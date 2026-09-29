@@ -46,7 +46,6 @@ mod application_mcp_credentials_tests;
 mod audit_tests;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::admin_assistant::{
     CatalogCapabilityReader, ConfigServiceDraftStore, ConfigServiceDraftValidator,
@@ -111,7 +110,6 @@ use axum::routing::get;
 use axum::{Json, Router};
 use sha2::{Digest, Sha256};
 
-static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const MAX_AUDITED_BODY: usize = 2 * 1024 * 1024;
 
 fn human_coordinate(value: &str, fallback: &str) -> String {
@@ -232,14 +230,9 @@ async fn durable_management_audit(
         .and_then(|value| value.to_str().ok())
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| {
-            let seq = AUDIT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or_default();
-            format!("generated-{}-{timestamp}-{seq}", std::process::id())
-        });
+        // An audit call identity needs uniqueness, not a time: draw it from a
+        // random source rather than composing a clock reading with a counter.
+        .unwrap_or_else(|| format!("generated-{}", uuid::Uuid::new_v4().simple()));
     // The audit record is filed AGAINST a tenant, so an unstamped request has
     // no record to file. Filing it under a compiled-in Workspace would attach a
     // real principal's write to a tenant that never made it, and would let the
@@ -392,6 +385,9 @@ pub struct ControlRouterInput {
     /// Optional application coordinator for IAM's canonical desktop OAuth
     /// operation. Present only in interactive local Cloud composition.
     pub cloud_login: Option<Arc<dyn awaken_admin_config_api::CloudLoginApplication>>,
+    /// The process's one wall clock, read by the admin surfaces that stamp or
+    /// judge time.
+    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 struct LiveControlCapabilities {
@@ -459,6 +455,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         local_browser_auth,
         remote_iam,
         cloud_login,
+        clock,
     } = input;
 
     let identity_mode = if remote_iam.is_some() {
@@ -494,6 +491,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
             brokered_catalog,
             // Shared credential-availability cooldowns (E3-4).
             availability: Default::default(),
+            clock,
         },
         capabilities,
         cloud_login,

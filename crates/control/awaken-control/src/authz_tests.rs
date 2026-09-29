@@ -412,7 +412,7 @@ fn embedded_resource_profile_authorizes_every_preset_reader_role() {
         .enumerate()
     {
         let dir = tempfile::tempdir().unwrap();
-        let iam = embedded_iam(dir.path());
+        let iam = embedded_iam(dir.path(), awaken_lease_contract::system_clock());
         let service_id = format!("resource-profile-{index}");
         iam.mint_service_token(TokenSpec {
             token_id: format!("tok_resource_profile_{index}"),
@@ -458,11 +458,12 @@ fn only_canonical_utc_timestamps_pass_the_expiry_shape_check() {
 
 #[test]
 fn only_preset_role_ids_are_mintable() {
+    let clock = awaken_lease_contract::system_clock();
     for role in ["admin", "workspace_admin", "workspace_user"] {
-        assert!(is_preset_role(role), "{role}");
+        assert!(is_preset_role(role, clock.as_ref()), "{role}");
     }
-    assert!(!is_preset_role("superuser"));
-    assert!(!is_preset_role(""));
+    assert!(!is_preset_role("superuser", clock.as_ref()));
+    assert!(!is_preset_role("", clock.as_ref()));
 }
 
 #[test]
@@ -478,7 +479,7 @@ fn fresh_token_ids_are_tok_prefixed_hex() {
 fn timestamps_render_canonical_rfc3339_utc() {
     // The calendar itself is the wall-clock port's codec (tested there); this
     // pins the IAM shape: fixed width, whole seconds, `Z`.
-    let now = now_rfc3339();
+    let now = rfc3339_at(awaken_lease_contract::system_clock().as_ref());
     assert!(canonical_timestamp_shape(&now), "{now}");
     assert_eq!(now.len(), 20);
     assert!(now.ends_with('Z'));
@@ -519,7 +520,7 @@ use tower::ServiceExt as _;
 /// the caller keeps it alive for the test.
 pub(super) fn fresh_iam() -> (tempfile::TempDir, Arc<ManagementAuthz>) {
     let dir = tempfile::tempdir().unwrap();
-    let iam = embedded_iam(dir.path());
+    let iam = embedded_iam(dir.path(), awaken_lease_contract::system_clock());
     (dir, iam)
 }
 
@@ -1896,7 +1897,7 @@ async fn embedded_iam_rehydrates_minted_and_revoked_tokens_across_a_restart() {
     let survivor;
     let revoked;
     {
-        let iam = embedded_iam(dir.path());
+        let iam = embedded_iam(dir.path(), awaken_lease_contract::system_clock());
         survivor = mint(&iam, "tok_survivor", BOOTSTRAP_WORKSPACE, "admin");
         revoked = mint(&iam, "tok_revoked_restart", BOOTSTRAP_WORKSPACE, "admin");
         iam.revoke_token("tok_revoked_restart").unwrap();
@@ -1904,7 +1905,7 @@ async fn embedded_iam_rehydrates_minted_and_revoked_tokens_across_a_restart() {
 
     // Reopen over the SAME data dir: tokens already exist, so no re-bootstrap;
     // the durable rows rehydrate into a fresh live evaluator.
-    let iam2 = embedded_iam(dir.path());
+    let iam2 = embedded_iam(dir.path(), awaken_lease_contract::system_clock());
     let app = guarded_app(iam2);
 
     // The survivor still authenticates AND authorizes (admin reads the catalog).

@@ -330,6 +330,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
         &stores.platform_workspace,
         awaken_iam_client::CredentialCache::open(),
         managed_services.entitlement_provider.take(),
+        clock.clone(),
     )
     .await?;
     let catalog = stores

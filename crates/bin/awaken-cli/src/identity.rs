@@ -69,6 +69,7 @@ pub(crate) async fn identity_wiring(
     platform_workspace: &str,
     cloud_credential_cache: awaken_iam_client::CredentialCache,
     entitlement_provider: Option<Box<dyn awaken_iam_core::EntitlementProvider>>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<IdentityWiring, String> {
     let deployment = deployment.clone();
     let platform_workspace = platform_workspace.to_owned();
@@ -78,6 +79,7 @@ pub(crate) async fn identity_wiring(
             &platform_workspace,
             cloud_credential_cache,
             entitlement_provider,
+            clock,
         )
     })
     .await
@@ -89,6 +91,7 @@ fn identity_wiring_blocking(
     platform_workspace: &str,
     cloud_credential_cache: awaken_iam_client::CredentialCache,
     entitlement_provider: Option<Box<dyn awaken_iam_core::EntitlementProvider>>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<IdentityWiring, String> {
     match deployment.identity_mode {
         ManagementIdentityMode::SelfManaged => {
@@ -98,11 +101,13 @@ fn identity_wiring_blocking(
                     &deployment.org_id,
                     platform_workspace,
                     provider,
+                    clock,
                 ),
                 None => awaken_control::embedded_iam_for_tenant(
                     &deployment.data_dir,
                     &deployment.org_id,
                     platform_workspace,
+                    clock,
                 ),
             };
             for workspace_id in &deployment.iam_workspaces {
@@ -121,7 +126,7 @@ fn identity_wiring_blocking(
             })
         }
         ManagementIdentityMode::AwakenCloud => {
-            cloud_identity_wiring(&deployment.cloud_iam, cloud_credential_cache)
+            cloud_identity_wiring(&deployment.cloud_iam, cloud_credential_cache, clock)
         }
         ManagementIdentityMode::NoLogin => Ok(IdentityWiring {
             iam: None,
@@ -136,6 +141,7 @@ fn identity_wiring_blocking(
 fn cloud_identity_wiring(
     config: &config::CloudIamConfig,
     cache: awaken_iam_client::CredentialCache,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<IdentityWiring, String> {
     let interactive = config.access_token.is_none()
         && config.service_token.is_none()
@@ -144,7 +150,7 @@ fn cloud_identity_wiring(
         .then(|| DesktopCloudLogin::new(config, cache))
         .transpose()?
         .map(Arc::new);
-    let remote_iam = awaken_cloud_authz(config, login.clone())?;
+    let remote_iam = awaken_cloud_authz(config, login.clone(), clock)?;
     Ok(IdentityWiring {
         iam: None,
         remote_iam: Some(remote_iam),
@@ -310,6 +316,7 @@ impl awaken_admin_config_api::CloudLoginApplication for DesktopCloudLogin {
 fn awaken_cloud_authz(
     config: &config::CloudIamConfig,
     desktop: Option<Arc<DesktopCloudLogin>>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<Arc<RemoteManagementAuthz>, String> {
     if let Some(path) = &config.service_token_file {
         return RemoteManagementAuthz::connect_with_projected_service_token(
@@ -317,6 +324,7 @@ fn awaken_cloud_authz(
             config.audience.clone(),
             config.issuer.clone(),
             path.clone(),
+            clock,
         );
     }
     let user_token_source: Arc<RedactedStringSource> = match config.access_token.clone() {
@@ -347,6 +355,7 @@ fn awaken_cloud_authz(
         config.issuer.clone(),
         user_token_source,
         config.service_token.clone(),
+        clock,
     )
 }
 
@@ -573,7 +582,15 @@ mod tests {
         let mut deployment = config::local_test_deployment(directory.path().into());
         deployment.identity_mode = ManagementIdentityMode::AwakenCloud;
         deployment.cloud_iam = config;
-        let error = match identity_wiring(&deployment, "workspace-test", cache, None).await {
+        let error = match identity_wiring(
+            &deployment,
+            "workspace-test",
+            cache,
+            None,
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        {
             Ok(_) => panic!("the unreachable fixture issuer must fail closed"),
             Err(error) => error,
         };

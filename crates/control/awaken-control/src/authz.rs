@@ -102,6 +102,7 @@
 //! (`tests/management_authz.rs`, `tests/management_tokens.rs`) are the equivalence
 //! oracle and pass unchanged across this adoption.
 
+use awaken_lease_contract::WallClock;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -162,7 +163,7 @@ mod remote;
 use remote::{RemoteAuthenticationFailure, authenticate_off_event_loop};
 
 use bootstrap::bootstrap_admin_token;
-use clock::{canonical_timestamp_shape, now_rfc3339, now_unix};
+use clock::{canonical_timestamp_shape, rfc3339_at, unix_seconds_at};
 use directory::reconcile_agents_directory;
 use hosted_route_profile::HostedRuntimeRouteDescriptor;
 pub use hosted_route_profile::{
@@ -298,6 +299,9 @@ pub struct ManagementAuthz {
     org_id: OrgId,
     /// Installation workspace selected for browser sessions.
     workspace_id: WorkspaceId,
+    /// The process's one wall clock: token mint and revocation stamps, and the
+    /// instant every presented credential and browser session is judged at.
+    clock: Arc<dyn WallClock>,
 }
 
 /// User-selectable identity posture for the local product.
@@ -360,7 +364,10 @@ impl ManagementAuthz {
             principal: principal.clone(),
             workspace: WorkspaceId(spec.workspace_id.clone()),
             role: qualify_role(&spec.role),
-            created_at: Timestamp(spec.created_at.unwrap_or_else(now_rfc3339)),
+            created_at: Timestamp(
+                spec.created_at
+                    .unwrap_or_else(|| rfc3339_at(self.clock.as_ref())),
+            ),
             expires_at: spec.expires_at.map(Timestamp),
         };
         let mut guard = self.state.lock().unwrap();
@@ -406,7 +413,7 @@ impl ManagementAuthz {
         let mut guard = self.state.lock().unwrap();
         guard
             .directory
-            .revoke(&token_id, Timestamp(now_rfc3339()))?;
+            .revoke(&token_id, Timestamp(rfc3339_at(self.clock.as_ref())))?;
         let token = guard
             .directory
             .token(&token_id)
@@ -493,11 +500,13 @@ impl ManagementAuthz {
         if !presented.starts_with(CANONICAL_API_TOKEN_PREFIX) {
             return Err(AuthReject::Invalid);
         }
-        // now_unix is unused for API tokens (this plane mints no JWTs); pass 0.
-        match self
-            .gate
-            .authenticate_detailed(presented, &Timestamp(now_rfc3339()), 0)
-        {
+        // The Unix-seconds reading is unused for API tokens (this plane mints no
+        // JWTs); pass 0.
+        match self.gate.authenticate_detailed(
+            presented,
+            &Timestamp(rfc3339_at(self.clock.as_ref())),
+            0,
+        ) {
             Ok((principal, Some(workspace))) => Ok((principal, workspace)),
             // A management credential is always a workspace-bound API token; a
             // resolved token with no workspace (only a JWT, never minted here) is
@@ -555,15 +564,19 @@ impl ManagementAuthz {
 /// Panics on open/migrate failure, like the durable-store boot path: a
 /// management server that silently came up open would be worse than one that
 /// refuses to start.
-pub fn embedded_iam(dir: &Path) -> Arc<ManagementAuthz> {
-    embedded_iam_for_tenant(dir, DEFAULT_ORG_ID, BOOTSTRAP_WORKSPACE)
+pub fn embedded_iam(dir: &Path, clock: Arc<dyn WallClock>) -> Arc<ManagementAuthz> {
+    embedded_iam_for_tenant(dir, DEFAULT_ORG_ID, BOOTSTRAP_WORKSPACE, clock)
 }
 
 /// Open embedded IAM for the platform-provisioned local Workspace. Production
 /// composition roots use this entry point so IAM bootstrap authority and
 /// resource ownership share one durable coordinate rather than a compiled id.
-pub fn embedded_iam_for_workspace(dir: &Path, workspace_id: &str) -> Arc<ManagementAuthz> {
-    embedded_iam_for_tenant(dir, DEFAULT_ORG_ID, workspace_id)
+pub fn embedded_iam_for_workspace(
+    dir: &Path,
+    workspace_id: &str,
+    clock: Arc<dyn WallClock>,
+) -> Arc<ManagementAuthz> {
+    embedded_iam_for_tenant(dir, DEFAULT_ORG_ID, workspace_id, clock)
 }
 
 /// Reconcile one product-owned immutable profile into the durable PAP and live
@@ -712,12 +725,14 @@ pub fn embedded_iam_for_tenant(
     dir: &Path,
     org_id: &str,
     workspace_id: &str,
+    clock: Arc<dyn WallClock>,
 ) -> Arc<ManagementAuthz> {
     embedded_iam_for_tenant_with_entitlements(
         dir,
         org_id,
         workspace_id,
         Box::new(EntitlementEngine::unlicensed()),
+        clock,
     )
 }
 
@@ -728,6 +743,7 @@ pub fn embedded_iam_for_tenant_with_entitlements(
     org_id: &str,
     workspace_id: &str,
     entitlements: Box<dyn EntitlementProvider>,
+    clock: Arc<dyn WallClock>,
 ) -> Arc<ManagementAuthz> {
     std::fs::create_dir_all(dir).expect("create typed data_dir for embedded IAM");
     let db_path = dir.join("iam.sqlite");
@@ -736,7 +752,7 @@ pub fn embedded_iam_for_tenant_with_entitlements(
 
     // Durable role catalog (idempotent upsert of the preset roles) — the PAP
     // and any external reader see the same catalog the evaluator derives from.
-    let now = Timestamp(now_rfc3339());
+    let now = Timestamp(rfc3339_at(clock.as_ref()));
     seed_named_roles(&store, &now).expect("seed the preset role catalog");
     reconcile_agents_directory(&store, org_id, workspace_id, &now);
     migrate_legacy_workspace_bindings(&store).unwrap_or_else(|error| {
@@ -835,6 +851,7 @@ pub fn embedded_iam_for_tenant_with_entitlements(
         store,
         org_id: OrgId(org_id.to_owned()),
         workspace_id: WorkspaceId(workspace_id.to_owned()),
+        clock,
     });
 
     if hydrated_tokens == 0 {
@@ -1529,15 +1546,15 @@ fn problem(status: StatusCode, code: &str, detail: String, headers: &HeaderMap) 
 
 /// Whether `role` is one of the preset Anthropic role ids — the only roles the
 /// mint surface accepts (custom roles are post-P1).
-fn is_preset_role(role: &str) -> bool {
-    named_role_catalog(&Timestamp(now_rfc3339()))
+fn is_preset_role(role: &str, clock: &dyn WallClock) -> bool {
+    named_role_catalog(&Timestamp(rfc3339_at(clock)))
         .iter()
         .any(|def| def.id.0 == role)
 }
 
 /// The preset role ids, for the unknown-role error message.
-fn preset_role_ids() -> String {
-    named_role_catalog(&Timestamp(now_rfc3339()))
+fn preset_role_ids(clock: &dyn WallClock) -> String {
+    named_role_catalog(&Timestamp(rfc3339_at(clock)))
         .iter()
         .map(|def| def.id.0.clone())
         .collect::<Vec<_>>()
@@ -1639,13 +1656,13 @@ async fn mint_token_route(
     let Some(role) = field("role") else {
         return invalid("`role` (non-empty string) is required".to_string());
     };
-    if !is_preset_role(&role) {
+    if !is_preset_role(&role, authz.clock.as_ref()) {
         return problem(
             StatusCode::UNPROCESSABLE_ENTITY,
             "unknown_role",
             format!(
                 "unknown role `{role}`: the preset roles are {}",
-                preset_role_ids()
+                preset_role_ids(authz.clock.as_ref())
             ),
             &headers,
         );

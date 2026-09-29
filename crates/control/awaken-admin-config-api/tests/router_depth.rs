@@ -55,6 +55,7 @@ fn router(probe: Option<Arc<dyn CredentialProbe>>) -> TestRouter {
         model_discovery: None,
         brokered_catalog: None,
         availability: Arc::new(AvailabilityLedger::new()),
+        clock: awaken_lease_contract::system_clock(),
     });
     TestRouter { app, catalog }
 }

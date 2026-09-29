@@ -84,10 +84,19 @@ impl ProviderCredentialHolders {
 }
 
 impl CatalogModelPublicationResolver {
+    /// The current reading of the injected wall clock, in epoch milliseconds.
+    pub(super) fn clock_reading_ms(&self) -> u64 {
+        awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref())
+    }
+
     /// Resolve against a frozen catalog snapshot. This is useful for deterministic
     /// tests; production composition should use [`Self::from_repo`].
     #[must_use]
-    pub fn new(catalog: ProviderCatalog, credentials: Arc<dyn CredentialRepo>) -> Self {
+    pub fn new(
+        catalog: ProviderCatalog,
+        credentials: Arc<dyn CredentialRepo>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Self {
         let acp_capabilities = Arc::new(Vec::new());
         let executor_capabilities = Arc::new(executor_capabilities(&acp_capabilities));
         Self {
@@ -107,12 +116,17 @@ impl CatalogModelPublicationResolver {
             credential_selection_sequences: Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
+            clock,
         }
     }
 
     /// Resolve against the live catalog repository at publication time.
     #[must_use]
-    pub fn from_repo(repo: Arc<dyn CatalogRepo>, credentials: Arc<dyn CredentialRepo>) -> Self {
+    pub fn from_repo(
+        repo: Arc<dyn CatalogRepo>,
+        credentials: Arc<dyn CredentialRepo>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Self {
         let acp_capabilities = Arc::new(Vec::new());
         let executor_capabilities = Arc::new(executor_capabilities(&acp_capabilities));
         Self {
@@ -132,6 +146,7 @@ impl CatalogModelPublicationResolver {
             credential_selection_sequences: Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
+            clock,
         }
     }
 

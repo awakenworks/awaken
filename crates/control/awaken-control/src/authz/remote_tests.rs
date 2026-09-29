@@ -14,7 +14,7 @@ use axum::{Json, Router};
 use tower::ServiceExt as _;
 
 use super::{RemoteManagementAuthz, cloud_authorization_denial_detail};
-use crate::authz::{cloud_management_guard, now_unix, qualify_hosted_runtime_action};
+use crate::authz::{cloud_management_guard, qualify_hosted_runtime_action, unix_seconds_at};
 
 const SEED: [u8; 32] = [19; 32];
 const KID: &str = "awaken-local-cloud-test";
@@ -111,7 +111,7 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
     let base_url = format!("http://{address}");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (token, rotated_token, service_token) = runtime.block_on(async {
-        let now = now_unix();
+        let now = unix_seconds_at(awaken_lease_contract::system_clock().as_ref());
         let authority = AccessTokenAuthority::new(LocalSeedSigner::new(KID, SEED));
         let token = authority
             .mint(&AccessTokenClaims {
@@ -169,6 +169,7 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
         ISSUER.into(),
         token_source,
         None,
+        awaken_lease_contract::system_clock(),
     )
     .unwrap();
 
@@ -229,6 +230,7 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
         AUDIENCE.into(),
         ISSUER.into(),
         projected_token,
+        awaken_lease_contract::system_clock(),
     )
     .unwrap();
     let hosted_app = Router::new()
@@ -344,7 +346,7 @@ fn cloud_tunnel_guard_requires_wif_service_bearer_and_scope() {
     let base_url = format!("http://{address}");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (account_scoped, service_unscoped, service_scoped) = runtime.block_on(async {
-        let now = now_unix();
+        let now = unix_seconds_at(awaken_lease_contract::system_clock().as_ref());
         let authority = AccessTokenAuthority::new(LocalSeedSigner::new(KID, SEED));
         let mint = |sub: &str,
                     subject_kind: awaken_iam_host::AccessTokenSubjectKind,
@@ -395,6 +397,7 @@ fn cloud_tunnel_guard_requires_wif_service_bearer_and_scope() {
         AUDIENCE.into(),
         ISSUER.into(),
         projected_token,
+        awaken_lease_contract::system_clock(),
     )
     .unwrap();
     async fn ok() -> StatusCode {

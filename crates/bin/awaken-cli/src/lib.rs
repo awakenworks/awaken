@@ -535,10 +535,11 @@ pub async fn build_secured_all_in_one_router(
     dir: &std::path::Path,
     key: &[u8; 32],
 ) -> (Router, Arc<ManagementAuthz>) {
-    let iam = embedded_iam(dir);
     let stores = open_local_process_stores(dir, key)
         .await
         .unwrap_or_else(|error| panic!("open local deployment stores: {error}"));
+    // IAM judges tokens on the same wall clock the stores stamp with.
+    let iam = embedded_iam(dir, stores.clock.clone());
     let options = exact_host_model::local_test_process_options(&stores);
     let router = prepare_runtime_routers(
         stores,
@@ -669,6 +670,7 @@ fn resolve_model_services(
         awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
             control.catalog.clone(),
             control.credentials.clone(),
+            stores.clock.clone(),
         )
         .with_credential_material_delivery(
             control.secrets.clone(),

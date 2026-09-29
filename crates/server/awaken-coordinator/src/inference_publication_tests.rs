@@ -121,8 +121,12 @@ mod tests {
             .next()
             .expect("self-hosted Provider policy has an exact holder")
             .clone();
-        CatalogModelPublicationResolver::from_repo(catalog, credentials)
-            .with_direct_provider_credential_execution(policy, holder)
+        CatalogModelPublicationResolver::from_repo(
+            catalog,
+            credentials,
+            awaken_lease_contract::system_clock(),
+        )
+        .with_direct_provider_credential_execution(policy, holder)
     }
 
     async fn provider(model: &str, credential: Option<(&str, bool)>) -> TestServices {

@@ -11,7 +11,7 @@ use awaken_iam_host::{AuthReject, LocalBrowserAuth, LocalBrowserAuthError, Local
 use axum::http::HeaderMap;
 use axum::http::header::COOKIE;
 
-use super::{ManagementAuthz, now_rfc3339, qualify_role};
+use super::{ManagementAuthz, qualify_role, rfc3339_at};
 
 impl ManagementAuthz {
     /// Start the local browser handoff over this installation's existing,
@@ -61,7 +61,7 @@ impl ManagementAuthz {
             .and_then(|value| value.to_str().ok())
             .ok_or(AuthReject::Invalid)?;
         self.gate
-            .authenticate_session_cookie(cookie, Timestamp(now_rfc3339()))
+            .authenticate_session_cookie(cookie, Timestamp(rfc3339_at(self.clock.as_ref())))
             .map(|principal| (principal, self.workspace_id.clone()))
     }
 }
@@ -91,7 +91,7 @@ mod tests {
     async fn session_survives_sqlite_restart_but_logout_does_not() {
         let dir = tempfile::tempdir().unwrap();
         let account = AccountId("local-console-admin".into());
-        let first_iam = embedded_iam(dir.path());
+        let first_iam = embedded_iam(dir.path(), awaken_lease_contract::system_clock());
         let (first_browser, handoff) = first_iam.begin_local_browser(account.clone()).unwrap();
         let exchange = awaken_iam_host::local_browser_router(first_browser)
             .oneshot(
@@ -117,7 +117,7 @@ mod tests {
             .to_owned();
         drop(first_iam);
 
-        let restarted_iam = embedded_iam(dir.path());
+        let restarted_iam = embedded_iam(dir.path(), awaken_lease_contract::system_clock());
         let (restarted_browser, _) = restarted_iam.begin_local_browser(account.clone()).unwrap();
         async fn echo() -> Response {
             (StatusCode::OK, "ok").into_response()
@@ -153,7 +153,7 @@ mod tests {
             .unwrap();
         assert_eq!(logout.status(), StatusCode::NO_CONTENT);
 
-        let after_logout_iam = embedded_iam(dir.path());
+        let after_logout_iam = embedded_iam(dir.path(), awaken_lease_contract::system_clock());
         let (after_logout_browser, _) = after_logout_iam.begin_local_browser(account).unwrap();
         let rejected = awaken_iam_host::local_browser_router(after_logout_browser)
             .oneshot(

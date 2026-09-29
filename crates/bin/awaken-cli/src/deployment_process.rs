@@ -138,6 +138,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         &stores.platform_workspace,
         awaken_iam_client::CredentialCache::open(),
         managed_services.entitlement_provider.take(),
+        stores.clock.clone(),
     )
     .await?;
     let coordinator_authorities =

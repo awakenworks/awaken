@@ -255,9 +255,12 @@ pub(super) fn wire_tools(
     Ok(tools)
 }
 
-pub(super) fn project(revision: AgentConfigRevision) -> Result<Agent, ManagedAgentError> {
+pub(super) fn project(
+    revision: AgentConfigRevision,
+    clock: &dyn awaken_lease_contract::WallClock,
+) -> Result<Agent, ManagedAgentError> {
     let revision_number = revision.revision;
-    let fallback_timestamp = lifecycle_timestamp();
+    let fallback_timestamp = lifecycle_timestamp_at(clock);
     let created_at = revision
         .created_at_unix_ms
         .map(awaken_session_application_contract::epoch_millis_to_rfc3339)

@@ -190,6 +190,7 @@ fn harness_with_capabilities(capabilities: ConfigCapabilitiesView) -> Harness {
             model_discovery: Some(discovery.clone()),
             brokered_catalog: None,
             availability: Arc::new(AvailabilityLedger::new()),
+            clock: awaken_lease_contract::system_clock(),
         },
         capabilities,
     );
@@ -261,6 +262,7 @@ async fn cloud_login_commands_update_the_live_capability_projection() {
             model_discovery: None,
             brokered_catalog: None,
             availability: Arc::new(AvailabilityLedger::new()),
+            clock: awaken_lease_contract::system_clock(),
         },
         Arc::new(LiveCloudCapabilities(authenticated.clone())),
         Some(Arc::new(FixedCloudLogin(authenticated))),
@@ -517,6 +519,7 @@ async fn b1_brokered_refresh_exposes_only_explicit_managed_offerings() {
                 },
             )))),
             availability: Arc::new(AvailabilityLedger::new()),
+            clock: awaken_lease_contract::system_clock(),
         },
         cloud_capabilities(true),
     );
@@ -570,6 +573,7 @@ async fn b1_brokered_refresh_exposes_only_explicit_managed_offerings() {
         model_discovery: None,
         brokered_catalog: None,
         availability: Arc::new(AvailabilityLedger::new()),
+        clock: awaken_lease_contract::system_clock(),
     });
     let (status, local_catalog) = call(&local, "GET", "/v1/config/catalog", Value::Null).await;
     assert_eq!(status, StatusCode::OK);
@@ -627,6 +631,7 @@ async fn b3_enabled_cloud_supply_without_login_is_typed_and_non_mutating() {
             model_discovery: None,
             brokered_catalog: None,
             availability: Arc::new(AvailabilityLedger::new()),
+            clock: awaken_lease_contract::system_clock(),
         },
         cloud_capabilities(false),
     );

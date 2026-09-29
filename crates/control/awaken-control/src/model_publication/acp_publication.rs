@@ -65,7 +65,7 @@ impl CatalogModelPublicationResolver {
             .verified_acp_capability(
                 resolved_binding.identity().2,
                 Some(&required_credential),
-                wall_clock_ms(),
+                self.clock_reading_ms(),
             )
             .await?;
         validate_acp_session_configuration(&resolved_binding, session_configuration, &negotiated)?;
@@ -160,11 +160,4 @@ impl CatalogModelPublicationResolver {
             }
         }
     }
-}
-
-pub(super) fn wall_clock_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }

@@ -20,12 +20,18 @@ use awaken_tenancy::ScopeId;
 
 pub struct CredentialRevisionValidator {
     credentials: Arc<dyn CredentialRepo>,
+    /// The process's one wall clock: the instant a descriptor's expiry is
+    /// judged at.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl CredentialRevisionValidator {
     #[must_use]
-    pub fn new(credentials: Arc<dyn CredentialRepo>) -> Self {
-        Self { credentials }
+    pub fn new(
+        credentials: Arc<dyn CredentialRepo>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Self {
+        Self { credentials, clock }
     }
 }
 
@@ -77,11 +83,7 @@ impl awaken_resource_contract::RepositoryCredentialValidator for CredentialRevis
                 &awaken_session_resource_contract::repository_transport_credential_usage(),
             )
             .map_err(|_| unavailable())?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| unavailable())?
-            .as_millis()
-            .min(u128::from(u64::MAX)) as u64;
+        let now = awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref());
         descriptor.validate_expiry(now).map_err(|_| unavailable())
     }
 }
@@ -180,7 +182,10 @@ mod tests {
             "material": { "kind": "structured", "type_id": "awaken.http-basic/v1", "fields": ["password", "username"] },
             "targets": [{ "target": { "purpose": { "type": "repository_transport" }, "audience": "https://github.com/git" }, "usage": { "type": "http_basic_auth" } }]
         })).unwrap());
-        let validator = CredentialRevisionValidator::new(credentials.clone());
+        let validator = CredentialRevisionValidator::new(
+            credentials.clone(),
+            awaken_lease_contract::system_clock(),
+        );
         for case in 0..14 {
             let mut candidate = source.clone();
             let mut workspace = "workspace-a";
@@ -268,7 +273,8 @@ mod tests {
         )
         .await
         .unwrap();
-        let validator = CredentialRevisionValidator::new(credentials);
+        let validator =
+            CredentialRevisionValidator::new(credentials, awaken_lease_contract::system_clock());
         let exact = CredentialRef {
             id: source.id.0,
             revision: 1,

@@ -114,6 +114,8 @@ pub struct ProviderConnectionService {
     credentials: Arc<dyn CredentialRepo>,
     secrets: Arc<dyn SecretStore>,
     discovery: Arc<dyn ModelCatalogDiscovery>,
+    /// The process's one wall clock: the stamp a discovered connection carries.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl ProviderConnectionService {
@@ -123,12 +125,14 @@ impl ProviderConnectionService {
         credentials: Arc<dyn CredentialRepo>,
         secrets: Arc<dyn SecretStore>,
         discovery: Arc<dyn ModelCatalogDiscovery>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self {
             catalog,
             credentials,
             secrets,
             discovery,
+            clock,
         }
     }
 
@@ -391,7 +395,12 @@ impl ProviderConnectionService {
         }
         let sync = self
             .catalog
-            .put_discovered_connection(provider.clone(), endpoint.clone(), models, unix_time_ms())
+            .put_discovered_connection(
+                provider.clone(),
+                endpoint.clone(),
+                models,
+                awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref()),
+            )
             .await?;
         if command_owned && credential.status != CredentialStatus::Active {
             credential = awaken_credential_vault::repo::transition_credential_status(
@@ -593,17 +602,6 @@ fn validate_provider_segment(key: &str, value: &str) -> Result<(), ProviderConne
             "{key} contains unsupported characters"
         )))
     }
-}
-
-fn unix_time_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
