@@ -246,10 +246,10 @@ pub(crate) fn a_restarted_worker_reclaims_only_expired_never_checked_out_capacit
     let worker_a = current_thread_runtime();
     let checked_out = worker_a.block_on(async {
         let pool = WarmContainerPool::new(
-            Arc::new(ContainerProvider::new(
-                Arc::new(make_runtime(namespace.clone())),
-                tag.clone(),
-            )),
+            Arc::new(
+                ContainerProvider::new(Arc::new(make_runtime(namespace.clone())), tag.clone())
+                    .with_clock(awaken_lease_contract::system_clock()),
+            ),
             2,
         )
         .with_capacity_leases(leases())
@@ -292,10 +292,10 @@ pub(crate) fn a_restarted_worker_reclaims_only_expired_never_checked_out_capacit
     let worker_b = current_thread_runtime();
     worker_b.block_on(async {
         let pool = WarmContainerPool::new(
-            Arc::new(ContainerProvider::new(
-                Arc::new(make_runtime(namespace.clone())),
-                tag.clone(),
-            )),
+            Arc::new(
+                ContainerProvider::new(Arc::new(make_runtime(namespace.clone())), tag.clone())
+                    .with_clock(awaken_lease_contract::system_clock()),
+            ),
             2,
         )
         .with_capacity_leases(leases().without_maintenance())

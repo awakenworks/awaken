@@ -119,7 +119,8 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
             .await
             .unwrap(),
     );
-    let provider = ContainerProvider::new(runtime.clone(), fixture_image());
+    let provider = ContainerProvider::new(runtime.clone(), fixture_image())
+        .with_clock(awaken_lease_contract::system_clock());
     let scope = format!("process-stop-{}", std::process::id());
     let mut spec = spec_with_command(&scope, fixture_image(), session_argv());
     spec.filesystem_continuity = pc::FilesystemContinuity::Ephemeral;

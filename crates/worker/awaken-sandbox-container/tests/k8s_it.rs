@@ -111,7 +111,8 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         return;
     };
     let runtime = Arc::new(rt);
-    let provider = ContainerProvider::new(runtime.clone(), fixture_image());
+    let provider = ContainerProvider::new(runtime.clone(), fixture_image())
+        .with_clock(awaken_lease_contract::system_clock());
     let desired = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let create_fence = effect_fence(&scope, "create", "lifecycle-owner", 1);
     let first = ContainerEnvironmentProvider::create_environment_for_effect(
@@ -176,7 +177,8 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
             size: "1Gi".into(),
         },
     ));
-    let replacement = ContainerProvider::new(replacement_runtime, fixture_image());
+    let replacement = ContainerProvider::new(replacement_runtime, fixture_image())
+        .with_clock(awaken_lease_contract::system_clock());
     let mut observation =
         awaken_sandbox_container::ContainerEnvironmentAdoption::new(&desired, &first_handle);
     assert!(
@@ -298,7 +300,8 @@ async fn create_replay_keeps_a_later_managed_file_generation() {
     let runtime = Arc::new(runtime);
     let scope = format!("k8s-file-create-replay-{}", std::process::id());
     let image = fixture_image();
-    let provider = ContainerProvider::new(runtime.clone(), image.clone());
+    let provider = ContainerProvider::new(runtime.clone(), image.clone())
+        .with_clock(awaken_lease_contract::system_clock());
     let desired = spec_with_command(&scope, image, command(&["sleep", "30"]));
     let create_fence = effect_fence(&scope, "create", "file-owner", 1);
     let first = ContainerEnvironmentProvider::create_environment_for_effect(
@@ -423,6 +426,7 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
     let image =
         std::env::var("AWAKEN_K8S_FIXTURE_IMAGE").unwrap_or_else(|_| "awaken-bb:1".to_string());
     let first = ContainerProvider::new(Arc::new(first_runtime), image.clone())
+        .with_clock(awaken_lease_contract::system_clock())
         .acquire_restore_environment(&spec, &request)
         .await
         .expect("KR1 exact Pod/PVC create");
@@ -456,7 +460,10 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
         storage_class_name: None,
         size: "1Gi".into(),
     });
-    let retry = Arc::new(ContainerProvider::new(Arc::new(retry_runtime), image));
+    let retry = Arc::new(
+        ContainerProvider::new(Arc::new(retry_runtime), image)
+            .with_clock(awaken_lease_contract::system_clock()),
+    );
     let mut mismatch = request.clone();
     mismatch.generation_id.push_str("-other");
     assert!(
@@ -690,7 +697,8 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
         size: "1Gi".into(),
     }));
     let scope = format!("terminal-replace-{}", std::process::id());
-    let provider = ContainerProvider::new(runtime.clone(), fixture_image());
+    let provider = ContainerProvider::new(runtime.clone(), fixture_image())
+        .with_clock(awaken_lease_contract::system_clock());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sh", "-c", "sleep 300"]));
     let create_fence = effect_fence(&scope, "create", "terminal-owner", 1);
     let first_environment = ContainerEnvironmentProvider::create_environment_for_effect(
@@ -978,7 +986,8 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
         storage_class_name: None,
         size: "1Gi".into(),
     }));
-    let provider = ContainerProvider::new(runtime.clone(), fixture_image());
+    let provider = ContainerProvider::new(runtime.clone(), fixture_image())
+        .with_clock(awaken_lease_contract::system_clock());
     let scope = format!("claim-fence-{}", std::process::id());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let first_fence = effect_fence(&scope, "create-a", "claim-owner", 1);
@@ -1086,7 +1095,8 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         storage_class_name: None,
         size: "1Gi".into(),
     }));
-    let provider = ContainerProvider::new(runtime.clone(), fixture_image());
+    let provider = ContainerProvider::new(runtime.clone(), fixture_image())
+        .with_clock(awaken_lease_contract::system_clock());
     let scope = format!("claim-orphan-{}", std::process::id());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let create_fence = effect_fence(&scope, "create", "orphan-owner-a", 1);
@@ -1250,7 +1260,8 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         storage_class_name: None,
         size: "1Gi".into(),
     }));
-    let provider = ContainerProvider::new(runtime.clone(), fixture_image());
+    let provider = ContainerProvider::new(runtime.clone(), fixture_image())
+        .with_clock(awaken_lease_contract::system_clock());
     let scope = format!("claim-only-terminal-{}", std::process::id());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let create_fence = effect_fence(&scope, "create", "claim-only-owner", 1);
@@ -1521,7 +1532,10 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
         storage_class_name: None,
         size: "1Gi".into(),
     }));
-    let provider = Arc::new(ContainerProvider::new(runtime, fixture_image()));
+    let provider = Arc::new(
+        ContainerProvider::new(runtime, fixture_image())
+            .with_clock(awaken_lease_contract::system_clock()),
+    );
     let scope = format!("claim-delete-rebuild-wins-{}", std::process::id());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let create_fence = effect_fence(&scope, "create", "delete-race-owner", 1);
@@ -1774,7 +1788,8 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         storage_class_name: None,
         size: "1Gi".into(),
     }));
-    let provider = ContainerProvider::new(runtime, fixture_image());
+    let provider = ContainerProvider::new(runtime, fixture_image())
+        .with_clock(awaken_lease_contract::system_clock());
     let scope = format!("claim-delete-order-{}", std::process::id());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let create_fence = effect_fence(&scope, "create", "delete-order-owner", 1);
@@ -1978,7 +1993,8 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
         return;
     };
     let plain_runtime = Arc::new(plain);
-    let plain_provider = ContainerProvider::new(plain_runtime.clone(), fixture_image());
+    let plain_provider = ContainerProvider::new(plain_runtime.clone(), fixture_image())
+        .with_clock(awaken_lease_contract::system_clock());
     let scope = format!("claim-preflight-{}", std::process::id());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let owner_fence = effect_fence(&scope, "create-a", "preflight-owner-a", 1);
@@ -2033,7 +2049,8 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
         storage_class_name: None,
         size: "1Gi".into(),
     }));
-    let retained_provider = ContainerProvider::new(retained_runtime, fixture_image());
+    let retained_provider = ContainerProvider::new(retained_runtime, fixture_image())
+        .with_clock(awaken_lease_contract::system_clock());
     let foreign_fence = effect_fence(&scope, "create-b", "preflight-owner-b", 1);
     let authority = EffectAuthority::new(&foreign_fence);
     let error = ContainerEnvironmentProvider::create_environment_for_effect(

@@ -29,7 +29,8 @@ async fn native_acp_and_hand_share_one_production_container() {
     };
     let runtime = Arc::new(DockerRuntime::connect_local(8080).expect("docker client"));
     runtime.ping().await.expect("reachable Docker daemon");
-    let provider = ContainerProvider::new(runtime.clone(), image);
+    let provider = ContainerProvider::new(runtime.clone(), image)
+        .with_clock(awaken_lease_contract::system_clock());
     let scope = format!("session-real-{}", std::process::id());
     let _residue = residue::TestResidue::arm(scope.as_str(), residue::Backend::Docker);
     let spec = pc::SandboxSpec {

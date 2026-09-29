@@ -2936,7 +2936,7 @@ async fn container_checkpoint_projection_preserves_exact_handle_and_current_auth
         "current", "legacy", "denied", "renew", "revoke", "replace", "expire",
     ] {
         let runtime = Arc::new(FakeRuntime::default());
-        let provider = ContainerProvider::new(runtime.clone(), "fixture");
+        let provider = ContainerProvider::for_test(runtime.clone(), "fixture");
         let mut requested = spec("checkpoint-projection");
         requested.mounts.clear();
         requested.env.clear();
@@ -3945,7 +3945,7 @@ async fn expired_effect_fence_rejects_before_runtime_or_mount_materialization() 
      * time-bound zero-effect rejection rather than accepting a later adapter
      * error as equivalent evidence. */
     let runtime = Arc::new(FakeRuntime::default());
-    let provider = ContainerProvider::new(runtime.clone(), "agent:test");
+    let provider = ContainerProvider::for_test(runtime.clone(), "agent:test");
     let expired =
         pc::SandboxEffectFence::new("operation-expired", "owner-1", "runtime-1", 1, 0).unwrap();
     let error = match provider
@@ -4076,7 +4076,7 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                         state.creation_response_gate = Some((boundary, gate.clone()));
                     }
                 }
-                let mut provider = ContainerProvider::new(runtime.clone(), "agent:test");
+                let mut provider = ContainerProvider::for_test(runtime.clone(), "agent:test");
                 if boundary == "file" {
                     provider = provider.with_blob_source(Arc::new(PausedCreationInput {
                         inner: OneBlob("file-1", b"retained creation input".to_vec()),
@@ -4315,7 +4315,7 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
      * | R3 | any | foreign/regressed | entry denial, zero runtime calls |
      * | R3-equal | yes | equal | E2 + E3 after one runtime call |
      */
-    let now = container_runtime_unix_now_ms().expect("test clock");
+    let now = crate::effect_clock_reading_ms(Some(&awaken_lease_contract::system_clock())).unwrap();
     let initial = pc::SandboxEffectFence::new(
         "renewable-create",
         "worker-a",
@@ -4333,7 +4333,7 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
     )
     .unwrap();
     let runtime = Arc::new(FakeRuntime::default().expiring_effect_fence_once());
-    let provider = ContainerProvider::new(runtime.clone(), "agent:test");
+    let provider = ContainerProvider::for_test(runtime.clone(), "agent:test");
     let mut renewable_spec = spec("renewed-provider-boundary");
     renewable_spec.mounts.clear();
     renewable_spec.env.clear();
@@ -4381,7 +4381,7 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
         ),
     ] {
         let runtime = Arc::new(FakeRuntime::default().expiring_effect_fence_once());
-        let provider = ContainerProvider::new(runtime.clone(), "agent:test");
+        let provider = ContainerProvider::for_test(runtime.clone(), "agent:test");
         let mut rejected_spec = spec(&format!("rejected-provider-boundary-{rule}"));
         rejected_spec.mounts.clear();
         rejected_spec.env.clear();
@@ -4504,7 +4504,7 @@ fn base_provider(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
     // One immutable provider composition is shared by creation and fresh-process
     // recovery. The conventional proxy supplies connectivity without claiming to
     // enforce a host allowlist.
-    ContainerProvider::new(runtime, "ghcr.io/awaken/sandbox:latest").with_forward_proxy(
+    ContainerProvider::for_test(runtime, "ghcr.io/awaken/sandbox:latest").with_forward_proxy(
         ForwardProxy {
             url: "http://gw.internal:8888".into(),
         },
@@ -6414,7 +6414,7 @@ async fn allowlist_fails_before_runtime_with_or_without_a_forward_proxy() {
         request.network = pc::NetworkPolicy::Allowlist {
             hosts: vec!["api.anthropic.com".into()],
         };
-        let base = ContainerProvider::new(rt.clone(), "ghcr.io/awaken/sandbox:latest")
+        let base = ContainerProvider::for_test(rt.clone(), "ghcr.io/awaken/sandbox:latest")
             .with_blob("file-1", b"in-bytes".to_vec())
             .with_blob("res-9", b"work-bytes".to_vec());
         let result = if with_proxy {
@@ -6440,7 +6440,7 @@ async fn unrestricted_egress_injects_no_proxy_env() {
     let mut open = spec("run-open");
     open.network = pc::NetworkPolicy::Unrestricted;
     // No proxy needed for unrestricted egress; seed the spec's required mounts.
-    let p = ContainerProvider::new(rt.clone(), "ghcr.io/awaken/sandbox:latest")
+    let p = ContainerProvider::for_test(rt.clone(), "ghcr.io/awaken/sandbox:latest")
         .with_blob("file-1", b"in-bytes".to_vec())
         .with_blob("res-9", b"work-bytes".to_vec());
     p.create(&open).await.unwrap();
@@ -6775,7 +6775,7 @@ async fn durable_writable_secret_waits_for_explicit_environment_disposal() {
     let broker = Arc::new(RecordingSecretBroker::default());
     *broker.current.lock().unwrap() = br#"{"tokens":{"access_token":"old"}}"#.to_vec();
     let provider =
-        ContainerProvider::new(rt.clone(), "agent:latest").with_secret_broker(broker.clone());
+        ContainerProvider::for_test(rt.clone(), "agent:latest").with_secret_broker(broker.clone());
     let spec = pc::SandboxSpec {
         process_tree_supervision: false,
         scope: "credential-refresh".into(),
@@ -6903,7 +6903,7 @@ async fn remote_runtime_harvests_live_credential_only_at_environment_disposal() 
     let broker = Arc::new(RecordingSecretBroker::default());
     *broker.current.lock().unwrap() = br#"{"claudeAiOauth":{"accessToken":"old"}}"#.to_vec();
     let provider =
-        ContainerProvider::new(rt.clone(), "agent:latest").with_secret_broker(broker.clone());
+        ContainerProvider::for_test(rt.clone(), "agent:latest").with_secret_broker(broker.clone());
     let requested = writable_credential_spec("remote-credential-refresh");
     let environment =
         ContainerEnvironmentProvider::create_unattached_environment(&provider, &requested)
@@ -6974,8 +6974,8 @@ async fn failed_remote_credential_harvest_blocks_writeback_and_environment_remov
     let runtime = Arc::new(FakeRuntime::default().failing_live_credential("remote cat failed"));
     let broker = Arc::new(RecordingSecretBroker::default());
     *broker.current.lock().unwrap() = b"authoritative-old".to_vec();
-    let provider =
-        ContainerProvider::new(runtime.clone(), "agent:latest").with_secret_broker(broker.clone());
+    let provider = ContainerProvider::for_test(runtime.clone(), "agent:latest")
+        .with_secret_broker(broker.clone());
     let sandbox = provider
         .create(&writable_credential_spec(
             "failed-remote-credential-harvest",
@@ -7005,8 +7005,8 @@ async fn failed_remote_credential_harvest_blocks_writeback_and_environment_remov
     let broker = Arc::new(RecordingSecretBroker::default());
     *broker.current.lock().unwrap() = b"authoritative-old".to_vec();
     broker.reject_writeback.store(true, Ordering::SeqCst);
-    let provider =
-        ContainerProvider::new(runtime.clone(), "agent:latest").with_secret_broker(broker.clone());
+    let provider = ContainerProvider::for_test(runtime.clone(), "agent:latest")
+        .with_secret_broker(broker.clone());
     let sandbox = provider
         .create(&writable_credential_spec("rejected-credential-writeback"))
         .await
@@ -7394,7 +7394,7 @@ async fn disposal_reaps_every_exec_edge_and_then_refuses_new_ones() {
 
     for (rule, agent_edge) in [("R1", false), ("R2", true)] {
         let runtime = Arc::new(FakeRuntime::default());
-        let provider = ContainerProvider::new(runtime.clone(), "fixture");
+        let provider = ContainerProvider::for_test(runtime.clone(), "fixture");
         let sandbox = provider.create_container(&mountless()).await.unwrap();
         if agent_edge {
             sandbox
@@ -7443,7 +7443,7 @@ async fn disposal_reaps_every_exec_edge_and_then_refuses_new_ones() {
     // already met and disposal must not be stranded over it. Fail-closed: only
     // an observation that the container is not running admits the tolerance.
     let runtime = Arc::new(FakeRuntime::default());
-    let provider = ContainerProvider::new(runtime.clone(), "fixture");
+    let provider = ContainerProvider::for_test(runtime.clone(), "fixture");
     let sandbox = provider.create_container(&mountless()).await.unwrap();
     pc::Sandbox::spawn(&sandbox, pc::Command::new(["sh", "-c", "true"]))
         .await
@@ -7471,7 +7471,7 @@ async fn disposal_reaps_every_exec_edge_and_then_refuses_new_ones() {
     // R7: the container is not merely stopped but absent. Reaping cannot be
     // asked of what is gone, and its obligation is met a fortiori.
     let runtime = Arc::new(FakeRuntime::default());
-    let provider = ContainerProvider::new(runtime.clone(), "fixture");
+    let provider = ContainerProvider::for_test(runtime.clone(), "fixture");
     let sandbox = provider.create_container(&mountless()).await.unwrap();
     pc::Sandbox::spawn(&sandbox, pc::Command::new(["sh", "-c", "true"]))
         .await
@@ -7488,7 +7488,7 @@ async fn disposal_reaps_every_exec_edge_and_then_refuses_new_ones() {
     // but the environment is removed anyway, because a lost harvest costs one
     // round of bytes and a leaked container costs the host permanently.
     let runtime = Arc::new(FakeRuntime::default());
-    let provider = ContainerProvider::new(runtime.clone(), "fixture");
+    let provider = ContainerProvider::for_test(runtime.clone(), "fixture");
     let sandbox = provider.create_container(&mountless()).await.unwrap();
     pc::Sandbox::spawn(&sandbox, pc::Command::new(["sh", "-c", "true"]))
         .await
@@ -7516,7 +7516,7 @@ async fn disposal_reaps_every_exec_edge_and_then_refuses_new_ones() {
 
     // R3: never exec'd, so the reaper is never demanded.
     let runtime = Arc::new(FakeRuntime::default());
-    let provider = ContainerProvider::new(runtime.clone(), "fixture");
+    let provider = ContainerProvider::for_test(runtime.clone(), "fixture");
     let sandbox = provider.create_container(&mountless()).await.unwrap();
     sandbox.dispose().await.expect("dispose");
     assert!(!reaped(runtime.as_ref()), "R3/E2 no reap was demanded");
