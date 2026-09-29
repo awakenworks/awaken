@@ -109,21 +109,17 @@ pub(crate) fn container_effect_fence_from_values(
     }
 }
 
-pub(crate) fn container_runtime_unix_now_ms() -> Result<u64, pc::SandboxError> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| {
-            pc::SandboxError::backend(
-                "container_runtime_unix_now_ms",
-                format!("read Sandbox effect time: {error}"),
-            )
-        })?
-        .as_millis()
-        .try_into()
-        .map_err(|_| {
-            pc::SandboxError::backend(
-                "container_runtime_unix_now_ms",
-                "Sandbox effect time exceeds u64",
+/// A Sandbox effect's wall-clock reading from the composing process's clock.
+/// A provider or runtime composed without one judges no effect fence: it fails
+/// closed rather than reading the host clock itself.
+pub(crate) fn effect_clock_reading_ms(
+    clock: Option<&std::sync::Arc<dyn awaken_lease_contract::WallClock>>,
+) -> Result<u64, pc::SandboxError> {
+    clock
+        .map(|clock| awaken_lease_contract::WallClockExt::now_ms(clock.as_ref()))
+        .ok_or_else(|| {
+            pc::SandboxError::fence_rejected(
+                "container effect fence cannot be judged: the provider was composed without a clock",
             )
         })
 }
@@ -132,14 +128,15 @@ pub(crate) fn container_runtime_unix_now_ms() -> Result<u64, pc::SandboxError> {
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) const RUNTIME_OWNER_LABEL: &str = "awaken.sandbox.owner";
 
+/// A process-incarnation identity. It needs uniqueness, not time: a random
+/// nonce tells two incarnations with the same pid apart, and the sequence tells
+/// this incarnation's owners apart.
 pub(crate) fn runtime_owner_id() -> String {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
+    static INCARNATION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let incarnation = INCARNATION.get_or_init(|| uuid::Uuid::new_v4().simple().to_string());
     let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    format!("{}-{epoch}-{sequence}", std::process::id())
+    format!("{}-{incarnation}-{sequence}", std::process::id())
 }
 
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
@@ -296,7 +293,23 @@ pub(crate) fn container_capabilities(
 
 #[cfg(test)]
 mod capability_tests {
-    use super::allowlist_capability_advertised;
+    use super::{allowlist_capability_advertised, effect_clock_reading_ms, pc};
+
+    #[test]
+    fn effect_fences_are_judged_on_the_composed_clock_or_rejected() {
+        // Decision table: C1 clock composed / absent. E1 composed => its exact
+        // reading; E2 absent => a fence rejection, never a host-clock read.
+        let clock: std::sync::Arc<dyn awaken_lease_contract::WallClock> =
+            std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(42));
+        assert_eq!(effect_clock_reading_ms(Some(&clock)).unwrap(), 42, "E1");
+        assert!(
+            matches!(
+                effect_clock_reading_ms(None),
+                Err(pc::SandboxError::FenceRejected(_))
+            ),
+            "E2"
+        );
+    }
 
     #[test]
     fn allowlist_claim_requires_runtime_and_issuer() {
@@ -334,12 +347,13 @@ pub use awaken_container_contract::K8sContinuationVolume;
 #[cfg(feature = "k8s")]
 pub(crate) fn validate_runtime_effect_fence(
     effect_fence: &pc::SandboxEffectFence,
+    clock: Option<&std::sync::Arc<dyn awaken_lease_contract::WallClock>>,
 ) -> Result<(), RuntimeError> {
     effect_fence
         .validate_identity()
         .map_err(|error| RuntimeError::Backend(error.to_string()))?;
-    let now = container_runtime_unix_now_ms()
-        .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+    let now =
+        effect_clock_reading_ms(clock).map_err(|error| RuntimeError::Backend(error.to_string()))?;
     if effect_fence.expired_at(now) {
         Err(RuntimeError::EffectFenceExpired)
     } else {

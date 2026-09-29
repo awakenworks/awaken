@@ -80,7 +80,8 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
     };
     let initial_fence = super::disposal::effect_fence(&spec.scope, "create", "creator", 1);
     let terminal_fence = super::disposal::effect_fence(&spec.scope, "cleanup", "successor", 2);
-    let creator = ContainerProvider::new(first_runtime, image);
+    let creator = ContainerProvider::new(first_runtime, image)
+        .with_clock(awaken_lease_contract::system_clock());
     let sandbox = creator
         .claim_for_effect(
             &spec,
@@ -121,7 +122,8 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
         )
         .await
         .unwrap();
-    let peer = ContainerProvider::new(peer_runtime.clone(), image);
+    let peer = ContainerProvider::new(peer_runtime.clone(), image)
+        .with_clock(awaken_lease_contract::system_clock());
     let displaced = root.with_extension("test-displaced");
     assert!(
         !displaced.exists(),
@@ -217,7 +219,8 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
     // missing adapter edge, exercised identically on both real daemons.
     drop(adopted);
     drop(peer);
-    let cold = ContainerProvider::new(peer_runtime.clone(), image);
+    let cold = ContainerProvider::new(peer_runtime.clone(), image)
+        .with_clock(awaken_lease_contract::system_clock());
     let cleanup = cold
         .prepare_terminal_for_effect(
             &spec,

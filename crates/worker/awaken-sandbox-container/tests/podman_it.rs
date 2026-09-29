@@ -219,7 +219,8 @@ async fn podman_materializes_inline_content_through_the_provider() {
     // binds it read-only at the mount_path. This drives the SAME materialize path the
     // Docker e2e verifies, but through the rootless-podman argv + a real `podman` binary.
     let Some(rt) = runtime().await else { return };
-    let provider = ContainerProvider::new(Arc::new(rt), "docker.io/library/busybox:latest");
+    let provider = ContainerProvider::new(Arc::new(rt), "docker.io/library/busybox:latest")
+        .with_clock(awaken_lease_contract::system_clock());
 
     let _residue = residue::TestResidue::arm("pod-inline", residue::Backend::Podman);
     let spec = pc::SandboxSpec {
@@ -295,6 +296,7 @@ async fn podman_separates_container_environment_from_cli_environment() {
     let Some(rt) = runtime().await else { return };
     let rt = Arc::new(rt);
     let provider = ContainerProvider::new(rt.clone(), "docker.io/library/busybox:latest")
+        .with_clock(awaken_lease_contract::system_clock())
         .with_secret_broker(Arc::new(ProcessSecretBroker));
     let _residue = residue::TestResidue::arm("pod-exec-env", residue::Backend::Podman);
     let spec = pc::SandboxSpec {
@@ -368,6 +370,7 @@ async fn podman_rotates_and_persists_a_native_credential_file() {
     let refreshed = br#"{"claudeAiOauth":{"accessToken":"new","refreshToken":"rotated"}}"#;
     let broker = Arc::new(CredentialBroker(Mutex::new(initial.to_vec())));
     let provider = ContainerProvider::new(Arc::new(rt), "docker.io/library/busybox:latest")
+        .with_clock(awaken_lease_contract::system_clock())
         .with_secret_broker(broker.clone());
     let _residue = residue::TestResidue::arm("pod-native-credential", residue::Backend::Podman);
     let spec = pc::SandboxSpec {

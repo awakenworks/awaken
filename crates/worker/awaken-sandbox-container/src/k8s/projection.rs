@@ -45,7 +45,7 @@ async fn marker_command(
     effect_fence: &ContainerEffectFence,
     script: &str,
 ) -> Result<Vec<u8>, RuntimeError> {
-    crate::runtime::validate_runtime_effect_fence(effect_fence)?;
+    runtime.validate_effect_fence(effect_fence)?;
     let expected = projection_fence_value(effect_fence);
     let argv = vec![
         "/bin/sh".into(),

@@ -572,6 +572,9 @@ pub struct K8sRuntime {
     image_prewarm: Option<crate::K8sImagePrewarm>,
     creation_attempts:
         Mutex<std::collections::HashMap<K8sCreationAttemptKey, Arc<K8sCreationAttemptGate>>>,
+    /// The composing process's wall clock: Sandbox effect fences are judged on
+    /// it. A runtime composed without one judges no fence (fail closed).
+    clock: Option<Arc<dyn awaken_lease_contract::WallClock>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -657,12 +660,29 @@ impl K8sRuntime {
             continuation_volume: None,
             image_prewarm: None,
             creation_attempts: Mutex::new(Default::default()),
+            clock: None,
         };
         runtime
             .network_policy_attestation
             .refresh(&runtime.clients.control, &runtime.namespace)
             .await?;
         Ok(runtime)
+    }
+
+    /// Compose the runtime with the process's wall clock (see the `clock`
+    /// field). The execution composition always installs it.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+        self.clock = Some(clock);
+        self
+    }
+
+    /// Judge one Sandbox effect fence on the composed clock.
+    pub(crate) fn validate_effect_fence(
+        &self,
+        effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<(), RuntimeError> {
+        crate::runtime::validate_runtime_effect_fence(effect_fence, self.clock.as_ref())
     }
 
     /// Set the GC owner (e.g. a Lease/ConfigMap) whose deletion reaps orphan Pods.
@@ -738,6 +758,7 @@ impl K8sRuntime {
             continuation_volume: None,
             image_prewarm: None,
             creation_attempts: Mutex::new(Default::default()),
+            clock: Some(awaken_lease_contract::system_clock()),
         }
     }
 

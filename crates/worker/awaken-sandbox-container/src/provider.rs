@@ -30,6 +30,7 @@ fn rebase_staged_paths(
 fn refresh_effect_fence(
     asserted: &ContainerEffectFence,
     source: Option<&dyn pc::CurrentExecutionAuthority>,
+    now_ms: u64,
 ) -> Result<ContainerEffectFence, pc::SandboxError> {
     let source = source.ok_or_else(|| {
         pc::SandboxError::fence_rejected(
@@ -44,7 +45,7 @@ fn refresh_effect_fence(
             "renewed container effect fence is not a strict successor of the admitted effect",
         ));
     }
-    current.validate_live_at(container_runtime_unix_now_ms()?)?;
+    current.validate_live_at(now_ms)?;
     Ok(current)
 }
 
@@ -76,6 +77,10 @@ pub struct ContainerProvider<R: ContainerRuntime> {
     /// mutability lets an already-shared provider receive the platform adapter.
     pub(super) memory_mounter: std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>,
     pub(super) resident_hand: Option<ResidentHandConfig>,
+    /// The composing process's wall clock: effect fences are judged and
+    /// allowlist capabilities issued on it. A provider composed without one
+    /// judges no fence and issues no capability (fail closed).
+    pub(super) clock: Option<Arc<dyn awaken_lease_contract::WallClock>>,
 }
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
@@ -110,7 +115,27 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             secret_broker: std::sync::RwLock::new(None),
             memory_mounter: std::sync::RwLock::new(None),
             resident_hand: None,
+            clock: None,
         }
+    }
+
+    /// A unit-test provider composed on the host clock.
+    #[cfg(test)]
+    pub(crate) fn for_test(runtime: Arc<R>, default_image: impl Into<String>) -> Self {
+        Self::new(runtime, default_image).with_clock(awaken_lease_contract::system_clock())
+    }
+
+    /// Compose the provider with the process's wall clock (see the `clock`
+    /// field). The execution composition always installs it.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+        self.clock = Some(clock);
+        self
+    }
+
+    /// One reading of the composed clock for an effect-fence judgement.
+    pub(super) fn effect_clock_ms(&self) -> Result<u64, pc::SandboxError> {
+        crate::effect_clock_reading_ms(self.clock.as_ref())
     }
 
     /// Make the existing Hand the Session container's resident process. This is
@@ -200,6 +225,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             &command,
             self.forward_proxy.as_ref(),
             self.allowlist_proxy.as_ref(),
+            self.clock.as_ref(),
         )
         .map_err(pc::SandboxError::from)?;
         if let Some(hand) = &self.resident_hand {
@@ -266,7 +292,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         let effect_fence = effect.fence();
         let effect_fence_source = effect.authority();
         if let Some(effect_fence) = effect_fence {
-            effect_fence.validate_live_at(container_runtime_unix_now_ms()?)?;
+            effect_fence.validate_live_at(self.effect_clock_ms()?)?;
         }
         // The copied durable fence is identity, not current admission. The
         // fenced creation port carries the original captured authority here;
@@ -433,7 +459,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                             "unfenced container realization reported an expired effect fence",
                         ));
                     };
-                    let refreshed = refresh_effect_fence(asserted, effect_fence_source);
+                    let refreshed = refresh_effect_fence(
+                        asserted,
+                        effect_fence_source,
+                        self.effect_clock_ms()?,
+                    );
                     match refreshed {
                         Ok(refreshed) => current_effect_fence = Some(refreshed),
                         Err(error) => return Err(error),
@@ -622,8 +652,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                                 "unfenced container activation reported an expired effect fence",
                             )
                         })?;
-                        current_effect_fence =
-                            Some(refresh_effect_fence(asserted, effect_fence_source)?);
+                        current_effect_fence = Some(refresh_effect_fence(
+                            asserted,
+                            effect_fence_source,
+                            self.effect_clock_ms()?,
+                        )?);
                     }
                     Err(RuntimeError::MayHaveCommitted(message)) => {
                         return Err(pc::SandboxError::from(RuntimeError::MayHaveCommitted(

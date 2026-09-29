@@ -16,7 +16,7 @@ pub(super) async fn prepare(
     realization_fingerprint: &pc::SandboxRealizationFingerprint,
 ) -> Result<String, RuntimeError> {
     if let Some(effect_fence) = context.effect_fence {
-        crate::runtime::validate_runtime_effect_fence(effect_fence)?;
+        runtime.validate_effect_fence(effect_fence)?;
     }
     let runtime_id = runtime.realization_runtime_id(context.scope)?;
     let pods = runtime.pods();
@@ -45,7 +45,7 @@ pub(super) async fn prepare(
         .map(continuation::claim_uid)
         .transpose()?;
     if let Some(effect_fence) = context.effect_fence {
-        crate::runtime::validate_runtime_effect_fence(effect_fence)?;
+        runtime.validate_effect_fence(effect_fence)?;
     }
     let mut pod = runtime.pod_for_effect(&runtime_id, plan, context.effect_fence);
     // Create the Pod before its projected ConfigMaps/Secrets. Kubernetes admits
@@ -121,7 +121,7 @@ pub(super) async fn converge(
         runtime.stamp_effect_evidence(&mut configmap, context, realization_fingerprint);
         stamp_realization(&mut configmap)?;
         if let Some(effect_fence) = context.effect_fence {
-            crate::runtime::validate_runtime_effect_fence(effect_fence)?;
+            runtime.validate_effect_fence(effect_fence)?;
         }
         let configmap = create_or_verify(&cms, &configmap).await?;
         verify_projected_content(
@@ -146,7 +146,7 @@ pub(super) async fn converge(
         runtime.stamp_effect_evidence(&mut secret, context, realization_fingerprint);
         stamp_realization(&mut secret)?;
         if let Some(effect_fence) = context.effect_fence {
-            crate::runtime::validate_runtime_effect_fence(effect_fence)?;
+            runtime.validate_effect_fence(effect_fence)?;
         }
         let secret = create_or_verify(&secrets, &secret).await?;
         verify_projected_content(
@@ -158,7 +158,7 @@ pub(super) async fn converge(
     }
     realization::await_pod_ready(&runtime.pods(), pod_name).await?;
     if let Some(effect_fence) = context.effect_fence {
-        crate::runtime::validate_runtime_effect_fence(effect_fence)?;
+        runtime.validate_effect_fence(effect_fence)?;
     }
     if let Some(effect_fence) = context.effect_fence {
         if projection::projection_complete(runtime, pod_name, effect_fence).await? {

@@ -75,7 +75,8 @@ async fn a_hand_in_a_network_denied_container_is_reached_over_a_unix_rendezvous(
 
     let _residue = residue::TestResidue::arm("hand-rv", residue::Backend::Docker);
     let runtime = DockerRuntime::connect_local(AGENT_PORT).expect("docker client");
-    let provider = ContainerProvider::new(Arc::new(runtime), "python:3-slim");
+    let provider = ContainerProvider::new(Arc::new(runtime), "python:3-slim")
+        .with_clock(awaken_lease_contract::system_clock());
 
     let spec = pc::SandboxSpec {
         process_tree_supervision: false,

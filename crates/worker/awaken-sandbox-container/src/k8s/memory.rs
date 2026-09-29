@@ -11,7 +11,7 @@ pub(super) async fn project_snapshots(
     plan: &ContainerPlan,
     effect_fence: &ContainerEffectFence,
 ) -> Result<(), RuntimeError> {
-    crate::runtime::validate_runtime_effect_fence(effect_fence)?;
+    runtime.validate_effect_fence(effect_fence)?;
     let expected = super::projection::projection_fence_value(effect_fence);
     for (index, mount) in plan.memory_mounts.iter().enumerate() {
         let root = format!("/memory/{index}");

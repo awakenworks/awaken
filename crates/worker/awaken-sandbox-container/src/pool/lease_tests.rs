@@ -295,7 +295,7 @@ async fn worker(
     size: usize,
 ) -> WarmContainerPool<FakeDaemon> {
     WarmContainerPool::new(
-        Arc::new(ContainerProvider::new(daemon.clone(), "agent:test")),
+        Arc::new(ContainerProvider::for_test(daemon.clone(), "agent:test")),
         size,
     )
     .with_capacity_leases(leases(daemon, clock).without_maintenance())
@@ -898,7 +898,7 @@ async fn l5_the_maintenance_loop_renews_every_held_record() {
     let daemon = FakeDaemon::new();
     let clock = manual_clock(T0);
     let owner = WarmContainerPool::new(
-        Arc::new(ContainerProvider::new(daemon.clone(), "agent:test")),
+        Arc::new(ContainerProvider::for_test(daemon.clone(), "agent:test")),
         1,
     )
     .with_capacity_leases(leases(&daemon, &clock))

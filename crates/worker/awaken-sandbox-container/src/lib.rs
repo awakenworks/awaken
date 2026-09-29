@@ -126,7 +126,7 @@ pub(crate) use runtime::{
 };
 use runtime::{
     allowlist_capability_advertised, container_adoption_fingerprint, container_capabilities,
-    container_realization_fingerprint, container_runtime_unix_now_ms,
+    container_realization_fingerprint, effect_clock_reading_ms,
 };
 pub use secret::SecretBytes;
 use staged_mounts::{
@@ -1133,7 +1133,7 @@ pub fn container_plan(
     command: &[String],
     forward_proxy: Option<&ForwardProxy>,
 ) -> Result<ContainerPlan, EgressError> {
-    container_plan_with_allowlist(spec, default_image, command, forward_proxy, None)
+    container_plan_with_allowlist(spec, default_image, command, forward_proxy, None, None)
 }
 
 fn container_plan_with_allowlist(
@@ -1142,9 +1142,15 @@ fn container_plan_with_allowlist(
     command: &[String],
     forward_proxy: Option<&ForwardProxy>,
     allowlist_proxy: Option<&AllowlistProxy>,
+    clock: Option<&Arc<dyn awaken_lease_contract::WallClock>>,
 ) -> Result<ContainerPlan, EgressError> {
-    let egress =
-        egress_plan_with_allowlist(&spec.network, forward_proxy, allowlist_proxy, &spec.scope)?;
+    let egress = egress_plan_with_allowlist(
+        &spec.network,
+        forward_proxy,
+        allowlist_proxy,
+        &spec.scope,
+        clock,
+    )?;
     let mut env = inline_env(spec);
     env.extend(egress.proxy_env);
     Ok(ContainerPlan {

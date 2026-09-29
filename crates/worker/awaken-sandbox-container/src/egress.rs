@@ -145,11 +145,15 @@ impl AllowlistProxy {
         Ok(format!("http://{token}:x@{authority}"))
     }
 
-    fn issue(&self, scope: &str, hosts: &[String]) -> Result<String, EgressError> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or_default();
+    /// Issue on the composing process's clock; without one, fail closed.
+    fn issue(
+        &self,
+        scope: &str,
+        hosts: &[String],
+        clock: Option<&std::sync::Arc<dyn awaken_lease_contract::WallClock>>,
+    ) -> Result<String, EgressError> {
+        let clock = clock.ok_or(EgressError::AllowlistClockUnavailable)?;
+        let now = clock.now().duration_since_epoch().as_secs();
         self.issue_at(scope, hosts, now)
     }
 
@@ -201,6 +205,10 @@ pub enum EgressError {
     InvalidAllowlistHost(String),
     #[error("allowlist capability could not be encoded")]
     InvalidAllowlistCapability,
+    /// The issuer was composed without a clock, so no capability expiry can be
+    /// stamped; the allowlist fails closed.
+    #[error("allowlist capability cannot be issued: the provider was composed without a clock")]
+    AllowlistClockUnavailable,
 }
 
 impl From<EgressError> for awaken_provisioning_contract::SandboxError {
@@ -209,7 +217,9 @@ impl From<EgressError> for awaken_provisioning_contract::SandboxError {
     fn from(error: EgressError) -> Self {
         let detail = error.to_string();
         match error {
-            EgressError::AllowlistUnsupported => Self::Unsupported(detail),
+            EgressError::AllowlistUnsupported | EgressError::AllowlistClockUnavailable => {
+                Self::Unsupported(detail)
+            }
             EgressError::InvalidAllowlistProxy
             | EgressError::InvalidAllowlistScope
             | EgressError::EmptyAllowlist
@@ -228,14 +238,17 @@ pub fn egress_plan(
     policy: &pc::NetworkPolicy,
     proxy: Option<&ForwardProxy>,
 ) -> Result<EgressRealization, EgressError> {
-    egress_plan_with_allowlist(policy, proxy, None, "")
+    egress_plan_with_allowlist(policy, proxy, None, "", None)
 }
 
+/// `clock` is the composing process's wall clock; an allowlist capability's
+/// expiry is stamped from it.
 pub fn egress_plan_with_allowlist(
     policy: &pc::NetworkPolicy,
     proxy: Option<&ForwardProxy>,
     allowlist_proxy: Option<&AllowlistProxy>,
     scope: &str,
+    clock: Option<&std::sync::Arc<dyn awaken_lease_contract::WallClock>>,
 ) -> Result<EgressRealization, EgressError> {
     match policy {
         pc::NetworkPolicy::Unrestricted => Ok(EgressRealization {
@@ -264,7 +277,7 @@ pub fn egress_plan_with_allowlist(
             let proxy = allowlist_proxy.ok_or(EgressError::AllowlistUnsupported)?;
             Ok(EgressRealization {
                 network: NetworkMode::Allowlist,
-                proxy_env: proxy_env_url(proxy.issue(scope, hosts)?),
+                proxy_env: proxy_env_url(proxy.issue(scope, hosts, clock)?),
                 identity: proxy.realization_identity(),
             })
         }
@@ -335,9 +348,14 @@ mod tests {
 
         let allowlist_proxy =
             AllowlistProxy::new("http://gateway.internal:8081", [7; 32], 60).unwrap();
-        let restricted =
-            egress_plan_with_allowlist(&allowlist, None, Some(&allowlist_proxy), "session-a")
-                .unwrap();
+        let restricted = egress_plan_with_allowlist(
+            &allowlist,
+            None,
+            Some(&allowlist_proxy),
+            "session-a",
+            Some(&awaken_lease_contract::system_clock()),
+        )
+        .unwrap();
         assert_eq!(restricted.network, NetworkMode::Allowlist);
         let proxy_url = restricted
             .proxy_env
@@ -348,6 +366,27 @@ mod tests {
         assert!(proxy_url.starts_with("http://v1."));
         assert!(proxy_url.ends_with("@gateway.internal:8081"));
         assert!(!proxy_url.contains("api.anthropic.com"));
+    }
+
+    #[test]
+    fn allowlist_issue_is_stamped_on_the_composed_clock_or_fails_closed() {
+        // Decision table: C1 clock composed / absent. E1 composed => the
+        // capability expiry is the clock reading plus the ttl; E2 absent =>
+        // AllowlistClockUnavailable, never a host-clock fallback.
+        let proxy = AllowlistProxy::new("http://gateway.internal:8081", [3; 32], 30).unwrap();
+        let hosts = ["api.example.com".to_string()];
+        let clock: std::sync::Arc<dyn awaken_lease_contract::WallClock> =
+            std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(100_000));
+        assert_eq!(
+            proxy.issue("session-a", &hosts, Some(&clock)),
+            proxy.issue_at("session-a", &hosts, 100),
+            "E1"
+        );
+        assert_eq!(
+            proxy.issue("session-a", &hosts, None),
+            Err(EgressError::AllowlistClockUnavailable),
+            "E2"
+        );
     }
 
     #[test]
