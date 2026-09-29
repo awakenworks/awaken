@@ -89,6 +89,15 @@ pub type AttemptExecutorDecorator = Arc<
         + Sync,
 >;
 
+/// Whether this Host owns its commit store or executes as a database-less
+/// Worker. The constructor selects the role; an injected transport alone never
+/// changes it or grants the Worker a local write authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HostAuthorityRole {
+    StoreOwning,
+    DatabaseLessWorker,
+}
+
 /// One remote-attempt adapter plus the exact credential realization evidence
 /// installed beside it. Bundling both prevents Worker/direct admission from
 /// drifting away from the transport resolver that performs the effect.
@@ -203,12 +212,10 @@ pub struct SharedHost {
     /// `store_dir/<thread>.db`, so an awaiting run survives a process restart. When
     /// `None`, sessions use an in-memory coordinator (ephemeral).
     pub(crate) store_dir: Option<PathBuf>,
-    /// The cell server this host is a database-less **worker** of, if any. When set,
-    /// every thread's read boundary is a non-authoritative recovery projection;
-    /// writes use the attempt's claim-fenced operation coordinator. Set via
-    /// [`with_worker_upstream`](Self::with_worker_upstream); `None` is a
-    /// store-owning server/host.
-    pub(crate) upstream: Option<awaken_worker_transport_security::WorkerUpstream>,
+    /// The process role selected by the Host constructor. A database-less
+    /// Worker reads a non-authoritative recovery projection and commits through
+    /// the separately injected claim-fenced transport; it retains no HTTP client.
+    pub(crate) authority_role: HostAuthorityRole,
     /// The deployment axes (store/dispatch backend, durable ingress, wake), parsed
     /// once from the environment at construction. The runtime reads this typed
     /// config instead of reaching into process env at each call site.

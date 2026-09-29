@@ -163,7 +163,7 @@ impl SharedHost {
     /// Worker's claim-fenced remote projection or the Coordinator-injected local
     /// authority. Runtime Host never selects a Store backend.
     pub(crate) async fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
-        if self.upstream.is_some() {
+        if self.is_database_less_worker() {
             return Ok(HostCommit::Remote(crate::store::RemoteHostCommit::new()));
         }
         self.authority
@@ -543,7 +543,7 @@ impl SharedHost {
                     "background_task requires the Native backend so the canonical tool executor remains process-addressable",
                 ));
             }
-            if background_tasks_enabled && self.upstream.is_some() {
+            if background_tasks_enabled && self.is_database_less_worker() {
                 return Err(HostError::bad_request(
                     "background_task requires a co-located Session application until completion attention has a claim-fenced Worker transport",
                 ));
@@ -1748,7 +1748,7 @@ impl SharedHost {
             // Memory observation, after Coordinator commit and before settlement, so
             // the durable intent lands beside authoritative Session truth. Local
             // execution observes here because its commit authority is in this Host.
-            let mut terminal_observers: Vec<_> = if self.upstream.is_some() {
+            let mut terminal_observers: Vec<_> = if self.is_database_less_worker() {
                 Vec::new()
             } else {
                 self.memory_terminal_observer(

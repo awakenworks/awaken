@@ -143,9 +143,8 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
         .await
         .expect("R1 co-located Native context");
 
-    let worker = SharedHost::new(Arc::new(OkModel), "stub").with_worker_upstream(
-        awaken_worker_transport_security::WorkerUpstream::new("http://coordinator.invalid"),
-    );
+    let worker =
+        SharedHost::new(Arc::new(OkModel), "stub").with_database_less_worker_role_for_test();
     let error = match worker
         .ctx_for_snapshot(
             "background-worker",

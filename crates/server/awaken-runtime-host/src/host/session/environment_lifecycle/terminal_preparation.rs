@@ -1013,8 +1013,8 @@ impl SharedHost {
                     .await
                     .map_err(|error| HostError::unavailable(error.to_string()))?;
                 self.terminal_cleanup_effect_fence(effect)?;
-                let operation_reference = match &self.upstream {
-                    Some(_) => awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
+                let operation_reference = if self.is_database_less_worker() {
+                    awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
                         awaken_session_state_contract::SessionTerminalMemoryIntent,
                     >::encode(
                         self.worker
@@ -1032,8 +1032,9 @@ impl SharedHost {
                         intent.access(),
                         intent,
                     )
-                    .map_err(|error| HostError::internal(error.to_string()))?,
-                    None => intent.memory_store_id().to_owned(),
+                    .map_err(|error| HostError::internal(error.to_string()))?
+                } else {
+                    intent.memory_store_id().to_owned()
                 };
                 self.terminal_cleanup_effect_fence(effect)?;
                 mounter

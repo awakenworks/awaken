@@ -904,8 +904,11 @@ impl SharedHost {
                 lease: lease.clone(),
             }
         });
-        let publication_transport = match (publication_authority.as_ref(), &self.upstream) {
-            (Some(fence), Some(_)) => {
+        let publication_transport = match (
+            publication_authority.as_ref(),
+            self.is_database_less_worker(),
+        ) {
+            (Some(fence), true) => {
                 let verifier = self
                     .dispatch
                     .dispatch_session_runtime
@@ -935,7 +938,7 @@ impl SharedHost {
             // Local topology already compiled this exact command through the
             // frozen terminal projection. It has no Gateway capability to mint
             // and must not re-read the mutable Repository Registry here.
-            (Some(_), None) => Some(awaken_resource_contract::RepositoryTransport::Direct),
+            (Some(_), false) => Some(awaken_resource_contract::RepositoryTransport::Direct),
             (None, _) => None,
         };
         let Some(pin) = pin else {

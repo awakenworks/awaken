@@ -2388,7 +2388,6 @@ dependencies = [
  "awaken-store-inmem",
  "awaken-store-sqlite",
  "awaken-tenancy",
- "awaken-worker-transport-security",
  "axum",
  "base64 0.22.1",
  "futures-util",

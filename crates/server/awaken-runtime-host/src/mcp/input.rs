@@ -140,7 +140,11 @@ impl SharedHost {
         configuration: &std::collections::BTreeMap<String, Value>,
         opaque_backend: bool,
     ) -> Result<(), HostError> {
-        validate_input_placement(configuration, opaque_backend, self.upstream.is_some())
+        validate_input_placement(
+            configuration,
+            opaque_backend,
+            self.is_database_less_worker(),
+        )
     }
 
     pub(crate) fn install_mcp_input_handlers(

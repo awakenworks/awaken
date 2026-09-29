@@ -955,8 +955,10 @@ roots: `awaken all-in-one` (combined process assembly), `awaken_worker::run`,
 `awaken-scenario-host` (e2e). The rule: **roots read env and build providers;
 everything else receives ports** — enforced by the clippy env rule above. Every
 seam is a named `SharedHost` builder method (`with_executor_provider`,
-`with_acp`/`with_projected_acp`, `with_config_service`, `with_worker_upstream`,
-`with_tool_executor_provider`, `customize_host` last-mile). A phase that adds a
+`with_acp`/`with_projected_acp`, `with_config_service`,
+`with_tool_executor_provider`, `customize_host` last-mile). The database-less
+Worker role is selected by `new_worker_with_deployment`; its process root keeps
+`WorkerUpstream` and injects the actual claim-fenced transport ports. A phase that adds a
 seam adds it to **all three roots** or documents the abstention (e.g. a
 gateway-only worker abstains from vault seams). Guard: one composition test per
 root boots it on in-memory stores and asserts its seam set — assembly drift
