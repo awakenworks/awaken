@@ -30,7 +30,8 @@ impl PostgresDispatchStore {
         // Match claim's Thread-before-row order. The unique physical index is
         // the storage backstop; recheck peers under this transaction lock to
         // return the domain Blocked outcome instead of an expected SQL error.
-        let Some(thread) = lock_dispatch_thread(&mut tx, &claim.run_id).await? else {
+        let Some(thread) = lock_dispatch_thread(&mut tx, &claim.run_id, ThreadLock::Wait).await?
+        else {
             return Ok(AttemptAdmission::Fenced);
         };
         let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
@@ -421,9 +422,16 @@ impl DispatchQueue for PostgresDispatchStore {
         lock_run_identity(&mut tx, &request.run_id().0).await?;
         if exact_run_replay(&mut tx, p, &request).await? {
             let run_id = request.run_id().clone();
-            let claimed =
-                claim_exact_transaction(&mut tx, &run_id, owner, lease_ms, None, capabilities)
-                    .await?;
+            let claimed = claim_exact_transaction(
+                &mut tx,
+                ThreadLock::Wait,
+                &run_id,
+                owner,
+                lease_ms,
+                None,
+                capabilities,
+            )
+            .await?;
             tx.commit().await.map_err(store_error)?;
             return Ok(claimed);
         }
@@ -434,8 +442,16 @@ impl DispatchQueue for PostgresDispatchStore {
         }
         insert_new_dispatch(&mut tx, p, &request, &SubmitOptions::default()).await?;
         let run_id = request.run_id().clone();
-        let claimed =
-            claim_exact_transaction(&mut tx, &run_id, owner, lease_ms, None, capabilities).await?;
+        let claimed = claim_exact_transaction(
+            &mut tx,
+            ThreadLock::Wait,
+            &run_id,
+            owner,
+            lease_ms,
+            None,
+            capabilities,
+        )
+        .await?;
         tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
@@ -455,6 +471,7 @@ impl DispatchQueue for PostgresDispatchStore {
             let run_id = request.run_id().clone();
             let claimed = claim_exact_transaction(
                 &mut tx,
+                ThreadLock::Wait,
                 &run_id,
                 &owner,
                 lease_ms,
@@ -474,6 +491,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let run_id = request.run_id().clone();
         let claimed = claim_exact_transaction(
             &mut tx,
+            ThreadLock::Wait,
             &run_id,
             &owner,
             lease_ms,
@@ -496,8 +514,16 @@ impl DispatchQueue for PostgresDispatchStore {
         let run_id = input.run_id.clone();
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         append_pending_transaction(&mut tx, NS, &input).await?;
-        let claimed =
-            claim_exact_transaction(&mut tx, &run_id, owner, lease_ms, None, capabilities).await?;
+        let claimed = claim_exact_transaction(
+            &mut tx,
+            ThreadLock::Wait,
+            &run_id,
+            owner,
+            lease_ms,
+            None,
+            capabilities,
+        )
+        .await?;
         tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
@@ -514,6 +540,7 @@ impl DispatchQueue for PostgresDispatchStore {
         append_pending_transaction(&mut tx, NS, &input).await?;
         let claimed = claim_exact_transaction(
             &mut tx,
+            ThreadLock::Wait,
             &run_id,
             &worker.identity.lease_owner(),
             lease_ms,
@@ -581,9 +608,16 @@ impl DispatchQueue for PostgresDispatchStore {
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let mut tx = self.pool.begin().await.map_err(store_error)?;
-        let claimed =
-            claim_exact_transaction(&mut tx, requested_run, owner, lease_ms, None, capabilities)
-                .await?;
+        let claimed = claim_exact_transaction(
+            &mut tx,
+            ThreadLock::Wait,
+            requested_run,
+            owner,
+            lease_ms,
+            None,
+            capabilities,
+        )
+        .await?;
         tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
@@ -607,6 +641,7 @@ impl DispatchQueue for PostgresDispatchStore {
             };
             if let Some(claimed) = claim_exact_transaction_with_mode(
                 &mut tx,
+                ThreadLock::Wait,
                 &RunId(run_id),
                 owner,
                 lease_ms,
@@ -633,6 +668,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         let claimed = claim_exact_transaction(
             &mut tx,
+            ThreadLock::Wait,
             requested_run,
             &worker.identity.lease_owner(),
             lease_ms,
@@ -1584,6 +1620,7 @@ impl ControlDispatchQueue for PostgresDispatchStore {
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         let claimed = claim_exact_transaction_with_mode(
             &mut tx,
+            ThreadLock::Wait,
             requested_run,
             owner,
             lease_ms,

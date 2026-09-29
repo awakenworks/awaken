@@ -63,9 +63,9 @@ fn candidate_retry_due() -> &'static str {
 }
 
 /// An exhausted epoch cannot pass the existing discovery admission check.
-/// Prune that permanent front from the deep fallback instead of decoding the
-/// whole prefix on every broad claim. The first cheap page and other malformed
-/// epochs retain their existing handling.
+/// Prune that permanent runnable front before decoding candidate payloads.
+/// Reservation recovery retains its existing first-page handling; other
+/// malformed epochs still reach the canonical exact admission error.
 fn candidate_epoch_not_exhausted() -> &'static str {
     "d.lease_epoch < 9223372036854775807"
 }
@@ -86,6 +86,7 @@ fn candidate_page_sql(local: bool) -> String {
     let reservation_peer = no_running_peer(p);
     let state_rank = candidate_state_rank(local);
     let retry_due = candidate_retry_due();
+    let epoch_not_exhausted = candidate_epoch_not_exhausted();
     format!(
         "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, \
                 d.status, d.cancel_requested, d.lease_epoch, \
@@ -113,6 +114,7 @@ fn candidate_page_sql(local: bool) -> String {
                (pe.available_at IS NULL OR pe.available_at <= $1)))) OR \
               d.status = 'pending') \
              AND {retry_due} \
+             AND (d.status IN ('reserved', 'reservation_running') OR {epoch_not_exhausted}) \
          ) ranked \
              ORDER BY ranked.physical_rank, ranked.state_rank, \
                       ranked.priority DESC, ranked.created_at, ranked.run_id \
@@ -234,6 +236,7 @@ impl PostgresDispatchStore {
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         let claimed = claim_exact_transaction(
             &mut tx,
+            ThreadLock::SkipBusy,
             &RunId(run_id),
             owner,
             lease_ms,
@@ -315,9 +318,16 @@ impl PostgresDispatchStore {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ThreadLock {
+    Wait,
+    SkipBusy,
+}
+
 async fn lock_dispatch_thread(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     run_id: &RunId,
+    mode: ThreadLock,
 ) -> Result<Option<String>, DispatchError> {
     let thread: Option<String> = sqlx::query_scalar(&format!(
         "SELECT thread_id FROM {NS}_dispatch WHERE run_id = $1"
@@ -329,17 +339,33 @@ async fn lock_dispatch_thread(
     if let Some(thread) = &thread {
         // One Thread-before-row ordering for claim and physical admission.
         // Hash collisions only over-serialize; unique indexes remain backstops.
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-            .bind(thread)
-            .execute(&mut **tx)
-            .await
-            .map_err(store_error)?;
+        match mode {
+            ThreadLock::Wait => {
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                    .bind(thread)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(store_error)?;
+            }
+            ThreadLock::SkipBusy => {
+                let acquired: bool =
+                    sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))")
+                        .bind(thread)
+                        .fetch_one(&mut **tx)
+                        .await
+                        .map_err(store_error)?;
+                if !acquired {
+                    return Ok(None);
+                }
+            }
+        }
     }
     Ok(thread)
 }
 
 async fn claim_exact_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    thread_lock: ThreadLock,
     requested_run: &RunId,
     owner: &str,
     lease_ms: u64,
@@ -371,6 +397,7 @@ async fn claim_exact_transaction(
     };
     claim_exact_transaction_with_mode(
         tx,
+        thread_lock,
         requested_run,
         owner,
         lease_ms,
@@ -383,6 +410,7 @@ async fn claim_exact_transaction(
 #[allow(clippy::too_many_arguments)]
 async fn claim_exact_transaction_with_mode(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    thread_lock: ThreadLock,
     requested_run: &RunId,
     owner: &str,
     lease_ms: u64,
@@ -391,7 +419,7 @@ async fn claim_exact_transaction_with_mode(
     mode: ExactClaimMode,
 ) -> Result<Option<Claimed>, DispatchError> {
     let p = NS;
-    let Some(_) = lock_dispatch_thread(tx, requested_run).await? else {
+    let Some(_) = lock_dispatch_thread(tx, requested_run, thread_lock).await? else {
         return Ok(None);
     };
     // All exact-claim modes share the database authority clock. Read it only
