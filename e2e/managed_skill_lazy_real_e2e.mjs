@@ -14,6 +14,8 @@ import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import Anthropic from '@anthropic-ai/sdk';
+import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
+import { Chat } from '@ai-sdk/react';
 import {
   SKILLS_BETA, bindSandboxExecutionPolicy, managedFileUploadForm,
   provisionProviderTestModel, waitForPort, waitForSessionEventReceipt, waitForValue,
@@ -127,6 +129,65 @@ async function readTurn(sessionId, label, instructionsPreloaded = false) {
   assert.equal(pods.length, 0, 'read/reply does not create Sandbox Pod');
   assert.ok(firstTextMs <= replyBudget, `${label} first text ${firstTextMs.toFixed(0)}ms exceeds ${replyBudget}ms`);
   console.log(`${label}: first text ${firstTextMs.toFixed(0)}ms; complete ${elapsed.toFixed(0)}ms; zero Sandbox Pods`);
+}
+
+async function clientQuestionTurn(environmentId, agent, instructions) {
+  // X1 one pinned Skill + a standard custom frontend tool; X2 the official
+  // AI SDK sends customer text and supplies the tool answer. X1+X2 -> one
+  // byte-faithful user.message, one correlated user.custom_tool_result, then
+  // real model inference/reply; no Agent-tool result for the same occurrence
+  // and no Sandbox. This is transport/context delivery, not a semantic score.
+  const id = await session(environmentId, { type: 'agent_with_overrides', id: agent.id,
+    version: agent.version, system: 'The complete startup-diagnosis Skill instructions follow.\n'
+      + instructions + '\nAfter reading its reference, call AskUserQuestion once to ask whether any partner shop has opened. After receiving the frontend answer, reply briefly and do not call another tool.',
+    tools: [...agent.tools, { type: 'custom', name: 'AskUserQuestion',
+      description: 'Ask the customer one question, then await the frontend answer.',
+      input_schema: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] } }] });
+  const chat = new Chat({ id, transport: new DefaultChatTransport({
+    api: `${baseURL}/v1/ai-sdk/threads/${id}/runs`, headers: { 'x-api-key': client.apiKey },
+    fetch: (input, init) => fetch(input, { ...init,
+      signal: AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(90_000)]) }),
+  }), sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls });
+  const customer = '我是做家具的，想招经销商。服务费金额本次未提供，收款时间还没有定。';
+  const start = performance.now();
+  await chat.sendMessage({ text: customer });
+  assert.equal(chat.error, undefined, 'official client receives the question');
+  const part = chat.lastMessage?.parts.find(part => part.type === 'tool-AskUserQuestion');
+  assert.ok(part?.toolCallId && part.state === 'input-available', 'real model calls frontend question');
+  const initial = [];
+  for await (const event of client.beta.sessions.events.list(id, { order: 'asc', limit: 100, betas })) initial.push(event);
+  const call = initial.find(event => event.type === 'agent.custom_tool_use' && event.name === 'AskUserQuestion');
+  assert.ok(call, 'standard Managed call matches the frontend tool');
+  const answer = { answer: '合作门店还没有开业' };
+  await chat.addToolOutput({ tool: 'AskUserQuestion', toolCallId: part.toolCallId, output: answer });
+  const answerReceipt = await waitForValue(async () => {
+    const rows = [];
+    for await (const event of client.beta.sessions.events.list(id, { order: 'asc', limit: 100, betas })) rows.push(event);
+    return rows.find(event => event.type === 'user.custom_tool_result'
+      && event.custom_tool_use_id === call.id && JSON.stringify(event.content) === JSON.stringify([{ type: 'text', text: JSON.stringify(answer) }]));
+  }, receipt => Boolean(receipt?.processed_at), 'exact frontend answer commit', { timeoutMs: 90_000, pollMs: 100 });
+  const { events } = await waitForSessionEventReceipt(client, id, answerReceipt.id, betas,
+  ({ delta }) => {
+    const modelIndex = delta.findIndex(event => event.type === 'span.model_request_start');
+    return modelIndex >= 0
+      && delta.some((event, index) => index > modelIndex && event.type === 'agent.message'
+        && event.content?.some(block => block.type === 'text' && block.text?.trim()))
+      && delta.some(event => event.type === 'session.status_idle' && event.stop_reason?.type === 'end_turn');
+  },
+  'AI SDK answer reaches the real model and the Session ends', { timeoutMs: 90_000, pollMs: 100 });
+  const pods = await scopedPods(id);
+  record({ label: 'ai-sdk-frontend-question', session_id: id, elapsed_ms: performance.now() - start, pods, events });
+  const users = events.filter(event => event.type === 'user.message');
+  assert.equal(users.length, 1, 'one actual customer input in Managed history');
+  assert.deepEqual(users[0].content, [{ type: 'text', text: customer }], 'unprovided and unset remain distinct bytes');
+  const replies = events.filter(event => event.type === 'user.custom_tool_result' && event.custom_tool_use_id === call.id);
+  assert.equal(replies.length, 1, 'one exact public answer occurrence');
+  assert.deepEqual(replies[0].content, [{ type: 'text', text: JSON.stringify(answer) }]);
+  assert.ok(!events.some(event => event.type === 'agent.tool_result' && event.tool_use_id === call.id), 'no second result family');
+  const replyIndex = events.indexOf(replies[0]);
+  assert.ok(events.some((event, index) => index > replyIndex && event.type === 'span.model_request_start'), 'model inference receives the answer');
+  assert.equal(pods.length, 0, 'frontend question and answer require no Sandbox');
+  console.log(`ai-sdk-frontend-question: ${Math.round(performance.now() - start)}ms; exact input/answer history; zero Sandbox Pods`);
 }
 async function environment(failure = false) {
   const env = await client.beta.environments.create({ name: `skill-lazy-${tag}-${failure ? 'failure' : 'normal'}`, config: { type: 'self_hosted' }, betas });
@@ -312,6 +373,7 @@ async function main() {
     version: agent.version, system: 'You help a Chinese SME owner. The following are the complete instructions of the pinned startup-diagnosis Skill.\n' + instructions });
   await readTurn(preloaded, 'preloaded-cold-session', true);
   await readTurn(preloaded, 'preloaded-warm-session', true);
+  await clientQuestionTurn(normalEnv, agent, instructions);
   let historical;
   if (upgradeImage) {
     // U1 old committed runtime creates a retained Pod and writes state; U2

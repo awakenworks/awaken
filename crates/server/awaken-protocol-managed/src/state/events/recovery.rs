@@ -473,6 +473,7 @@ impl ManagedState {
         let tool_index = record.projected_tool_index_for(owner_thread_id);
         let mut latest = tool_index.latest;
         let client_settled_occurrences = tool_index.client_settled_occurrences;
+        let mut custom = tool_index.custom;
         let mut qualified = Vec::with_capacity(events.len());
         for mut event in std::mem::take(events) {
             // Runtime's neutral pending state says only that the client must
@@ -542,10 +543,17 @@ impl ManagedState {
                 let public_id =
                     managed_tool_event_id(&public_thread_id, &source_id, runtime_call_id);
                 latest.insert(runtime_call_id.to_string(), public_id.clone());
+                if matches!(event.kind, OutboundKind::AgentCustomToolUse { .. }) {
+                    custom.insert(public_id.clone());
+                }
                 event.id = Some(public_id);
             }
             match &mut event.kind {
-                OutboundKind::AgentToolResult { tool_use_id, .. } => {
+                OutboundKind::AgentToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } => {
                     // Managed Agents publishes a client-owned result as the
                     // admitted `user.custom_tool_result`. Runtime must retain
                     // its neutral ToolResult for model continuation, but
@@ -560,7 +568,16 @@ impl ManagedState {
                     if client_settled_occurrences.contains(&public_tool_use_id) {
                         continue;
                     }
-                    *tool_use_id = public_tool_use_id;
+                    if custom.contains(&public_tool_use_id) {
+                        event.kind = OutboundKind::UserCustomToolResult {
+                            custom_tool_use_id: public_tool_use_id,
+                            content: Some(content.clone()),
+                            is_error: is_error.unwrap_or(false),
+                            session_thread_id: owner_thread_id.map(|_| public_thread_id.clone()),
+                        };
+                    } else {
+                        *tool_use_id = public_tool_use_id;
+                    }
                 }
                 OutboundKind::AgentMcpToolResult {
                     mcp_tool_use_id, ..

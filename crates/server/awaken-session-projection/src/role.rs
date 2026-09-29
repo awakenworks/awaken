@@ -67,6 +67,8 @@ pub enum FactRole {
 /// than by a Runtime call id. Tool uses carry their own reversible identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TranscriptRole {
+    UserMessage,
+    UserCustomToolResult,
     AgentMessage,
     AgentThinking,
     AgentToolResult,
@@ -275,6 +277,8 @@ impl TranscriptRole {
     #[must_use]
     pub const fn as_wire_type(self) -> &'static str {
         match self {
+            Self::UserMessage => "user.message",
+            Self::UserCustomToolResult => "user.custom_tool_result",
             Self::AgentMessage => "agent.message",
             Self::AgentThinking => "agent.thinking",
             Self::AgentToolResult => "agent.tool_result",
@@ -287,6 +291,8 @@ impl TranscriptRole {
     #[must_use]
     pub fn from_wire_type(wire_type: &str) -> Option<Self> {
         [
+            Self::UserMessage,
+            Self::UserCustomToolResult,
             Self::AgentMessage,
             Self::AgentThinking,
             Self::AgentToolResult,
@@ -360,6 +366,8 @@ mod tests {
             "E2"
         );
         for role in [
+            TranscriptRole::UserMessage,
+            TranscriptRole::UserCustomToolResult,
             TranscriptRole::AgentMessage,
             TranscriptRole::AgentThinking,
             TranscriptRole::AgentToolResult,

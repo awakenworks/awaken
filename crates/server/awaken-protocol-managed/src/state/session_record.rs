@@ -17,6 +17,8 @@ pub(super) struct ProjectedToolIndex {
     /// continuation, while Managed publishes the corresponding `user.*` event
     /// as their one wire representation.
     pub(super) client_settled_occurrences: HashSet<String>,
+    /// Authored custom-tool family of each exact public occurrence.
+    pub(super) custom: HashSet<String>,
     pub(super) mcp: Vec<String>,
     pub(super) latest: HashMap<String, String>,
     /// Exact committed source occurrence of every qualified tool-use Event.
@@ -405,6 +407,7 @@ impl SessionRecord {
     ) -> ProjectedToolIndex {
         let mut all = HashSet::new();
         let mut client_settled_occurrences = HashSet::new();
+        let mut custom = HashSet::new();
         let mut mcp = Vec::new();
         let mut latest = HashMap::new();
         let mut sources = HashSet::new();
@@ -435,6 +438,9 @@ impl SessionRecord {
             }
             match &event.kind {
                 OutboundKind::AgentToolUse { .. } | OutboundKind::AgentCustomToolUse { .. } => {
+                    if matches!(event.kind, OutboundKind::AgentCustomToolUse { .. }) {
+                        custom.insert(event.id.clone());
+                    }
                     all.insert(runtime_call_id.to_string());
                     latest.insert(runtime_call_id.to_string(), event.id.clone());
                 }
@@ -449,6 +455,7 @@ impl SessionRecord {
         ProjectedToolIndex {
             all,
             client_settled_occurrences,
+            custom,
             mcp,
             latest,
             sources,

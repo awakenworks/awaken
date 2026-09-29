@@ -2,6 +2,8 @@
 //! HITL round-trip where a mutating tool awaits for approval, is confirmed, runs
 //! rooted in the session's sandbox, and the read-back proves isolation.
 
+#[path = "server/cross_protocol_inputs.rs"]
+mod cross_protocol_inputs;
 mod support;
 
 use std::sync::Arc;

@@ -36,6 +36,9 @@ enum Step {
     /// Admit a Session activity with no retained user Event (a profiled or
     /// Run-admission start) and commit its Run's `Running` lifecycle.
     Begin(usize),
+    /// Same admitted Run with a customer message supplied through a Run port,
+    /// without a Managed Event batch (AI SDK/AG-UI input).
+    ExternalInput(usize),
     /// Commit a claim-fenced `Rescheduled` transition of the same Run.
     Reschedule(usize),
     /// Commit, in one commit, a response whose tool call follows more
@@ -259,7 +262,7 @@ impl Scenario {
                     RunState::Running,
                 ));
             }
-            Step::Begin(index) => {
+            Step::Begin(index) | Step::ExternalInput(index) => {
                 let activity = self
                     .warm
                     .application
@@ -267,6 +270,16 @@ impl Scenario {
                     .await
                     .unwrap();
                 let run_id = RunId(format!("begun-run-{index}"));
+                if matches!(step, Step::ExternalInput(_)) {
+                    self.runtime.push_committed_message(
+                        cursor,
+                        Message::text(
+                            MessageId(format!("external-input-{index}")),
+                            Role::User,
+                            "服务费金额没提供；收款时间没定。",
+                        ),
+                    );
+                }
                 self.runtime.lifecycle.lock().unwrap().push(lifecycle(
                     cursor,
                     &self.session_id,
@@ -463,6 +476,31 @@ async fn every_refresh_schedule_of_one_run_equals_its_cold_rebuild() {
         &[Step::Input(0), Step::Say(0), Step::Tool(0), Step::Close(0)],
         1,
         &RUN_WITH_EXECUTED_TOOL,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn external_customer_input_survives_every_refresh_schedule_and_cold_rebuild() {
+    // C1 a Run-port input has no Managed admission batch; C2 warm projection
+    // refreshes at any subset of its three commits; C3 a fresh cold adapter
+    // reads the same stores. R1 all eight schedules -> exactly one public
+    // customer input with stable ID/bytes/time, before the assistant text;
+    // R2 C2+C3 -> identical complete history, including terminal state.
+    // The sibling Input scenarios retain command-owned receipt deduplication.
+    assert_every_schedule_is_equivalent(
+        &[Step::ExternalInput(0), Step::Say(0), Step::Close(0)],
+        1,
+        &[
+            "session.status_running",
+            "session.thread_status_running",
+            "user.message",
+            "agent.message",
+            "agent.message",
+            "session.thread_status_idle",
+            "session.usage",
+            "session.status_idle",
+        ],
     )
     .await;
 }
