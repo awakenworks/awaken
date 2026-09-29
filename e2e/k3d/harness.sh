@@ -184,6 +184,31 @@ k3d_hard_stop_node() {
   return 2
 }
 
+# One exact inner container task, as distinct from the enclosing K3D node.
+# Native Worker and PostgreSQL faults share this injection/observation owner.
+k3d_hard_stop_cri_container() {
+  local cluster="$1" node="$2" container="$3" observed kill_status=0 attempt deadline remaining
+  [[ "$container" =~ ^[0-9a-f]{64}$ ]] || return 2
+  k3d_validate_node_target "$cluster" "$node" || return "$?"
+  observed=$(timeout 5 docker exec "$node" crictl inspect "$container" | jq -er '.status | .id + "|" + .state') || return "$?"
+  [[ "$observed" = "$container|CONTAINER_RUNNING" ]] || return 2
+  # StopContainer may send TERM, or lose its ACK after killing the process.
+  # Request one unambiguous hard signal; never resend it after an uncertain ACK.
+  timeout 15 docker exec "$node" ctr -n k8s.io tasks kill --signal SIGKILL --all "$container" >/dev/null || kill_status=$?
+  deadline=$((SECONDS + 10))
+  for attempt in {1..50}; do
+    remaining=$((deadline - SECONDS))
+    ((remaining > 0)) || break
+    observed=$(timeout "${remaining}s" docker exec "$node" crictl inspect "$container" | jq -er '.status | .id + "|" + .state + "|" + (.exitCode | tostring)') || return "$?"
+    [[ "$observed" != "$container|CONTAINER_EXITED|137" ]] || return 0
+    [[ "$observed" = "$container|CONTAINER_RUNNING|"* ]] || break
+    [[ "$attempt" = 50 ]] || sleep 0.2
+  done
+  echo "exact CRI SIGKILL termination was not observed (kill status=$kill_status)" >&2
+  [[ "$kill_status" = 0 ]] || return "$kill_status"
+  return 2
+}
+
 # Capture the exact running node and underlay interface before the fault. Keep
 # this receipt in the caller before any effect, so failed post-observation still
 # leaves enough identity for cleanup. Docker disconnect destroys the interface;
@@ -1055,6 +1080,63 @@ print(json.dumps(value))
 
   k3d_validate_name "awaken-test-1"
   ! k3d_validate_name "--all"
+  # CRI decision table: R1 exact running task + one KILL + same exited/137
+  # -> success; R2 lost ACK with R1 receipt -> same success; R3 running, other
+  # id, zero exit or missing evidence -> fail, without a second signal; R4
+  # malformed/foreign/not-running target -> no signal. R5 delayed exit -> join
+  # the same task. Real Kubernetes phases additionally join Pod UID + CRI id.
+  (
+    local container="$(printf 'd%.0s' {1..64})" initial=CONTAINER_RUNNING
+    local final=CONTAINER_EXITED exit_code=137 ack=0 kills=0 waits=0 delayed=0
+    local observed_id="$container" provider_error=0 calls=0 result
+    k3d_validate_node_target() { [[ "$1/$2" = awaken-test/k3d-awaken-test-agent-0 ]]; }
+    timeout() { shift; "$@"; }
+    sleep() { waits=$((waits+1)); }
+    docker() {
+      [[ "$1 $2" = 'exec k3d-awaken-test-agent-0' ]] || return 98
+      if [[ "$3" = ctr ]]; then
+        [[ "$*" = *"tasks kill --signal SIGKILL --all $container" ]] || return 98
+        kills=$((kills+1)); return "$ack"
+      fi
+      [[ "$3 $4 $5" = "crictl inspect $container" ]] || return 98
+      ((provider_error == 0)) || return "$provider_error"
+      local state="$initial" id="$container"
+      if ((kills > 0)); then
+        state="$final"; id="$observed_id"
+        if ((waits < delayed)); then state=CONTAINER_RUNNING; fi
+      fi
+      printf '{"status":{"id":"%s","state":"%s","exitCode":%s}}\n' "$id" "$state" "$exit_code"
+    }
+    for ack in 0 41; do
+      kills=0; k3d_hard_stop_cri_container awaken-test k3d-awaken-test-agent-0 "$container"
+      [[ "$kills" = 1 ]]
+    done
+    ack=0; final=CONTAINER_RUNNING; kills=0
+    ! k3d_hard_stop_cri_container awaken-test k3d-awaken-test-agent-0 "$container" 2>/dev/null
+    [[ "$kills" = 1 ]]
+    final=CONTAINER_EXITED
+    for exit_code in 0 1; do
+      kills=0; ! k3d_hard_stop_cri_container awaken-test k3d-awaken-test-agent-0 "$container" 2>/dev/null
+      [[ "$kills" = 1 ]]
+    done
+    exit_code=137; observed_id="$(printf 'e%.0s' {1..64})"; kills=0
+    ! k3d_hard_stop_cri_container awaken-test k3d-awaken-test-agent-0 "$container" 2>/dev/null
+    [[ "$kills" = 1 ]]
+    observed_id="$container"; initial=CONTAINER_EXITED; kills=0
+    ! k3d_hard_stop_cri_container awaken-test k3d-awaken-test-agent-0 "$container"
+    [[ "$kills" = 0 ]]
+    initial=CONTAINER_RUNNING; provider_error=42
+    ! k3d_hard_stop_cri_container awaken-test k3d-awaken-test-agent-0 "$container" 2>/dev/null
+    [[ "$kills" = 0 ]]
+    provider_error=0
+    ! k3d_hard_stop_cri_container awaken-test k3d-other-agent-0 "$container"
+    ! k3d_hard_stop_cri_container awaken-test k3d-awaken-test-agent-0 bad
+    [[ "$kills" = 0 ]]
+    delayed=3; waits=0
+    k3d_hard_stop_cri_container awaken-test k3d-awaken-test-agent-0 "$container"
+    [[ "$kills" = 1 && "$waits" = 3 ]]
+  )
+
   # Hard-stop decision table: P1 exact running node + one SIGKILL request +
   # false/137 observation => physical termination even if the daemon lost its
   # exit-event ACK; P2 malformed/foreign/replaced/already-stopped => no signal;
