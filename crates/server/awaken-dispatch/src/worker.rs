@@ -429,6 +429,18 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         self
     }
 
+    /// Install one per-attempt model gate from the claim supplied by the
+    /// dispatch queue. Parent and child Runs may share a Session slot, while
+    /// each claimed execution retains its own fenced model admission.
+    #[must_use]
+    pub fn with_claimed_model_request_gate_factory(
+        mut self,
+        factory: crate::ClaimedModelRequestGateFactory,
+    ) -> Self {
+        self.exec = self.exec.with_claimed_model_request_gate(factory);
+        self
+    }
+
     /// Install a coordinate obtained by trusted execution-provider composition,
     /// never by an Agent or a caller-supplied stop receipt. Admission persists
     /// it atomically and verifies the exact registered assignment before entry.

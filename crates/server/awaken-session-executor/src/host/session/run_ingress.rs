@@ -52,6 +52,7 @@ impl SharedHost {
     /// therefore configured once regardless of delivery durability.
     pub(super) async fn build_ingress(
         &self,
+        claimed_model_gate: Option<awaken_dispatch::ClaimedModelRequestGateFactory>,
         runtime: Arc<Runtime>,
         attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
         commit: Arc<HostCommit>,
@@ -97,6 +98,9 @@ impl SharedHost {
             worker = worker.with_inference_materializer(materializer);
         }
         worker = worker.with_context(run_context);
+        if let Some(factory) = claimed_model_gate {
+            worker = worker.with_claimed_model_request_gate_factory(factory);
+        }
         if let Some(observer) = settlement_observer {
             worker = worker.with_settlement_observer(observer);
         }

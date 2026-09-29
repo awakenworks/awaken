@@ -14,7 +14,7 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::llm::{LlmExecutor, ModelRequestGate};
 use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use tokio_util::sync::CancellationToken;
@@ -32,6 +32,12 @@ pub type InferenceMaterializerFn = Arc<
         + Send
         + Sync,
 >;
+
+/// Rebind a Session model gate to the exact claim of each durable attempt.
+/// The worker already owns this claim; a shared Session slot cannot represent
+/// a parent and independently scheduled child at the same time.
+pub type ClaimedModelRequestGateFactory =
+    Arc<dyn Fn(&RunClaim) -> Arc<dyn ModelRequestGate> + Send + Sync>;
 
 // The serializable durable-run instruction moved to the dispatch contract
 // (ADR-0039 2.1); re-exported so `awaken_dispatch_contract::RunDispatch` is stable.
@@ -53,6 +59,7 @@ pub(crate) struct WorkerContext {
     /// Runtime-only materialization. Absent preserves an explicitly composed host
     /// executor; once installed, rejecting pinned access fails the run closed.
     inference_materializer: Option<InferenceMaterializerFn>,
+    claimed_model_request_gate: Option<ClaimedModelRequestGateFactory>,
 }
 
 impl WorkerContext {
@@ -64,6 +71,7 @@ impl WorkerContext {
             context: RuntimeRunContext::new(),
             stream_publisher: None,
             inference_materializer: None,
+            claimed_model_request_gate: None,
         }
     }
 
@@ -90,6 +98,15 @@ impl WorkerContext {
     #[must_use]
     pub(crate) fn with_inference_materializer(mut self, resolve: InferenceMaterializerFn) -> Self {
         self.inference_materializer = Some(resolve);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_claimed_model_request_gate(
+        mut self,
+        factory: ClaimedModelRequestGateFactory,
+    ) -> Self {
+        self.claimed_model_request_gate = Some(factory);
         self
     }
 
@@ -170,6 +187,9 @@ impl WorkerContext {
                 publisher.clone(),
             )));
         }
+        if let (Some(factory), Some(claim)) = (&self.claimed_model_request_gate, claim) {
+            context = context.with_model_request_gate(factory(claim));
+        }
         context
     }
 }
@@ -189,7 +209,10 @@ mod resolve_seam_tests {
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
     use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
     use awaken_runtime_contract::live_inbox::LiveInbox;
-    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+    use awaken_runtime_contract::llm::{
+        AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ModelRequestAdmission,
+        ModelRequestAdmissionRequest, ModelRequestGate,
+    };
     use awaken_runtime_contract::runtime_context::{
         AttemptOwnershipError, AttemptOwnershipVerifier,
     };
@@ -198,7 +221,7 @@ mod resolve_seam_tests {
     };
     use awaken_store_inmem::MemoryCommitCoordinator;
 
-    use super::WorkerContext;
+    use super::{CancellationToken, ClaimedModelRequestGateFactory, RunClaim, WorkerContext};
 
     struct Labeled(&'static str);
     #[async_trait::async_trait]
@@ -228,6 +251,76 @@ mod resolve_seam_tests {
         WorkerContext::new(Arc::new(MemoryCommitCoordinator::new(
             awaken_lease_contract::system_clock(),
         )))
+    }
+
+    struct ExactModelGate(String);
+
+    #[async_trait::async_trait]
+    impl ModelRequestGate for ExactModelGate {
+        async fn admit_model_request(
+            &self,
+            request: ModelRequestAdmissionRequest,
+        ) -> Result<ModelRequestAdmission, String> {
+            if request.run_id.0 == self.0 {
+                Ok(ModelRequestAdmission::Admit)
+            } else {
+                Err("wrong Run claim".into())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn model_gate_is_rebound_by_each_claimed_attempt_without_replacing_direct_context() {
+        // Causes: C1 one WorkerContext serves two distinct claimed Runs; C2 an
+        // unclaimed/direct context is built. Effects: E1 each attempt receives
+        // only its own gate; E2 C2 retains the base gate. Decision table:
+        // R1=claim A=>gate A, R2=claim B=>gate B, R3=no claim=>base gate.
+        // No Session-wide claim map or second admission authority is created.
+        let factory: ClaimedModelRequestGateFactory = Arc::new(|claim| {
+            let gate: Arc<dyn ModelRequestGate> = Arc::new(ExactModelGate(claim.run_id.0.clone()));
+            gate
+        });
+        let worker = ctx()
+            .with_context(
+                RuntimeRunContext::new()
+                    .with_model_request_gate(Arc::new(ExactModelGate("direct".into()))),
+            )
+            .with_claimed_model_request_gate(factory);
+        for run in ["parent", "child"] {
+            let claim = RunClaim {
+                run_id: RunId(run.into()),
+                owner: "worker".into(),
+                epoch: 1,
+            };
+            let context = worker.runtime_context(CancellationToken::new(), Some(&claim));
+            assert_eq!(
+                context
+                    .model_request_gate
+                    .unwrap()
+                    .admit_model_request(ModelRequestAdmissionRequest {
+                        run_id: claim.run_id.clone(),
+                        thread_id: ThreadId("shared-session".into()),
+                    },)
+                    .await
+                    .unwrap(),
+                ModelRequestAdmission::Admit,
+                "R1/R2 {run}"
+            );
+        }
+        let direct = worker.runtime_context(CancellationToken::new(), None);
+        assert_eq!(
+            direct
+                .model_request_gate
+                .unwrap()
+                .admit_model_request(ModelRequestAdmissionRequest {
+                    run_id: RunId("direct".into()),
+                    thread_id: ThreadId("direct".into()),
+                },)
+                .await
+                .unwrap(),
+            ModelRequestAdmission::Admit,
+            "R3"
+        );
     }
 
     fn activation(model_ref: &str) -> RunActivation {

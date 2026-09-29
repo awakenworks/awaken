@@ -214,6 +214,17 @@ impl RemoteHostCommit {
 }
 
 impl HostCommit {
+    /// A separately dispatched child has its own Thread and claim. Keep local
+    /// committed authority shared, but give a database-less child its own
+    /// non-authoritative recovery projection so it cannot replace the parent's
+    /// in-flight snapshot or commit ordinal.
+    pub(crate) fn for_independent_child(self: &Arc<Self>) -> Arc<Self> {
+        match self.as_ref() {
+            HostCommit::Local(_) => self.clone(),
+            HostCommit::Remote(_) => Arc::new(HostCommit::Remote(RemoteHostCommit::new())),
+        }
+    }
+
     pub(crate) async fn authoritative_run(
         &self,
         run_id: &RunId,
@@ -407,5 +418,45 @@ impl RunRecoverySource for HostCommit {
                     )
                 }),
         }
+    }
+}
+
+#[cfg(test)]
+mod child_projection_tests {
+    use super::*;
+
+    #[test]
+    fn independent_children_share_local_truth_but_not_remote_recovery_snapshots() {
+        // Causes: C1 a database-less parent starts two independently claimed
+        // children while its own Run is live; C2 a co-located parent does so.
+        // Effects: E1 C1 gets one distinct recovery projection per Run; E2 C2
+        // keeps the exact same local committed authority. Rules R1=C1=>E1,
+        // R2=C2=>E2. A projection is only a claim-scoped read/ordinal cache;
+        // neither rule creates another durable Thread authority.
+        let remote = Arc::new(HostCommit::Remote(RemoteHostCommit::new()));
+        let child_a = remote.for_independent_child();
+        let child_b = remote.for_independent_child();
+        let root_projection = remote.recovery_projection().unwrap();
+        let a_projection = child_a.recovery_projection().unwrap();
+        let b_projection = child_b.recovery_projection().unwrap();
+        assert!(
+            !Arc::ptr_eq(&root_projection, &a_projection),
+            "R1 parent/child"
+        );
+        assert!(
+            !Arc::ptr_eq(&root_projection, &b_projection),
+            "R1 parent/other child"
+        );
+        assert!(
+            !Arc::ptr_eq(&a_projection, &b_projection),
+            "R1 independent siblings"
+        );
+
+        let local = Arc::new(HostCommit::Local(Arc::new(
+            crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            )),
+        )));
+        assert!(Arc::ptr_eq(&local, &local.for_independent_child()), "R2");
     }
 }
