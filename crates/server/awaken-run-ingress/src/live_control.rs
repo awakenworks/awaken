@@ -52,14 +52,22 @@ pub enum Error {
 /// rather than silently succeeding (G5).
 pub struct LiveRunControlService<S> {
     worker: Arc<DispatchWorker<S>>,
+    /// The control edge's clock for the cancellation drive it performs. Claim,
+    /// renewal, ownership verification and settlement are judged by the store
+    /// that owns the row; this clock times only what the attempt itself reads.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl<S: ControlDispatch + 'static> LiveRunControlService<S> {
     /// Build from a dispatch worker. The worker carries both the runtime
     /// live-control handle and the durable dispatch store, keeping this service
-    /// free of a second commit boundary (G6/G13).
-    pub fn new(worker: Arc<DispatchWorker<S>>) -> Self {
-        Self { worker }
+    /// free of a second commit boundary (G6/G13). `clock` is the composing
+    /// Host's clock.
+    pub fn new(
+        worker: Arc<DispatchWorker<S>>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Self {
+        Self { worker, clock }
     }
 
     /// Cancel the run identified by `correlation_id`.
@@ -91,11 +99,7 @@ impl<S: ControlDispatch + 'static> LiveRunControlService<S> {
             // the intent remains durable on that owner's lease.
             let driven = self
                 .worker
-                // The control edge owns the clock for this exact drive. Claim,
-                // renewal, ownership verification and settlement are judged by the
-                // store that owns the row; this source times only what the attempt
-                // itself reads, so the control edge never introduces a second one.
-                .tick_run(&run_id, awaken_lease_contract::system_clock())
+                .tick_run(&run_id, self.clock.clone())
                 .await
                 .map_err(|error| Error::Dispatch(error.to_string()))?;
             return match driven {
@@ -200,7 +204,7 @@ mod tests {
             commit,
             "live-control-test",
         ));
-        LiveRunControlService::new(worker)
+        LiveRunControlService::new(worker, awaken_lease_contract::system_clock())
     }
 
     fn activation(run: &str) -> RunActivation {
@@ -280,7 +284,7 @@ mod tests {
             commit.clone(),
             "live-control-test",
         ));
-        let service = LiveRunControlService::new(worker);
+        let service = LiveRunControlService::new(worker, awaken_lease_contract::system_clock());
         store
             .enqueue(RunDispatch::new(activation("queued-cancel")))
             .await
@@ -318,7 +322,10 @@ mod tests {
             entered: entered.clone(),
             release: release.clone(),
         }));
-        let service = Arc::new(LiveRunControlService::new(worker));
+        let service = Arc::new(LiveRunControlService::new(
+            worker,
+            awaken_lease_contract::system_clock(),
+        ));
         store
             .enqueue(RunDispatch::new(activation("wall-clock-cancel")))
             .await
@@ -380,7 +387,7 @@ mod tests {
             commit,
             "pause-control-test",
         ));
-        let service = LiveRunControlService::new(worker);
+        let service = LiveRunControlService::new(worker, awaken_lease_contract::system_clock());
         let run_id = RunId("external-attempt".into());
         let thread_id = awaken_agent_contract::agent::thread::Id("external-thread".into());
         let pause = PauseSignal::new();

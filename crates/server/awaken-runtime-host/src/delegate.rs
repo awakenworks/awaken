@@ -598,7 +598,7 @@ impl CancellableRunDelegationService for HostRunDelegationService {
             scheduler.reader.clone(),
             scheduler.owner.clone(),
         ));
-        awaken_run_ingress::LiveRunControlService::new(worker)
+        awaken_run_ingress::LiveRunControlService::new(worker, scheduler.clock.clone())
             .cancel(&cancellation.child_run_id.0)
             .await
             .map_err(|error| DelegationExecutionError::retryable(error.to_string()))

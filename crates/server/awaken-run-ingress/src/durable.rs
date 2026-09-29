@@ -252,7 +252,7 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
     /// a live/queued/awaiting run, or pause/wake a live one, by correlation id (ADR-0018).
     /// Shares the same worker/store/runtime, so it owns no second commit boundary.
     pub fn live_control(&self) -> LiveRunControlService<S> {
-        LiveRunControlService::new(self.worker.clone())
+        LiveRunControlService::new(self.worker.clone(), self.clock.clone())
     }
 
     /// Start an autonomous daemon that drains this queue against its runtime,
