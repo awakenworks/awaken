@@ -150,6 +150,16 @@ step "fmt" "cargo fmt --all" \
 step "runtime-host-neutral" "keep neutral Runtime Host ports available without enabling authority dependencies" \
   cargo check -p awaken-session-executor --no-default-features "${locked[@]}"
 
+# Compile-surface decision table: CR10 the Managed HTTP library is a production
+# root without test-support; CR11 it calls a fixture-only Session accessor;
+# CR12 workspace tests enable test-support through feature unification.
+# R1 CR10 + CR11 -> reject the missing production method; R2 CR10 + the narrowed
+# Session roles -> compile; R3 CR12 may compile either implementation and cannot
+# substitute for R1/R2. Keep this in the one Rust gate, before workspace checks,
+# so quick, push and full exercise the same real production dependency graph.
+step "managed-protocol-production" "use production Session roles rather than fixture-only accessors" \
+  cargo check -p awaken-protocol-managed --lib --no-default-features "${locked[@]}"
+
 # The fuzz crate is a separate workspace and the only Rust consumer of this
 # repository's crates outside it, so `cargo check --workspace` never compiles it.
 # It is why three crates keep reviewed public API snapshots (ADR-0081, 2026-09-28);
