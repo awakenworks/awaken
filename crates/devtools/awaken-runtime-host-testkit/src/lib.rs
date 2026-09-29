@@ -185,7 +185,8 @@ mod tests {
 
     /// Decision table (authorities → Host ports): P1 every port the Host
     /// reads comes from the one selected set of authorities, so a Skill,
-    /// reclamation state and clock are always present together.
+    /// reclamation state and clock are always present together; P2 the Host's
+    /// clock is the exact Resources handle used to stamp and judge records.
     #[test]
     fn resource_ports_carry_every_authority_of_one_selection() {
         let clock = awaken_lease_contract::system_clock();
@@ -194,6 +195,7 @@ mod tests {
         let ports = local_resource_ports(&authorities);
         assert!(ports.skills.is_some(), "P1 Skill catalog present");
         assert!(ports.reclamation.is_some(), "P1 reclamation present");
+        assert!(Arc::ptr_eq(&ports.clock, &authorities.clock()), "P2 clock");
         assert!(
             Arc::ptr_eq(&ports.memory_repository, &authorities.memory_repository()),
             "P1 the same Memory authority"
