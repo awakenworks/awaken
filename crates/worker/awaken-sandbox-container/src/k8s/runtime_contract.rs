@@ -169,6 +169,14 @@ impl ContainerRuntime for K8sRuntime {
         );
         Ok(std::collections::BTreeMap::from([
             ("backend".into(), "kubernetes".into()),
+            (
+                "execution_uid".into(),
+                crate::runtime::SANDBOX_EXECUTION_ID.to_string(),
+            ),
+            (
+                "hardening_revision".into(),
+                crate::runtime::CONTAINER_HARDENING_REVISION.into(),
+            ),
             ("namespace".into(), self.namespace.clone()),
             (
                 "realization_namespace".into(),

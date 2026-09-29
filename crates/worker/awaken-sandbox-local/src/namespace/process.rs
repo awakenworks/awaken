@@ -8,24 +8,27 @@ pub(super) struct LaunchInfo {
 }
 
 impl LaunchInfo {
-    pub(super) fn attach(command: &mut TokioCommand) -> Result<Self, pc::SandboxError> {
+    /// Map bubblewrap's private report (fd 3) and the workload syscall profile
+    /// (fds 4..) in one mapping, so no parent descriptor can be clobbered by an
+    /// earlier child-side `dup2`.
+    pub(super) fn attach(
+        command: &mut TokioCommand,
+        runtime_roots: Vec<awaken_sandbox_fs::ProjectionRoot>,
+    ) -> Result<Self, pc::SandboxError> {
         #[cfg(target_os = "linux")]
         {
-            use command_fds::{CommandFdExt, FdMapping};
             // LocalProcess::spawn owns process-group and cancellation policy;
             // this adapter only supplies the trusted namespace identity report.
             let (read, write) = std::os::unix::net::UnixStream::pair()
                 .map_err(|error| pc::SandboxError::backend("attach", error))?;
             read.set_nonblocking(true)
                 .map_err(|error| pc::SandboxError::backend("attach", error))?;
-            command
-                .as_std_mut()
-                .fd_mappings(vec![FdMapping {
-                    parent_fd: write.into(),
-                    child_fd: 3,
-                }])
-                .map_err(|error| pc::SandboxError::backend("attach", error))?;
-            command.args(["--info-fd", "3"]);
+            map_launch_fds(
+                command,
+                Some(write.into()),
+                awaken_local_process::seccomp::SyscallProfile::Namespace,
+                runtime_roots,
+            )?;
             Ok(Self {
                 report: tokio::net::UnixStream::from_std(read)
                     .map_err(|error| pc::SandboxError::backend("attach", error))?,
@@ -33,7 +36,7 @@ impl LaunchInfo {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = command;
+            let _ = (command, runtime_roots);
             Ok(Self {})
         }
     }
@@ -84,6 +87,119 @@ impl LaunchInfo {
     }
 }
 
+/// The syscall profile alone, for a launch that needs no identity report (the
+/// readiness probe, the Workdir networkless shell). Readiness must exercise the
+/// same filter a Session gets.
+#[cfg(target_os = "linux")]
+pub(crate) fn attach_syscall_profile(
+    command: &mut TokioCommand,
+    profile: awaken_local_process::seccomp::SyscallProfile,
+    runtime_roots: Vec<awaken_sandbox_fs::ProjectionRoot>,
+) -> Result<(), pc::SandboxError> {
+    map_launch_fds(command, None, profile, runtime_roots)
+}
+
+/// Map the report (fd 3) and the compiled programs onto the descriptors the
+/// rendered `--add-seccomp-fd` options name, in one `command-fds` mapping.
+#[cfg(target_os = "linux")]
+fn map_launch_fds(
+    command: &mut TokioCommand,
+    report: Option<std::os::fd::OwnedFd>,
+    profile: awaken_local_process::seccomp::SyscallProfile,
+    runtime_roots: Vec<awaken_sandbox_fs::ProjectionRoot>,
+) -> Result<(), pc::SandboxError> {
+    use awaken_local_process::seccomp::BUBBLEWRAP_FILTER_FDS;
+    use command_fds::{CommandFdExt, FdMapping};
+    use std::os::fd::AsFd as _;
+    let filters = profile
+        .bubblewrap_filter_fds()
+        .map_err(|error| pc::SandboxError::unsupported(error.to_string()))?;
+    if filters.len() != BUBBLEWRAP_FILTER_FDS.len() {
+        return Err(pc::SandboxError::backend(
+            "attach",
+            "syscall profile program count does not match the rendered launcher options",
+        ));
+    }
+    let mut mappings = Vec::with_capacity(filters.len() + 1);
+    let with_report = report.is_some();
+    if let Some(report) = report {
+        mappings.push(FdMapping {
+            parent_fd: report,
+            child_fd: 3,
+        });
+    }
+    for (child_fd, filter) in BUBBLEWRAP_FILTER_FDS.into_iter().zip(filters) {
+        mappings.push(FdMapping {
+            parent_fd: filter,
+            child_fd,
+        });
+    }
+    for (index, root) in runtime_roots.into_iter().enumerate() {
+        mappings.push(FdMapping {
+            parent_fd: root
+                .as_fd()
+                .try_clone_to_owned()
+                .map_err(|error| pc::SandboxError::backend("attach", error))?,
+            child_fd: runtime_root_fd(index)?,
+        });
+    }
+    command
+        .as_std_mut()
+        .fd_mappings(mappings)
+        .map_err(|error| pc::SandboxError::backend("attach", error))?;
+    if with_report {
+        command.args(["--info-fd", "3"]);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn runtime_root_fd(index: usize) -> Result<i32, pc::SandboxError> {
+    let first = awaken_local_process::BUBBLEWRAP_SECCOMP_FDS
+        .into_iter()
+        .max()
+        .expect("a syscall profile has descriptors")
+        + 1;
+    i32::try_from(index)
+        .ok()
+        .and_then(|index| first.checked_add(index))
+        .ok_or_else(|| pc::SandboxError::invalid("too many runtime projection descriptors"))
+}
+
+/// Replace path-based automatic runtime binds with the retained directory's
+/// descriptor. Missing automatic roots are omitted, not left as a path that
+/// could appear after admission. Both the resolved path and the actual opened
+/// directory must satisfy the same root predicate before any launcher starts.
+#[cfg(target_os = "linux")]
+pub(super) fn pin_runtime_roots(
+    argv: &mut Vec<String>,
+    roots: &[String],
+) -> Result<Vec<awaken_sandbox_fs::ProjectionRoot>, pc::SandboxError> {
+    let mut pinned = Vec::new();
+    for destination in roots {
+        let position = argv
+            .windows(3)
+            .position(|args| args == ["--ro-bind-try", destination, destination])
+            .ok_or_else(|| {
+                pc::SandboxError::invalid("runtime projection is absent from launch plan")
+            })?;
+        let Some((_, root)) = super::seatbelt::prepare_runtime_root(destination)? else {
+            argv.drain(position..position + 3);
+            continue;
+        };
+        argv.splice(
+            position..position + 3,
+            [
+                "--ro-bind-fd".to_owned(),
+                runtime_root_fd(pinned.len())?.to_string(),
+                destination.clone(),
+            ],
+        );
+        pinned.push(root);
+    }
+    Ok(pinned)
+}
+
 #[cfg(target_os = "linux")]
 fn reported_group(bytes: &[u8]) -> Result<u32, pc::SandboxError> {
     #[derive(serde::Deserialize)]
@@ -104,6 +220,76 @@ fn reported_group(bytes: &[u8]) -> Result<u32, pc::SandboxError> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    /// P1 a plain runtime directory or a benign alias -> one fd bind retaining
+    /// the admitted inode. P2 substitute that alias after preparation -> the
+    /// pinned view still reads P1. P3 an absent automatic root -> remove its
+    /// path bind entirely, so later creation cannot add a new host view.
+    #[test]
+    fn runtime_projection_retains_identity_and_omits_missing_roots() {
+        use std::os::fd::{AsFd as _, AsRawFd as _};
+        let temp = tempfile::tempdir().unwrap();
+        let owned = temp.path().join("owned");
+        let foreign = temp.path().join("foreign");
+        let alias = temp.path().join("runtime");
+        std::fs::create_dir(&owned).unwrap();
+        std::fs::create_dir(&foreign).unwrap();
+        std::fs::write(owned.join("marker"), b"owned").unwrap();
+        std::fs::write(foreign.join("marker"), b"foreign").unwrap();
+        std::os::unix::fs::symlink(&owned, &alias).unwrap();
+        let root = alias.to_string_lossy().into_owned();
+        let missing = temp.path().join("missing").to_string_lossy().into_owned();
+        let mut argv = vec![
+            "bwrap".into(),
+            "--ro-bind-try".into(),
+            root.clone(),
+            root.clone(),
+            "--ro-bind-try".into(),
+            missing.clone(),
+            missing.clone(),
+        ];
+        let retained = pin_runtime_roots(&mut argv, &[root.clone(), missing.clone()]).unwrap();
+        assert_eq!(retained.len(), 1, "P1");
+        assert_eq!(argv, ["bwrap", "--ro-bind-fd", "6", &root], "P1/P3");
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&foreign, &alias).unwrap();
+        std::fs::create_dir(&missing).unwrap();
+        let pinned =
+            std::path::PathBuf::from(format!("/proc/self/fd/{}", retained[0].as_fd().as_raw_fd()));
+        assert_eq!(
+            std::fs::read(pinned.join("marker")).unwrap(),
+            b"owned",
+            "P2"
+        );
+        assert_eq!(
+            std::fs::read(alias.join("marker")).unwrap(),
+            b"foreign",
+            "P2 control"
+        );
+    }
+
+    /// P4 lexical installation-looking alias -> physical operator HOME: refuse
+    /// before adding inherited descriptors or starting a launcher. The test
+    /// reads only directory metadata, never any HOME file or secret.
+    #[test]
+    fn runtime_alias_cannot_project_the_operator_home() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+        let alias = temp.path().join("installation");
+        std::os::unix::fs::symlink(&home, &alias).unwrap();
+        let root = alias.to_string_lossy().into_owned();
+        let mut argv = vec![
+            "bwrap".into(),
+            "--ro-bind-try".into(),
+            root.clone(),
+            root.clone(),
+        ];
+        assert!(pin_runtime_roots(&mut argv, &[root]).is_err(), "P4");
+        assert!(
+            !argv.iter().any(|arg| arg == "--ro-bind-fd"),
+            "P4 no admitted bind"
+        );
+    }
 
     #[test]
     fn private_report_requires_one_bounded_unsigned_host_pid() {
@@ -162,7 +348,7 @@ mod tests {
             // Use the sole LocalProcess spawn boundary for R5: its drop policy
             // must retain cleanup when private-report binding is cancelled.
             let launch = if mode == "cancelled" {
-                LaunchInfo::attach(&mut command).unwrap()
+                LaunchInfo::attach(&mut command, Vec::new()).unwrap()
             } else {
                 LaunchInfo { report }
             };

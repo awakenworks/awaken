@@ -30,17 +30,93 @@ pub async fn wait_for_process_exit(
 #[cfg(target_os = "linux")]
 pub mod scoped;
 
+#[cfg(target_os = "linux")]
+pub mod seccomp;
+
+/// How many BPF programs the workload syscall profile compiles to (an `EPERM`
+/// table and a `clone3` → `ENOSYS` table), i.e. how many `--add-seccomp-fd`
+/// options a bubblewrap launch carries. Declared on every platform so pure
+/// launcher renderers stay target-independent; only Linux compiles programs.
+pub const SECCOMP_PROGRAM_COUNT: usize = 2;
+
+/// The descriptors a bubblewrap launch receives the programs on. fd 3 is
+/// bubblewrap's private info report, so the programs start at fd 4.
+pub const BUBBLEWRAP_SECCOMP_FDS: [i32; SECCOMP_PROGRAM_COUNT] = [4, 5];
+
+/// The bubblewrap options installing the programs mapped at
+/// [`BUBBLEWRAP_SECCOMP_FDS`], in installation order.
+#[must_use]
+pub fn bubblewrap_seccomp_args() -> Vec<String> {
+    BUBBLEWRAP_SECCOMP_FDS
+        .iter()
+        .flat_map(|fd| ["--add-seccomp-fd".to_owned(), fd.to_string()])
+        .collect()
+}
+
 mod execution_identity;
 pub use execution_identity::{ProcessExecutionIdentity, ProcessNamespaceIdentity};
 
 /// One process-lifetime profile shared by Namespace and host-view rendering.
 /// Filesystem and network policy remain the sandbox provider's responsibility.
-pub const BUBBLEWRAP_PROCESS_BOUNDARY: [&str; 4] = [
+pub const BUBBLEWRAP_PROCESS_BOUNDARY: [&str; 5] = [
     "--unshare-user",
+    "--disable-userns",
     "--unshare-pid",
     "--die-with-parent",
     "--new-session",
 ];
+
+/// Resolve a trusted launcher (`bwrap`, `sandbox-exec`) from the operator's
+/// `PATH` — the Worker's own environment, never the environment a workload or
+/// Session configuration supplies to the child. Only absolute directories are
+/// searched, the match must be an executable regular file, and the result is
+/// canonicalized so a later launch execs exactly the file that was found.
+#[must_use]
+pub fn resolve_operator_executable(
+    name: &str,
+    operator_path: &std::ffi::OsStr,
+) -> Option<std::path::PathBuf> {
+    let candidate = std::path::Path::new(name);
+    if candidate.is_absolute() {
+        return is_executable_file(candidate)
+            .then(|| std::fs::canonicalize(candidate).ok())
+            .flatten();
+    }
+    if candidate.components().count() != 1 {
+        return None;
+    }
+    std::env::split_paths(operator_path)
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join(name))
+        .find(|path| is_executable_file(path))
+        .and_then(|path| std::fs::canonicalize(path).ok())
+}
+
+/// [`resolve_operator_executable`] against this process's own `PATH`.
+pub fn resolve_operator_launcher(name: &str) -> Result<std::path::PathBuf, SandboxError> {
+    resolve_operator_executable(name, &std::env::var_os("PATH").unwrap_or_default()).ok_or_else(
+        || {
+            SandboxError::unsupported(format!(
+                "sandbox launcher `{name}` is not an executable on the Worker's absolute PATH"
+            ))
+        },
+    )
+}
+
+fn is_executable_file(path: &std::path::Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        metadata.is_file()
+    }
+}
 
 /// Configure a command so the child becomes leader of a private process group.
 fn configure_process_group(command: &mut Command) {
@@ -216,6 +292,68 @@ mod tests {
     use std::path::Path;
     use std::process::Stdio;
     use std::time::Duration;
+
+    /// Operator launcher resolution. Causes: C1 absolute search directory with
+    /// an executable regular file; C2 relative search directory; C3 matching
+    /// name that is not executable, or a directory; C4 a name with a path
+    /// separator; C5 an absolute name. Effects: C1 => the canonical file (a
+    /// symlink resolves to its target); C2/C3 => skipped, search continues;
+    /// C4 => refused; C5 => itself when executable. Nothing else is searched.
+    #[cfg(unix)]
+    #[test]
+    fn operator_launcher_is_an_absolute_canonical_executable() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let (plain, executable, linked) = (
+            root.path().join("plain"),
+            root.path().join("exec"),
+            root.path().join("linked"),
+        );
+        for dir in [&plain, &executable, &linked] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        std::fs::write(plain.join("tool"), b"#!/bin/sh\n").unwrap();
+        std::fs::create_dir(plain.join("dir-tool")).unwrap();
+        let target = executable.join("tool");
+        std::fs::write(&target, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&target, linked.join("tool")).unwrap();
+        let canonical = std::fs::canonicalize(&target).unwrap();
+        let search = |dirs: &[&Path]| std::env::join_paths(dirs).unwrap();
+
+        let path = search(&[Path::new("relative"), &plain, &executable]);
+        assert_eq!(
+            resolve_operator_executable("tool", &path),
+            Some(canonical.clone()),
+            "C1-C3"
+        );
+        let path = search(&[&linked]);
+        assert_eq!(
+            resolve_operator_executable("tool", &path),
+            Some(canonical.clone()),
+            "C1 link"
+        );
+        assert_eq!(
+            resolve_operator_executable("dir-tool", &search(&[&plain])),
+            None,
+            "C3"
+        );
+        assert_eq!(
+            resolve_operator_executable("exec/tool", &search(&[root.path()])),
+            None,
+            "C4"
+        );
+        assert_eq!(
+            resolve_operator_executable(target.to_str().unwrap(), std::ffi::OsStr::new("")),
+            Some(canonical),
+            "C5"
+        );
+        assert_eq!(
+            resolve_operator_executable(plain.join("tool").to_str().unwrap(), &path),
+            None,
+            "C5 not executable"
+        );
+    }
 
     #[cfg(unix)]
     async fn wait_for_marker(path: &Path, expected: &str) {

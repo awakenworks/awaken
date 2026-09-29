@@ -22,6 +22,9 @@ nix = { version = "0.29", features = ["signal"] }
 # Scoped cutoffs read the same BOOTTIME the authority proof samples.
 awaken-authority-clock.workspace = true
 rustix = { version = "1", features = ["fs", "net", "process", "event"] }
+# Pinned BPF compiler for the sandbox syscall profile handed to bubblewrap.
+libc = "0.2"
+seccompiler = "0.5"
 tokio = { workspace = true, features = ["net", "io-util"] }
 zeroize = "1"
 
