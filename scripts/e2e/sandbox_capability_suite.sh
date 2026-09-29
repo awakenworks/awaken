@@ -82,10 +82,10 @@ if command -v node >/dev/null 2>&1 && node --input-type=module --eval \
   'import { bwrapAvailable } from "./e2e/bwrap_capability.mjs"; process.exit(bwrapAvailable() ? 0 : 1);'
 then
   namespace_available=true
-  run "bwrap:runtime-host-one-workspace" \
+  run "bwrap:session-environment-one-workspace" \
     env AWAKEN_TEST_REQUIRE_NAMESPACE_WORKSPACE=1 \
-    cargo test -q -p awaken-session-executor --lib \
-      session_environment::tests::shared_environment::namespace_native_process_and_agent_channel_share_one_live_environment \
+    cargo test -q -p awaken-session-environment --lib \
+      tests::shared_environment::namespace_native_process_and_agent_channel_share_one_live_environment \
       -- --exact
 else
   skip "bwrap/unprivileged user namespace unavailable"

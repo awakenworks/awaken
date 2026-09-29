@@ -94,7 +94,7 @@ CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
     # The Session environment provider's capacity role is one delegating call
     # to the provider's own `prewarm`, whose callers (warm capacity) stay
     # counted under their own names.
-    "crates/server/awaken-session-executor/src/session_environment/provider.rs::prewarm": (
+    "crates/worker/awaken-session-environment/src/provider.rs::prewarm": (
         "delegates to SandboxEnvironmentProvider::prewarm; its callers are the counted effect"
     ),
     # The port implementation is one delegating call; every caller that awaits

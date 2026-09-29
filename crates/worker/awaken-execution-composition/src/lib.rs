@@ -11,7 +11,8 @@
 
 use std::sync::Arc;
 
-use awaken_session_executor::{SandboxEnvironmentProvider, SharedHost};
+use awaken_session_executor::SharedHost;
+use awaken_session_environment::SandboxEnvironmentProvider;
 use awaken_session_environment_contract::HandExecutorFactory;
 
 mod container;

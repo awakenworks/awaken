@@ -33,10 +33,10 @@ SESSION_RUN_ADMISSION_OWNER = (
     "crates/server/awaken-session-application/src/run_admission.rs"
 )
 CONTAINER_REPOSITORY_OWNER = (
-    "crates/server/awaken-session-executor/src/session_environment/container_repositories.rs"
+    "crates/worker/awaken-session-environment/src/container_repositories.rs"
 )
 SESSION_REPOSITORY_ADAPTER = (
-    "crates/server/awaken-session-executor/src/session_environment/repository_realizer.rs"
+    "crates/worker/awaken-session-environment/src/repository_realizer.rs"
 )
 FORBIDDEN_HOST_ERROR_INFERENCE = (
     '.contains("401")',
@@ -121,7 +121,7 @@ PARALLEL_RAW_TOOL_REGISTRY = re.compile(
 RAW_TOOL_REGISTRY_OWNER = "crates/contract/awaken-tool-contract/src/tool.rs"
 RAW_TOOL_REGISTRY_CONSUMERS = (
     "crates/runtime/awaken-runtime/src/runtime.rs",
-    "crates/server/awaken-session-executor/src/session_environment/environment.rs",
+    "crates/worker/awaken-session-environment/src/environment.rs",
     "crates/worker/awaken-tool-relay/src/serve.rs",
 )
 
@@ -256,7 +256,14 @@ def repository_git_boundary_violations(sources: dict[str, str]) -> list[str]:
     """Credentialed Repository network effects exist only inside a Sandbox."""
     errors: list[str] = []
     for path, source in sources.items():
-        if not path.startswith("crates/server/awaken-session-executor/src/"):
+        # The Runtime Host and the Session environment adapters it is handed:
+        # neither may run Repository Git on the host.
+        if not path.startswith(
+            (
+                "crates/server/awaken-session-executor/src/",
+                "crates/worker/awaken-session-environment/src/",
+            )
+        ):
             continue
         # A `tests.rs` module and the topic files under its `tests/` directory
         # are compiled only behind the parent's `#[cfg(test)] mod tests;`.
@@ -434,7 +441,8 @@ def selftest() -> None:
     # Repository Git decision table: G1 clone+push use Sandbox processes and a
     # single control protocol -> accept; G2 host bundle/subprocess transport ->
     # reject; G3 Workdir/Namespace accept a credential -> reject; G4 moving the
-    # host Git call to another Runtime Host module still cannot evade the gate.
+    # host Git call to another Session environment module, or G5 into the
+    # Runtime Host, still cannot evade the gate.
     git_boundary = {
         CONTAINER_REPOSITORY_OWNER: (
             "publish_sandbox_control_service REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH "
@@ -458,6 +466,11 @@ def selftest() -> None:
         "credentialed Repository effects require a container Sandbox"
     )
     git_boundary[
-        "crates/server/awaken-session-executor/src/session_environment/host_git_bypass.rs"
+        "crates/worker/awaken-session-environment/src/host_git_bypass.rs"
     ] = 'Command::new("git")'
     assert repository_git_boundary_violations(git_boundary), "G4"
+    del git_boundary["crates/worker/awaken-session-environment/src/host_git_bypass.rs"]
+    git_boundary["crates/server/awaken-session-executor/src/host_git_bypass.rs"] = (
+        'Command::new("git")'
+    )
+    assert repository_git_boundary_violations(git_boundary), "G5"

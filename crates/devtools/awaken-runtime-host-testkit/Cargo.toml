@@ -13,6 +13,8 @@ description = "Local Resources, Skill and Memory-extraction adapters handed to t
 
 [dependencies]
 awaken-session-executor = { workspace = true, features = ["test-support"] }
+# The sandbox-backed Session environment volatile and durable fixtures run in.
+awaken-session-environment = { workspace = true, features = ["test-support"] }
 awaken-runtime-contract.workspace = true
 awaken-resource-application.workspace = true
 awaken-resource-contract.workspace = true

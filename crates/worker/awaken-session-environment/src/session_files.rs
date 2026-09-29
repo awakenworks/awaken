@@ -12,7 +12,7 @@ use awaken_session_environment_contract::DiscoveredSkillFile;
 /// A typed read root prevents a Workspace-relative request from silently
 /// acquiring the authority of a frozen sandbox-absolute mount path.
 enum FileReadRoot {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Workspace {
         subdir: String,
     },
@@ -23,7 +23,7 @@ enum FileReadRoot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FileReadAuthority {
-    #[cfg(any(test, kani))]
+    #[cfg(any(test, kani, feature = "test-support"))]
     Workspace,
     FrozenMount,
 }
@@ -57,14 +57,14 @@ const fn file_read_authority_admitted(
 ) -> bool {
     facts.lexically_safe
         && match authority {
-            #[cfg(any(test, kani))]
+            #[cfg(any(test, kani, feature = "test-support"))]
             FileReadAuthority::Workspace => !facts.absolute,
             FileReadAuthority::FrozenMount => facts.absolute,
         }
 }
 
 impl FileReadRoot {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn workspace(subdir: &str) -> Result<Self, pc::SandboxError> {
         // Validate with the same canonical rule the Container backend uses. The
         // local backends receive the relative representation only after this
@@ -100,7 +100,7 @@ impl FileReadRoot {
 
     fn local_logical(&self) -> &str {
         match self {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Workspace { subdir } => subdir,
             Self::FrozenMount { path } => path,
         }
@@ -168,8 +168,8 @@ impl SandboxEnvironment {
 
     /// Read a Workspace-relative directory. Absolute paths are rejected at the
     /// type-construction edge rather than interpreted differently per backend.
-    #[cfg(test)]
-    pub(crate) async fn list_workspace_files(
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn list_workspace_files(
         &self,
         subdir: &str,
     ) -> Result<Vec<(String, Vec<u8>)>, pc::SandboxError> {
@@ -195,7 +195,7 @@ impl SandboxEnvironment {
             Self::Namespace { sandbox, .. } => sandbox.list_files(root.local_logical()),
             Self::Container { sandbox, .. } => {
                 let root = match root {
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     FileReadRoot::Workspace { subdir } => {
                         container_files::read_root(&subdir, sandbox.outputs_path())?
                     }

@@ -22,7 +22,7 @@ async fn unattached_container_rebuild_is_refused_before_any_provider_call() {
         .realizer()
         .create_effective_for_effect(
             &spec,
-            crate::session_environment::ProviderEffect::Unattached,
+            awaken_session_environment_contract::ProviderEffect::Unattached,
             Some(&source),
             awaken_session_environment_contract::EnvironmentRealizationKind::Rebuild,
         )
@@ -36,7 +36,7 @@ async fn unattached_container_rebuild_is_refused_before_any_provider_call() {
         .realizer()
         .create_effective_for_effect(
             &spec,
-            crate::session_environment::ProviderEffect::Unattached,
+            awaken_session_environment_contract::ProviderEffect::Unattached,
             None,
             awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
@@ -67,7 +67,7 @@ async fn adopted_container_reprojects_the_current_managed_file_tree() {
         .realizer()
         .create_effective_for_effect(
             &spec,
-            crate::session_environment::ProviderEffect::Unattached,
+            awaken_session_environment_contract::ProviderEffect::Unattached,
             None,
             awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
@@ -101,7 +101,7 @@ async fn adopted_container_reprojects_the_current_managed_file_tree() {
         .adopt_effective_for_effect(
             &spec,
             &handle,
-            crate::session_environment::ProviderEffect::Unattached,
+            awaken_session_environment_contract::ProviderEffect::Unattached,
         )
         .await
         .expect("adopt the same container after the input tree was lost");

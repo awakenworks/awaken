@@ -23,7 +23,7 @@ use awaken_session_environment_contract::{
 pub(crate) fn default_session_provider(sandbox_root: PathBuf) -> SessionEnvironmentProvider {
     #[cfg(test)]
     {
-        crate::session_environment::SandboxEnvironmentProvider::workdir(sandbox_root)
+        awaken_session_environment::SandboxEnvironmentProvider::workdir(sandbox_root)
             .into_session_provider()
     }
     #[cfg(not(test))]

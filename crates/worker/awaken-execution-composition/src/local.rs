@@ -4,7 +4,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use awaken_session_executor::{DeploymentConfig, SandboxEnvironmentProvider, SandboxTier, SharedHost};
+use awaken_session_executor::{DeploymentConfig, SandboxTier, SharedHost};
+use awaken_session_environment::SandboxEnvironmentProvider;
 use awaken_session_environment_contract::HandExecutorFactory;
 
 /// Resolve the effective sandbox tier at startup, probing the OS-native launcher

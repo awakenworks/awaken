@@ -115,7 +115,8 @@ pub fn volatile_host_with_deployment(
 fn with_workdir_fallback(host: SharedHost) -> SharedHost {
     let base = awaken_session_executor::session_sandbox_base(host.deployment_config());
     host.with_fallback_session_environment_provider(
-        awaken_session_executor::SandboxEnvironmentProvider::workdir(base).into_session_provider(),
+        awaken_session_environment::SandboxEnvironmentProvider::workdir(base)
+            .into_session_provider(),
     )
 }
 
@@ -127,7 +128,13 @@ fn with_workdir_fallback(host: SharedHost) -> SharedHost {
 /// When `dir` or its extraction database cannot be opened.
 #[must_use]
 pub fn with_durable_store_dir(host: SharedHost, dir: &Path) -> SharedHost {
-    host.with_durable_store_dir(dir, memory_extraction_repository(Some(dir)))
+    host.with_durable_store_dir(
+        dir,
+        memory_extraction_repository(Some(dir)),
+        |provider, base| {
+            awaken_session_environment::test_support::relocated_provider(provider, base)
+        },
+    )
 }
 
 fn volatile_resource_ports() -> LocalResourcePorts {
