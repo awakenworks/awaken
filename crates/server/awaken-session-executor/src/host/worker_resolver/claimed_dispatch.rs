@@ -88,8 +88,10 @@ impl HostWorkerResolver {
                 commit.clone(),
                 Some(snapshot),
                 publication_source,
-                claimed.request.activation.inherited_toolsets().cloned(),
-                &snapshot.resolved_spec.plugin_config.agent.toolsets,
+                crate::delegate::CallerToolConfiguration {
+                    toolsets: snapshot.resolved_spec.plugin_config.agent.toolsets.clone(),
+                    inherited: claimed.request.activation.inherited_toolsets().cloned(),
+                },
             )
             .map_err(Self::map_host_resolution_error)?
         {

@@ -258,15 +258,14 @@ pub(crate) async fn run_configured_agent_until_boundary(
     adapters: ChildExecutionAdapters,
 ) -> Result<AgentRunBoundary, AgentRunError> {
     let config = config.clone();
-    if resume.is_some() {
-        if let Some(ticket) = scheduler
+    if resume.is_some()
+        && let Some(ticket) = scheduler
             .as_ref()
             .and_then(RunScheduler::local_child_reader)
             .or_else(|| context.reader.clone())
             .and_then(|reader| reader.resume_ticket(&child_run_id))
-        {
-            context.inherited_toolsets = ticket.inherited_toolsets;
-        }
+    {
+        context.inherited_toolsets = ticket.inherited_toolsets;
     }
     let thread = child_run_id.0.clone();
     super::child_attempt::validate_child_tool_configuration(

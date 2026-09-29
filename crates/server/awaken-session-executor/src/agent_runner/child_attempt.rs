@@ -359,7 +359,8 @@ mod tests {
                         accepted = listener.accept() => {
                             let (mut stream, _) = accepted.unwrap();
                             let mut bytes = [0; 2048];
-                            stream.read(&mut bytes).await.unwrap();
+                            let received = stream.read(&mut bytes).await.unwrap();
+                            assert!(received > 0, "web request must send bytes");
                             requests.fetch_add(1, Ordering::SeqCst);
                             stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello").await.unwrap();
                         }

@@ -98,6 +98,12 @@ fn advisor_seed_messages(
 /// Runs delegates behind `agent_run`: local and remote Agents share the same
 /// first-class child Run identity and lifecycle; only placement differs.
 #[derive(Clone)]
+pub(crate) struct CallerToolConfiguration {
+    pub(crate) toolsets: Vec<awaken_runtime_contract::agent_bindings::ToolsetPolicy>,
+    pub(crate) inherited: Option<awaken_runtime_contract::activation::InheritedToolsets>,
+}
+
+#[derive(Clone)]
 pub(crate) struct HostRunDelegationService {
     llm: Arc<dyn LlmExecutor>,
     /// Native children execute in the Session-owned environment. Isolation is a
@@ -114,8 +120,7 @@ pub(crate) struct HostRunDelegationService {
     publications: Option<Arc<dyn PublishedAgentSnapshotSource>>,
     workspace: String,
     scheduler: Option<RunScheduler>,
-    caller_toolsets: Vec<awaken_runtime_contract::agent_bindings::ToolsetPolicy>,
-    inherited_toolsets: Option<awaken_runtime_contract::activation::InheritedToolsets>,
+    tool_configuration: CallerToolConfiguration,
 }
 
 #[derive(Clone, Debug)]
@@ -178,13 +183,15 @@ impl HostRunDelegationService {
             publications,
             workspace,
             scheduler: None,
-            caller_toolsets: parent_snapshot
-                .resolved_spec
-                .plugin_config
-                .agent
-                .toolsets
-                .clone(),
-            inherited_toolsets: None,
+            tool_configuration: CallerToolConfiguration {
+                toolsets: parent_snapshot
+                    .resolved_spec
+                    .plugin_config
+                    .agent
+                    .toolsets
+                    .clone(),
+                inherited: None,
+            },
         })
     }
 
@@ -223,11 +230,9 @@ impl HostRunDelegationService {
 
     pub(crate) fn with_tool_configuration(
         mut self,
-        caller: Vec<awaken_runtime_contract::agent_bindings::ToolsetPolicy>,
-        inherited: Option<awaken_runtime_contract::activation::InheritedToolsets>,
+        configuration: CallerToolConfiguration,
     ) -> Self {
-        self.caller_toolsets = caller;
-        self.inherited_toolsets = inherited;
+        self.tool_configuration = configuration;
         self
     }
 
@@ -337,9 +342,10 @@ impl HostRunDelegationService {
             // ordinary recursive delegate must not leak its parent's advisor
             // candidate into that child.
             child_service.advisor = None;
-            child_service.caller_toolsets =
-                snapshot.resolved_spec.plugin_config.agent.toolsets.clone();
-            child_service.inherited_toolsets = context.inherited_toolsets.clone();
+            child_service.tool_configuration = CallerToolConfiguration {
+                toolsets: snapshot.resolved_spec.plugin_config.agent.toolsets.clone(),
+                inherited: context.inherited_toolsets.clone(),
+            };
             Some(Arc::new(child_service) as Arc<dyn RunDelegationService>)
         };
         let boundary = crate::agent_runner::run_configured_agent_until_boundary(
@@ -503,8 +509,8 @@ impl RunDelegationService for HostRunDelegationService {
         let mut context = request.context;
         context.inherited_toolsets = Some(
             awaken_runtime_contract::activation::InheritedToolsets::with_caller(
-                self.caller_toolsets.clone(),
-                self.inherited_toolsets.as_ref(),
+                self.tool_configuration.toolsets.clone(),
+                self.tool_configuration.inherited.as_ref(),
             ),
         );
         let snapshot = self

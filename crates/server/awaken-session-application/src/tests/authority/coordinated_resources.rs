@@ -178,29 +178,35 @@ async fn cold_child_report_projects_frozen_root_and_files_before_continuation() 
         } else {
             result.expect("CR1");
         }
-        let projections = runtime.installed_projections.lock().unwrap();
-        let projection = projections.last().expect("CR1 complete frozen projection");
-        assert_eq!(projection.baseline.agent_id, "coord-root");
-        assert_eq!(projection.baseline.agent_revision, Some(1));
-        assert_eq!(projection.baseline.model, "coord-model");
-        let publication = projection
-            .agent_publication
-            .as_ref()
-            .expect("exact root publication");
-        assert_eq!(publication.metadata.source.agent_id.0, "coord-root");
-        assert_eq!(publication.metadata.source.revision, 1);
-        assert_eq!(projection.resource_revision, 2);
-        assert_eq!(projection.resources, file_resources("confirmed"));
-        let continuations = runtime.continuations.lock().unwrap();
-        assert_eq!(
-            continuations.len(),
-            1,
-            "one continuation after successful preparation"
-        );
-        assert_eq!(
-            continuations[0].session_activity_epoch, epoch,
-            "same activity on recovery"
-        );
+        // Finish each synchronous observation before the repository await.
+        // Retaining either mutex there can block the recovery it observes.
+        {
+            let projections = runtime.installed_projections.lock().unwrap();
+            let projection = projections.last().expect("CR1 complete frozen projection");
+            assert_eq!(projection.baseline.agent_id, "coord-root");
+            assert_eq!(projection.baseline.agent_revision, Some(1));
+            assert_eq!(projection.baseline.model, "coord-model");
+            let publication = projection
+                .agent_publication
+                .as_ref()
+                .expect("exact root publication");
+            assert_eq!(publication.metadata.source.agent_id.0, "coord-root");
+            assert_eq!(publication.metadata.source.revision, 1);
+            assert_eq!(projection.resource_revision, 2);
+            assert_eq!(projection.resources, file_resources("confirmed"));
+        }
+        {
+            let continuations = runtime.continuations.lock().unwrap();
+            assert_eq!(
+                continuations.len(),
+                1,
+                "one continuation after successful preparation"
+            );
+            assert_eq!(
+                continuations[0].session_activity_epoch, epoch,
+                "same activity on recovery"
+            );
+        }
         let persisted = repo.get(&SessionId::from(&id)).await.unwrap();
         assert!(
             persisted.active_activity_epochs.contains(&epoch),

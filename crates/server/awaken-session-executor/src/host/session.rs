@@ -876,8 +876,10 @@ impl SharedHost {
                         commit.clone(),
                         installed.as_ref(),
                         publication_source.clone(),
-                        None,
-                        &toolsets,
+                        crate::delegate::CallerToolConfiguration {
+                            toolsets: toolsets.clone(),
+                            inherited: None,
+                        },
                     )?
                 {
                     runtime = runtime.with_run_delegation(service);
@@ -889,8 +891,10 @@ impl SharedHost {
                     commit.clone(),
                     installed.as_ref(),
                     publication_source.clone(),
-                    None,
-                    &toolsets,
+                    crate::delegate::CallerToolConfiguration {
+                        toolsets: toolsets.clone(),
+                        inherited: None,
+                    },
                 )?
             {
                 runtime = runtime.with_run_delegation(service);
