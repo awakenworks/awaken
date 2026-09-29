@@ -141,10 +141,7 @@ pub async fn work_session_guard(
     let access = match state
         .environments
         // The token's expiry is judged on the Session application's clock.
-        .authenticate_session_access(
-            &token,
-            state.sessions.session_application().clock().now_ms(),
-        )
+        .authenticate_session_access(&token, state.sessions.roles.clock.now_ms())
         .await
     {
         Ok(Some(access)) => access,
