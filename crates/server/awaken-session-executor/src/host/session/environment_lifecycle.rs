@@ -28,23 +28,6 @@ use state::{
 impl crate::session_slot::SessionRuntimeSlot {
     /// Stage only the rebuildable owner coordinates. No physical owner is
     /// retired or published until the caller commits under this same slot lock.
-    #[cfg(test)]
-    pub(crate) fn projected_environment_owner(
-        &self,
-        thread: &str,
-        workspace_id: &str,
-        state: &awaken_session_state_contract::SessionEnvironmentState,
-        newer: bool,
-    ) -> Result<SessionEnvironmentOwner, HostError> {
-        self.projected_environment_owner_for_resource_reservation(
-            thread,
-            workspace_id,
-            state,
-            newer,
-            false,
-        )
-    }
-
     pub(crate) fn projected_environment_owner_for_resource_reservation(
         &self,
         thread: &str,
@@ -575,7 +558,13 @@ impl SharedHost {
         state: &awaken_session_state_contract::SessionEnvironmentState,
     ) -> Result<(), HostError> {
         self.session_slots.update(thread, |slot| {
-            let owner = slot.projected_environment_owner(thread, workspace_id, state, false)?;
+            let owner = slot.projected_environment_owner_for_resource_reservation(
+                thread,
+                workspace_id,
+                state,
+                false,
+                false,
+            )?;
             slot.install_projected_environment_owner(owner, state);
             Ok(())
         })

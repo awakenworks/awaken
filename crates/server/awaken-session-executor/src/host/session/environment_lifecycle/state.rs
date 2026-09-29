@@ -308,15 +308,6 @@ impl SessionEnvironmentOwner {
         Ok(current.clone())
     }
 
-    #[cfg(test)]
-    pub(super) fn install_projection(
-        &mut self,
-        projected: ProjectedEnvironmentOwner,
-        newer: bool,
-    ) -> Result<(), HostError> {
-        self.install_projection_with_resource_reservation(projected, newer, false)
-    }
-
     pub(super) fn install_projection_with_resource_reservation(
         &mut self,
         projected: ProjectedEnvironmentOwner,
