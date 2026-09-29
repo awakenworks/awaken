@@ -199,8 +199,12 @@ pub fn plan_interval_aggregate(
                 .reach_transitions()
                 .iter()
                 .any(|transition| {
-                    budget_reach_projection_close_cursor(persisted, transition, lifecycle_events)
-                        == Some(close)
+                    budget_reach_projection_close_cursor(
+                        persisted,
+                        transition,
+                        lifecycle_events,
+                        historical_pending,
+                    ) == Some(close)
                 });
         if budget_transition_owns_pause {
             continue;

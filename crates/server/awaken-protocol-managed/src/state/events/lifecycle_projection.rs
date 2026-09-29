@@ -37,33 +37,46 @@ impl ManagedState {
             .collect()
     }
 
-    pub(super) fn append_child_lifecycle_projection(
+    /// Select child Running, cross-post, and lifecycle facts in one committed
+    /// source-order fold. A prior warm child status is never consulted.
+    pub(super) fn plan_child_activity_projection(
         &self,
-        record: &mut SessionRecord,
+        record: &SessionRecord,
+        links: &[CoordinatedThreadLink],
         events: &[RunLifecycleEvent],
         historical_pending: &std::collections::HashMap<RunLifecycleCursor, Pending>,
         snapshots: &std::collections::HashMap<
             String,
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
         >,
-    ) -> Result<(), StateError> {
+        index: &awaken_managed_session_events::OrderIndex<'_>,
+    ) -> Result<
+        (
+            awaken_managed_session_events::ChildLifecycle,
+            Vec<CoordinatedThread>,
+        ),
+        StateError,
+    > {
+        let issued = timeline_encoding::issued_tool_events(record);
+        let tool_orders = committed_projection::committed_tool_orders(record, index);
+        let order_refs = tool_orders
+            .iter()
+            .map(|(id, order)| (id.as_str(), *order))
+            .collect();
+        let orders =
+            awaken_managed_session_events::coordination_orders(index, &issued, links, &order_refs);
+        let cross_posts = awaken_managed_session_events::cross_posts(&issued, links);
         let mut threads = Self::coordinated_threads(record);
-        let projection = awaken_managed_session_events::project_child_lifecycle(
+        let projection = awaken_managed_session_events::project_child_activity(
             &mut threads,
+            &cross_posts,
+            &orders,
             events,
             historical_pending,
             snapshots,
         )
         .map_err(projection_error)?;
-        for fact in &projection.facts {
-            record.publish_fact(fact, None)?;
-        }
-        record
-            .checkpoint
-            .progress
-            .terminal_cursors
-            .extend(projection.terminal_cursors);
-        Ok(())
+        Ok((projection, threads))
     }
 
     pub(super) fn append_child_disposition_projection(
@@ -125,6 +138,7 @@ impl ManagedState {
         &self,
         record: &mut SessionRecord,
         evidence: DelegationProjectionEvidence<'_>,
+        index: &awaken_managed_session_events::OrderIndex<'_>,
     ) -> Result<(), StateError> {
         let DelegationProjectionEvidence {
             links,
@@ -172,7 +186,26 @@ impl ManagedState {
             }
             debug_assert_eq!(record.child_threads[index].id, thread_id);
         }
-        self.append_coordination_cross_posts(record, links)?;
+        let (activity, final_threads) = self.plan_child_activity_projection(
+            record,
+            links,
+            lifecycle_events,
+            historical_pending,
+            snapshots,
+            index,
+        )?;
+        // Child transcript projection resolves answerable tool ids before
+        // lifecycle Idle/usage consumes them. Keep that existing dependency
+        // while the sole activity plan has already selected every Running key.
+        for fact in activity.facts.iter().filter(|fact| {
+            matches!(
+                fact.key.role,
+                awaken_managed_session_events::FactRole::CoordinationStatusRunning
+                    | awaken_managed_session_events::FactRole::CoordinationMessageSent
+            )
+        }) {
+            record.publish_fact(fact, None)?;
+        }
         for link in links {
             let thread_id = link.thread_id.0.as_str();
             let child = record
@@ -221,12 +254,34 @@ impl ManagedState {
                 },
             )?;
         }
-        self.append_child_lifecycle_projection(
-            record,
-            lifecycle_events,
-            historical_pending,
-            snapshots,
-        )?;
+        for fact in activity.facts.iter().filter(|fact| {
+            !matches!(
+                fact.key.role,
+                awaken_managed_session_events::FactRole::CoordinationStatusRunning
+                    | awaken_managed_session_events::FactRole::CoordinationMessageSent
+            )
+        }) {
+            record.publish_fact(fact, None)?;
+        }
+        record
+            .checkpoint
+            .progress
+            .terminal_cursors
+            .extend(activity.terminal_cursors);
+        for projected in final_threads {
+            if let Some(child) = record
+                .child_threads
+                .iter_mut()
+                .find(|child| child.id == projected.thread)
+            {
+                child.status = match projected.status {
+                    ThreadStatus::Running => SessionThreadStatus::Running,
+                    ThreadStatus::Rescheduling => SessionThreadStatus::Rescheduling,
+                    ThreadStatus::Idle => SessionThreadStatus::Idle,
+                    ThreadStatus::Terminated => SessionThreadStatus::Terminated,
+                };
+            }
+        }
         // Archive is an absorbing Thread disposition, so it is projected after
         // historical Run lifecycle. On warm refresh it prevents later lifecycle
         // pages from reviving the child; on cold rebuild it closes the same

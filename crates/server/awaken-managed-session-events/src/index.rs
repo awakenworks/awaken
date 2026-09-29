@@ -70,7 +70,11 @@ pub struct BudgetReachAnchor {
 impl BudgetReachAnchor {
     /// Anchor every budget-reach transition of `persisted` over `lifecycle`.
     #[must_use]
-    pub fn of(persisted: &PersistedSession, lifecycle: &[RunLifecycleEvent]) -> Vec<Self> {
+    pub fn of(
+        persisted: &PersistedSession,
+        lifecycle: &[RunLifecycleEvent],
+        historical_pending: &HashMap<RunLifecycleCursor, Pending>,
+    ) -> Vec<Self> {
         persisted
             .budget
             .reach_transitions()
@@ -78,7 +82,10 @@ impl BudgetReachAnchor {
             .map(|transition| Self {
                 generation: transition.generation,
                 close_cursor: budget_reach_projection_close_cursor(
-                    persisted, transition, lifecycle,
+                    persisted,
+                    transition,
+                    lifecycle,
+                    historical_pending,
                 ),
             })
             .collect()

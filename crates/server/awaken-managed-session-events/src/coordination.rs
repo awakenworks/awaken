@@ -18,12 +18,15 @@
 use std::collections::{HashMap, HashSet};
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
+use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
+use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind};
+use awaken_session_application_contract::Pending;
 use awaken_session_execution_contract::{CoordinatedThreadLink, CoordinatedThreadTarget};
 
-use crate::lifecycle::{CoordinatedThread, ThreadStatus};
+use crate::lifecycle::{ChildLifecycle, CoordinatedThread, ThreadStatus, project_child_lifecycle};
 use crate::{
-    CanonicalOrder, FactKey, FactKind, FactProvenance, FactRole, OrderIndex, TimelineFact,
+    CanonicalOrder, FactKey, FactKind, FactProvenance, FactRole, OrderIndex, ProjectionError,
+    TimelineFact,
 };
 
 /// One published tool event, seen neutrally.
@@ -163,13 +166,11 @@ pub fn link_facts(link: &CoordinatedThreadLink) -> [TimelineFact; 2] {
 /// each. A spawn is bound by the operation id that created the durable link;
 /// a follow-up by the existing Thread id. A failed result never creates a
 /// message merely because its target link already exists; a call whose link
-/// is not visible yet stays eligible for a later prefix. `published` answers
-/// whether a fact's key already names a published event.
+/// is not visible yet stays eligible for a later prefix. Child Running is
+/// selected only by [`project_child_activity`] in committed source order.
 pub fn cross_posts(
     events: &[IssuedToolEvent<'_>],
     links: &[CoordinatedThreadLink],
-    threads: &mut [CoordinatedThread],
-    published: impl Fn(&FactKey) -> bool,
 ) -> Vec<TimelineFact> {
     if links.is_empty() {
         return Vec::new();
@@ -249,26 +250,104 @@ pub fn cross_posts(
         };
         let sent = at(FactRole::CoordinationMessageSent);
         // The deterministic public fact is the sole projection receipt.
-        if published(&sent) || emitted.contains(&sent) {
+        if emitted.contains(&sent) {
             continue;
-        }
-        let Some(child) = threads.iter_mut().find(|child| child.thread == thread_id) else {
-            continue;
-        };
-        if child.status == ThreadStatus::Terminated {
-            continue;
-        }
-        if child.status != ThreadStatus::Running {
-            child.status = ThreadStatus::Running;
-            let running = at(FactRole::CoordinationStatusRunning);
-            if !published(&running) && emitted.insert(running.clone()) {
-                facts.push(TimelineFact::new(running, FactKind::ThreadRunning));
-            }
         }
         emitted.insert(sent.clone());
         facts.push(TimelineFact::new(sent, FactKind::MessageSent { message }));
     }
     facts
+}
+
+/// One source-ordered child activity fold. Accepted cross-posts and ordinary
+/// child lifecycle used to independently choose a Running edge from the latest
+/// mutable Thread status. Merging their committed coordinates here gives every
+/// prefix the same first-listable owner: link creation, an accepted follow-up,
+/// or a Run opening. The existing lifecycle projector remains the only owner
+/// of Run boundary/error semantics.
+pub fn project_child_activity(
+    threads: &mut [CoordinatedThread],
+    cross_posts: &[TimelineFact],
+    orders: &HashMap<FactKey, CanonicalOrder>,
+    lifecycle: &[RunLifecycleEvent],
+    historical_pending: &HashMap<RunLifecycleCursor, Pending>,
+    snapshots: &HashMap<String, RunRecoverySnapshot>,
+) -> Result<ChildLifecycle, ProjectionError> {
+    enum Trigger<'a> {
+        Send(&'a TimelineFact),
+        Lifecycle(&'a RunLifecycleEvent),
+    }
+    let mut triggers = Vec::new();
+    for sent in cross_posts {
+        let order = orders.get(&sent.key).ok_or_else(|| {
+            ProjectionError::corrupt("accepted coordination send lacks committed source order")
+        })?;
+        triggers.push((*order, Trigger::Send(sent)));
+    }
+    for event in lifecycle {
+        if !threads
+            .iter()
+            .any(|thread| thread.thread == event.thread_id.0)
+        {
+            continue;
+        }
+        let phase = match event.kind {
+            RunLifecycleEventKind::Running | RunLifecycleEventKind::Resumed => {
+                crate::role::phase::THREAD_OPENING
+            }
+            RunLifecycleEventKind::Rescheduled => crate::role::phase::THREAD_RESCHEDULED,
+            _ => crate::role::phase::THREAD_TERMINAL,
+        };
+        triggers.push((
+            CanonicalOrder {
+                source_commit_cursor: event.source_commit_cursor,
+                phase,
+                ordinal: crate::Ordinal::at(event.cursor.0 as usize),
+                processed_at_unix_ms: None,
+            },
+            Trigger::Lifecycle(event),
+        ));
+    }
+    triggers.sort_by_key(|(order, _)| *order);
+    let mut projection = ChildLifecycle::default();
+    for (_, trigger) in triggers {
+        match trigger {
+            Trigger::Send(sent) => {
+                let Some(child) = threads
+                    .iter_mut()
+                    .find(|child| child.thread == sent.key.thread)
+                else {
+                    continue;
+                };
+                if child.status == ThreadStatus::Terminated {
+                    continue;
+                }
+                if child.status != ThreadStatus::Running {
+                    child.status = ThreadStatus::Running;
+                    projection.facts.push(TimelineFact::new(
+                        FactKey::new(
+                            &sent.key.thread,
+                            FactRole::CoordinationStatusRunning,
+                            sent.key.provenance.clone(),
+                        ),
+                        FactKind::ThreadRunning,
+                    ));
+                }
+                projection.facts.push(sent.clone());
+            }
+            Trigger::Lifecycle(event) => {
+                let one = project_child_lifecycle(
+                    threads,
+                    std::slice::from_ref(event),
+                    historical_pending,
+                    snapshots,
+                )?;
+                projection.facts.extend(one.facts);
+                projection.terminal_cursors.extend(one.terminal_cursors);
+            }
+        }
+    }
+    Ok(projection)
 }
 
 fn accepted_order(
@@ -458,6 +537,95 @@ pub fn coordination_orders(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn child_running_owner_is_stable_between_send_and_run_commit() {
+        // Causes: C1 the link's previous Run closed at cursor 3; C2 an accepted
+        // follow-up send is listable at cursor 5; C3 the next child Running
+        // commits at cursor 6; C4 a cold replica sees C1-C3 together. Effects:
+        // E1 C1+C2 opens once under the coordination FactKey before MessageSent;
+        // E2 C3 appends no second Running or changes an issued key; E3 C4 yields
+        // the same full facts; E4 an already-Running child gets no reopening.
+        // Decision rows R1=C1+C2=>E1; R2=R1+C3=>E1+E2; R3=C1+C2+C3+C4=>E3;
+        // R4=Running+C2=>E4. The cursor order, not a warm Thread DTO, owns it.
+        use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+        use awaken_agent_contract::agent::thread::Id as ThreadId;
+
+        let child = || CoordinatedThread {
+            thread: "child".into(),
+            advisor: false,
+            status: ThreadStatus::Running,
+        };
+        let lifecycle = |cursor, kind, state| RunLifecycleEvent {
+            cursor: awaken_agent_contract::encode_run_lifecycle_cursor(cursor, 0).unwrap(),
+            source_commit_cursor: cursor,
+            thread_id: ThreadId("child".into()),
+            run_id: RunId("child-run".into()),
+            kind,
+            state,
+            await_reason: None,
+        };
+        let completed = lifecycle(
+            3,
+            RunLifecycleEventKind::Completed,
+            RunState::Ended(EndCause::NaturalEnd),
+        );
+        let running = lifecycle(6, RunLifecycleEventKind::Running, RunState::Running);
+        let sent = TimelineFact::new(
+            FactKey::new(
+                "child",
+                FactRole::CoordinationMessageSent,
+                FactProvenance::CoordinationCall {
+                    event_id: "tool-follow".into(),
+                },
+            ),
+            FactKind::MessageSent {
+                message: "follow up".into(),
+            },
+        );
+        let orders = HashMap::from([(
+            sent.key.clone(),
+            CanonicalOrder {
+                source_commit_cursor: 5,
+                phase: crate::role::phase::COORDINATION_MESSAGE,
+                ordinal: crate::Ordinal::FIRST,
+                processed_at_unix_ms: None,
+            },
+        )]);
+        let project = |events: &[RunLifecycleEvent]| {
+            project_child_activity(
+                &mut [child()],
+                std::slice::from_ref(&sent),
+                &orders,
+                events,
+                &HashMap::new(),
+                &HashMap::new(),
+            )
+            .unwrap()
+            .facts
+        };
+        let prefix = project(std::slice::from_ref(&completed));
+        assert_eq!(
+            prefix.iter().map(|fact| fact.key.role).collect::<Vec<_>>(),
+            vec![
+                FactRole::LifecycleStatusIdle,
+                FactRole::CoordinationStatusRunning,
+                FactRole::CoordinationMessageSent,
+            ],
+            "R1/E1"
+        );
+        let full = project(&[completed.clone(), running.clone()]);
+        assert_eq!(full, prefix, "R2-R3/E2-E3 old prefix and cold rebuild");
+        let already_running = project(std::slice::from_ref(&running));
+        assert_eq!(
+            already_running
+                .iter()
+                .map(|fact| fact.key.role)
+                .collect::<Vec<_>>(),
+            vec![FactRole::CoordinationMessageSent],
+            "R4/E4"
+        );
+    }
 
     fn result<'a>(
         event_id: &'a str,

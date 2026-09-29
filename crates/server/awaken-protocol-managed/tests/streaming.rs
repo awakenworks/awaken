@@ -383,6 +383,128 @@ async fn live_broadcast_preserves_order_across_two_runs() {
     );
 }
 
+#[tokio::test]
+async fn accepted_followup_running_keeps_its_get_cursor_when_child_run_commits_later() {
+    // Causes: F1 the first child Run completed; F2 a follow-up send/result and
+    // exact child activity admission commit while its new Running lifecycle is
+    // absent; F3 GET publishes that prefix; F4 the child Running commits at the
+    // next source cursor; F5 a cold replica reads the full prefix. Effects:
+    // E1 F2+F3 emits one coordination Running before MessageSent; E2 F4 adds
+    // no second Running or rekeys/withdraws any issued Event; E3 F5 and every
+    // old cursor return exactly the same suffix. Decision rows R1=F1+F2+F3
+    // =>E1; R2=R1+F4=>E1+E2; R3=R2+F5=>E3. Both reads use the production GET
+    // projector; the fake assigns the delayed commit a fresh, later cursor.
+    use awaken_session_execution_contract::SessionAgentCoordination as _;
+
+    let runtime = CoordinatedRuntimeFake::default();
+    let repository =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let state = Arc::new(support::state(runtime.clone()).with_session_repo(repository.clone()));
+    let id = state_create(&state).await;
+    state_send_user(&state, &runtime, &id, "first").await;
+    let prior = state.list_events(&id, None, None, false).unwrap().data;
+    let old_cursor = prior.last().expect("F1 committed first Run").id.clone();
+    let (_snapshot, mut receiver) = state.stream_subscribe(&id).unwrap();
+
+    runtime.defer_child_completion();
+    runtime.defer_next_child_opening();
+    let request = serde_json::from_value(serde_json::json!({
+        "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "follow up" }] }]
+    }))
+    .unwrap();
+    state.send_events(&id, request).await.unwrap();
+    support::drive_retained_session_events(&state, &id).await;
+    let admitted = state
+        .session_application()
+        .admit_session_run_activity(
+            &awaken_session_types::SessionId::from(&id),
+            "researcher",
+            &awaken_agent_contract::agent::run::Id("coord-run-2".into()),
+            awaken_session_execution_contract::SessionRunActivityAdmissionMode::RecoverOrAdmit,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            admitted,
+            awaken_session_execution_contract::SessionRunActivityAdmission::Admitted { .. }
+        ),
+        "F2 exact child activity receipt"
+    );
+    support::drive_completed_user_dispatches(&state, &id, &runtime.completed_user_dispatches())
+        .await;
+    let app = router(state.clone());
+    let before_open = http_json(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    let before_events = before_open["data"].as_array().unwrap();
+    let issued = &before_events[prior.len()..];
+    let sent = issued
+        .iter()
+        .position(|event| event["type"] == "agent.thread_message_sent")
+        .expect("R1 accepted follow-up is listable");
+    assert_eq!(
+        issued[sent - 1]["type"],
+        "session.thread_status_running",
+        "R1/E1 accepted send reopens the Idle child before its message"
+    );
+    let issued_suffix = state
+        .list_events(&id, Some(&old_cursor), None, false)
+        .unwrap();
+    assert_eq!(
+        issued_suffix.data.len(),
+        issued.len(),
+        "R1 exact old cursor"
+    );
+    let (published, lagged) = drain(&mut receiver);
+    assert_eq!(lagged, 0, "R1 no delivery gap");
+    assert!(
+        !published.is_empty(),
+        "R1 live subscriber receives the prefix"
+    );
+
+    runtime.commit_deferred_child_opening();
+    let after_open = http_json(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(
+        after_open["data"], before_open["data"],
+        "R2/E2 exact prefix"
+    );
+    assert!(
+        drain(&mut receiver).0.is_empty(),
+        "R2 no duplicate broadcast"
+    );
+
+    let cold = Arc::new(support::state(runtime).with_session_repo(repository));
+    let cold_events = http_json(
+        &router(cold.clone()),
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(cold_events["data"], before_open["data"], "R3/E3 cold");
+    assert_eq!(
+        serde_json::to_value(
+            cold.list_events(&id, Some(&old_cursor), None, false)
+                .unwrap()
+                .data
+        )
+        .unwrap(),
+        serde_json::to_value(issued_suffix.data).unwrap(),
+        "R3/E3 old cursor"
+    );
+}
+
 // === 2 Preview plane: Runtime Thread live source =============================
 
 /// Root live-preview cause/effect graph: C1 a Session SSE opts into
