@@ -18,6 +18,8 @@ awaken-file-store = { workspace = true, features = ["sqlite", "postgres", "objec
 awaken-memory-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-skill-store = { workspace = true, features = ["postgres"] }
 thiserror.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+awaken-sql-storage = { workspace = true, features = ["postgres"] }
 
 [dev-dependencies]
 tempfile = "3"

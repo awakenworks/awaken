@@ -326,6 +326,26 @@ impl ApplicationAccessStore {
             .map(|repository| Self::over(repository, clock))
     }
 
+    /// Migrate the canonical application-access schema over the process pool.
+    pub async fn with_postgres_pool(
+        pool: sqlx::PgPool,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Result<Self, ApplicationAccessRepositoryError> {
+        PostgresApplicationAccessRepository::with_pool(pool)
+            .await
+            .map(|repository| Self::over(repository, clock))
+    }
+
+    /// Verify the canonical schema over the process pool without DDL.
+    pub async fn with_existing_postgres_pool(
+        pool: sqlx::PgPool,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Result<Self, ApplicationAccessRepositoryError> {
+        PostgresApplicationAccessRepository::with_existing_pool(pool)
+            .await
+            .map(|repository| Self::over(repository, clock))
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory(
         clock: Arc<dyn awaken_lease_contract::WallClock>,

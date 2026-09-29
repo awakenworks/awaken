@@ -87,6 +87,10 @@ async fn connect_verified(url: &str) -> Result<PgPool, StoreError> {
     let pool = PgPool::connect(url)
         .await
         .map_err(|err| StoreError::Connect(err.to_string()))?;
+    pool_verified(pool).await
+}
+
+async fn pool_verified(pool: PgPool) -> Result<PgPool, StoreError> {
     let bundle = credential_bundle().map_err(|err| StoreError::Schema(err.to_string()))?;
     awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
         .map_err(|err| StoreError::Schema(err.to_string()))?
@@ -103,10 +107,20 @@ pub async fn connect_existing_pair(
     url: &str,
 ) -> Result<(PostgresCredentialRepo, PostgresSealedBlobStore), StoreError> {
     let pool = connect_verified(url).await?;
-    Ok((
+    Ok(pair_from_pool(pool))
+}
+
+pub async fn with_existing_pool_pair(
+    pool: PgPool,
+) -> Result<(PostgresCredentialRepo, PostgresSealedBlobStore), StoreError> {
+    Ok(pair_from_pool(pool_verified(pool).await?))
+}
+
+fn pair_from_pool(pool: PgPool) -> (PostgresCredentialRepo, PostgresSealedBlobStore) {
+    (
         PostgresCredentialRepo { pool: pool.clone() },
         PostgresSealedBlobStore { pool },
-    ))
+    )
 }
 
 /// Apply the credential bundle once and construct both adapters over the same
@@ -116,10 +130,13 @@ pub async fn connect_migrated_pair(
     url: &str,
 ) -> Result<(PostgresCredentialRepo, PostgresSealedBlobStore), StoreError> {
     let pool = connect_migrated(url).await?;
-    Ok((
-        PostgresCredentialRepo { pool: pool.clone() },
-        PostgresSealedBlobStore { pool },
-    ))
+    Ok(pair_from_pool(pool))
+}
+
+pub async fn with_pool_pair(
+    pool: PgPool,
+) -> Result<(PostgresCredentialRepo, PostgresSealedBlobStore), StoreError> {
+    Ok(pair_from_pool(pool_migrated(pool).await?))
 }
 
 fn storage(err: impl std::fmt::Display) -> CredentialError {

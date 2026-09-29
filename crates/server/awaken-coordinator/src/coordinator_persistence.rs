@@ -68,16 +68,31 @@ fn database_url(deployment: &DeploymentConfig) -> Result<Option<&str>, String> {
 /// Apply every configured Coordinator-owned Postgres bundle without starting
 /// runtime services or connecting a wake transport.
 pub async fn migrate_postgres_schema(deployment: &DeploymentConfig) -> Result<(), String> {
-    let components = postgres_components(deployment);
     let Some(url) = database_url(deployment)? else {
         return Ok(());
     };
-    if components.dispatch {
-        super::worker_registry::migrate_postgres(url, deployment.postgres_max_connections.get())
-            .await?;
+    let pool = awaken_sql_storage::postgres_pool_options()
+        .max_connections(deployment.postgres_max_connections.get())
+        .connect(url)
+        .await
+        .map_err(|error| error.to_string())?;
+    migrate_postgres_schema_with_pool(deployment, pool).await
+}
+
+/// Operational migration reuses the composition's one bounded pool. Scope SQL
+/// stays in the existing adapters and no wake/runtime global is initialized.
+pub async fn migrate_postgres_schema_with_pool(
+    deployment: &DeploymentConfig,
+    pool: sqlx::PgPool,
+) -> Result<(), String> {
+    if database_url(deployment)?.is_none() {
+        return Ok(());
     }
-    super::runtime_authority::migrate(deployment).await?;
-    Ok(())
+    let components = postgres_components(deployment);
+    if components.dispatch {
+        super::worker_registry::open_postgres_pool(pool.clone(), false).await?;
+    }
+    super::runtime_authority::migrate_with_pool(deployment, pool).await
 }
 
 /// Initialize only the runtime backends selected by a scenario deployment.
@@ -140,7 +155,7 @@ async fn open_with(
     let postgres_pool = if components.requires_process_pool() {
         let url = database_url.expect("Postgres Coordinator components require database URL");
         Some(
-            sqlx::postgres::PgPoolOptions::new()
+            awaken_sql_storage::postgres_pool_options()
                 .max_connections(deployment.postgres_max_connections.get())
                 .connect(url)
                 .await

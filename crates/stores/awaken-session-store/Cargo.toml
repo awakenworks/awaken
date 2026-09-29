@@ -26,7 +26,7 @@ awaken-session-resource-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-environment-contract.workspace = true
 awaken-resource-contract.workspace = true
-awaken-sql-storage.workspace = true
+awaken-sql-storage = { workspace = true, features = ["postgres"] }
 awaken-sqlite-pool.workspace = true
 awaken-deployment-contract = { workspace = true }
 awaken-credential-contract = { workspace = true }

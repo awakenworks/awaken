@@ -115,7 +115,7 @@ awaken-resource-application.workspace = true
 awaken-store-fs.workspace = true
 awaken-store-sqlite.workspace = true
 awaken-sqlite-pool.workspace = true
-awaken-sql-storage.workspace = true
+awaken-sql-storage = { workspace = true, features = ["postgres"] }
 awaken-store-postgres.workspace = true
 awaken-store-inmem = { workspace = true, optional = true }
 awaken-connection-plan.workspace = true

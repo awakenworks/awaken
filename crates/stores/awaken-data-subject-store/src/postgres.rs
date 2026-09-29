@@ -80,6 +80,11 @@ impl PgDataSubjectRepo {
         let pool = PgPool::connect(url)
             .await
             .map_err(|error| PgStoreError::Connect(error.to_string()))?;
+        Self::with_existing_pool(pool).await
+    }
+
+    /// Verify the scoped ledger on the composition-owned pool.
+    pub async fn with_existing_pool(pool: PgPool) -> Result<Self, PgStoreError> {
         let bundle = control_data_subject_bundle()
             .map_err(|error| PgStoreError::Schema(error.to_string()))?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)

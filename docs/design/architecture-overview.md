@@ -128,6 +128,17 @@ one capability containing commit, dispatch, wake, and stream-checkpoint access.
 The Host can therefore distinguish only local injected authority from a
 claim-fenced remote Worker projection; it cannot reopen or reselect a backend.
 
+The product-process composition owns PostgreSQL connection cardinality by
+endpoint, database and principal. Its existing Coordinator persistence pool is
+injected into Session, WorkQueue, application capabilities, captured content,
+Resources, executable catalogs and image-build persistence at that same tuple.
+Store constructors verify or migrate their existing scoped ledgers; they do not
+open an additional pool when assembly supplies one. Distinct database/principal
+tuples retain separate bounded pools. Startup acquires these handles before
+mounting routers; closing a shared handle invalidates every consuming adapter
+without a fallback connection or transaction replay. Dedicated notification and
+advisory sessions remain separately budgeted by the deployment owner.
+
 A product composition that already owns an opened
 `PostgresCommitCoordinator` uses the asynchronous Coordinator-owned
 `postgres_local_commit` factory with a Thread id to open a scoped execution

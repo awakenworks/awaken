@@ -5,27 +5,7 @@
 // @formal entrypoint session_time.root_observations_are_revision_bound_and_replay_stable
 // @formal entrypoint webhook.lifecycle_commit_and_outbox_are_atomic
 use super::*;
-use sqlx::Connection;
-
-const IDLE_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const HEALTH_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
-
-fn pool_options() -> sqlx::postgres::PgPoolOptions {
-    sqlx::postgres::PgPoolOptions::new()
-        .idle_timeout(IDLE_CONNECTION_TIMEOUT)
-        // SQLx's built-in ping is intentionally replaced because it has no
-        // independent deadline. A Kubernetes Service cannot retarget an
-        // established TCP socket after primary promotion.
-        .test_before_acquire(false)
-        .before_acquire(|connection, _metadata| {
-            Box::pin(async move {
-                match tokio::time::timeout(HEALTH_CHECK_TIMEOUT, connection.ping()).await {
-                    Ok(result) => result.map(|()| true),
-                    Err(_) => Err(sqlx::Error::PoolTimedOut),
-                }
-            })
-        })
-}
+use awaken_sql_storage::postgres_pool_options as pool_options;
 
 /// A Postgres-backed [`SessionRepository`] — the network-DB sibling over
 /// the same `managed` migration scope. The Session port is async; the retained
@@ -97,6 +77,11 @@ impl PostgresManagedSessionRepository {
             .connect(url)
             .await
             .map_err(|e| e.to_string())?;
+        Self::with_existing_pool(pool).await
+    }
+
+    /// Verify the existing scoped ledger over the composition-owned pool.
+    pub async fn with_existing_pool(pool: PgPool) -> Result<Self, String> {
         let receipts = Self::migration_receipts(&pool).await?;
         let selected = selected_session_schema(&receipts).map_err(|error| error.to_string())?;
         debug_assert!(selected.pre_convergence.is_none() || selected.stream.is_legacy());
@@ -1158,7 +1143,7 @@ mod pool_policy_tests {
         let options = pool_options();
         assert_eq!(
             options.get_idle_timeout(),
-            Some(IDLE_CONNECTION_TIMEOUT),
+            Some(std::time::Duration::from_secs(5)),
             "P3/E3"
         );
         assert!(

@@ -90,19 +90,37 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
             .await?
         }
     };
+    let mut postgres_pools = crate::postgres_pools::ProcessPostgresPools::new(
+        deployment.runtime.postgres_max_connections.get(),
+    );
+    if let Some(pool) = persistence.postgres_pool.clone() {
+        postgres_pools.seed(
+            deployment
+                .runtime
+                .database_url
+                .as_deref()
+                .expect("persistence requires database URL"),
+            pool,
+        )?;
+    }
     let worker_directory = persistence.worker_directory.clone();
     let worker_observations = worker_observation_wiring::WorkerObservationWiring::runtime(
         role,
         deployment,
         worker_directory.clone(),
     )?;
-    let resources =
-        open_resources_application(deployment.resources.clone(), postgres_schema, clock.clone())
-            .await?;
+    let resources = open_resources_application(
+        deployment.resources.clone(),
+        postgres_schema,
+        clock.clone(),
+        &mut postgres_pools,
+    )
+    .await?;
     let stores = open_process_stores(ProcessStoreOpenOptions {
         control: deployment.control.clone(),
         coordinator: deployment.coordinator.clone(),
         resources: Some(resources),
+        postgres_pools: &mut postgres_pools,
         workspace_root: deployment.data_dir.clone(),
         platform_workspace,
         publish_local_workspace,
@@ -145,6 +163,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
             .environment_work
             .clone(),
         &service_lifecycle,
+        &mut postgres_pools,
     )
     .await?;
     let executable_agent_wiring = executable_agent_registration::for_runtime_role(
@@ -164,6 +183,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
             .resources
             .authorities()
             .reclamation(),
+        &mut postgres_pools,
     )
     .await?;
     let control_service = if role == config::Role::Coordinator {
@@ -267,12 +287,16 @@ pub(crate) async fn migrate_deployment_schema_prepared(
     let manifest = migration_manifest(deployment.role);
     // The migration process's one wall clock.
     let clock = awaken_lease_contract::system_clock();
+    let mut postgres_pools = crate::postgres_pools::ProcessPostgresPools::new(
+        deployment.runtime.postgres_max_connections.get(),
+    );
     let resources = if manifest.contains(&MigrationComponent::Resources) {
         Some(
             open_resources_application(
                 deployment.resources.clone(),
                 PostgresSchemaMode::Migrate,
                 clock.clone(),
+                &mut postgres_pools,
             )
             .await?,
         )
@@ -286,6 +310,7 @@ pub(crate) async fn migrate_deployment_schema_prepared(
             control: deployment.control.clone(),
             coordinator: deployment.coordinator.clone(),
             resources,
+            postgres_pools: &mut postgres_pools,
             workspace_root: deployment.data_dir.clone(),
             platform_workspace,
             publish_local_workspace,
@@ -298,9 +323,23 @@ pub(crate) async fn migrate_deployment_schema_prepared(
         .map(drop)?;
     }
     if manifest.contains(&MigrationComponent::Coordinator) {
-        executable_agent_registration::migrate(deployment).await?;
-        executable_environment_registration::migrate(deployment).await?;
-        awaken_coordinator::migrate_postgres_coordinator_schema(&deployment.runtime).await?;
+        executable_agent_registration::migrate(deployment, &mut postgres_pools).await?;
+        executable_environment_registration::migrate(deployment, &mut postgres_pools).await?;
+        if deployment.runtime.dispatch_backend == awaken_session_executor::DispatchBackend::Postgres
+            || deployment.runtime.store == awaken_session_executor::StoreKind::Postgres
+        {
+            let url = deployment
+                .runtime
+                .database_url
+                .as_deref()
+                .ok_or("PostgreSQL Coordinator migration requires runtime.database_url")?;
+            let pool = postgres_pools.get(url).await?;
+            awaken_coordinator::migrate_postgres_coordinator_schema_with_pool(
+                &deployment.runtime,
+                pool,
+            )
+            .await?;
+        }
     }
     Ok(())
 }

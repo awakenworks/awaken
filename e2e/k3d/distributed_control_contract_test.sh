@@ -271,7 +271,7 @@ grep -q 'coordinator_worker_log_count' "$REPO_ROOT/e2e/k3d/distributed_control_e
 grep -q 'observe_expired_predecessor' "$REPO_ROOT/crates/server/awaken-dispatch-http/src/worker_dispatch/session_coordination.rs"
 grep -Fq 'hard_crash_native_worker "$NATIVE_CRASH_OLD" "$NATIVE_OLD_UID"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'hard_crash_native_worker "$NATIVE_CRASH_NEXT" "$NATIVE_INFLIGHT_UID"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-grep -Fq 'k3d_hard_stop_cri_container "$CLUSTER" "$node" "$container" || return "$?"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+[[ "$(grep -Fc 'k3d_hard_stop_cri_container "$CLUSTER" "$node" "$container" || return "$?"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")" -eq 1 ]]
 ! grep -Fq 'crictl stop --timeout' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'NATIVE_INFLIGHT_RETAINED' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq '[ "$NATIVE_INFLIGHT_JOURNAL" = "1|0" ]' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"

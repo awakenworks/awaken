@@ -100,38 +100,82 @@ pub async fn open_postgres_with_file_store(
     blob_store: Option<Arc<dyn awaken_resource_contract::FileStore>>,
     clock: Arc<dyn WallClock>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
-    let resources = Arc::new(
-        match schema {
-            SchemaMode::Migrate => awaken_resource_store::PostgresResourceStore::connect(url).await,
-            SchemaMode::Verify => {
-                awaken_resource_store::PostgresResourceStore::connect_existing(url).await
-            }
+    let pool = awaken_sql_storage::postgres_pool_options()
+        .connect(url)
+        .await
+        .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?;
+    open_postgres_with_pool(pool, schema, blob_store, clock).await
+}
+
+/// Compose every PostgreSQL Resources adapter over one caller-owned pool.
+/// The file-byte capability may remain remote; metadata keeps one database
+/// authority and each existing adapter owns its scoped migration contract.
+pub async fn open_postgres_with_pool(
+    pool: sqlx::PgPool,
+    schema: SchemaMode,
+    blob_store: Option<Arc<dyn awaken_resource_contract::FileStore>>,
+    clock: Arc<dyn WallClock>,
+) -> Result<ResourcesApplication, ResourcePersistenceError> {
+    let resources = Arc::new(match schema {
+        SchemaMode::Migrate => {
+            let store = awaken_resource_store::PostgresResourceStore::with_pool(pool.clone());
+            store
+                .ensure_schema()
+                .await
+                .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?;
+            store
         }
-        .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?,
-    );
+        SchemaMode::Verify => {
+            awaken_resource_store::PostgresResourceStore::with_existing_pool(pool.clone())
+                .await
+                .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?
+        }
+    });
     let registry = Arc::new(RegistryApplication::new(resources.clone(), clock.clone()));
-    let file_catalog = Arc::new(
-        match schema {
-            SchemaMode::Migrate => awaken_file_store::postgres::PgFileStore::connect(url).await,
-            SchemaMode::Verify => {
-                awaken_file_store::postgres::PgFileStore::connect_existing(url).await
-            }
+    let file_catalog = Arc::new(match schema {
+        SchemaMode::Migrate => {
+            let store = awaken_file_store::postgres::PgFileStore::with_pool(pool.clone());
+            store
+                .ensure_schema()
+                .await
+                .map_err(|error| ResourcePersistenceError::File(error.to_string()))?;
+            store
         }
-        .map_err(|error| ResourcePersistenceError::File(error.to_string()))?,
-    );
+        SchemaMode::Verify => {
+            awaken_file_store::postgres::PgFileStore::with_existing_pool(pool.clone())
+                .await
+                .map_err(|error| ResourcePersistenceError::File(error.to_string()))?
+        }
+    });
     let file_store = blob_store.unwrap_or_else(|| file_catalog.clone());
     let memory = match schema {
-        SchemaMode::Migrate => awaken_memory_store::PostgresMemoryRepository::connect(url).await,
-        SchemaMode::Verify => {
-            awaken_memory_store::PostgresMemoryRepository::connect_existing(url).await
+        SchemaMode::Migrate => {
+            let store = awaken_memory_store::PostgresMemoryRepository::with_pool(pool.clone());
+            store
+                .ensure_schema()
+                .await
+                .map_err(|error| ResourcePersistenceError::Memory(error.to_string()))?;
+            store
         }
-    }
-    .map_err(|error| ResourcePersistenceError::Memory(error.to_string()))?;
+        SchemaMode::Verify => {
+            awaken_memory_store::PostgresMemoryRepository::with_existing_pool(pool.clone())
+                .await
+                .map_err(|error| ResourcePersistenceError::Memory(error.to_string()))?
+        }
+    };
     let skills = match schema {
-        SchemaMode::Migrate => awaken_skill_store::PgSkillStore::connect(url).await,
-        SchemaMode::Verify => awaken_skill_store::PgSkillStore::connect_existing(url).await,
-    }
-    .map_err(|error| ResourcePersistenceError::Skill(error.to_string()))?;
+        SchemaMode::Migrate => {
+            let store = awaken_skill_store::PgSkillStore::with_pool(pool.clone());
+            store
+                .ensure_schema()
+                .await
+                .map_err(|error| ResourcePersistenceError::Skill(error.to_string()))?;
+            store
+        }
+        SchemaMode::Verify => awaken_skill_store::PgSkillStore::with_existing_pool(pool)
+            .await
+            .map_err(|error| ResourcePersistenceError::Skill(error.to_string()))?,
+    };
     Ok(ResourcesApplication::new(ResourceAuthorities::new(
         registry,
         file_store,
@@ -149,9 +193,23 @@ pub async fn open_postgres_with_object_store(
     object: ObjectBackingConfig,
     clock: Arc<dyn WallClock>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
+    let pool = awaken_sql_storage::postgres_pool_options()
+        .connect(url)
+        .await
+        .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?;
+    open_postgres_with_pool_and_object_store(pool, schema, object, clock).await
+}
+
+/// Inject the process metadata pool while selecting the existing object-byte adapter.
+pub async fn open_postgres_with_pool_and_object_store(
+    pool: sqlx::PgPool,
+    schema: SchemaMode,
+    object: ObjectBackingConfig,
+    clock: Arc<dyn WallClock>,
+) -> Result<ResourcesApplication, ResourcePersistenceError> {
     let files = awaken_file_store::object::ObjectFileStore::from_config(object)
         .map_err(|error| ResourcePersistenceError::File(error.to_string()))?;
-    open_postgres_with_file_store(url, schema, Some(Arc::new(files)), clock).await
+    open_postgres_with_pool(pool, schema, Some(Arc::new(files)), clock).await
 }
 
 /// Hermetic Resources application for tests and scenario processes.
