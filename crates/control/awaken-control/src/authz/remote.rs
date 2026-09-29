@@ -12,7 +12,7 @@ use awaken_iam_host::{AuthReject, HostConfig, IamClient, IamGate, connect_remote
 use base64::Engine as _;
 
 use super::off_event_loop;
-use super::{ActionNamespace, now_rfc3339, now_unix, qualified_action};
+use super::{ActionNamespace, qualified_action, rfc3339_at, unix_seconds_at};
 
 pub(super) fn cloud_authorization_denial_detail(
     action: &awaken_iam_contract::ActionKey,
@@ -46,6 +46,9 @@ pub struct RemoteManagementAuthz {
     gate: RwLock<RemoteGateState>,
     user_token_source: Option<Arc<RedactedStringSource>>,
     config: RemoteGateConfig,
+    /// The process's one wall clock: the instant every presented credential is
+    /// judged at.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 /// Authenticated request identity together with the credential attributes a
@@ -107,6 +110,7 @@ impl RemoteManagementAuthz {
         issuer: String,
         user_token_source: Arc<RedactedStringSource>,
         service_token: Option<String>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<Arc<Self>, String> {
         let config = RemoteGateConfig {
             base_url,
@@ -116,7 +120,7 @@ impl RemoteManagementAuthz {
             service_token_file: None,
         };
         let user_token = resolve_user_token(user_token_source.as_ref())?;
-        Self::connect_config(config, Some(user_token_source), Some(user_token))
+        Self::connect_config(config, Some(user_token_source), Some(user_token), clock)
     }
 
     /// Connect hosted Management with its projected workload credential. User
@@ -126,6 +130,7 @@ impl RemoteManagementAuthz {
         audience: String,
         issuer: String,
         service_token_file: PathBuf,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<Arc<Self>, String> {
         Self::connect_config(
             RemoteGateConfig {
@@ -137,6 +142,7 @@ impl RemoteManagementAuthz {
             },
             None,
             None,
+            clock,
         )
     }
 
@@ -144,6 +150,7 @@ impl RemoteManagementAuthz {
         config: RemoteGateConfig,
         user_token_source: Option<Arc<RedactedStringSource>>,
         user_token: Option<RedactedString>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<Arc<Self>, String> {
         let user_is_carrier = config.service_token.is_none()
             && config.service_token_file.is_none()
@@ -156,6 +163,7 @@ impl RemoteManagementAuthz {
             }),
             user_token_source,
             config,
+            clock,
         }))
     }
 
@@ -189,7 +197,11 @@ impl RemoteManagementAuthz {
             .read()
             .map_err(|_| AuthReject::Invalid)?
             .gate
-            .authenticate_detailed(token, &Timestamp(now_rfc3339()), now_unix())
+            .authenticate_detailed(
+                token,
+                &Timestamp(rfc3339_at(self.clock.as_ref())),
+                unix_seconds_at(self.clock.as_ref()),
+            )
             .map(|(principal, _)| principal)?;
         let access_token_claims = if is_api_token(token) {
             None

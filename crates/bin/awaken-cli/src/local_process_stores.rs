@@ -96,14 +96,16 @@ pub(super) fn in_memory_split_coordinator() -> (ProcessStores, ControlServices) 
             stores.clock.clone(),
         ),
     );
+    let repository_credentials = Arc::new(awaken_control::CredentialRevisionValidator::new(
+        control.credentials,
+        stores.clock.clone(),
+    ));
     (
         stores,
         ControlServices {
             audit,
             credentials,
-            repository_credentials: Arc::new(awaken_control::CredentialRevisionValidator::new(
-                control.credentials,
-            )),
+            repository_credentials,
             webhooks,
             consent,
         },

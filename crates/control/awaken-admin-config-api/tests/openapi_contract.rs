@@ -36,6 +36,7 @@ fn state() -> AdminState {
         model_discovery: None,
         brokered_catalog: None,
         availability: Default::default(),
+        clock: awaken_lease_contract::system_clock(),
     }
 }
 

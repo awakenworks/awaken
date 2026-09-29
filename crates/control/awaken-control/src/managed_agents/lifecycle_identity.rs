@@ -1,33 +1,15 @@
-// @formal surface requirement=control.agent_profiles.immutable_profile
-// @formal reason: This source implements the repository-controlled agent profile product boundary and is
-// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Managed Agent lifecycle identities and timestamps.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use awaken_lease_contract::{WallClock, WallClockExt};
 
-use sha2::{Digest, Sha256};
-
-static AGENT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-pub(super) fn new_agent_id(workspace_id: &str) -> String {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let sequence = AGENT_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let entropy = format!(
-        "{workspace_id}:{}:{timestamp}:{sequence}",
-        std::process::id()
-    );
-    let digest = Sha256::digest(entropy.as_bytes());
-    let encoded = format!("{digest:x}");
-    format!("agent_{}", &encoded[..32])
+/// A fresh Agent id. Only uniqueness is required of it, so it is drawn from a
+/// random source rather than composed from a clock reading, the process id and
+/// a counter.
+pub(super) fn new_agent_id() -> String {
+    format!("agent_{}", uuid::Uuid::new_v4().simple())
 }
 
-pub(super) fn lifecycle_timestamp() -> String {
-    let milliseconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default();
-    awaken_session_application_contract::epoch_millis_to_rfc3339(milliseconds)
+/// A reading of `clock` spelled as a Managed lifecycle timestamp.
+pub(super) fn lifecycle_timestamp_at(clock: &dyn WallClock) -> String {
+    awaken_session_application_contract::epoch_millis_to_rfc3339(clock.now_ms())
 }

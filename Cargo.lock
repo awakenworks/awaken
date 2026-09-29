@@ -298,6 +298,7 @@ dependencies = [
  "awaken-config-resolver",
  "awaken-credential-contract",
  "awaken-credential-vault",
+ "awaken-lease-contract",
  "awaken-model-catalog",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
@@ -700,6 +701,7 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]

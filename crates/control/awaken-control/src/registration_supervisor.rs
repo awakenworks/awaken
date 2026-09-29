@@ -7,7 +7,9 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+
+use awaken_lease_contract::mono::Stopwatch;
 
 use awaken_config_service::PublicationBindingReconciler;
 use awaken_environment_application::EnvironmentApplication;
@@ -37,12 +39,16 @@ pub struct RegistrationHealthSnapshot {
     pub lag_seconds: u64,
 }
 
+/// Registration lag is an elapsed duration, never a wall observation: it is
+/// measured on the one monotonic scheduling clock from the supervisor's start,
+/// so a wall-clock step can neither hide nor fabricate lag.
 pub struct RegistrationHealth {
     ready: AtomicBool,
     pending_domains: AtomicUsize,
     consecutive_failures: AtomicU64,
-    last_success_unix_ms: AtomicU64,
-    started_unix_ms: u64,
+    /// Milliseconds after `started` of the last settled pass; zero until one.
+    last_success_since_start_ms: AtomicU64,
+    started: Stopwatch,
 }
 
 impl Default for RegistrationHealth {
@@ -54,8 +60,8 @@ impl Default for RegistrationHealth {
             ready: AtomicBool::new(true),
             pending_domains: AtomicUsize::new(2),
             consecutive_failures: AtomicU64::new(0),
-            last_success_unix_ms: AtomicU64::new(0),
-            started_unix_ms: unix_now_ms(),
+            last_success_since_start_ms: AtomicU64::new(0),
+            started: Stopwatch::start(),
         }
     }
 }
@@ -63,26 +69,27 @@ impl Default for RegistrationHealth {
 impl RegistrationHealth {
     #[must_use]
     pub fn snapshot(&self) -> RegistrationHealthSnapshot {
-        let last_success = self.last_success_unix_ms.load(Ordering::Acquire);
-        let now = unix_now_ms();
+        let last_success = self.last_success_since_start_ms.load(Ordering::Acquire);
+        let now = self.since_start_ms();
         RegistrationHealthSnapshot {
             ready: self.ready.load(Ordering::Acquire),
             pending_domains: self.pending_domains.load(Ordering::Acquire),
             consecutive_failures: self.consecutive_failures.load(Ordering::Acquire),
-            lag_seconds: if last_success == 0 {
-                now.saturating_sub(self.started_unix_ms) / 1_000
-            } else {
-                now.saturating_sub(last_success) / 1_000
-            },
+            // Before any settled pass the lag runs from the start.
+            lag_seconds: now.saturating_sub(last_success) / 1_000,
         }
+    }
+
+    fn since_start_ms(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
     fn record(&self, pending_domains: usize) {
         self.pending_domains
             .store(pending_domains, Ordering::Release);
         if pending_domains == 0 {
-            self.last_success_unix_ms
-                .store(unix_now_ms().max(1), Ordering::Release);
+            self.last_success_since_start_ms
+                .store(self.since_start_ms().max(1), Ordering::Release);
             self.consecutive_failures.store(0, Ordering::Release);
             self.ready.store(true, Ordering::Release);
         } else {
@@ -194,13 +201,6 @@ fn retry_delay(config: RegistrationSupervisorConfig, failures: u32) -> Duration 
         .retry_min
         .saturating_mul(1_u32 << exponent)
         .min(config.retry_max)
-}
-
-fn unix_now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

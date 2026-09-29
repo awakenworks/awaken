@@ -249,7 +249,7 @@ impl CatalogModelPublicationResolver {
                             policy: self.direct_credential_policy.clone(),
                             selected_holder,
                             binding: &material_binding,
-                            now_unix_ms: super::wall_clock_ms(),
+                            now_unix_ms: self.clock_reading_ms(),
                         },
                         self.credential_material_delivery
                             .as_ref()
@@ -537,7 +537,7 @@ mod tests {
                         .envelope
                         .as_ref()
                         .unwrap()
-                        .validate_for_holder(&holder, super::super::wall_clock_ms())
+                        .validate_for_holder(&holder, super::super::tests::test_clock_ms())
                         .unwrap();
                     assert_eq!(issued.access.credential.id, source.id.0);
                     assert_eq!(issued.access.credential.revision, source.version as u64);

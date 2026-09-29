@@ -102,6 +102,9 @@ pub struct AdminState {
     /// /credentials/:id/cooldown`; pool resolution then rotates past it. Shared, so
     /// every route observes the same cooldown state.
     pub availability: Arc<AvailabilityLedger>,
+    /// The process's one wall clock: the `now` the availability ledger is read
+    /// at and the stamp manual attributes and discovered connections carry.
+    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -639,6 +642,7 @@ async fn test_and_save_provider_connection(
         state.credentials.clone(),
         state.secrets.clone(),
         discovery.clone(),
+        state.clock.clone(),
     );
     let connected = service
         .connect(ConnectProviderCommand {
@@ -667,17 +671,6 @@ async fn test_and_save_provider_connection(
     ))
 }
 
-fn unix_time_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
 async fn put_model_attributes(
     State(state): State<AdminState>,
     State(capabilities): State<ConfigCapabilitiesView>,
@@ -696,7 +689,7 @@ async fn put_model_attributes(
         max_output_tokens: request.max_output_tokens,
         provenance: Default::default(),
     }
-    .stamped(ModelAttributeSource::Manual, unix_time_ms());
+    .stamped(ModelAttributeSource::Manual, state.clock_ms());
     state
         .catalog
         .put_model_attributes(model_id, attrs.clone())
@@ -944,14 +937,13 @@ async fn resolve_profile_candidates_route(
     }))
 }
 
-/// Wall-clock milliseconds since the epoch — the `now` the availability ledger reads.
-/// Only the HTTP layer touches the clock; the ledger itself stays time-argument pure.
-fn now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
+impl AdminState {
+    /// The injected wall clock's reading in epoch milliseconds — the `now` the
+    /// availability ledger reads. Only the HTTP layer reads the clock; the
+    /// ledger itself stays time-argument pure.
+    fn clock_ms(&self) -> u64 {
+        awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref())
+    }
 }
 
 async fn credential_in_scope(
@@ -997,7 +989,7 @@ async fn cooldown_credential(
 ) -> Result<Json<AvailabilityState>, Problem> {
     let source = CredentialSourceId(id);
     fence_known_credential(&state, &source, &workspace_id, &req_id(&headers)).await?;
-    let now = now_ms();
+    let now = state.clock_ms();
     match request.kind.as_str() {
         "quota" => {
             let disposition = Disposition::Quota {
@@ -1031,7 +1023,7 @@ async fn get_availability(
 ) -> Result<Json<AvailabilityState>, Problem> {
     let source = CredentialSourceId(id);
     fence_known_credential(&state, &source, &workspace_id, &req_id(&headers)).await?;
-    Ok(Json(state.availability.state(&source, now_ms())))
+    Ok(Json(state.availability.state(&source, state.clock_ms())))
 }
 
 /// Which members of a pool are selectable right now — `selection_order` with cooled
@@ -1061,7 +1053,7 @@ async fn get_pool_eligible(
             &rid,
         ));
     }
-    let now = now_ms();
+    let now = state.clock_ms();
     let eligible: Vec<String> = pool
         .eligible_order(&state.availability, now)
         .iter()

@@ -25,6 +25,8 @@ awaken-agent-config.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-sql-storage.workspace = true
 awaken-tenancy.workspace = true
+# The one wall-clock port: availability, manual attribute and discovery stamps.
+awaken-lease-contract.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
