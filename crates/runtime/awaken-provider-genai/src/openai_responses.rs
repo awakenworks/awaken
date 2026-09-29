@@ -55,7 +55,9 @@ impl OpenAiResponsesExecutor {
     }
 
     async fn execute(&self, request: &ChatRequest) -> Result<ResponsesResponse, Error> {
-        let deadline = crate::inference_budget::current_attempt_timing()?.response_deadline();
+        let deadline = crate::inference_budget::current_attempt_timing()?
+            .response_deadline()
+            .instant();
         let body = request_body_for_provider(request, &self.provider_kind).map_err(|error| {
             // Nothing was encoded, so nothing reached the transport.
             error.with_execution_evidence(ModelExecutionEvidence::NotDispatched(

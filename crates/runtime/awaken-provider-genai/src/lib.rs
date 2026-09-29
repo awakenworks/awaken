@@ -7,7 +7,6 @@
 //! neutral `ChatRequest`/`ChatResponse` onto `genai` types and routes on the
 //! selected `ModelBinding.model_ref` — it never picks a different model (G22).
 
-use awaken_runtime_contract::llm::{ModelInferenceClock, TokioModelInferenceClock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -205,7 +204,7 @@ impl LlmExecutor for GenaiExecutor {
         // deadline and the useful-progress silence window (validated positive
         // and no longer than the response window where it was declared).
         let timing = crate::inference_budget::current_attempt_timing()?;
-        let deadline = timing.response_deadline();
+        let deadline = timing.response_deadline().instant();
         let idle = timing.idle();
         let model = request.model_binding.identity().1.to_owned();
         let genai_request =
@@ -236,7 +235,7 @@ impl LlmExecutor for GenaiExecutor {
             // extended-thinking folds into a `Thinking` block (→ `agent.thinking`).
             .with_capture_reasoning_content(true);
 
-        let started = TokioModelInferenceClock.now();
+        let started = awaken_lease_contract::mono::now();
         let stream_response = tokio::time::timeout_at(
             deadline,
             self.client
@@ -264,7 +263,7 @@ impl LlmExecutor for GenaiExecutor {
             // actual text, reasoning, tool progress, or a terminal event. This
             // prevents provider heartbeats and empty choices from occupying the
             // full reasoning budget while retaining one stream parser/authority.
-            let observed_at = TokioModelInferenceClock.now();
+            let observed_at = awaken_lease_contract::mono::now();
             let remaining = deadline.saturating_duration_since(observed_at);
             if remaining.is_zero() {
                 break Err(Error::Timeout(
@@ -299,7 +298,7 @@ impl LlmExecutor for GenaiExecutor {
                     ));
                 }
                 Err(_) => {
-                    let after_wait = TokioModelInferenceClock.now();
+                    let after_wait = awaken_lease_contract::mono::now();
                     if after_wait >= deadline {
                         break Err(Error::Timeout(
                             "model stream exceeded total timeout".to_string(),
@@ -315,7 +314,7 @@ impl LlmExecutor for GenaiExecutor {
                     continue;
                 }
             };
-            let event_at = TokioModelInferenceClock.now();
+            let event_at = awaken_lease_contract::mono::now();
             let mut made_progress = false;
             match event {
                 // Live text: forward each chunk as it arrives (valid UTF-8 by type).
@@ -430,7 +429,9 @@ impl GenaiExecutor {
         request: ChatRequest,
         max_tokens_override: Option<u32>,
     ) -> Result<ChatResponse> {
-        let deadline = crate::inference_budget::current_attempt_timing()?.response_deadline();
+        let deadline = crate::inference_budget::current_attempt_timing()?
+            .response_deadline()
+            .instant();
         let model = request.model_binding.identity().1.to_owned();
         let genai_request =
             to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())
@@ -557,7 +558,7 @@ pub async fn probe_credential(
     )
     .and_then(|budget| {
         awaken_runtime_contract::llm::ModelAttemptTiming::standalone(
-            TokioModelInferenceClock.now(),
+            awaken_lease_contract::mono::now(),
             budget,
         )
     }) else {

@@ -36,9 +36,7 @@ fn verdict(error: &Error) -> RetryVerdict {
 #[tokio::test]
 async fn every_native_dialect_obeys_the_inherited_deadline_before_http_dispatch() {
     use awaken_provider_genai::OpenAiResponsesExecutor;
-    use awaken_runtime_contract::llm::{
-        ModelAttemptTiming, ModelInferenceClock, TokioModelInferenceClock,
-    };
+    use awaken_runtime_contract::llm::ModelAttemptTiming;
     use awaken_runtime_contract::model_operation::with_model_invocation_context;
     use std::sync::{
         Arc,
@@ -80,11 +78,13 @@ async fn every_native_dialect_obeys_the_inherited_deadline_before_http_dispatch(
                     .unwrap(),
                 )
             };
-            let started = TokioModelInferenceClock.now();
+            let started = awaken_lease_contract::mono::now();
             let timing = ModelAttemptTiming::start_at(
                 started,
                 budget(Duration::from_millis(300), Duration::from_millis(300)),
-                started + Duration::from_millis(logical_ms),
+                awaken_lease_contract::mono::MonoDeadline::at(
+                    started + Duration::from_millis(logical_ms),
+                ),
             )
             .unwrap();
             let result = with_model_invocation_context(None, timing, async {
@@ -242,9 +242,7 @@ async fn healthy_text_reasoning_and_typed_tool_progress_finish_after_the_old_ten
             request.tools = vec![support::compatibility_tool()];
         }
         let timing = ModelAttemptTiming::standalone(
-            awaken_runtime_contract::llm::ModelInferenceClock::now(
-                &awaken_runtime_contract::llm::TokioModelInferenceClock,
-            ),
+            awaken_lease_contract::mono::now(),
             ModelInferenceBudget::DEFAULT,
         )
         .unwrap();
@@ -253,7 +251,7 @@ async fn healthy_text_reasoning_and_typed_tool_progress_finish_after_the_old_ten
             let progress = Progress(progress);
             with_model_invocation_context(None, timing, async {
                 tokio::time::timeout_at(
-                    timing.watchdog_deadline(),
+                    timing.watchdog_deadline().instant(),
                     executor.infer_streaming(request, &progress),
                 )
                 .await
@@ -416,9 +414,7 @@ async fn responses_complete_body_outlives_the_old_two_minute_cap_and_deadline_re
         let executor =
             OpenAiResponsesExecutor::from_materialized_endpoint("openai", &base, "test").unwrap();
         let timing = ModelAttemptTiming::standalone(
-            awaken_runtime_contract::llm::ModelInferenceClock::now(
-                &awaken_runtime_contract::llm::TokioModelInferenceClock,
-            ),
+            awaken_lease_contract::mono::now(),
             if complete {
                 ModelInferenceBudget::DEFAULT
             } else {

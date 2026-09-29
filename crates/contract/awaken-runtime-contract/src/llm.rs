@@ -21,10 +21,7 @@ use crate::agent_bindings::InferenceOptions;
 use crate::resolved::{ModelBinding, ToolDescriptor};
 
 mod inference_budget;
-pub use inference_budget::{
-    ModelAttemptTiming, ModelInferenceBudget, ModelInferenceBudgetError, ModelInferenceClock,
-    TokioModelInferenceClock,
-};
+pub use inference_budget::{ModelAttemptTiming, ModelInferenceBudget, ModelInferenceBudgetError};
 
 /// One model invocation request. Pure data so it can be logged, replayed, and
 /// snapshotted without holding a live provider handle (G3).
