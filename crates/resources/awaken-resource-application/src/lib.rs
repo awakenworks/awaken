@@ -115,6 +115,7 @@ impl ResourcesApplication {
     ) -> Arc<dyn awaken_session_configuration_contract::SkillCatalogApplication> {
         Arc::new(StoreSkillCatalogApplication::new(
             self.authorities.skill_store(),
+            self.authorities.clock(),
         ))
     }
 

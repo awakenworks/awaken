@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::AgentSkillKind;
+use awaken_lease_contract::WallClock;
 use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
     ArtifactRecovery, FileApplicationService, FileContentSource, FileContentSourceError,
@@ -228,12 +229,13 @@ pub struct StoreSkillBundleSource {
 
 pub struct StoreSkillCatalogApplication {
     store: Arc<dyn SkillStore>,
+    clock: Arc<dyn WallClock>,
 }
 
 impl StoreSkillCatalogApplication {
     #[must_use]
-    pub fn new(store: Arc<dyn SkillStore>) -> Self {
-        Self { store }
+    pub fn new(store: Arc<dyn SkillStore>, clock: Arc<dyn WallClock>) -> Self {
+        Self { store, clock }
     }
 }
 
@@ -311,10 +313,7 @@ impl SkillCatalogApplication for StoreSkillCatalogApplication {
             content: content.as_bytes().to_vec(),
             executable: false,
         }];
-        let created_unix_nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
-            .unwrap_or_default();
+        let created_unix_nanos = self.clock.now().as_unix_nanos_u64();
         let version = SkillVersion {
             id: format!("skver_{id}_{next}").into(),
             skill_id: id.clone().into(),
@@ -385,6 +384,81 @@ mod tests {
         ArtifactPublication, ArtifactPublisher as _, ArtifactRecovery, content_id,
         harvest_idempotency_key,
     };
+
+    #[tokio::test]
+    async fn authored_skill_versions_use_the_resource_clock() {
+        use awaken_resource_contract::SkillStore as _;
+        use awaken_session_configuration_contract::SkillCatalogApplication as _;
+
+        // Cause/effect decision table: R1 missing Skill + content A at T1 ->
+        // create v1 and its definition with the same T1 stamp; R2 same
+        // content at T2 -> no new version or timestamp change; R3 changed
+        // content at T2 -> append v2 stamped T2 and update only the
+        // definition's updated stamp. The store's typed failures remain the
+        // existing SkillStore boundary; this rule changes its time source.
+        let store = Arc::new(awaken_skill_store::InMemorySkillStore::new());
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_700_000_000_123));
+        let application = super::StoreSkillCatalogApplication::new(store.clone(), clock.clone());
+        application
+            .publish_authored("workspace", "guide", "Guide", "first", "content A")
+            .await
+            .expect("R1 create authored Skill");
+        let first = store
+            .version("workspace", "guide", 1)
+            .await
+            .expect("R1 read first version")
+            .expect("R1 first version exists");
+        let first_stamp = 1_700_000_000_123_000_000;
+        assert_eq!(first.created_unix_nanos, first_stamp, "R1");
+        let definition = store
+            .definition("workspace", "guide")
+            .await
+            .expect("R1 read definition")
+            .expect("R1 definition exists");
+        assert_eq!(definition.timestamps.created_unix_nanos, first_stamp, "R1");
+        assert_eq!(definition.timestamps.updated_unix_nanos, first_stamp, "R1");
+
+        clock.advance(5);
+        application
+            .publish_authored("workspace", "guide", "Guide", "first", "content A")
+            .await
+            .expect("R2 identical content is idempotent");
+        assert!(
+            store
+                .version("workspace", "guide", 2)
+                .await
+                .unwrap()
+                .is_none(),
+            "R2 no new version"
+        );
+        let definition = store
+            .definition("workspace", "guide")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(definition.latest_version, 1, "R2");
+        assert_eq!(definition.timestamps.updated_unix_nanos, first_stamp, "R2");
+
+        application
+            .publish_authored("workspace", "guide", "Guide", "second", "content B")
+            .await
+            .expect("R3 append changed content");
+        let second = store
+            .version("workspace", "guide", 2)
+            .await
+            .unwrap()
+            .expect("R3 second version exists");
+        let second_stamp = 1_700_000_000_128_000_000;
+        assert_eq!(second.created_unix_nanos, second_stamp, "R3");
+        let definition = store
+            .definition("workspace", "guide")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(definition.latest_version, 2, "R3");
+        assert_eq!(definition.timestamps.created_unix_nanos, first_stamp, "R3");
+        assert_eq!(definition.timestamps.updated_unix_nanos, second_stamp, "R3");
+    }
 
     struct FixedBindingFailure(awaken_resource_contract::ResourceRegistryError);
 
