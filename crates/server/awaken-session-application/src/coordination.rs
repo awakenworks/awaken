@@ -868,6 +868,17 @@ impl SessionAgentCoordination for SessionApplication {
             "Message from agent {} (thread {}):\n{}",
             member.entry.name, command.source_thread_id.0, child_report
         );
+        // Cold boundary recovery may have only a lease/Environment projection.
+        // Restore the complete frozen Agent/model/Resource facts before root
+        // admission, just as for a newly coordinated child. No physical owner
+        // is acquired by this Coordinator operation.
+        self.install_dispatch_projection(&owner, &settled)
+            .await
+            .map_err(|error| {
+                RunError::unavailable(format!(
+                    "Agent report Resource projection is unavailable: {error}"
+                ))
+            })?;
         let continued = self
             .runtime()
             .continue_session_agent_report(SessionAgentReportContinuation {

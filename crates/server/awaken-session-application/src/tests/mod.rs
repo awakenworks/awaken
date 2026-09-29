@@ -2292,6 +2292,10 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingAgentAd
         &self,
         command: awaken_session_execution_contract::SessionAgentReportContinuation,
     ) -> Result<(), RunError> {
+        assert!(
+            !self.installed_projections.lock().unwrap().is_empty(),
+            "cold report continuation requires complete projection before admission"
+        );
         self.continuations.lock().unwrap().push(command);
         Ok(())
     }
