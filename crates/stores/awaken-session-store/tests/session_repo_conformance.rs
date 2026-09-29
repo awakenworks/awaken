@@ -234,48 +234,45 @@ fn sqlite_restores_and_canonically_rewrites_the_pre_typed_deployment_record() {
 async fn postgres_root_cas_conforms_to_the_same_decision_table() {
     use awaken_session_store::PostgresManagedSessionRepository;
     use sqlx::Executor;
-    use sqlx::postgres::{PgPool, PgPoolOptions};
+    use sqlx::postgres::PgPoolOptions;
 
-    // Fixture admission table: no configured URL + unreachable local default
-    // may skip; configured URL + unreachable database must fail the gate.
-    let configured = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
-        Ok(url) => Some(url),
-        Err(std::env::VarError::NotPresent) => None,
-        Err(std::env::VarError::NotUnicode(_)) => {
-            panic!("AWAKEN_TEST_DATABASE_URL is not valid Unicode")
-        }
+    // Fixture decision table: F1 no explicit URL -> canonical visible skip;
+    // F2 configured connection/setup failure -> fail; F3 concurrent callers
+    // -> isolated random schemas, no deletion of a shared predecessor. The
+    // existing D1-D9 CAS/lifecycle/context rules below remain unchanged.
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
     };
-    let url = configured.clone().unwrap_or_else(|| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_owned()
-    });
-    let admin = match PgPool::connect(&url).await {
-        Ok(pool) => pool,
-        Err(error) if configured.is_none() => {
-            println!("[skip] no Postgres reachable: {error}");
-            return;
-        }
-        Err(error) => panic!("configured AWAKEN_TEST_DATABASE_URL is unreachable: {error}"),
-    };
-    let _ = admin
-        .execute("DROP SCHEMA IF EXISTS t_session_root_cas CASCADE")
-        .await;
-    admin
-        .execute("CREATE SCHEMA t_session_root_cas")
+    assert!(
+        !url.trim().is_empty(),
+        "explicit Session PostgreSQL URL is empty"
+    );
+    let admin = PgPoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .connect(&url)
         .await
-        .expect("create Session CAS schema");
+        .expect("explicit Session PostgreSQL fixture must connect");
+    let schema = format!("t_session_root_cas_{}", uuid::Uuid::new_v4().simple());
+    admin
+        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .await
+        .expect("create owned Session schema");
     admin.close().await;
+    let owned_schema = schema.clone();
     let pool = PgPoolOptions::new()
-        .after_connect(|connection, _| {
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .after_connect(move |connection, _| {
+            let schema = owned_schema.clone();
             Box::pin(async move {
                 connection
-                    .execute("SET search_path = t_session_root_cas")
+                    .execute(format!("SET search_path = {schema}").as_str())
                     .await?;
                 Ok(())
             })
         })
         .connect(&url)
         .await
-        .expect("connect Session CAS schema");
+        .expect("connect owned Session CAS schema");
     let repo = std::sync::Arc::new(
         PostgresManagedSessionRepository::with_pool(pool.clone())
             .await
@@ -284,8 +281,8 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
     // PostgreSQL refinement rule D9: C8 three repository clients share one
     // migrated pool/schema and execute D3-D7. Effect E9 includes the same exact
     // capacity winner with rejected-row/fact absence, stale zero-effect and
-    // reusable-claim result as SQLite. An unavailable endpoint skips this
-    // entire rule and is never reported as live PostgreSQL evidence.
+    // reusable-claim result as SQLite. An absent fixture skips this rule;
+    // a configured but unavailable endpoint fails rather than certifying it.
     let second_deployment_replica = PostgresManagedSessionRepository::with_pool(pool.clone())
         .await
         .expect("open second Postgres Deployment replica");
@@ -329,4 +326,43 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
         }
     })
     .await;
+    pool.execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        .await
+        .expect("drop exact owned Session schema");
+    pool.close().await;
+}
+
+#[test]
+fn root_cas_postgres_fixture_absence_and_configured_failure_are_distinct() {
+    // Cause/effect table: F1 no URL -> visible SKIPPED with no fallback;
+    // F2 explicit empty or unreachable URL -> failed backend process, never
+    // a passing skip. The actual CAS backend case runs in a child to avoid
+    // changing process-global environment for another Session test.
+    let run = |url: Option<&str>| {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child.args([
+            "postgres_root_cas_conforms_to_the_same_decision_table",
+            "--exact",
+            "--nocapture",
+        ]);
+        child.env_remove("AWAKEN_TEST_DATABASE_URL");
+        if let Some(url) = url {
+            child.env("AWAKEN_TEST_DATABASE_URL", url);
+        }
+        child.output().expect("Session fixture rule child")
+    };
+    let absent = run(None);
+    assert!(absent.status.success(), "F1");
+    assert!(
+        String::from_utf8_lossy(&absent.stderr).contains("SKIPPED PostgreSQL fixture"),
+        "F1 visible skip"
+    );
+    for url in ["", "postgres://127.0.0.1:1/unreachable"] {
+        let bad = run(Some(url));
+        assert!(!bad.status.success(), "F2 configured failure");
+        assert!(
+            !String::from_utf8_lossy(&bad.stderr).contains("SKIPPED PostgreSQL fixture"),
+            "F2 no false skip"
+        );
+    }
 }
