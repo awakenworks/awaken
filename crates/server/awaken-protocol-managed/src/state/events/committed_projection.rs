@@ -73,7 +73,7 @@ impl ManagedState {
         session_id: &str,
         persisted: awaken_session_state_contract::PersistedSession,
         base_record: SessionRecord,
-        started: std::time::Instant,
+        started: awaken_lease_contract::mono::Stopwatch,
     ) -> Result<
         publication::ProjectionRefreshBuild<publication::ProjectionRefreshCandidate>,
         StateError,

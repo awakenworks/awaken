@@ -183,7 +183,7 @@ impl ManagedState {
     /// Rehydrate a record from the durable Session root exactly as a cold
     /// replica does, then reduce the current committed prefix onto it.
     async fn cold_rebuild(&self, session_id: &str) -> Result<Option<SessionRecord>, StateError> {
-        let started = std::time::Instant::now();
+        let started = awaken_lease_contract::mono::Stopwatch::start();
         let recovered = self.read_persisted_session_projection(session_id).await?;
         let persisted = recovered.session;
         let agent_id = persisted
