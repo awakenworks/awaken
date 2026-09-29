@@ -611,12 +611,13 @@ async fn newer_projection_replaces_only_a_descriptor_and_preserves_every_physica
             });
         assert_eq!(
             pending
-                .install_projection(
+                .install_projection_with_resource_reservation(
                     ProjectedEnvironmentOwner::AwaitingAdoption {
                         identity: identity("owner-B"),
                         binding: "B".into()
                     },
-                    newer
+                    newer,
+                    false,
                 )
                 .is_ok(),
             newer,
@@ -662,12 +663,13 @@ async fn newer_projection_replaces_only_a_descriptor_and_preserves_every_physica
             let phase = std::mem::discriminant(&owner);
             assert!(
                 owner
-                    .install_projection(
+                    .install_projection_with_resource_reservation(
                         ProjectedEnvironmentOwner::AwaitingAdoption {
                             identity: identity("owner-B"),
                             binding: "B".into()
                         },
-                        newer
+                        newer,
+                        false,
                     )
                     .is_err(),
                 "R3"
