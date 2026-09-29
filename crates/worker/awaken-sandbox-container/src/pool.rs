@@ -1063,7 +1063,10 @@ mod tests {
         // capacity); W2 duplicates dedup; W3 unprepared/packages/mounts do not
         // trigger alternate building/materialization; W4 zero physical creates.
         let runtime = Arc::new(RecordingRuntime::ready());
-        let provider = Arc::new(ContainerProvider::new(runtime.clone(), "sandbox:default"));
+        let provider = Arc::new(ContainerProvider::for_test(
+            runtime.clone(),
+            "sandbox:default",
+        ));
         let pool = WarmContainerPool::new(provider, 2);
         for continuity in [
             pc::FilesystemContinuity::Ephemeral,
@@ -1268,7 +1271,7 @@ mod tests {
         size: usize,
     ) -> WarmContainerPool<RecordingRuntime> {
         WarmContainerPool::new(
-            Arc::new(ContainerProvider::new(runtime, "agent:test")),
+            Arc::new(ContainerProvider::for_test(runtime, "agent:test")),
             size,
         )
     }
@@ -1284,7 +1287,7 @@ mod tests {
         // pool alike; R3 the pool's rung is the pool itself, never a leaked
         // inner reference, so warm-capacity bypass stays the pool's decision.
         let runtime = Arc::new(RecordingRuntime::ready());
-        let inner = Arc::new(ContainerProvider::new(runtime, "agent:test"));
+        let inner = Arc::new(ContainerProvider::for_test(runtime, "agent:test"));
         assert!(inner.restore_targets().is_some(), "R1 inner targets");
         assert!(inner.restorable().is_none(), "R1 inner bytes");
         let pool = WarmContainerPool::new(inner.clone(), 1);
@@ -1304,7 +1307,7 @@ mod tests {
     #[test]
     fn pool_preserves_inner_provider_capability_evidence() {
         let runtime = Arc::new(crate::podman::PodmanRuntime::new(7600));
-        let inner = Arc::new(ContainerProvider::new(runtime, "agent:test"));
+        let inner = Arc::new(ContainerProvider::for_test(runtime, "agent:test"));
         let expected = inner.sandbox_capabilities();
         let pool = WarmContainerPool::new(inner, 1);
         assert_eq!(pool.sandbox_capabilities(), expected);
@@ -1441,7 +1444,7 @@ mod tests {
         // | B3   | -  | -  | 1  | E3      |
         let runtime = Arc::new(RecordingRuntime::ready());
         let pool = WarmContainerPool::with_limits(
-            Arc::new(ContainerProvider::new(runtime.clone(), "agent:test")),
+            Arc::new(ContainerProvider::for_test(runtime.clone(), "agent:test")),
             2,
             2,
             Duration::from_secs(300),
@@ -1476,7 +1479,10 @@ mod tests {
 
         let runtime_one = Arc::new(RecordingRuntime::ready());
         let pool_one = WarmContainerPool::with_limits(
-            Arc::new(ContainerProvider::new(runtime_one.clone(), "agent:test")),
+            Arc::new(ContainerProvider::for_test(
+                runtime_one.clone(),
+                "agent:test",
+            )),
             1,
             1,
             Duration::from_secs(300),
@@ -1491,7 +1497,10 @@ mod tests {
 
         let runtime_two = Arc::new(RecordingRuntime::ready());
         let pool_two = WarmContainerPool::with_limits(
-            Arc::new(ContainerProvider::new(runtime_two.clone(), "agent:test")),
+            Arc::new(ContainerProvider::for_test(
+                runtime_two.clone(),
+                "agent:test",
+            )),
             1,
             2,
             Duration::from_secs(300),

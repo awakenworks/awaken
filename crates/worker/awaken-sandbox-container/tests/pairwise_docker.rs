@@ -69,7 +69,11 @@ async fn setup() -> Option<(ContainerProvider<DockerRuntime>, Arc<DockerRuntime>
         eprintln!("skipping: no reachable Docker daemon");
         return None;
     }
-    Some((ContainerProvider::new(rt.clone(), "busybox:latest"), rt))
+    Some((
+        ContainerProvider::new(rt.clone(), "busybox:latest")
+            .with_clock(awaken_lease_contract::system_clock()),
+        rt,
+    ))
 }
 
 /// A process-as-container that exits 0 when it has a default route (egress path), 1 when
@@ -406,8 +410,9 @@ async fn a_real_container_rotates_and_persists_a_native_credential_file() {
     let broker = Arc::new(CredentialBroker {
         bytes: Mutex::new(initial.to_vec()),
     });
-    let provider =
-        ContainerProvider::new(rt.clone(), "busybox:latest").with_secret_broker(broker.clone());
+    let provider = ContainerProvider::new(rt.clone(), "busybox:latest")
+        .with_clock(awaken_lease_contract::system_clock())
+        .with_secret_broker(broker.clone());
     let spec = pc::SandboxSpec {
         process_tree_supervision: false,
         scope: "pw-native-credential".into(),
@@ -460,6 +465,7 @@ async fn a_file_mount_resolved_from_the_blob_source_is_readable_in_a_real_contai
     // them — the container reads the resolved file. This is the container analogue of the
     // bwrap tier's `resolve_source`, proving the store→bind wiring end-to-end.
     let provider = ContainerProvider::new(rt.clone(), "busybox:latest")
+        .with_clock(awaken_lease_contract::system_clock())
         .with_blob("blob-42", b"resolved-from-the-store".to_vec());
     let spec = pc::SandboxSpec {
         process_tree_supervision: false,
@@ -684,8 +690,9 @@ async fn allowlist_rejects_a_forward_proxy_before_docker_creation() {
     let Some((_, rt)) = setup().await else {
         return;
     };
-    let provider =
-        ContainerProvider::new(rt.clone(), "busybox:latest").with_forward_proxy(ForwardProxy {
+    let provider = ContainerProvider::new(rt.clone(), "busybox:latest")
+        .with_clock(awaken_lease_contract::system_clock())
+        .with_forward_proxy(ForwardProxy {
             url: "http://127.0.0.1:1/".into(),
         });
     let spec = pc::SandboxSpec {
@@ -709,7 +716,8 @@ async fn allowlist_rejects_a_forward_proxy_before_docker_creation() {
         control_services: Default::default(),
     };
     assert!(provider.create(&spec).await.is_err());
-    let no_proxy = ContainerProvider::new(rt.clone(), "busybox:latest");
+    let no_proxy = ContainerProvider::new(rt.clone(), "busybox:latest")
+        .with_clock(awaken_lease_contract::system_clock());
     assert!(
         no_proxy.create(&spec).await.is_err(),
         "an Allowlist without enforcement must fail closed"

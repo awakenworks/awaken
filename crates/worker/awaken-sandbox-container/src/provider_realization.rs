@@ -22,6 +22,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             &environment_keepalive_command(),
             self.forward_proxy.as_ref(),
             self.allowlist_proxy.as_ref(),
+            self.clock.as_ref(),
         )
         .map_err(pc::SandboxError::from)?;
         plan.binds.retain(|bind| {

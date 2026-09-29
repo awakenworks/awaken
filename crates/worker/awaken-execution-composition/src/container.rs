@@ -110,7 +110,8 @@ async fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<BuiltContainerEnvironment, String> {
     let leased = runtime.capacity_lease_domain().is_some();
-    let mut provider = ContainerProvider::new(runtime, container_image(image)?);
+    let mut provider =
+        ContainerProvider::new(runtime, container_image(image)?).with_clock(clock.clone());
     if settings.container_hand_residency == ContainerHandResidency::Resident {
         provider = provider.with_resident_hand(awaken_sandbox_container::ResidentHandConfig::new(
             settings.container_hand_bin.clone(),
@@ -380,7 +381,8 @@ pub async fn build_container_environment_for_realization(
             )
             .await
             .map_err(|error| format!("k8s runtime: {error}"))?
-            .with_image_pull_secrets(settings.k8s_image_pull_secrets.clone());
+            .with_image_pull_secrets(settings.k8s_image_pull_secrets.clone())
+            .with_clock(clock.clone());
             if let Some(policy) = settings.k8s_image_prewarm.clone() {
                 runtime = runtime
                     .with_image_prewarm(policy)
