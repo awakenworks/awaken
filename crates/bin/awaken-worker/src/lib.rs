@@ -546,7 +546,7 @@ impl WorkerNodeBuilder {
     pub fn with_session_container_environment_components(
         mut self,
         backend: impl Into<String>,
-        components: awaken_session_executor::ContainerEnvironmentComponents,
+        components: awaken_execution_composition::ContainerEnvironmentComponents,
     ) -> Self {
         self.session_container_provider = Some(InstalledSessionContainerProvider {
             backend: backend.into(),
@@ -1344,8 +1344,9 @@ impl WorkerNode {
                 .hand_executor_factory
                 .clone()
                 .expect("container provider was validated with a hand factory");
-            host = host.with_session_container_environment_components(
-                awaken_session_executor::ContainerEnvironmentComponents {
+            host = awaken_execution_composition::install_container_environment_components(
+                host,
+                awaken_execution_composition::ContainerEnvironmentComponents {
                     provider: installed.provider,
                     capacity: installed.capacity,
                     extra_mounts: installed.extra_mounts,

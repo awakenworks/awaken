@@ -788,7 +788,7 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
     )
     .with_session_container_environment_components(
         "hosted",
-        awaken_session_executor::ContainerEnvironmentComponents {
+        awaken_execution_composition::ContainerEnvironmentComponents {
             provider: Arc::new(CheckpointContainerProvider),
             capacity: None,
             extra_mounts: Vec::new(),

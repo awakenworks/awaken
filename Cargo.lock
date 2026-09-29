@@ -1384,10 +1384,14 @@ dependencies = [
  "awaken-container-contract",
  "awaken-lease-contract",
  "awaken-provisioning-contract",
+ "awaken-run-executor-acp",
+ "awaken-runtime-contract",
+ "awaken-runtime-host-testkit",
  "awaken-sandbox-container",
  "awaken-sandbox-local",
  "awaken-session-environment-contract",
  "awaken-session-executor",
+ "tempfile",
  "tokio",
 ]
 

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use awaken_session_executor::ContainerEnvironmentComponents;
+use crate::ContainerEnvironmentComponents;
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 use awaken_sandbox_container::ContainerProvider;
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]

@@ -8,67 +8,6 @@ use std::sync::Arc;
 
 use awaken_run_executor_acp::{AcpRunExecutor, LaunchObserver, SessionHomeProvider};
 
-async fn validate_namespace_hand_bin(path: &std::path::Path) -> Result<(), String> {
-    let metadata = std::fs::metadata(path).map_err(|error| {
-        format!(
-            "namespace Session environments require the release companion at {}: {error}",
-            path.display()
-        )
-    })?;
-    if !metadata.is_file() {
-        return Err(format!(
-            "namespace Session environment companion is not a file: {}",
-            path.display()
-        ));
-    }
-
-    let child = tokio::process::Command::new(path)
-        .args(["hand", "--check"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| format!("start namespace hand companion {}: {error}", path.display()))?;
-    let output = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait_with_output())
-        .await
-        .map_err(|_| {
-            format!(
-                "namespace hand companion check timed out after 5s: {}",
-                path.display()
-            )
-        })?
-        .map_err(|error| format!("check namespace hand companion {}: {error}", path.display()))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    Err(if detail.is_empty() {
-        format!("namespace hand companion check failed: {}", path.display())
-    } else {
-        format!("namespace hand companion check failed: {detail}")
-    })
-}
-
-fn namespace_hand_path(current_exe: &std::path::Path) -> std::path::PathBuf {
-    let binary_name = format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX);
-    let sibling = current_exe.with_file_name(&binary_name);
-    let Some(parent) = current_exe.parent() else {
-        return sibling;
-    };
-    if matches!(
-        parent.file_name().and_then(std::ffi::OsStr::to_str),
-        Some("deps" | "examples")
-    ) && let Some(profile_dir) = parent.parent()
-    {
-        let cargo_companion = profile_dir.join(binary_name);
-        if cargo_companion.is_file() {
-            return cargo_companion;
-        }
-    }
-    sibling
-}
-
 #[cfg(test)]
 pub(crate) fn deployment_test_binary(key: &str) -> std::path::PathBuf {
     let path =
@@ -257,16 +196,18 @@ impl crate::host::SharedHost {
         launch: crate::LaunchSource,
         session_home: Option<Arc<dyn SessionHomeProvider>>,
     ) -> Self {
+        // The process composition installs the TrustedHost provider that
+        // BackendOwned candidates realize in; without one they fail closed.
+        // This crate's own tests keep the Workdir default they were written for.
+        #[cfg(test)]
         if self.env.backend_owned_session_provider.is_none() {
             let provider = crate::session_environment::SandboxEnvironmentProvider::
                 trusted_host_workdir_with_agent_stderr(
                     session_sandbox_base(&self.deployment).join("backend-owned"),
                     self.deployment.sandbox.inherit_agent_stderr,
-                );
-            if let Some(mounter) = self.memory_mounter() {
-                provider.install_memory_mounter(mounter);
-            }
-            self.env.backend_owned_session_provider = Some(provider.into_session_provider());
+                )
+                .into_session_provider();
+            self = self.with_backend_owned_environment_provider(provider);
         }
         let observer = self.acp_launch_observer();
         self.exec.acp = Some(Arc::new(AcpBackend::bound(
@@ -344,162 +285,13 @@ impl crate::host::SharedHost {
         }
     }
 
-    /// Select the Session environment once from the typed Deployment, regardless
-    /// of whether this Host serves Native, provider, or ACP model execution.
-    /// Model backend selection must not create a parallel sandbox-tier decision.
-    pub async fn with_session_environment_from_deployment(
-        self,
-        hand_factory: Option<Arc<dyn awaken_session_environment_contract::HandExecutorFactory>>,
-    ) -> Result<Self, String> {
-        // Production bundles install both executables as siblings. Resolve at
-        // this composition edge; providers never search host paths themselves.
-        let companion = std::env::current_exe()
-            .ok()
-            .map(|path| namespace_hand_path(&path))
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX))
-            });
-        self.with_session_environment_from_deployment_at(hand_factory, companion)
-            .await
-    }
-
-    /// The one startup owner, shared with installed-binary qualification. Tests
-    /// supply Cargo's exact artifact rather than assuming that Cargo's separate
-    /// intermediate directory is the release installation directory. This input
-    /// never bypasses capability validation or changes provider selection.
-    pub async fn with_session_environment_from_deployment_at(
-        self,
-        hand_factory: Option<Arc<dyn awaken_session_environment_contract::HandExecutorFactory>>,
-        namespace_hand_path: std::path::PathBuf,
-    ) -> Result<Self, String> {
-        self.deployment.validate_local_execution()?;
-        if self.env.session_provider_explicit && !self.deployment.trusted_host_enabled() {
-            return Ok(self);
-        }
-        let deployment = self.deployment.clone();
-        let base = session_sandbox_base(&deployment);
-        let tier = if self.env.session_provider_explicit {
-            deployment.sandbox_tier
-        } else {
-            crate::resolve_sandbox_tier(
-                deployment.sandbox_tier,
-                deployment.sandbox.allow_local_fallback,
-                &base,
-            )
-            .await
-            .map_err(|error| format!("configure the Session sandbox tier: {error}"))?
-        };
-        let mut host = self;
-        // Namespace and TrustedHost validate/install the same local companion.
-        let trusted_hand_factory = if deployment.trusted_host_enabled() {
-            Some(
-                hand_factory
-                    .clone()
-                    .ok_or("TrustedHost Native execution requires the installed Hand factory")?,
-            )
-        } else {
-            None
-        };
-        if (!host.env.session_provider_explicit && tier == crate::SandboxTier::Namespace)
-            || trusted_hand_factory.is_some()
-        {
-            validate_namespace_hand_bin(&namespace_hand_path).await?;
-        }
-        let namespace_hand_bin = namespace_hand_path.to_string_lossy().into_owned();
-        if deployment.trusted_host_enabled() {
-            // The TrustedHost backend is configured completely before the Host
-            // holds it: an already-installed backend cannot gain its Hand or
-            // scoped execution afterwards, so it must not exist yet when either
-            // is required.
-            let needs_configuration = trusted_hand_factory.is_some()
-                || cfg!(target_os = "linux") && deployment.sandbox.trusted_host_scoped_execution;
-            if host.env.backend_owned_session_provider.is_some() && needs_configuration {
-                return Err(
-                    "configure TrustedHost execution: its backend was installed before the \
-                     deployment selected its Hand; select the Session environment before \
-                     binding ACP"
-                        .into(),
-                );
-            }
-            if host.env.backend_owned_session_provider.is_none() {
-                #[allow(unused_mut)]
-                let mut provider = crate::session_environment::SandboxEnvironmentProvider::
-                    trusted_host_workdir_with_agent_stderr(
-                        base.join("trusted-host"),
-                        deployment.sandbox.inherit_agent_stderr,
-                    );
-                if let Some(factory) = trusted_hand_factory {
-                    provider.install_workdir_hand(
-                        factory,
-                        namespace_hand_bin.clone(),
-                        std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),
-                    );
-                }
-                #[cfg(target_os = "linux")]
-                if deployment.sandbox.trusted_host_scoped_execution {
-                    let execution = awaken_sandbox_local::LocalExecutionDeployment::discover(
-                        namespace_hand_path,
-                    )
-                    .map_err(|error| format!("configure TrustedHost execution: {error}"))?;
-                    provider
-                        .install_scoped_execution(execution)
-                        .await
-                        .map_err(|error| format!("configure TrustedHost execution: {error}"))?;
-                }
-                host.env.backend_owned_session_provider = Some(provider.into_session_provider());
-            }
-        }
-        // An explicit primary provider does not configure the independent,
-        // operator-enabled TrustedHost backend. Preserve the primary while
-        // completing that secondary backend through the same startup path.
-        if !host.env.session_provider_explicit {
-            host.env.session_provider = if let Some(provider) =
-                crate::session_environment::SandboxEnvironmentProvider::for_host_tier(
-                    tier,
-                    base,
-                    deployment.sandbox.inherit_agent_stderr,
-                    hand_factory.clone(),
-                    namespace_hand_bin,
-                    std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),
-                )? {
-                provider.into_session_provider()
-            } else {
-                // The container tiers are assembled by the worker-plane
-                // composition (`awaken-execution-composition`), which installs
-                // their provider before this selection runs. Reaching here means
-                // a process root skipped it; fail closed instead of running the
-                // Session outside its configured isolation.
-                return Err(format!(
-                    "configure the Session sandbox tier: the {tier:?} container tier is installed \
-                     by the execution composition, which this process did not run"
-                ));
-            };
-            host.env.session_provider_explicit = true;
-        }
-        if let Some(mounter) = host.memory_mounter() {
-            host.env
-                .session_provider
-                .installation()
-                .install_memory_mounter(mounter.clone());
-            if let Some(provider) = &host.env.backend_owned_session_provider {
-                provider.installation().install_memory_mounter(mounter);
-            }
-        }
-        Ok(host)
-    }
-
-    /// Realize an explicitly supplied ACP launch source in the deployment's sandbox
-    /// tier. Product code supplies a projected source backed by published access;
-    /// deterministic dev fixtures may supply [`crate::LaunchSource::Fixed`] directly.
-    pub async fn with_acp_launch_source(
-        self,
-        hand_factory: Arc<dyn awaken_session_environment_contract::HandExecutorFactory>,
-        source: crate::LaunchSource,
-    ) -> Result<Self, String> {
-        Ok(self
-            .with_session_environment_from_deployment(Some(hand_factory))
-            .await?
-            .with_bound_acp(source, None))
+    /// Serve `acp:*` sessions from an explicitly supplied launch source in the
+    /// Session environment the process composition already selected. Product
+    /// code supplies a projected source backed by published access;
+    /// deterministic dev fixtures may supply [`crate::LaunchSource::Fixed`].
+    #[must_use]
+    pub fn with_acp_launch_source(self, source: crate::LaunchSource) -> Self {
+        self.with_bound_acp(source, None)
     }
 
     /// The hub-backed launch observer for this host: republishes an ACP agent's
@@ -579,9 +371,10 @@ impl crate::session_slot::SessionRuntimeSlot {
     }
 }
 
-/// The base dir the ACP sandbox roots and per-thread config homes live under
-/// (`AWAKEN_SANDBOX_DIR`), or a per-process temp dir when unset.
-pub(crate) fn session_sandbox_base(deployment: &crate::DeploymentConfig) -> std::path::PathBuf {
+/// The base dir the Session sandbox roots and per-thread config homes live
+/// under (`AWAKEN_SANDBOX_DIR`), or a per-process temp dir when unset. The
+/// process composition roots the providers it selects here.
+pub fn session_sandbox_base(deployment: &crate::DeploymentConfig) -> std::path::PathBuf {
     deployment
         .sandbox_dir
         .clone()
@@ -599,51 +392,7 @@ pub(crate) fn session_sandbox_base(deployment: &crate::DeploymentConfig) -> std:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_environment::SandboxEnvironmentProviderAccess as _;
 
-    #[test]
-    fn namespace_companion_resolution_preserves_release_and_cargo_test_layouts() {
-        // Cause/effect table: C1 a release executable and companion are siblings
-        // -> E1 keep the sibling path; C2 Cargo runs a test from `debug/deps`
-        // or an example from `debug/examples` while the built companion is in
-        // `debug` -> E2 use that profile-level companion. A missing profile
-        // companion falls back to the release sibling so validation owns the
-        // one fail-closed error path.
-        let root = std::env::temp_dir().join(format!(
-            "awaken-namespace-companion-path-{}",
-            std::process::id()
-        ));
-        std::fs::remove_dir_all(&root).ok();
-        let profile = root.join("debug");
-        let deps = profile.join("deps");
-        std::fs::create_dir_all(&deps).unwrap();
-        let companion_name = format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX);
-        let companion = profile.join(&companion_name);
-        std::fs::write(&companion, []).unwrap();
-
-        assert_eq!(
-            namespace_hand_path(&profile.join("awaken")),
-            profile.join(&companion_name),
-            "C1/E1"
-        );
-        assert_eq!(
-            namespace_hand_path(&deps.join("awaken-test-hash")),
-            companion,
-            "C2 test/E2"
-        );
-        assert_eq!(
-            namespace_hand_path(&profile.join("examples/awaken-example")),
-            companion,
-            "C2 example/E2"
-        );
-        std::fs::remove_file(&companion).unwrap();
-        assert_eq!(
-            namespace_hand_path(&deps.join("awaken-test-hash")),
-            deps.join(companion_name),
-            "missing profile companion preserves fail-closed sibling validation"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
     use crate::host::SharedHost;
 
     struct NoLlm;
@@ -708,179 +457,6 @@ mod tests {
                 acp: None,
                 provider_server_tools: Vec::new(),
             })
-        }
-    }
-
-    struct NoHandFactory;
-
-    impl awaken_session_environment_contract::HandExecutorFactory for NoHandFactory {
-        fn bind(
-            &self,
-            _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
-            _operation_scope: &str,
-            _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
-        ) -> Arc<dyn awaken_runtime_contract::tool::ToolExecutor> {
-            panic!("the native-only startup test never opens a container")
-        }
-    }
-
-    /// P1: Sandbox tier selection is caused by Deployment, not by ACP presence.
-    /// A Native-only Worker must install the selected provider before serving.
-    #[tokio::test]
-    #[ignore = "requires installed Hand companion; mandatory in trusted-host portability gate"]
-    async fn native_only_deployment_selects_the_session_provider() {
-        let mut deployment = crate::DeploymentConfig::ephemeral();
-        deployment.sandbox_tier = crate::SandboxTier::Local;
-        deployment.acp = None;
-        let expected = deployment.sandbox_support().0;
-
-        let host = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
-            .with_session_environment_from_deployment_at(
-                Some(Arc::new(NoHandFactory)),
-                deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER"),
-            )
-            .await
-            .unwrap()
-            .with_acp_from_deployment(None, None)
-            .await;
-
-        assert!(host.env.session_provider_explicit);
-        assert_eq!(
-            host.env.session_provider.realizer().capabilities(),
-            expected
-        );
-        assert!(host.exec.acp.is_none());
-    }
-
-    #[tokio::test]
-    #[ignore = "requires installed Hand companion; mandatory in trusted-host portability gate"]
-    async fn trusted_host_hand_startup_covers_prior_acp_and_explicit_primary_orderings() {
-        // Cause/effect table: S1 ACP provider absent/present; S2 primary
-        // implicit/explicit; S3 TrustedHost enabled. All four S1*S2 rules with
-        // S3 must install ONE mandatory Hand on the trusted provider, retaining
-        // primary capabilities and any existing provider root. No tool launch
-        // is needed: real CLI/Hand/resource execution lives in the E2E gate.
-        // S7 scoped={off,on Linux} crosses both startup orderings, probes the
-        // real binary, preserves root relocation and is idempotent on reentry.
-        // S8 Cargo's test and binary directories may differ: supply its exact
-        // artifact to the SAME startup owner, never copy/search another binary.
-        let modes: &[bool] = if cfg!(target_os = "linux") {
-            &[false, true]
-        } else {
-            &[false]
-        };
-        for &scoped in modes {
-            for prior_acp in [false, true] {
-                for explicit_primary in [false, true] {
-                    let base = tempfile::tempdir().unwrap();
-                    let mut deployment = crate::DeploymentConfig::ephemeral();
-                    deployment.sandbox_tier = crate::SandboxTier::Local;
-                    deployment.sandbox_dir = Some(base.path().into());
-                    deployment.sandbox.trusted_host_scoped_execution = scoped;
-                    let mut host =
-                        SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment);
-                    if prior_acp {
-                        host = host.with_projected_acp(
-                            *awaken_run_executor_acp::acp_cli("claude").unwrap(),
-                            Arc::new(FixedModel),
-                            None,
-                        );
-                    }
-                    host.env.session_provider_explicit = explicit_primary;
-                    let capabilities = host.env.session_provider.realizer().capabilities();
-                    let host = host
-                        .with_session_environment_from_deployment_at(
-                            Some(Arc::new(NoHandFactory)),
-                            deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER"),
-                        )
-                        .await
-                        .unwrap();
-                    let host = host
-                        .with_session_environment_from_deployment_at(
-                            Some(Arc::new(NoHandFactory)),
-                            deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER"),
-                        )
-                        .await
-                        .unwrap();
-                    #[cfg(target_os = "linux")]
-                    {
-                        let provider = host
-                            .env
-                            .backend_owned_session_provider
-                            .as_ref()
-                            .unwrap()
-                            .sandbox_provider();
-                        for provider in [provider, &provider.at_root(base.path().join("relocated"))]
-                        {
-                            let crate::session_environment::SandboxEnvironmentProvider::Workdir {
-                                provider,
-                                ..
-                            } = provider
-                            else {
-                                panic!("expected TrustedHost")
-                            };
-                            assert_eq!(provider.execution_deployment().is_some(), scoped);
-                        }
-                    }
-                    assert_eq!(
-                        host.env.session_provider.realizer().capabilities(),
-                        capabilities
-                    );
-                    assert!(matches!(
-                        host.env
-                            .backend_owned_session_provider
-                            .as_ref()
-                            .map(|provider| provider.sandbox_provider()),
-                        Some(
-                            crate::session_environment::SandboxEnvironmentProvider::Workdir {
-                                hand: Some(_),
-                                ..
-                            }
-                        )
-                    ));
-                    assert!(host.env.session_provider_explicit);
-                    assert_eq!(host.exec.acp.is_some(), prior_acp);
-                }
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn trusted_host_startup_rejects_missing_factory_and_invalid_companion() {
-        // S4 enabled+no factory => fail before launching a companion. S5 missing
-        // or directory companion => fail; S6 executable without Hand --check
-        // support => fail. There is no successful Local executor substitution.
-        // Configuration failure is a returned error, not an unwind: callers
-        // must still be able to withdraw an already-created Worker registration.
-        // S5/S6 enter the same startup owner with an explicit artifact, proving
-        // artifact injection cannot bypass capability checks or fall back to a
-        // different executable. Successful real artifacts are the ignored rows
-        // above; release-layout selection remains the pure resolver's table.
-        let mut deployment = crate::DeploymentConfig::ephemeral();
-        deployment.sandbox_tier = crate::SandboxTier::Local;
-        let message = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
-            .with_session_environment_from_deployment(None)
-            .await
-            .err()
-            .expect("missing factory must reject");
-        assert!(message.contains("requires the installed Hand factory"));
-        let root = tempfile::tempdir().unwrap();
-        for (artifact, reason) in [
-            (root.path().join("missing"), "require the release companion"),
-            (root.path().to_path_buf(), "companion is not a file"),
-            (std::env::current_exe().unwrap(), "companion check failed"),
-        ] {
-            let mut deployment = crate::DeploymentConfig::ephemeral();
-            deployment.sandbox_tier = crate::SandboxTier::Local;
-            let error = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
-                .with_session_environment_from_deployment_at(
-                    Some(Arc::new(NoHandFactory)),
-                    artifact,
-                )
-                .await
-                .err()
-                .expect("S5/S6 explicit invalid artifact must fail startup");
-            assert!(error.contains(reason), "S5/S6 expected {reason}: {error}");
         }
     }
 

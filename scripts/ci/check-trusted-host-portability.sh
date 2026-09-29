@@ -101,6 +101,7 @@ fi
 # qualification above intentionally does not provide Hand, and must not race
 # companion validation or turn an absent executable into a successful skip.
 cargo test -p awaken-session-executor --lib acp_backend::tests -- --include-ignored
+cargo test -p awaken-execution-composition --lib local:: -- --include-ignored
 cargo test -p awaken-sandbox-fs --lib
 cargo test -p awaken-sandbox-memoryd --lib
 cargo test -p awaken-sandbox-memoryd --test copy_lifecycle

@@ -8,21 +8,6 @@
 
 use crate::host::*;
 
-/// The one container-environment realization assembled from a deployment by
-/// the worker-plane composition (`awaken-execution-composition`).
-///
-/// A downstream composition may decorate `provider` while retaining the exact
-/// capacity and cache-volume owners created by the canonical builder. This
-/// prevents product integrations from reproducing Kubernetes/Podman/Docker
-/// construction merely to add an infrastructure concern such as checkpointing.
-/// Consumer: [`SharedHost::with_session_container_environment_components`].
-pub struct ContainerEnvironmentComponents {
-    pub provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
-    pub capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
-    pub extra_mounts: Vec<awaken_provisioning_contract::MountRequirement>,
-    pub cache_volume_initializer: Option<Arc<dyn crate::CacheVolumeInitializer>>,
-}
-
 /// Sandbox-provider wiring. Consumer: Session environment realization and
 /// lifecycle, ACP backend selection, warm capacity, and helper sub-agents.
 pub(crate) struct EnvironmentProviders {
@@ -57,18 +42,18 @@ pub(crate) struct EnvironmentProviders {
 }
 
 impl EnvironmentProviders {
-    /// Workdir-tier providers rooted at `sandbox_root` until startup installs
-    /// an explicit Session provider.
+    /// The providers a Host starts with: the construction-time fallback
+    /// Session provider (`crate::uninstalled_environment`), until startup
+    /// installs one.
     pub(in crate::host) fn new(
         sandbox_root: PathBuf,
         auxiliary_sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxFactory>,
     ) -> Self {
         Self {
             auxiliary_sandboxes,
-            session_provider: crate::session_environment::SandboxEnvironmentProvider::workdir(
+            session_provider: crate::uninstalled_environment::default_session_provider(
                 sandbox_root,
-            )
-            .into_session_provider(),
+            ),
             environment_checkpoint_store: None,
             cache_volume_prewarmer: crate::cache_volume::CacheVolumePrewarmer::default(),
             backend_owned_session_provider: None,
@@ -108,92 +93,110 @@ impl SharedHost {
         self
     }
 
-    /// Install the already-configured provider that owns every Session container
-    /// environment on this Host.
-    ///
-    /// This is the public startup seam for downstream providers. The Host
-    /// continues to own Session routing and lifecycle; the provider supplies only
-    /// its enforceable Sandbox capabilities and create/adopt implementation. A
-    /// caller that also installs a [`awaken_provisioning_contract::SecretBroker`]
-    /// must do so after selecting the provider so there is one broker installation
-    /// on the authoritative environment path.
+    /// Install the authoritative provider of every Session environment on this
+    /// Host. The process composition selects and builds it from the Deployment
+    /// (`awaken-execution-composition`); the Host continues to own Session
+    /// routing and lifecycle. A caller that also installs a
+    /// [`awaken_provisioning_contract::SecretBroker`] does so afterwards, so the
+    /// broker lands on this authoritative provider.
     #[must_use]
-    pub fn with_session_container_provider(
+    pub fn with_session_environment_provider(
+        mut self,
+        provider: awaken_session_environment_contract::SessionEnvironmentProvider,
+    ) -> Self {
+        self.env.session_provider = provider;
+        self.env.session_provider_explicit = true;
+        if let Some(mounter) = self.memory_mounter() {
+            self.env
+                .session_provider
+                .installation()
+                .install_memory_mounter(mounter);
+        }
+        self
+    }
+
+    /// Install a non-authoritative fallback provider: it serves Sessions until
+    /// Deployment selection installs the authoritative one, which replaces it.
+    /// Consumers: test and Scenario compositions that deliberately keep the
+    /// cheap Workdir adapter.
+    #[must_use]
+    pub fn with_fallback_session_environment_provider(
+        mut self,
+        provider: awaken_session_environment_contract::SessionEnvironmentProvider,
+    ) -> Self {
+        self.env.session_provider = provider;
+        self.env.session_provider_explicit = false;
+        if let Some(mounter) = self.memory_mounter() {
+            self.env
+                .session_provider
+                .installation()
+                .install_memory_mounter(mounter);
+        }
+        self
+    }
+
+    /// Install the TrustedHost provider that serves BackendOwned provisioning
+    /// and `trusted_host` Environments. Without one, both fail closed.
+    #[must_use]
+    pub fn with_backend_owned_environment_provider(
+        mut self,
+        provider: awaken_session_environment_contract::SessionEnvironmentProvider,
+    ) -> Self {
+        if let Some(mounter) = self.memory_mounter() {
+            provider.installation().install_memory_mounter(mounter);
+        }
+        self.env.backend_owned_session_provider = Some(provider);
+        self
+    }
+
+    /// Whether startup already installed the TrustedHost provider.
+    #[must_use]
+    pub fn backend_owned_environment_provider_installed(&self) -> bool {
+        self.env.backend_owned_session_provider.is_some()
+    }
+
+    /// The installed Session environment provider, for the composition that
+    /// selected it to verify its startup.
+    #[must_use]
+    pub fn installed_session_environment_provider(
+        &self,
+    ) -> &awaken_session_environment_contract::SessionEnvironmentProvider {
+        &self.env.session_provider
+    }
+
+    /// The installed TrustedHost provider, for the composition that selected
+    /// it to verify its startup.
+    #[must_use]
+    pub fn installed_backend_owned_environment_provider(
+        &self,
+    ) -> Option<&awaken_session_environment_contract::SessionEnvironmentProvider> {
+        self.env.backend_owned_session_provider.as_ref()
+    }
+
+    /// Container-provider installation for this crate's own tests: the
+    /// canonical container environment over `provider` with this Host's
+    /// Deployment Hand settings.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_session_container_provider(
         self,
         provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
         hand_factory: Arc<dyn awaken_session_environment_contract::HandExecutorFactory>,
     ) -> Self {
-        self.with_session_container_provider_and_capacity(provider, None, hand_factory)
-    }
-
-    /// Install one container provider and its optional never-used-capacity owner.
-    /// Keeping both handles from the same startup prevents provider erasure
-    /// from orphaning startup warmup and shutdown drain.
-    #[must_use]
-    pub fn with_session_container_provider_and_capacity(
-        mut self,
-        provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
-        capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
-        hand_factory: Arc<dyn awaken_session_environment_contract::HandExecutorFactory>,
-    ) -> Self {
         let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
-        self.env.session_provider = crate::session_environment::SandboxEnvironmentProvider::
+        let environment = crate::session_environment::SandboxEnvironmentProvider::
             container_with_capacity_hand_idle_and_residency(
                 provider,
-                capacity,
+                None,
                 Vec::new(),
                 hand_factory,
                 hand_bin,
                 std::time::Duration::from_secs(self.deployment.sandbox.container_hand_idle_secs),
                 self.deployment.sandbox.container_hand_residency,
                 self.clock.clone(),
-            ).into_session_provider();
-        self.env.session_provider_explicit = true;
-        if let Some(mounter) = self.memory_mounter() {
-            self.env
-                .session_provider
-                .installation()
-                .install_memory_mounter(mounter);
-        }
-        self
-    }
-
-    /// Install the complete result of the canonical deployment builder after a
-    /// downstream composition has decorated its provider. Capacity, creation
-    /// mounts, and cache initialization remain paired with that same provider
-    /// construction instead of being rebuilt on a parallel path.
-    #[must_use]
-    pub fn with_session_container_environment_components(
-        mut self,
-        components: ContainerEnvironmentComponents,
-        hand_factory: Arc<dyn awaken_session_environment_contract::HandExecutorFactory>,
-    ) -> Self {
-        let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
-        self.env.session_provider = crate::session_environment::SandboxEnvironmentProvider::
-            container_with_capacity_hand_idle_and_residency(
-                components.provider,
-                components.capacity,
-                components.extra_mounts,
-                hand_factory,
-                hand_bin,
-                std::time::Duration::from_secs(
-                    self.deployment.sandbox.container_hand_idle_secs,
-                ),
-                self.deployment.sandbox.container_hand_residency,
-                self.clock.clone(),
-            ).into_session_provider();
-        if let Some(initializer) = components.cache_volume_initializer {
-            self.env.cache_volume_prewarmer =
-                crate::cache_volume::CacheVolumePrewarmer::new(initializer);
-        }
-        self.env.session_provider_explicit = true;
-        if let Some(mounter) = self.memory_mounter() {
-            self.env
-                .session_provider
-                .installation()
-                .install_memory_mounter(mounter);
-        }
-        self
+            )
+            .into_session_provider();
+        self.with_session_environment_provider(environment)
     }
 
     /// Install the process composition's auxiliary-run sandbox factory. Every
