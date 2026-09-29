@@ -911,3 +911,15 @@ Flow extends its existing two-stream settlement test with a foreign prefix
 larger than its page, retaining pre-settlement refusal and exactly-once replay.
 These tests certify query and projection behavior, not predecessor termination
 or completion of the original product roots.
+
+### Published converged V7 migration identities
+
+The exact Run operational index and governed entry closure were published on
+independent branches as converged V7. The migration owner selects the known
+index-first receipt by its exact checksum and appends closure at V8; the main
+closure-first lineage appends the index at V8. Existing receipts are never
+rewritten. Both histories reach the same schema and all future migrations use
+one numbering stream. Unknown checksums retain the ordinary migration refusal.
+SQLite adapter tests cover both persisted V7 prefixes, idempotent reopen, exact
+receipt preservation and rejection of an unknown checksum. PostgreSQL uses the
+same selection owner for migration and external-schema verification.
