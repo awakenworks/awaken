@@ -621,7 +621,7 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
                     }
                     for exact_binding in [false, true] {
                         let mut projected_owner = owner.clone();
-                        let result = projected_owner.install_projection(
+                        let result = projected_owner.install_projection_with_resource_reservation(
                             ProjectedEnvironmentOwner::AwaitingAdoption {
                                 identity: identity.clone(),
                                 binding: if exact_binding {
@@ -631,6 +631,7 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
                                 },
                             },
                             true,
+                            false,
                         );
                         assert_eq!(
                             result.is_ok(),
@@ -702,12 +703,13 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
                         _ => {}
                     }
                 }
-                let result = owner.install_projection(
+                let result = owner.install_projection_with_resource_reservation(
                     ProjectedEnvironmentOwner::AwaitingAdoption {
                         identity: projected,
                         binding,
                     },
                     true,
+                    false,
                 );
                 assert_eq!(
                     result.is_err(),
