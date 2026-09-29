@@ -1294,6 +1294,13 @@ impl awaken_container_contract::ContainerEnvironmentProvider for BatchArtifactCo
 
 #[async_trait::async_trait]
 impl awaken_container_contract::ContainerEnvironment for BatchArtifactContainer {
+    async fn owned_process_binding(
+        &self,
+    ) -> Result<Option<String>, awaken_provisioning_contract::SandboxError> {
+        // This fixture retains no process containment.
+        Ok(None)
+    }
+
     async fn checkpoint_upload(
         &self,
         _access: awaken_container_contract::ContainerCheckpointAccess<'_>,
