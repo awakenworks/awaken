@@ -871,7 +871,7 @@ async fn terminal_control_pod_is_cleaned_without_reopening_live_control() {
         &desired,
         &create,
         &EffectAuthority::new(&create),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .expect("KC1 create real control Pod");
