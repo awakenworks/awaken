@@ -132,7 +132,14 @@ pub struct ProjectedQueries;
 impl<S> LocalCommitAdapter<S, ProjectedQueries> {
     #[must_use]
     pub fn projected(store: S) -> Self {
-        Self::with_queries(Arc::new(store), ProjectedQueries)
+        Self::projected_shared(Arc::new(store))
+    }
+
+    /// Share one store with its other read roles without exposing or copying
+    /// the private projection query policy into a downstream composition.
+    #[must_use]
+    pub fn projected_shared(store: Arc<S>) -> Self {
+        Self::with_queries(store, ProjectedQueries)
     }
 }
 
