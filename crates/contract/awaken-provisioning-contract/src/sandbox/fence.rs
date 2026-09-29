@@ -153,7 +153,7 @@ impl SandboxEffectFence {
                     },
                     epoch,
                 ),
-                Expiry::from_unix_ms(expires_at_unix_ms),
+                Expiry::from_epoch_ms(expires_at_unix_ms),
             ),
         )))
     }
@@ -215,7 +215,7 @@ impl SandboxEffectFence {
     /// The persisted expiry millisecond.
     #[must_use]
     pub fn expires_at_unix_ms(&self) -> u64 {
-        self.0.lease().expires().to_unix_ms()
+        self.0.lease().expires().to_epoch_ms()
     }
 
     /// Validate expiry against a caller-observed clock instant. Identity is

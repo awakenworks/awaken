@@ -322,7 +322,7 @@ impl SqliteWorkQueue {
                     .map_err(|_| WorkQueueError::Storage("negative Session Work expiry".into()))?;
                 return Ok(Some(SessionWorkLease::granted(
                     work_id, env_id, awaken_session_types::SessionId::from(&session_id), owner, epoch,
-                    Expiry::from_unix_ms(expires_at_unix_ms),
+                    Expiry::from_epoch_ms(expires_at_unix_ms),
                 )));
             }
             let epoch = if current.0 == "active"
@@ -362,7 +362,7 @@ impl SqliteWorkQueue {
             tx.commit().map_err(storage)?;
             Ok(Some(SessionWorkLease::granted(
                 work_id, env_id, awaken_session_types::SessionId::from(&session_id), worker_owner, epoch,
-                Expiry::from_unix_ms(now_ms.saturating_add(HEARTBEAT_TTL_SECONDS * 1_000)),
+                Expiry::from_epoch_ms(now_ms.saturating_add(HEARTBEAT_TTL_SECONDS * 1_000)),
             )))
         }).await
     }

@@ -50,18 +50,13 @@ impl Expiry {
         self.0.as_epoch_ms_i64()
     }
 
-    /// Decode an unsigned wire millisecond: the `u64` expiry JSON records
-    /// persist (fence and lease wires predating this type).
+    /// The unsigned epoch millisecond: the exact inverse of
+    /// [`Expiry::from_epoch_ms`] for the `u64` expiry fence and lease wires
+    /// carry. Unlike [`Expiry::to_persisted_ms`] and `UtcTime::as_epoch_ms`
+    /// (both clamped to the signed SQL domain), every value decoded by
+    /// [`Expiry::from_epoch_ms`] round-trips exactly, including `u64::MAX`.
     #[must_use]
-    pub const fn from_unix_ms(epoch_ms: u64) -> Self {
-        Self(UtcTime::from_epoch_ms(epoch_ms))
-    }
-
-    /// The unsigned wire millisecond, saturating at `u64::MAX`. Unlike
-    /// [`Expiry::to_persisted_ms`] (the signed SQL domain), every value decoded
-    /// by [`Expiry::from_unix_ms`] round-trips exactly, including `u64::MAX`.
-    #[must_use]
-    pub fn to_unix_ms(self) -> u64 {
+    pub fn to_epoch_ms(self) -> u64 {
         u64::try_from(self.0.duration_since_epoch().as_millis()).unwrap_or(u64::MAX)
     }
 
@@ -203,7 +198,7 @@ mod tests {
         // R5 the unsigned wire domain round-trips exactly, including u64::MAX,
         // where the signed SQL domain clamps.
         for wire in [0, 1_500, i64::MAX as u64, u64::MAX] {
-            assert_eq!(Expiry::from_unix_ms(wire).to_unix_ms(), wire, "R5 {wire}");
+            assert_eq!(Expiry::from_epoch_ms(wire).to_epoch_ms(), wire, "R5 {wire}");
         }
     }
 

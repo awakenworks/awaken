@@ -1117,7 +1117,7 @@ impl WorkQueue for PostgresWorkQueue {
                 session_id.clone(),
                 owner,
                 epoch,
-                Expiry::from_unix_ms(expires_at_unix_ms),
+                Expiry::from_epoch_ms(expires_at_unix_ms),
             )));
         }
         let epoch = if current.0 == "active" && current.1.as_deref() == Some(worker_owner) {
@@ -1197,7 +1197,7 @@ impl WorkQueue for PostgresWorkQueue {
             session_id.clone(),
             worker_owner,
             epoch,
-            Expiry::from_unix_ms(now_ms.saturating_add(HEARTBEAT_TTL_SECONDS * 1_000)),
+            Expiry::from_epoch_ms(now_ms.saturating_add(HEARTBEAT_TTL_SECONDS * 1_000)),
         )))
     }
 

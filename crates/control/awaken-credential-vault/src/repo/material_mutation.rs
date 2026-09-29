@@ -174,11 +174,11 @@ impl CredentialMaterialMutationFence {
     ) -> Result<Option<Self>, CredentialError> {
         let now = UtcTime::from_epoch_ms(now_unix_ms);
         if self.phase != CredentialMaterialMutationPhase::Writing
-            || Expiry::from_unix_ms(self.writer_lease_expires_at_unix_ms).is_live_at(now)
+            || Expiry::from_epoch_ms(self.writer_lease_expires_at_unix_ms).is_live_at(now)
         {
             return Ok(None);
         }
-        if Expiry::from_unix_ms(lease_expires_at_unix_ms).is_expired_at(now) {
+        if Expiry::from_epoch_ms(lease_expires_at_unix_ms).is_expired_at(now) {
             return Err(CredentialError::MutationConflict(
                 "credential material recovery lease must expire after claim time".into(),
             ));
@@ -266,7 +266,7 @@ impl CredentialMaterialMutationFence {
             self.phase == CredentialMaterialMutationPhase::Writing
                 && !self.attempt_id.is_empty()
                 && self.is_original_writer()
-                && Expiry::from_unix_ms(self.writer_lease_expires_at_unix_ms)
+                && Expiry::from_epoch_ms(self.writer_lease_expires_at_unix_ms)
                     .is_live_at(UtcTime::from_epoch_ms(credential_material_now_unix_ms()?))
         } else {
             self.phase == CredentialMaterialMutationPhase::Ready
@@ -340,7 +340,7 @@ pub(super) fn credential_material_recovery_plan(
             OwnerWritesComplete => MarkReady,
             OwnerWriteFailed | UnpublishedConflict => AbortUnpublished,
             SupervisorTick
-                if Expiry::from_unix_ms(fence.writer_lease_expires_at_unix_ms)
+                if Expiry::from_epoch_ms(fence.writer_lease_expires_at_unix_ms)
                     .is_expired_at(UtcTime::from_epoch_ms(now_unix_ms)) =>
             {
                 ClaimExpiredWriterForAbort

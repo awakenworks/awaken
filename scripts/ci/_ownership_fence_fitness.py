@@ -332,4 +332,3 @@ def selftest() -> None:
     assert not violations(
         {"crates/b.rs": "// struct NewLease; epoch: u64; epoch += 1; Arc<()>\nconst S: &str = \"epoch: u64\";"}
     ), "C1"
-

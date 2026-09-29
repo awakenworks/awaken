@@ -86,6 +86,16 @@ release containing this amendment therefore drains old Workers and deploys
 Control plus Worker binaries as one coordinated maintenance cutover; no legacy
 renewal endpoint or epoch-default compatibility path is retained.
 
+Lease, RunClaim, renewal and settlement JSON all decode their epoch through
+`awaken_lease_contract::fence::Epoch`: missing or zero never creates a typed
+grant. A positive but stale epoch still reaches the existing aggregate fence;
+invalid wire input reaches neither provider lookup nor physical-slot mutation.
+Dispatch rows keep the epoch in their existing column; no lease JSON migration
+is required. Credential material envelopes retain their own persisted rule:
+missing/zero writer epoch means `None`. A legacy `Writing` envelope is then an
+unowned abort-only recovery intent, never a dispatch grant or original-writer
+publication authority; already-`Ready` material retains its existing recovery.
+
 ### D5: The Dispatch aggregate also owns physical-attempt quiescence
 
 A live claim does not by itself prove that a superseded model, tool, or Sandbox

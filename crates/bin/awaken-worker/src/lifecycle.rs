@@ -720,7 +720,7 @@ pub(crate) fn spawn_session_realization_reconciliation(
                     let cleanup_target = awaken_session_realization_contract::SessionRealizationTarget {
                         owner: lifecycle.identity.worker_id.clone(),
                         runtime_incarnation: lifecycle.identity.lease_owner(),
-                        lease_expires_at_unix_ms: claim_expiry.to_unix_ms(),
+                        lease_expires_at_unix_ms: claim_expiry.to_epoch_ms(),
                         reassign_existing_lease: false,
                     };
                     if let Err(error) = lifecycle

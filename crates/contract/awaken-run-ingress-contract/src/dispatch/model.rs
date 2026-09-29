@@ -17,10 +17,11 @@ pub struct Lease {
     /// owner-name-independent. A row that has never been claimed has epoch 0,
     /// so a lease — which only a claim mints — never carries 0.
     ///
-    /// Required on the wire: a missing epoch used to decode as 0 through
+    /// Required and nonzero on the wire: a missing epoch used to decode as 0 through
     /// `#[serde(default)]`, a value no claim grants. Dispatch rows persist the
     /// epoch in their own `lease_epoch` column, never as this JSON, so only the
     /// Control/Worker transport (one release on both ends) carries this field.
+    #[serde(deserialize_with = "awaken_lease_contract::fence::Epoch::deserialize_u64")]
     pub epoch: u64,
 }
 
@@ -32,6 +33,7 @@ pub struct Lease {
 pub struct RunClaim {
     pub run_id: RunId,
     pub owner: String,
+    #[serde(deserialize_with = "awaken_lease_contract::fence::Epoch::deserialize_u64")]
     pub epoch: u64,
 }
 

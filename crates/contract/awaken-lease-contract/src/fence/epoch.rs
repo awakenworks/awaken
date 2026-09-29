@@ -45,6 +45,15 @@ impl Epoch {
         }
     }
 
+    /// Decode a source-compatible integer field through this type's one
+    /// nonzero wire law. Consumers: dispatch Lease, RunClaim, RenewRequest and
+    /// SettleRequest, whose Rust fields remain u64 during the wire cutover.
+    pub fn deserialize_u64<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<u64, D::Error> {
+        Self::deserialize(deserializer).map(Self::get)
+    }
+
     /// The persisted generation.
     #[must_use]
     pub const fn get(self) -> u64 {

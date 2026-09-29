@@ -1189,6 +1189,11 @@ async fn managed_mutation_batch_continues_after_its_first_item_fails() {
 
 #[test]
 fn legacy_writing_json_defaults_to_an_expired_unowned_lease() {
+    // C1 legacy epoch missing/zero; C2 writer token/deadline absent. E1 decode
+    // is an expired unowned envelope (not a grant); E2 takeover starts at epoch
+    // two even with a reused attempt namespace; E3 neither Ready nor publish
+    // is allowed. This table preserves persisted compatibility without giving
+    // missing identity a dispatch-style grant.
     let command = managed_command("https://mcp.example.com");
     let (source, _) = prepare_source_with_id(command.source_id.clone().unwrap(), command.source);
     let child = ManagedVaultCredential {
@@ -1205,26 +1210,37 @@ fn legacy_writing_json_defaults_to_an_expired_unowned_lease() {
         lifecycle: ManagedCredentialLifecycle::Active,
     };
     let pending = PendingManagedCredentialMutation::create(source, child).unwrap();
-    let mut legacy = serde_json::to_value(pending).unwrap();
-    let object = legacy.as_object_mut().unwrap();
-    object.remove("writer_token");
-    object.remove("writer_epoch");
-    object.remove("writer_lease_expires_at_unix_ms");
+    let wire = serde_json::to_value(pending).unwrap();
+    for epoch in [None, Some(0)] {
+        let mut legacy = wire.clone();
+        let object = legacy.as_object_mut().unwrap();
+        object.remove("writer_token");
+        object.remove("writer_epoch");
+        object.remove("writer_lease_expires_at_unix_ms");
+        if let Some(epoch) = epoch {
+            object.insert("writer_epoch".into(), epoch.into());
+        }
 
-    let decoded: PendingManagedCredentialMutation = serde_json::from_value(legacy).unwrap();
-    assert!(decoded.material_fence.writer_token.is_none());
-    assert_eq!(decoded.material_fence.writer_epoch, None);
-    assert_eq!(decoded.material_fence.writer_lease_expires_at_unix_ms, 0);
-    let claimed = decoded.claim_after_expiry(0, 1).unwrap().unwrap();
-    // Legacy zero is unowned, never a route back to the reserved original
-    // writer epoch. Deserialization/recovery must enter abort-only epoch two.
-    assert_eq!(
-        claimed.material_fence.writer_epoch,
-        awaken_lease_contract::fence::Epoch::from_persisted(2)
-    );
-    claimed.validate().unwrap();
-    assert!(claimed.with_material_ready().is_err());
-    assert!(claimed.with_material_reclaiming().is_err());
+        let decoded: PendingManagedCredentialMutation = serde_json::from_value(legacy).unwrap();
+        assert!(
+            decoded.material_fence.writer_token.is_none(),
+            "E1 {epoch:?}"
+        );
+        assert_eq!(decoded.material_fence.writer_epoch, None, "E1 {epoch:?}");
+        assert_eq!(
+            decoded.material_fence.writer_lease_expires_at_unix_ms, 0,
+            "E1 {epoch:?}"
+        );
+        let claimed = decoded.claim_after_expiry(0, 1).unwrap().unwrap();
+        assert_eq!(
+            claimed.material_fence.writer_epoch,
+            awaken_lease_contract::fence::Epoch::from_persisted(2),
+            "E2 {epoch:?}"
+        );
+        claimed.validate().unwrap();
+        assert!(claimed.with_material_ready().is_err(), "E3 {epoch:?}");
+        assert!(claimed.with_material_reclaiming().is_err(), "E3 {epoch:?}");
+    }
 }
 
 #[tokio::test]
