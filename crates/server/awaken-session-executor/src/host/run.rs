@@ -402,7 +402,7 @@ impl SharedHost {
                 // A standalone Host has no autonomous pool. Preserve its direct
                 // ingress behavior for tests/embedders while served deployments
                 // always take the non-blocking process-pool branch above.
-                awaken_dispatch::LiveRunControlService::new((*ingress).clone())
+                awaken_dispatch::LiveRunControlService::new((*ingress).clone(), self.clock())
                     .cancel(&run_id.0)
                     .await
                     .map_err(|error| HostError::internal(error.to_string()))?;
