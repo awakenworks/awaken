@@ -92,9 +92,9 @@ pub mod phase {
     pub const LINK_OPENING: u16 = 52;
     pub const COORDINATION_OPENING: u16 = 54;
     pub const COORDINATION_MESSAGE: u16 = 55;
-    pub const OUTCOME_EVALUATION_START: u16 = 60;
-    pub const OUTCOME_EVALUATION_ONGOING: u16 = 61;
-    pub const OUTCOME_EVALUATION_END: u16 = 62;
+    /// One terminal report releases complete evaluation trios; the ordinal
+    /// carries iteration and start/ongoing/end order within this phase.
+    pub const OUTCOME_EVALUATION: u16 = 60;
     pub const OUTCOME_ERROR: u16 = 63;
     pub const LIFECYCLE_ERROR: u16 = 70;
     pub const THREAD_TERMINAL: u16 = 80;
@@ -233,9 +233,9 @@ impl FactRole {
             Self::CoordinationMessageSent
             | Self::ChildMessageReceived
             | Self::AdvisorMessageReceived => phase::COORDINATION_MESSAGE,
-            Self::OutcomeEvaluationStart => phase::OUTCOME_EVALUATION_START,
-            Self::OutcomeEvaluationOngoing => phase::OUTCOME_EVALUATION_ONGOING,
-            Self::OutcomeEvaluationEnd => phase::OUTCOME_EVALUATION_END,
+            Self::OutcomeEvaluationStart
+            | Self::OutcomeEvaluationOngoing
+            | Self::OutcomeEvaluationEnd => phase::OUTCOME_EVALUATION,
             Self::OutcomeError => phase::OUTCOME_ERROR,
             Self::RootLifecycleError | Self::LifecycleError => phase::LIFECYCLE_ERROR,
             Self::RootLifecycleStatusIdle
@@ -342,8 +342,8 @@ mod tests {
             ("model-request-end", 41),
             ("model-request-start", 40),
             ("outcome-error", 63),
-            ("outcome-evaluation-end", 62),
-            ("outcome-evaluation-ongoing", 61),
+            ("outcome-evaluation-end", 60),
+            ("outcome-evaluation-ongoing", 60),
             ("outcome-evaluation-start", 60),
             ("parent-terminal-child-status-terminated", 110),
             ("parent-terminal-primary-status-terminated", 111),
