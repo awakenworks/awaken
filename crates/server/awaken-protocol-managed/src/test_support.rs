@@ -11,6 +11,13 @@ mod managed_event_observer;
 pub use managed_event_observer::{
     DurableFact, wait_for_delivered_lifecycle_facts, wait_for_session_events,
 };
+#[path = "test_support/committed_audit.rs"]
+mod committed_audit;
+pub use committed_audit::{
+    AwaitTargets, StateLog, audited_lifecycle_records, fixture_state_log, fixture_thread_audit,
+    fixture_usage_command, lifecycle_audit_pausing_on, lifecycle_audit_records,
+    remember_ticket_await_target, tool_call_target,
+};
 
 use awaken_session_execution_contract::SessionRuntime;
 
@@ -18,41 +25,6 @@ use awaken_runtime_contract::tool_batch::ToolBatch;
 
 use crate::types::tunnel::{Tunnel, TunnelCertificate, TunnelToken};
 
-/// Materialize authored fixture transitions as real committed audit records.
-/// Snapshot and lifecycle assertions must describe one fact set. Classification
-/// still belongs to the production reducer, so an inconsistent expected kind
-/// cannot manufacture an Awaiting predecessor or override the encoded state.
-pub fn lifecycle_audit_records<'a>(
-    events: impl IntoIterator<Item = &'a awaken_agent_contract::RunLifecycleEvent>,
-) -> Vec<awaken_agent_contract::audit::record::Record> {
-    use awaken_agent_contract::{RunLifecycleEventKind, audit::run_event::RunEvent};
-    let mut records = events
-        .into_iter()
-        .map(|event| {
-            let fact = if event.kind == RunLifecycleEventKind::Rescheduled {
-                RunEvent::RunRescheduled {
-                    state: event.state.clone(),
-                    claim_epoch: 1,
-                }
-            } else {
-                RunEvent::RunStateChanged {
-                    state: event.state.clone(),
-                    await_reason: event.await_reason,
-                    await_target: None,
-                }
-            };
-            let draft: awaken_agent_contract::audit::draft::Draft = fact.into();
-            awaken_agent_contract::audit::record::Record {
-                sequence: event.cursor.0,
-                run_id: event.run_id.clone(),
-                kind: draft.kind,
-                payload: draft.payload,
-            }
-        })
-        .collect::<Vec<_>>();
-    records.sort_by_key(|record| record.sequence);
-    records
-}
 use crate::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunnelScope};
 
 /// Protocol fixtures exercise application ordering, not OS suspend behavior.
@@ -1619,12 +1591,21 @@ impl awaken_session_execution_contract::ThreadReadRuntime for CoordinatedRuntime
             .unwrap_or_default();
         // M1-M2/E5: the root (10) and child (5) counters are committed Thread
         // state, matching the Budget projection above. One shared fixture fact
-        // must survive either read path and repeated Session aggregation.
+        // must survive either read path and repeated Session aggregation. It
+        // is committed with the Thread's own work, so a later disposition
+        // commit does not move it.
         use awaken_agent_contract::agent::state::StateKey as _;
         state.push(awaken_runtime_contract::llm::ThreadUsageKey::write(
             &Self::committed_usage(thread_id),
         ));
-        state_commit_cursors.push(store_cursor);
+        state_commit_cursors.push(
+            thread_lifecycle
+                .iter()
+                .map(|event| event.source_commit_cursor)
+                .chain(message_commit_cursors.iter().copied())
+                .max()
+                .unwrap_or(store_cursor),
+        );
         Ok(Some(
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
                 commit_timestamps: Default::default(),

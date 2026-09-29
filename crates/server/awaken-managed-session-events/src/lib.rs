@@ -34,7 +34,7 @@ mod usage;
 pub use acceptance::{AcceptanceFence, LifecycleAcceptance, accept_lifecycle};
 pub use activation::activation_failure_fact;
 pub use aggregate::{
-    IntervalAggregatePlan, IntervalStep, IntervalUsage, latest_interval_opening,
+    IntervalAggregatePlan, IntervalHold, IntervalStep, IntervalUsage, interval_hold,
     plan_interval_aggregate,
 };
 pub use coordination::{
@@ -48,7 +48,9 @@ pub use evidence::{
 };
 pub use fact::{FactKind, TimelineFact};
 pub use fault::{RunFault, run_fault, run_state_fault};
-pub use historical::{historical_message_boundaries, historical_pending_by_lifecycle};
+pub use historical::{
+    audited_await_targets, historical_message_boundaries, historical_pending_by_lifecycle,
+};
 pub use index::{
     BudgetReachAnchor, OrderEvidence, OrderIndex, ParentTerminalEvidence,
     message_projection_ordinal_bound, report_commit_cursor,

@@ -363,56 +363,52 @@ impl ManagedState {
         }))
     }
 
-    pub(super) fn pending_from_recovery_snapshot(
+    /// Refuse a committed prefix whose current Run is paused without an
+    /// audited await target. The timeline classifies every pause from the
+    /// `RunStateChanged` audit its commit wrote beside the ticket, never from
+    /// a live ticket, so a pause that left no target cannot be projected the
+    /// same before and after its ticket is consumed; it is surfaced as damage
+    /// instead. A budget pause needs no target: its reason is the whole fact.
+    pub(super) fn committed_pause_health(
         snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
-    ) -> Result<Option<Pending>, StateError> {
-        let ticket_error = match Self::pending_ticket_from_recovery_snapshot(snapshot) {
-            Ok(Some((_, _, pending))) => return Ok(Some(pending)),
-            Ok(None) => None,
-            Err(error) => {
-                tracing::error!(
-                    awaken.thread.id = %snapshot.thread_id.0,
-                    %error,
-                    "projecting a damaged pending-tool ticket from its committed Awaiting audit"
-                );
-                Some(error)
-            }
+    ) -> Result<(), StateError> {
+        let Some(current) = Self::current_recovery_run(snapshot)? else {
+            return Ok(());
         };
-
-        let current = match Self::current_recovery_run(snapshot) {
-            Ok(current) => current,
-            Err(error) => return Err(ticket_error.unwrap_or(error)),
+        if !matches!(
+            current.state,
+            awaken_agent_contract::agent::run::RunState::Awaiting
+        ) {
+            return Ok(());
+        }
+        let audited = Self::latest_recovery_run_state_change(snapshot, &current.id);
+        let Some((event, awaken_agent_contract::agent::run::RunState::Awaiting)) = audited else {
+            return Err(StateError::projection_recovery_required(
+                "Runtime recovery exposed an Awaiting Run without its answerable ticket; interrupt the Session to settle it",
+            ));
         };
-        let Some(current) = current.filter(|run| {
-            matches!(
-                run.state,
-                awaken_agent_contract::agent::run::RunState::Awaiting
-            )
-        }) else {
-            return ticket_error.map_or(Ok(None), Err);
-        };
-        let run_id = &current.id;
-        let Some((event, awaken_agent_contract::agent::run::RunState::Awaiting)) =
-            Self::latest_recovery_run_state_change(snapshot, run_id)
-        else {
-            return ticket_error.map_or(Ok(None), Err);
-        };
-        let pending = event
+        let budget_pause = event
             .payload
-            .get("await_target")
+            .get("await_reason")
             .cloned()
-            .and_then(|target| {
-                serde_json::from_value::<awaken_agent_contract::agent::awaiting::AwaitTarget>(
-                    target,
+            .and_then(|reason| {
+                serde_json::from_value::<awaken_agent_contract::agent::awaiting::AwaitReason>(
+                    reason,
                 )
                 .ok()
             })
-            .and_then(|target| Pending::from_await_target(&target));
-        match (pending, ticket_error) {
-            (Some(pending), _) => Ok(Some(pending)),
-            (None, Some(error)) => Err(error),
-            (None, None) => Ok(None),
+            == Some(awaken_agent_contract::agent::awaiting::AwaitReason::BudgetReached);
+        if event
+            .payload
+            .get("await_target")
+            .is_some_and(|target| !target.is_null())
+            || budget_pause
+        {
+            return Ok(());
         }
+        Err(StateError::projection_recovery_required(
+            "Runtime recovery exposed an Awaiting Run without its answerable ticket; interrupt the Session to settle it",
+        ))
     }
 
     pub(super) fn public_tool_thread_id(session_id: &str, owner_thread_id: Option<&str>) -> String {

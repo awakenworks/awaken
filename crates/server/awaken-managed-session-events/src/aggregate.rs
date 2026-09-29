@@ -1,6 +1,7 @@
 // @formal entrypoint session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
-//! Aggregate Session facts owned by admitted runtime intervals: each interval's
-//! exact opening edge, and its usage/idle close.
+//! Aggregate Session facts owned by admitted runtime intervals: each observed
+//! interval's usage/idle close, and how the intervals hold the lifecycle
+//! boundaries of a prefix.
 //!
 //! Consumer: the protocol adapter's candidate builder, which withdraws the
 //! replaced facts, then appends the planned ones in order.
@@ -50,10 +51,10 @@ pub struct IntervalUsage {
 /// Plan the aggregate facts of `persisted`'s intervals over the accepted
 /// lifecycle.
 ///
-/// Session-level Usage/Idle belongs to the root-owned interval, while Running
-/// belongs to the exact lifecycle opening already visible to a client.
-/// Closing an interval must never replace that issued cursor: only
-/// non-canonical opening candidates and former interval-id Running facts are
+/// Session-level Usage/Idle belongs to the root-owned interval. Its Running
+/// edge is the lifecycle walk's (one per aggregate period, keyed by the
+/// period's first commit), never the interval's, so closing an interval cannot
+/// move an issued opening: only former interval-id Running facts are
 /// withdrawn. A legacy row with no interval history, and independent budget
 /// reach facts, retain their projections unchanged.
 pub fn plan_interval_aggregate(
@@ -63,12 +64,6 @@ pub fn plan_interval_aggregate(
 ) -> Result<IntervalAggregatePlan, ProjectionError> {
     let session_id = persisted.session_id.as_str();
     let aggregate = |role, provenance| FactKey::new(session_id, role, provenance);
-    let lifecycle_running = |cursor: RunLifecycleCursor| {
-        aggregate(
-            FactRole::AggregateStatusRunning,
-            FactProvenance::Lifecycle { cursor: cursor.0 },
-        )
-    };
     let interval_fact = |role, interval_id: &str| {
         aggregate(
             role,
@@ -107,12 +102,6 @@ pub fn plan_interval_aggregate(
                     event.source_commit_cursor >= open && event.source_commit_cursor <= close
                 })
                 .collect::<Vec<_>>();
-            for lifecycle in &interval_lifecycle {
-                if opening.is_some_and(|opening| opening.cursor == lifecycle.cursor) {
-                    continue;
-                }
-                replaced.push(lifecycle_running(lifecycle.cursor));
-            }
             if let Some(terminal_cursor) = interval_lifecycle
                 .iter()
                 .filter(|event| SessionAgentRunBoundary::is_boundary(event.kind))
@@ -136,21 +125,7 @@ pub fn plan_interval_aggregate(
                 &interval.interval_id,
             ));
         }
-        if let Some(interval) = persisted.running_interval.as_ref()
-            && let Some(opening) = running_interval_lifecycle_open_event(
-                session_id,
-                interval,
-                closed.last().map_or(0, |last| last.close),
-                &persisted.event_batches,
-                lifecycle_events,
-            )
-        {
-            for lifecycle in lifecycle_events.iter().filter(|event| {
-                event.source_commit_cursor >= opening.source_commit_cursor
-                    && event.cursor != opening.cursor
-            }) {
-                replaced.push(lifecycle_running(lifecycle.cursor));
-            }
+        if let Some(interval) = persisted.running_interval.as_ref() {
             replaced.push(interval_fact(
                 FactRole::AggregateStatusRunning,
                 &interval.interval_id,
@@ -167,12 +142,12 @@ pub fn plan_interval_aggregate(
         if interval.observations.is_empty() {
             continue;
         }
-        let running = opening.map(|opening| lifecycle_running(opening.cursor));
-        // A fast interval may commit only Awaiting/Ended. Its terminal-prefix
-        // bracket was public before any later interval existed and must be
-        // rebuilt on a cold reader using that same exact terminal, never a
-        // Running commit beyond this interval's retained close.
-        if running.is_none()
+        // A fast interval may commit only Awaiting/Ended. Its primary Thread's
+        // terminal-prefix Running edge was public before any later interval
+        // existed and must be rebuilt on a cold reader using that same exact
+        // terminal, never a Running commit beyond this interval's retained
+        // close.
+        if opening.is_none()
             && let Some(terminal) = interval.observations.iter().find_map(|observation| {
                 lifecycle_events.iter().find(|event| {
                     event.cursor == observation.lifecycle_cursor
@@ -183,15 +158,6 @@ pub fn plan_interval_aggregate(
                 })
             })
         {
-            plan.steps.push(IntervalStep::AppendOnce(TimelineFact::new(
-                aggregate(
-                    FactRole::AggregateTerminalStatusRunning,
-                    FactProvenance::LifecyclePrefix {
-                        cursor: terminal.cursor.0,
-                    },
-                ),
-                FactKind::SessionRunning,
-            )));
             plan.steps.push(IntervalStep::AppendOnce(TimelineFact::new(
                 aggregate(
                     FactRole::RootTerminalStatusRunning,
@@ -227,12 +193,6 @@ pub fn plan_interval_aggregate(
                 )
             },
         );
-        if let Some(running) = running {
-            plan.steps.push(IntervalStep::AppendOnce(TimelineFact::new(
-                running,
-                FactKind::SessionRunning,
-            )));
-        }
         let budget_transition_owns_pause = stop == StopFact::BudgetReached
             && persisted
                 .budget
@@ -259,47 +219,132 @@ pub fn plan_interval_aggregate(
             ),
         });
     }
-    if let Some(interval) = persisted.running_interval.as_ref()
-        && let Some(opening) = running_interval_lifecycle_open_event(
-            session_id,
-            interval,
-            closed.last().map_or(0, |last| last.close),
-            &persisted.event_batches,
-            lifecycle_events,
-        )
-    {
-        plan.steps.push(IntervalStep::AppendOnce(TimelineFact::new(
-            lifecycle_running(opening.cursor),
-            FactKind::SessionRunning,
-        )));
-    }
     Ok(plan)
 }
 
-/// The latest interval opening the Session has resolved: the running
-/// interval's when it is resolved, otherwise the latest closed interval's.
-/// Each is selected against the same predecessor close as
-/// [`plan_interval_aggregate`], so the aggregate Running key a reader derives
-/// from it is the one the plan keeps.
+/// How admitted Session intervals hold the lifecycle boundaries of a prefix.
+///
+/// Consumer: the protocol adapter's aggregate close outside intervals, which
+/// closes the aggregate at a boundary only when no interval holds it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IntervalHold {
+    /// Boundaries inside an observed closed interval, whose own usage/idle
+    /// pair closes the aggregate for them.
+    pub closed_by_interval: std::collections::HashSet<RunLifecycleCursor>,
+    /// Boundaries at which a Session interval was still admitted: inside the
+    /// running interval, or inside an interval that settled without an
+    /// observation other than its last boundary, where it ended.
+    pub session_active: std::collections::HashSet<RunLifecycleCursor>,
+    /// The latest boundary of each observed closed interval, where its own
+    /// pair closes the aggregate; the aggregate stays open at its earlier
+    /// boundaries.
+    pub interval_closes: std::collections::HashSet<RunLifecycleCursor>,
+}
+
+/// Where each admitted interval starts: after the Runtime commit cursor its
+/// admission recorded. An interval recorded before that coordinate was kept
+/// starts at its resolved opening, else after the fence of the batch that
+/// admitted it, else after its predecessor's close (the legacy rule).
+fn interval_start(
+    admitted_after_commit_cursor: Option<u64>,
+    opening: Option<&RunLifecycleEvent>,
+    opened_revision: awaken_session_types::SessionRevision,
+    batches: &[awaken_session_event_contract::SessionEventBatch],
+    prior_close: u64,
+) -> u64 {
+    if let Some(admitted_after) = admitted_after_commit_cursor {
+        return admitted_after.max(prior_close).saturating_add(1);
+    }
+    opening.map_or_else(
+        || {
+            crate::interval::interval_admission_fence(opened_revision, batches)
+                .unwrap_or(prior_close)
+                .max(prior_close)
+                .saturating_add(1)
+        },
+        |opening| opening.source_commit_cursor,
+    )
+}
+
+/// How the admitted intervals of `persisted` hold the boundaries of
+/// `lifecycle_events` (see [`IntervalHold`]).
 #[must_use]
-pub fn latest_interval_opening<'a>(
-    persisted: &'a PersistedSession,
-    lifecycle_events: &'a [RunLifecycleEvent],
-) -> Option<&'a RunLifecycleEvent> {
+pub fn interval_hold(
+    persisted: &PersistedSession,
+    lifecycle_events: &[RunLifecycleEvent],
+) -> IntervalHold {
     let closed = closed_interval_openings(persisted, lifecycle_events);
-    persisted
-        .running_interval
-        .as_ref()
-        .and_then(|interval| {
-            running_interval_lifecycle_open_event(
-                persisted.session_id.as_str(),
-                interval,
-                closed.last().map_or(0, |last| last.close),
-                &persisted.event_batches,
-                lifecycle_events,
-            )
-        })
-        .or_else(|| closed.last().and_then(|last| last.opening))
+    let mut prior_close = 0_u64;
+    // (start, end, observed): an unobserved interval ends where the next
+    // interval starts.
+    let mut spans = Vec::<(u64, Option<u64>, bool)>::new();
+    for interval in &closed {
+        let start = interval_start(
+            interval.interval.admitted_after_commit_cursor,
+            interval.opening,
+            interval.interval.opened_revision,
+            &persisted.event_batches,
+            prior_close,
+        );
+        let observed = !interval.interval.observations.is_empty();
+        if let Some(previous) = spans.last_mut()
+            && previous.1.is_none()
+        {
+            previous.1 = Some(start.saturating_sub(1));
+        }
+        spans.push((start, observed.then_some(interval.close), observed));
+        prior_close = interval.close;
+    }
+    if let Some(interval) = persisted.running_interval.as_ref() {
+        let opening = running_interval_lifecycle_open_event(
+            persisted.session_id.as_str(),
+            interval,
+            prior_close,
+            &persisted.event_batches,
+            lifecycle_events,
+        );
+        let start = interval_start(
+            interval.admitted_after_commit_cursor,
+            opening,
+            interval.opened_revision,
+            &persisted.event_batches,
+            prior_close,
+        );
+        if let Some(previous) = spans.last_mut()
+            && previous.1.is_none()
+        {
+            previous.1 = Some(start.saturating_sub(1));
+        }
+        spans.push((start, None, true));
+    }
+    let boundaries = lifecycle_events
+        .iter()
+        .filter(|event| SessionAgentRunBoundary::is_boundary(event.kind))
+        .collect::<Vec<_>>();
+    let mut hold = IntervalHold::default();
+    let running = persisted.running_interval.is_some();
+    for (index, (start, end, observed)) in spans.iter().copied().enumerate() {
+        let inside = boundaries
+            .iter()
+            .filter(|event| {
+                event.source_commit_cursor >= start
+                    && end.is_none_or(|end| event.source_commit_cursor <= end)
+            })
+            .map(|event| event.cursor)
+            .collect::<Vec<_>>();
+        let is_running = running && index + 1 == spans.len();
+        if is_running {
+            hold.session_active.extend(inside);
+        } else if observed {
+            hold.interval_closes.extend(inside.iter().max().copied());
+            hold.closed_by_interval.extend(inside);
+        } else if let Some((_, earlier)) = inside.split_last() {
+            // Settled without an observation: the Session stayed active up
+            // to its last boundary, where it ended.
+            hold.session_active.extend(earlier.iter().copied());
+        }
+    }
+    hold
 }
 
 /// A closed interval with the opening selected against its predecessor.

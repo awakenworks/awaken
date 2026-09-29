@@ -1,6 +1,8 @@
 // @formal evidence session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
 // awaken-file-limit-ceiling: 5239 (legacy oversized test file: split, never grow)
 use awaken_session_types::SessionId;
+#[macro_use]
+mod no_committed_threads;
 mod observation_refinement;
 mod observed_commit;
 mod recording_cleanup_terminal;
@@ -4282,7 +4284,7 @@ impl SessionRepository for FaultingSessionRepository {
                         error.to_string(),
                     )
                 })?;
-            if !concurrent.begin_runtime_interval(1) {
+            if !concurrent.begin_runtime_interval(1, 0) {
                 return Err(
                     awaken_session_state_contract::SessionRepositoryError::InvalidMutation(
                         "injected concurrent activity could not open its interval".into(),

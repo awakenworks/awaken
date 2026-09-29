@@ -23,7 +23,24 @@ pub fn historical_pending_by_lifecycle<'a>(
     lifecycle_events: &[RunLifecycleEvent],
     snapshots: impl Fn(&str) -> Option<&'a RunRecoverySnapshot>,
 ) -> Result<HashMap<RunLifecycleCursor, Pending>, ProjectionError> {
-    let mut pending = HashMap::new();
+    Ok(audited_await_targets(lifecycle_events, snapshots)?
+        .into_iter()
+        .filter_map(|(cursor, target)| Some((cursor, Pending::from_await_target(&target)?)))
+        .collect())
+}
+
+/// The await target every Awaiting lifecycle commit's own audit recorded,
+/// answerable by a client or not (a scheduled action, a delegation, a pause),
+/// keyed by that lifecycle cursor. A commit absent here left no target: its
+/// pause cannot be classified until a later commit supersedes it.
+pub fn audited_await_targets<'a>(
+    lifecycle_events: &[RunLifecycleEvent],
+    snapshots: impl Fn(&str) -> Option<&'a RunRecoverySnapshot>,
+) -> Result<
+    HashMap<RunLifecycleCursor, awaken_agent_contract::agent::awaiting::AwaitTarget>,
+    ProjectionError,
+> {
+    let mut targets = HashMap::new();
     let mut awaiting_ordinal = HashMap::<(String, String), usize>::new();
     for lifecycle in lifecycle_events
         .iter()
@@ -54,15 +71,13 @@ pub fn historical_pending_by_lifecycle<'a>(
             .transpose()
             .map_err(|error| {
                 ProjectionError::corrupt(format!("decode committed Awaiting target: {error}"))
-            })?
-            .as_ref()
-            .and_then(Pending::from_await_target);
-        if let Some(historical) = historical {
-            pending.insert(lifecycle.cursor, historical);
+            })?;
+        if let Some(target) = historical {
+            targets.insert(lifecycle.cursor, target);
         }
         *ordinal += 1;
     }
-    Ok(pending)
+    Ok(targets)
 }
 
 /// Root and child use the same ordered, source-scoped history selection.

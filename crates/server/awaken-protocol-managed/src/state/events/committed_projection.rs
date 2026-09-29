@@ -18,6 +18,8 @@ mod candidate_evidence;
 mod canonical_order;
 mod historical_pending;
 mod interval_aggregate_projection;
+#[cfg(test)]
+mod oracle_tests;
 mod permission_harvest;
 mod publication;
 mod refresh_entrypoint;
@@ -49,7 +51,6 @@ impl ManagedState {
             .session(&awaken_session_types::SessionId::from(session_id))
             .await
             .map_err(StateError::from)?;
-        let persisted_status = Self::wire_session_status(&persisted);
         // Snapshot the complete warm projection and its process-local CAS token
         // before asynchronous source reads. Every path below builds privately
         // and publishes through the same compare-and-swap owner.
@@ -60,6 +61,24 @@ impl ManagedState {
             .get(session_id)
             .cloned()
             .ok_or(StateError::NotFound)?;
+        self.build_committed_projection_candidate_over(session_id, persisted, base_record, started)
+            .await
+    }
+
+    /// Reduce one committed prefix onto `base_record`. The warm refresh
+    /// passes this replica's published record; the warm/cold oracle passes a
+    /// freshly rehydrated one, so both run the one reducer.
+    async fn build_committed_projection_candidate_over(
+        &self,
+        session_id: &str,
+        persisted: awaken_session_state_contract::PersistedSession,
+        base_record: SessionRecord,
+        started: awaken_lease_contract::mono::Stopwatch,
+    ) -> Result<
+        publication::ProjectionRefreshBuild<publication::ProjectionRefreshCandidate>,
+        StateError,
+    > {
+        let persisted_status = Self::wire_session_status(&persisted);
         let base_cache_revision = base_record.cache_revision;
         let evidence = CandidateEvidence::read(
             self,
@@ -196,6 +215,10 @@ impl ManagedState {
             publication_ms = publication_started.elapsed().as_millis() as u64,
             "Managed committed projection publication completed"
         );
+        #[cfg(test)]
+        if matches!(result, Ok(true)) {
+            Box::pin(self.check_warm_equals_cold_rebuild(session_id)).await;
+        }
         result
     }
 }

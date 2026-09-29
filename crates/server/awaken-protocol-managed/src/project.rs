@@ -476,28 +476,6 @@ pub(crate) fn project_messages_with_mcp_ids(
     ))
 }
 
-/// Project the Run's sole committed disposition to the one Managed terminal
-/// classification used by foreground and cold lifecycle reconstruction.
-pub(crate) fn terminal_stop_reason(
-    state: &awaken_agent_contract::agent::run::RunState,
-    pending: Option<&Pending>,
-    await_reason: Option<&awaken_agent_contract::agent::awaiting::AwaitReason>,
-    aggregate_budget_reached: bool,
-) -> StopReason {
-    use awaken_managed_session_events::StopFact;
-    match awaken_managed_session_events::terminal_stop(
-        state,
-        pending,
-        await_reason,
-        aggregate_budget_reached,
-    ) {
-        StopFact::EndTurn => StopReason::EndTurn,
-        StopFact::RetriesExhausted => StopReason::RetriesExhausted,
-        StopFact::BudgetReached => StopReason::BudgetReached,
-        StopFact::RequiresAction { calls } => StopReason::RequiresAction { event_ids: calls },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

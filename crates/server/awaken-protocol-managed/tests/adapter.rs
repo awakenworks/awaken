@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use awaken_agent_contract::agent::awaiting;
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
@@ -2678,15 +2679,21 @@ impl ToolAwaitingFake {
         }
     }
 
-    fn await_reason(&self) -> awaken_agent_contract::agent::awaiting::AwaitReason {
+    fn await_reason(&self) -> awaiting::AwaitReason {
         match self.scenario {
-            AdapterToolScenario::Permission => {
-                awaken_agent_contract::agent::awaiting::AwaitReason::ToolPermission
-            }
-            AdapterToolScenario::Custom => {
-                awaken_agent_contract::agent::awaiting::AwaitReason::ExternalEvent
-            }
+            AdapterToolScenario::Permission => awaiting::AwaitReason::ToolPermission,
+            AdapterToolScenario::Custom => awaiting::AwaitReason::ExternalEvent,
         }
+    }
+
+    fn await_target(&self, pending: Pending) -> awaiting::AwaitTarget {
+        awaken_protocol_managed::test_support::tool_call_target(
+            pending,
+            match self.scenario {
+                AdapterToolScenario::Permission => awaiting::ToolAwaitReason::Permission,
+                AdapterToolScenario::Custom => awaiting::ToolAwaitReason::ClientExecution,
+            },
+        )
     }
 
     fn recovery_snapshot(
@@ -2706,24 +2713,13 @@ impl ToolAwaitingFake {
             .map(
                 |pending| awaken_agent_contract::thread::read::recovery::RunResumeTicket {
                     run_id: run.run_id.clone(),
-                    ticket: awaken_agent_contract::agent::awaiting::ResumeTicket::new(
+                    ticket: awaiting::ResumeTicket::new(
                         format!("adapter-awaiting-ticket:{}", pending.tool_use_id),
                         run.run_id.clone(),
                         thread_id.clone(),
                         "adapter-snapshot",
                         "adapter-catalog",
-                        awaken_agent_contract::agent::awaiting::AwaitTarget::ToolCall {
-                            reason: match self.scenario {
-                                AdapterToolScenario::Permission => awaken_agent_contract::agent::awaiting::ToolAwaitReason::Permission,
-                                AdapterToolScenario::Custom => awaken_agent_contract::agent::awaiting::ToolAwaitReason::ClientExecution,
-                            },
-                            call_id: pending.tool_use_id,
-                            tool: awaken_agent_contract::agent::awaiting::PendingTool {
-                                tool_id: pending.name,
-                                arguments: pending.input,
-                            },
-                            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
-                        },
+                        self.await_target(pending),
                     ),
                 },
             )
@@ -2744,8 +2740,10 @@ impl ToolAwaitingFake {
                 message_commit_cursors: run.message_commit_cursors.clone(),
                 state: Vec::new(),
                 state_commit_cursors: Vec::new(),
-                events: awaken_protocol_managed::test_support::lifecycle_audit_records(
+                // This fake only ever pauses on its scenario's one tool.
+                events: awaken_protocol_managed::test_support::lifecycle_audit_pausing_on(
                     &run.lifecycle,
+                    &self.await_target(self.pending()),
                 ),
                 resume_tickets,
                 thread_version: u64::try_from(run.lifecycle.len()).unwrap(),
