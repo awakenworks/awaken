@@ -693,7 +693,7 @@ mod tests {
             // decisions and real OS sampling have separate executable tests.
             Ok(
                 awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(
-                    std::time::Instant::now(),
+                    awaken_lease_contract::mono::now(),
                     std::time::Duration::ZERO,
                 ),
             )

@@ -248,8 +248,8 @@ pub struct awaken_runtime_contract::authority_lease::AuthorityProofStarted
 impl awaken_runtime_contract::authority_lease::AuthorityProofStarted
 pub fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::elapsed_at(self, Self) -> core::option::Option<core::time::Duration>
 pub const fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::elapsed_clock(self) -> core::time::Duration
-pub const fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(std::time::Instant, core::time::Duration) -> Self
-pub const fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::scheduled(self) -> std::time::Instant
+pub const fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(tokio::time::instant::Instant, core::time::Duration) -> Self
+pub const fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::scheduled(self) -> tokio::time::instant::Instant
 pub mod awaken_runtime_contract::boundary
 pub enum awaken_runtime_contract::boundary::BoundaryOutcome
 pub awaken_runtime_contract::boundary::BoundaryOutcome::Await

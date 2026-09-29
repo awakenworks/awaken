@@ -27,6 +27,7 @@ serde_json.workspace = true
 test-support = ["awaken-session-realization-contract/test-support"]
 
 [dev-dependencies]
+awaken-lease-contract.workspace = true
 async-trait.workspace = true
 awaken-credential-contract.workspace = true
 awaken-environment-contract.workspace = true

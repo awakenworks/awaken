@@ -1029,7 +1029,7 @@ mod tests {
             ("T3", 1_020_001, false),
             ("T4", 999_999, false),
         ] {
-            let scheduled = std::time::Instant::now();
+            let scheduled = awaken_lease_contract::mono::now();
             let runtime = Arc::new(RecordingTerminalProjectionRuntime::default());
             *runtime.observation.lock().unwrap() = Some(AuthorityProofStarted::from_clock_sample(
                 scheduled,

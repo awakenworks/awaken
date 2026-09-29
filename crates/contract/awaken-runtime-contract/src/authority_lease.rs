@@ -11,12 +11,20 @@
 //! Run-claim supervisors share it so the two distinct aggregates cannot drift
 //! into different liveness arithmetic.
 
-use std::time::{Duration, Instant};
+use awaken_lease_contract::mono::Instant;
+use std::time::Duration;
 
 /// Process-local observation taken before an authority request. The platform
 /// adapter supplies the elapsed clock; this value object performs no clock I/O,
 /// owns no lease, and is deliberately not serializable. Scheduling Instant and
 /// authority elapsed time need not advance together (for example on suspend).
+///
+/// The two halves have different owners on purpose. `scheduled` only paces
+/// the next attempt and reports latency, so it is the one monotonic scheduling
+/// point, `awaken_lease_contract::mono` (a paused test runtime controls it).
+/// `elapsed` is the suspend-inclusive authority clock
+/// (`awaken-authority-clock`, BOOTTIME on Linux): it alone is compared with the
+/// physical cutoff, and nothing here substitutes a scheduling reading for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuthorityProofStarted {
     scheduled: Instant,
@@ -129,7 +137,7 @@ mod tests {
         // E2 None for backward C1, never saturating into renewed authority.
         // This pure decision table is platform-neutral; the Local process
         // adapter separately checks that Linux samples the existing BOOTTIME.
-        let scheduled = Instant::now();
+        let scheduled = awaken_lease_contract::mono::now();
         let start = AuthorityProofStarted::from_clock_sample(scheduled, Duration::from_secs(1));
         for scheduling in [Duration::ZERO, Duration::from_secs(2)] {
             for (elapsed, expected) in [
@@ -155,7 +163,7 @@ mod tests {
         // Only P1+below yields the exact remainder. Equal/above/regression deny;
         // P4 never weakens that decision. No float conversion or upward rounding.
         let timing = AuthorityLeaseTiming::from_ttl_ms(30);
-        let scheduled = Instant::now();
+        let scheduled = awaken_lease_contract::mono::now();
         let started = AuthorityProofStarted::from_clock_sample(scheduled, Duration::from_secs(1));
         for (elapsed_micros, remaining_micros) in [
             (999_999, None),
