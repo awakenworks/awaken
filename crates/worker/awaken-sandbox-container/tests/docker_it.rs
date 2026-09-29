@@ -97,6 +97,7 @@ async fn docker_full_lifecycle_against_a_real_daemon() {
         ContainerState::Running
     ));
     assert!(rt.poll(id).await.unwrap().is_none(), "still running");
+    process_lifecycle::verify_security_floor(&rt, id).await;
 
     // reap + teardown
     rt.signal(id, pc::Signal::Kill).await.unwrap();

@@ -43,8 +43,17 @@ pub struct HandToolContext {
     /// Trusted launcher for the persistent shell. Providers use this to enter a
     /// sandbox once when Bash starts instead of wrapping every command and
     /// losing shell state between calls.
-    bash_launcher: Option<(PathBuf, Vec<String>)>,
+    bash_launcher: Option<Result<(PathBuf, Vec<String>), String>>,
+    /// Trusted per-start preparation of that launcher (private descriptors and
+    /// the options naming them), applied before the launcher's own arguments.
+    bash_launch_preparation: Option<BashLaunchPreparation>,
 }
+
+/// Provider-owned preparation of a trusted Bash launcher, run once per shell
+/// start. It may only add launcher options and inherited descriptors; it never
+/// sees model input.
+pub type BashLaunchPreparation =
+    Arc<dyn Fn(&mut tokio::process::Command) -> std::io::Result<()> + Send + Sync>;
 
 impl std::fmt::Debug for HandToolContext {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -71,6 +80,7 @@ impl HandToolContext {
             max_file_bytes: Some(DEFAULT_MAX_FILE_BYTES),
             bash_env: None,
             bash_launcher: None,
+            bash_launch_preparation: None,
         }
     }
 
@@ -123,7 +133,25 @@ impl HandToolContext {
         program: impl Into<PathBuf>,
         args: impl IntoIterator<Item = String>,
     ) -> Self {
-        self.bash_launcher = Some((program.into(), args.into_iter().collect()));
+        self.bash_launcher = Some(Ok((program.into(), args.into_iter().collect())));
+        self
+    }
+
+    /// Retain a provider's failed isolation admission as the shell's launch
+    /// outcome. A later Bash call returns this error without selecting another
+    /// executable or starting an unconfined shell.
+    #[must_use]
+    pub fn with_bash_launcher_failure(mut self, cause: impl Into<String>) -> Self {
+        self.bash_launcher = Some(Err(cause.into()));
+        self
+    }
+
+    /// Prepare the trusted launcher on every shell start, before its own
+    /// arguments (for example, hand it a sealed syscall-profile descriptor).
+    /// Has no effect without [`Self::with_bash_launcher`].
+    #[must_use]
+    pub fn with_bash_launch_preparation(mut self, prepare: BashLaunchPreparation) -> Self {
+        self.bash_launch_preparation = Some(prepare);
         self
     }
 }
@@ -1249,6 +1277,9 @@ mod write_tests {
         // => reject; overlapping aliases => most specific; similarly named
         // non-alias => ordinary workspace. Missing nested projection remains
         // covered by the already-openable workdir, not another missing root.
+        // On macOS /var/folders names /private/var/folders; compare the same
+        // physical coordinate the existing resolver authorizes, not a lexical
+        // spelling that differs while naming the identical directory.
         let fixture = tempfile::tempdir().unwrap();
         let workdir = fixture.path().join("workspace");
         let mount = fixture.path().join("mnt");
@@ -1272,7 +1303,11 @@ mod write_tests {
             ("outputs-similar/file", workdir.join("outputs-similar/file")),
             ("/nested/file", workdir.join("not-yet-created/file")),
         ] {
-            assert_eq!(files.resolve(input).unwrap().absolute, expected, "{input}");
+            assert_eq!(
+                files.resolve(input).unwrap().absolute,
+                canonicalize_with_missing(&expected).unwrap(),
+                "{input}"
+            );
         }
         for input in ["../outside/file", "../../file", "outputs/../../file", ""] {
             assert!(files.resolve(input).is_err(), "{input}");

@@ -1308,3 +1308,110 @@ fn sandbox_exec_renders_mount_permissions_none_network_and_escaped_paths() {
     assert!(profile.contains("/host/rw"));
     assert!(!profile.contains("(allow network*)"));
 }
+
+/// Resolver projection decision table. Causes: network policy. Effects:
+/// Unrestricted (already sharing the host network namespace) projects the host
+/// resolver runtime directories so `/etc/resolv.conf` resolves; None and
+/// Allowlist project neither directory, because their AF_UNIX endpoints would
+/// resolve names through the host from a networkless namespace. Every policy
+/// carries the workload syscall profile options before `--`.
+#[test]
+fn resolver_runtime_directories_follow_the_network_policy() {
+    let ws = PathBuf::from("/host/ws");
+    let out = PathBuf::from("/host/out");
+    let argv = vec![s("true")];
+    for (network, projected) in [
+        (pc::NetworkPolicy::Unrestricted, true),
+        (pc::NetworkPolicy::None, false),
+        (
+            pc::NetworkPolicy::Allowlist {
+                hosts: vec![s("example.com")],
+            },
+            false,
+        ),
+    ] {
+        let rendered = bubblewrap_argv(&input(&ws, &out, &[], &[], &network, &argv));
+        for dir in ["/run/systemd/resolve", "/run/NetworkManager"] {
+            assert_eq!(
+                rendered
+                    .windows(3)
+                    .any(|w| w == ["--ro-bind-try", dir, dir]),
+                projected,
+                "{network:?} {dir}"
+            );
+        }
+        assert!(
+            rendered
+                .windows(3)
+                .any(|w| w == ["--ro-bind-try", "/etc", "/etc"])
+        );
+        let options = &rendered[..rendered.iter().position(|arg| arg == "--").unwrap()];
+        assert_eq!(
+            options
+                .iter()
+                .filter(|arg| *arg == "--disable-userns")
+                .count(),
+            1,
+            "the namespace denies nested user namespaces independently of its BPF profile"
+        );
+        let seccomp = awaken_local_process::bubblewrap_seccomp_args();
+        assert!(
+            options
+                .windows(seccomp.len())
+                .any(|window| window == seccomp),
+            "{network:?} syscall profile"
+        );
+    }
+}
+
+/// Runtime-root admission decision table. A PATH-derived root is exposed
+/// read-only in full, so: R1 an installation tree at depth >= 2 outside host
+/// state is admitted, including trees *below* the operator home; R2 `/` and
+/// any other single-component root is refused; R3 the operator home, `/root`
+/// and any ancestor of either is refused; R4 kernel/runtime state trees are
+/// refused; R5 relative or non-normal (`..`, `.`) paths are refused.
+/// R6 whole first-level home trees are refused; R7 private state descendants
+/// are refused even when a directory is named bin or reached through an alias.
+#[test]
+fn runtime_roots_never_expose_host_state() {
+    let home = std::path::Path::new("/home/op");
+    for (root, admitted, row) in [
+        ("/opt/acp/node_modules", true, "R1"),
+        ("/home/op/.nvm/versions/node/v22", true, "R1"),
+        ("/home/op/.local/bin", true, "R1"),
+        ("/", false, "R2"),
+        ("/opt", false, "R2"),
+        ("/home", false, "R2/R3"),
+        ("/home/op", false, "R3"),
+        ("/home/op/.cargo", false, "R6"),
+        ("/home/op/.cargo/bin", true, "R1/R6"),
+        ("/home/op/.ssh/bin", false, "R7"),
+        ("/home/op/.config/app/bin", false, "R7"),
+        ("/home/op/.claude/sessions", false, "R7"),
+        ("/root", false, "R2/R3"),
+        ("/proc/self", false, "R4"),
+        ("/run/user/1000", false, "R4"),
+        ("/var/run/docker", false, "R4"),
+        ("/sys/fs", false, "R4"),
+        ("relative/bin", false, "R5"),
+        ("/opt/acp/../../home/op", false, "R5"),
+    ] {
+        assert_eq!(
+            is_projectable_runtime_root(std::path::Path::new(root), Some(home)),
+            admitted,
+            "{row} {root}"
+        );
+    }
+    // Without a known home, `/root` is still protected and trees stay admitted.
+    assert!(!is_projectable_runtime_root(
+        std::path::Path::new("/root"),
+        None
+    ));
+    assert!(is_projectable_runtime_root(
+        std::path::Path::new("/home/op/.local/bin"),
+        None
+    ));
+    // A PATH of `/` or `$HOME` itself projects nothing (the pre-fix exposure).
+    let env = vec![(s("PATH"), s("/:/usr/bin"))];
+    assert!(projected_runtime_roots(&env).is_empty());
+}

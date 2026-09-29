@@ -37,18 +37,23 @@ use crate::FilesystemHandleCodec as _;
 use control::{
     NamespaceControlPublicationRegistry, private_control_host_directory, private_control_mount,
 };
-#[cfg(test)]
-use seatbelt::projected_runtime_roots;
+#[cfg(target_os = "linux")]
+pub(crate) use process::attach_syscall_profile as attach_workload_syscall_profile;
 use seatbelt::projected_runtime_roots_for_command;
 pub use seatbelt::sandbox_exec_argv;
+#[cfg(test)]
+use seatbelt::{is_projectable_runtime_root, projected_runtime_roots};
 
 /// Probe the actual launch profile, not only the presence of a user namespace.
 /// This is deliberately not cached: installation, permissions and host policy
 /// can change during a Worker incarnation. Readiness is observation, not consent
 /// or a process-tree supervision attestation.
 #[cfg(target_os = "linux")]
+const PROBE_RUNTIME_ROOT: &str = "/usr/bin";
+
+#[cfg(target_os = "linux")]
 fn linux_probe_argv() -> Vec<String> {
-    bubblewrap_argv(&RenderInput {
+    let mut argv = bubblewrap_argv(&RenderInput {
         host_workspace: std::path::Path::new("/tmp"),
         host_outputs: std::path::Path::new("/tmp"),
         outputs_path: pc::WorkspaceLayout::OUTPUTS_ROOT,
@@ -57,7 +62,21 @@ fn linux_probe_argv() -> Vec<String> {
         network: &pc::NetworkPolicy::None,
         cwd: "",
         argv: &["/usr/bin/true".to_owned()],
-    })
+    });
+    // Readiness must exercise the directory-fd option production runtime
+    // projections require, not only namespaces and the syscall profile.
+    let position = argv.iter().position(|argument| argument == "--").unwrap();
+    argv.splice(
+        position..position,
+        [
+            "--ro-bind-fd".to_owned(),
+            process::runtime_root_fd(0)
+                .expect("first runtime descriptor")
+                .to_string(),
+            PROBE_RUNTIME_ROOT.to_owned(),
+        ],
+    );
+    argv
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -69,7 +88,32 @@ async fn run_native_probe_argv(argv: &[String], timeout: std::time::Duration) ->
     let Some(program) = argv.first() else {
         return false;
     };
-    let mut command = TokioCommand::new(program);
+    let Ok(launcher) = awaken_local_process::resolve_operator_launcher(program) else {
+        return false;
+    };
+    let mut command = TokioCommand::new(launcher);
+    #[cfg(target_os = "linux")]
+    {
+        let roots = if argv.iter().any(|argument| argument == "--ro-bind-fd") {
+            let Ok(root) = awaken_sandbox_fs::ProjectionRoot::capture(std::path::Path::new(
+                PROBE_RUNTIME_ROOT,
+            )) else {
+                return false;
+            };
+            vec![root]
+        } else {
+            Vec::new()
+        };
+        if process::attach_syscall_profile(
+            &mut command,
+            awaken_local_process::seccomp::SyscallProfile::Namespace,
+            roots,
+        )
+        .is_err()
+        {
+            return false;
+        }
+    }
     command
         .args(&argv[1..])
         .env_clear()
@@ -230,6 +274,24 @@ fn control_directory_for(
     }
 }
 
+/// Host system roots every Namespace launch sees read-only.
+const NAMESPACE_SYSTEM_ROOTS: [&str; 6] = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"];
+
+/// Host resolver runtime directories. `/etc/resolv.conf` is commonly a symlink
+/// into one of them, so binding `/etc` alone leaves a dangling link and an
+/// unrestricted namespace fails DNS with EAI_AGAIN. They also hold the
+/// resolver's own AF_UNIX endpoints (systemd-resolved's varlink
+/// `io.systemd.Resolve`), and a read-only bind does not stop `connect(2)` on a
+/// socket inode: projected into a networkless namespace they would resolve any
+/// name through the host and turn `--unshare-net` into a DNS channel. Only the
+/// policy that already shares the host network namespace receives them.
+fn resolver_runtime_roots(network: &pc::NetworkPolicy) -> &'static [&'static str] {
+    match network {
+        pc::NetworkPolicy::Unrestricted => &["/run/systemd/resolve", "/run/NetworkManager"],
+        pc::NetworkPolicy::Allowlist { .. } | pc::NetworkPolicy::None => &[],
+    }
+}
+
 /// Render a `bwrap` command line (unprivileged, Linux). Deterministic and pure.
 /// Layout: unshare namespaces, mount `/proc` `/dev` `/tmp`, read-only-bind the
 /// host userland (so interpreters exist), bind the workspace and outputs, bind
@@ -244,6 +306,8 @@ pub fn bubblewrap_argv(input: &RenderInput) -> Vec<String> {
             .map(s),
     );
     a.extend(["--unshare-ipc", "--unshare-uts"].into_iter().map(s));
+    // The launch maps the compiled workload syscall profile onto these fds.
+    a.extend(awaken_local_process::bubblewrap_seccomp_args());
     match input.network {
         pc::NetworkPolicy::Unrestricted => {} // share the host network namespace
         _ => a.push(s("--unshare-net")),
@@ -292,20 +356,11 @@ pub fn bubblewrap_argv(input: &RenderInput) -> Vec<String> {
         a.extend([s("--dir"), s("/run/awaken")]);
         a.extend([s("--dir"), s(SANDBOX_CONTROL_DIRECTORY_PATH)]);
     }
-    // `/etc/resolv.conf` is commonly a symlink into one of these `/run`
-    // directories. Binding `/etc` alone leaves a dangling link and makes every
-    // otherwise-unrestricted namespace fail DNS with EAI_AGAIN. The `-try`
-    // form stays portable when either resolver runtime directory is absent.
-    for dir in [
-        "/usr",
-        "/bin",
-        "/sbin",
-        "/lib",
-        "/lib64",
-        "/etc",
-        "/run/systemd/resolve",
-        "/run/NetworkManager",
-    ] {
+    // The `-try` form stays portable when a root is absent on this host.
+    for &dir in NAMESPACE_SYSTEM_ROOTS
+        .iter()
+        .chain(resolver_runtime_roots(input.network))
+    {
         a.push(s("--ro-bind-try"));
         a.push(s(dir));
         a.push(s(dir));
@@ -1747,7 +1802,7 @@ impl NamespaceSandbox {
     fn render_argv(
         &self,
         command: &pc::MaterializedCommand,
-    ) -> Result<Vec<String>, pc::SandboxError> {
+    ) -> Result<(Vec<String>, Vec<String>), pc::SandboxError> {
         if command.argv.is_empty() {
             return Err(pc::SandboxError::invalid("command argv is empty"));
         }
@@ -1783,12 +1838,24 @@ impl NamespaceSandbox {
         // `cfg!` keeps both branches type-checked on every target; only the matching
         // one is live. Both renderers take the same `RenderInput`.
         #[cfg(target_os = "macos")]
-        let argv = sandbox_exec_argv(&input);
+        let argv = {
+            let roots = projected_runtime_roots_for_command(input.env, input.argv)
+                .iter()
+                .map(|root| seatbelt::prepare_runtime_root(root))
+                .collect::<Result<Vec<_>, _>>()?;
+            let canonical: Vec<String> = roots
+                .iter()
+                .flatten()
+                .map(|(path, _)| path.to_string_lossy().into_owned())
+                .collect();
+            seatbelt::sandbox_exec_argv_with_runtime_roots(&input, &canonical)
+        };
         #[cfg(target_os = "linux")]
         let argv = bubblewrap_argv(&input);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            Ok(argv)
+            let runtime_roots = projected_runtime_roots_for_command(input.env, input.argv);
+            Ok((argv, runtime_roots))
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
@@ -1805,9 +1872,20 @@ impl NamespaceSandbox {
         &self,
         command: &pc::MaterializedCommand,
     ) -> Result<(TokioCommand, process::LaunchInfo), pc::SandboxError> {
-        let argv = self.render_argv(command)?;
-        let mut cmd = TokioCommand::new(&argv[0]);
-        let launch_info = process::LaunchInfo::attach(&mut cmd)?;
+        let (argv, runtime_roots) = self.render_argv(command)?;
+        #[cfg(target_os = "linux")]
+        let (argv, pinned_roots) = {
+            let mut argv = argv;
+            let pinned = process::pin_runtime_roots(&mut argv, &runtime_roots)?;
+            (argv, pinned)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let pinned_roots = {
+            let _ = runtime_roots;
+            Vec::new()
+        };
+        let mut cmd = TokioCommand::new(awaken_local_process::resolve_operator_launcher(&argv[0])?);
+        let launch_info = process::LaunchInfo::attach(&mut cmd, pinned_roots)?;
         cmd.args(&argv[1..]);
         self.configure_command(&mut cmd, command)?;
         Ok((cmd, launch_info))

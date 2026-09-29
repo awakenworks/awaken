@@ -1069,10 +1069,14 @@ impl K8sRuntime {
                  spec on the k8s tier rather than silently dropping the cap"
             )));
         }
-        if matches!(plan.network, crate::NetworkMode::None) {
+        if !matches!(plan.network, crate::NetworkMode::Open) {
             self.probe_ready().await?;
         }
-        admit_network(&plan.network, self.network_policy_attestation.current())
+        admit_network(
+            &plan.network,
+            self.network_policy_attestation.current(),
+            self.network_policy_attestation.allowlist_current(),
+        )
     }
 
     async fn observed_continuation_disposition(
@@ -1881,7 +1885,7 @@ fn build_pod_with_continuation(
                 containers,
                 volumes: (!volumes.is_empty()).then_some(volumes),
                 security_context: Some(PodSecurityContext {
-                    fs_group: Some(10001),
+                    fs_group: Some(crate::runtime::SANDBOX_EXECUTION_ID),
                     ..Default::default()
                 }),
                 // a finished agent Pod is reaped, not looped.
@@ -1896,6 +1900,7 @@ fn build_pod_with_continuation(
                 // The untrusted agent must NOT reach the kube API (no SA token): its
                 // only control-plane channel is the ACP data channel, nothing else.
                 automount_service_account_token: Some(false),
+                enable_service_links: Some(false),
                 image_pull_secrets: (!image_pull_secrets.is_empty()).then(|| {
                     image_pull_secrets
                         .iter()

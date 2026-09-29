@@ -1,13 +1,5 @@
 use super::*;
 
-struct OwnedDirectory(std::path::PathBuf);
-
-impl Drop for OwnedDirectory {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 #[test]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn atomic_directory_publication_decision_table_is_total() {
@@ -16,16 +8,11 @@ fn atomic_directory_publication_decision_table_is_total() {
     // C1+C2+absent moves exactly the stage name; R2 C1+C2+occupied rejects
     // while preserving both trees; R3 !C1 or !C2 rejects before the syscall.
     // There is deliberately no delete, replacement, or Repository policy.
-    let root = std::env::temp_dir().join(format!(
-        "awaken-sandbox-fs-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let _owned = OwnedDirectory(root.clone());
+    let _owned = tempfile::Builder::new()
+        .prefix("awaken-sandbox-fs-")
+        .tempdir()
+        .unwrap();
+    let root = _owned.path().to_path_buf();
     let stage = root.join("stage");
     let destination = root.join("destination");
     std::fs::create_dir(&stage).unwrap();
@@ -69,16 +56,11 @@ fn exclusive_file_lock_is_one_inode_one_writer_and_drop_releases() {
     // acquires one stable inode; R2 exact locked returns WouldBlock without
     // replacing it; R3 dropping the owner admits the next caller even for
     // C3=between-fork-and-exec; R4 symlink rejects without locking its target.
-    let root = std::env::temp_dir().join(format!(
-        "awaken-sandbox-lock-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let _owned = OwnedDirectory(root.clone());
+    let _owned = tempfile::Builder::new()
+        .prefix("awaken-sandbox-lock-")
+        .tempdir()
+        .unwrap();
+    let root = _owned.path().to_path_buf();
     let path = root.join("realization.lock");
 
     let first = try_lock_exclusive(&path).expect("R1");
@@ -116,16 +98,11 @@ fn sibling_file_transform_streams_into_the_same_atomic_replace_boundary() {
     // file; E2 C2 preserves the old file and removes its private stage.
     // Decision table: R1=C1->E1; R2=C2->E2. Both the byte convenience method and
     // large-log migration reuse this single inode-check/publication authority.
-    let root = std::env::temp_dir().join(format!(
-        "awaken-sandbox-transform-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let _owned = OwnedDirectory(root.clone());
+    let _owned = tempfile::Builder::new()
+        .prefix("awaken-sandbox-transform-")
+        .tempdir()
+        .unwrap();
+    let root = _owned.path().to_path_buf();
     let lock = try_lock_exclusive(&root.join("lifecycle.lock")).unwrap();
     let data = root.join("data");
     std::fs::write(&data, b"alpha\nbeta\n").unwrap();
@@ -171,16 +148,11 @@ fn retained_parent_sibling_effects_fail_closed_after_parent_replacement() {
     // relative effects; P2 replacement makes every C2 row reject before
     // mutation, preserving both the renamed owned directory and the foreign
     // replacement. This is the lock-domain invariant used by the marker.
-    let base = std::env::temp_dir().join(format!(
-        "awaken-sandbox-retained-parent-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&base).unwrap();
-    let _owned = OwnedDirectory(base.clone());
+    let _owned = tempfile::Builder::new()
+        .prefix("awaken-sandbox-retained-parent-")
+        .tempdir()
+        .unwrap();
+    let base = _owned.path().to_path_buf();
     let parent = base.join("parent");
     let renamed = base.join("renamed-owned-parent");
     std::fs::create_dir(&parent).unwrap();
@@ -233,16 +205,11 @@ fn atomic_file_publication_decision_table_is_total() {
     // and preserves the winner; R3 a race has exactly one winner and no
     // partial destination. Empty bytes are valid infrastructure data; their
     // domain interpretation remains the caller's responsibility.
-    let root = std::env::temp_dir().join(format!(
-        "awaken-sandbox-file-publish-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let _owned = OwnedDirectory(root.clone());
+    let _owned = tempfile::Builder::new()
+        .prefix("awaken-sandbox-file-publish-")
+        .tempdir()
+        .unwrap();
+    let root = _owned.path().to_path_buf();
     let destination = root.join("identity");
 
     publish_file_noreplace(&destination, b"first").expect("R1");
@@ -292,16 +259,11 @@ fn descriptor_relative_mutation_rejects_substituted_roots_and_symlinks() {
     // exact-root remove unlinks a symlink name without following it and
     // recursively removes an exact directory tree; R5 C4=extra-bit rejects on
     // every supported platform before chmod rather than truncating the mode.
-    let root = std::env::temp_dir().join(format!(
-        "awaken-sandbox-relative-mutation-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let _owned = OwnedDirectory(root.clone());
+    let _owned = tempfile::Builder::new()
+        .prefix("awaken-sandbox-relative-mutation-")
+        .tempdir()
+        .unwrap();
+    let root = _owned.path().to_path_buf();
     let identity = directory_identity_nofollow(&root).unwrap();
     let secret = Path::new("nested/secret");
 
@@ -390,16 +352,11 @@ fn descriptor_tree_read_propagates_every_non_missing_boundary_fault() {
     // callers cannot reinterpret partial I/O as empty Artifacts/Skills/Memory;
     // R5 an excluded prefix is not opened while other files and empty
     // directory entries remain in the complete snapshot.
-    let root = std::env::temp_dir().join(format!(
-        "awaken-sandbox-tree-read-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let _owned = OwnedDirectory(root.clone());
+    let _owned = tempfile::Builder::new()
+        .prefix("awaken-sandbox-tree-read-")
+        .tempdir()
+        .unwrap();
+    let root = _owned.path().to_path_buf();
     std::fs::create_dir_all(root.join("tree/nested")).unwrap();
     std::fs::create_dir(root.join("tree/empty")).unwrap();
     std::fs::create_dir_all(root.join("tree/excluded/private")).unwrap();
@@ -477,13 +434,11 @@ fn bounded_tree_reader_reuses_exact_walk_and_enforces_the_supplied_limit() {
     // B2 file length > limit => InvalidData, never a partial snapshot;
     // B3 same tree via existing unbounded API => unchanged compatibility;
     // B4 missing required root => NotFound, not a successful empty tree.
-    let root = std::env::temp_dir().join(format!(
-        "awaken-bounded-tree-{}-{}",
-        std::process::id(),
-        PRIVATE_STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let _owned = OwnedDirectory(root.clone());
+    let _owned = tempfile::Builder::new()
+        .prefix("awaken-bounded-tree-")
+        .tempdir()
+        .unwrap();
+    let root = _owned.path().to_path_buf();
     for limit in [0_usize, 16] {
         std::fs::write(root.join("a"), vec![b'a'; limit]).unwrap();
         let captured = read_tree_nofollow_bounded(&root, limit as u64, u64::MAX).unwrap();
@@ -548,13 +503,12 @@ fn metadata_budgets_count_empty_entries_and_depth_before_descent() {
     // bound succeeds. B8 the old unbounded reader preserves its contract.
     // Unlike descriptor-only tests, B6-B8 run on Windows too: its quiescent-path
     // adapter must enforce exactly the same caller-owned budgets.
-    let root = std::env::temp_dir().join(format!(
-        "awaken-tree-limits-{}-{}",
-        std::process::id(),
-        PRIVATE_STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
+    let _owned = tempfile::Builder::new()
+        .prefix("awaken-tree-limits-")
+        .tempdir()
+        .unwrap();
+    let root = _owned.path().to_path_buf();
     std::fs::create_dir_all(root.join("d")).unwrap();
-    let _owned = OwnedDirectory(root.clone());
     std::fs::write(root.join("a"), b"").unwrap();
     std::fs::write(root.join("d/b"), b"").unwrap();
     for (entries, depth, valid) in [(2, 2, false), (3, 1, false), (3, 2, true), (0, 0, false)] {
@@ -615,13 +569,11 @@ fn pinned_socket_path_is_short_nofollow_and_directory_exact() {
     // capture -> bind only in the retained inode; S3 missing/file/symlink parent,
     // no leaf, NUL or overlong address -> reject with no publication. The kernel
     // and procfs are external TCB; these are executed Linux adapter checks.
-    let root = std::env::temp_dir().join(format!(
-        "awaken-socket-{}-{}",
-        std::process::id(),
-        PRIVATE_STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let _owned = OwnedDirectory(root.clone());
+    let _owned = tempfile::Builder::new()
+        .prefix("awaken-socket-")
+        .tempdir()
+        .unwrap();
+    let root = _owned.path().to_path_buf();
     for length in [1, 120] {
         let parent = root.join("p".repeat(length));
         std::fs::create_dir(&parent).unwrap();

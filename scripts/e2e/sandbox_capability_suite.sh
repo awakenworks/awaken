@@ -84,6 +84,9 @@ if command -v node >/dev/null 2>&1 && node --input-type=module --eval \
   'import { bwrapAvailable } from "./e2e/bwrap_capability.mjs"; process.exit(bwrapAvailable() ? 0 : 1);'
 then
   namespace_available=true
+  run "bwrap:workload-security-boundary" \
+    env AWAKEN_TEST_REQUIRE_NAMESPACE_WORKSPACE=1 \
+    cargo test -q -p awaken-sandbox-local --test syscall_boundary -- --nocapture
   run "bwrap:session-environment-one-workspace" \
     env AWAKEN_TEST_REQUIRE_NAMESPACE_WORKSPACE=1 \
     cargo test -q -p awaken-session-environment --lib \

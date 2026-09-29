@@ -21,8 +21,8 @@ pub use coordination::{
 };
 pub use erasure::{Erased, erase};
 pub use hand::{
-    BashArgs, BashTool, EditArgs, EditTool, GlobArgs, GlobTool, GrepArgs, GrepTool,
-    HandToolContext, ReadArgs, ReadTool, WriteArgs, WriteTool,
+    BashArgs, BashLaunchPreparation, BashTool, EditArgs, EditTool, GlobArgs, GlobTool, GrepArgs,
+    GrepTool, HandToolContext, ReadArgs, ReadTool, WriteArgs, WriteTool,
 };
 pub use web::{
     ANTHROPIC_PROVIDER_ID, AWAKEN_CLOUD_PROVIDER_ID, AWAKEN_DIRECT_PROVIDER_ID,

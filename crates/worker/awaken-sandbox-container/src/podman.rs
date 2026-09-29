@@ -671,6 +671,14 @@ impl ContainerRuntime for PodmanRuntime {
     ) -> Result<std::collections::BTreeMap<String, String>, RuntimeError> {
         Ok(std::collections::BTreeMap::from([
             ("backend".into(), "podman".into()),
+            (
+                "execution_uid".into(),
+                crate::runtime::SANDBOX_EXECUTION_ID.to_string(),
+            ),
+            (
+                "hardening_revision".into(),
+                crate::runtime::CONTAINER_HARDENING_REVISION.into(),
+            ),
             ("agent_port".into(), self.agent_port.to_string()),
         ]))
     }

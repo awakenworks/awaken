@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 
 use awaken_provisioning_contract as pc;
-use k8s_openapi::api::core::v1::{Capabilities, PodSpec, ResourceRequirements, SecurityContext};
+use k8s_openapi::api::core::v1::{
+    Capabilities, PodSpec, ResourceRequirements, SeccompProfile, SecurityContext,
+};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 
 /// The egress-posture label value an external platform policy may select on. The
@@ -47,13 +49,14 @@ pub(crate) fn has_forbidden_sandbox_namespace_shape(spec: &PodSpec) -> bool {
 pub(super) fn admit_network(
     network: &crate::NetworkMode,
     restricted_policy: bool,
+    allowlist_policy: bool,
 ) -> Result<(), crate::RuntimeError> {
-    if matches!(network, crate::NetworkMode::Open)
-        || (matches!(
-            network,
-            crate::NetworkMode::None | crate::NetworkMode::Allowlist
-        ) && restricted_policy)
-    {
+    let admitted = match network {
+        crate::NetworkMode::Open => true,
+        crate::NetworkMode::None => restricted_policy,
+        crate::NetworkMode::Allowlist => allowlist_policy,
+    };
+    if admitted {
         Ok(())
     } else {
         Err(crate::RuntimeError::Backend(
@@ -68,6 +71,13 @@ pub(super) fn hardened_security_context() -> SecurityContext {
     SecurityContext {
         allow_privilege_escalation: Some(false),
         read_only_root_filesystem: Some(true),
+        run_as_non_root: Some(true),
+        run_as_user: Some(crate::runtime::SANDBOX_EXECUTION_ID),
+        run_as_group: Some(crate::runtime::SANDBOX_EXECUTION_ID),
+        seccomp_profile: Some(SeccompProfile {
+            type_: "RuntimeDefault".into(),
+            localhost_profile: None,
+        }),
         capabilities: Some(Capabilities {
             drop: Some(vec!["ALL".to_string()]),
             add: None,
@@ -126,19 +136,34 @@ mod tests {
 
     #[test]
     fn restricted_network_requires_exact_composition_evidence() {
-        /* Cause/effect graph: C1 network is open, C2 the composition attests the
-         * versioned restricted-egress policy. E1 admits Pod creation; E2 fails
-         * before contacting Kubernetes. Decision rules: N1 C1+!C2=>E1;
-         * N2 C1+C2=>E1; N3 !C1+C2=>E1; N4 !C1+!C2=>E2. Allowlist is rejected
-         * earlier by the canonical egress planner and is not a NetworkMode. */
-        assert!(
-            admit_network(&crate::NetworkMode::Open, false).is_ok(),
-            "N1"
-        );
-        assert!(admit_network(&crate::NetworkMode::Open, true).is_ok(), "N2");
-        assert!(admit_network(&crate::NetworkMode::None, true).is_ok(), "N3");
-        let error = admit_network(&crate::NetworkMode::None, false).expect_err("N4");
-        assert!(error.to_string().contains("cannot prove"), "N4: {error}");
+        // N1 Open admits independently of both evidence bits. N2 None admits
+        // exactly on deny-all evidence. N3 Allowlist admits exactly on its own
+        // proxy-only evidence: neither posture may borrow the other's proof.
+        // The issuer remains an independent earlier capability predicate.
+        for network in [
+            crate::NetworkMode::Open,
+            crate::NetworkMode::None,
+            crate::NetworkMode::Allowlist,
+        ] {
+            for restricted in [false, true] {
+                for allowlist in [false, true] {
+                    let expected = match network {
+                        crate::NetworkMode::Open => true,
+                        crate::NetworkMode::None => restricted,
+                        crate::NetworkMode::Allowlist => allowlist,
+                    };
+                    let result = admit_network(&network, restricted, allowlist);
+                    assert_eq!(
+                        result.is_ok(),
+                        expected,
+                        "N1-N3 {network:?} {restricted}/{allowlist}"
+                    );
+                    if let Err(error) = result {
+                        assert!(error.to_string().contains("cannot prove"));
+                    }
+                }
+            }
+        }
     }
 
     #[test]

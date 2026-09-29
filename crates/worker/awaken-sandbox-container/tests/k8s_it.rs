@@ -22,7 +22,8 @@ use awaken_sandbox_container::{
     ContainerState, K8sContinuationVolume, NetworkMode, RootfsPlan,
 };
 use k8s_common::{
-    container_id, disposal_authorization, effect_fence, fixture_image, spec_with_command,
+    container_id, control_image, disposal_authorization, effect_fence, fixture_image,
+    spec_with_command,
 };
 use pc::test_support::EffectAuthority;
 
@@ -82,11 +83,14 @@ async fn live_runtime() -> Option<K8sRuntime> {
     // isolated test namespace. Both paths must still pass the runtime's
     // canonical NetworkPolicy admission before any Pod is created.
     let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
-    let runtime = match K8sRuntime::connect(&namespace, addr).await {
+    let runtime = match k8s_common::connect_with_clock(&namespace, addr).await {
         Ok(runtime) => runtime,
         Err(error) => panic!("AWAKEN_K8S_E2E=1 requires a kube client: {error}"),
     };
     match runtime.ping().await {
+        // Cause: an exact fenced creation needs the same process clock that
+        // production composition installs. Without it the physical result is
+        // indeterminate, so no live lifecycle row actually reaches Kubernetes.
         Ok(()) => Some(runtime),
         Err(error) => panic!("AWAKEN_K8S_E2E=1 requires a reachable apiserver: {error}"),
     }
@@ -861,13 +865,14 @@ async fn terminal_control_pod_is_cleaned_without_reopening_live_control() {
     let image = fixture_image();
     let runtime = runtime.with_sandbox_control_forwarder(
         awaken_sandbox_container::k8s::K8sSandboxControlForwarder::new(
-            image.clone(),
+            control_image(),
             "/usr/local/bin/awaken-sandbox",
             awaken_sandbox_container::k8s::DEFAULT_REPOSITORY_GIT_CONTROL_PORT,
         )
         .unwrap(),
     );
-    let provider = ContainerProvider::new(Arc::new(runtime), image.clone());
+    let provider = ContainerProvider::new(Arc::new(runtime), image.clone())
+        .with_clock(awaken_lease_contract::system_clock());
     let scope = format!("terminal-control-{}", std::process::id());
     let mut desired = spec_with_command(&scope, image, command(&["sleep", "300"]));
     desired
@@ -1532,6 +1537,7 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
         storage_class_name: None,
         size: "1Gi".into(),
     }));
+    let fault_runtime = runtime.clone();
     let provider = Arc::new(
         ContainerProvider::new(runtime, fixture_image())
             .with_clock(awaken_lease_contract::system_clock()),
@@ -1583,12 +1589,18 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
     );
     k8s_common::set_test_finalizer(&pods, &pod_name, TEST_FINALIZER, true).await;
 
-    let terminator = pc::Sandbox::spawn(
-        source.as_ref(),
-        pc::Command::new(["sh", "-c", "kill -TERM 1"]),
-    )
-    .await
-    .expect("KPV6 make A terminal without changing the frozen realization plan");
+    // C2 is a test-owned external Pod fault, not a Session exec attempt. The
+    // latter would leave a legitimate unobserved-exec quiescence debt when
+    // PID 1 dies before its status frame. KPV6 tests the independent Rebuild
+    // DELETE versus terminal-cleanup race, while the exec-status unit rows
+    // retain the fail-closed unknown-status outcome.
+    let terminator = fault_runtime
+        .spawn(
+            awaken_sandbox_container::AdmittedExec::unrecorded(&pod_name),
+            pc::MaterializedCommand::new(["sh", "-c", "kill -TERM 1"]),
+        )
+        .await
+        .expect("KPV6 make A terminal without a Session exec attempt");
     let _ = terminator.wait().await;
     let terminal_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {

@@ -1011,6 +1011,10 @@ async fn exec_pending_wait_does_not_block_poll_or_another_waiter() {
 
 #[tokio::test]
 async fn exec_poll_distinguishes_running_missing_and_finished_status() {
+    // X1 pending -> None then exact successful status; X2 missing observer ->
+    // error; X3 transport ends without a Status frame -> error, with no
+    // invented code 0. KPV6's external fault must not weaken X3 for a real
+    // Session-owned exec whose status was lost.
     let process = exec_process(Some(tokio::spawn(async {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         Some(success_status(0))
@@ -1023,6 +1027,11 @@ async fn exec_poll_distinguishes_running_missing_and_finished_status() {
     assert!(missing.poll().await.is_err());
     assert!(missing.wait().await.is_err());
     assert_eq!(k8s_exit_status(None).code, None);
+    let no_status_frame = exec_process(Some(tokio::spawn(async { None })));
+    assert!(
+        no_status_frame.wait().await.is_err(),
+        "X3 no synthetic exit"
+    );
 }
 
 #[tokio::test]
@@ -1801,11 +1810,41 @@ fn build_pod_without_memory_mounts_still_isolates_the_input_projector() {
 
 #[test]
 fn build_pod_hardens_the_untrusted_agent() {
+    // K1 all agent/helper containers share the non-root identity, dropped
+    // capabilities, no privilege escalation and RuntimeDefault seccomp.
+    // K2 service links and SA token are absent; K3 writable volume mounts
+    // remain present and the volume group matches that execution identity.
     let spec = build_pod("r", &plan_with_memory(Vec::new()), &None, None, &[])
         .spec
         .unwrap();
     // No SA token → the agent cannot reach the kube API.
     assert_eq!(spec.automount_service_account_token, Some(false));
+    assert_eq!(spec.enable_service_links, Some(false));
+    assert_eq!(
+        spec.security_context.as_ref().unwrap().fs_group,
+        Some(crate::runtime::SANDBOX_EXECUTION_ID)
+    );
+    for container in spec
+        .containers
+        .iter()
+        .chain(spec.init_containers.iter().flatten())
+    {
+        let context = container.security_context.as_ref().unwrap();
+        assert_eq!(context.run_as_non_root, Some(true), "K1 {}", container.name);
+        assert_eq!(
+            context.run_as_user,
+            Some(crate::runtime::SANDBOX_EXECUTION_ID)
+        );
+        assert_eq!(
+            context.run_as_group,
+            Some(crate::runtime::SANDBOX_EXECUTION_ID)
+        );
+        assert_eq!(
+            context.seccomp_profile.as_ref().unwrap().type_,
+            "RuntimeDefault"
+        );
+        assert_eq!(context.allow_privilege_escalation, Some(false));
+    }
     let sc = spec.containers[0].security_context.as_ref().unwrap();
     assert_eq!(sc.allow_privilege_escalation, Some(false));
     assert_eq!(sc.read_only_root_filesystem, Some(true));

@@ -22,6 +22,13 @@ pub(crate) use crate::runtime_error::RuntimeFailure;
 /// retained for compatibility with existing resources; it is discovery evidence,
 /// never disposal authorization.
 pub(crate) const MANAGED_SANDBOX_LABEL: &str = "awaken.sandbox";
+/// Immutable execution-floor revision included in backend realization evidence.
+/// A pre-hardening object cannot be silently adopted under the new floor.
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+pub(crate) const CONTAINER_HARDENING_REVISION: &str = "linux-workload-hardening-v1";
+/// Numeric execution identity of the existing production Sandbox image; every
+/// runtime and the writable-volume group consume this one value.
+pub(crate) const SANDBOX_EXECUTION_ID: i64 = 10001;
 /// Stable, non-secret logical scope selector used to discover a provider effect
 /// across Worker-process owner changes.
 #[cfg(any(feature = "docker", feature = "podman"))]

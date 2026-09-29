@@ -42,10 +42,70 @@ fn runtime_projection_root(entry: PathBuf) -> Option<PathBuf> {
     )
 }
 
+/// Kernel and runtime state trees. A projected runtime never lives here, and
+/// their contents (process views, device nodes, service sockets) are exactly
+/// what the Namespace boundary withholds.
+const HOST_STATE_ROOTS: [&str; 5] = ["/proc", "/sys", "/dev", "/run", "/var/run"];
+
+/// A PATH-derived runtime root is exposed read-only in full, so it must name an
+/// installation tree, never a region of host state. Rejected: a relative or
+/// non-normal path (`..`, `.`), `/` and any other single-component root (which
+/// would expose a whole top-level tree such as `/home` or `/var`), the operator
+/// home or `/root` or any ancestor of either (which would expose credentials and
+/// every sibling project), and anything inside kernel/runtime state trees.
+/// Installation trees *below* a home (`~/.nvm/versions/node/vX`,
+/// `~/.local/bin`) remain projectable.
+pub(super) fn is_projectable_runtime_root(
+    root: &std::path::Path,
+    home: Option<&std::path::Path>,
+) -> bool {
+    use std::path::Component;
+    if !root.is_absolute()
+        || root
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
+    {
+        return false;
+    }
+    let depth = root
+        .components()
+        .filter(|component| matches!(component, Component::Normal(_)))
+        .count();
+    if depth < 2 {
+        return false;
+    }
+    let exposes = |protected: &std::path::Path| protected.starts_with(root);
+    if home.is_some_and(exposes) || exposes(std::path::Path::new("/root")) {
+        return false;
+    }
+    if let Some(relative) = home.and_then(|home| root.strip_prefix(home).ok()) {
+        // A whole first-level home tree is not a runtime closure (for example,
+        // .cargo also carries credentials beside bin). Known installation
+        // subtrees stay possible; private state trees never become runtimes.
+        if relative.components().count() < 2
+            || [
+                ".ssh", ".aws", ".azure", ".config", ".gnupg", ".docker", ".kube", ".codex",
+                ".claude",
+            ]
+            .iter()
+            .any(|private| relative.starts_with(private))
+        {
+            return false;
+        }
+    }
+    !HOST_STATE_ROOTS.iter().any(|state| root.starts_with(state))
+}
+
 fn push_runtime_projection(roots: &mut Vec<String>, entry: PathBuf) {
     let Some(root) = runtime_projection_root(entry) else {
         return;
     };
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute());
+    if !is_projectable_runtime_root(&root, home.as_deref()) {
+        return;
+    }
     let root = root.to_string_lossy().into_owned();
     if !roots.contains(&root) {
         roots.push(root);
@@ -80,6 +140,55 @@ pub(super) fn projected_runtime_roots_for_command(
     roots
 }
 
+/// One physical-root admission for both OS adapters. Linux additionally checks
+/// the retained descriptor's actual kernel pathname; macOS emits grants for
+/// the canonical target so a substituted alias does not grant its new target.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn prepare_runtime_root(
+    destination: &str,
+) -> Result<Option<(PathBuf, awaken_sandbox_fs::ProjectionRoot)>, pc::SandboxError> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let physical_home = home
+        .as_ref()
+        .and_then(|home| std::fs::canonicalize(home).ok());
+    let admitted = |path: &std::path::Path| {
+        is_projectable_runtime_root(path, home.as_deref())
+            && is_projectable_runtime_root(path, physical_home.as_deref())
+    };
+    let physical = match std::fs::canonicalize(destination) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err(pc::SandboxError::invalid(
+                "runtime projection cannot be resolved safely",
+            ));
+        }
+    };
+    if !admitted(&physical) {
+        return Err(pc::SandboxError::invalid(
+            "runtime projection resolves to protected host state",
+        ));
+    }
+    let root = awaken_sandbox_fs::ProjectionRoot::capture(&physical)
+        .map_err(|_| pc::SandboxError::invalid("runtime projection cannot be retained safely"))?;
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::{AsFd as _, AsRawFd as _};
+        let opened = std::fs::read_link(format!("/proc/self/fd/{}", root.as_fd().as_raw_fd()))
+            .map_err(|_| {
+                pc::SandboxError::invalid("runtime projection identity cannot be observed")
+            })?;
+        if opened.to_string_lossy().ends_with(" (deleted)") || !admitted(&opened) {
+            return Err(pc::SandboxError::invalid(
+                "opened runtime projection names protected host state",
+            ));
+        }
+    }
+    root.verify(&physical)
+        .map_err(|_| pc::SandboxError::invalid("runtime projection changed during admission"))?;
+    Ok(Some((physical, root)))
+}
+
 fn seatbelt_string(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len() + 2);
     escaped.push('"');
@@ -105,6 +214,16 @@ fn seatbelt_path_filters(path: &std::path::Path) -> String {
 /// profile supplies the minimum runtime reads; user data remains deny-by-default.
 #[must_use]
 pub fn sandbox_exec_argv(input: &RenderInput) -> Vec<String> {
+    sandbox_exec_argv_with_runtime_roots(
+        input,
+        &projected_runtime_roots_for_command(input.env, input.argv),
+    )
+}
+
+pub(super) fn sandbox_exec_argv_with_runtime_roots(
+    input: &RenderInput,
+    runtime_roots: &[String],
+) -> Vec<String> {
     let mut readable = vec![
         input.host_workspace.to_path_buf(),
         input.host_outputs.to_path_buf(),
@@ -118,11 +237,7 @@ pub fn sandbox_exec_argv(input: &RenderInput) -> Vec<String> {
         readable.push(root.join("mnt"));
     }
     readable.extend(input.mounts.iter().map(|mount| mount.host.clone()));
-    readable.extend(
-        projected_runtime_roots_for_command(input.env, input.argv)
-            .into_iter()
-            .map(PathBuf::from),
-    );
+    readable.extend(runtime_roots.iter().map(PathBuf::from));
     let mut writable = vec![
         input.host_workspace.to_path_buf(),
         input.host_outputs.to_path_buf(),

@@ -90,6 +90,14 @@ pub fn podman_run_argv(name: &str, plan: &ContainerPlan, rootfs: &RootfsPlan) ->
     argv.extend(["--entrypoint".into(), String::new()]);
     argv.extend(["--label".into(), format!("{MANAGED_SANDBOX_LABEL}=1")]);
     argv.push("--read-only".into());
+    argv.extend([
+        "--cap-drop=ALL".into(),
+        "--security-opt=no-new-privileges".into(),
+    ]);
+    argv.extend([
+        "--user".into(),
+        format!("{0}:{0}", crate::runtime::SANDBOX_EXECUTION_ID),
+    ]);
     for dir in writable_dirs(plan) {
         argv.extend([
             "--tmpfs".into(),

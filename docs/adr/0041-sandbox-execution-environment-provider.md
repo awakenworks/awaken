@@ -1127,3 +1127,11 @@ The Gateway verifies the existing signed wire format and owns public-address
 connection admission; the runtime separately proves that direct traffic cannot
 bypass it. Neither proxy variables nor a token alone establish isolation. No
 second provider, egress service or realization authority is introduced.
+
+Container execution uses the existing backend security projections: capabilities
+are dropped and privilege escalation is disabled; Docker and Podman retain an
+init owner. Kubernetes agents and helpers share the production image's non-root
+identity and volume group, RuntimeDefault seccomp, and disabled service links.
+The backend realization configuration records this security-floor revision, so
+recovery does not reinterpret a pre-floor object as an equivalent realization.
+Kubernetes deny-all and allowlist postures consume their own live policy evidence.

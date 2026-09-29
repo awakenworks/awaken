@@ -30,6 +30,16 @@ pub struct ProjectionRoot {
     handle: same_file::Handle,
 }
 
+/// Borrow the retained directory itself for descriptor-based consumers. They
+/// must not reopen its name after validation: an alias or rename can change
+/// which directory that name selects while this descriptor retains identity.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl std::os::fd::AsFd for ProjectionRoot {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self._directory.as_fd()
+    }
+}
+
 impl ProjectionRoot {
     pub fn capture(path: &Path) -> std::io::Result<Self> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -76,5 +86,32 @@ impl ProjectionRoot {
                 ))
             }
         }
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod tests {
+    use super::*;
+    use std::os::fd::AsFd as _;
+
+    /// P1 capture a plain directory -> retain its exact inode. P2 rename it and
+    /// put another directory at the old name -> path verification rejects;
+    /// the borrowed descriptor still names P1. This is the root-substitution
+    /// condition a later descriptor bind must resist, not a path round-trip.
+    #[test]
+    fn borrowed_projection_descriptor_retains_the_captured_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("runtime");
+        std::fs::create_dir(&path).unwrap();
+        let expected = directory_identity_nofollow(&path).unwrap();
+        let retained = ProjectionRoot::capture(&path).unwrap();
+        std::fs::rename(&path, temp.path().join("old-runtime")).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(retained.verify(&path).is_err(), "P2 replacement rejected");
+        assert_eq!(
+            descriptor_identity(retained.as_fd()).unwrap(),
+            expected,
+            "P1 retained"
+        );
     }
 }

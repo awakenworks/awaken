@@ -38,15 +38,7 @@ impl LocalExecutionDeployment {
         helper: PathBuf,
         paths: &std::ffi::OsStr,
     ) -> Result<Self, pc::SandboxError> {
-        use std::os::unix::fs::PermissionsExt;
-        let launcher = std::env::split_paths(paths)
-            .filter(|directory| directory.is_absolute())
-            .map(|directory| directory.join("bwrap"))
-            .find(|path| {
-                std::fs::metadata(path)
-                    .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-            })
-            .and_then(|path| std::fs::canonicalize(path).ok())
+        let launcher = awaken_local_process::resolve_operator_executable("bwrap", paths)
             .ok_or_else(|| {
                 pc::SandboxError::unsupported(
                     "TrustedHost scoped execution requires bwrap on an absolute operator PATH",

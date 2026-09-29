@@ -4,6 +4,41 @@ use awaken_sandbox_container::ContainerRuntime;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 
+pub(crate) async fn verify_security_floor(runtime: &dyn ContainerRuntime, container_id: &str) {
+    // SF1 actual exec UID/GID matches the production image identity; SF2 all
+    // effective capabilities are gone; SF3 NNP and seccomp filtering are set;
+    // SF4 root mount is read-only while /tmp and outputs remain writable.
+    // Exact nonzero row codes expose which effect failed. Rendered flags or
+    // Docker/Podman inspect metadata alone do not prove these kernel effects.
+    let script = r#"
+test "$(id -u)" = 10001 || exit 41
+test "$(id -g)" = 10001 || exit 42
+grep -Eq '^CapEff:[[:space:]]*0+$' /proc/self/status || exit 43
+grep -Eq '^NoNewPrivs:[[:space:]]*1$' /proc/self/status || exit 44
+grep -Eq '^Seccomp:[[:space:]]*2$' /proc/self/status || exit 45
+options=$(awk '$5 == "/" { print $6 }' /proc/self/mountinfo)
+case ",$options," in *,ro,*) ;; *) exit 46 ;; esac
+printf floor > /tmp/awaken-floor && printf floor > /mnt/session/outputs/awaken-floor || exit 47
+rm /tmp/awaken-floor /mnt/session/outputs/awaken-floor || exit 48
+"#;
+    let process = runtime
+        .spawn(
+            awaken_sandbox_container::AdmittedExec::unrecorded(container_id),
+            pc::MaterializedCommand::new(["sh", "-c", script]),
+        )
+        .await
+        .expect("SF actual security probe");
+    let status = tokio::time::timeout(Duration::from_secs(10), process.wait())
+        .await
+        .expect("SF probe deadline")
+        .expect("SF probe exit");
+    assert_eq!(
+        status.code,
+        Some(0),
+        "SF1-SF4 real kernel security floor (41-48 identify cause)"
+    );
+}
+
 pub(crate) async fn verify_wait_cancellation_and_signal(
     runtime: &dyn ContainerRuntime,
     container_id: &str,

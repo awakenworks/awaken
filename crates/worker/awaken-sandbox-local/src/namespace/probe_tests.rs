@@ -65,6 +65,7 @@ async fn native_probe_uses_the_real_profile_and_rechecks_changed_substrate() {
     let argv = linux_probe_argv();
     for flag in [
         "--unshare-user",
+        "--disable-userns",
         "--unshare-pid",
         "--unshare-ipc",
         "--unshare-uts",
@@ -76,6 +77,17 @@ async fn native_probe_uses_the_real_profile_and_rechecks_changed_substrate() {
         assert_eq!(argv.iter().filter(|arg| *arg == flag).count(), 1, "{flag}");
     }
     assert!(argv.ends_with(&["--".into(), "/usr/bin/true".into()]));
+    assert!(
+        argv.windows(3).any(|arguments| {
+            arguments
+                == [
+                    "--ro-bind-fd",
+                    &process::runtime_root_fd(0).unwrap().to_string(),
+                    PROBE_RUNTIME_ROOT,
+                ]
+        }),
+        "P12 real profile requires a pinned runtime directory"
+    );
     let mut fixture = vec![
         "/bin/sh".into(), "-c".into(),
         "enabled=$1; shift; for arg do if [ \"$arg\" = --unshare-pid ] && [ ! -f \"$enabled\" ]; then exit 41; fi; done".into(),
@@ -91,6 +103,31 @@ async fn native_probe_uses_the_real_profile_and_rechecks_changed_substrate() {
     assert!(run_native_probe_argv(&fixture, timeout).await, "P3");
     std::fs::remove_file(&enabled).unwrap();
     assert!(!run_native_probe_argv(&fixture, timeout).await, "P4");
+}
+
+/// P12 namespaces alone are available but the launcher rejects descriptor
+/// binds -> full readiness fails. P13 the same launcher accepts the required
+/// option -> succeeds. This proves option admission, not kernel enforcement;
+/// the real syscall/Namespace suites own that independent evidence.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn readiness_requires_runtime_directory_fd_support() {
+    let argv = linux_probe_argv();
+    for (script, expected) in [
+        (
+            "for arg do if [ \"$arg\" = --ro-bind-fd ]; then exit 42; fi; done",
+            false,
+        ),
+        ("exit 0", true),
+    ] {
+        let mut fixture = vec!["/bin/sh".into(), "-c".into(), script.into(), "probe".into()];
+        fixture.extend_from_slice(&argv[1..]);
+        assert_eq!(
+            run_native_probe_argv(&fixture, Duration::from_secs(1)).await,
+            expected,
+            "P12/P13"
+        );
+    }
 }
 
 #[tokio::test]

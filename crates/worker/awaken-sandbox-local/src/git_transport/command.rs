@@ -158,7 +158,7 @@ enum GitAuthentication<'a> {
 /// invocation therefore disables automatic maintenance in full: no auto gc,
 /// no detached gc even if one were triggered, no scheduled maintenance, and
 /// no post-fetch commit-graph write.
-const GIT_NO_DETACHED_MAINTENANCE: [&str; 8] = [
+const GIT_HOST_PROCESS_FLOOR: &[&str] = &[
     "-c",
     "gc.auto=0",
     "-c",
@@ -167,6 +167,12 @@ const GIT_NO_DETACHED_MAINTENANCE: [&str; 8] = [
     "maintenance.auto=false",
     "-c",
     "fetch.writeCommitGraph=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "submodule.recurse=false",
 ];
 
 /// The fully composed Git process for one invocation. The returned directory,
@@ -177,9 +183,16 @@ fn compose_git_command(
     args: &[&str],
     authentication: GitAuthentication<'_>,
 ) -> Result<(std::process::Command, Option<tempfile::TempDir>), SandboxError> {
-    let mut command = std::process::Command::new("git");
+    let git = awaken_local_process::resolve_operator_executable(
+        "git",
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )
+    .ok_or_else(|| {
+        SandboxError::unsupported("repository Git is unavailable on the Worker's absolute PATH")
+    })?;
+    let mut command = std::process::Command::new(git);
     command
-        .args(GIT_NO_DETACHED_MAINTENANCE)
+        .args(GIT_HOST_PROCESS_FLOOR)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env_remove(GIT_CREDENTIAL_USERNAME_ENV)
         .env_remove(GIT_CREDENTIAL_PASSWORD_ENV)
@@ -256,8 +269,6 @@ fn compose_git_command(
                 "credential.useHttpPath=false",
                 "-c",
                 "http.extraHeader=",
-                "-c",
-                "core.hooksPath=/dev/null",
                 "-c",
                 "protocol.allow=never",
             ]);
@@ -410,6 +421,48 @@ pub(crate) fn git_bytes(cwd: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, Sa
 mod tests {
     use super::*;
 
+    /// G1 local Git consumes an agent-writable repository that supplies a
+    /// post-checkout hook and fsmonitor command -> builtin checkout/status still
+    /// work, but neither program executes on the host. G2 a CLI-authored trusted
+    /// operation keeps its working tree/ref behavior. This executes actual Git;
+    /// an argv assertion alone would miss executable configuration consumers.
+    #[test]
+    fn local_repository_configuration_cannot_execute_host_hooks_or_monitors() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        run_git(Some(root.path()), &["init", "-q"]).unwrap();
+        run_git(
+            Some(root.path()),
+            &["config", "user.email", "test@example.invalid"],
+        )
+        .unwrap();
+        run_git(Some(root.path()), &["config", "user.name", "fixture"]).unwrap();
+        std::fs::write(root.path().join("source"), b"source").unwrap();
+        run_git(Some(root.path()), &["add", "source"]).unwrap();
+        run_git(Some(root.path()), &["commit", "-qm", "fixture"]).unwrap();
+        let marker = root.path().join("host-program-ran");
+        let hook = root.path().join(".git/hooks/post-checkout");
+        std::fs::write(
+            &hook,
+            format!("#!/bin/sh\nprintf attacked > '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        run_git(
+            Some(root.path()),
+            &["config", "core.fsmonitor", hook.to_str().unwrap()],
+        )
+        .unwrap();
+        run_git(Some(root.path()), &["checkout", "--detach", "HEAD"]).unwrap();
+        run_git(Some(root.path()), &["status", "--porcelain"]).unwrap();
+        assert!(!marker.exists(), "G1 untrusted host program withheld");
+        assert_eq!(
+            std::fs::read(root.path().join("source")).unwrap(),
+            b"source",
+            "G2"
+        );
+    }
+
     #[test]
     fn every_git_invocation_disables_detached_maintenance_in_both_branches() {
         // Invariant: an effect spawns no process that outlives it. R1 Local
@@ -418,7 +471,7 @@ mod tests {
         // branch (anonymous HTTPS) -> the same options precede the transport
         // configuration and the caller's arguments. Both branches share one
         // composition, so the assertion is on the exact argv, not on a flag.
-        let expected: Vec<&str> = GIT_NO_DETACHED_MAINTENANCE.to_vec();
+        let expected: Vec<&str> = GIT_HOST_PROCESS_FLOOR.to_vec();
         assert_eq!(
             expected,
             [
@@ -430,6 +483,12 @@ mod tests {
                 "maintenance.auto=false",
                 "-c",
                 "fetch.writeCommitGraph=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "submodule.recurse=false",
             ],
             "the pinned option set is the invariant, not a convenience"
         );
@@ -488,7 +547,7 @@ mod tests {
             );
         }
         let local_program = branches[0].1.0.get_program().to_string_lossy().into_owned();
-        assert_eq!(local_program, "git");
+        assert!(Path::new(&local_program).is_absolute());
     }
 
     #[test]

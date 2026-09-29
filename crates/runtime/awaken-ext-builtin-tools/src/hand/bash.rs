@@ -10,6 +10,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const BASH_OUTPUT_LIMIT: usize = 100 * 1024;
 const BASH_DEFAULT_TIMEOUT_MS: u64 = 120_000;
+/// The longest one invocation may hold the persistent shell. A model-supplied
+/// timeout above this is rejected rather than silently shortened, so the model
+/// learns the bound instead of misreading a truncated run.
+const BASH_MAX_TIMEOUT_MS: u64 = 600_000;
 
 /// A persistent Bash scoped to one Hand/toolset instance.
 pub struct BashTool {
@@ -35,8 +39,10 @@ pub struct BashArgs {
     /// Restart the runner-side Bash session before executing the command.
     #[serde(default)]
     pub restart: bool,
-    /// Invocation timeout in milliseconds; zero selects the default timeout.
+    /// Invocation timeout in milliseconds (at most 600000); zero selects the
+    /// default timeout of 120000.
     #[serde(default)]
+    #[schemars(range(max = 600_000))]
     pub timeout_ms: Option<u64>,
 }
 
@@ -59,6 +65,14 @@ impl Tool for BashTool {
             return Err(ToolError::InvalidArguments(
                 "bash: command is required".into(),
             ));
+        }
+        if let Some(timeout) = args
+            .timeout_ms
+            .filter(|timeout| *timeout > BASH_MAX_TIMEOUT_MS)
+        {
+            return Err(ToolError::InvalidArguments(format!(
+                "bash: timeout_ms {timeout} exceeds the maximum of {BASH_MAX_TIMEOUT_MS}"
+            )));
         }
         if session
             .as_ref()
@@ -108,12 +122,19 @@ struct BashSession {
 
 impl BashSession {
     fn spawn(context: &HandToolContext) -> Result<Self, ToolError> {
-        let mut command = if let Some((program, args)) = &context.bash_launcher {
-            let mut command = tokio::process::Command::new(program);
-            command.args(args);
-            command
-        } else {
-            persistent_bash_command()
+        let mut command = match &context.bash_launcher {
+            Some(Ok((program, args))) => {
+                let mut command = tokio::process::Command::new(program);
+                if let Some(prepare) = &context.bash_launch_preparation {
+                    prepare(&mut command).map_err(|error| {
+                        ToolError::DefinitiveFailure(format!("prepare bash launcher: {error}"))
+                    })?;
+                }
+                command.args(args);
+                command
+            }
+            Some(Err(cause)) => return Err(ToolError::DefinitiveFailure(cause.clone())),
+            None => persistent_bash_command(),
         };
         command
             .current_dir(&context.workdir)
@@ -377,6 +398,92 @@ mod bash_tests {
                 None
             );
         }
+    }
+
+    /// Timeout bound. T1 absent/zero => default; T2 at the maximum => accepted;
+    /// T3 above the maximum => InvalidArguments naming the bound, and no shell
+    /// is started for it (the next call still runs normally). The schema
+    /// publishes the bound so the model sees it before calling.
+    #[tokio::test]
+    async fn model_timeout_is_bounded_and_the_bound_is_published() {
+        let schema = serde_json::to_value(schemars::schema_for!(BashArgs)).unwrap();
+        assert_eq!(
+            schema["properties"]["timeout_ms"]["maximum"],
+            serde_json::json!(BASH_MAX_TIMEOUT_MS),
+            "published bound: {schema}"
+        );
+        let tool = BashTool::new(&HandToolContext::default());
+        let call = |timeout_ms| BashArgs {
+            command: "printf ok".into(),
+            restart: false,
+            timeout_ms,
+        };
+        let error = tool
+            .call(call(Some(BASH_MAX_TIMEOUT_MS + 1)))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, ToolError::InvalidArguments(message) if message.contains("600000")),
+            "T3 {error:?}"
+        );
+        assert!(tool.session.lock().await.is_none(), "T3 no shell started");
+        for timeout in [None, Some(0), Some(BASH_MAX_TIMEOUT_MS)] {
+            assert_eq!(
+                tool.call(call(timeout)).await.unwrap(),
+                "ok",
+                "T1/T2 {timeout:?}"
+            );
+        }
+    }
+
+    /// F1 provider rejects launcher admission -> exact definitive error, no
+    /// preparation or process effects. F2 admitted executable but preparation
+    /// fails -> preparation error, no executable/workload effects. F3 restart
+    /// does not bypass either refusal; no shell state is published in any row.
+    #[tokio::test]
+    async fn refused_or_unprepared_launcher_never_starts_a_shell() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("workload-ran");
+        let prepared = Arc::new(AtomicBool::new(false));
+        let hook = prepared.clone();
+        let refused = HandToolContext::new(directory.path())
+            .with_bash_launcher_failure("isolation launcher unavailable")
+            .with_bash_launch_preparation(Arc::new(move |_| {
+                hook.store(true, Ordering::SeqCst);
+                Ok(())
+            }));
+        let unprepared = HandToolContext::new(directory.path())
+            .with_bash_launcher("/bin/bash", [])
+            .with_bash_launch_preparation(Arc::new(|_| {
+                Err(std::io::Error::other("syscall profile unavailable"))
+            }));
+        for (context, expected) in [
+            (refused, "isolation launcher unavailable"),
+            (unprepared, "syscall profile unavailable"),
+        ] {
+            let context = context.with_bash_env(std::collections::BTreeMap::from([(
+                "PROBE_MARKER".into(),
+                marker.to_string_lossy().into_owned(),
+            )]));
+            let tool = BashTool::new(&context);
+            for restart in [false, true] {
+                let error = tool
+                    .call(BashArgs {
+                        command: "printf attacked > \"$PROBE_MARKER\"".into(),
+                        restart,
+                        timeout_ms: None,
+                    })
+                    .await
+                    .unwrap_err();
+                assert!(
+                    matches!(error, ToolError::DefinitiveFailure(ref cause) if cause.contains(expected)),
+                    "F1-F3 {error:?}"
+                );
+                assert!(tool.session.lock().await.is_none(), "F3 no shell published");
+                assert!(!marker.exists(), "F1/F2 workload never executed");
+            }
+        }
+        assert!(!prepared.load(Ordering::SeqCst), "F1 before preparation");
     }
 
     #[tokio::test]

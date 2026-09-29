@@ -372,9 +372,23 @@ mod cgroup_host_config_tests {
     // host-config assembly is unit-testable without a live daemon.
     #[test]
     fn host_config_hardens_rootfs_publishes_the_agent_port_and_maps_binds_ro_flag() {
+        // D1 every execution plan -> read-only root, capability drop, no new
+        // privileges and init; writable tmpfs/binds retain their declared access.
+        // Package builds have their separate existing admission and are not
+        // execution containers. A removed floor flag must fail this rule.
         let rt = DockerRuntime::connect_local(8080).expect("client builds without a daemon");
         let hc = rt.host_config(&plan_with_binds());
+        assert_eq!(
+            rt.container_config(&plan_with_binds(), HashMap::new())
+                .user
+                .as_deref(),
+            Some("10001:10001"),
+            "D1 production image identity"
+        );
         assert_eq!(hc.readonly_rootfs, Some(true));
+        assert_eq!(hc.cap_drop, Some(vec!["ALL".into()]));
+        assert_eq!(hc.security_opt, Some(vec!["no-new-privileges:true".into()]));
+        assert_eq!(hc.init, Some(true));
         assert!(hc.tmpfs.as_ref().unwrap().contains_key("/tmp"));
         assert!(hc.port_bindings.as_ref().unwrap().contains_key("8080/tcp"));
         let binds = hc.binds.unwrap();
@@ -399,19 +413,21 @@ mod cgroup_host_config_tests {
         // None: an empty network is applied and port publishing is dropped (Docker
         // forbids publishing under `--network none`). Without this the deny-egress
         // policy is planned but never enforced — a fail-open egress leak.
-        let denied = rt.host_config(&ContainerPlan {
-            network: crate::NetworkMode::None,
-            egress_identity: crate::EgressRealizationIdentity {
-                network: crate::NetworkMode::None,
-                proxy_endpoint: None,
-                capability_ttl_secs: None,
-                issuer_revision: None,
-                ephemeral_capability: false,
-            },
-            ..plan()
-        });
-        assert_eq!(denied.network_mode.as_deref(), Some("none"));
-        assert!(denied.port_bindings.is_none());
+        // D2 Open -> bridge/port; D3 None or an unresolved Allowlist -> no
+        // network and no published port. An earlier admission rejection is
+        // independent defence, not permission to render an open network here.
+        for network in [crate::NetworkMode::None, crate::NetworkMode::Allowlist] {
+            let denied = rt.host_config(&ContainerPlan {
+                network: network.clone(),
+                egress_identity: crate::EgressRealizationIdentity {
+                    network,
+                    ..Default::default()
+                },
+                ..plan()
+            });
+            assert_eq!(denied.network_mode.as_deref(), Some("none"));
+            assert!(denied.port_bindings.is_none());
+        }
     }
 
     #[test]
@@ -597,6 +613,7 @@ impl DockerRuntime {
         let mut exposed_ports = HashMap::new();
         exposed_ports.insert(self.port_key(), HashMap::new());
         Config {
+            user: Some(format!("{0}:{0}", crate::runtime::SANDBOX_EXECUTION_ID)),
             image: Some(plan.image.clone()),
             entrypoint: Some(Vec::new()),
             cmd: Some(plan.command.clone()),
@@ -851,7 +868,7 @@ impl DockerRuntime {
             .collect();
         // Apply the planned egress policy at the container level. Only `Open`
         // receives a bridge; unresolved Allowlist intent is treated as total denial.
-        let deny_net = matches!(plan.network, crate::NetworkMode::None);
+        let deny_net = !matches!(plan.network, crate::NetworkMode::Open);
         // Publish the agent port to an ephemeral 127.0.0.1 host port — but not under
         // `--network none`, where Docker forbids port publishing (and there is no
         // reachable agent channel anyway).
@@ -872,6 +889,9 @@ impl DockerRuntime {
             network_mode: deny_net.then(|| "none".to_string()),
             // Harden the untrusted agent: read-only rootfs, writable app paths as tmpfs.
             readonly_rootfs: Some(true),
+            cap_drop: Some(vec!["ALL".into()]),
+            security_opt: Some(vec!["no-new-privileges:true".into()]),
+            init: Some(true),
             tmpfs: Some(tmpfs_for(plan)),
             ..cgroup_host_config(&plan.limits)
         }
@@ -904,6 +924,14 @@ impl ContainerRuntime for DockerRuntime {
     ) -> Result<std::collections::BTreeMap<String, String>, RuntimeError> {
         Ok(std::collections::BTreeMap::from([
             ("backend".into(), "docker".into()),
+            (
+                "execution_uid".into(),
+                crate::runtime::SANDBOX_EXECUTION_ID.to_string(),
+            ),
+            (
+                "hardening_revision".into(),
+                crate::runtime::CONTAINER_HARDENING_REVISION.into(),
+            ),
             ("agent_port".into(), self.agent_port.to_string()),
         ]))
     }
