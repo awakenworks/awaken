@@ -2066,6 +2066,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-ext-builtin-tools",
+ "awaken-lease-contract",
  "awaken-runtime-contract",
  "base64 0.22.1",
  "futures",

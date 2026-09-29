@@ -24,6 +24,14 @@ pub fn now() -> Instant {
 pub struct MonoDeadline(Instant);
 
 impl MonoDeadline {
+    /// The deadline at an exact instant, for a caller that derives it from a
+    /// start it already sampled (an attempt window bounded by a request
+    /// deadline). Unrepresentable arithmetic stays the caller's typed refusal.
+    #[must_use]
+    pub const fn at(instant: Instant) -> Self {
+        Self(instant)
+    }
+
     /// The deadline `timeout` from now. A timeout too large to represent is a
     /// deadline that never passes.
     #[must_use]

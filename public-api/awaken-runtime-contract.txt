@@ -714,17 +714,17 @@ pub const fn awaken_runtime_contract::llm::ChatResponse::terminal_receipt(&self)
 pub struct awaken_runtime_contract::llm::ModelAttemptTiming
 impl awaken_runtime_contract::llm::ModelAttemptTiming
 pub const fn awaken_runtime_contract::llm::ModelAttemptTiming::idle(self) -> core::time::Duration
-pub const fn awaken_runtime_contract::llm::ModelAttemptTiming::response_deadline(self) -> tokio::time::instant::Instant
+pub const fn awaken_runtime_contract::llm::ModelAttemptTiming::response_deadline(self) -> awaken_lease_contract::mono::MonoDeadline
 pub fn awaken_runtime_contract::llm::ModelAttemptTiming::standalone(tokio::time::instant::Instant, awaken_runtime_contract::llm::ModelInferenceBudget) -> core::result::Result<Self, awaken_runtime_contract::llm::ModelInferenceBudgetError>
-pub fn awaken_runtime_contract::llm::ModelAttemptTiming::start_at(tokio::time::instant::Instant, awaken_runtime_contract::llm::ModelInferenceBudget, tokio::time::instant::Instant) -> core::result::Result<Self, awaken_runtime_contract::llm::ModelInferenceBudgetError>
-pub const fn awaken_runtime_contract::llm::ModelAttemptTiming::watchdog_deadline(self) -> tokio::time::instant::Instant
+pub fn awaken_runtime_contract::llm::ModelAttemptTiming::start_at(tokio::time::instant::Instant, awaken_runtime_contract::llm::ModelInferenceBudget, awaken_lease_contract::mono::MonoDeadline) -> core::result::Result<Self, awaken_runtime_contract::llm::ModelInferenceBudgetError>
+pub const fn awaken_runtime_contract::llm::ModelAttemptTiming::watchdog_deadline(self) -> awaken_lease_contract::mono::MonoDeadline
 pub struct awaken_runtime_contract::llm::ModelInferenceBudget
 impl awaken_runtime_contract::llm::ModelInferenceBudget
 pub const awaken_runtime_contract::llm::ModelInferenceBudget::DEFAULT: Self
 pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::attempt_response(self) -> core::time::Duration
 pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::connect_timeout(self) -> core::time::Duration
 pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::idle(self) -> core::time::Duration
-pub fn awaken_runtime_contract::llm::ModelInferenceBudget::logical_deadline(self, tokio::time::instant::Instant) -> core::result::Result<tokio::time::instant::Instant, awaken_runtime_contract::llm::ModelInferenceBudgetError>
+pub fn awaken_runtime_contract::llm::ModelInferenceBudget::logical_deadline(self, tokio::time::instant::Instant) -> core::result::Result<awaken_lease_contract::mono::MonoDeadline, awaken_runtime_contract::llm::ModelInferenceBudgetError>
 pub fn awaken_runtime_contract::llm::ModelInferenceBudget::new(core::time::Duration, core::time::Duration, core::time::Duration, core::time::Duration) -> core::result::Result<Self, awaken_runtime_contract::llm::ModelInferenceBudgetError>
 pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::return_allowance(self) -> core::time::Duration
 pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::total(self) -> core::time::Duration
@@ -748,9 +748,6 @@ pub type awaken_runtime_contract::llm::ThreadUsageKey::Value = awaken_runtime_co
 pub const awaken_runtime_contract::llm::ThreadUsageKey::KEY: &'static str
 pub const awaken_runtime_contract::llm::ThreadUsageKey::MERGE: awaken_agent_contract::agent::state::MergePolicy
 pub const awaken_runtime_contract::llm::ThreadUsageKey::SCOPE: awaken_agent_contract::agent::state::Scope
-pub struct awaken_runtime_contract::llm::TokioModelInferenceClock
-impl awaken_runtime_contract::llm::ModelInferenceClock for awaken_runtime_contract::llm::TokioModelInferenceClock
-pub fn awaken_runtime_contract::llm::TokioModelInferenceClock::now(&self) -> tokio::time::instant::Instant
 pub const awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY: &str
 pub trait awaken_runtime_contract::llm::DeltaSink: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::llm::DeltaSink::on_reasoning<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -763,10 +760,6 @@ pub fn awaken_runtime_contract::llm::LlmExecutor::infer_streaming<'life0, 'life1
 pub trait awaken_runtime_contract::llm::ModelContentMaterializer: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::llm::ModelContentMaterializer::materialize<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatRequest>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::llm::ModelContentMaterializer::process_bound(&self) -> bool
-pub trait awaken_runtime_contract::llm::ModelInferenceClock: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::llm::ModelInferenceClock::now(&self) -> tokio::time::instant::Instant
-impl awaken_runtime_contract::llm::ModelInferenceClock for awaken_runtime_contract::llm::TokioModelInferenceClock
-pub fn awaken_runtime_contract::llm::TokioModelInferenceClock::now(&self) -> tokio::time::instant::Instant
 pub trait awaken_runtime_contract::llm::ModelRequestGate: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::llm::ModelRequestGate::admit_model_request<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ModelRequestAdmissionRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::llm::ModelRequestAdmission, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::llm::ModelRequestGate::process_bound(&self) -> bool

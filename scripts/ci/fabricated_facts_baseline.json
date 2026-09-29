@@ -14,7 +14,7 @@
     "ambient_clock_read": {
       "owner": "chaizhenhua",
       "expires": "2026-12-31",
-      "reason": "The wall clock predates the WallClock port across the worker, runtime and control tiers. Each file is converted by taking a WallClock at construction or the caller's sampled instant as an argument; the count may only fall. The scan was widened to Utc::now, concrete clock values read in place (SystemClock.now_ms(), Clock::now_ms(&SystemClock)), cfg(any(test, feature)) code that ships with its feature, and files that declare their own clock trait (no longer exempt); that raised the recorded 167 reads in 97 files to 190 in 110 without any new read being written. The model-request budget and retry work then added three (provider-genai, the runtime inference engine), and the BOOTTIME authority clock moved local-process's read into awaken-authority-clock: 193 in 110. Run ingress, the container sandbox's waits and warm pool, the Worker's registration and evidence loops and the Session application now read monotonic time through awaken_lease_contract::mono (Stopwatch, MonoDeadline) and wall time through their injected clock; what remains in the Worker lifecycle is paired with the BOOTTIME authority proof's scheduling Instant, and the container effect-fence and egress reads wait on the runtime-host composition that builds those providers. The Managed adapter's rate limit, Skill, Memory-store, Deployment and Work routes and its projection timings read the Resources, Deployment, Session or Coordinator clock they are composed with, and the Deployment application stamps on its injected clock. Every remaining monotonic reading outside the Worker lifecycle's authority proof and the model-inference clock (the OAuth token cache, MCP progress throttling, the circuit breaker, tool timing, image-build and shutdown waits, the FUSE drain and content cache, Dream and evaluation timings) now goes through awaken_lease_contract::mono. The Coordinator's application access (issuance, revocation, expiry, retention), fleet readiness, claim-fenced Artifact publication, claimed commits, operator quarantine and Dream processes stamp and judge on the Coordinator clock they are composed with.",
+      "reason": "The wall clock predates the WallClock port across the worker, runtime and control tiers. Each file is converted by taking a WallClock at construction or the caller's sampled instant as an argument; the count may only fall. The scan was widened to Utc::now, concrete clock values read in place (SystemClock.now_ms(), Clock::now_ms(&SystemClock)), cfg(any(test, feature)) code that ships with its feature, and files that declare their own clock trait (no longer exempt); that raised the recorded 167 reads in 97 files to 190 in 110 without any new read being written. The model-request budget and retry work then added three (provider-genai, the runtime inference engine), and the BOOTTIME authority clock moved local-process's read into awaken-authority-clock: 193 in 110. Run ingress, the container sandbox's waits and warm pool, the Worker's registration and evidence loops and the Session application now read monotonic time through awaken_lease_contract::mono (Stopwatch, MonoDeadline) and wall time through their injected clock; what remains in the Worker lifecycle is paired with the BOOTTIME authority proof's scheduling Instant, and the container effect-fence and egress reads wait on the runtime-host composition that builds those providers. The Managed adapter's rate limit, Skill, Memory-store, Deployment and Work routes and its projection timings read the Resources, Deployment, Session or Coordinator clock they are composed with, and the Deployment application stamps on its injected clock. Every remaining monotonic reading outside the Worker lifecycle's authority proof and the model-inference clock (the OAuth token cache, MCP progress throttling, the circuit breaker, tool timing, image-build and shutdown waits, the FUSE drain and content cache, Dream and evaluation timings) now goes through awaken_lease_contract::mono. The Coordinator's application access (issuance, revocation, expiry, retention), fleet readiness, claim-fenced Artifact publication, claimed commits, operator quarantine and Dream processes stamp and judge on the Coordinator clock they are composed with. The Runtime's and the native provider's inference timing read mono instead of the retired TokioModelInferenceClock.",
       "files": {
         "crates/bin/awaken-cli/src/config/workspace_data.rs": 1,
         "crates/bin/awaken-cli/src/live_runtime_capabilities.rs": 1,
@@ -24,7 +24,6 @@
         "crates/bin/awaken-sandbox/src/main.rs": 1,
         "crates/bin/awaken-worker/src/lifecycle.rs": 6,
         "crates/contract/awaken-agent-contract/src/id.rs": 1,
-        "crates/contract/awaken-runtime-contract/src/llm/inference_budget.rs": 1,
         "crates/control/awaken-admin-config-api/src/provider_connection.rs": 1,
         "crates/control/awaken-admin-config-api/src/router.rs": 2,
         "crates/control/awaken-authz-enforce/src/lib.rs": 1,
@@ -42,9 +41,6 @@
         "crates/runtime/awaken-authority-clock/src/lib.rs": 1,
         "crates/runtime/awaken-ext-background-task/src/supervisor.rs": 1,
         "crates/runtime/awaken-ext-memory/src/extraction/controller.rs": 1,
-        "crates/runtime/awaken-provider-genai/src/inference_budget.rs": 2,
-        "crates/runtime/awaken-provider-genai/src/lib.rs": 5,
-        "crates/runtime/awaken-runtime/src/engine/inference.rs": 4,
         "crates/runtime/awaken-runtime/src/retry.rs": 1,
         "crates/server/awaken-credential-materializer/src/admission.rs": 1,
         "crates/server/awaken-credential-materializer/src/brokered_inference.rs": 1,
@@ -65,10 +61,8 @@
     "clock_trait_declaration": {
       "owner": "chaizhenhua",
       "expires": "2026-12-31",
-      "reason": "Each context declared its own wall-clock port before awaken-lease-contract owned one: agent-contract Clock, WorkerClock, RegistryClock, DataSubjectClock, WarmLeaseClock and the runtime ModelInferenceClock. Each is retired by taking awaken_lease_contract::WallClock; the count may only fall.",
-      "files": {
-        "crates/contract/awaken-runtime-contract/src/llm/inference_budget.rs": 1
-      }
+      "reason": "Each context declared its own wall-clock port before awaken-lease-contract owned one: agent-contract Clock, WorkerClock, RegistryClock, DataSubjectClock, WarmLeaseClock and the runtime ModelInferenceClock. Each is retired by taking awaken_lease_contract::WallClock; the count may only fall. The last, ModelInferenceClock, is gone: inference policy reads awaken_lease_contract::mono and ModelAttemptTiming carries MonoDeadlines. No clock trait remains outside awaken-lease-contract.",
+      "files": {}
     },
     "defaulted_system_clock": {
       "owner": "chaizhenhua",
@@ -81,9 +75,8 @@
     "shadow_clock_helper": {
       "owner": "chaizhenhua",
       "expires": "2026-12-31",
-      "reason": "Private fn now*() helpers that read time without a port, plus the now methods of the per-context clock traits. Each is retired by reading the injected WallClock (WallClockExt::now_ms/observed_at) or by retiring its trait; the count may only fall. The Session application exposes its clock instead of a now_unix_ms helper. The Managed routes' now_ms helpers are gone; the Vault's fail-closed clock reading is a named reading of its injected clock. The Coordinator's access-store, Dream, quarantine and Dream-application helpers are gone.",
+      "reason": "Private fn now*() helpers that read time without a port, plus the now methods of the per-context clock traits. Each is retired by reading the injected WallClock (WallClockExt::now_ms/observed_at) or by retiring its trait; the count may only fall. The Session application exposes its clock instead of a now_unix_ms helper. The Managed routes' now_ms helpers are gone; the Vault's fail-closed clock reading is a named reading of its injected clock. The Coordinator's access-store, Dream, quarantine and Dream-application helpers are gone. The ModelInferenceClock trait's now() and its Tokio adapter are gone.",
       "files": {
-        "crates/contract/awaken-runtime-contract/src/llm/inference_budget.rs": 2,
         "crates/control/awaken-admin-config-api/src/router.rs": 1,
         "crates/control/awaken-authz-enforce/src/lib.rs": 1,
         "crates/control/awaken-control/src/authz/clock.rs": 2,
