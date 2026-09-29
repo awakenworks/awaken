@@ -9,6 +9,8 @@
 use awaken_session_types::SessionId;
 #[path = "signed_worker_transport_http/attempt_binding.rs"]
 mod attempt_binding;
+#[path = "signed_worker_transport_http/registry_incarnation.rs"]
+mod registry_incarnation;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -3212,57 +3214,5 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
             .load(Ordering::SeqCst),
         0,
         "V1/E1"
-    );
-}
-
-/// Cause/effect design: C1 the cleanup claim route has authenticated Worker-id
-/// evidence but no Coordinator Worker Directory; C2 the request supplies a
-/// syntactically complete identity and target. Effect E1: fail closed before
-/// Session Control, because C1 cannot prove the current registry incarnation.
-/// Decision rule D1: C1+C2 => HTTP 500 and zero claim calls. A local header is
-/// deliberately insufficient incarnation authority; no compatibility bypass is
-/// permitted for this recovery-only claim. Constraint/Invariant: cleanup claims
-/// require the Coordinator's current registry incarnation, never header identity.
-#[tokio::test]
-async fn terminal_cleanup_claim_requires_current_registry_incarnation() {
-    // The dispatch port reads "now" from its store; mirror the service clock.
-    let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
-    let dispatch = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
-    let session_control = Arc::new(RecordingSessionControl::default());
-    *session_control.projection.lock().unwrap() = Some(frozen_projection());
-    let service = WorkerDispatchService::local(dispatch, awaken_lease_contract::system_clock())
-        .with_session_control(session_control.clone());
-    let router = dispatch_transport_router_with_service(Arc::new(service));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-
-    let identity = WorkerIdentity::new("local-worker", "local-incarnation", 1);
-    let response = reqwest::Client::new()
-        .post(format!(
-            "http://{address}/v1/worker/session/cleanup/claim-next"
-        ))
-        .header("x-awaken-worker-id", "local-worker")
-        .json(&serde_json::json!({
-            "identity": identity,
-            "target": awaken_session_realization_contract::SessionRealizationTarget {
-                owner: "local-worker".into(),
-                runtime_incarnation: identity.lease_owner(),
-                lease_expires_at_unix_ms: u64::MAX,
-                reassign_existing_lease: false,
-            },
-        }))
-        .send()
-        .await
-        .expect("D1 request reaches the authenticated route");
-
-    assert_eq!(
-        response.status(),
-        reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-        "D1/E1"
-    );
-    assert!(
-        session_control.cleanup_claims.lock().unwrap().is_empty(),
-        "D1/E1"
     );
 }
