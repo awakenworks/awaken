@@ -31,6 +31,19 @@ pub(super) struct K8sExecPlan {
     pub(super) secret_stdin: Vec<pc::MaterializedEnvValue>,
 }
 
+/// Keep the SDK attachment (including its unrequested stdin writer) until the
+/// status observer returns. On WebSocket v4, dropping that writer closes the
+/// entire connection and can discard stdout/status. This owns lifetime only;
+/// an absent remote status remains absent and never becomes successful exit.
+pub(super) async fn observe_attached_completion<O, F>(owner: O, completion: F) -> Option<Status>
+where
+    F: std::future::Future<Output = Option<Status>>,
+{
+    let status = completion.await;
+    drop(owner);
+    status
+}
+
 pub(super) fn k8s_exit_status(status: Option<Status>) -> pc::ExitStatus {
     let success = status.as_ref().and_then(|status| status.status.as_deref()) == Some("Success");
     let code = status
@@ -81,6 +94,12 @@ pub(super) fn k8s_exec_argv(
         return Err(backend("exec command argv is empty"));
     }
     let pid_file = crate::exec_pid_file(id);
+    // Null commands observe EOF while the v4 transport writer stays alive.
+    let stdin_redirect = if command.stdio == pc::Stdio::Null {
+        " </dev/null"
+    } else {
+        ""
+    };
     let mut inline_env = Vec::new();
     let mut secrets = Vec::new();
     for var in command.env {
@@ -106,8 +125,9 @@ pub(super) fn k8s_exec_argv(
              done; \
              {} \
              printf '%s' \"$$\" > \"$pid_file\"; \
-             if [ -n \"$cwd\" ]; then cd -- \"$cwd\" || exit 126; fi; exec \"$@\"",
-            crate::exec_pid_file_prelude()
+             if [ -n \"$cwd\" ]; then cd -- \"$cwd\" || exit 126; fi; exec \"$@\"{}",
+            crate::exec_pid_file_prelude(),
+            stdin_redirect
         ),
         "awaken-exec".into(),
         pid_file.clone(),

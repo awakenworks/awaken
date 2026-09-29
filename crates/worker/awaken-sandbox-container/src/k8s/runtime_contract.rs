@@ -684,6 +684,7 @@ impl ContainerRuntime for K8sRuntime {
             )
             .await
             .map_err(backend)?;
+        let mut secret_input = None;
         if !execution.secret_stdin.is_empty() {
             let mut stdin = attached
                 .stdin()
@@ -694,7 +695,10 @@ impl ContainerRuntime for K8sRuntime {
                     .await
                     .map_err(backend)?;
             }
-            stdin.shutdown().await.map_err(backend)?;
+            // The prelude consumes exact byte lengths, not EOF. Keep this
+            // writer until status so a v4 connection cannot close prematurely.
+            stdin.flush().await.map_err(backend)?;
+            secret_input = Some(stdin);
         }
         let mut stdout = attached
             .stdout()
@@ -702,11 +706,15 @@ impl ContainerRuntime for K8sRuntime {
         let status = attached
             .take_status()
             .ok_or_else(|| backend("k8s exec has no completion status"))?;
-        let completion = tokio::spawn(async move {
-            let mut ignored = Vec::new();
-            let (_, status) = tokio::join!(stdout.read_to_end(&mut ignored), status);
-            status
-        });
+        let completion = tokio::spawn(super::process::observe_attached_completion(
+            attached,
+            async move {
+                let mut ignored = Vec::new();
+                let (_, status) = tokio::join!(stdout.read_to_end(&mut ignored), status);
+                drop(secret_input);
+                status
+            },
+        ));
         Ok(Box::new(K8sExecProcess {
             id,
             pod: container_id.to_string(),
@@ -768,7 +776,9 @@ impl ContainerRuntime for K8sRuntime {
                 pid_file: execution.pid_file,
                 pods,
                 state: tokio::sync::Mutex::new(K8sExecState {
-                    completion: Some(tokio::spawn(completion)),
+                    completion: Some(tokio::spawn(super::process::observe_attached_completion(
+                        attached, completion,
+                    ))),
                     status: None,
                 }),
             }),
