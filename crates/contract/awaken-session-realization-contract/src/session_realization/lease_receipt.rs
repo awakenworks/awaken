@@ -68,7 +68,6 @@ impl ObservedSessionRealizationLease {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     fn lease(expiry: u64) -> SessionRealizationLease {
         SessionRealizationLease {
@@ -125,7 +124,7 @@ mod tests {
         // C3 scheduler advances/stalls. Only before grants exact remaining.
         // Changing the absolute authority epoch never changes the result:
         // no Worker wall-clock coordinate participates in this calculation.
-        let scheduled = Instant::now();
+        let scheduled = awaken_lease_contract::mono::now();
         let started = AuthorityProofStarted::from_clock_sample(scheduled, Duration::from_secs(1));
         for authority_epoch in [0, 1_000_000, u64::MAX - 30] {
             let proof = SessionRealizationLeaseReceipt::issued_at(

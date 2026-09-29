@@ -62,9 +62,10 @@ pub fn observe_realization_request() -> Result<
     awaken_runtime_contract::authority_lease::AuthorityProofStarted,
     awaken_session_error_contract::RunError,
 > {
-    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    let origin = *ORIGIN.get_or_init(std::time::Instant::now);
-    let now = std::time::Instant::now();
+    static ORIGIN: std::sync::OnceLock<awaken_lease_contract::mono::Instant> =
+        std::sync::OnceLock::new();
+    let origin = *ORIGIN.get_or_init(awaken_lease_contract::mono::now);
+    let now = awaken_lease_contract::mono::now();
     Ok(
         awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(
             now,

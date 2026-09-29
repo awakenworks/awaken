@@ -377,6 +377,7 @@ dependencies = [
 name = "awaken-authority-clock"
 version = "1.0.0"
 dependencies = [
+ "awaken-lease-contract",
  "awaken-runtime-contract",
  "rustix 1.1.4",
 ]
@@ -2913,6 +2914,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-environment-contract",
+ "awaken-lease-contract",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
  "awaken-runtime-contract",
@@ -2937,6 +2939,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-environment-contract",
+ "awaken-lease-contract",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
  "awaken-session-application-contract",
