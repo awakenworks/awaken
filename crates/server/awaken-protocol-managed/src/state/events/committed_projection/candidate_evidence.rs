@@ -39,8 +39,6 @@ pub(super) struct CandidateEvidence {
     pub(super) budget_reach: Vec<BudgetReachProjection>,
     /// The complete accepted lifecycle prefix and its checkpoint cursor.
     pub(super) acceptance: LifecycleAcceptance,
-    /// The accepted suffix beyond the base record's lifecycle checkpoint.
-    pub(super) new_lifecycle: Vec<RunLifecycleEvent>,
     pub(super) historical_pending: HashMap<RunLifecycleCursor, Pending>,
     pub(super) timings: awaken_session_application::SessionProjectionReadTimings,
     pub(super) usage_done: std::time::Duration,
@@ -51,45 +49,9 @@ impl CandidateEvidence {
         state: &ManagedState,
         session_id: &str,
         persisted: &awaken_session_state_contract::PersistedSession,
-        initial_cursor: RunLifecycleCursor,
         started: awaken_lease_contract::mono::Stopwatch,
     ) -> Result<Self, StateError> {
         let price_snapshot = persisted.budget.price_snapshot().cloned();
-        let budget_reach = persisted
-            .budget
-            .reach_transitions()
-            .iter()
-            .filter(|transition| {
-                awaken_managed_session_events::budget_reach_close_cursor(persisted, transition)
-                    .is_some()
-            })
-            .map(|transition| {
-                let mut usage = session_usage_value(
-                    transition
-                        .usage_cursor
-                        .to_session_usage()
-                        .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?,
-                    None,
-                )
-                .map_err(StateError::Run)?;
-                usage.list_cost = transition.public_list_cost_minor().map(|amount| {
-                    crate::types::MonetaryAmount {
-                        amount: amount.to_string(),
-                        currency: crate::types::Currency::USD,
-                    }
-                });
-                Ok((
-                    transition.generation,
-                    usage,
-                    crate::types::BudgetLimit::Limit {
-                        max_list_cost: crate::types::MonetaryAmount {
-                            amount: transition.max_list_cost_minor.to_string(),
-                            currency: crate::types::Currency::USD,
-                        },
-                    },
-                ))
-            })
-            .collect::<Result<Vec<_>, StateError>>()?;
         // The Session application reads the Runtime evidence through its
         // read-only projection port, in the order that keeps it one prefix:
         // retained terminal Outcomes before the root fence, then the root,
@@ -234,7 +196,9 @@ impl CandidateEvidence {
                 children: &children,
                 known_children: &known_children,
             },
-            initial_cursor,
+            // Every candidate begins from an empty committed timeline; the
+            // acceptance fence sees the full durable lifecycle prefix.
+            RunLifecycleCursor(0),
             |event| targets.contains_key(&event.cursor),
         );
         let historical_pending = acceptance
@@ -246,6 +210,49 @@ impl CandidateEvidence {
                     .map(|pending| (event.cursor, pending.clone()))
             })
             .collect::<HashMap<_, _>>();
+        // Price only the transitions whose public pause is anchored by this
+        // accepted committed prefix. A crossing hidden behind an answerable
+        // ticket cannot be inferred from the current Session status.
+        let budget_reach = persisted
+            .budget
+            .reach_transitions()
+            .iter()
+            .filter(|transition| {
+                awaken_managed_session_events::budget_reach_projection_close_cursor(
+                    persisted,
+                    transition,
+                    &acceptance.accepted,
+                    &historical_pending,
+                )
+                .is_some()
+            })
+            .map(|transition| {
+                let mut usage = session_usage_value(
+                    transition
+                        .usage_cursor
+                        .to_session_usage()
+                        .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?,
+                    None,
+                )
+                .map_err(StateError::Run)?;
+                usage.list_cost = transition.public_list_cost_minor().map(|amount| {
+                    crate::types::MonetaryAmount {
+                        amount: amount.to_string(),
+                        currency: crate::types::Currency::USD,
+                    }
+                });
+                Ok((
+                    transition.generation,
+                    usage,
+                    crate::types::BudgetLimit::Limit {
+                        max_list_cost: crate::types::MonetaryAmount {
+                            amount: transition.max_list_cost_minor.to_string(),
+                            currency: crate::types::Currency::USD,
+                        },
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>, StateError>>()?;
         // A Thread's current answerable call is its latest accepted
         // lifecycle commit when that commit is an audited pause.
         let mut latest_by_thread = HashMap::<&str, &RunLifecycleEvent>::new();
@@ -269,12 +276,6 @@ impl CandidateEvidence {
         for thread_id in &acceptance.blocked_threads {
             transcripts.remove(thread_id);
         }
-        let new_lifecycle = acceptance
-            .accepted
-            .iter()
-            .filter(|event| event.cursor > initial_cursor)
-            .cloned()
-            .collect();
         Ok(Self {
             root,
             links,
@@ -293,7 +294,6 @@ impl CandidateEvidence {
             price_snapshot,
             budget_reach,
             acceptance,
-            new_lifecycle,
             historical_pending,
             timings,
             usage_done,
@@ -372,7 +372,7 @@ impl CandidateEvidence {
             links: &self.links,
             snapshots: &self.children,
             transcripts: &self.transcripts,
-            lifecycle_events: &self.new_lifecycle,
+            lifecycle_events: &self.acceptance.accepted,
             latest_run_states: &self.child_latest_run_states,
             pending: &self.child_pending,
             historical_pending: &self.historical_pending,

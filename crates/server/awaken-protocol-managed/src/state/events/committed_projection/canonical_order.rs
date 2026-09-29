@@ -12,19 +12,13 @@
 //! wire tool results, live overlays, and DTO timestamps.
 
 use super::*;
-use awaken_managed_session_events::{
-    AnchoredOutcome, BudgetReachAnchor, CanonicalOrder, FactProvenance, FactRole, OrderEvidence,
-    OrderIndex, ParentTerminalEvidence,
-};
+use awaken_managed_session_events::{CanonicalOrder, FactProvenance, FactRole, OrderIndex};
 use std::collections::HashMap;
 
 pub(super) struct CanonicalizationEvidence<'a> {
-    pub(super) persisted: &'a awaken_session_state_contract::PersistedSession,
-    pub(super) lifecycle_events: &'a [RunLifecycleEvent],
-    pub(super) root_snapshot:
-        Option<&'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     pub(super) outcome_projections: &'a [AnchoredOutcomeProjection],
-    pub(super) delegation: DelegationProjectionEvidence<'a>,
+    pub(super) links: &'a [CoordinatedThreadLink],
+    pub(super) index: &'a OrderIndex<'a>,
 }
 
 fn retain_earliest<K: std::hash::Hash + Eq>(
@@ -36,6 +30,55 @@ fn retain_earliest<K: std::hash::Hash + Eq>(
         .entry(key)
         .and_modify(|current| *current = (*current).min(order))
         .or_insert(order);
+}
+
+/// The same committed coordinate lookup serves the early child activity fold
+/// and the final canonical sort. Fact keys and qualified tool ids are the
+/// existing identity owners; a published Event position is never an input.
+fn keyed_event_order(
+    record: &SessionRecord,
+    index: &OrderIndex<'_>,
+    event: &Event,
+    present_types: &std::collections::HashSet<&str>,
+) -> Option<CanonicalOrder> {
+    if let Some(tool) = decode_managed_tool_event_id(&event.id) {
+        let thread_id = internal_thread_id(&record.session.id, tool.thread_id);
+        return index.tool_order(&thread_id, tool.source_id, tool.call_id);
+    }
+    let key = record.checkpoint.progress.fact_keys.get(&event.id)?;
+    let authenticated = match (&key.role, &key.provenance) {
+        (FactRole::Transcript(role), FactProvenance::AssistantResponse { .. }) => {
+            event.kind.type_str() == role.as_wire_type()
+        }
+        (FactRole::Transcript(role), _) => present_types.contains(role.as_wire_type()),
+        _ => true,
+    };
+    authenticated.then(|| index.fact_order(key)).flatten()
+}
+
+pub(in crate::state::events) fn committed_tool_orders(
+    record: &SessionRecord,
+    index: &OrderIndex<'_>,
+) -> HashMap<String, CanonicalOrder> {
+    let present_types = record
+        .events
+        .iter()
+        .map(|event| event.kind.type_str())
+        .collect::<std::collections::HashSet<_>>();
+    record
+        .events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                OutboundKind::AgentToolUse { .. } | OutboundKind::AgentToolResult { .. }
+            )
+        })
+        .filter_map(|event| {
+            keyed_event_order(record, index, event, &present_types)
+                .map(|order| (event.id.clone(), order))
+        })
+        .collect()
 }
 
 /// Attach each live overlay to its explicit retained predecessor, or the
@@ -72,42 +115,11 @@ impl ManagedState {
         evidence: CanonicalizationEvidence<'_>,
     ) -> Result<(), StateError> {
         let CanonicalizationEvidence {
-            persisted,
-            lifecycle_events,
-            root_snapshot,
             outcome_projections,
-            delegation: delegation_evidence,
+            links,
+            index,
         } = evidence;
-        let DelegationProjectionEvidence {
-            links,
-            snapshots: child_snapshots,
-            historical_pending,
-            ..
-        } = delegation_evidence;
         let session_id = record.session.id.clone();
-        let outcomes = outcome_projections
-            .iter()
-            .map(|projection| AnchoredOutcome {
-                outcome_id: &projection.outcome_id,
-                terminal: &projection.terminal,
-                terminal_commit_cursor: projection.terminal_commit_cursor,
-                evaluation_commit_cursors: &projection.evaluation_commit_cursors,
-            })
-            .collect::<Vec<_>>();
-        let budget_reach = BudgetReachAnchor::of(persisted, lifecycle_events);
-        let index = OrderIndex::new(OrderEvidence {
-            session_id: &session_id,
-            batches: &persisted.event_batches,
-            closed_intervals: &persisted.closed_runtime_intervals,
-            budget_reach: &budget_reach,
-            parent_terminal: ParentTerminalEvidence::of(persisted),
-            lifecycle: lifecycle_events,
-            root: root_snapshot,
-            children: child_snapshots,
-            links,
-            outcomes: &outcomes,
-            historical_pending,
-        });
 
         // An evaluation's public completion time is its evaluation command's.
         for projection in outcome_projections {
@@ -134,7 +146,7 @@ impl ManagedState {
                     && evaluation.completed_at.is_some()
                 {
                     evaluation.completed_at = index
-                        .time_for(persisted.session_id.as_str(), source_commit_cursor)
+                        .time_for(&session_id, source_commit_cursor)
                         .map(awaken_session_application_contract::epoch_millis_to_rfc3339);
                 }
             }
@@ -170,14 +182,10 @@ impl ManagedState {
                 orders.insert(event.id.clone(), *order);
                 continue;
             }
-            if let Some(tool) = decode_managed_tool_event_id(&event.id) {
-                let thread_id = internal_thread_id(&session_id, tool.thread_id);
-                if let Some(order) = index.tool_order(&thread_id, tool.source_id, tool.call_id) {
+            let Some(key) = record.checkpoint.progress.fact_keys.get(&event.id) else {
+                if let Some(order) = keyed_event_order(record, index, event, &present_types) {
                     orders.insert(event.id.clone(), order);
                 }
-                continue;
-            }
-            let Some(key) = record.checkpoint.progress.fact_keys.get(&event.id) else {
                 continue;
             };
             match &key.provenance {
@@ -189,24 +197,15 @@ impl ManagedState {
                 FactProvenance::ParentTerminal => {
                     parent_terminal_facts.push((event.id.clone(), key.clone()));
                 }
-                provenance => {
-                    let authenticated = match (key.role, provenance) {
-                        (FactRole::Transcript(role), FactProvenance::AssistantResponse { .. }) => {
-                            event.kind.type_str() == role.as_wire_type()
-                        }
-                        (FactRole::Transcript(role), _) => {
-                            present_types.contains(role.as_wire_type())
-                        }
-                        _ => true,
-                    };
-                    if authenticated && let Some(order) = index.fact_order(key) {
+                _ => {
+                    if let Some(order) = keyed_event_order(record, index, event, &present_types) {
                         orders.insert(event.id.clone(), order);
                     }
                 }
             }
         }
         let coordination = awaken_managed_session_events::coordination_orders(
-            &index,
+            index,
             &timeline_encoding::issued_tool_events(record),
             links,
             &orders

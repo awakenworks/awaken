@@ -228,14 +228,16 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
 }
 
 /// Cause/effect graph: C1 the child is a real coordinated Thread link; C2 its
-/// latest ordinary Run is Idle; C3 it is still Running; C4 the durable archive
+/// latest ordinary Run is Idle; C3 it is still Running in committed Runtime;
+/// C3a only its disposable Managed DTO is poisoned Running; C4 the durable archive
 /// command commits Archived through the parent Session partition; C5 the same
 /// request retries; C6 the disposable Managed cache is lost; C7 the id is
 /// unknown; C8 the Runtime fixture exposes one already-committed coordinated
 /// prefix whose root/child Messages and disposition state carry their exact
 /// same-index commit coordinates before Thread assertions. Effects: E1
 /// C1+C2+C4+C8 returns Terminated and emits one terminal; E2
-/// C3 conflicts before the command; E3 C5 is idempotent; E4 C6 rebuilds the same
+/// C3 conflicts before the command while C3a is repaired from committed Idle;
+/// E3 C5 is idempotent; E4 C6 rebuilds the same
 /// terminal event id from disposition truth; E5 C7 is not found; E6 every
 /// pre-terminal cursor reaches the same append-only suffix warm and cold. No child-named
 /// teardown or Managed archive registry participates.
@@ -244,6 +246,7 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
 /// |---|---|---|---|---|---|---|
 /// | A1 | yes | idle | no→yes | no | no | E1,E6 |
 /// | A2 | yes | running | no | no | no | E2 |
+/// | A2a | yes | committed idle, warm running | no→yes | no | no | E1,E6 |
 /// | A3 | yes | terminated | yes | yes | no | E3 |
 /// | A4 | yes | n/a | yes | no | yes | E4 |
 /// | A5 | no | n/a | n/a | no | no | E5 |
@@ -293,31 +296,11 @@ async fn child_thread_archive_uses_durable_disposition_and_survives_cache_loss()
             .unwrap();
         child.status = SessionThreadStatus::Running;
     }
-    assert!(
-        matches!(
-            state.archive_thread(&session.id, child_id).await,
-            Err(StateError::Conflict)
-        ),
-        "A2/E2"
-    );
-    assert!(runtime.archive_commits().is_empty(), "A2/E2");
-    state
-        .sessions
-        .lock()
-        .unwrap()
-        .get_mut(&session.id)
-        .unwrap()
-        .child_threads
-        .iter_mut()
-        .find(|thread| thread.id == child_id)
-        .unwrap()
-        .status = SessionThreadStatus::Idle;
-
     let archived = state
         .archive_thread(&session.id, child_id)
         .await
-        .expect("A1/E1 commits the durable disposition");
-    assert_eq!(archived.status, SessionThreadStatus::Terminated, "A1/E1");
+        .expect("A2a committed Idle repairs the poisoned warm DTO before archive");
+    assert_eq!(archived.status, SessionThreadStatus::Terminated, "A2a/E1");
     assert_eq!(
         runtime.archive_commits(),
         vec![(session.id.clone(), child_id.into())],
@@ -371,6 +354,79 @@ async fn child_thread_archive_uses_durable_disposition_and_survives_cache_loss()
         .collect::<Vec<_>>();
     assert_eq!(cold_terminal_events.len(), 1, "A4/E4");
     assert_eq!(cold_terminal_events[0].id, warm_terminal_id, "A4/E4 id");
+}
+
+#[tokio::test]
+async fn child_thread_archive_rejects_a_committed_running_child() {
+    use awaken_session_execution_contract::SessionAgentCoordination as _;
+
+    // Causes: A2 a coordinated link and child Running lifecycle are committed;
+    // its exact Run activity is admitted by the Session application. Effect:
+    // archive refreshes from that source, returns Conflict and commits no
+    // Archived disposition or terminal Event. A2a's warm-only Running poison
+    // in the adjacent test instead refreshes back to committed Idle.
+    let runtime = crate::test_support::CoordinatedRuntimeFake::default();
+    runtime.defer_child_completion();
+    let state = ManagedState::new(runtime.clone());
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent": "coder", "environment_id": "env_local"
+            }))
+            .unwrap(),
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        )
+        .await
+        .unwrap();
+    <crate::test_support::CoordinatedRuntimeFake as SessionRuntime>::run(
+        &runtime,
+        "coder",
+        &session.id,
+        vec![ContentBlock::text("coordinate")],
+    )
+    .await
+    .expect("A2 committed coordination prefix");
+    let admission = state
+        .session_application()
+        .admit_session_run_activity(
+            &awaken_session_types::SessionId::from(&session.id),
+            "researcher",
+            &awaken_agent_contract::agent::run::Id("coord-run-1".into()),
+            awaken_session_execution_contract::SessionRunActivityAdmissionMode::RecoverOrAdmit,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            admission,
+            awaken_session_execution_contract::SessionRunActivityAdmission::Admitted { .. }
+        ),
+        "A2 exact child activity admission"
+    );
+    state.refresh_committed_events(&session.id).await.unwrap();
+    let child_id = crate::test_support::CoordinatedRuntimeFake::CHILD_THREAD_ID;
+    assert_eq!(
+        state.get_thread(&session.id, child_id).unwrap().status,
+        SessionThreadStatus::Running,
+        "A2 committed Running precondition"
+    );
+    assert!(
+        matches!(
+            state.archive_thread(&session.id, child_id).await,
+            Err(StateError::Conflict)
+        ),
+        "A2/E2"
+    );
+    assert!(runtime.archive_commits().is_empty(), "A2/E2");
+    assert!(
+        state
+            .list_thread_events(&session.id, child_id, None, None)
+            .unwrap()
+            .data
+            .iter()
+            .all(|event| event.type_str() != "session.thread_status_terminated"),
+        "A2/E2 no terminal projection"
+    );
 }
 
 #[tokio::test]
@@ -872,7 +928,7 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
     // selects only its stated effect and preserves the authority constraint.
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
-    use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind};
+    use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
     use awaken_session_application_contract::Pending;
     use awaken_session_execution_contract::{CoordinatedThreadLink, CoordinatedThreadTarget};
 
@@ -964,8 +1020,11 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
             .unwrap()
             .insert(child_id.clone(), vec![child_message]);
         let child_thread = awaken_agent_contract::agent::thread::Id(child_id.clone());
+        // P2 source-order constraint: production audit cursors encode the
+        // backend-wide commit before the event offset; raw 1/2 would decode
+        // both child transitions as commit 0 and reverse the accepted send.
         runtime.lifecycle.lock().unwrap().push(RunLifecycleEvent {
-            cursor: RunLifecycleCursor(1),
+            cursor: awaken_agent_contract::encode_run_lifecycle_cursor(1, 0).unwrap(),
             source_commit_cursor: 1,
             thread_id: child_thread.clone(),
             run_id: child_run.clone(),
@@ -975,7 +1034,7 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
         });
         if let Some(kind) = terminal_kind {
             runtime.lifecycle.lock().unwrap().push(RunLifecycleEvent {
-                cursor: RunLifecycleCursor(2),
+                cursor: awaken_agent_contract::encode_run_lifecycle_cursor(2, 0).unwrap(),
                 source_commit_cursor: 2,
                 thread_id: child_thread,
                 run_id: child_run,

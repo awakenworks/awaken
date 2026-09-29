@@ -263,6 +263,9 @@ pub struct CoordinatedRuntimeFake {
     archive_commits: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
     reject_archive: std::sync::Arc<std::sync::atomic::AtomicBool>,
     defer_child_completion: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    defer_next_child_opening: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    deferred_child_opening:
+        std::sync::Arc<std::sync::Mutex<Option<awaken_agent_contract::RunLifecycleEvent>>>,
     hold_next_user_run_activation: std::sync::Arc<std::sync::atomic::AtomicBool>,
     user_run_activation_entered: std::sync::Arc<tokio::sync::Notify>,
     user_run_activation_release: std::sync::Arc<tokio::sync::Notify>,
@@ -315,6 +318,8 @@ impl Default for CoordinatedRuntimeFake {
             archive_commits: Default::default(),
             reject_archive: Default::default(),
             defer_child_completion: Default::default(),
+            defer_next_child_opening: Default::default(),
+            deferred_child_opening: Default::default(),
             hold_next_user_run_activation: Default::default(),
             user_run_activation_entered: Default::default(),
             user_run_activation_release: Default::default(),
@@ -392,6 +397,51 @@ impl CoordinatedRuntimeFake {
     pub fn defer_child_completion(&self) {
         self.defer_child_completion
             .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Hold only the next child's Running commit while the accepted parent
+    /// send and root boundary remain committed. The later opening receives the
+    /// next global source cursor, never a retroactive cursor in the prefix.
+    pub fn defer_next_child_opening(&self) {
+        self.defer_next_child_opening
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn commit_deferred_child_opening(&self) {
+        let mut opening = self
+            .deferred_child_opening
+            .lock()
+            .unwrap()
+            .take()
+            .expect("one deferred child Running commit");
+        let root_cursor = self
+            .root_message_cursors
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or_default();
+        let child_cursor = self
+            .child_message_cursors
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or_default();
+        let mut lifecycle = self.lifecycle.lock().unwrap();
+        let source_cursor = lifecycle
+            .iter()
+            .map(|event| event.source_commit_cursor)
+            .chain([root_cursor, child_cursor])
+            .max()
+            .unwrap_or_default()
+            + 1;
+        opening.source_commit_cursor = source_cursor;
+        opening.cursor = awaken_agent_contract::encode_run_lifecycle_cursor(source_cursor, 0)
+            .expect("deferred child cursor fits Runtime encoding");
+        lifecycle.push(opening);
     }
 
     /// Pause the next canonical User Run activation after its Session activity
@@ -663,7 +713,15 @@ impl awaken_session_execution_contract::SessionRuntime for CoordinatedRuntimeFak
             state: RunState::Running,
             await_reason: None,
         };
-        self.lifecycle.lock().unwrap().push(running);
+        if self
+            .defer_next_child_opening
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            let replaced = self.deferred_child_opening.lock().unwrap().replace(running);
+            assert!(replaced.is_none(), "only one deferred child opening");
+        } else {
+            self.lifecycle.lock().unwrap().push(running);
+        }
         if !self
             .defer_child_completion
             .load(std::sync::atomic::Ordering::SeqCst)

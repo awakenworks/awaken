@@ -16,7 +16,6 @@ impl ManagedState {
         record: &mut SessionRecord,
         session_id: &str,
         persisted: &awaken_session_state_contract::PersistedSession,
-        persisted_status: SessionStatus,
         evidence: &CandidateEvidence,
         root: &RootProjection,
     ) -> Result<(), StateError> {
@@ -70,35 +69,26 @@ impl ManagedState {
             session_usage_value(evidence.usage.clone(), evidence.price_snapshot.as_ref())
                 .map_err(StateError::Run)?;
         record.session.usage = projected_usage;
-        // A budget-reach transition owns its own aggregate pause once its
-        // interval has closed and no call awaits an answer.
-        let active_child = record.child_threads.iter().any(|child| {
-            matches!(
-                child.status,
-                SessionThreadStatus::Running | SessionThreadStatus::Rescheduling
-            )
-        });
-        let answerable = evidence.root_pending.is_some() || !evidence.child_pending.is_empty();
-        if persisted_status == SessionStatus::Idle && !active_child && !answerable {
-            for (generation, usage, budget) in projected_budget_reach.iter().cloned() {
-                let at = |role| {
-                    FactKey::new(session_id, role, FactProvenance::BudgetReach { generation })
-                };
-                record.push_fact(
-                    at(FactRole::BudgetReachUsage),
-                    OutboundKind::SessionUsage {
-                        usage,
-                        budget: Some(budget),
-                    },
-                );
-                record.push_fact(
-                    at(FactRole::BudgetReachStatusIdle),
-                    OutboundKind::SessionStatusIdle {
-                        stop_reason: StopReason::BudgetReached,
-                    },
-                );
-                record.checkpoint.source.budget_reach_generation = generation;
-            }
+        // Each historical reach is admitted by its own committed close and
+        // answerable-wait history. A later Running Session, pending call or
+        // child Archive cannot erase a previously issued budget pair.
+        for (generation, usage, budget) in projected_budget_reach.iter().cloned() {
+            let at =
+                |role| FactKey::new(session_id, role, FactProvenance::BudgetReach { generation });
+            record.push_fact(
+                at(FactRole::BudgetReachUsage),
+                OutboundKind::SessionUsage {
+                    usage,
+                    budget: Some(budget),
+                },
+            );
+            record.push_fact(
+                at(FactRole::BudgetReachStatusIdle),
+                OutboundKind::SessionStatusIdle {
+                    stop_reason: StopReason::BudgetReached,
+                },
+            );
+            record.checkpoint.source.budget_reach_generation = generation;
         }
         self.bracket_aggregate_outside_intervals(record, session_id, persisted, evidence)
     }
@@ -134,13 +124,16 @@ impl ManagedState {
             .links
             .iter()
             .map(|link| link.thread_id.0.as_str())
-            .filter(|thread| {
-                evidence.child_dispositions.get(*thread)
-                    != Some(&awaken_agent_contract::ThreadDisposition::Archived)
-            })
             .collect::<std::collections::HashSet<_>>();
+        // Link membership is committed topology for the whole historical
+        // walk. A later Archived disposition terminates the child's current
+        // projection; it cannot erase the periods that child owned earlier.
         let hold = awaken_managed_session_events::interval_hold(persisted, accepted);
-        let budget_reach = awaken_managed_session_events::BudgetReachAnchor::of(persisted, accepted);
+        let budget_reach = awaken_managed_session_events::BudgetReachAnchor::of(
+            persisted,
+            accepted,
+            historical_pending,
+        );
         let mut root_running = false;
         let mut running_children = std::collections::HashSet::<&str>::new();
         let mut paused = std::collections::BTreeMap::<&str, &Pending>::new();

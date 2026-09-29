@@ -2,6 +2,7 @@
 
 import json
 import re
+import tempfile
 from pathlib import Path
 
 import _crate_boundary_workspace
@@ -159,6 +160,135 @@ def check_managed_route_inventory(repo_root: Path) -> list[str]:
     )
 
 
+def _rust_struct_fields(source: str, name: str) -> set[str]:
+    declaration = re.search(rf"\bstruct\s+{name}\s*\{{([^}}]*)\}}", source, re.S)
+    if declaration is None:
+        return set()
+    return set(
+        re.findall(
+            r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?([A-Za-z_]\w*)\s*:",
+            declaration.group(1),
+        )
+    )
+
+
+def _rust_function_body_spans(source: str, names: set[str]) -> list[tuple[int, int]]:
+    """Find the owned function bodies, ignoring braces inside ordinary strings."""
+    spans: list[tuple[int, int]] = []
+    for function in re.finditer(r"\bfn\s+([A-Za-z_]\w*)\b", source):
+        if function.group(1) not in names:
+            continue
+        opening = source.find("{", function.end())
+        if opening < 0:
+            continue
+        depth = 0
+        quoted = False
+        escaped = False
+        for position in range(opening, len(source)):
+            char = source[position]
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    quoted = False
+            elif char == '"':
+                quoted = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    spans.append((opening, position + 1))
+                    break
+    return spans
+
+
+def projection_input_boundary_violations(
+    entrypoint: str, record: str, reducers: dict[str, str]
+) -> list[str]:
+    """Keep published SessionRecord content out of committed fact selection."""
+    errors: list[str] = []
+    test_only_modules = set(
+        re.findall(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*mod\s+(\w+)\s*;", entrypoint)
+    )
+    entrypoint = _crate_boundary_workspace.production_rust(entrypoint)
+    record = _crate_boundary_workspace.production_rust(record)
+    memo_fields = _rust_struct_fields(record, "ProjectionDeliveryMemo")
+    allowed_memo = {
+        "cache_revision", "overlay", "transient_events", "transient_owners"
+    }
+    if memo_fields != allowed_memo:
+        errors.append(
+            "Managed projection warm memo must carry only cache CAS and transient overlay fields"
+        )
+    if _rust_struct_fields(entrypoint, "CommittedPrefixBase") != {"owner_scope", "record", "memo"}:
+        errors.append("Managed committed-prefix base must own root scope, fresh record and delivery memo")
+    if not re.search(r"\bfn\s+into_delivery_memo\s*\(\s*self\s*\)", record):
+        errors.append("SessionRecord must consume warm state through into_delivery_memo")
+    if not re.search(r"let\s+Self\s*\{[^}]*\}\s*=\s*self", record, re.S):
+        errors.append("warm-to-delivery-memo extraction must destructure every SessionRecord field")
+    if not re.search(
+        r"\bfn\s+build_committed_projection_candidate_over\s*\([^)]*base\s*:\s*CommittedPrefixBase",
+        entrypoint,
+        re.S,
+    ):
+        errors.append("the sole candidate reducer must accept CommittedPrefixBase, not a warm SessionRecord")
+    for required in (
+        "read_persisted_session_projection(session_id)",
+        "rehydrated_session_for(",
+        "SessionRecord::new(",
+        ".into_delivery_memo()",
+    ):
+        if required not in entrypoint:
+            errors.append(f"Managed projection lost its root-derived clean base: {required}")
+    if re.search(r"\b(?:base_record|warm_record|published_record)\s*\.\s*(?:events|child_threads|checkpoint|permission_decisions)", entrypoint):
+        errors.append("Managed candidate reads durable projection fields from its warm record")
+    if re.search(r"\bself\.owner_scope\s*\(", entrypoint):
+        errors.append("Managed candidate reads owner scope from its warm map, not the durable root")
+    for relative, source in reducers.items():
+        if Path(relative).stem in test_only_modules:
+            continue
+        production = _crate_boundary_workspace.production_rust(source)
+        # CAS publication and prior-complete observation are delivery owners;
+        # permit their bodies only. A second reducer in the same file cannot
+        # inherit an exception just by sharing that file with the publisher.
+        delivery_bodies = _rust_function_body_spans(
+            production,
+            {
+                "publish_projection_candidate",
+                "publish_projection_update",
+                "refresh_committed_events_for_observation",
+            },
+        )
+        for warm_read in re.finditer(r"\.\s*sessions\b", production):
+            if not any(start <= warm_read.start() < end for start, end in delivery_bodies):
+                errors.append(f"{relative}: committed reducer reads the warm Session cache")
+        if re.search(r"\b(?:base_record|warm_record|published_record)\s*\.\s*(?:events|child_threads|checkpoint|permission_decisions)", production):
+            errors.append(f"{relative}: committed reducer reads warm durable projection fields")
+    return errors
+
+
+def check_projection_input_boundary(repo_root: Path) -> list[str]:
+    # The module declaration is the scope owner. Its same-stem directory is
+    # walked in full, so a newly split reducer file enters the guard at once.
+    module = (
+        repo_root
+        / "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs"
+    )
+    record = module.parent.parent / "session_record.rs"
+    reducers = {
+        str(path.relative_to(repo_root)): path.read_text(encoding="utf-8")
+        for path in sorted(module.with_suffix("").rglob("*.rs"))
+    }
+    return projection_input_boundary_violations(
+        module.read_text(encoding="utf-8"),
+        record.read_text(encoding="utf-8"),
+        reducers,
+    )
+
+
 def selftest() -> None:
     # Cause/effect graph and decision table:
     # C1 exact official compatible protocol-family inventory, C2 exact separately packaged and
@@ -250,3 +380,70 @@ def selftest() -> None:
         "fn prepare_protocol_session() {}"
     )
     assert session_admission_ownership_violations(duplicate), "A3/E10"
+
+    # Projection-input cause/effect table. C1 the reducer takes only a fresh
+    # committed-prefix base and the warm memo has delivery fields; C2 a new
+    # warm durable field enters that memo; C3 a reducer reads the warm cache;
+    # C4 a new split module is added below the owner directory; C5 an alias in
+    # the publisher file reads the cache outside its CAS function; C6 the
+    # candidate reads owner scope from a warm map. Effects: E1 C1 passes;
+    # E2 C2/C3/C5/C6 fail; E3 C4 is scanned immediately. Rules:
+    # P1=C1=>E1; P2=C1+C2=>E2; P3=C1+C3=>E2; P4=C1+C4+C3=>E3+E2;
+    # P5=C1+C5=>E2 even though that file contains a legal publisher;
+    # P6=C1+C6=>E2.
+    # Constraint: within-pass `record` reads are legal only because the typed
+    # CommittedPrefixBase is constructed from the durable Session root.
+    entry = """
+struct CommittedPrefixBase {
+    owner_scope: String,
+    record: SessionRecord,
+    memo: ProjectionDeliveryMemo,
+}
+fn committed_prefix_base() {
+    rehydrated_session_for(); SessionRecord::new();
+}
+fn build_committed_projection_candidate() {
+    read_persisted_session_projection(session_id); record.into_delivery_memo();
+}
+fn build_committed_projection_candidate_over(base: CommittedPrefixBase) {}
+"""
+    record = """
+struct ProjectionDeliveryMemo {
+    cache_revision: u64,
+    overlay: ManagedLiveOverlay,
+    transient_events: Vec<Event>,
+    transient_owners: HashMap<String, String>,
+}
+fn into_delivery_memo(self) {
+    let Self { cache_revision, events, checkpoint } = self;
+}
+"""
+    assert projection_input_boundary_violations(entry, record, {}) == [], "P1/E1"
+    widened = record.replace("    overlay: ManagedLiveOverlay,", "    overlay: ManagedLiveOverlay,\n    durable_events: Vec<Event>,")
+    assert projection_input_boundary_violations(entry, widened, {}), "P2/E2"
+    raw = entry.replace("base: CommittedPrefixBase", "base: SessionRecord")
+    assert projection_input_boundary_violations(raw, record, {}), "P3/E2 raw reducer"
+    leak = {"future.rs": "fn reduce(&self) { self.sessions.lock().unwrap(); }"}
+    assert projection_input_boundary_violations(entry, record, leak), "P3/E2 warm read"
+    publisher = {
+        "publisher.rs": "fn publish_projection_candidate(&self) { self.sessions.lock(); }"
+    }
+    assert projection_input_boundary_violations(entry, record, publisher) == [], "P1/E1 CAS owner"
+    alias_leak = {
+        "publisher.rs": publisher["publisher.rs"]
+        + " fn reduce(shared: &ManagedState) { let alias = &shared.sessions; alias.lock(); }"
+    }
+    assert projection_input_boundary_violations(entry, record, alias_leak), "P5/E2 alias"
+    assert projection_input_boundary_violations(
+        entry + " fn late(&self) { self.owner_scope(session_id); }", record, {}
+    ), "P6/E2 warm owner"
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        module = root / "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs"
+        module.parent.mkdir(parents=True)
+        module.write_text(entry, encoding="utf-8")
+        (module.parent.parent / "session_record.rs").write_text(record, encoding="utf-8")
+        subtree = module.with_suffix("")
+        subtree.mkdir()
+        (subtree / "future.rs").write_text(leak["future.rs"], encoding="utf-8")
+        assert check_projection_input_boundary(root), "P4/E3 newly split reducer included"

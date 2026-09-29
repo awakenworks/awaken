@@ -964,6 +964,9 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         },
     );
     runtime.lifecycle.lock().unwrap().extend([
+        // R2 source-order constraint: ThreadCommit encodes each audit sequence
+        // as commit*1000+offset. Raw sequence 1..4 decodes to source commit 0
+        // and makes a completed child appear before its accepted root send.
         // The root ResumeTicket is consumable only while its owning Run is
         // durably Awaiting. This fixture used to publish the ticket beside a
         // synthetic Running record, a state combination no production commit
@@ -971,7 +974,7 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         // a stale ticket beside Running remains covered by recovery's
         // fail-closed decision table and must not regain projection authority.
         awaken_agent_contract::RunLifecycleEvent {
-            cursor: awaken_agent_contract::RunLifecycleCursor(1),
+            cursor: awaken_agent_contract::encode_run_lifecycle_cursor(1, 0).unwrap(),
             source_commit_cursor: 1,
             thread_id: awaken_agent_contract::agent::thread::Id("sesn_1".into()),
             run_id: root_run_id.clone(),
@@ -980,7 +983,7 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
             await_reason: None,
         },
         awaken_agent_contract::RunLifecycleEvent {
-            cursor: awaken_agent_contract::RunLifecycleCursor(2),
+            cursor: awaken_agent_contract::encode_run_lifecycle_cursor(2, 0).unwrap(),
             source_commit_cursor: 2,
             thread_id: awaken_agent_contract::agent::thread::Id("sesn_1".into()),
             run_id: root_run_id,
@@ -989,7 +992,7 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
             await_reason: Some(awaken_agent_contract::agent::awaiting::AwaitReason::ExternalEvent),
         },
         awaken_agent_contract::RunLifecycleEvent {
-            cursor: awaken_agent_contract::RunLifecycleCursor(3),
+            cursor: awaken_agent_contract::encode_run_lifecycle_cursor(3, 0).unwrap(),
             source_commit_cursor: 3,
             thread_id: awaken_agent_contract::agent::thread::Id(child_thread_id.into()),
             run_id: child_run_id.clone(),
@@ -998,7 +1001,7 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
             await_reason: None,
         },
         awaken_agent_contract::RunLifecycleEvent {
-            cursor: awaken_agent_contract::RunLifecycleCursor(4),
+            cursor: awaken_agent_contract::encode_run_lifecycle_cursor(4, 0).unwrap(),
             source_commit_cursor: 4,
             thread_id: awaken_agent_contract::agent::thread::Id(child_thread_id.into()),
             run_id: child_run_id,

@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 use super::*;
-use crate::state::sessions::RehydrationPurpose;
 
 /// Every test shares this one zero ceiling; no history or refresh schedule is
 /// exempt from the warm/cold comparison except the two explicit read-counting
@@ -153,23 +152,12 @@ impl ManagedState {
         let started = awaken_lease_contract::mono::Stopwatch::start();
         let recovered = self.read_persisted_session_projection(session_id).await?;
         let persisted = recovered.session;
-        let agent_id = persisted
-            .agent_id()
-            .map(str::to_string)
-            .ok_or(StateError::NotFound)?;
-        let session = self.rehydrated_session_for(
+        let base = self.committed_prefix_base(
             session_id,
             &recovered.owner_scope,
-            persisted.clone(),
-            RehydrationPurpose::CollectionRead,
+            &persisted,
+            ProjectionDeliveryMemo::default(),
         )?;
-        let base = SessionRecord::new(
-            agent_id,
-            session,
-            persisted.revision,
-            persisted.resources.clone(),
-            Vec::new(),
-        );
         match self
             .build_committed_projection_candidate_over(session_id, persisted, base, started)
             .await?
@@ -188,4 +176,130 @@ fn the_divergence_ceiling_cannot_regress_above_zero() {
     // Effect: this policy test fails before a green oracle result can bless it.
     // Rule Z1: every warm/cold comparison has a zero allowance.
     assert_eq!(DIVERGENCE_CEILING, 0, "Z1 no divergence exemptions");
+}
+
+#[tokio::test]
+async fn candidate_uses_committed_prefix_even_when_warm_progress_is_poisoned() {
+    // Causes: P1 one fixed Session/Thread committed prefix; P2 a clean cache
+    // base or a base carrying phantom durable Event/child/owner, consumed
+    // Message id and advanced lifecycle/budget cursors; P3 a local `evt_N`
+    // overlay. Effects:
+    // E1 P1+P2 yields the same durable ids/payload/order and checkpoint;
+    // E2 P3 survives as delivery-only local state without changing E1.
+    // Rules: R1=P1+clean=>E1; R2=P1+poisoned=>E1;
+    // R3=P1+poisoned+P3=>E1+E2. The source fence and publication CAS are
+    // exercised separately; this test pins the reducer's input boundary.
+    use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_agent_contract::agent::run::Id as RunId;
+
+    let runtime = crate::state::test_support::RehydrateFake::default();
+    let message = Message::text(
+        MessageId::assistant(&RunId("prefix-run".into()), 0),
+        Role::Assistant,
+        "committed answer",
+    );
+    *runtime.committed.lock().unwrap() = Some(vec![message.clone()]);
+    let state = ManagedState::new(runtime);
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent": "coder", "environment_id": "env_local"
+            }))
+            .unwrap(),
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        )
+        .await
+        .unwrap();
+    let session_id = session.id.as_str();
+    let recovered = state
+        .read_persisted_session_projection(session_id)
+        .await
+        .unwrap();
+    let persisted = recovered.session;
+    let owner_scope = recovered.owner_scope;
+    let base = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .cloned()
+        .unwrap();
+    let build = |base: SessionRecord| {
+        let fresh = state
+            .committed_prefix_base(
+                session_id,
+                &owner_scope,
+                &persisted,
+                base.into_delivery_memo(),
+            )
+            .unwrap();
+        state.build_committed_projection_candidate_over(
+            session_id,
+            persisted.clone(),
+            fresh,
+            awaken_lease_contract::mono::Stopwatch::start(),
+        )
+    };
+    let publication::ProjectionRefreshBuild::Complete(clean) = build(base.clone()).await.unwrap()
+    else {
+        panic!("R1 fixed committed prefix must project");
+    };
+    let clean = clean.into_record();
+
+    let mut poisoned = base;
+    poisoned.events.push(Event {
+        id: "phantom-durable".into(),
+        kind: OutboundKind::AgentThinking {},
+        processed_at: None,
+    });
+    let phantom_agent = crate::types::session::SessionThreadAgent::from(&poisoned.session.agent);
+    poisoned.child_threads.push(ManagedState::child_thread(
+        &poisoned.session,
+        "phantom-child",
+        phantom_agent,
+    ));
+    poisoned
+        .event_thread_owners
+        .insert("phantom-durable".into(), "phantom-child".into());
+    poisoned
+        .checkpoint
+        .progress
+        .thread_message_ids
+        .insert((session_id.to_string(), message.id.0));
+    poisoned.checkpoint.source.lifecycle_cursor =
+        awaken_agent_contract::RunLifecycleCursor(u64::MAX);
+    poisoned.checkpoint.source.budget_reach_generation = u64::MAX;
+    let overlay = Event {
+        id: "evt_7".into(),
+        kind: OutboundKind::AgentThinking {},
+        processed_at: None,
+    };
+    poisoned.events.push(overlay.clone());
+    poisoned.overlay.anchors.insert(
+        overlay.id.clone(),
+        clean.events.first().expect("R1 committed event").id.clone(),
+    );
+    let publication::ProjectionRefreshBuild::Complete(actual) = build(poisoned).await.unwrap()
+    else {
+        panic!("R2 fixed committed prefix must project");
+    };
+    let actual = actual.into_record();
+    assert_eq!(
+        durable_history(&actual.events),
+        durable_history(&clean.events),
+        "R1-R3/E1"
+    );
+    assert!(
+        actual.checkpoint == clean.checkpoint,
+        "R1-R3/E1 source and progress"
+    );
+    assert_eq!(
+        serde_json::to_value(&actual.child_threads).unwrap(),
+        serde_json::to_value(&clean.child_threads).unwrap(),
+        "R1-R3/E1 children are committed-derived"
+    );
+    assert!(
+        actual.events.iter().any(|event| event.id == overlay.id),
+        "R3/E2 overlay retained"
+    );
 }

@@ -255,25 +255,4 @@ impl ManagedState {
             }
         }
     }
-
-    /// Lower accepted parent `send_message` calls into one cross-Thread
-    /// message each (decided by [`awaken_managed_session_events::cross_posts`]).
-    pub(super) fn append_coordination_cross_posts(
-        &self,
-        record: &mut SessionRecord,
-        links: &[CoordinatedThreadLink],
-    ) -> Result<(), StateError> {
-        record.refresh_event_index();
-        let mut threads = Self::coordinated_threads(record);
-        let facts = awaken_managed_session_events::cross_posts(
-            &timeline_encoding::issued_tool_events(record),
-            links,
-            &mut threads,
-            |key| record.event_positions(&record.fact_id(key)).is_some(),
-        );
-        for fact in &facts {
-            record.publish_fact(fact, None)?;
-        }
-        Ok(())
-    }
 }

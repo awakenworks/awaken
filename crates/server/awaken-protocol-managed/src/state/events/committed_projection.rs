@@ -28,11 +28,65 @@ mod root_projection;
 mod run_observation_projection;
 mod source_fence;
 mod usage_projection;
+use crate::state::session_record::ProjectionDeliveryMemo;
+use crate::state::sessions::RehydrationPurpose;
+use awaken_managed_session_events::{
+    AnchoredOutcome, BudgetReachAnchor, OrderEvidence, OrderIndex, ParentTerminalEvidence,
+};
 use candidate_evidence::CandidateEvidence;
-use canonical_order::*;
+use canonical_order::CanonicalizationEvidence;
+pub(super) use canonical_order::committed_tool_orders;
 pub(super) use root_projection::transcript_fact_key;
 
+/// One clean reduction base. Only `memo` came from a prior warm publication;
+/// `owner_scope` and `record` derive from the current durable Session root.
+/// The record starts with
+/// no committed Events, children, consumption marks or lifecycle checkpoint.
+/// Consumer: the sole committed-prefix candidate builder below.
+struct CommittedPrefixBase {
+    owner_scope: String,
+    record: SessionRecord,
+    memo: ProjectionDeliveryMemo,
+}
+
 impl ManagedState {
+    fn committed_prefix_base(
+        &self,
+        session_id: &str,
+        owner_scope: &str,
+        persisted: &awaken_session_state_contract::PersistedSession,
+        memo: ProjectionDeliveryMemo,
+    ) -> Result<CommittedPrefixBase, StateError> {
+        if persisted.session_id != session_id {
+            return Err(StateError::Run(RunError::internal(
+                "committed projection root belongs to another Session",
+            )));
+        }
+        let agent_id = persisted
+            .agent_id()
+            .map(str::to_string)
+            .ok_or(StateError::NotFound)?;
+        let session = self.rehydrated_session_for(
+            session_id,
+            owner_scope,
+            persisted.clone(),
+            RehydrationPurpose::CollectionRead,
+        )?;
+        let mut record = SessionRecord::new(
+            agent_id,
+            session,
+            persisted.revision,
+            persisted.resources.clone(),
+            Vec::new(),
+        );
+        record.cache_revision = memo.cache_revision;
+        Ok(CommittedPrefixBase {
+            owner_scope: owner_scope.to_string(),
+            record,
+            memo,
+        })
+    }
+
     async fn build_committed_projection_candidate(
         &self,
         session_id: &str,
@@ -45,49 +99,45 @@ impl ManagedState {
         // without passing through this protocol adapter. Include that root in the
         // same private candidate as Runtime facts so GET cannot publish a stale
         // preparing/idle status or a torn cross-source projection.
-        let persisted = self
-            .roles
-            .roots
-            .session(&awaken_session_types::SessionId::from(session_id))
-            .await
-            .map_err(StateError::from)?;
-        // Snapshot the complete warm projection and its process-local CAS token
-        // before asynchronous source reads. Every path below builds privately
-        // and publishes through the same compare-and-swap owner.
-        let base_record = self
+        let recovered = self.read_persisted_session_projection(session_id).await?;
+        let persisted = recovered.session;
+        // Only the process-local CAS token and transient delivery overlay
+        // survive from the prior warm record. All timeline decisions are
+        // rebuilt from this durable root and the fenced Thread evidence.
+        let memo = self
             .sessions
             .lock()
             .unwrap()
             .get(session_id)
             .cloned()
-            .ok_or(StateError::NotFound)?;
-        self.build_committed_projection_candidate_over(session_id, persisted, base_record, started)
+            .ok_or(StateError::NotFound)?
+            .into_delivery_memo();
+        let base =
+            self.committed_prefix_base(session_id, &recovered.owner_scope, &persisted, memo)?;
+        self.build_committed_projection_candidate_over(session_id, persisted, base, started)
             .await
     }
 
-    /// Reduce one committed prefix onto `base_record`. The warm refresh
-    /// passes this replica's published record; the warm/cold oracle passes a
-    /// freshly rehydrated one, so both run the one reducer.
+    /// Reduce one committed prefix onto a clean root-derived base. Warm and
+    /// cold callers enter this same reducer; no prior durable projection is
+    /// an input to its fact selection.
     async fn build_committed_projection_candidate_over(
         &self,
         session_id: &str,
         persisted: awaken_session_state_contract::PersistedSession,
-        base_record: SessionRecord,
+        base: CommittedPrefixBase,
         started: awaken_lease_contract::mono::Stopwatch,
     ) -> Result<
         publication::ProjectionRefreshBuild<publication::ProjectionRefreshCandidate>,
         StateError,
     > {
-        let persisted_status = Self::wire_session_status(&persisted);
-        let base_cache_revision = base_record.cache_revision;
-        let evidence = CandidateEvidence::read(
-            self,
-            session_id,
-            &persisted,
-            base_record.checkpoint.source.lifecycle_cursor,
-            started,
-        )
-        .await?;
+        let CommittedPrefixBase {
+            owner_scope,
+            record: mut staged_record,
+            memo,
+        } = base;
+        let base_cache_revision = staged_record.cache_revision;
+        let evidence = CandidateEvidence::read(self, session_id, &persisted, started).await?;
         let selection_done = started.elapsed();
         if self
             .candidate_source_moved(session_id, &persisted, &evidence)
@@ -96,6 +146,37 @@ impl ManagedState {
             return Ok(publication::ProjectionRefreshBuild::Retry);
         }
         let validation_done = started.elapsed();
+        // One committed ordering index serves both first-listable child
+        // activity selection and the final Event sort. Neither stage may
+        // rediscover a different cursor from mutable published Thread status.
+        let outcomes = evidence
+            .outcomes
+            .iter()
+            .map(|projection| AnchoredOutcome {
+                outcome_id: &projection.outcome_id,
+                terminal: &projection.terminal,
+                terminal_commit_cursor: projection.terminal_commit_cursor,
+                evaluation_commit_cursors: &projection.evaluation_commit_cursors,
+            })
+            .collect::<Vec<_>>();
+        let budget_reach = BudgetReachAnchor::of(
+            &persisted,
+            &evidence.acceptance.accepted,
+            &evidence.historical_pending,
+        );
+        let order_index = OrderIndex::new(OrderEvidence {
+            session_id,
+            batches: &persisted.event_batches,
+            closed_intervals: &persisted.closed_runtime_intervals,
+            budget_reach: &budget_reach,
+            parent_terminal: ParentTerminalEvidence::of(&persisted),
+            lifecycle: &evidence.acceptance.accepted,
+            root: evidence.root.as_ref(),
+            children: &evidence.children,
+            links: &evidence.links,
+            outcomes: &outcomes,
+            historical_pending: &evidence.historical_pending,
+        });
 
         // Build the complete disposable projection on a private result snapshot. A
         // transcript can be observed between its ToolUse and ToolResult commits,
@@ -103,20 +184,12 @@ impl ManagedState {
         // earlier mutations (message-consumption marks, cursors, or Events) in
         // this process. Durable Session/Runtime facts remain the sole recovery
         // authority; only a fully valid projection replaces the warm cache.
-        let mut staged_record = base_record;
         Self::apply_persisted_session(&mut staged_record, &persisted);
         let record = &mut staged_record;
         let root = self.project_root_prefix(record, session_id, &persisted, &evidence)?;
         let delegation = evidence.delegation();
-        self.append_delegation_projections(record, delegation)?;
-        self.close_aggregate(
-            record,
-            session_id,
-            &persisted,
-            persisted_status,
-            &evidence,
-            &root,
-        )?;
+        self.append_delegation_projections(record, delegation, &order_index)?;
+        self.close_aggregate(record, session_id, &persisted, &evidence, &root)?;
         // Parent terminality is a durable Session fact and absorbs every
         // derived child lifecycle. Keeping this at the end of the sole warm/cold
         // projector preserves child output/lifecycle ordering, closes each child
@@ -140,14 +213,18 @@ impl ManagedState {
             evidence.price_snapshot.as_ref(),
         )?;
         let reduction_done = started.elapsed();
+        // Attach local previews only after every durable fact has been
+        // selected. The canonicalizer reattaches them by their stable fact id,
+        // never by a warm event position or as a projection input.
+        record.events.extend(memo.transient_events);
+        record.overlay = memo.overlay;
+        record.event_thread_owners.extend(memo.transient_owners);
         Self::canonicalize_committed_events(
             record,
             CanonicalizationEvidence {
-                persisted: &persisted,
-                lifecycle_events: &evidence.acceptance.accepted,
-                root_snapshot: evidence.root.as_ref(),
                 outcome_projections: &evidence.outcomes,
-                delegation,
+                links: &evidence.links,
+                index: &order_index,
             },
         )?;
         if persisted.is_hidden() && persisted.is_terminal() {
@@ -162,11 +239,10 @@ impl ManagedState {
                 .owner(&awaken_session_types::SessionId::from(session_id))
                 .await
                 .map_err(Self::map_application_mutation_error)?;
-            let expected_owner = self.owner_scope(session_id).ok_or(StateError::NotFound)?;
             if !refresh_entrypoint::logical_deletion_is_proven(
                 true,
                 persisted.session_id == session_id,
-                owner == expected_owner,
+                owner == owner_scope,
                 persisted.is_hidden(),
                 persisted.is_terminal(),
                 false,
