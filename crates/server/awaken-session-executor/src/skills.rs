@@ -582,7 +582,7 @@ impl FilesystemSkillPrompt {
             })
             .collect::<Result<Vec<_>, String>>()?;
         Ok(format!(
-            "Available Skills are listed below. When a Skill is relevant, read its `SKILL.md` from the given path before acting.\n{}",
+            "Available Skills are listed below. Apply a relevant Skill's complete instructions. If its complete instructions are already in the conversation, use them without rereading `SKILL.md`. Otherwise, read its `SKILL.md` from the given path before acting. Names and descriptions alone are not complete instructions. Use the listed directory for supporting scripts or resources when needed.\n{}",
             entries.join("\n")
         ))
     }
@@ -613,6 +613,54 @@ fn skill_descriptor() -> ToolDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filesystem_guidance_uses_complete_context_without_forcing_a_second_read() {
+        // Graph: G1 full instructions supplied in Agent system / prior tool
+        // history / neither; G2 only catalogue metadata; G3 cold/no Environment
+        // / restored same pinned projection. D1 system or history => use the
+        // complete context, no mandatory reread; D2 metadata-only => read the
+        // listed pinned file. D3 restoration preserves both rules and paths.
+        // No new loaded-state flag, body detector, registry or physical work
+        // is introduced: the existing model context owns what is available.
+        let projection = FilesystemSkillPrompt {
+            entries: vec![(
+                "Diagnose".into(),
+                "diagnose a project".into(),
+                ".skills/pinned".into(),
+            )],
+        };
+        let prompt = projection.render(&Default::default(), None).unwrap();
+        assert!(
+            prompt.contains("already in the conversation"),
+            "D1 full context is sufficient"
+        );
+        assert!(
+            prompt.contains("without rereading"),
+            "D1 do not compete with preloaded instructions"
+        );
+        assert!(
+            prompt.contains("Otherwise, read"),
+            "D2 progressive disclosure remains"
+        );
+        assert!(
+            prompt.contains("Names and descriptions alone"),
+            "G2 metadata is not a full method"
+        );
+        assert!(
+            prompt.contains(".skills/pinned/SKILL.md"),
+            "D2 exact frozen path"
+        );
+        assert!(projection.exposes_directory(".skills/pinned"));
+        assert_eq!(
+            projection
+                .clone()
+                .render(&Default::default(), None)
+                .unwrap(),
+            prompt,
+            "D3 restore does not add a competing guidance path"
+        );
+    }
 
     fn version_with(files: Vec<awaken_skill_store::SkillBundleFile>) -> SkillVersion {
         SkillVersion {

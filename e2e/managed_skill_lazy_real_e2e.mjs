@@ -80,7 +80,7 @@ function resultText(events, name) {
   return events.filter((event) => event.type === 'agent.tool_result' && ids.has(event.tool_use_id))
     .map((event) => JSON.stringify(event.content)).join('\n');
 }
-async function readTurn(sessionId, label) {
+async function readTurn(sessionId, label, instructionsPreloaded = false) {
   const start = performance.now();
   let firstTextMs;
   // Restored conversation already knows facts.md. A distinct, undisclosed
@@ -90,7 +90,9 @@ async function readTurn(sessionId, label) {
   const expected = restored ? recoveryMarker : referenceMarker;
   const id = await send(sessionId, restored
     ? '请读取这个 Skill 中尚未读过的 references/recovery.md。根据它给我一个简短问题，并带上其中的识别标记。'
-    : '我是做家具的，想招经销商。请先读取已绑定 Skill 以及它要求的参考资料，给我一个自然的简短问题，并带上资料中的识别标记。');
+    : instructionsPreloaded
+      ? '我是做家具的，想招经销商。请按已提供的方法，读取它要求的参考资料，给我一个自然的简短问题，并带上资料中的识别标记。'
+      : '我是做家具的，想招经销商。请先读取已绑定 Skill 以及它要求的参考资料，给我一个自然的简短问题，并带上资料中的识别标记。');
   const { delta } = await waitForSessionEventReceipt(client, sessionId, id, betas,
     ({ delta }) => {
       if (firstTextMs === undefined && delta.some((event) => event.type === 'agent.message'
@@ -119,6 +121,9 @@ async function readTurn(sessionId, label) {
   assert.ok(delta.some((event, index) => index > inferenceIndex && event.type === 'agent.message'
     && event.content?.some((block) => block.type === 'text' && block.text?.trim())), 'model replies after receiving reference bytes');
   assert.ok(!delta.some((event) => event.type === 'agent.tool_use' && event.name !== 'read'), 'no shell probe before reply');
+  if (instructionsPreloaded) assert.ok(!delta.some(event => event.type === 'agent.tool_use'
+    && event.name === 'read' && JSON.stringify(event.input).includes('/SKILL.md')),
+  'full system instructions do not require another Skill body read; unknown reference still read');
   assert.equal(pods.length, 0, 'read/reply does not create Sandbox Pod');
   assert.ok(firstTextMs <= replyBudget, `${label} first text ${firstTextMs.toFixed(0)}ms exceeds ${replyBudget}ms`);
   console.log(`${label}: first text ${firstTextMs.toFixed(0)}ms; complete ${elapsed.toFixed(0)}ms; zero Sandbox Pods`);
@@ -130,9 +135,9 @@ async function environment(failure = false) {
     config: failure ? { requests: { cpu_millis: 1_000_000 } } : {} });
   return env.id;
 }
-async function session(environmentId) {
+async function session(environmentId, selectedAgent = owned.agent) {
   const start = performance.now();
-  const value = await client.beta.sessions.create({ agent: owned.agent, environment_id: environmentId, betas });
+  const value = await client.beta.sessions.create({ agent: selectedAgent, environment_id: environmentId, betas });
   owned.sessions.push(value.id);
   record({ label: 'session-create', session_id: value.id, duration_ms: performance.now() - start });
   return value.id;
@@ -232,7 +237,8 @@ async function main() {
     id: `skill-lazy-${tag}`, provider_id: 'deepseek', dialect: 'open_ai_chat', base_url: 'https://api.deepseek.com',
     secret: key, model_id: process.env.DEEPSEEK_MODEL ?? 'deepseek-flash', timeout_secs: 90,
   });
-  const form = managedFileUploadForm('---\nname: startup-diagnosis\ndescription: 家具招商诊断，先阅读参考资料再提问\n---\nBefore answering, read references/facts.md. Include its reference marker with one brief Chinese question.\nWhen explicitly asked to execute, use bash to run scripts/verify.sh from this Skill directory. Never retry a failed tool.\n', 'SKILL.md');
+  const instructions = 'Before answering, read references/facts.md. Include its reference marker with one brief Chinese question.\nWhen explicitly asked to execute, use bash to run scripts/verify.sh from this Skill directory. Never retry a failed tool.\n';
+  const form = managedFileUploadForm('---\nname: startup-diagnosis\ndescription: 家具招商诊断，先阅读参考资料再提问\n---\n' + instructions, 'SKILL.md');
   form.append('file', new Blob([`${referenceMarker}\n产品是家具，客户计划招经销商。\n`]), 'references/facts.md');
   form.append('file', new Blob([`${recoveryMarker}\n现在需要澄清合作门店是否已经开业。\n`]), 'references/recovery.md');
   form.append('file', new Blob([`#!/bin/sh\nset -eu\nprintf 'SCRIPT_BEGIN '; date -u +%s%N\nstate=/workspace/.skill-lazy-state\nif [ ! -e "$state" ]; then printf '%s' '${executionMarker}' > "$state"; fi\ntest "$(cat "$state")" = '${executionMarker}'\nprintf '%s\\n' '${executionMarker}'\nprintf 'SCRIPT_END '; date -u +%s%N\n`]), 'scripts/verify.sh');
@@ -287,6 +293,16 @@ async function main() {
   }
   const cold = await session(normalEnv); await readTurn(cold, 'cold-session');
   const warm = await session(normalEnv); await readTurn(warm, 'warm-session');
+  // P1 complete pinned instructions are already in Agent.system; P2 the
+  // bundled reference is still unknown; P3 cold/warm same Session. P1+P2 at
+  // both P3 states => apply method without rereading SKILL.md, read reference,
+  // deliver actual new bytes and reply, no Bash/Pod. Existing cold and restored
+  // cases own metadata-only disclosure and missing-reference reads. Same SDK,
+  // registry, read tool and Session helper; no loaded-state extension.
+  const preloaded = await session(normalEnv, { type: 'agent_with_overrides', id: agent.id,
+    version: agent.version, system: 'You help a Chinese SME owner. The following are the complete instructions of the pinned startup-diagnosis Skill.\n' + instructions });
+  await readTurn(preloaded, 'preloaded-cold-session', true);
+  await readTurn(preloaded, 'preloaded-warm-session', true);
   let historical;
   if (upgradeImage) {
     // U1 old committed runtime creates a retained Pod and writes state; U2
