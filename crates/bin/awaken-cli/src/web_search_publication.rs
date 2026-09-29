@@ -10,26 +10,19 @@ use awaken_config_service::PluginPublicationResolver;
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::{ExactCredentialAccessRequest, compile_exact_credential_access};
+use awaken_lease_contract::{WallClock, WallClockExt as _};
 use awaken_runtime_contract::credential::CredentialPurpose;
 use awaken_runtime_contract::{
     CredentialExecutionPolicy, CredentialMaterialBinding, CredentialTarget, ModelExposurePolicy,
     PlaintextBoundary, PlaintextHolder,
 };
 
-fn unix_time_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
 async fn compile_target_access(
     credentials: &dyn CredentialRepo,
     workspace: &awaken_tenancy::ScopeId,
     target: &mut awaken_ext_builtin_tools::WebProviderTarget,
     requirement: awaken_ext_builtin_tools::WebSearchCredentialRequirement,
+    now_ms: u64,
 ) -> Result<(), String> {
     let awaken_ext_builtin_tools::WebSearchCredentialRequirement::Exact(usage) = requirement else {
         return Ok(());
@@ -70,7 +63,7 @@ async fn compile_target_access(
             ),
             selected_holder: &holder,
             binding: &binding,
-            now_unix_ms: unix_time_ms(),
+            now_unix_ms: now_ms,
         },
     )
     .map_err(|_| "web provider credential is not authorized for this provider".to_string())?;
@@ -84,6 +77,7 @@ async fn compile_config_accesses(
     providers: &awaken_ext_builtin_tools::WebSearchProviderRegistry,
     config: &mut awaken_ext_builtin_tools::WebSearchConfig,
     fetch: bool,
+    now_ms: u64,
 ) -> Result<(), String> {
     let requirement = if fetch {
         providers.fetch_credential_requirement(&config.provider_id)
@@ -97,7 +91,7 @@ async fn compile_config_accesses(
             credential_access: config.credential_access.take(),
             options: std::mem::take(&mut config.options),
         };
-        compile_target_access(credentials, workspace, &mut primary, requirement).await?;
+        compile_target_access(credentials, workspace, &mut primary, requirement, now_ms).await?;
         config.credential = primary.credential;
         config.credential_access = primary.credential_access;
         config.options = primary.options;
@@ -109,7 +103,7 @@ async fn compile_config_accesses(
             providers.search_credential_requirement(&target.provider_id)
         }
         .ok_or_else(|| "web provider disappeared during publication".to_string())?;
-        compile_target_access(credentials, workspace, target, requirement).await?;
+        compile_target_access(credentials, workspace, target, requirement, now_ms).await?;
     }
     Ok(())
 }
@@ -117,16 +111,19 @@ async fn compile_config_accesses(
 pub(crate) struct WebSearchPublicationResolver {
     providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     credentials: Arc<dyn CredentialRepo>,
+    clock: Arc<dyn WallClock>,
 }
 
 impl WebSearchPublicationResolver {
     pub(crate) fn new(
         providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
         credentials: Arc<dyn CredentialRepo>,
+        clock: Arc<dyn WallClock>,
     ) -> Self {
         Self {
             providers,
             credentials,
+            clock,
         }
     }
 }
@@ -161,6 +158,7 @@ impl PluginPublicationResolver for WebSearchPublicationResolver {
             &self.providers,
             &mut config,
             false,
+            self.clock.now_ms(),
         )
         .await?;
         serde_json::to_value(config).map_err(|error| error.to_string())
@@ -170,16 +168,19 @@ impl PluginPublicationResolver for WebSearchPublicationResolver {
 pub(crate) struct WebFetchPublicationResolver {
     providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     credentials: Arc<dyn CredentialRepo>,
+    clock: Arc<dyn WallClock>,
 }
 
 impl WebFetchPublicationResolver {
     pub(crate) fn new(
         providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
         credentials: Arc<dyn CredentialRepo>,
+        clock: Arc<dyn WallClock>,
     ) -> Self {
         Self {
             providers,
             credentials,
+            clock,
         }
     }
 }
@@ -214,6 +215,7 @@ impl PluginPublicationResolver for WebFetchPublicationResolver {
             &self.providers,
             &mut config,
             true,
+            self.clock.now_ms(),
         )
         .await?;
         serde_json::to_value(config).map_err(|error| error.to_string())
@@ -329,6 +331,7 @@ mod tests {
         let resolver = WebSearchPublicationResolver::new(
             awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
             Arc::new(InMemoryCredentialRepo::new()),
+            awaken_lease_contract::system_clock(),
         );
         assert_eq!(
             resolver
@@ -372,6 +375,7 @@ mod tests {
         let fetch = WebFetchPublicationResolver::new(
             awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
             Arc::new(InMemoryCredentialRepo::new()),
+            awaken_lease_contract::system_clock(),
         );
         assert!(
             fetch
@@ -410,6 +414,7 @@ mod tests {
         let resolver = WebSearchPublicationResolver::new(
             awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
             credentials.clone(),
+            awaken_lease_contract::system_clock(),
         );
         let authored = serde_json::json!({
             "provider_id": "brave",
@@ -441,15 +446,18 @@ mod tests {
 
         let mut fetch_providers = awaken_ext_builtin_tools::WebSearchProviderRegistry::default();
         fetch_providers.register_fetch(Arc::new(PaidFetch)).unwrap();
-        let fetch_published =
-            WebFetchPublicationResolver::new(fetch_providers, credentials.clone())
-                .resolve(
-                    &awaken_tenancy::ScopeId::from("workspace-a"),
-                    &[],
-                    Some(&authored),
-                )
-                .await
-                .expect("P1 applies identically to WebFetch");
+        let fetch_published = WebFetchPublicationResolver::new(
+            fetch_providers,
+            credentials.clone(),
+            awaken_lease_contract::system_clock(),
+        )
+        .resolve(
+            &awaken_tenancy::ScopeId::from("workspace-a"),
+            &[],
+            Some(&authored),
+        )
+        .await
+        .expect("P1 applies identically to WebFetch");
         assert!(fetch_published.get("credential").is_none());
         assert!(fetch_published.get("credential_access").is_some());
 
@@ -506,6 +514,7 @@ mod tests {
             WebSearchPublicationResolver::new(
                 awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
                 other_credentials,
+                awaken_lease_contract::system_clock(),
             )
             .resolve(
                 &awaken_tenancy::ScopeId::from("workspace-a"),
@@ -515,6 +524,99 @@ mod tests {
             .await
             .is_err(),
             "P5/E2"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_and_fetch_publication_judge_expiry_on_the_composed_clock() {
+        // Causes: C1 an exact active Brave credential expires at 200; C2 the
+        // injected clock reads 199 or 200; C3 Search or Fetch uses the same
+        // source, Workspace and revision; C4 Search selects that source as a
+        // fallback behind a free provider. Effects: E1 a secret-free access is
+        // published before expiry; E2 no access is published at expiry.
+        // Constraint: the real host clock and repository contents do not
+        // change between rules. Decision table: R1 Search+199 -> E1,
+        // R2 Fetch+199 -> E1, R3 fallback+199 -> E1; R4 Search+200 -> E2,
+        // R5 Fetch+200 -> E2, R6 fallback+200 -> E2.
+        let credentials: Arc<dyn CredentialRepo> = Arc::new(InMemoryCredentialRepo::new());
+        let mut source =
+            described_web_credential(credentials.clone(), "workspace-a", "brave").await;
+        source
+            .descriptor
+            .as_mut()
+            .expect("described credential")
+            .expires_at_unix_ms = Some(200);
+        credentials.put(source.clone()).await.unwrap();
+        let authored = serde_json::json!({
+            "provider_id": "brave",
+            "credential": {"id": source.id.0, "revision": source.version},
+            "options": {"safesearch": "strict"}
+        });
+        let workspace = awaken_tenancy::ScopeId::from("workspace-a");
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(199));
+        let search = WebSearchPublicationResolver::new(
+            awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
+            credentials.clone(),
+            clock.clone(),
+        );
+        let mut fetch_providers = awaken_ext_builtin_tools::WebSearchProviderRegistry::default();
+        fetch_providers.register_fetch(Arc::new(PaidFetch)).unwrap();
+        let fetch = WebFetchPublicationResolver::new(fetch_providers, credentials, clock.clone());
+        let fallback_authored = serde_json::json!({
+            "provider_id": "duckduckgo",
+            "options": {},
+            "fallbacks": [{
+                "provider_id": "brave",
+                "credential": authored["credential"],
+                "options": {"safesearch": "strict"}
+            }]
+        });
+
+        assert!(
+            search
+                .resolve(&workspace, &[], Some(&authored))
+                .await
+                .is_ok(),
+            "R1"
+        );
+        assert!(
+            fetch
+                .resolve(&workspace, &[], Some(&authored))
+                .await
+                .is_ok(),
+            "R2"
+        );
+        let fallback_published = search
+            .resolve(&workspace, &[], Some(&fallback_authored))
+            .await
+            .expect("R3");
+        assert!(
+            fallback_published["fallbacks"][0]
+                .get("credential_access")
+                .is_some(),
+            "R3"
+        );
+        clock.set(200);
+        assert!(
+            search
+                .resolve(&workspace, &[], Some(&authored))
+                .await
+                .is_err(),
+            "R4"
+        );
+        assert!(
+            fetch
+                .resolve(&workspace, &[], Some(&authored))
+                .await
+                .is_err(),
+            "R5"
+        );
+        assert!(
+            search
+                .resolve(&workspace, &[], Some(&fallback_authored))
+                .await
+                .is_err(),
+            "R6"
         );
     }
 }
