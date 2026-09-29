@@ -133,7 +133,8 @@ pub struct WorkerNodeBuilder {
     brokered_acp_model_access:
         Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
     remote_attempt: Option<awaken_session_executor::RemoteAttemptInstallation>,
-    hand_executor_factory: Option<Arc<dyn awaken_session_executor::HandExecutorFactory>>,
+    hand_executor_factory:
+        Option<Arc<dyn awaken_session_environment_contract::HandExecutorFactory>>,
     worker_local_credential_resolver:
         Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
     acp_capability_observation_source:
@@ -379,7 +380,7 @@ impl WorkerNodeBuilder {
     #[must_use]
     pub fn with_hand_executor_factory(
         mut self,
-        factory: Arc<dyn awaken_session_executor::HandExecutorFactory>,
+        factory: Arc<dyn awaken_session_environment_contract::HandExecutorFactory>,
     ) -> Self {
         self.hand_executor_factory = Some(factory);
         self
@@ -884,7 +885,8 @@ pub struct WorkerNode {
     brokered_acp_model_access:
         Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
     remote_attempt: Option<awaken_session_executor::RemoteAttemptInstallation>,
-    hand_executor_factory: Option<Arc<dyn awaken_session_executor::HandExecutorFactory>>,
+    hand_executor_factory:
+        Option<Arc<dyn awaken_session_environment_contract::HandExecutorFactory>>,
     credential_observation_resolver:
         Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
     acp_capability_observation_source:

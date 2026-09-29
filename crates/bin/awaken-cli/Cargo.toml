@@ -48,6 +48,8 @@ awaken-worker = { workspace = true }
 # The service layer: SharedHost / ManagedHost / ConfigService / ConfigPlane and the
 # durable session repositories the startup opens.
 awaken-session-executor.workspace = true
+# The container Hand residency the runtime settings select.
+awaken-session-environment-contract.workspace = true
 # Local Resource ports for the test-support runtime process without a Deployment.
 awaken-runtime-host-testkit = { workspace = true, optional = true }
 # The installation platform Workspace marker this startup reads or publishes.

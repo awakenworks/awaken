@@ -22,86 +22,9 @@ const RESOURCE_PROMPT_VARIABLES: &[&str] = &[
     "{{awaken.resource.access}}",
 ];
 
-/// Provider-relative view of a sandbox-logical path presented to an Agent.
-/// `SandboxAbsolute` is valid inside Namespace/Container. `WorkdirRelative`
-/// deliberately strips the provider-private host root, so a trusted local ACP
-/// process receives a usable path without leaking the operator's absolute path
-/// into a potentially remote model request.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) enum AgentPathView {
-    #[default]
-    SandboxAbsolute,
-    WorkdirRelative {
-        logical_cwd: String,
-    },
-}
-
-impl AgentPathView {
-    pub(crate) fn sandbox_absolute() -> Self {
-        Self::SandboxAbsolute
-    }
-
-    pub(crate) fn workdir_relative(logical_cwd: impl Into<String>) -> Self {
-        Self::WorkdirRelative {
-            logical_cwd: logical_cwd.into(),
-        }
-    }
-
-    pub(crate) fn render(&self, logical: &str) -> String {
-        self.render_with_separator(logical, std::path::MAIN_SEPARATOR)
-    }
-
-    fn render_with_separator(&self, logical: &str, separator: char) -> String {
-        match self {
-            Self::SandboxAbsolute => logical.to_string(),
-            Self::WorkdirRelative { logical_cwd } => {
-                relative_logical_path(logical_cwd, logical, separator)
-            }
-        }
-    }
-
-    fn workspace(&self) -> String {
-        match self {
-            Self::SandboxAbsolute => awaken_provisioning_contract::WorkspaceLayout::ROOT.into(),
-            Self::WorkdirRelative { logical_cwd } => relative_logical_path(
-                logical_cwd,
-                awaken_provisioning_contract::WorkspaceLayout::ROOT,
-                std::path::MAIN_SEPARATOR,
-            ),
-        }
-    }
-}
-
-/// Compute a portable relative path between two already-validated logical
-/// sandbox paths. This never observes a provider-private host prefix.
-fn relative_logical_path(from: &str, to: &str, separator: char) -> String {
-    let from = from
-        .trim_matches('/')
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    let to = to
-        .trim_matches('/')
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    let common = from
-        .iter()
-        .zip(&to)
-        .take_while(|(left, right)| left == right)
-        .count();
-    let mut result = std::iter::repeat_n("..", from.len() - common)
-        .chain(to[common..].iter().copied())
-        .collect::<Vec<_>>()
-        .join("/");
-    if result.is_empty() {
-        result.push('.');
-    }
-    if separator != '/' {
-        result = result.replace('/', &separator.to_string());
-    }
-    result
-}
+/// The Agent's view of sandbox-logical paths; the Session environment
+/// contract owns the value and its rendering.
+pub(crate) use awaken_session_environment_contract::AgentPathView;
 
 #[cfg(test)]
 #[path = "resource_prompt_tests.rs"]

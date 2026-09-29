@@ -4,7 +4,7 @@
 //! Live skill discovery cache for a Session-owned remote hand.
 
 use awaken_provisioning_contract as pc;
-use awaken_sandbox_local::DiscoveredSkillFile;
+use awaken_session_environment_contract::DiscoveredSkillFile;
 
 pub(crate) struct ContainerSkillCache {
     dirs: std::sync::Mutex<std::collections::BTreeSet<String>>,

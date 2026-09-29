@@ -12,7 +12,7 @@ use awaken_runtime_contract::tool::ToolExecutor;
 
 struct RelayHandExecutorFactory;
 
-impl awaken_session_executor::HandExecutorFactory for RelayHandExecutorFactory {
+impl awaken_session_environment_contract::HandExecutorFactory for RelayHandExecutorFactory {
     fn bind(
         &self,
         channel: Box<dyn AgentChannelType>,
@@ -33,7 +33,8 @@ impl awaken_session_executor::HandExecutorFactory for RelayHandExecutorFactory {
 
 /// Build the canonical execution-plane Hand adapter.
 #[must_use]
-pub fn relay_hand_executor_factory() -> Arc<dyn awaken_session_executor::HandExecutorFactory> {
+pub fn relay_hand_executor_factory()
+-> Arc<dyn awaken_session_environment_contract::HandExecutorFactory> {
     Arc::new(RelayHandExecutorFactory)
 }
 

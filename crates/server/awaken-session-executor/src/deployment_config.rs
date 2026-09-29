@@ -173,17 +173,9 @@ pub enum PackageImageBuilder {
     Kubernetes,
 }
 
-/// Lifetime of the Session container's Hand role. One enum drives both the Pod
-/// process and the Runtime Host binding, preventing parallel Hand owners.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ContainerHandResidency {
-    /// Launch a rebuildable `hand --stdio` process for the current Worker.
-    #[default]
-    AttachedExec,
-    /// Run the Hand as the Session container process and reopen its private
-    /// provider channel after Worker replacement.
-    Resident,
-}
+// Lifetime of the Session container's Hand role; the Session environment
+// contract owns the value so the environment and this Deployment agree.
+use awaken_session_environment_contract::ContainerHandResidency;
 
 /// Deployment-owned exposure of the existing Worker MCP relay to an isolated
 /// container network. The advertised origin carries only generation-scoped
@@ -286,37 +278,6 @@ impl ContainerMcpRelayExposure {
                     normalized.iter().all(|candidate| candidate != &upstream)
                 })
         })
-    }
-}
-
-impl ContainerHandResidency {
-    /// Recovery evidence shared by Worker registration and the realized
-    /// SessionEnvironment executor. Keeping this exhaustive mapping here makes
-    /// a new residency mode a compile error until both paths agree.
-    #[must_use]
-    pub const fn recovery_capability(
-        self,
-    ) -> awaken_runtime_contract::tool::ToolRecoveryCapability {
-        match self {
-            Self::AttachedExec => {
-                awaken_runtime_contract::tool::ToolRecoveryCapability::NonRecoverable
-            }
-            Self::Resident => awaken_runtime_contract::tool::ToolRecoveryCapability::DurableRequest,
-        }
-    }
-}
-
-impl std::str::FromStr for ContainerHandResidency {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "attached_exec" | "attached" => Ok(Self::AttachedExec),
-            "resident" => Ok(Self::Resident),
-            other => Err(format!(
-                "invalid container_hand_residency={other:?}: expected attached_exec or resident"
-            )),
-        }
     }
 }
 

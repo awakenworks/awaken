@@ -9,18 +9,11 @@ use awaken_sandbox_local::{LocalSandbox, NamespaceSandbox};
 
 use super::HandExecutorFactory;
 use super::container_skills::ContainerSkillCache;
-use super::session_hand::{HandProjectionUpdate, HandStopProof, SessionHandExecutor};
+use super::session_hand::{HandProjectionUpdate, SessionHandExecutor};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EnvironmentStopProof {
-    NoBoundProcesses,
-    Hand(HandStopProof),
-    #[cfg(target_os = "linux")]
-    ExecutionTreeQuiescent,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct EnvironmentQuiescenceProof;
+pub(crate) use awaken_session_environment_contract::{
+    EnvironmentQuiescenceProof, EnvironmentStopProof,
+};
 
 /// One realized sandbox shared by every Run attempt in a Session.
 pub(crate) enum SessionEnvironment {
@@ -224,7 +217,7 @@ impl SessionEnvironment {
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: &str,
         hand_idle_after: std::time::Duration,
-        hand_residency: crate::deployment_config::ContainerHandResidency,
+        hand_residency: awaken_session_environment_contract::ContainerHandResidency,
         capabilities: pc::SandboxCapabilities,
         clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<Self, pc::SandboxError> {

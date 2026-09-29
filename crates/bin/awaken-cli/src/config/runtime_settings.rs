@@ -1,9 +1,10 @@
 use std::path::Path;
 
 use awaken_session_executor::{
-    AcpWorkerProfile, ContainerHandResidency, ContainerMcpRelayExposure, ContentCaptureSettings,
-    ContentRedaction, SandboxPackageSettingsInput, SandboxSettings, SandboxTier, Wake,
+    AcpWorkerProfile, ContainerMcpRelayExposure, ContentCaptureSettings, ContentRedaction,
+    SandboxPackageSettingsInput, SandboxSettings, SandboxTier, Wake,
 };
+use awaken_session_environment_contract::ContainerHandResidency;
 
 use super::file_schema::FileConfig;
 

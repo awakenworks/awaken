@@ -191,7 +191,7 @@ impl awaken_sandbox_container::ContainerEnvironmentCapacity for RecordingCapacit
 
 struct NoHandFactory;
 
-impl awaken_session_executor::HandExecutorFactory for NoHandFactory {
+impl awaken_session_environment_contract::HandExecutorFactory for NoHandFactory {
     fn bind(
         &self,
         _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
