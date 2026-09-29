@@ -93,8 +93,8 @@ use process_startup::{ProcessStartup, local_model_supply};
 #[cfg(test)]
 use process_stores::role_hosts_resources;
 use process_stores::{
-    ControlStores, CoordinatorStores, MigrationComponent, PostgresSchemaMode,
-    ProcessStoreOpenOptions, ProcessStores, migration_manifest, open_process_stores,
+    CoordinatorStores, MigrationComponent, PostgresSchemaMode, ProcessStoreOpenOptions,
+    ProcessStores, migration_manifest, open_process_stores,
 };
 #[cfg(test)]
 use process_stores::{role_owns_control_component, role_owns_managed_execution};
