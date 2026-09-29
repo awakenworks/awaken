@@ -680,7 +680,7 @@ impl RuntimeToolSource for LocalSandbox {
 
 impl RuntimeToolSource for crate::session_environment::SessionEnvironment {
     fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
-        self.rooted_tools()
+        self.agent_tools().rooted_tools()
     }
 }
 

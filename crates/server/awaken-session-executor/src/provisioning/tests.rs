@@ -206,7 +206,7 @@ fn install_terminal_artifact_environment(
     workspace_id: &str,
     environment: Arc<crate::session_environment::SessionEnvironment>,
 ) {
-    let binding = serde_json::to_string(&environment.handle())
+    let binding = serde_json::to_string(&environment.lifecycle().handle())
         .expect("terminal artifact Environment binding");
     let state = awaken_session_state_contract::SessionEnvironmentState::Resident {
         binding,
@@ -241,7 +241,7 @@ async fn root_terminal_cleanup_effect(
         .read(session_id, |slot| slot.environment_owner.resident())
         .flatten()
         .expect("terminal test requires a resident Environment");
-    let binding = serde_json::to_string(&environment.handle()).unwrap();
+    let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let workspace_id = host
         .session_slots
         .read(session_id, |slot| slot.workspace.clone())
@@ -745,9 +745,10 @@ async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_pat
     // single admission authority; no Bash command rewriting or alias mount
     // is introduced as a second path mapping.
     let host = host();
-    let local = crate::session_environment::SessionEnvironmentProvider::workdir(
+    let local = crate::session_environment::SandboxEnvironmentProvider::workdir(
         tempfile::tempdir().unwrap().path(),
-    );
+    )
+    .into_session_provider();
     let bare = host.sandbox_spec("bare");
     assert_eq!(bare.isolation, pc::IsolationClass::Workdir, "W2/E3");
 
@@ -859,7 +860,8 @@ async fn projected_acp_rejects_a_provider_with_split_tool_and_process_paths() {
         .expect("install exact immutable Agent publication");
 
     let root = tempfile::tempdir().unwrap();
-    let local = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let local = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let spec = host.sandbox_spec("projected-acp");
     assert_eq!(
         spec.isolation,
@@ -938,7 +940,8 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
     );
 
     let root = tempfile::tempdir().unwrap();
-    let local = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let local = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let spec = host.sandbox_spec("model-override-acp");
     assert_eq!(
         spec.isolation,
@@ -993,12 +996,13 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
     }
 
     let tmp = tempfile::tempdir().unwrap();
-    let env = crate::session_environment::SessionEnvironment::workdir(
+    let env = crate::session_environment::SandboxEnvironment::workdir(
         LocalProvider::new(tmp.path())
             .create_sandbox(&agent_run_sandbox_spec("s"))
             .await
             .unwrap(),
-    );
+    )
+    .into_session_environment();
     let host = host();
     host.register_thread_resources(
         "t",
@@ -1018,7 +1022,9 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
             ..Default::default()
         },
     );
-    let err = host.realize_thread_repositories("t", &env).await;
+    let err = host
+        .realize_thread_repositories("t", env.repositories().as_ref())
+        .await;
     assert!(
         err.is_err(),
         "R9a unsafe repo mount must abort Session start"
@@ -1578,17 +1584,22 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
     let create_fence = lease
         .sandbox_effect_fence("session-artifacts-create")
         .unwrap();
-    let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-        host.test_local_provider()
-            .create_sandbox_for_effect(
-                &spec,
-                &create_fence,
-                None,
-                &awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence),
-            )
-            .await
-            .unwrap(),
-    ));
+    let environment = Arc::new(
+        crate::session_environment::SandboxEnvironment::workdir(
+            host.test_local_provider()
+                .create_sandbox_for_effect(
+                    &spec,
+                    &create_fence,
+                    None,
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                        &create_fence,
+                    ),
+                )
+                .await
+                .unwrap(),
+        )
+        .into_session_environment(),
+    );
     install_terminal_artifact_environment(
         host.as_ref(),
         "session-artifacts",
@@ -1737,17 +1748,22 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
     let create_fence = lease
         .sandbox_effect_fence("artifact-response-loss-create")
         .unwrap();
-    let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-        host.test_local_provider()
-            .create_sandbox_for_effect(
-                &spec,
-                &create_fence,
-                None,
-                &awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence),
-            )
-            .await
-            .unwrap(),
-    ));
+    let environment = Arc::new(
+        crate::session_environment::SandboxEnvironment::workdir(
+            host.test_local_provider()
+                .create_sandbox_for_effect(
+                    &spec,
+                    &create_fence,
+                    None,
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                        &create_fence,
+                    ),
+                )
+                .await
+                .unwrap(),
+        )
+        .into_session_environment(),
+    );
     install_terminal_artifact_environment(
         host.as_ref(),
         "artifact-response-loss",
@@ -2078,12 +2094,15 @@ async fn artifact_harvest_has_one_file_authority_and_no_magic_bundle_gate() {
     let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
     host.register_thread_workspace("plain-files", "workspace-a");
     let spec = agent_run_sandbox_spec("plain-files");
-    let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-        LocalProvider::new(storage.path())
-            .create_sandbox(&spec)
-            .await
-            .unwrap(),
-    ));
+    let environment = Arc::new(
+        crate::session_environment::SandboxEnvironment::workdir(
+            LocalProvider::new(storage.path())
+                .create_sandbox(&spec)
+                .await
+                .unwrap(),
+        )
+        .into_session_environment(),
+    );
     host.install_test_resident_session_environment("plain-files", environment);
     let output = storage
         .path()
@@ -2292,17 +2311,22 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
     let create_fence = lease
         .sandbox_effect_fence("session-harvest-failure-create")
         .unwrap();
-    let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-        host.test_local_provider()
-            .create_sandbox_for_effect(
-                &spec,
-                &create_fence,
-                None,
-                &awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence),
-            )
-            .await
-            .unwrap(),
-    ));
+    let environment = Arc::new(
+        crate::session_environment::SandboxEnvironment::workdir(
+            host.test_local_provider()
+                .create_sandbox_for_effect(
+                    &spec,
+                    &create_fence,
+                    None,
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                        &create_fence,
+                    ),
+                )
+                .await
+                .unwrap(),
+        )
+        .into_session_environment(),
+    );
     install_terminal_artifact_environment(
         host.as_ref(),
         "session-harvest-failure",
@@ -2363,12 +2387,13 @@ async fn agent_authored_skill_remains_run_scoped_until_explicit_publication() {
 
     // A real sandbox env with a skill authored under the workspace `skills/` dir.
     let base = dir.join("sbx");
-    let env = crate::session_environment::SessionEnvironment::workdir(
+    let env = crate::session_environment::SandboxEnvironment::workdir(
         LocalProvider::new(&base)
             .create_sandbox(&agent_run_sandbox_spec("t"))
             .await
             .unwrap(),
-    );
+    )
+    .into_session_environment();
     let skill_dir = base.join("t").join("skills").join("notes");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(
@@ -2386,6 +2411,7 @@ async fn agent_authored_skill_remains_run_scoped_until_explicit_publication() {
             .is_empty()
     );
     let authored = env
+        .skills()
         .scan_skill_dir(crate::skills::DEFAULT_SKILLS_SUBDIR)
         .unwrap();
     assert!(
@@ -2393,7 +2419,7 @@ async fn agent_authored_skill_remains_run_scoped_until_explicit_publication() {
         "R1/E1: the authored Skill remains visible inside its originating run"
     );
 
-    env.dispose().await.unwrap();
+    env.lifecycle().dispose().await.unwrap();
     assert!(
         host.tools
             .skills

@@ -44,12 +44,13 @@ async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_t
     let mut docker_spec = spec();
     docker_spec.scope = format!("host-repo-real-{}", std::process::id());
     docker_spec.outputs_path = "/mnt/session/outputs".into();
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider,
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&docker_spec)
     .await
     .unwrap();
@@ -62,23 +63,34 @@ async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_t
         initial_commit: None,
         access: pc::MountAccess::ReadWrite,
     };
-    pc::RepositoryRealizer::realize_repository(&environment, &repository_plan, None)
-        .await
-        .unwrap();
+    pc::RepositoryRealizer::realize_repository(
+        environment.repositories().as_ref(),
+        &repository_plan,
+        None,
+    )
+    .await
+    .unwrap();
     environment
+        .agent_process()
         .materialize_inline("/workspace/.mnt/live.txt", b"live")
         .await
         .unwrap();
     assert_eq!(
-        environment.list_workspace_files(".mnt").await.unwrap(),
+        environment
+            .sandbox_environment()
+            .list_workspace_files(".mnt")
+            .await
+            .unwrap(),
         vec![("live.txt".into(), b"live".to_vec())]
     );
     environment
+        .projection()
         .remove_projection_path(".mnt/live.txt")
         .await
         .unwrap();
     assert!(
         environment
+            .sandbox_environment()
             .list_workspace_files(".mnt")
             .await
             .unwrap()
@@ -86,6 +98,7 @@ async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_t
     );
 
     let change = environment
+        .sandbox_environment()
         .sandbox()
         .spawn(pc::Command::new([
             "sh",
@@ -108,12 +121,13 @@ async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_t
         .await
         .unwrap();
     assert_eq!(change.wait().await.unwrap().code, Some(0));
-    environment.register_skill_dir("skills");
-    environment.refresh_skills().await.unwrap();
-    let skills = environment.scan_skill_dir("skills").unwrap();
+    environment.skills().register_skill_dir("skills");
+    environment.skills().refresh_skills().await.unwrap();
+    let skills = environment.skills().scan_skill_dir("skills").unwrap();
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].id, "authored");
     let commit = environment
+        .sandbox_environment()
         .list_workspace_files(".mnt")
         .await
         .unwrap()
@@ -126,11 +140,12 @@ async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_t
         expected_prior_commit: None,
     };
     environment
+        .projection()
         .remove_projection_path(".mnt/commit.txt")
         .await
         .unwrap();
     let first = pc::RepositoryRealizer::publish_repository(
-        &environment,
+        environment.repositories().as_ref(),
         &repository_plan,
         &expectation,
         None,
@@ -138,7 +153,7 @@ async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_t
     .await
     .unwrap();
     let replay = pc::RepositoryRealizer::publish_repository(
-        &environment,
+        environment.repositories().as_ref(),
         &repository_plan,
         &expectation,
         None,
@@ -148,12 +163,12 @@ async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_t
     assert_eq!(first, replay, "C1/C2 canonical receipt");
     // Artifact cause/effect rule: one regular output file → one canonical
     // content-addressed Artifact and binary-safe read through the same port.
-    let artifacts = environment.capture_artifacts().await.unwrap();
+    let artifacts = environment.harvest().capture_artifacts().await.unwrap();
     assert_eq!(artifacts.len(), 1);
     assert!(artifacts[0].metadata.path.ends_with("nested/result.bin"));
     assert_eq!(artifacts[0].metadata.id, artifacts[0].metadata.content_hash);
     assert_eq!(artifacts[0].bytes, vec![0, 0xff]);
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 
     git(
         temp.path(),
@@ -199,7 +214,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         awaken_session_environment_contract::ContainerHandResidency::Resident,
     ] {
         let fake = Arc::new(FakeContainerProvider::default());
-        let provider = SessionEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+        let provider = SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
             fake.clone(),
             None,
             Vec::new(),
@@ -208,7 +223,8 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             std::time::Duration::ZERO,
             residency,
             awaken_lease_contract::system_clock(),
-        );
+        )
+        .into_session_provider();
         let thread = "session-container";
         let host = Arc::new(crate::SharedHost::new(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
@@ -239,7 +255,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             .unwrap();
         let spec = host.sandbox_spec_for_provider(thread, &provider);
         let original = Arc::new(provider.create(&spec).await.unwrap());
-        let handle = original.handle();
+        let handle = original.lifecycle().handle();
         let binding = serde_json::to_string(&handle).unwrap();
         let generation = awaken_session_state_contract::SandboxGeneration::new(
             &awaken_session_types::SessionId::from(thread),
@@ -269,9 +285,9 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             .unwrap();
         host.publish_prepared_session_environment(thread, &candidate, identity)
             .unwrap();
-        let SessionEnvironment::Container {
+        let SandboxEnvironment::Container {
             sandbox: physical, ..
-        } = original.as_ref()
+        } = original.sandbox_environment()
         else {
             unreachable!()
         };
@@ -282,7 +298,12 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 tool_id: "read".into(),
                 arguments: serde_json::json!({}),
             };
-            previous.tool_executor().invoke(&call).await.unwrap();
+            previous
+                .agent_tools()
+                .tool_executor()
+                .invoke(&call)
+                .await
+                .unwrap();
             {
                 let lifecycle = host
                     .session_slots
@@ -294,7 +315,12 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                     .unwrap();
             }
             assert!(
-                previous.tool_executor().invoke(&call).await.is_err(),
+                previous
+                    .agent_tools()
+                    .tool_executor()
+                    .invoke(&call)
+                    .await
+                    .is_err(),
                 "W2 old Hand stays closed"
             );
             // W1/W2 new admitted work reinstalls the aggregate-owned Resource
@@ -356,14 +382,22 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 .environment;
             assert!(!Arc::ptr_eq(&previous, &rebound), "W2 fresh wrapper");
             assert!(
-                !Arc::ptr_eq(&previous.tool_executor(), &rebound.tool_executor()),
+                !Arc::ptr_eq(
+                    &previous.agent_tools().tool_executor(),
+                    &rebound.agent_tools().tool_executor()
+                ),
                 "W2 fresh Hand"
             );
-            let SessionEnvironment::Container { sandbox, .. } = rebound.as_ref() else {
+            let SandboxEnvironment::Container { sandbox, .. } = rebound.sandbox_environment()
+            else {
                 unreachable!()
             };
             assert!(Arc::ptr_eq(physical, sandbox), "W2 same physical owner");
-            assert_eq!(rebound.handle(), handle, "W2 exact durable binding");
+            assert_eq!(
+                rebound.lifecycle().handle(),
+                handle,
+                "W2 exact durable binding"
+            );
             assert_eq!(fake.creates.load(Ordering::SeqCst), 1, "W2 no recreate");
             assert_eq!(
                 fake.adopts.load(Ordering::SeqCst),
@@ -372,6 +406,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             );
             assert_eq!(fake.disposals.load(Ordering::SeqCst), 0, "W2 no disposal");
             rebound
+                .agent_tools()
                 .tool_executor()
                 .invoke(&call)
                 .await
@@ -382,6 +417,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         foreign.sandbox_id.push_str("-foreign");
         assert!(
             provider
+                .adoption()
                 .rebind_retained(
                     &spec,
                     &foreign,
@@ -394,7 +430,9 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         );
         let directory = tempfile::tempdir().unwrap();
         assert!(
-            SessionEnvironmentProvider::workdir(directory.path())
+            SandboxEnvironmentProvider::workdir(directory.path())
+                .into_session_provider()
+                .adoption()
                 .rebind_retained(
                     &spec,
                     &handle,
@@ -405,7 +443,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 .is_err(),
             "W3 foreign provider"
         );
-        previous.stop_bound_processes().await.unwrap();
+        previous.lifecycle().stop_bound_processes().await.unwrap();
     }
 }
 
@@ -444,12 +482,13 @@ impl pc::SandboxCheckpointStore for CountingCheckpointStore {
 async fn container_restore_is_refused_at_selection_when_the_provider_has_no_restorable_rung() {
     let provider = Arc::new(FakeContainerProvider::default());
     assert!(provider.restorable().is_none(), "C1");
-    let container = SessionEnvironmentProvider::container(
+    let container = SandboxEnvironmentProvider::container(
         provider,
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
-    );
+    )
+    .into_session_provider();
     let store = CountingCheckpointStore::default();
     let request = pc::SandboxRestoreRequest {
         workspace_id: "workspace".into(),
@@ -470,6 +509,7 @@ async fn container_restore_is_refused_at_selection_when_the_provider_has_no_rest
         },
     };
     let error = container
+        .terminal()
         .restore(&spec(), &request, &store)
         .await
         .expect_err("R1 refused");

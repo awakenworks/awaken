@@ -69,12 +69,13 @@ pub(crate) async fn materialize_delivered_skill(
         .iter()
         .map(|file| (file.path.clone(), file.content.clone(), file.executable))
         .collect::<Vec<_>>();
-    env.materialize_read_only_tree(
-        &delivered_skill_directory(version.skill_id.as_str()),
-        &files,
-    )
-    .await
-    .map_err(|error| error.to_string())
+    env.skills()
+        .materialize_read_only_tree(
+            &delivered_skill_directory(version.skill_id.as_str()),
+            &files,
+        )
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Serve only the advertised, exact Managed bundle while its filesystem is
@@ -182,6 +183,7 @@ impl SkillSource for EnvSkillSource {
     fn scan(&self) -> Result<Vec<SkillFile>, String> {
         Ok(self
             .env
+            .skills()
             .scan_skill_dir(&self.subdir)
             .map_err(|error| error.to_string())?
             .into_iter()
@@ -218,6 +220,7 @@ fn snapshot_repository_skill_files(
             root.clone()
         };
         let files = env
+            .skills()
             .scan_skill_dir(root)
             .map_err(|error| error.to_string())?;
         snapshot.extend(files.into_iter().map(|file| SkillFile {
@@ -360,12 +363,13 @@ pub(crate) async fn build_skill_registry(
         // supplies only realized repository roots and must not implicitly add
         // an unmounted workspace root.
         if roots.is_empty() {
-            env.register_skill_dir(authored_skills_subdir);
+            env.skills().register_skill_dir(authored_skills_subdir);
         }
         for root in roots {
-            env.register_skill_dir(root);
+            env.skills().register_skill_dir(root);
         }
-        env.refresh_skills()
+        env.skills()
+            .refresh_skills()
             .await
             .map_err(|error| error.to_string())?;
     }
@@ -410,7 +414,8 @@ pub(crate) async fn build_skill_registry(
         && (delivered.is_some() || (filesystem_delivery && !configured.is_empty()))
         && let Some(env) = env.as_ref()
     {
-        env.remove_projection_path(DELIVERED_SKILLS_SUBDIR)
+        env.projection()
+            .remove_projection_path(DELIVERED_SKILLS_SUBDIR)
             .await
             .map_err(|error| error.to_string())?;
     }
@@ -430,12 +435,13 @@ pub(crate) async fn build_skill_registry(
                 skill.body
             );
             if let Some(env) = env.as_ref() {
-                env.materialize_read_only_tree(
-                    &directory,
-                    &[("SKILL.md".to_string(), content.into_bytes(), false)],
-                )
-                .await
-                .map_err(|error| error.to_string())?;
+                env.skills()
+                    .materialize_read_only_tree(
+                        &directory,
+                        &[("SKILL.md".to_string(), content.into_bytes(), false)],
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
             }
             skill.dir = Some(directory);
         }
@@ -571,6 +577,7 @@ impl FilesystemSkillPrompt {
                     Some(environment) => path_view.render(&format!(
                         "{}/SKILL.md",
                         environment
+                            .skills()
                             .skill_directory_path(directory)
                             .map_err(|error| error.to_string())?,
                     )),
@@ -791,12 +798,15 @@ mod tests {
         // existing no-Skill `None` path; Managed never supplies this live root.
         let base = std::env::temp_dir().join(format!("awaken-authored-{}", std::process::id()));
         let provider = LocalProvider::new(&base);
-        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            provider
-                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
-                .await
-                .unwrap(),
-        ));
+        let env = Arc::new(
+            crate::session_environment::SandboxEnvironment::workdir(
+                provider
+                    .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                    .await
+                    .unwrap(),
+            )
+            .into_session_environment(),
+        );
         let live_roots = Vec::<String>::new();
         let registry = build_skill_registry(
             &[],
@@ -833,7 +843,7 @@ mod tests {
         assert_eq!(found.dir.as_deref(), Some("skills/notes"));
         assert!(found.body.contains("hydrate"));
 
-        env.dispose().await.unwrap();
+        env.lifecycle().dispose().await.unwrap();
     }
 
     #[tokio::test]
@@ -853,12 +863,15 @@ mod tests {
             std::process::id()
         ));
         std::fs::remove_dir_all(&base).ok();
-        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            LocalProvider::new(&base)
-                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
-                .await
-                .unwrap(),
-        ));
+        let env = Arc::new(
+            crate::session_environment::SandboxEnvironment::workdir(
+                LocalProvider::new(&base)
+                    .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                    .await
+                    .unwrap(),
+            )
+            .into_session_environment(),
+        );
         let unbound = base.join("t").join(MANAGED_SKILLS_SUBDIR).join("unbound");
         std::fs::create_dir_all(&unbound).unwrap();
         std::fs::write(
@@ -913,7 +926,7 @@ mod tests {
             "R9 no second installation owner"
         );
 
-        env.dispose().await.unwrap();
+        env.lifecycle().dispose().await.unwrap();
         std::fs::remove_dir_all(base).ok();
     }
 
@@ -925,12 +938,15 @@ mod tests {
         // is reused across cwd projections; it must not retain a first-use path.
         // The filesystem read is independent of prompt spelling/normalization.
         let base = tempfile::tempdir().unwrap();
-        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            LocalProvider::new(base.path())
-                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("skill-path"))
-                .await
-                .unwrap(),
-        ));
+        let env = Arc::new(
+            crate::session_environment::SandboxEnvironment::workdir(
+                LocalProvider::new(base.path())
+                    .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("skill-path"))
+                    .await
+                    .unwrap(),
+            )
+            .into_session_environment(),
+        );
         let body = b"---\nname: Frozen\ndescription: pinned\n---\nEXACT-SKILL-BYTES";
         let repository_body =
             b"---\nname: Repository\ndescription: pinned checkout\n---\nEXACT-REPOSITORY-BYTES";
@@ -994,7 +1010,7 @@ mod tests {
             Some("项目 repo/src"),
             Some("repo/.claude/skills/source"),
         ] {
-            let view = env.agent_filesystem_view(
+            let view = env.agent_tools().agent_filesystem_view(
                 cwd,
                 crate::session_environment::AgentFilesystemClient::AcpProcess,
             );
@@ -1049,7 +1065,7 @@ mod tests {
             })
         });
         assert!(slots.prompts("skill-path", None, true, false).is_err());
-        env.dispose().await.unwrap();
+        env.lifecycle().dispose().await.unwrap();
     }
 
     #[tokio::test]
@@ -1058,12 +1074,15 @@ mod tests {
         // `plugin_config.skills_dir`) is discovered there — the dir is not hardcoded.
         let base = std::env::temp_dir().join(format!("awaken-skilldir-{}", std::process::id()));
         std::fs::remove_dir_all(&base).ok();
-        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            LocalProvider::new(&base)
-                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
-                .await
-                .unwrap(),
-        ));
+        let env = Arc::new(
+            crate::session_environment::SandboxEnvironment::workdir(
+                LocalProvider::new(&base)
+                    .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                    .await
+                    .unwrap(),
+            )
+            .into_session_environment(),
+        );
         let registry = SourceSkillRegistry::new(
             Arc::new(EnvSkillSource {
                 env: env.clone(),
@@ -1096,7 +1115,7 @@ mod tests {
         assert_eq!(found.description, "bake");
         assert_eq!(found.dir.as_deref(), Some("recipes/bake"));
 
-        env.dispose().await.unwrap();
+        env.lifecycle().dispose().await.unwrap();
     }
 
     #[tokio::test]
@@ -1117,12 +1136,15 @@ mod tests {
             std::process::id()
         ));
         std::fs::remove_dir_all(&base).ok();
-        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            LocalProvider::new(&base)
-                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
-                .await
-                .unwrap(),
-        ));
+        let env = Arc::new(
+            crate::session_environment::SandboxEnvironment::workdir(
+                LocalProvider::new(&base)
+                    .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                    .await
+                    .unwrap(),
+            )
+            .into_session_environment(),
+        );
         let roots =
             ["workspace/a/.claude/skills", "workspace/b/.claude/skills"].map(str::to_string);
         for (root, body) in roots.iter().zip(["A-v1", "B-v1"]) {
@@ -1231,7 +1253,7 @@ mod tests {
         assert!(next.iter().any(|skill| skill.body.contains("A-v2")));
         assert!(next.iter().any(|skill| skill.name == "Late"));
 
-        env.dispose().await.unwrap();
+        env.lifecycle().dispose().await.unwrap();
         std::fs::remove_dir_all(base).ok();
     }
 
@@ -1248,12 +1270,15 @@ mod tests {
          * authoritative sandbox scanner and registry builder instead of
          * introducing a second discovery fake. */
         let base = tempfile::tempdir().expect("SS1/SS3 temporary repository root");
-        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            LocalProvider::new(base.path())
-                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
-                .await
-                .unwrap(),
-        ));
+        let env = Arc::new(
+            crate::session_environment::SandboxEnvironment::workdir(
+                LocalProvider::new(base.path())
+                    .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                    .await
+                    .unwrap(),
+            )
+            .into_session_environment(),
+        );
         let root = "workspace/repository/.claude/skills".to_owned();
 
         let missing = build_skill_registry(
@@ -1290,7 +1315,7 @@ mod tests {
         };
         assert!(error.contains("UTF-8"), "SS3: {error}");
 
-        env.dispose().await.unwrap();
+        env.lifecycle().dispose().await.unwrap();
     }
 
     #[tokio::test]
@@ -1305,12 +1330,15 @@ mod tests {
             std::process::id()
         ));
         std::fs::remove_dir_all(&base).ok();
-        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            LocalProvider::new(&base)
-                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
-                .await
-                .unwrap(),
-        ));
+        let env = Arc::new(
+            crate::session_environment::SandboxEnvironment::workdir(
+                LocalProvider::new(&base)
+                    .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                    .await
+                    .unwrap(),
+            )
+            .into_session_environment(),
+        );
         let root = "workspace/repo/.claude/skills".to_string();
         let repository_skill = base.join("t").join(&root).join("test");
         std::fs::create_dir_all(&repository_skill).unwrap();
@@ -1343,7 +1371,7 @@ mod tests {
         };
         assert!(error.contains("bundle hash mismatch"), "R8/E1: {error}");
 
-        env.dispose().await.unwrap();
+        env.lifecycle().dispose().await.unwrap();
         std::fs::remove_dir_all(base).ok();
     }
 }

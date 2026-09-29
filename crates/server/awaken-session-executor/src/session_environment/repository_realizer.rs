@@ -3,10 +3,10 @@
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 
-use super::{SessionEnvironment, container_repositories};
+use super::{SandboxEnvironment, container_repositories};
 
 #[async_trait]
-impl pc::RepositoryRealizer for SessionEnvironment {
+impl pc::RepositoryRealizer for SandboxEnvironment {
     async fn realize_repository(
         &self,
         plan: &pc::RepositoryRealizationPlan,

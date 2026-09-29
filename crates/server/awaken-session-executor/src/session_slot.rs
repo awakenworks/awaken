@@ -759,6 +759,7 @@ impl SessionRuntimeSlots {
             let environment = slot.environment_owner.resident();
             let path_view = match environment.as_deref() {
                 Some(environment) => environment
+                    .agent_tools()
                     .agent_prompt_path_view(working_directory, has_acp, has_native)
                     .map_err(str::to_owned)?,
                 None => Default::default(),

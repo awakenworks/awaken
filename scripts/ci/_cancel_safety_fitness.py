@@ -91,6 +91,12 @@ EFFECT_METHODS: dict[str, str] = {
 # despite matching none of the three shapes — name the owner that survives the
 # caller, so a later reader can retire the entry when the code changes.
 CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
+    # The Session environment provider's capacity role is one delegating call
+    # to the provider's own `prewarm`, whose callers (warm capacity) stay
+    # counted under their own names.
+    "crates/server/awaken-session-executor/src/session_environment/provider.rs::prewarm": (
+        "delegates to SandboxEnvironmentProvider::prewarm; its callers are the counted effect"
+    ),
     # The port implementation is one delegating call; every caller that awaits
     # `create_rooted_sandbox` stays counted under its own name above, so the
     # ownership question is decided (and ratcheted) at those callers.

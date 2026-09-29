@@ -235,7 +235,7 @@ async fn run_configured_agent_inner(
             .expect("a Fresh Agent Run created a sandbox"),
     };
     let current_tool_executor: Arc<dyn ToolExecutor> = match &sandbox {
-        AgentRunSandbox::Shared(environment) => environment.tool_executor(),
+        AgentRunSandbox::Shared(environment) => environment.agent_tools().tool_executor(),
         #[cfg(test)]
         AgentRunSandbox::SharedLocal(_) => Arc::new(RawToolRegistry::new(env.runtime_tools())),
         AgentRunSandbox::Fresh(_) => Arc::new(RawToolRegistry::new(env.runtime_tools())),

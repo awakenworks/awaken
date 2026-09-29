@@ -1560,7 +1560,7 @@ impl SharedHost {
                         .collect::<Vec<_>>();
                     executors.extend(crate::acp_tool_export::environment_executor_tools(
                         selected_hand_ids,
-                        environment.tool_executor(),
+                        environment.agent_tools().tool_executor(),
                     ));
                 }
                 if let Some((skill_descriptors, skill_executors)) = semantic_skill_tools.as_ref() {
@@ -1608,10 +1608,10 @@ impl SharedHost {
                     let exporter = self.exec.acp_tool_exporter.as_ref().ok_or_else(|| {
                         HostError::internal("ACP_TOOL_BRIDGE_MISSING: ACP Session tools require an installed tool-export adapter")
                     })?;
-                    if matches!(
-                        env.as_deref(),
-                        Some(crate::session_environment::SessionEnvironment::Container { .. })
-                    ) {
+                    if env
+                        .as_deref()
+                        .is_some_and(|env| env.agent_process().is_container())
+                    {
                         let (descriptors, executors) =
                             crate::acp_tool_export::pair_tools(descriptors, executors)
                                 .map_err(HostError::internal)?;
@@ -1646,7 +1646,7 @@ impl SharedHost {
                 .zip(env.clone())
                 .map(|(acp, env)| {
                     acp.executor_for(
-                        env.clone(),
+                        env.agent_process().clone(),
                         permission,
                         execution_backend.clone(),
                         acp_mcp_servers,
@@ -1770,7 +1770,7 @@ impl SharedHost {
                 // Every realized tier owns the Hand for its Session. Container uses
                 // the channel-backed process; Workdir/Namespace use their rooted
                 // implementations behind the same ToolExecutor port.
-                Some(environment.tool_executor())
+                Some(environment.agent_tools().tool_executor())
             } else {
                 self.session_slots
                     .read(thread, |slot| slot.deferred_executor.clone())

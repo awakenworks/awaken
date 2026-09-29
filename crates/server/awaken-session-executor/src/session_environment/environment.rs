@@ -16,7 +16,7 @@ pub(crate) use awaken_session_environment_contract::{
 };
 
 /// One realized sandbox shared by every Run attempt in a Session.
-pub(crate) enum SessionEnvironment {
+pub(crate) enum SandboxEnvironment {
     Workdir {
         sandbox: Arc<LocalSandbox>,
         hand: Option<Arc<SessionHandExecutor>>,
@@ -35,7 +35,7 @@ pub(crate) enum SessionEnvironment {
     },
 }
 
-impl SessionEnvironment {
+impl SandboxEnvironment {
     pub(crate) async fn tool_execution_domain(
         &self,
     ) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, pc::SandboxError> {
@@ -61,27 +61,6 @@ impl SessionEnvironment {
                 super::container_files::logical_path(directory)
             }
         }
-    }
-
-    pub(crate) fn agent_prompt_path_view(
-        &self,
-        working_directory: Option<&str>,
-        has_acp: bool,
-        has_native: bool,
-    ) -> Result<crate::managed_resource_projection::AgentPathView, &'static str> {
-        if matches!(self, Self::Workdir { .. }) && has_acp && has_native {
-            return Err(
-                "TrustedHost fallback candidates cannot mix ACP and Native filesystem clients",
-            );
-        }
-        let client = if has_acp {
-            super::AgentFilesystemClient::AcpProcess
-        } else {
-            super::AgentFilesystemClient::NativeTools
-        };
-        Ok(self
-            .agent_filesystem_view(working_directory, client)
-            .prompt_paths)
     }
 
     pub(crate) fn agent_filesystem_view(

@@ -288,7 +288,7 @@ impl SharedHost {
                         "trusted_host Environment requires a local Workdir provider",
                     )
                 })?;
-            if !provider.supports_host_identity() {
+            if !provider.realizer().supports_host_identity() {
                 return Err(HostError::internal(
                     "trusted_host provider does not preserve host identity",
                 ));
@@ -842,8 +842,8 @@ impl SharedHost {
         );
         for input in transition.desired().resources.inputs() {
             let path = crate::managed_resource_projection::resolved_input_effect_path(input);
-            if let Err(error) = environment.reserve_owned_path(&path) {
-                let _ = environment.dispose().await;
+            if let Err(error) = environment.projection().reserve_owned_path(&path) {
+                let _ = environment.lifecycle().dispose().await;
                 return Err(HostError::internal(error.to_string()));
             }
         }
@@ -987,7 +987,7 @@ impl SharedHost {
             None,
             None,
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
         .await
     }
@@ -1011,25 +1011,16 @@ impl SharedHost {
                 )
             })
             .transpose()?;
+        // The provider decides what a Rebuild means for its physical owner: a
+        // container replaces the incarnation the source binding names, while
+        // Workdir and Namespace rebuilds are owned by their realization marker.
         let intent = if matches!(
             effect.intent.kind(),
             awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild { .. }
-        ) && matches!(
-            provider,
-            crate::session_environment::SessionEnvironmentProvider::Container { .. }
         ) {
-            let handle = source_handle.as_ref().ok_or_else(|| {
-                HostError::internal("Container Environment rebuild lacks its source binding")
-            })?;
-            // The container provider decodes its own handle into the exact
-            // physical incarnation it replaces.
-            awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
-                source: Box::new(handle.clone()),
-            }
+            awaken_session_environment_contract::EnvironmentRealizationKind::Rebuild
         } else {
-            // This fact is consumed only by the Container provider. Workdir and
-            // Namespace rebuilds remain owned by their realization-marker path.
-            awaken_container_contract::EnvironmentRealizationIntent::Create
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create
         };
         self.create_session_environment_with_provider_effect(
             provider,
@@ -1049,7 +1040,7 @@ impl SharedHost {
         effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
         authority: Option<&dyn awaken_provisioning_contract::CurrentExecutionAuthority>,
         source_handle: Option<&awaken_provisioning_contract::SandboxHandle>,
-        intent: awaken_container_contract::EnvironmentRealizationIntent,
+        intent: awaken_session_environment_contract::EnvironmentRealizationKind,
     ) -> Result<crate::session_environment::SessionEnvironment, HostError> {
         let spec = self.validate_session_environment_capabilities(provider, spec)?;
         // Capture before any preparation await. A same-byte replacement slot
@@ -1084,6 +1075,7 @@ impl SharedHost {
             crate::session_environment::ProviderEffect::from_parts(effect_fence, current_fence)
                 .map_err(|error| HostError::internal(error.to_string()))?;
         provider
+            .realizer()
             .create_effective_for_effect(&spec, effect, source_handle, intent)
             .await
             .map_err(|error| HostError::internal(error.to_string()))
@@ -1123,6 +1115,7 @@ impl SharedHost {
             .map(|repository| repository.plan.mount_path.clone())
             .collect::<Vec<_>>();
         let spec = provider
+            .realizer()
             .effective_spec(spec)
             .map_err(|error| HostError::internal(error.to_string()))?;
         self.validate_effective_session_environment_capabilities(
@@ -1173,6 +1166,7 @@ impl SharedHost {
             })
             .unwrap_or_default();
         let layout = provider
+            .adoption()
             .effective_adoption_layout(spec, handle)
             .map_err(|error| HostError::internal(error.to_string()))?;
         if !repository_paths.is_empty() && layout.historical_owned_paths.is_none() {
@@ -1212,8 +1206,8 @@ impl SharedHost {
             historical_owned_paths,
         )
         .map_err(|error| HostError::bad_request(error.to_string()))?;
-        let capabilities = provider.capabilities();
-        if provider.supports_host_identity() {
+        let capabilities = provider.realizer().capabilities();
+        if provider.realizer().supports_host_identity() {
             awaken_provisioning_contract::prepare_trusted_host_environment(&spec, &capabilities)
                 .map_err(|error| HostError::bad_request(error.to_string()))?;
             return Ok(spec);

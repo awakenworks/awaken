@@ -50,6 +50,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
         host.ensure_session_environment_for_tool(&self.thread)
             .await
             .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))?
+            .agent_tools()
             .tool_execution_domain()
             .await
             .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))
@@ -63,7 +64,10 @@ impl ToolExecutor for DeferredSandboxExecutor {
                     .flatten()
             })
             .map_or(ToolRecoveryCapability::NonRecoverable, |environment| {
-                environment.tool_executor().recovery_capability(tool_id)
+                environment
+                    .agent_tools()
+                    .tool_executor()
+                    .recovery_capability(tool_id)
             })
     }
 
@@ -86,6 +90,6 @@ impl ToolExecutor for DeferredSandboxExecutor {
             .ensure_session_environment_for_tool(&self.thread)
             .await
             .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?;
-        environment.tool_executor().invoke(call).await
+        environment.agent_tools().tool_executor().invoke(call).await
     }
 }

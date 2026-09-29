@@ -1487,6 +1487,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
             let environment = Arc::new(
                 host.env
                     .session_provider
+                    .terminal()
                     .prepare_terminal_effective_for_effect(
                         &host.sandbox_spec(thread),
                         Some(&handle),
@@ -1805,6 +1806,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             let environment = host
                 .env
                 .session_provider
+                .terminal()
                 .prepare_terminal_effective_for_effect(
                     &host.sandbox_spec(&thread),
                     Some(&handle),

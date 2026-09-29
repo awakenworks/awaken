@@ -205,6 +205,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
                         )
                         .map_err(crate::managed_adapter_error::to_run_error)?;
                     if !provider
+                        .realizer()
                         .capabilities()
                         .supports_secret_egress_without_bypass()
                     {
@@ -513,17 +514,19 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
             let mcp_home_logical = format!(".mcp-home/{}", request.target.fingerprint());
             let mcp_home = format!(
                 "{}/{}",
-                environment.workspace_cwd().trim_end_matches('/'),
+                environment
+                    .agent_process()
+                    .workspace_cwd()
+                    .trim_end_matches('/'),
                 mcp_home_logical
             );
-            let home_sentinel = if crate::session_environment::AgentSandbox::supports_host_identity(
-                environment.as_ref(),
-            ) {
+            let home_sentinel = if environment.agent_process().supports_host_identity() {
                 format!("{mcp_home_logical}/.awaken-mcp-home")
             } else {
                 format!("{mcp_home}/.awaken-mcp-home")
             };
             environment
+                .agent_process()
                 .materialize_inline(&home_sentinel, b"")
                 .await
                 .map_err(|error| {
@@ -549,7 +552,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
             let generation = request.generation.clone();
             let command = awaken_provisioning_contract::Command {
                 argv,
-                cwd: environment.workspace_cwd(),
+                cwd: environment.agent_process().workspace_cwd(),
                 env: vec![awaken_provisioning_contract::EnvVar {
                     name: "HOME".into(),
                     value: awaken_provisioning_contract::EnvValue::Inline { value: mcp_home },
@@ -565,20 +568,21 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
             let staging_server = server.clone();
             let stage = tokio::spawn(async move {
                 let _staging_activity = staging_activity;
-                let (process, channel) = match environment.spawn_agent(command).await {
-                    Ok(spawned) => spawned,
-                    Err(error) => {
-                        staging.finish();
-                        let cleanup = host.drain_mcp_projection(&generation).await;
-                        if let Err(cleanup) = cleanup {
-                            return Err(to_run_error(cleanup));
+                let (process, channel) =
+                    match environment.agent_process().spawn_agent(command).await {
+                        Ok(spawned) => spawned,
+                        Err(error) => {
+                            staging.finish();
+                            let cleanup = host.drain_mcp_projection(&generation).await;
+                            if let Err(cleanup) = cleanup {
+                                return Err(to_run_error(cleanup));
+                            }
+                            return Err(RunError::classified(
+                                "mcp_sandbox_spawn_failed",
+                                format!("sandbox stdio MCP process could not start: {error}"),
+                            ));
                         }
-                        return Err(RunError::classified(
-                            "mcp_sandbox_spawn_failed",
-                            format!("sandbox stdio MCP process could not start: {error}"),
-                        ));
-                    }
-                };
+                    };
                 let process: Arc<dyn awaken_provisioning_contract::ProcessHandle> =
                     Arc::from(process);
                 match host.attach_staging_mcp_process(&generation, process.clone()) {

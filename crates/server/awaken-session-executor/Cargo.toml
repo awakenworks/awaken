@@ -15,6 +15,8 @@ authority = "runtime-host"
 awaken-container-contract.workspace = true
 # The auxiliary-run sandbox ports the process composition injects.
 awaken-session-environment-contract.workspace = true
+# The neutral Agent channel the Session environment launches Agents over.
+awaken-agent-channel.workspace = true
 # The neutral session substrate (SharedHost) and the two port adapters
 # (ManagedHost / RunApplicationHost) live here; the assembly bin mounts them.
 awaken-agent-contract.workspace = true
@@ -113,7 +115,6 @@ awaken-sandbox-container.workspace = true
 # `AcpCapabilityHandshake::negotiate` takes `&mut dyn AgentChannel`, which the
 # ACP contract re-uses but does not re-export, so a test handshake has to name
 # the trait itself. Dev-only: production code only ever consumes the port.
-awaken-agent-channel.workspace = true
 awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
 awaken-service-lifecycle.workspace = true
 awaken-sandbox-local = { workspace = true, features = ["test-support"] }

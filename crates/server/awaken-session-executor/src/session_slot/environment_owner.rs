@@ -44,7 +44,7 @@ impl UnboundSessionEnvironment {
         self.origin == other.origin
             && self.binding == other.binding
             && Arc::ptr_eq(&self.environment, &other.environment)
-            && self.environment.handle() == other.environment.handle()
+            && self.environment.lifecycle().handle() == other.environment.lifecycle().handle()
     }
 
     pub(crate) fn effect_kind(
@@ -116,7 +116,7 @@ impl BoundSessionEnvironment {
         self.identity == other.identity
             && self.binding == other.binding
             && Arc::ptr_eq(&self.environment, &other.environment)
-            && self.environment.handle() == other.environment.handle()
+            && self.environment.lifecycle().handle() == other.environment.lifecycle().handle()
     }
 
     pub(crate) fn activity_generation_id(&self) -> String {
@@ -125,7 +125,7 @@ impl BoundSessionEnvironment {
                 generation.id().to_owned()
             }
             BoundSessionEnvironmentIdentity::LegacyDirect(_) => {
-                self.environment.handle().sandbox_id
+                self.environment.lifecycle().handle().sandbox_id
             }
         }
     }
@@ -282,7 +282,7 @@ impl SessionEnvironmentOwner {
             return None;
         };
         if !Arc::ptr_eq(&owned.environment, environment)
-            || owned.environment.handle() != environment.handle()
+            || owned.environment.lifecycle().handle() != environment.lifecycle().handle()
         {
             return None;
         }

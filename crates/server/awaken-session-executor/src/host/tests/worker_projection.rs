@@ -1602,13 +1602,14 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
         )))
         .with_acp_tool_exporter(exporter.clone());
     raw_host.env.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root.path(),
             false,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
-        );
+        )
+        .into_session_provider();
     let (host, _managed) = dispatch_test_host(raw_host);
 
     let reserved = host

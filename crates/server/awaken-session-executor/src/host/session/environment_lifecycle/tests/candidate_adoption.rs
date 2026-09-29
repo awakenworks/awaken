@@ -43,11 +43,12 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
     // fabricated and a non-owner never receives persist. Rules D1=C3=>E1+E2,
     // D2=C4=>E1+E2. An owning sink remains the separate Store-read authority.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     for (suffix, install_non_owner) in [("absent", false), ("non-owner", true)] {
         let thread = format!("durable-adoption-{suffix}");
         let environment = environment(&provider, &thread).await;
-        let binding = serde_json::to_string(&environment.handle()).unwrap();
+        let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let expected = BoundSessionEnvironmentIdentity::LegacyDirect(
             LegacyDirectEnvironmentProvenance::DurableBinding {
                 binding: binding.clone(),
@@ -105,7 +106,8 @@ async fn ordinary_candidate_without_a_sink_gets_an_explicit_direct_receipt() {
     // receipt; both retain the exact Session and physical binding and claim no
     // durable generation. Rules O1=C1+C2=>E1, O2=C1+C3=>E2.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     for (thread, kind) in [
         (
             "ordinary-create-fallback",
@@ -117,7 +119,7 @@ async fn ordinary_candidate_without_a_sink_gets_an_explicit_direct_receipt() {
         ),
     ] {
         let environment = environment(&provider, thread).await;
-        let binding = serde_json::to_string(&environment.handle()).unwrap();
+        let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
         let candidate = match kind {
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create => host
@@ -158,7 +160,8 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
     // replay from becoming a second publication authority.
     let thread = "candidate-projection-fence";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, thread).await;
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
     let candidate = host
@@ -209,9 +212,10 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
     for warm in [false, true] {
         let thread = "adopt-successor-receipt";
         let root = tempfile::tempdir().unwrap();
-        let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+        let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+            .into_session_provider();
         let environment = environment(&provider, thread).await;
-        let binding = serde_json::to_string(&environment.handle()).unwrap();
+        let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let source = identity(thread);
         let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
         host.install_session_environment_owner_projection(
@@ -324,9 +328,10 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
     for fenced in [false, true] {
         let thread = "adoption-dispatch-retry";
         let root = tempfile::tempdir().unwrap();
-        let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+        let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+            .into_session_provider();
         let environment = environment(&provider, thread).await;
-        let binding = serde_json::to_string(&environment.handle()).unwrap();
+        let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
             awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone()).unwrap(),
@@ -473,7 +478,8 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
     // Candidate commit reducer and cannot relabel Create as Adopt.
     let thread = "committed-candidate-terminal-takeover";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, thread).await;
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
     let candidate = host
@@ -542,14 +548,16 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
     // Adopt Candidate, preserving only known identity; RA2 foreign target,
     // stale retirement, wrong cause or replay => reject without owner change.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let owned = environment(&provider, "candidate-evidence").await;
     let foreign = environment(&provider, "candidate-foreign").await;
     let rebound = Arc::new(
         provider
+            .adoption()
             .rebind_retained(
                 &crate::provisioning::agent_run_sandbox_spec("candidate-evidence"),
-                &owned.handle(),
+                &owned.lifecycle().handle(),
                 &owned,
                 crate::session_environment::ProviderEffect::Unattached,
             )
@@ -724,7 +732,8 @@ async fn unacknowledged_candidate_adoption_requires_aggregate_authority() {
     // reject before Provider observation/adoption and keep exact Retiring owner.
     // A raw local handle is provenance for recovery, never authority by itself.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let thread = "unacknowledged-no-authority";
     let environment = environment(&provider, thread).await;
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
@@ -776,7 +785,8 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
     // rescheduling loop.
     let thread = "stale-unmaterialized-projection";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, thread).await;
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
     let candidate = host

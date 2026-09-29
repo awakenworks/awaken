@@ -69,7 +69,7 @@ impl AttachedTools {
     }
 
     pub(super) async fn open(
-        sandbox: &dyn crate::session_environment::AgentSandbox,
+        sandbox: &dyn awaken_session_environment_contract::AgentProcessEnvironment,
         tools: &crate::acp_tool_export::AttachedToolSet,
     ) -> Result<Self, OpenError> {
         let helper = sandbox

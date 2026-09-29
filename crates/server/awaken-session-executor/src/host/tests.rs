@@ -1,6 +1,7 @@
 //! Host tests, split by capability topic. Shared fixtures live here; the
 //! crate-wide ones live in [`fixtures`].
 use super::*;
+use crate::session_environment::SandboxEnvironmentAccess;
 use awaken_lease_contract::system_clock;
 use awaken_dispatch_contract::ControlDispatchQueue;
 use awaken_sandbox_container::ContainerHandleCodec as _;

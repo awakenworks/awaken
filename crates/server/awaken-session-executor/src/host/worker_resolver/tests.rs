@@ -1603,13 +1603,14 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
     // | F4 | F | n/a | n/a | yes | T | E4: physical + logical revocation |
     // Workdir remains correctly ineligible for F1's immutability requirement.
     raw_host.env.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             storage.path().join("sandboxes"),
             false,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
-        );
+        )
+        .into_session_provider();
     let host = Arc::new(raw_host);
     let managed = managed_test_host(host.clone());
     let bytes = b"frozen worker input".to_vec();
@@ -1713,6 +1714,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
             .session_environment("thread-cold-resource")
             .await
             .expect("F3 resident environment")
+            .harvest()
             .list_frozen_mount_files("/mnt/session/uploads")
             .await
             .expect("F3 list live files")
@@ -1732,6 +1734,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         host.session_environment("thread-cold-resource")
             .await
             .expect("resident environment")
+            .harvest()
             .list_frozen_mount_files("/mnt/session/uploads")
             .await
             .expect("list live files")
@@ -2511,8 +2514,10 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
     activation.snapshot.resolved_spec.model_binding = candidate;
 
     let mut first = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
-    first.env.backend_owned_session_provider =
-        Some(crate::session_environment::SessionEnvironmentProvider::workdir(&trusted_root));
+    first.env.backend_owned_session_provider = Some(
+        crate::session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
+            .into_session_provider(),
+    );
     let first = Arc::new(first);
     let projection = empty_frozen_projection_for_snapshot(
         first.local_workspace(),
@@ -2534,8 +2539,10 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
 
     let mut replacement =
         SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
-    replacement.env.backend_owned_session_provider =
-        Some(crate::session_environment::SessionEnvironmentProvider::workdir(&trusted_root));
+    replacement.env.backend_owned_session_provider = Some(
+        crate::session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
+            .into_session_provider(),
+    );
     let replacement = Arc::new(replacement);
     let _replacement_managed = managed_test_host(replacement.clone());
     replacement
@@ -2577,7 +2584,12 @@ async fn a_resident_environment_is_reused_without_a_second_adoption() {
         Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
     let _managed = managed_test_host(host.clone());
     let ctx = host.ctx_for(thread, None).await.expect("resident session");
-    let handle = ctx.env.as_ref().expect("eager environment").handle();
+    let handle = ctx
+        .env
+        .as_ref()
+        .expect("eager environment")
+        .lifecycle()
+        .handle();
     let encoded = serde_json::to_string(&handle).unwrap();
 
     let adopted = adopt_bound_sandbox(
@@ -2609,7 +2621,12 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
         Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
     let _managed = managed_test_host(host.clone());
     let ctx = host.ctx_for(thread, None).await.expect("resident session");
-    let handle = ctx.env.as_ref().expect("eager environment").handle();
+    let handle = ctx
+        .env
+        .as_ref()
+        .expect("eager environment")
+        .lifecycle()
+        .handle();
     let encoded = serde_json::to_string(&handle).unwrap();
     std::fs::remove_dir_all(storage.path().join("sandboxes").join(thread))
         .expect("terminate local sandbox out of band");
@@ -2667,7 +2684,12 @@ async fn a_stale_binding_cannot_evict_a_different_resident_environment() {
         Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
     let _managed = managed_test_host(host.clone());
     let ctx = host.ctx_for(thread, None).await.expect("resident session");
-    let resident = ctx.env.as_ref().expect("eager environment").handle();
+    let resident = ctx
+        .env
+        .as_ref()
+        .expect("eager environment")
+        .lifecycle()
+        .handle();
     let stale = awaken_provisioning_contract::SandboxHandle::new(
         resident.provider_kind(),
         resident.sandbox_id.clone(),
@@ -2736,11 +2758,14 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
     let replacement = Arc::new(
         host.env
             .session_provider
-            .adopt(&spec, &observed.handle())
+            .adopt(&spec, &observed.lifecycle().handle())
             .await
             .expect("same-handle replacement"),
     );
-    assert_eq!(observed.handle(), replacement.handle());
+    assert_eq!(
+        observed.lifecycle().handle(),
+        replacement.lifecycle().handle()
+    );
     assert!(!Arc::ptr_eq(&observed, &replacement));
 
     host.install_test_resident_session_environment(thread, replacement.clone());

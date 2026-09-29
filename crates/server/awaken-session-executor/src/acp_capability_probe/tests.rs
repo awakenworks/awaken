@@ -62,7 +62,8 @@ fn probe_negotiator(
     let mut host = SharedHost::new(Arc::new(NoLlm), "stub");
     host.local_workspace = owner.to_string();
     host.env.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::workdir(base);
+        crate::session_environment::SandboxEnvironmentProvider::workdir(base)
+            .into_session_provider();
     SessionAcpCapabilityNegotiator::new(Arc::new(host), Duration::from_secs(30), handshake)
 }
 

@@ -174,9 +174,11 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
     // | P3 | already projected | same | same | E3 |
     let thread = "resident-resource-reservation";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let resident_environment = environment(&provider, thread).await;
-    let initial_binding = serde_json::to_string(&resident_environment.handle()).unwrap();
+    let initial_binding =
+        serde_json::to_string(&resident_environment.lifecycle().handle()).unwrap();
     let initial_identity = identity(thread);
     let mut owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
         identity: initial_identity,
@@ -185,9 +187,11 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
     });
 
     resident_environment
+        .projection()
         .reserve_owned_path("/workspace/live.txt")
         .expect("P1 reserve provider-owned path");
-    let reserved_binding = serde_json::to_string(&resident_environment.handle()).unwrap();
+    let reserved_binding =
+        serde_json::to_string(&resident_environment.lifecycle().handle()).unwrap();
     let reserved_identity = BoundSessionEnvironmentIdentity::Durable {
         effect_id: "resource-reservation-effect".into(),
         generation: generation(thread),
@@ -232,9 +236,10 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
 
     let foreign = environment(&provider, "foreign-resource-reservation").await;
     foreign
+        .projection()
         .reserve_owned_path("/workspace/foreign.txt")
         .expect("P2 reserve foreign path");
-    let foreign_binding = serde_json::to_string(&foreign.handle()).unwrap();
+    let foreign_binding = serde_json::to_string(&foreign.lifecycle().handle()).unwrap();
     assert!(
         owner
             .install_projection(
@@ -273,9 +278,10 @@ async fn realization_revocation_absorbs_only_a_compatible_durable_receipt() {
     // | V2 | realization revocation | different | E2 |
     let thread = "revoked-resource-receipt";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let binding = serde_json::to_string(&environment.handle()).unwrap();
+    let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let mut owner = resident(thread, environment.clone());
     let retirement = owner
         .begin_retirement(
@@ -342,7 +348,8 @@ async fn cancelled_cleanup_keeps_the_exact_owner_retiring_and_hidden_from_tools(
     // phase+effect+generation+binding+Arc for retry; E3 C4 cannot relabel it.
     // Decision rules R18/R19: C1+C2+C3 => E1+E2; C2+C4 => E3.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, "cancel-retirement").await;
     let owner = Arc::new(tokio::sync::Mutex::new(resident(
         "cancel-retirement",
@@ -416,7 +423,8 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
     // Q3+Q4 atomically consumes it, admitting the fresh realization generation.
     let thread = "expiry-before-source-dispose";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, thread).await;
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
     host.install_test_resident_session_environment(thread, environment.clone());
@@ -483,7 +491,8 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
     // R19/R21: C1+C2=>E1; C1+C2+C3+C4=>E2. The separate ABA rule owns !C4.
     let thread = "discard-live-retry";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, thread).await;
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
     host.install_test_resident_session_environment(thread, environment.clone());
@@ -522,7 +531,8 @@ async fn only_exact_terminated_status_clears_a_retiring_owner() {
     // C1+C4=>E3. A dispose Err returns before this status gate and therefore
     // has the same retained-owner effect as C3.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, "status-retirement").await;
     let mut owner = resident("status-retirement", environment);
     let retirement = owner
@@ -585,7 +595,8 @@ async fn terminal_takeover_is_highest_priority_and_other_causes_cannot_overwrite
     // each lower cause + Terminal => E1; every other different-cause pair => E2.
     let thread = "terminal-takeover";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, thread).await;
     let generation = generation(thread);
     let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
@@ -778,11 +789,12 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     );
     if preclosed {
         environment
+            .lifecycle()
             .dispose()
             .await
             .expect("CP3 exact root already unavailable");
         assert_eq!(
-            environment.status().await.unwrap(),
+            environment.sandbox_environment().status().await.unwrap(),
             awaken_provisioning_contract::SandboxStatus::Terminated,
             "CP3 unavailable observation precondition"
         );
@@ -799,7 +811,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
         "CP2/E2 or CP3/E3 exact retired root is absent"
     );
     assert_eq!(
-        environment.status().await.unwrap(),
+        environment.sandbox_environment().status().await.unwrap(),
         awaken_provisioning_contract::SandboxStatus::Terminated,
         "CP2/E2 or CP3/E3 old wrapper remains terminal"
     );

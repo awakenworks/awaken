@@ -122,13 +122,15 @@ fn install_restart_memory_mounter(
     teardown_calls: Arc<std::sync::atomic::AtomicUsize>,
     teardown_failures: Arc<std::sync::atomic::AtomicUsize>,
 ) -> SessionEnvironmentProvider {
-    provider.install_memory_mounter(Arc::new(RestartMemoryMounter {
-        outcomes: std::sync::Mutex::new(outcomes.into_iter().collect()),
-        mount_calls,
-        teardown_calls,
-        teardown_failures,
-        response_gate: std::sync::Mutex::new(None),
-    }));
+    provider
+        .installation()
+        .install_memory_mounter(Arc::new(RestartMemoryMounter {
+            outcomes: std::sync::Mutex::new(outcomes.into_iter().collect()),
+            mount_calls,
+            teardown_calls,
+            teardown_failures,
+            response_gate: std::sync::Mutex::new(None),
+        }));
     provider
 }
 
@@ -138,13 +140,14 @@ fn restart_namespace_provider(
     mount_calls: Arc<std::sync::atomic::AtomicUsize>,
     teardown_calls: Arc<std::sync::atomic::AtomicUsize>,
 ) -> SessionEnvironmentProvider {
-    let provider = SessionEnvironmentProvider::namespace_with_agent_stderr(
+    let provider = SandboxEnvironmentProvider::namespace_with_agent_stderr(
         root,
         false,
         Arc::new(FakeHandExecutorFactory),
         "/bin/sh",
         std::time::Duration::ZERO,
-    );
+    )
+    .into_session_provider();
     install_restart_memory_mounter(
         provider,
         outcomes,
@@ -202,20 +205,22 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         let fuse_mounts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let fuse_teardowns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let base_provider = if namespace {
-            SessionEnvironmentProvider::namespace_with_agent_stderr(
+            SandboxEnvironmentProvider::namespace_with_agent_stderr(
                 fuse_root.path(),
                 false,
                 Arc::new(FakeHandExecutorFactory),
                 "/bin/sh",
                 std::time::Duration::ZERO,
             )
+            .into_session_provider()
         } else if trusted {
-            SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(
+            SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(
                 fuse_root.path(),
                 false,
             )
+            .into_session_provider()
         } else {
-            SessionEnvironmentProvider::workdir(fuse_root.path())
+            SandboxEnvironmentProvider::workdir(fuse_root.path()).into_session_provider()
         };
         let fuse_provider = install_restart_memory_mounter(
             base_provider,
@@ -229,7 +234,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         );
         let (fuse_spec, fuse_memory) = restart_memory_spec(&format!("{label}-restart-fuse"));
-        let fuse_spec = fuse_provider.effective_spec(&fuse_spec).unwrap();
+        let fuse_spec = fuse_provider.realizer().effective_spec(&fuse_spec).unwrap();
         let fuse_effect = pc::SandboxEffectFence::new(
             format!("create-fuse-{label}"),
             "owner",
@@ -239,6 +244,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         )
         .unwrap();
         let created = fuse_provider
+            .realizer()
             .create_effective_for_effect(
                 &fuse_spec,
                 crate::session_environment::ProviderEffect::Fenced {
@@ -248,19 +254,20 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                     ),
                 },
                 None,
-                awaken_container_contract::EnvironmentRealizationIntent::Create,
+                awaken_session_environment_contract::EnvironmentRealizationKind::Create,
             )
             .await
             .expect("M1 initial Fuse participant");
-        let fuse_handle = created.handle();
-        let before =
-            created.agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::AcpProcess);
+        let fuse_handle = created.lifecycle().handle();
+        let before = created
+            .agent_tools()
+            .agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::AcpProcess);
         drop(created);
-        let unfenced = match &fuse_provider {
-            SessionEnvironmentProvider::Workdir { provider, .. } => {
+        let unfenced = match fuse_provider.sandbox_provider() {
+            SandboxEnvironmentProvider::Workdir { provider, .. } => {
                 provider.adopt_sandbox(&fuse_handle).await.map(|_| ())
             }
-            SessionEnvironmentProvider::Namespace { provider, .. } => {
+            SandboxEnvironmentProvider::Namespace { provider, .. } => {
                 provider.adopt_sandbox(&fuse_handle).await.map(|_| ())
             }
             _ => unreachable!("restart fixture selects only Local/Namespace"),
@@ -274,6 +281,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         );
         assert_eq!(fuse_mounts.load(Ordering::SeqCst), 1, "M0 {label}");
         let ready_replay = fuse_provider
+            .realizer()
             .create_effective_for_effect(
                 &fuse_spec,
                 crate::session_environment::ProviderEffect::Fenced {
@@ -283,13 +291,18 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                     ),
                 },
                 None,
-                awaken_container_contract::EnvironmentRealizationIntent::Create,
+                awaken_session_environment_contract::EnvironmentRealizationKind::Create,
             )
             .await
             .expect("M1 Ready replay reuses Fuse");
-        assert_eq!(ready_replay.handle(), fuse_handle, "M1 {label} binding");
+        assert_eq!(
+            ready_replay.lifecycle().handle(),
+            fuse_handle,
+            "M1 {label} binding"
+        );
         drop(ready_replay);
         let adopted = fuse_provider
+            .adoption()
             .adopt_effective_for_effect(
                 &fuse_spec,
                 &fuse_handle,
@@ -301,8 +314,9 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             .await
             .expect("M1 adoption reuses Fuse");
         assert_eq!(fuse_mounts.load(Ordering::SeqCst), 1, "M1 {label}");
-        let after =
-            adopted.agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::AcpProcess);
+        let after = adopted
+            .agent_tools()
+            .agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::AcpProcess);
         assert_eq!(before.protocol_cwd, after.protocol_cwd, "M5 stable cwd");
         assert_eq!(
             before.command_cwd, after.command_cwd,
@@ -326,14 +340,18 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 required: true,
             };
             adopted
+                .projection()
                 .reconcile_adopted_mounts(&[fuse_memory.clone(), late])
                 .await
                 .expect("M4 only the late mount attaches");
             assert_eq!(fuse_mounts.load(Ordering::SeqCst), 1, "M4 no remount");
             let files = if trusted {
-                adopted.list_frozen_mount_files("/workspace").await
+                adopted
+                    .harvest()
+                    .list_frozen_mount_files("/workspace")
+                    .await
             } else {
-                adopted.list_workspace_files("").await
+                adopted.sandbox_environment().list_workspace_files("").await
             }
             .unwrap();
             assert!(
@@ -343,7 +361,11 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 "M4 late mount is visible"
             );
             assert!(
-                adopted.attach_mount(fuse_memory).await.is_err(),
+                adopted
+                    .projection()
+                    .attach_mount(fuse_memory)
+                    .await
+                    .is_err(),
                 "ordinary runtime replacement remains fenced"
             );
         }
@@ -360,10 +382,11 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         copy_teardowns,
     );
     let (copy_spec, copy_memory) = restart_memory_spec("namespace-restart-copy");
-    let copy_spec = copy_provider.effective_spec(&copy_spec).unwrap();
+    let copy_spec = copy_provider.realizer().effective_spec(&copy_spec).unwrap();
     let copy_effect =
         pc::SandboxEffectFence::new("create-copy", "owner", "runtime", 1, u64::MAX).unwrap();
     let created = copy_provider
+        .realizer()
         .create_effective_for_effect(
             &copy_spec,
             crate::session_environment::ProviderEffect::Fenced {
@@ -373,16 +396,16 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 ),
             },
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
         .await
         .expect("M2 initial Copy participant");
-    let copy_handle = created.handle();
+    let copy_handle = created.lifecycle().handle();
     drop(created);
-    let SessionEnvironmentProvider::Namespace {
+    let SandboxEnvironmentProvider::Namespace {
         provider: copy_namespace,
         ..
-    } = &copy_provider
+    } = copy_provider.sandbox_provider()
     else {
         unreachable!("copy fixture is Namespace")
     };
@@ -397,6 +420,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
     );
     drop(unfenced_copy);
     let copy_replay = copy_provider
+        .realizer()
         .create_effective_for_effect(
             &copy_spec,
             crate::session_environment::ProviderEffect::Fenced {
@@ -406,12 +430,13 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 ),
             },
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
         .await
         .expect("M2 Ready replay retains Copy");
     drop(copy_replay);
     let copy_adopted = copy_provider
+        .adoption()
         .adopt_effective_for_effect(
             &copy_spec,
             &copy_handle,
@@ -423,12 +448,14 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .await
         .expect("M2 adoption retains Copy");
     copy_adopted
+        .projection()
         .reconcile_adopted_mounts(std::slice::from_ref(&copy_memory))
         .await
         .expect("M2 exact Copy is already reconciled");
     assert_eq!(copy_mounts.load(Ordering::SeqCst), 1, "M2 zero remount");
     assert_eq!(
         copy_adopted
+            .harvest()
             .list_frozen_mount_files(&copy_memory.mount_path)
             .await
             .unwrap(),
@@ -446,10 +473,14 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         drift_teardowns.clone(),
     );
     let (drift_spec, _) = restart_memory_spec("namespace-restart-drift");
-    let drift_spec = drift_provider.effective_spec(&drift_spec).unwrap();
+    let drift_spec = drift_provider
+        .realizer()
+        .effective_spec(&drift_spec)
+        .unwrap();
     let drift_effect =
         pc::SandboxEffectFence::new("create-drift", "owner", "runtime", 1, u64::MAX).unwrap();
     let created = drift_provider
+        .realizer()
         .create_effective_for_effect(
             &drift_spec,
             crate::session_environment::ProviderEffect::Fenced {
@@ -459,7 +490,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 ),
             },
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
         .await
         .expect("M3 initial Fuse participant");
@@ -474,6 +505,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         drift_teardowns.clone(),
     );
     let error = match drift_provider
+        .realizer()
         .create_effective_for_effect(
             &drift_spec,
             crate::session_environment::ProviderEffect::Fenced {
@@ -483,7 +515,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 ),
             },
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
         .await
     {
@@ -520,19 +552,20 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
     let hot_mounts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let hot_teardowns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let hot_provider = install_restart_memory_mounter(
-        SessionEnvironmentProvider::workdir(hot_root.path()),
+        SandboxEnvironmentProvider::workdir(hot_root.path()).into_session_provider(),
         [pc::Realization::Fuse],
         hot_mounts.clone(),
         hot_teardowns.clone(),
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     );
     let (hot_spec, _) = restart_memory_spec("terminal-fuse-hot");
-    let hot_spec = hot_provider.effective_spec(&hot_spec).unwrap();
+    let hot_spec = hot_provider.realizer().effective_spec(&hot_spec).unwrap();
     let hot_create =
         pc::SandboxEffectFence::new("create-hot", "owner", "runtime", 2, u64::MAX).unwrap();
     let hot_terminal =
         pc::SandboxEffectFence::new("terminal-hot", "owner", "runtime", 2, u64::MAX).unwrap();
     let hot = hot_provider
+        .realizer()
         .create_effective_for_effect(
             &hot_spec,
             crate::session_environment::ProviderEffect::Fenced {
@@ -542,18 +575,20 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
                 ),
             },
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
         .await
         .expect("T1 hot Fuse create");
-    hot.acknowledge_memory_reconciliation(
-        &hot_terminal,
-        &[],
-        &awaken_provisioning_contract::test_support::EffectAuthority::new(&hot_terminal),
-    )
-    .await
-    .expect("T1 exact empty Fuse evidence");
+    hot.lifecycle()
+        .acknowledge_memory_reconciliation(
+            &hot_terminal,
+            &[],
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&hot_terminal),
+        )
+        .await
+        .expect("T1 exact empty Fuse evidence");
     let prepared = hot
+        .lifecycle()
         .prepare_disposal_for_effect(
             &hot_terminal,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(&hot_terminal),
@@ -561,14 +596,15 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
         .await
         .expect("T1 prepared");
     let authorization = restart_disposal_authorization(prepared, "terminal-fuse-hot");
-    hot.dispose_for_effect(
-        &authorization,
-        &awaken_provisioning_contract::test_support::EffectAuthority::new(
-            authorization.effect_fence(),
-        ),
-    )
-    .await
-    .expect("T1 dispose");
+    hot.lifecycle()
+        .dispose_for_effect(
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                authorization.effect_fence(),
+            ),
+        )
+        .await
+        .expect("T1 dispose");
     assert_eq!(hot_mounts.load(Ordering::SeqCst), 1, "T1 no remount");
     assert_eq!(hot_teardowns.load(Ordering::SeqCst), 1, "T1 one teardown");
 
@@ -578,15 +614,16 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
         let teardowns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let teardown_failures = Arc::new(std::sync::atomic::AtomicUsize::new(1));
         let base_provider = if namespace {
-            SessionEnvironmentProvider::namespace_with_agent_stderr(
+            SandboxEnvironmentProvider::namespace_with_agent_stderr(
                 root.path(),
                 false,
                 Arc::new(FakeHandExecutorFactory),
                 "/bin/sh",
                 std::time::Duration::ZERO,
             )
+            .into_session_provider()
         } else {
-            SessionEnvironmentProvider::workdir(root.path())
+            SandboxEnvironmentProvider::workdir(root.path()).into_session_provider()
         };
         let provider = install_restart_memory_mounter(
             base_provider,
@@ -601,7 +638,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
             teardown_failures,
         );
         let (spec, memory) = restart_memory_spec(&format!("terminal-fuse-{label}"));
-        let spec = provider.effective_spec(&spec).unwrap();
+        let spec = provider.realizer().effective_spec(&spec).unwrap();
         let create =
             pc::SandboxEffectFence::new(format!("create-{label}"), "owner", "runtime", 2, u64::MAX)
                 .unwrap();
@@ -614,6 +651,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
         )
         .unwrap();
         let created = provider
+            .realizer()
             .create_effective_for_effect(
                 &spec,
                 crate::session_environment::ProviderEffect::Fenced {
@@ -623,11 +661,11 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
                     ),
                 },
                 None,
-                awaken_container_contract::EnvironmentRealizationIntent::Create,
+                awaken_session_environment_contract::EnvironmentRealizationKind::Create,
             )
             .await
             .expect("T2 create Fuse");
-        let handle = created.handle();
+        let handle = created.lifecycle().handle();
         drop(created);
         let request_handle = (!namespace).then_some(&handle);
         let foreign = pc::SandboxEffectFence::new(
@@ -640,6 +678,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
         .unwrap();
         assert!(
             provider
+                .terminal()
                 .prepare_terminal_effective_for_effect(
                     &spec,
                     request_handle,
@@ -654,6 +693,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
         assert_eq!(mounts.load(Ordering::SeqCst), 1, "T3 {label} zero remount");
 
         let first = provider
+            .terminal()
             .prepare_terminal_effective_for_effect(
                 &spec,
                 request_handle,
@@ -666,6 +706,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
             .expect("T2 Ready participant");
         assert_eq!(
             first
+                .harvest()
                 .list_frozen_mount_files(&memory.mount_path)
                 .await
                 .unwrap(),
@@ -675,6 +716,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
         drop(first); // response loss after Ready -> Removing and FUSE replay
 
         let second = provider
+            .terminal()
             .prepare_terminal_effective_for_effect(
                 &spec,
                 request_handle,
@@ -687,6 +729,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
             .expect("T2 Removing participant");
         assert_eq!(mounts.load(Ordering::SeqCst), 1, "T2 {label}");
         second
+            .lifecycle()
             .acknowledge_memory_reconciliation(
                 &terminal,
                 &[],
@@ -695,6 +738,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
             .await
             .expect("T4 exact empty Fuse evidence");
         let prepared = second
+            .lifecycle()
             .prepare_disposal_for_effect(
                 &terminal,
                 &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
@@ -705,6 +749,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
             restart_disposal_authorization(prepared, &format!("terminal-fuse-{label}"));
         assert!(
             second
+                .lifecycle()
                 .dispose_for_effect(
                     &authorization,
                     &awaken_provisioning_contract::test_support::EffectAuthority::new(
@@ -719,6 +764,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
         drop(second); // wrapper loss retains both authorization and Provider-owned guard
 
         let replay = provider
+            .terminal()
             .prepare_terminal_effective_for_effect(
                 &spec,
                 request_handle,
@@ -733,6 +779,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
             .expect("T4 authorized Removing participant");
         assert_eq!(mounts.load(Ordering::SeqCst), 1, "T4 {label} same guard");
         replay
+            .lifecycle()
             .dispose_for_effect(
                 &authorization,
                 &awaken_provisioning_contract::test_support::EffectAuthority::new(
@@ -744,6 +791,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
         assert_eq!(teardowns.load(Ordering::SeqCst), 2, "T4 {label} retry");
         assert!(
             provider
+                .terminal()
                 .prepare_terminal_effective_for_effect(
                     &spec,
                     request_handle,
@@ -780,15 +828,16 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
             for change in ["revoke", "replace", "expire", "renew", "cancel"] {
                 let root = tempfile::tempdir().unwrap();
                 let provider = if namespace {
-                    SessionEnvironmentProvider::namespace_with_agent_stderr(
+                    SandboxEnvironmentProvider::namespace_with_agent_stderr(
                         root.path(),
                         false,
                         Arc::new(FakeHandExecutorFactory),
                         "/bin/sh",
                         std::time::Duration::ZERO,
                     )
+                    .into_session_provider()
                 } else {
-                    SessionEnvironmentProvider::workdir(root.path())
+                    SandboxEnvironmentProvider::workdir(root.path()).into_session_provider()
                 };
                 let mounts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
                 let teardowns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -801,13 +850,15 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                     teardown_failures: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                     response_gate: std::sync::Mutex::new(None),
                 });
-                provider.install_memory_mounter(mounter.clone());
+                provider
+                    .installation()
+                    .install_memory_mounter(mounter.clone());
                 let (mut spec, memory) = restart_memory_spec("cold-current-memory");
                 let mut second = memory.clone();
                 second.mount_id = "memory-2".into();
                 second.mount_path = "/mnt/memory/second".into();
                 spec.mounts.push(second);
-                let spec = provider.effective_spec(&spec).unwrap();
+                let spec = provider.realizer().effective_spec(&spec).unwrap();
                 let create =
                     pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX - 1)
                         .unwrap();
@@ -815,6 +866,7 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                     pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX - 1)
                         .unwrap();
                 let created = provider
+                    .realizer()
                     .create_effective_for_effect(
                         &spec,
                         crate::session_environment::ProviderEffect::Fenced {
@@ -825,20 +877,24 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                                 ),
                         },
                         None,
-                        awaken_container_contract::EnvironmentRealizationIntent::Create,
+                        awaken_session_environment_contract::EnvironmentRealizationKind::Create,
                     )
                     .await
                     .unwrap();
-                let handle = created.handle();
+                let handle = created.lifecycle().handle();
                 drop(created);
-                let cold_provider = provider.at_root(root.path());
+                let cold_provider =
+                    crate::session_environment::relocated_provider(&provider, root.path());
                 drop(provider);
                 let provider = cold_provider;
-                provider.install_memory_mounter(mounter.clone());
+                provider
+                    .installation()
+                    .install_memory_mounter(mounter.clone());
                 assert_eq!(mounts.load(Ordering::SeqCst), 2);
                 let denied = pc::test_support::EffectAuthority::denied();
                 assert!(
                     provider
+                        .terminal()
                         .prepare_terminal_effective_for_effect(
                             &spec,
                             Some(&handle),
@@ -854,7 +910,7 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                 let gate = Arc::new(tokio::sync::Semaphore::new(0));
                 *mounter.response_gate.lock().unwrap() = Some((pause_at, gate.clone()));
                 let mut pending = Box::pin(tokio::task::unconstrained(
-                    provider.prepare_terminal_effective_for_effect(
+                    provider.terminal().prepare_terminal_effective_for_effect(
                         &spec,
                         Some(&handle),
                         None,
@@ -904,6 +960,7 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                 *authority.current.lock().unwrap() =
                     Some((terminal.clone(), std::time::Duration::from_secs(1)));
                 let replay = provider
+                    .terminal()
                     .prepare_terminal_effective_for_effect(
                         &spec,
                         Some(&handle),
@@ -925,6 +982,7 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                 for mount in &spec.mounts {
                     assert_eq!(
                         replay
+                            .harvest()
                             .list_frozen_mount_files(&mount.mount_path)
                             .await
                             .unwrap(),
@@ -932,15 +990,18 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                     );
                 }
                 replay
+                    .lifecycle()
                     .acknowledge_memory_reconciliation(&terminal, &[], &authority)
                     .await
                     .unwrap();
                 let prepared = replay
+                    .lifecycle()
                     .prepare_disposal_for_effect(&terminal, &authority)
                     .await
                     .unwrap();
                 let authorization = restart_disposal_authorization(prepared, "cold-current-memory");
                 replay
+                    .lifecycle()
                     .dispose_for_effect(
                         &authorization,
                         &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
@@ -968,13 +1029,13 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
 
-    let workdir = SessionEnvironmentProvider::workdir(first.path()).at_root(second.path());
+    let workdir = SandboxEnvironmentProvider::workdir(first.path()).at_root(second.path());
     assert!(matches!(
         workdir,
-        SessionEnvironmentProvider::Workdir { .. }
+        SandboxEnvironmentProvider::Workdir { .. }
     ));
 
-    let namespace = SessionEnvironmentProvider::namespace_with_agent_stderr(
+    let namespace = SandboxEnvironmentProvider::namespace_with_agent_stderr(
         first.path(),
         true,
         Arc::new(FakeHandExecutorFactory),
@@ -984,7 +1045,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
     .at_root(second.path());
     assert!(matches!(
         &namespace,
-        SessionEnvironmentProvider::Namespace { provider, .. }
+        SandboxEnvironmentProvider::Namespace { provider, .. }
             if provider.inherits_agent_stderr()
     ));
     let mut namespace_spec = spec();
@@ -1002,11 +1063,11 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
                 ),
             },
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
         .await
         .unwrap();
-    let handle = created.handle();
+    let handle = created.lifecycle().handle();
     drop(created);
     let adopted = namespace
         .adopt_effective_for_effect(
@@ -1019,10 +1080,11 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
         )
         .await
         .unwrap();
-    assert_eq!(adopted.handle(), handle);
+    assert_eq!(adopted.lifecycle().handle(), handle);
     let terminal_fence =
         pc::SandboxEffectFence::new("terminal", "provider-test", "runtime", 1, u64::MAX).unwrap();
     adopted
+        .lifecycle()
         .prepare_disposal_for_effect(
             &terminal_fence,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
@@ -1038,7 +1100,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
                 spec: &namespace_spec,
                 effect_fence: &terminal_fence,
             },
-            awaken_container_contract::ContainerObservationPurpose::TerminalCleanup,
+            awaken_session_environment_contract::ObservationPurpose::TerminalCleanup,
         )
         .await
         .unwrap();
@@ -1083,6 +1145,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
         pc::SandboxEffectFence::new(disposal_id, "provider-test", "runtime", 1, u64::MAX).unwrap();
     let authorization = disposal_preparation.authorize(disposal_fence).unwrap();
     adopted
+        .lifecycle()
         .dispose_for_effect(
             &authorization,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
@@ -1103,7 +1166,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
         lifetime: pc::MountLifetime::PerRun,
         required: true,
     };
-    let container = SessionEnvironmentProvider::container(
+    let container = SandboxEnvironmentProvider::container(
         provider,
         vec![unsafe_mount],
         Arc::new(FakeHandExecutorFactory),
@@ -1112,7 +1175,13 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
     .at_root(second.path());
     assert!(matches!(
         container,
-        SessionEnvironmentProvider::Container { .. }
+        SandboxEnvironmentProvider::Container { .. }
     ));
-    assert!(container.create(&spec()).await.is_err());
+    assert!(
+        container
+            .into_session_provider()
+            .create(&spec())
+            .await
+            .is_err()
+    );
 }

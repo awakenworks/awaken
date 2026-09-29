@@ -871,7 +871,12 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     .await
     .expect("install first complete Session projection");
     let first_ctx = first.ctx_for(thread, None).await.expect("first session");
-    let handle = first_ctx.env.as_ref().expect("eager environment").handle();
+    let handle = first_ctx
+        .env
+        .as_ref()
+        .expect("eager environment")
+        .lifecycle()
+        .handle();
     let marker = storage
         .path()
         .join("sandboxes")
@@ -917,6 +922,7 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
             .env
             .as_ref()
             .expect("eager environment")
+            .lifecycle()
             .handle(),
         handle
     );
@@ -941,7 +947,12 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .ctx_for("t-resident-adoption", None)
         .await
         .expect("resident session");
-    let resident_handle = resident.env.as_ref().expect("eager environment").handle();
+    let resident_handle = resident
+        .env
+        .as_ref()
+        .expect("eager environment")
+        .lifecycle()
+        .handle();
 
     let resident_binding = serde_json::to_string(&resident_handle).unwrap();
     assert_eq!(
@@ -961,7 +972,12 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .await
         .expect("the exact resident sandbox is idempotently accepted");
     assert_eq!(
-        reused.env.as_ref().expect("reused Environment").handle(),
+        reused
+            .env
+            .as_ref()
+            .expect("reused Environment")
+            .lifecycle()
+            .handle(),
         resident_handle,
         "idempotent adoption may rebuild the cache but retains physical identity"
     );
@@ -972,7 +988,7 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .create(&host.sandbox_spec("t-foreign-resident"))
         .await
         .expect("foreign sandbox");
-    let foreign_binding = serde_json::to_string(&foreign.handle()).unwrap();
+    let foreign_binding = serde_json::to_string(&foreign.lifecycle().handle()).unwrap();
     let error = match host
         .adopt_bound_session_environment(
             "t-resident-adoption",
@@ -992,7 +1008,12 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         "sandbox t-foreign-resident does not belong to Session t-resident-adoption"
     );
     assert_eq!(
-        resident.env.as_ref().expect("eager environment").handle(),
+        resident
+            .env
+            .as_ref()
+            .expect("eager environment")
+            .lifecycle()
+            .handle(),
         resident_handle
     );
 }
@@ -1015,7 +1036,12 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .ctx_for("t-retained-adoption", None)
         .await
         .expect("initial session");
-    let retained_handle = original.env.as_ref().expect("eager environment").handle();
+    let retained_handle = original
+        .env
+        .as_ref()
+        .expect("eager environment")
+        .lifecycle()
+        .handle();
     host.evict_session_for_rebuild("t-retained-adoption").await;
     drop(original);
 
@@ -1025,7 +1051,7 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .create(&host.sandbox_spec("t-foreign-retained"))
         .await
         .expect("foreign sandbox");
-    let foreign_binding = serde_json::to_string(&foreign.handle()).unwrap();
+    let foreign_binding = serde_json::to_string(&foreign.lifecycle().handle()).unwrap();
     let error = match host
         .adopt_bound_session_environment(
             "t-retained-adoption",
@@ -1063,7 +1089,12 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .await
         .expect("the exact retained sandbox rebuilds the runtime context");
     assert_eq!(
-        rebuilt.env.as_ref().expect("eager environment").handle(),
+        rebuilt
+            .env
+            .as_ref()
+            .expect("eager environment")
+            .lifecycle()
+            .handle(),
         retained_handle
     );
     assert_eq!(

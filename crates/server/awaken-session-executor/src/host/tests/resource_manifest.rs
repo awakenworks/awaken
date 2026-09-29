@@ -673,6 +673,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .expect("resident Skill environment");
     assert!(
         environment
+            .skills()
             .scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR)
             .expect("scan delivered Skill projection")
             .iter()
@@ -705,6 +706,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .expect("replace with explicit empty Skill selection");
     assert!(
         environment
+            .skills()
             .scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR)
             .expect("scan after Skill removal")
             .is_empty(),
