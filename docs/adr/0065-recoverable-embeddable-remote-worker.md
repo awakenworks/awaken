@@ -299,6 +299,17 @@ New Pod admissions also require the deployment's process-evidence finalizer;
 the frozen binding must retain that fact before effects. A historical unretained
 binding cannot gain stop capability by observing a later finalizer.
 
+The same provider also accepts a Deployment Pod whose `Always` restart policy
+is frozen before effects, provided every private container is still in its
+original execution with zero restarts and the evidence finalizer is already
+present. This does not treat a restartable Pod's natural exit as irreversible:
+observation requires accepted deletion intent and exact runtime exit of the
+entire frozen container set. A policy change, restart, replaced container or
+lost status remains Unknown. Historical bindings without the new policy fact
+retain their original `Never` interpretation; no binding or exit evidence is
+backfilled. Conditional deletion, Registry exit persistence and Dispatch
+retirement continue through the existing owners.
+
 On `Blocked` admission, the same Coordinator application path checks the current
 successor claim and reads the original physical slot. Only a different Worker
 with a persisted binding can be considered. Exact `expire_incarnation` closes the

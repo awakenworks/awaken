@@ -43,6 +43,44 @@ fn retained(mut pod: Value) -> Pod {
     decode(pod)
 }
 
+#[tokio::test]
+async fn deployment_stop_uses_existing_exact_delete_then_observes_original_exits() {
+    // C1 frozen retained Always Pod; C2 exact UID/RV; C3 deletion accepted;
+    // C4 original containers exited. P1(C1+C2) => one conditional DELETE and
+    // Unknown; P2(C1+C2+C3+!C4) => read-only Unknown; P3(C1..C4) => local exit.
+    // No response loss/retry may become a new stop operation or Dispatch write;
+    // those faults use the same existing stopper matrix below.
+    let fixture = Fixture::new(Fault::None);
+    let mut live = running();
+    live["spec"]["restartPolicy"] = json!("Always");
+    fixture.facts.lock().unwrap().pod = Some(retained(live));
+    let observer = fixture.observer();
+    let binding = observer.bind_pod_process("worker", "uid-a").await.unwrap();
+    let stopper = PodProcessStopper::new(observer);
+    assert_eq!(
+        stopper.request_stop(&binding).await.unwrap(),
+        PodProcessTermination::Unknown,
+        "P1"
+    );
+    assert_eq!(
+        stopper.request_stop(&binding).await.unwrap(),
+        PodProcessTermination::Unknown,
+        "P2"
+    );
+    let mut exited = terminal();
+    exited["spec"]["restartPolicy"] = json!("Always");
+    exited["metadata"]["deletionTimestamp"] = json!("2026-09-08T00:00:02Z");
+    fixture.facts.lock().unwrap().pod = Some(retained(exited));
+    assert!(
+        matches!(
+            stopper.request_stop(&binding).await.unwrap(),
+            PodProcessTermination::Observed(_)
+        ),
+        "P3"
+    );
+    assert_eq!(fixture.facts.lock().unwrap().accepted, 1);
+}
+
 fn status(code: u16) -> Response<Body> {
     Response::builder()
         .status(code)

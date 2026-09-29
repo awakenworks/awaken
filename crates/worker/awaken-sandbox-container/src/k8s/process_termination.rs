@@ -1,5 +1,5 @@
 // @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
-//! Independent observation of one non-restarting, private Pod process domain.
+//! Independent observation of one frozen, private Pod process domain.
 //!
 //! This evidence covers local processes only. It does not discharge a Dispatch
 //! attempt, prove external requests stopped, or grant replay authority. In
@@ -42,6 +42,10 @@ pub struct PodProcessBinding {
     retention_finalizer: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     init_containers: Vec<ContainerProcessBinding>,
+    /// An Always-policy Pod needs accepted deletion intent as well as exact
+    /// exits. Absence preserves the original Never-policy binding contract.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    restartable: bool,
 }
 
 fn worker_evidence_finalizer() -> String {
@@ -122,9 +126,9 @@ impl PodProcessObserver {
     }
     /// Obtain the exact running process coordinate through the existing control
     /// client. The caller must persist it before allowing any external effects.
-    /// Every ordinary container is included. The first profile rejects init,
-    /// ephemeral and independently restartable containers instead of silently
-    /// omitting them from its proof domain.
+    /// Every ordinary container is included. Init, ephemeral, independently
+    /// restartable containers and prior restarts remain outside this proof
+    /// domain. An Always-policy Pod additionally requires retained evidence.
     pub async fn bind_pod_process(
         &self,
         name: &str,
@@ -158,7 +162,7 @@ impl PodProcessObserver {
 
 fn process_statuses(pod: &Pod) -> Option<Vec<&ContainerStatus>> {
     let spec = pod.spec.as_ref()?;
-    if spec.restart_policy.as_deref() != Some("Never")
+    if !matches!(spec.restart_policy.as_deref(), Some("Never" | "Always"))
         || has_forbidden_sandbox_namespace_shape(spec)
         || spec.containers.is_empty()
         || spec
@@ -334,6 +338,10 @@ fn bind(
                 })
             })
             .collect::<Option<Vec<_>>>()?;
+        let restartable = pod.spec.as_ref()?.restart_policy.as_deref() == Some("Always");
+        if restartable && !evidence_is_retained(pod) {
+            return None;
+        }
         Some(PodProcessBinding {
             namespace: coordinate(Some(namespace))?,
             name: coordinate(Some(name))?,
@@ -345,9 +353,10 @@ fn bind(
                 .unwrap_or(WORKER_PROCESS_EVIDENCE_FINALIZER)
                 .into(),
             init_containers: completed_init_bindings(pod)?,
+            restartable,
         })
     })();
-    binding.ok_or_else(|| backend("Pod has no exact non-restarting private process binding"))
+    binding.ok_or_else(|| backend("Pod has no admissible private process binding"))
 }
 
 /// One exact process-set comparison for observation and stop admission. Neither
@@ -360,7 +369,13 @@ fn matching_statuses<'a>(
         return None;
     }
     let statuses = process_statuses(pod)?;
-    if pod.metadata.namespace.as_deref() != Some(binding.namespace.as_str())
+    let expected_policy = if binding.restartable {
+        "Always"
+    } else {
+        "Never"
+    };
+    if pod.spec.as_ref()?.restart_policy.as_deref() != Some(expected_policy)
+        || pod.metadata.namespace.as_deref() != Some(binding.namespace.as_str())
         || pod.metadata.name.as_deref() != Some(binding.name.as_str())
         || pod.metadata.uid.as_deref() != Some(binding.uid.as_str())
         || pod.spec.as_ref()?.node_name.as_deref() != Some(binding.node.as_str())
@@ -387,6 +402,13 @@ fn matching_statuses<'a>(
 
 fn observe(binding: &PodProcessBinding, pod: &Pod) -> PodProcessTermination {
     let proof = (|| {
+        if binding.restartable
+            && (!binding.retained
+                || !binding_retention_is_present(binding, pod)
+                || pod.metadata.deletion_timestamp.is_none())
+        {
+            return None;
+        }
         let statuses = matching_statuses(binding, pod)?;
         if !matches!(
             pod.status.as_ref()?.phase.as_deref(),
