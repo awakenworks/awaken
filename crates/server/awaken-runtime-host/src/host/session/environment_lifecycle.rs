@@ -1726,12 +1726,12 @@ mod terminal_output_tests {
             ),
         ];
         assert_eq!(
-            TerminalEffectMode::for_terminal_source(false),
+            TerminalEffectMode::for_terminal_source(true),
             TerminalEffectMode::LiveUnprepared,
             "HT0 filesystem data remains readable"
         );
         assert_eq!(
-            TerminalEffectMode::for_terminal_source(true),
+            TerminalEffectMode::for_terminal_source(false),
             TerminalEffectMode::RecoverOnlyUnprepared,
             "HT0 Container terminal source requires receipt-only reads and still needs preparation"
         );

@@ -192,3 +192,37 @@ async fn host_observation_preserves_purpose_and_exact_fence() {
     assert_eq!(fake.adopts.load(Ordering::SeqCst), 0);
     assert_eq!(fake.disposals.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn terminal_data_readability_follows_the_physical_tier() {
+    // Decision table: T1 Workdir and T2 Namespace keep direct filesystem
+    // access after their marker is terminal => readable; T3 a Container's
+    // file reads need a running process => not readable.
+    use awaken_session_environment_contract::EnvironmentTerminalRealization as _;
+    let base = tempfile::tempdir().unwrap();
+    assert!(
+        SandboxEnvironmentProvider::workdir(base.path()).terminal_data_is_readable(),
+        "T1"
+    );
+    assert!(
+        SandboxEnvironmentProvider::namespace_with_agent_stderr(
+            base.path(),
+            false,
+            Arc::new(UnusedHandExecutorFactory),
+            "/bin/sh",
+            std::time::Duration::ZERO,
+        )
+        .terminal_data_is_readable(),
+        "T2"
+    );
+    assert!(
+        !SandboxEnvironmentProvider::container(
+            Arc::new(FakeContainerProvider::default()),
+            Vec::new(),
+            Arc::new(UnusedHandExecutorFactory),
+            "/bin/sh",
+        )
+        .terminal_data_is_readable(),
+        "T3"
+    );
+}
