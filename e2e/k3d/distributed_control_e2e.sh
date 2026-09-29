@@ -641,6 +641,20 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 [ "${DRAINED:-0}" = "2" ] || { err "Workers did not fail closed after losing Coordinator authority"; exit 1; }
+# C1 unready can precede hard lease expiry: transport failure only revokes
+# admission temporarily. Restoring Coordinator at that point legitimately
+# preserves the process. C2 the persisted Registry leases expire with every
+# Coordinator absent => the existing lifecycle must drain that incarnation.
+# Observe C2 from the same Registry authority before asserting replacement;
+# readiness alone cannot manufacture an authority-loss fault.
+for _ in $(seq 1 90); do
+  LIVE_WORKER_LEASES=$(kubectl -n "$NS" exec postgres-primary-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+    "SELECT count(*) FROM worker_registry_worker WHERE expires_at_ms > FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)")
+  [[ "$LIVE_WORKER_LEASES" =~ ^[0-9]+$ ]] || { err "Worker lease observation is invalid"; exit 1; }
+  [ "$LIVE_WORKER_LEASES" = "0" ] && break
+  sleep 1
+done
+[ "$LIVE_WORKER_LEASES" = "0" ] || { err "Coordinator outage did not expire Worker authority"; exit 1; }
 kubectl -n "$NS" scale deploy/coordinator --replicas=2 >/dev/null
 kubectl -n "$NS" rollout status deploy/coordinator --timeout=240s
 node "$DRIVER" retry-publication "$API_URL"
