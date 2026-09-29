@@ -42,7 +42,9 @@ use crate::dispatch::{
     validate_session_run_replacement_candidates, validate_session_run_reservation_request,
     validate_session_run_reservation_resolution, verify_credential_realization_receipt,
 };
-use crate::dispatch_schema::{BUNDLE_ID, converged_dispatch_bundle, selected_dispatch_bundle};
+use crate::dispatch_schema::{
+    BUNDLE_ID, CONVERGED_BUNDLE_ID, selected_converged_dispatch_bundle, selected_dispatch_bundle,
+};
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, DispatchPlacement, LeaseLossReason, PlacementPolicy, WorkerAssignment,
@@ -74,7 +76,11 @@ pub enum StoreError {
 /// Built in, not configured — one runtime is one component.
 const NS: &str = "runtime";
 
-fn published_v15_checksum(conn: &Connection) -> Result<Option<String>, StoreError> {
+fn published_checksum(
+    conn: &Connection,
+    bundle: &str,
+    version: i64,
+) -> Result<Option<String>, StoreError> {
     let ledger_exists = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
@@ -87,9 +93,9 @@ fn published_v15_checksum(conn: &Connection) -> Result<Option<String>, StoreErro
     }
     conn.query_row(
         &format!(
-            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 15"
+            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = ?2"
         ),
-        params![BUNDLE_ID],
+        params![bundle, version],
         |row| row.get(0),
     )
     .optional()
@@ -346,10 +352,13 @@ impl SqliteDispatchStore {
         conn: Connection,
         clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<Self, StoreError> {
-        let published = selected_dispatch_bundle(published_v15_checksum(&conn)?.as_deref())
-            .map_err(|err| StoreError::Migrate(err.to_string()))?;
-        let converged =
-            converged_dispatch_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
+        let published =
+            selected_dispatch_bundle(published_checksum(&conn, BUNDLE_ID, 15)?.as_deref())
+                .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        let converged = selected_converged_dispatch_bundle(
+            published_checksum(&conn, CONVERGED_BUNDLE_ID, 7)?.as_deref(),
+        )
+        .map_err(|err| StoreError::Migrate(err.to_string()))?;
         let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
         runner
@@ -517,6 +526,107 @@ mod migration_history_tests {
     use crate::dispatch_schema::{BUNDLE_ID, CONVERGED_BUNDLE_ID, expanded_dispatch_bundle};
 
     #[test]
+    fn published_v7_lineages_preserve_receipts_and_converge_once() {
+        use crate::dispatch_schema::{
+            converged_dispatch_bundle, dispatch_bundle, selected_converged_dispatch_bundle,
+        };
+        use awaken_scoped_migration::{Dialect, Migration};
+        // Causes: C1 V7 is main's entry closure or the deployed operational
+        // index; C2 restart after applying V8. Effects: E1 retain exact V7
+        // checksum; E2 both effects exist once; E3 reopen creates no receipts.
+        // R1=C1 closure -> append index@8; R2=C1 index -> append closure@8;
+        // R3=R1/R2+C2 -> same 8 receipts. Unknown V7 is tested separately.
+        for index_first in [false, true] {
+            let conn = Connection::open_in_memory().unwrap();
+            let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
+            runner
+                .run_bundle(&conn, &dispatch_bundle().unwrap())
+                .unwrap();
+            let canonical = converged_dispatch_bundle().unwrap();
+            let index = Migration::new(
+                7,
+                "index exact Run operational replay over the existing global event identities",
+                include_str!("migrations/V0008__dispatch_operation_run_sequence.sql").trim(),
+            )
+            .unwrap();
+            let original = if index_first {
+                index
+            } else {
+                canonical.migrations()[6].clone()
+            };
+            let checksum = original.checksum_for(Dialect::Sqlite);
+            let mut prefix = canonical.migrations()[..6].to_vec();
+            prefix.push(original);
+            runner
+                .run_bundle(
+                    &conn,
+                    &MigrationBundle::new(CONVERGED_BUNDLE_ID, prefix).unwrap(),
+                )
+                .unwrap();
+            let store =
+                SqliteDispatchStore::from_connection(conn, awaken_lease_contract::system_clock())
+                    .unwrap();
+            let conn = store.conn.lock().unwrap();
+            let selected = selected_converged_dispatch_bundle(Some(&checksum)).unwrap();
+            runner.run_bundle(&conn, &selected).unwrap();
+            let retained: String = conn.query_row(
+                "SELECT checksum FROM runtime_schema_migrations WHERE bundle_id=?1 AND version=7",
+                [CONVERGED_BUNDLE_ID], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(retained, checksum, "E1 immutable V7 receipt");
+            let receipts: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM runtime_schema_migrations WHERE bundle_id=?1",
+                    [CONVERGED_BUNDLE_ID],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(receipts, 8, "E3 exact replay");
+            let closed_columns: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('runtime_dispatch') WHERE name='active_attempt_closing'",
+                [], |row| row.get(0),
+            ).unwrap();
+            let indexes: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='runtime_dispatch_operation_run_sequence'",
+                [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!((closed_columns, indexes), (1, 1), "E2 both effects once");
+        }
+    }
+
+    #[test]
+    fn unknown_v7_receipt_cannot_select_a_compatibility_stream() {
+        use crate::dispatch_schema::{converged_dispatch_bundle, dispatch_bundle};
+        // R4 unknown V7 checksum -> ordinary migration mismatch, no repair or
+        // receipt overwrite. A lookalike schema never authorizes migration.
+        let conn = Connection::open_in_memory().unwrap();
+        let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
+        runner
+            .run_bundle(&conn, &dispatch_bundle().unwrap())
+            .unwrap();
+        let canonical = converged_dispatch_bundle().unwrap();
+        runner
+            .run_bundle(
+                &conn,
+                &MigrationBundle::new(CONVERGED_BUNDLE_ID, canonical.migrations()[..7].to_vec())
+                    .unwrap(),
+            )
+            .unwrap();
+        conn.execute(
+            "UPDATE runtime_schema_migrations SET checksum=?1 WHERE bundle_id=?2 AND version=7",
+            rusqlite::params!["unknown", CONVERGED_BUNDLE_ID],
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                SqliteDispatchStore::from_connection(conn, awaken_lease_contract::system_clock()),
+                Err(super::StoreError::Migrate(_))
+            ),
+            "R4 reject"
+        );
+    }
+
+    #[test]
     fn store_open_selects_and_converges_the_durable_expanded_history() {
         /* Adapter-selection cause/effect table:
          * Q1 no ledger -> fresh compact history; Q2 exact expanded V15 receipt
@@ -560,7 +670,7 @@ mod migration_history_tests {
             .expect("Q2 convergence receipt");
         assert_eq!(published_max, 29, "Q2 expanded terminal");
         assert_eq!(
-            converged_count, 7,
+            converged_count, 8,
             "Q2/Q3 seal, paired slot, Thread exclusion, retired epoch, execution binding, retry deadline, entry closure"
         );
     }

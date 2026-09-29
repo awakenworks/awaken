@@ -681,7 +681,9 @@ async fn parallel_wave_retains_returned_siblings_after_fatal_result_without_publ
                     barrier: None,
                 }))
                 .with_gate(Arc::new(AllowGate));
-            let commit = Arc::new(MemoryCommitCoordinator::new());
+            let commit = Arc::new(MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ));
             let context = RuntimeRunContext::new().with_commit(commit.clone());
             let latch = context.physical_quiescence.clone();
             let outcome = runtime

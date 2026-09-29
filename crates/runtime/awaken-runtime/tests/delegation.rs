@@ -966,7 +966,9 @@ async fn interrupted_or_awaiting_parallel_child_preserves_returned_regular_sibli
                 concurrency: ToolConcurrency::Parallel,
                 output_bytes: 0,
             }));
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let result = runtime
             .execute(
                 activation_with_regular_tool(),
