@@ -707,6 +707,7 @@ pub async fn build_resolved_real_router() -> Router {
     let resolver = awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
         catalog_repo,
         cred_repo.clone(),
+        awaken_lease_contract::system_clock(),
     )
     .with_direct_provider_credential_execution(direct_policy, direct_holder);
     let published = awaken_config_service::ModelPublicationResolver::resolve_models(
@@ -840,6 +841,7 @@ pub async fn build_oauth_resolved_router() -> Router {
     let resolver = awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
         catalog_repo,
         cred_repo.clone(),
+        awaken_lease_contract::system_clock(),
     )
     .with_direct_provider_credential_execution(direct_policy, direct_holder);
     let published = awaken_config_service::ModelPublicationResolver::resolve_models(
@@ -1455,6 +1457,7 @@ pub async fn build_config_router() -> Router {
             awaken_control::ConfigPlaneManagedAgentRepository::new(
                 plane.clone(),
                 platform_workspace.clone(),
+                awaken_lease_contract::system_clock(),
             ),
         )),
     ));

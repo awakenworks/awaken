@@ -42,7 +42,6 @@ mod selection;
 pub use a2a_remote::A2aCardDiscovery;
 use a2a_remote::HttpA2aCardDiscovery;
 use acp_configuration::validate_acp_session_configuration;
-use acp_publication::wall_clock_ms;
 use composition::CatalogSource;
 pub use composition::ProviderCredentialHolders;
 use credential_publication::PublicationCredentialLookup;
@@ -69,6 +68,9 @@ pub struct CatalogModelPublicationResolver {
     executor_capabilities: Arc<Vec<ExecutorModelCapability>>,
     acp_capabilities: Arc<Vec<AcpPublicationCapability>>,
     credential_selection_sequences: Arc<Mutex<HashMap<String, u64>>>,
+    /// The process's one wall clock: the instant credential access and Worker
+    /// capability observations are judged at.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl CatalogModelPublicationResolver {
@@ -151,7 +153,7 @@ impl CatalogModelPublicationResolver {
             let acp = if matches!(Backend::from_ref(binding.identity().2), Backend::Acp(_)) {
                 let configuration = session_configuration.cloned().unwrap_or_default();
                 let (capability_adapter_version, capability_fingerprint, negotiated) = self
-                    .verified_acp_capability(binding.identity().2, None, wall_clock_ms())
+                    .verified_acp_capability(binding.identity().2, None, self.clock_reading_ms())
                     .await?;
                 validate_acp_session_configuration(&binding, &configuration, &negotiated)?;
                 Some(awaken_runtime_contract::resolved::AcpExecutionProfile {
@@ -378,6 +380,16 @@ mod tests {
         WorkerRegistration,
     };
 
+    /// The wall clock these fixtures compose resolvers with.
+    pub(super) fn test_clock() -> Arc<dyn awaken_lease_contract::WallClock> {
+        awaken_lease_contract::system_clock()
+    }
+
+    /// A reading of [`test_clock`] in epoch milliseconds.
+    pub(super) fn test_clock_ms() -> u64 {
+        awaken_lease_contract::WallClockExt::now_ms(test_clock().as_ref())
+    }
+
     pub(super) fn test_acp_capabilities() -> Arc<Vec<awaken_acp_contract::AcpPublicationCapability>>
     {
         Arc::new(awaken_run_executor_acp::known_acp_publication_capabilities())
@@ -415,7 +427,7 @@ mod tests {
         negotiated: awaken_acp_contract::NegotiatedAcpCapabilities,
     ) -> Arc<dyn WorkerDirectory> {
         let directory = Arc::new(MemoryWorkerDirectory::new());
-        let now = wall_clock_ms();
+        let now = test_clock_ms();
         let registered = directory
             .register(
                 WorkerRegistration {
@@ -528,7 +540,7 @@ mod tests {
             awaken_runtime_contract::PlaintextBoundary::Worker,
             awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
         );
-        CatalogModelPublicationResolver::new(catalog, credentials)
+        CatalogModelPublicationResolver::new(catalog, credentials, test_clock())
             .with_direct_provider_credential_execution(
                 policy,
                 (
@@ -1667,11 +1679,14 @@ mod tests {
         )
         .await
         .unwrap();
-        let missing_holder =
-            CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials.clone())
-                .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
-                .await
-                .expect_err("P0/E2");
+        let missing_holder = CatalogModelPublicationResolver::new(
+            catalog(&["primary"]),
+            credentials.clone(),
+            test_clock(),
+        )
+        .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+        .await
+        .expect_err("P0/E2");
         assert!(
             missing_holder
                 .to_string()

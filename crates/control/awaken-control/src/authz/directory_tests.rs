@@ -18,7 +18,12 @@ fn embedded_agents_workspace_has_one_idempotent_iam_directory_placement() {
     // old metadata and creates no second command path; C6 Directory mutation
     // -> E6 IAM policy version remains unchanged.
     let data = tempfile::tempdir().unwrap();
-    let first = embedded_iam_for_tenant(data.path(), "org-directory", "workspace_directory");
+    let first = embedded_iam_for_tenant(
+        data.path(),
+        "org-directory",
+        "workspace_directory",
+        awaken_lease_contract::system_clock(),
+    );
     let first_directory = DirectoryApi::new(first.store.clone());
     let policy_version = PolicyAdminApi::new(first.store.clone())
         .store_version()
@@ -101,7 +106,12 @@ fn embedded_agents_workspace_has_one_idempotent_iam_directory_placement() {
     );
     drop(first);
 
-    let restarted = embedded_iam_for_tenant(data.path(), "org-directory", "workspace_directory");
+    let restarted = embedded_iam_for_tenant(
+        data.path(),
+        "org-directory",
+        "workspace_directory",
+        awaken_lease_contract::system_clock(),
+    );
     let restarted_directory = DirectoryApi::new(restarted.store.clone());
     assert_eq!(
         restarted_directory

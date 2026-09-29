@@ -156,7 +156,7 @@ impl CatalogModelPublicationResolver {
                         policy: self.direct_credential_policy.clone(),
                         selected_holder,
                         binding: &material_binding,
-                        now_unix_ms: super::wall_clock_ms(),
+                        now_unix_ms: self.clock_reading_ms(),
                     },
                 )
                 .map_err(|error| unavailable(error.to_string()))?,
@@ -231,6 +231,7 @@ mod tests {
         let anonymous = CatalogModelPublicationResolver::new(
             ProviderCatalog::default(),
             anonymous_repo.clone(),
+            awaken_lease_contract::system_clock(),
         )
         .with_a2a_card_discovery(Arc::new(FixedA2aCard(anonymous_card)))
         .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
@@ -252,12 +253,15 @@ mod tests {
         .unwrap();
         required_card.security =
             serde_json::from_value(serde_json::json!([{"bearer": []}])).unwrap();
-        let without_credential =
-            CatalogModelPublicationResolver::new(ProviderCatalog::default(), anonymous_repo)
-                .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card.clone())))
-                .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
-                .await
-                .expect_err("A3");
+        let without_credential = CatalogModelPublicationResolver::new(
+            ProviderCatalog::default(),
+            anonymous_repo,
+            awaken_lease_contract::system_clock(),
+        )
+        .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card.clone())))
+        .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
+        .await
+        .expect_err("A3");
         assert!(
             without_credential
                 .to_string()
@@ -286,16 +290,16 @@ mod tests {
             .next()
             .expect("self-hosted provider holder")
             .clone();
-        let authenticated =
-            CatalogModelPublicationResolver::new(ProviderCatalog::default(), credentials.clone())
-                .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card.clone())))
-                .with_direct_provider_credential_execution(
-                    direct_policy.clone(),
-                    direct_holder.clone(),
-                )
-                .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
-                .await
-                .expect("A2");
+        let authenticated = CatalogModelPublicationResolver::new(
+            ProviderCatalog::default(),
+            credentials.clone(),
+            awaken_lease_contract::system_clock(),
+        )
+        .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card.clone())))
+        .with_direct_provider_credential_execution(direct_policy.clone(), direct_holder.clone())
+        .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
+        .await
+        .expect("A2");
         let ModelProvisioning::Remote {
             credential: Some(access),
             security_fingerprint,
@@ -317,16 +321,16 @@ mod tests {
         let mut zero_revision = entered.clone();
         zero_revision.version = 0;
         credentials.put(zero_revision).await.unwrap();
-        let error =
-            CatalogModelPublicationResolver::new(ProviderCatalog::default(), credentials.clone())
-                .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card.clone())))
-                .with_direct_provider_credential_execution(
-                    direct_policy.clone(),
-                    direct_holder.clone(),
-                )
-                .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
-                .await
-                .expect_err("A4");
+        let error = CatalogModelPublicationResolver::new(
+            ProviderCatalog::default(),
+            credentials.clone(),
+            awaken_lease_contract::system_clock(),
+        )
+        .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card.clone())))
+        .with_direct_provider_credential_execution(direct_policy.clone(), direct_holder.clone())
+        .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
+        .await
+        .expect_err("A4");
         assert!(error.to_string().contains("requires authentication"), "A4");
 
         let mut described = entered;
@@ -350,12 +354,16 @@ mod tests {
             )],
         ));
         credentials.put(described).await.unwrap();
-        let error = CatalogModelPublicationResolver::new(ProviderCatalog::default(), credentials)
-            .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card)))
-            .with_direct_provider_credential_execution(direct_policy, direct_holder)
-            .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
-            .await
-            .expect_err("A5");
+        let error = CatalogModelPublicationResolver::new(
+            ProviderCatalog::default(),
+            credentials,
+            awaken_lease_contract::system_clock(),
+        )
+        .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card)))
+        .with_direct_provider_credential_execution(direct_policy, direct_holder)
+        .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
+        .await
+        .expect_err("A5");
         assert!(error.to_string().contains("requires authentication"), "A5");
     }
 }

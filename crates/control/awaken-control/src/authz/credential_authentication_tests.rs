@@ -13,7 +13,7 @@ fn management_authentication_accepts_only_the_canonical_token_scheme() {
     // | yes              | sk-ant-     | E2     |
     // | no               | any         | E2     |
     let dir = tempfile::tempdir().unwrap();
-    let iam = embedded_iam(dir.path());
+    let iam = embedded_iam(dir.path(), awaken_lease_contract::system_clock());
     let canonical = std::fs::read_to_string(dir.path().join(ADMIN_TOKEN_FILE)).unwrap();
     let canonical = canonical.trim();
     assert!(canonical.starts_with(CANONICAL_API_TOKEN_PREFIX));

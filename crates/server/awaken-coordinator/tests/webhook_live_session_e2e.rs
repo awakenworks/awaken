@@ -126,7 +126,7 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         &service_lifecycle,
     )
     .expect("L1 bind the sole lifecycle notifier before traffic");
-    let engine = Arc::new(EnforceEngine::seeded());
+    let engine = Arc::new(EnforceEngine::seeded(awaken_lease_contract::system_clock()));
     let token = engine
         .mint(TokenSpec {
             token_id: "tok_app".into(),

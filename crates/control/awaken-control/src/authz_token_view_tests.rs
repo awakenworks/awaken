@@ -84,7 +84,7 @@ async fn a_token_never_displays_a_role_borrowed_from_another_workspace() {
         principal: principal.clone(),
         secret_hash: "$argon2id$unused-by-this-projection".to_string(),
         workspace: WorkspaceId("wrkspc_c".to_string()),
-        created_at: Timestamp(now_rfc3339()),
+        created_at: Timestamp(rfc3339_at(awaken_lease_contract::system_clock().as_ref())),
         expires_at: None,
         revoked_at: None,
     };

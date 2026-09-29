@@ -44,6 +44,7 @@ fn harness() -> Harness {
         model_discovery: None,
         brokered_catalog: None,
         availability: Default::default(),
+        clock: awaken_lease_contract::system_clock(),
     })
     // Mounted the way a deployment mounts it: the trusted edge resolves the
     // Workspace. Admin handlers are fail-closed on an absent stamp, and a

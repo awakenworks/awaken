@@ -248,8 +248,10 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         RESERVED_ADMIN_SCOPE,
         awaken_admin_assistant::admin_tool_descriptors(),
     ));
-    let credential_validator =
-        Arc::new(crate::CredentialRevisionValidator::new(credentials.clone()));
+    let credential_validator = Arc::new(crate::CredentialRevisionValidator::new(
+        credentials.clone(),
+        clock.clone(),
+    ));
     let mut config_service =
         ConfigService::new(model_publication_resolver, executable_agent_registrar)
             .with_credential_reference_validator(credential_validator.clone())
@@ -332,11 +334,12 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     );
     let agent_repository: Arc<dyn ManagedAgentRepository> =
         Arc::new(if request_scoped_execution_workspace {
-            ConfigPlaneManagedAgentRepository::request_scoped(config_plane.clone())
+            ConfigPlaneManagedAgentRepository::request_scoped(config_plane.clone(), clock.clone())
         } else {
             ConfigPlaneManagedAgentRepository::new(
                 config_plane.clone(),
                 execution_workspace.clone(),
+                clock.clone(),
             )
         });
     let data_subject_application = Arc::new(
@@ -347,7 +350,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         )
         .expect("a derived 32-byte enrollment signing key is valid"),
     );
-    let resolver = RepoDataSubjectResolver::new(data_subjects.clone(), erasure_jobs, clock)
+    let resolver = RepoDataSubjectResolver::new(data_subjects.clone(), erasure_jobs, clock.clone())
         .with_target(ErasureTarget::Coordinator, coordinator_content_eraser);
     let resolver = match resource_content_eraser {
         Some(eraser) => resolver.with_target(ErasureTarget::Resources, eraser),
@@ -394,6 +397,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         local_browser_auth,
         remote_iam,
         cloud_login,
+        clock,
     })
     .merge(crate::consent_router(
         data_subject_application.clone(),

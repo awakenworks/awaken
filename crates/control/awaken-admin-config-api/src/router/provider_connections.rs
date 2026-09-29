@@ -20,7 +20,7 @@ use axum::http::HeaderMap;
 
 use super::{
     AdminState, ConfigCapabilitiesView, CredentialSourceView, Problem, cred_problem, repo_problem,
-    req_id, unix_time_ms,
+    req_id,
 };
 
 #[derive(serde::Serialize)]
@@ -86,7 +86,7 @@ pub(super) async fn list_provider_connections(
         .list(&workspace_id)
         .await
         .map_err(|error| cred_problem(&error, &rid))?;
-    let now = unix_time_ms();
+    let now = state.clock_ms();
     let descriptors = awaken_model_catalog::provider_driver_descriptors()
         .into_iter()
         .map(|descriptor| (descriptor.provider_kind.clone(), descriptor))
