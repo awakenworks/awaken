@@ -13,7 +13,10 @@ use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_types::SessionId;
 mod cancelled_model;
 mod pagination;
+mod prefix_monotonicity;
 mod refresh_failure;
+mod replica_switch;
+mod timeline_scenarios;
 mod warm_cold_equivalence;
 
 use super::committed_projection::{

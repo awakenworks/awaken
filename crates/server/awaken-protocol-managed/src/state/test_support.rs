@@ -331,6 +331,9 @@ pub(crate) struct RehydrateFake {
     pub(super) child_commit_after_history_snapshot:
         Arc<std::sync::Mutex<Option<ChildCommitAfterHistorySnapshot>>>,
     pub(super) pending: Arc<std::sync::Mutex<Option<awaken_session_application_contract::Pending>>>,
+    /// `RunStateChanged.await_target` of an Awaiting commit that opened a
+    /// ticket, by lifecycle cursor; absent models a commit left unaudited.
+    pub(super) await_targets: Arc<std::sync::Mutex<crate::test_support::AwaitTargets>>,
     pub(super) ended: Arc<std::sync::Mutex<Vec<String>>>,
     pub(super) reject_mcp_publication: Arc<std::sync::atomic::AtomicBool>,
     pub(super) reject_environment_adoption: Arc<std::sync::atomic::AtomicBool>,
@@ -1662,11 +1665,12 @@ impl awaken_session_runtime_contract::ThreadReadRuntime for RehydrateFake {
             message_commit_cursors,
             state,
             state_commit_cursors,
-            events: crate::test_support::lifecycle_audit_records(lifecycle.iter().filter(
-                |event| {
+            events: crate::test_support::audited_lifecycle_records(
+                lifecycle.iter().filter(|event| {
                     event.thread_id.0 == thread_id && event.source_commit_cursor <= store_cursor
-                },
-            )),
+                }),
+                &self.await_targets.lock().unwrap(),
+            ),
             resume_tickets,
             thread_version: lifecycle.len() as u64,
             store_cursor,

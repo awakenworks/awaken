@@ -18,6 +18,31 @@ use awaken_runtime_contract::tool_batch::ToolBatch;
 
 use crate::types::tunnel::{Tunnel, TunnelCertificate, TunnelToken};
 
+/// The await target each audited Awaiting commit recorded, by its cursor.
+pub type AwaitTargets = std::collections::HashMap<
+    awaken_agent_contract::RunLifecycleCursor,
+    awaken_agent_contract::agent::awaiting::AwaitTarget,
+>;
+
+/// [`lifecycle_audit_records`] with the await target a Runtime commit records
+/// beside an Awaiting transition that opened a ticket, as production writes it
+/// in the same commit as the ticket.
+pub fn audited_lifecycle_records<'a>(
+    events: impl IntoIterator<Item = &'a awaken_agent_contract::RunLifecycleEvent>,
+    targets: &AwaitTargets,
+) -> Vec<awaken_agent_contract::audit::record::Record> {
+    let mut records = lifecycle_audit_records(events);
+    for record in &mut records {
+        if let Some(target) =
+            targets.get(&awaken_agent_contract::RunLifecycleCursor(record.sequence))
+        {
+            record.payload["await_target"] =
+                serde_json::to_value(target).expect("await targets serialize");
+        }
+    }
+    records
+}
+
 /// Materialize authored fixture transitions as real committed audit records.
 /// Snapshot and lifecycle assertions must describe one fact set. Classification
 /// still belongs to the production reducer, so an inconsistent expected kind
