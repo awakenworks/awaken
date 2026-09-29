@@ -308,6 +308,7 @@ impl SessionEnvironmentOwner {
         Ok(current.clone())
     }
 
+    #[cfg(test)]
     pub(super) fn install_projection(
         &mut self,
         projected: ProjectedEnvironmentOwner,
@@ -871,8 +872,8 @@ impl SessionEnvironmentOwner {
             RetiringEnvironmentOwner::Bound(owned)
                 if pending_revoked_resource_reservation(owned, &owned.identity, &binding)
                     && physical.owned_paths_are_monotonic_to(&successor));
-        if !(&binding == expected_binding && successor == physical)
-            && !(same_physical_successor
+        if !(&binding == expected_binding && successor == physical
+            || same_physical_successor
                 && prior.is_ok_and(|prior| prior.owned_paths_are_monotonic_to(&successor)))
         {
             return Err(HostError::internal(

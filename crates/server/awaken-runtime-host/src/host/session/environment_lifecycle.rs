@@ -28,6 +28,7 @@ use state::{
 impl crate::session_slot::SessionRuntimeSlot {
     /// Stage only the rebuildable owner coordinates. No physical owner is
     /// retired or published until the caller commits under this same slot lock.
+    #[cfg(test)]
     pub(crate) fn projected_environment_owner(
         &self,
         thread: &str,
@@ -1041,7 +1042,7 @@ impl SharedHost {
                     .as_ref()
                     .map(|candidate| candidate.environment.as_ref())
             })
-            .or_else(|| revoked_environment.as_deref());
+            .or(revoked_environment.as_deref());
         let authority = effect
             .provider_fence
             .as_ref()
