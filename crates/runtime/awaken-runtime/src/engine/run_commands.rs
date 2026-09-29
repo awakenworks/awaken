@@ -41,6 +41,13 @@ impl RunAttemptExecutor for Runtime {
         let reader = context.reader.clone().ok_or_else(|| {
             Error::Execution("RunAttemptExecutor::resume requires committed history".to_string())
         })?;
+        if let Some(ticket) = reader.resume_ticket(&command.run_id)
+            && ticket.inherited_toolsets.as_ref() != activation.inherited_toolsets()
+        {
+            return Err(Error::Execution(
+                "resumed activation tool configuration differs from the committed ticket".into(),
+            ));
+        }
         // Resume is the single ingress for an activated retry. A rebuilt Runtime
         // starts without its predecessor's in-memory snapshot registry, so retain
         // the exact immutable snapshot carried by this activation before resolving
@@ -328,13 +335,21 @@ async fn resume_with_continuation(
     runtime: &Runtime,
     command: ResumeCommand,
     reader: &dyn CommittedThreadView,
-    context: RuntimeRunContext,
+    mut context: RuntimeRunContext,
     continuation: ResumeContinuation,
 ) -> Result<RunState> {
     let ticket = reader
         .resume_ticket(&command.run_id)
         .ok_or_else(|| Error::Execution("run is not awaiting".to_string()))?;
     validate_resume(&ticket, &command).map_err(|err| Error::Execution(err.to_string()))?;
+    if context.inherited_toolsets.is_some()
+        && context.inherited_toolsets != ticket.inherited_toolsets
+    {
+        return Err(Error::Execution(
+            "resume tool configuration differs from the committed ticket".into(),
+        ));
+    }
+    context.inherited_toolsets = ticket.inherited_toolsets.clone();
     // Delegation continuation retains its execution ticket across child turns
     // and is not a ToolResult consumption. Every other named resume operation
     // is carried to the first commit that replaces this exact ticket.

@@ -588,20 +588,16 @@ pub fn activation(run: &str) -> RunActivation {
 /// An activation for an explicit thread, so a routing test can enqueue runs on
 /// distinct threads and assert each is driven on its own thread's runtime.
 pub fn activation_on(run: &str, thread: &str) -> RunActivation {
-    RunActivation {
-        run_id: RunId(run.to_string()),
-        thread_id: ThreadId(thread.to_string()),
-        snapshot: snapshot(),
-        input: vec![Message {
+    RunActivation::new(
+        RunId(run.to_string()),
+        ThreadId(thread.to_string()),
+        snapshot(),
+        vec![Message {
             id: MessageId("m1".to_string()),
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        delegation_origin: None,
-        model_ref_override: None,
-        data_subject_id: None,
-        tool_capability_narrowing: Default::default(),
-    }
+    )
 }
 
 /// A plain-text runtime wired to a metrics recorder, so a test can assert the

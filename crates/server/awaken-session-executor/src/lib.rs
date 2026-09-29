@@ -460,9 +460,9 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
             // Application requirements may only narrow the Session-owned tool
             // authority; they cannot restore a capability removed by the
             // frozen Session profile.
-            activation.tool_capability_narrowing = activation
-                .tool_capability_narrowing
-                .intersect(command.execution_requirements.tool_capability_narrowing);
+            activation = activation
+                .narrow_tools(command.execution_requirements.tool_capability_narrowing)
+                .map_err(RunError::bad_request)?;
             activation.model_ref_override = self
                 .host
                 .agent

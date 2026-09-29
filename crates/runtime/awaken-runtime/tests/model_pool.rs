@@ -163,10 +163,10 @@ fn binding(model: &str) -> awaken_runtime_contract::resolved::ResolvedModelCandi
 /// An activation whose primary model is `primary` with ordered pool `fallbacks`.
 fn activation(primary: &str, fallbacks: &[&str]) -> RunActivation {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    RunActivation {
-        run_id: RunId("run-1".to_string()),
-        thread_id: ThreadId("thread-1".to_string()),
-        snapshot: ExecutableAgentSnapshot {
+    RunActivation::new(
+        RunId("run-1".to_string()),
+        ThreadId("thread-1".to_string()),
+        ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("snapshot-1".to_string()),
             metadata: Default::default(),
             root_agent_id: AgentId("agent-1".to_string()),
@@ -185,16 +185,12 @@ fn activation(primary: &str, fallbacks: &[&str]) -> RunActivation {
             },
             fingerprint,
         },
-        input: vec![Message {
+        vec![Message {
             id: MessageId("m1".to_string()),
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        delegation_origin: None,
-        model_ref_override: None,
-        data_subject_id: None,
-        tool_capability_narrowing: Default::default(),
-    }
+    )
 }
 
 /// No backoff, no retries — failover, not per-model retry, is under test.

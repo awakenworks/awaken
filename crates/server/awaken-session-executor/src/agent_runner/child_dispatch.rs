@@ -50,12 +50,17 @@ pub(crate) fn child_dispatch_request(
     .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
     let inference_holder = crate::host::self_hosted_inference_holder(&activation)
         .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
-    let placement = crate::host::remote_worker_placement(
+    let mut placement = crate::host::remote_worker_placement(
         &activation.snapshot.resolved_spec,
         None,
         session_resources.as_ref(),
         false,
     );
+    if activation.inherited_toolsets().is_some() {
+        placement
+            .required_capabilities
+            .insert(awaken_runtime_contract::activation::INHERITED_TOOLSETS_CAPABILITY.to_string());
+    }
     let mut request = RunDispatch::new(activation)
         .for_session(parent_thread_id)
         .with_traceparent(awaken_observability::current_traceparent())

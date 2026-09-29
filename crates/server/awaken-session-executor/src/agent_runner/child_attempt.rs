@@ -15,14 +15,34 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 use super::AgentRunError;
 
+/// One pre-effect check shared by direct creation and claimed recovery.
+pub(crate) fn validate_child_tool_configuration(
+    snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+    inherited: Option<&awaken_runtime_contract::activation::InheritedToolsets>,
+) -> Result<(), AgentRunError> {
+    if inherited.is_none()
+        && snapshot.resolved_spec.plugin_ids.iter().any(|id| {
+            id == awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID
+                || id == awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID
+        })
+    {
+        return Err(AgentRunError::Configuration(
+            "delegated Web execution requires frozen caller toolsets".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Install the selected configured Web plugins into a child Native Runtime.
 /// Direct and recovered children call this same owner so replacement dispatch
 /// cannot silently lose the immutable publication's tool selection or policy.
 pub(crate) fn configure_child_native_runtime(
     mut runtime: awaken_runtime::Runtime,
     snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+    inherited: Option<&awaken_runtime_contract::activation::InheritedToolsets>,
     adapters: &ChildExecutionAdapters,
 ) -> Result<awaken_runtime::Runtime, AgentRunError> {
+    validate_child_tool_configuration(snapshot, inherited)?;
     let selected = |plugin_id: &str| {
         snapshot
             .resolved_spec
@@ -38,12 +58,16 @@ pub(crate) fn configure_child_native_runtime(
             )
         })?;
         runtime = runtime.with_plugin(Arc::new(
-            (**plugin).clone().with_execution_configuration(
-                awaken_ext_builtin_tools::web_search_execution_configuration(
-                    &snapshot.resolved_spec.plugin_config.agent.toolsets,
+            (**plugin)
+                .clone()
+                .with_inherited_execution_configuration(
+                    awaken_ext_builtin_tools::web_search_execution_configuration(
+                        &snapshot.resolved_spec.plugin_config.agent.toolsets,
+                    )
+                    .map_err(AgentRunError::Configuration)?,
+                    inherited.expect("selected WebSearch requires frozen callers"),
                 )
                 .map_err(AgentRunError::Configuration)?,
-            ),
         ));
     }
     if selected(awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID) {
@@ -54,12 +78,16 @@ pub(crate) fn configure_child_native_runtime(
             )
         })?;
         runtime = runtime.with_plugin(Arc::new(
-            (**plugin).clone().with_execution_configuration(
-                awaken_ext_builtin_tools::web_fetch_execution_configuration(
-                    &snapshot.resolved_spec.plugin_config.agent.toolsets,
+            (**plugin)
+                .clone()
+                .with_inherited_execution_configuration(
+                    awaken_ext_builtin_tools::web_fetch_execution_configuration(
+                        &snapshot.resolved_spec.plugin_config.agent.toolsets,
+                    )
+                    .map_err(AgentRunError::Configuration)?,
+                    inherited.expect("selected WebFetch requires frozen callers"),
                 )
                 .map_err(AgentRunError::Configuration)?,
-            ),
         ));
     }
     Ok(runtime)
@@ -132,15 +160,16 @@ pub(crate) fn child_attempt_executor(
         .into_iter()
         .map(|candidate| Backend::from_ref(candidate.binding().identity().2))
         .collect::<Vec<_>>();
+    let selected_web = snapshot.resolved_spec.plugin_ids.iter().any(|id| {
+        id == awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID
+            || id == awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID
+    });
     let acp = backends
         .iter()
         .find(|backend| matches!(backend, Backend::Acp(_)))
         .cloned()
         .map(|backend| {
-            if snapshot.resolved_spec.plugin_ids.iter().any(|id| {
-                id == awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID
-                    || id == awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID
-            }) {
+            if selected_web {
                 return Err(AgentRunError::Configuration(
                     "an ACP child publication selects a Web plugin, but child ACP tool export is unavailable"
                         .to_string(),
@@ -158,6 +187,11 @@ pub(crate) fn child_attempt_executor(
         .iter()
         .any(|backend| matches!(backend, Backend::Remote(_)))
     {
+        if selected_web {
+            return Err(AgentRunError::Configuration(
+                "a remote child publication selects Web tools whose inherited policy cannot be enforced by the remote executor".into(),
+            ));
+        }
         Some(adapters.remote.clone().ok_or_else(|| {
             AgentRunError::Configuration(
                 "delegate publication requires an unavailable remote backend".to_string(),
@@ -258,6 +292,176 @@ mod tests {
         executions: Arc<AtomicUsize>,
     }
 
+    #[tokio::test]
+    async fn direct_and_rebuilt_child_web_use_the_same_frozen_sources_before_network_io() {
+        // Causes: N1 caller-only allow; N2 denied target; N3 contradictory
+        // caller lists; N4 no source evidence; N5 activation crosses serde.
+        // Effects: one real HTTP request for N1; no request for N2/N3; N4 is
+        // rejected before execution; N5 reconstructs the same policy through
+        // the owner also used by recovered_child_worker. Loopback is an internal
+        // transport fixture; public hostname admission has separate tests.
+        // | Rule | Input | Materialization | Effect |
+        // | N1 | allow loopback | direct | HTTP once, normal result |
+        // | N2 | allow loopback, target localhost | serde rebuilt | error, no I/O |
+        // | N3 | allow + block loopback | serde rebuilt | error, no I/O |
+        // | N4 | missing sources | selected Web | pre-effect refusal |
+        use awaken_agent_contract::agent::message::Role;
+        use awaken_runtime_contract::activation::InheritedToolsets;
+        use awaken_runtime_contract::agent_bindings::{
+            ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+        };
+        use awaken_runtime_contract::execution::RunExecutor as _;
+        use awaken_runtime_contract::llm::{
+            AssistantOutput, ChatRequest, ChatResponse, LlmExecutor,
+        };
+        use awaken_runtime_contract::permission::ToolCall;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        struct FetchModel {
+            url: String,
+        }
+        #[async_trait::async_trait]
+        impl LlmExecutor for FetchModel {
+            async fn infer(
+                &self,
+                request: ChatRequest,
+            ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+                let output = if request
+                    .messages
+                    .iter()
+                    .any(|message| message.role == Role::Tool)
+                {
+                    AssistantOutput::text("finished")
+                } else {
+                    AssistantOutput::from_tool_calls(vec![ToolCall {
+                        call_id: "inherited-http".into(),
+                        tool_id: "web_fetch".into(),
+                        arguments: serde_json::json!({"url":self.url}),
+                    }])
+                };
+                Ok(ChatResponse {
+                    output,
+                    usage: None,
+                    stop_reason: None,
+                })
+            }
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(awaken_runtime_contract::CancellationToken::new());
+        let server = {
+            let requests = requests.clone();
+            let stop = stop.clone();
+            crate::agent_runner::AbortOnDropTask::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = stop.cancelled() => break,
+                        accepted = listener.accept() => {
+                            let (mut stream, _) = accepted.unwrap();
+                            let mut bytes = [0; 2048];
+                            stream.read(&mut bytes).await.unwrap();
+                            requests.fetch_add(1, Ordering::SeqCst);
+                            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello").await.unwrap();
+                        }
+                    }
+                }
+            })
+        };
+        let source = |kind: &str| {
+            vec![ToolsetPolicy {
+                source: ToolsetSource::Agent,
+                default: ToolExecutionPolicy::default(),
+                overrides: vec![ToolPolicyOverride::with_optional_configuration(
+                    "web_fetch",
+                    ToolExecutionPolicy::default(),
+                    Some(
+                        serde_json::json!({"type":"web_fetch","domains":{"type":kind,"domains":["127.0.0.1"]}}),
+                    ),
+                )],
+            }]
+        };
+        let allowed = InheritedToolsets::with_caller(source("allow"), None);
+        let blocked = InheritedToolsets::with_caller(source("block"), Some(&allowed));
+        let mut snapshot = agent("web-child", "use web_fetch");
+        snapshot.resolved_spec.plugin_ids =
+            vec![awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID.into()];
+        snapshot.resolved_spec.plugin_config.insert(
+            awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID.into(),
+            awaken_ext_builtin_tools::WebFetchPlugin::default_config(),
+        );
+        snapshot.recompute_fingerprint().unwrap();
+        let adapters = ChildExecutionAdapters {
+            web_fetch: Some(Arc::new(awaken_ext_builtin_tools::WebFetchPlugin::new(
+                awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
+                None,
+            ))),
+            ..Default::default()
+        };
+        assert!(
+            super::validate_child_tool_configuration(&snapshot, None).is_err(),
+            "N4 missing evidence"
+        );
+        for (rule, host, sources, rebuilt, expected_requests) in [
+            ("N1", "127.0.0.1", allowed.clone(), false, 1),
+            ("N2", "localhost", allowed, true, 1),
+            ("N3", "127.0.0.1", blocked, true, 1),
+        ] {
+            let activation = RunActivation::new(
+                awaken_agent_contract::agent::run::Id(format!("http-{rule}")),
+                awaken_agent_contract::agent::thread::Id(format!("http-{rule}")),
+                snapshot.clone(),
+                vec![user("fetch")],
+            )
+            .with_inherited_toolsets(Some(sources));
+            let activation: RunActivation = if rebuilt {
+                serde_json::from_slice(&serde_json::to_vec(&activation).unwrap()).unwrap()
+            } else {
+                activation
+            };
+            let runtime = super::configure_child_native_runtime(
+                awaken_runtime::Runtime::new().with_llm(Arc::new(FetchModel {
+                    url: format!("http://{host}:{port}/"),
+                })),
+                &activation.snapshot,
+                activation.inherited_toolsets(),
+                &adapters,
+            )
+            .unwrap();
+            let commit = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ));
+            let outcome = runtime
+                .execute(
+                    activation,
+                    RuntimeRunContext::new().with_commit(commit.clone()),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                outcome,
+                RunState::Ended(EndCause::NaturalEnd),
+                "{rule} model completed after tool result"
+            );
+            assert_eq!(
+                requests.load(Ordering::SeqCst),
+                expected_requests,
+                "{rule} actual network count"
+            );
+            let transcript = commit.committed().messages;
+            assert!(
+                transcript.iter().any(|message| message.role == Role::Tool
+                    && message.text_content().contains(if rule == "N1" {
+                        "hello"
+                    } else {
+                        "url_not_allowed"
+                    })),
+                "{rule} semantic tool result"
+            );
+        }
+        stop.cancel();
+        server.join().await.unwrap();
+    }
+
     #[async_trait::async_trait]
     impl awaken_runtime_contract::execution::RunExecutor for AcpChildRecorder {
         async fn execute(
@@ -310,6 +514,7 @@ mod tests {
         // | A2 | yes | no | E4 |
         // | A3 | no | either | E5 |
         // | A4 | yes + Web plugin | yes | E6 before adapter materialization |
+        // | A5 | remote + Web plugin | any | E6 before remote dispatch |
         // FMECA: capturing the coordinator's policy in the ACP factory lets a
         // parent silently broaden or narrow its referenced Agent, unlike the
         // Managed Agents version-pinned thread model.
@@ -454,5 +659,48 @@ mod tests {
         };
         assert!(error.to_string().contains("ACP child"), "A4/E6: {error}");
         assert_eq!(materializations.load(Ordering::SeqCst), 1, "A4/E6");
+        let mut remote_web_snapshot = native_snapshot;
+        remote_web_snapshot.resolved_spec.model_binding =
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                awaken_runtime_contract::resolved::ModelBinding::parse(
+                    "remote",
+                    "",
+                    "a2a:https://agent.example",
+                )
+                .expect("admitted remote test binding"),
+            );
+        remote_web_snapshot
+            .resolved_spec
+            .plugin_ids
+            .push(awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID.into());
+        let remote_error = match child_attempt_executor(
+            Arc::new(awaken_runtime::Runtime::new()),
+            &remote_web_snapshot,
+            &adapters,
+            effective_tool_authorization(
+                &remote_web_snapshot.resolved_spec.plugin_config,
+                &[],
+                &remote_web_snapshot
+                    .resolved_spec
+                    .plugin_config
+                    .agent
+                    .toolsets,
+            )
+            .policy,
+        ) {
+            Ok(_) => panic!("A5 remote child Web policy must fail closed"),
+            Err(error) => error,
+        };
+        assert!(
+            remote_error
+                .to_string()
+                .contains("remote child publication selects Web"),
+            "A5/E6: {remote_error}"
+        );
+        assert_eq!(
+            materializations.load(Ordering::SeqCst),
+            1,
+            "A5/E6 no external executor materialization"
+        );
     }
 }

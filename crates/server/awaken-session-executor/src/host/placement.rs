@@ -291,3 +291,31 @@ pub fn remote_worker_placement(
     }
     placement
 }
+
+/// Bind the immutable inherited-input format before a root can author children.
+/// Old unregistered executors reject its closed activation marker.
+pub(super) fn bind_root_tool_configuration_format(
+    activation: awaken_runtime_contract::RunActivation,
+    is_session_dispatch: bool,
+) -> awaken_runtime_contract::RunActivation {
+    // A root that may author child work also needs the new execution
+    // format. Registered capability admission alone cannot protect an old
+    // unregistered local executor; its activation decoder must reject the
+    // closed marker before it can create a child with weakened settings.
+    if activation.inherited_toolsets().is_none()
+        && (is_session_dispatch
+            || !activation
+                .snapshot
+                .resolved_spec
+                .plugin_config
+                .agent
+                .delegates
+                .is_empty())
+    {
+        activation.with_inherited_toolsets(Some(
+            awaken_runtime_contract::activation::InheritedToolsets::V1(Vec::new()),
+        ))
+    } else {
+        activation
+    }
+}

@@ -36,7 +36,8 @@ impl Runtime {
         input: impl Into<RunInput>,
         context: RuntimeRunContext,
     ) -> Result<RunState, Error> {
-        let (_run_id, activation) = self.prepare(snapshot, fresh_process_id("thread"), input);
+        let (_run_id, activation) =
+            self.prepare_with_context(snapshot, fresh_process_id("thread"), input, &context);
         self.execute(activation, context).await
     }
 
@@ -60,7 +61,8 @@ impl Runtime {
     where
         F: FnMut(&ResumeTicket) -> ResumeResult,
     {
-        let (run_id, activation) = self.prepare(snapshot, thread.into(), input);
+        let (run_id, activation) =
+            self.prepare_with_context(snapshot, thread.into(), input, &context);
         self.drive_to_completion(run_id, activation, context, &mut decide)
             .await
     }
@@ -85,7 +87,8 @@ impl Runtime {
             ThreadId(thread.into()),
             snapshot.clone(),
             input.into().0,
-        );
+        )
+        .with_inherited_toolsets(context.inherited_toolsets.clone());
         self.drive_to_completion(run_id, activation, context, &mut decide)
             .await
     }
@@ -159,7 +162,8 @@ impl Runtime {
         input: impl Into<RunInput>,
         context: RuntimeRunContext,
     ) -> Result<(RunId, RunState), Error> {
-        let (run_id, activation) = self.prepare(snapshot, thread.into(), input);
+        let (run_id, activation) =
+            self.prepare_with_context(snapshot, thread.into(), input, &context);
         let state = self.execute(activation, context).await?;
         Ok((run_id, state))
     }
@@ -173,17 +177,30 @@ impl Runtime {
         input: impl Into<RunInput>,
     ) -> (RunId, RunActivation) {
         let run_id = RunId(next_run_id());
-        let activation = RunActivation {
-            run_id: run_id.clone(),
-            thread_id: ThreadId(thread),
-            snapshot: snapshot.clone(),
-            input: input.into().0,
-            delegation_origin: None,
-            model_ref_override: None,
-            data_subject_id: None,
-            tool_capability_narrowing: Default::default(),
-        };
+        let activation = RunActivation::new(
+            run_id.clone(),
+            ThreadId(thread),
+            snapshot.clone(),
+            input.into().0,
+        );
         (run_id, activation)
+    }
+
+    /// The convenience entries freeze the caller's execution input before the
+    /// process-local context is consumed. Explicit dispatch builders may use
+    /// `prepare` and set the same value when they hold a frozen authority.
+    fn prepare_with_context(
+        &self,
+        snapshot: &ExecutableAgentSnapshot,
+        thread: String,
+        input: impl Into<RunInput>,
+        context: &RuntimeRunContext,
+    ) -> (RunId, RunActivation) {
+        let (run_id, activation) = self.prepare(snapshot, thread, input);
+        (
+            run_id,
+            activation.with_inherited_toolsets(context.inherited_toolsets.clone()),
+        )
     }
 }
 

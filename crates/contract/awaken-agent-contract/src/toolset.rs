@@ -22,6 +22,35 @@ pub struct ToolsetPolicy {
     pub overrides: Vec<ToolPolicyOverride>,
 }
 
+/// Frozen caller toolsets for one Run, ordered nearest caller to outermost
+/// caller. Extensions interpret only their own configuration values. This is
+/// execution input, never an edit to an immutable Agent publication.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "version", content = "sources", deny_unknown_fields)]
+pub enum InheritedToolsets {
+    #[serde(rename = "v1")]
+    V1(Vec<Vec<ToolsetPolicy>>),
+}
+
+impl InheritedToolsets {
+    /// Freeze the caller's own settings before its already-frozen ancestors.
+    #[must_use]
+    pub fn with_caller(caller: Vec<ToolsetPolicy>, inherited: Option<&Self>) -> Self {
+        let mut sources = vec![caller];
+        if let Some(inherited) = inherited {
+            sources.extend_from_slice(inherited.sources());
+        }
+        Self::V1(sources)
+    }
+
+    #[must_use]
+    pub fn sources(&self) -> &[Vec<ToolsetPolicy>] {
+        match self {
+            Self::V1(sources) => sources,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ToolsetSource {

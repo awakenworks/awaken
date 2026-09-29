@@ -134,6 +134,8 @@ impl SharedHost {
                 (resources, runtime_projection, is_session_dispatch)
             })
             .unwrap_or_default();
+        let activation =
+            super::placement::bind_root_tool_configuration_format(activation, is_session_dispatch);
         // `SessionRuntime::install_session_projection` is the sole
         // Coordinator-side owner that installs this frozen runtime projection.
         // Preserve that existing
@@ -213,6 +215,11 @@ impl SharedHost {
         }
         if let Some(placement) = placement {
             request = request.with_placement(placement);
+        }
+        if request.activation.inherited_toolsets().is_some() {
+            request.placement.required_capabilities.insert(
+                awaken_runtime_contract::activation::INHERITED_TOOLSETS_CAPABILITY.to_string(),
+            );
         }
         Ok(request)
     }

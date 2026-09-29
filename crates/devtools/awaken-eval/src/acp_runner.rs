@@ -67,10 +67,10 @@ impl ToolFreeAcpRunner {
         let fingerprint = CatalogFingerprint(format!("{namespace}-acp-v1"));
         let run_id = RunId(format!("{namespace}-acp-run-{sequence}"));
         let thread_id = ThreadId(format!("{namespace}-acp-thread-{sequence}"));
-        let activation = RunActivation {
+        let activation = RunActivation::new(
             run_id,
-            thread_id: thread_id.clone(),
-            snapshot: ExecutableAgentSnapshot {
+            thread_id.clone(),
+            ExecutableAgentSnapshot {
                 id: ExecutableAgentSnapshotId(format!("{namespace}-acp-v1")),
                 metadata: Default::default(),
                 root_agent_id: AgentId(format!("{namespace}-agent")),
@@ -91,16 +91,12 @@ impl ToolFreeAcpRunner {
                 },
                 fingerprint,
             },
-            input: vec![Message {
+            vec![Message {
                 id: MessageId(format!("{namespace}-acp-input-{sequence}")),
                 role: Role::User,
                 content: vec![ContentBlock::text(input)],
             }],
-            delegation_origin: None,
-            model_ref_override: None,
-            data_subject_id: None,
-            tool_capability_narrowing: Default::default(),
-        };
+        );
         let commit = Arc::new(MemoryCommitCoordinator::new(
             awaken_lease_contract::system_clock(),
         ));

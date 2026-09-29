@@ -210,6 +210,8 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         .sandbox_override
         .unwrap_or_else(|| inputs.deployment.sandbox_support());
     let mut capabilities = BTreeSet::from([NATIVE_RUNTIME_CAPABILITY.to_string()]);
+    capabilities
+        .insert(awaken_runtime_contract::activation::INHERITED_TOOLSETS_CAPABILITY.to_string());
     capabilities.extend(
         inputs
             .materializer

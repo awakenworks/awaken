@@ -605,20 +605,16 @@ fn configured_runtime(service: Arc<dyn RunDelegationService>) -> Runtime {
 }
 
 fn activation() -> RunActivation {
-    RunActivation {
-        run_id: RunId("run-1".to_string()),
-        thread_id: ThreadId("thread-1".to_string()),
-        snapshot: snapshot(),
-        input: vec![Message {
+    RunActivation::new(
+        RunId("run-1".to_string()),
+        ThreadId("thread-1".to_string()),
+        snapshot(),
+        vec![Message {
             id: MessageId("m1".to_string()),
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        delegation_origin: None,
-        model_ref_override: None,
-        data_subject_id: None,
-        tool_capability_narrowing: Default::default(),
-    }
+    )
 }
 
 fn activation_with_regular_tool() -> RunActivation {

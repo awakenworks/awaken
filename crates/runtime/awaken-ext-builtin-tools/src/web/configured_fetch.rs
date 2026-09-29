@@ -2,19 +2,17 @@
 
 use awaken_runtime_contract::tool::ToolError;
 
-use super::{WebFetchExecutionConfiguration, url_matches_filter};
+use super::{EffectiveWebFetchConfiguration, url_matches_filters};
 
 pub(super) fn configured_web_fetch_url(
     raw_url: &str,
-    configuration: &WebFetchExecutionConfiguration,
+    configuration: &EffectiveWebFetchConfiguration,
 ) -> Result<url::Url, ToolError> {
     let url = url::Url::parse(raw_url)
         .map_err(|error| ToolError::InvalidArguments(format!("url: {error}")))?;
-    if let Some(filter) = &configuration.domains
-        && !url_matches_filter(&url, filter)
-    {
+    if !url_matches_filters(&url, &configuration.domains) {
         return Err(ToolError::DefinitiveFailure(
-            "web_fetch URL is outside the configured domain policy".into(),
+            "url_not_allowed: web_fetch URL is outside the combined domain policy".into(),
         ));
     }
     Ok(url)
@@ -22,7 +20,7 @@ pub(super) fn configured_web_fetch_url(
 
 pub(super) fn web_fetch_text_limit(
     url: &url::Url,
-    configuration: &WebFetchExecutionConfiguration,
+    configuration: &EffectiveWebFetchConfiguration,
 ) -> Option<usize> {
     configuration
         .max_content_tokens

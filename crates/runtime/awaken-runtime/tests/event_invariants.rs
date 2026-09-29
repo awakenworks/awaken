@@ -88,10 +88,10 @@ impl ToolGateHook for AllowGate {
 
 fn activation() -> RunActivation {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    RunActivation {
-        run_id: RunId("run-1".to_string()),
-        thread_id: ThreadId("thread-1".to_string()),
-        snapshot: ExecutableAgentSnapshot {
+    RunActivation::new(
+        RunId("run-1".to_string()),
+        ThreadId("thread-1".to_string()),
+        ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("snapshot-1".to_string()),
             metadata: Default::default(),
             root_agent_id: AgentId("agent-1".to_string()),
@@ -117,16 +117,12 @@ fn activation() -> RunActivation {
             },
             fingerprint,
         },
-        input: vec![Message {
+        vec![Message {
             id: MessageId("m1".to_string()),
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        delegation_origin: None,
-        model_ref_override: None,
-        data_subject_id: None,
-        tool_capability_narrowing: Default::default(),
-    }
+    )
 }
 
 #[tokio::test]

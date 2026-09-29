@@ -157,6 +157,24 @@ async function main() {
       'A2/E2 the observing call needed no confirmation',
     );
     pass('auto runs an observing call unattended in the same turn');
+    // A4: a real auto-allowed read is not pending. Confirming its exact
+    // emitted event must return HTTP 400 and must not run another read. This
+    // pins non-ask admission through the official client; the shipped default
+    // evaluator cannot produce auto-deny, which has its Runtime test owner.
+    await assert.rejects(
+      () => client.beta.sessions.events.send(session.id, {
+        events: [{ type: 'user.tool_confirmation', tool_use_id: observing.id, result: 'allow' }],
+        betas: BETAS,
+      }),
+      (error) => error.status === 400,
+      'A4 a non-ask tool event cannot accept a confirmation',
+    );
+    let reads = 0;
+    for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
+      reads += Number(event.type === 'agent.tool_use' && event.name === 'read');
+    }
+    assert.equal(reads, 1, 'A4 refusal does not replay the tool');
+    pass('confirmation of an auto-allowed event is refused with no repeated tool use');
   } finally {
     if (srv) {
       await stopServer(srv.server);

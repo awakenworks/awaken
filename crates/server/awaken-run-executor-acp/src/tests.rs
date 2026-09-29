@@ -895,10 +895,10 @@ impl CommittedThreadView for RecordingCoordinator {
 }
 
 pub(crate) fn activation() -> RunActivation {
-    RunActivation {
-        run_id: RunId("run-1".into()),
-        thread_id: ThreadId("thread-1".into()),
-        snapshot: ExecutableAgentSnapshot {
+    RunActivation::new(
+        RunId("run-1".into()),
+        ThreadId("thread-1".into()),
+        ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("snap".into()),
             metadata: Default::default(),
             root_agent_id: AgentId("agent".into()),
@@ -919,12 +919,8 @@ pub(crate) fn activation() -> RunActivation {
             },
             fingerprint: CatalogFingerprint("fp".into()),
         },
-        input: vec![Message::text(MessageId("u1".into()), Role::User, "do it")],
-        delegation_origin: None,
-        model_ref_override: None,
-        data_subject_id: None,
-        tool_capability_narrowing: Default::default(),
-    }
+        vec![Message::text(MessageId("u1".into()), Role::User, "do it")],
+    )
 }
 
 fn activation_without_session_home() -> RunActivation {

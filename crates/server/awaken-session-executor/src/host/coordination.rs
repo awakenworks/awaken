@@ -695,7 +695,7 @@ impl SharedHost {
             session_activity_epoch,
             max_unarchived_threads,
         } = command;
-        let (baseline, tools, resources) = self
+        let (baseline, tools, resources, coordinator_publication) = self
             .session_slots
             .read(session_id.as_str(), |slot| {
                 (
@@ -706,6 +706,7 @@ impl SharedHost {
                     // this one slot snapshot; child admission neither publishes
                     // nor reconstructs physical active truth.
                     slot.dispatch_resource_manifest(),
+                    slot.published_snapshot.clone(),
                 )
             })
             .ok_or_else(|| HostError::bad_request("Session runtime projection is unavailable"))?;
@@ -775,8 +776,33 @@ impl SharedHost {
             depth: 1,
             agent_lineage: vec![baseline.agent_id],
         };
-        let activation = RunActivation::new(run_id, thread_id.clone(), snapshot, activation_input)
-            .with_delegation_origin(origin);
+        let coordinator_toolsets = tools
+            .as_ref()
+            .map(|tools| tools.toolsets.clone())
+            .or_else(|| {
+                coordinator_publication.as_ref().map(|publication| {
+                    publication
+                        .resolved_spec
+                        .plugin_config
+                        .agent
+                        .toolsets
+                        .clone()
+                })
+            })
+            .ok_or_else(|| {
+                HostError::bad_request(
+                    "coordinated Run has no exact coordinator tool configuration",
+                )
+            })?;
+        let mut activation =
+            RunActivation::new(run_id, thread_id.clone(), snapshot, activation_input)
+                .with_delegation_origin(origin);
+        activation = activation.with_inherited_toolsets(Some(
+            awaken_runtime_contract::activation::InheritedToolsets::with_caller(
+                coordinator_toolsets,
+                None,
+            ),
+        ));
         let request = crate::agent_runner::child_dispatch_request(
             activation,
             ThreadId(session_id.to_string()),
@@ -1348,6 +1374,10 @@ mod tests {
             host.session_slots.update(&session_id, |slot| {
                 slot.session_dispatch = true;
                 slot.baseline = Some(baseline);
+                // This resource-generation fixture explicitly supplies the
+                // coordinator's unrestricted configuration; missing input is
+                // not evidence of an unrestricted parent.
+                slot.tools = Some(Default::default());
                 slot.manifest = active.clone();
                 slot.resource_transition = transition;
             });
@@ -1423,6 +1453,83 @@ mod tests {
                 host.thread_resource_manifest(&session_id),
                 active,
                 "{rule}/E5 admission must not publish active",
+            );
+            // W1 current unrestricted coordinator input is still explicit;
+            // W2 a later projected tool update applies to the next child turn,
+            // while the already-queued activation remains byte-stable. These
+            // are execution-projection tests; Session CAS update admission has
+            // its own existing application tests.
+            let before = claimed.request.activation.clone();
+            assert_eq!(
+                before.inherited_toolsets().unwrap().sources(),
+                &[Vec::new()],
+                "W1 exact source"
+            );
+            let updated_tools = awaken_session_configuration_contract::SessionToolConfiguration {
+                toolsets: vec![awaken_runtime_contract::agent_bindings::ToolsetPolicy {
+                    source: awaken_runtime_contract::agent_bindings::ToolsetSource::Agent,
+                    default: Default::default(),
+                    overrides: vec![awaken_runtime_contract::agent_bindings::ToolPolicyOverride::with_optional_configuration(
+                        "web_fetch", Default::default(), Some(serde_json::json!({"type":"web_fetch","domains":{"type":"allow","domains":["docs.example.com"]}})),
+                    )],
+                }],
+                client_tools: Vec::new(),
+            };
+            host.session_slots
+                .update(&session_id, |slot| slot.tools = Some(updated_tools.clone()));
+            let mut target = awaken_runtime_contract::ExecutableAgentSnapshot::builder("roster-b")
+                .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                    "test", "model-b", "native",
+                ))
+                .build();
+            target.metadata.source.agent_id = target.root_agent_id.clone();
+            target.metadata.source.revision = 1;
+            target.recompute_fingerprint().unwrap();
+            let own = target.resolved_spec.plugin_config.agent.toolsets.clone();
+            let next_run = RunId(format!("coordinated-resource-next-{rule}"));
+            host.admit_coordinated_run(CoordinatedRunCommand {
+                intent: CoordinatedRunIntent::Spawn,
+                session_id: awaken_session_types::SessionId::from(&session_id),
+                thread_id: ThreadId(format!("coordinated-resource-next-thread-{rule}")),
+                run_id: next_run.clone(),
+                parent_run_id: RunId("parent-source-next".into()),
+                parent_call_id: "next-call".into(),
+                operation_id: format!("next-source-{rule}"),
+                snapshot: target,
+                message: "next turn".into(),
+                session_activity_epoch: 1,
+                max_unarchived_threads: 24,
+            })
+            .await
+            .unwrap();
+            let next = dispatch
+                .claim_run(&next_run, "source-inspection", 1_000, &Default::default())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                next.request
+                    .activation
+                    .inherited_toolsets()
+                    .unwrap()
+                    .sources(),
+                &[updated_tools.toolsets],
+                "W2 next turn gets current coordinator"
+            );
+            assert_eq!(
+                next.request
+                    .activation
+                    .snapshot
+                    .resolved_spec
+                    .plugin_config
+                    .agent
+                    .toolsets,
+                own,
+                "W2 ID roster keeps own publication tools"
+            );
+            assert_eq!(
+                claimed.request.activation, before,
+                "W2 existing run remains frozen"
             );
         }
     }
