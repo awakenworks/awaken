@@ -130,7 +130,7 @@ pub use wake::NatsWakeSignal;
 pub use wake::PgNotifyWake;
 pub use wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker, claim_bound_ownership_verifier};
-pub use worker_context::InferenceMaterializerFn;
+pub use worker_context::{ClaimedModelRequestGateFactory, InferenceMaterializerFn};
 
 #[cfg(any(feature = "durable", test))]
 fn next_supersession_epoch(max_epoch: i64) -> Result<i64, DispatchError> {
