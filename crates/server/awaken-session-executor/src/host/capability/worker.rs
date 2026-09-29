@@ -108,8 +108,8 @@ impl SharedHost {
     }
 
     /// Install the claim-fenced commit transport of a database-less Worker.
-    /// It is consulted only once [`Self::with_worker_upstream`] made this Host a
-    /// Worker; a Worker without it fails closed when it executes a claim.
+    /// It is consulted only when the Worker constructor selected the
+    /// database-less role; missing transport fails closed at claim execution.
     #[must_use]
     pub fn with_worker_claimed_commit(
         mut self,

@@ -1294,7 +1294,6 @@ impl WorkerNode {
         // Every execution topology installs the same Session MCP adapter.
         // Host permission grants and Environment-bound executors remain owners.
         .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter))
-        .with_worker_upstream(upstream)
         .with_worker_claimed_commit(claimed_commit)
         .with_memory_reference_encoder(Arc::new(
             awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder,

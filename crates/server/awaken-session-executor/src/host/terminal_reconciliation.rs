@@ -81,7 +81,7 @@ impl SharedHost {
         agent: Option<&str>,
     ) -> Result<bool, HostError> {
         if self.deployment.durable
-            || self.upstream.is_some()
+            || self.is_database_less_worker()
             || self
                 .session_slots
                 .read(thread, |slot| slot.runtime.is_some())
@@ -151,7 +151,7 @@ impl SharedHost {
     pub fn ensure_terminal_dispatch_reconciliation(self: &Arc<Self>) -> bool {
         if !self.deployment.durable
             || self.runs_local_dispatch_pool()
-            || self.upstream.is_some()
+            || self.is_database_less_worker()
             || self
                 .dispatch
                 .terminal_reconciliation
@@ -229,7 +229,7 @@ impl HostWorkerResolver {
         if let Some(observer) = host.session_run_admission_observer() {
             worker = worker.with_session_run_admission_observer(observer);
         }
-        if host.upstream.is_none()
+        if !host.is_database_less_worker()
             && let Some(observer) = host
                 .dispatched_memory_terminal_observer(&claimed.request, commit.clone())
                 .await
@@ -281,7 +281,7 @@ pub(super) async fn reconcile_committed_terminals(
     let host = resolver.host()?;
     // A database-less Worker delegates committed truth upstream and has no
     // process-local registry from which to discover every Thread reader.
-    if host.upstream.is_some() || limit == 0 {
+    if host.is_database_less_worker() || limit == 0 {
         return Ok(Vec::new());
     }
 

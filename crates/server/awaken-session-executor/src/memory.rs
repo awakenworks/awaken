@@ -766,7 +766,7 @@ impl crate::host::SharedHost {
         // owner of remote terminal observation and its durable extraction outbox;
         // probing the Worker's fail-closed repository here would duplicate that
         // authority and prevent an otherwise valid claimed Runtime from starting.
-        if self.upstream.is_some() {
+        if self.is_database_less_worker() {
             return Ok(0);
         }
         let bindings = self

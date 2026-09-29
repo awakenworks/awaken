@@ -51,7 +51,7 @@ impl crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>
 
 #[tokio::test]
 async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
-    // Causes: C1 upstream={local,remote}; C2 Run claim={absent,current,stale};
+    // Causes: C1 role={store-owning,database-less Worker}; C2 Run claim={absent,current,stale};
     // C3 realization={absent,exact,foreign,zero revision}. The source accepts
     // only the current complete fence. R1 local without authority reads once
     // with None; R2 local/remote Run reads once with the same claim; R3 remote
@@ -119,7 +119,7 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
             1,
         ),
         (
-            "R2-no-upstream",
+            "R2-store-owning",
             false,
             Some(current.clone()),
             Some(("session-a", 9)),
@@ -173,9 +173,7 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
         let source = Arc::new(FileFenceProbe::new(accepted));
         let mut host = host().with_file_content_source(source.clone());
         if remote {
-            host = host.with_worker_upstream(
-                awaken_worker_transport_security::WorkerUpstream::new("http://127.0.0.1:1"),
-            );
+            host = host.with_database_less_worker_role_for_test();
         }
         let result = crate::ManagedHost::new(Arc::new(host))
             .stage_resolved_input(

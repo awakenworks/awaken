@@ -191,9 +191,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     let realization_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub")
-            .with_worker_upstream(awaken_worker_transport_security::WorkerUpstream::new(
-                "http://coordinator.invalid",
-            ))
+            .with_database_less_worker_role_for_test()
             .with_memory_reference_encoder(Arc::new(RecordingTerminalMemoryReferenceEncoder {
                 events: events.clone(),
                 realization_attempts: realization_attempts.clone(),
@@ -964,9 +962,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         fence_refresh_probe: Some(probe.clone()),
     });
     let raw_host = SharedHost::new(Arc::new(OkModel), "stub")
-        .with_worker_upstream(awaken_worker_transport_security::WorkerUpstream::new(
-            "http://coordinator.invalid",
-        ))
+        .with_database_less_worker_role_for_test()
         .with_memory_reference_encoder(Arc::new(RecordingTerminalMemoryReferenceEncoder {
             events: events.clone(),
             realization_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -1797,9 +1793,9 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
      * caller shared by a resident same-process Environment and a cold
      * reconstruction after Worker loss. Causes: C1 the V2 binding carries one
      * complete writable Copy evidence M; C2 the frozen aggregate input exactly
-     * joins M; C3 the Environment is resident/cold; C4 the Host is an upstream
-     * Worker whose frozen input was materialized under an exact Run claim and
-     * whose resulting RunV1 reference would be expired at terminal time.
+     * joins M; C3 the Environment is resident/cold; C4 the Host constructor
+     * selected the database-less Worker role. Its frozen input was materialized
+     * under an exact Run claim whose RunV1 reference expires at terminal time.
      * Effects: E1 one live Artifact batch precedes Memory; E2 the Sandbox copy
      * is read once; E3 only SessionTerminalMemoryIntent is encoded and
      * reconciled; E4 the exact complete evidence is acknowledged after E3 and
@@ -1890,9 +1886,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             fence_refresh_probe: None,
         });
         let raw_host = SharedHost::new(Arc::new(OkModel), "stub")
-            .with_worker_upstream(awaken_worker_transport_security::WorkerUpstream::new(
-                "http://coordinator.invalid",
-            ))
+            .with_database_less_worker_role_for_test()
             .with_memory_reference_encoder(Arc::new(RecordingTerminalMemoryReferenceEncoder {
                 events: events.clone(),
                 realization_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
