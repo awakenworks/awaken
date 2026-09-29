@@ -127,7 +127,7 @@ impl SharedHost {
             .ok_or_else(|| {
                 map_live_control_error(LiveRunControlError::NoSubscriber(run_id.to_owned()))
             })?;
-        awaken_dispatch::LiveRunControlService::new(worker)
+        awaken_dispatch::LiveRunControlService::new(worker, self.clock())
             .wake(run_id)
             .await
             .map_err(map_live_control_error)
@@ -166,7 +166,7 @@ impl SharedHost {
             .is_durable()
             .then(|| ctx.claimed_worker.clone())
             .ok_or_else(|| HostError::bad_request("pause requires durable delivery"))?;
-        awaken_dispatch::LiveRunControlService::new(worker)
+        awaken_dispatch::LiveRunControlService::new(worker, self.clock())
             .pause(&run_id)
             .await
             .map_err(map_live_control_error)?;
