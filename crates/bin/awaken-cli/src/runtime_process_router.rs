@@ -262,6 +262,7 @@ pub(super) async fn prepare_runtime_routers(
                 crate::web_search_publication::WebSearchPublicationResolver::new(
                     web_search_providers.clone(),
                     control.credentials.clone(),
+                    stores.clock.clone(),
                 ),
             ) as Arc<dyn awaken_config_service::PluginPublicationResolver>
         })

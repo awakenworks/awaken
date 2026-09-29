@@ -100,6 +100,7 @@ pub(super) async fn control_component_for_process(
                 crate::web_search_publication::WebFetchPublicationResolver::new(
                     web_search_providers.clone(),
                     control.credentials.clone(),
+                    stores.clock.clone(),
                 ),
             ),
         ],
@@ -234,6 +235,7 @@ pub(super) async fn prepare_control_routers(
                         .expect("Control process requires Control stores")
                         .credentials
                         .clone(),
+                    stores.clock.clone(),
                 ),
             )
         });

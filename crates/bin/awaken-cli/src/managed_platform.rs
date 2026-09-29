@@ -548,6 +548,7 @@ mod tests {
                     crate::web_search_publication::WebSearchPublicationResolver::new(
                         providers,
                         Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+                        awaken_lease_contract::system_clock(),
                     ),
                 ),
                 None,
