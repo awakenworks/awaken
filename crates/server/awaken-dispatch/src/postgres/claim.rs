@@ -338,10 +338,16 @@ async fn lock_dispatch_thread(
     .map_err(store_error)?;
     if let Some(thread) = &thread {
         // One Thread-before-row ordering for claim and physical admission.
-        // Hash collisions only over-serialize; unique indexes remain backstops.
+        // The resolved dispatch relation is the authority namespace. Independent
+        // schemas must not contend, while different search_path prefixes that
+        // resolve this SAME table must retain one fence. current_schema() alone
+        // would split that fence. Hash collisions only over-serialize.
+        let key = format!(
+            "hashtextextended(jsonb_build_array('{NS}_dispatch'::regclass::oid, $1::text)::text, 0)"
+        );
         match mode {
             ThreadLock::Wait => {
-                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                sqlx::query(&format!("SELECT pg_advisory_xact_lock({key})"))
                     .bind(thread)
                     .execute(&mut **tx)
                     .await
@@ -349,7 +355,7 @@ async fn lock_dispatch_thread(
             }
             ThreadLock::SkipBusy => {
                 let acquired: bool =
-                    sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))")
+                    sqlx::query_scalar(&format!("SELECT pg_try_advisory_xact_lock({key})"))
                         .bind(thread)
                         .fetch_one(&mut **tx)
                         .await
