@@ -1,5 +1,14 @@
 # Wiki Update Log
 
+## 2026-09-30 — Observe exact Worker occupancy at transport cutover
+
+- ADR-0065 keeps Registry, Dispatch and WorkQueue as the three read authorities
+  for one incarnation. Coordinator's existing private Worker observation
+  boundary composes them without a release-owned database reader or mutation.
+- An unavailable or inconsistent observation stops the cutover. The historical
+  unbound physical attempt remains occupied and cannot be replayed or cleared
+  from a newer Pod observation.
+
 ## 2026-09-29 — Consolidate Sandbox allowlist ownership
 
 - [ADR-0041](../adr/0041-sandbox-execution-environment-provider.md) records the

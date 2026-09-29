@@ -282,7 +282,20 @@ pub async fn release_closed_idle_worker_evidence(
     ) {
         return Ok(());
     }
-    let owner = identity.lease_owner();
+    if has_active_physical_attempt_for_owner(dispatch, &identity.lease_owner()).await? {
+        return Ok(());
+    }
+    source.release_closed_idle_worker_evidence(identity).await
+}
+
+/// Read the original Dispatch physical-slot authority for a complete Worker
+/// incarnation owner. The closed-idle release and Coordinator cutover
+/// observation share this one scan. A concurrent or inconsistent read fails
+/// closed; it never manufactures a process-exit or whole-attempt receipt.
+pub async fn has_active_physical_attempt_for_owner(
+    dispatch: &dyn awaken_run_ingress_contract::ControlDispatchQueue,
+    owner: &str,
+) -> Result<bool, ApplicationError> {
     for summary in dispatch
         .list_dispatches()
         .await
@@ -293,12 +306,17 @@ pub async fn release_closed_idle_worker_evidence(
                 .load_physical_attempt(&summary.run_id)
                 .await
                 .map_err(|e| ApplicationError::unavailable(e.to_string()))?;
-            if physical.as_ref().is_some_and(|p| p.claim.owner == owner) {
-                return Ok(());
+            let physical = physical.ok_or_else(|| {
+                ApplicationError::unavailable(
+                    "Dispatch reported an active physical slot without its exact attempt",
+                )
+            })?;
+            if physical.claim.owner == owner {
+                return Ok(true);
             }
         }
     }
-    source.release_closed_idle_worker_evidence(identity).await
+    Ok(false)
 }
 
 /// Progress a blocked successor through the existing authorities, without a

@@ -17,7 +17,8 @@ use awaken_run_ingress::{
     ClosedAttemptExecution, ClosedWorkerExecution, MemoryDispatchStore, PhysicalAttempt,
     PostgresDispatchStore, RunClaim, RunDispatch, SqliteDispatchStore, WorkerDirectory,
     WorkerExecutionStopSource, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
-    WorkerProcessStopStatus, WorkerRegistration, WorkerState, stop_expired_predecessor,
+    WorkerProcessStopStatus, WorkerRegistration, WorkerState,
+    has_active_physical_attempt_for_owner, stop_expired_predecessor,
 };
 use awaken_run_ingress_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_run_ingress_testkit::worker_http::activation;
@@ -474,6 +475,10 @@ async fn closed_worker_releases_idle_evidence_only_after_the_original_physical_a
     // metadata and slot, no provider stop or forged exit. E2 C1+C2+ACK -> release
     // metadata through the existing source. R1 occupied; R2 original exact ACK;
     // R3 retry closed deregistration converges without changing the successor.
+    // Shared observation decision table: R4 occupied exact owner -> true;
+    // R5 occupied foreign owner -> false; R6 original ACK -> false. These
+    // reads leave the physical slot and Registry unchanged. Store faults or
+    // inconsistent active rows are errors, never false (R7, adapter contract).
     let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 100, 1_000).await;
     let identity = f.binding.worker().clone();
     let request = || {
@@ -490,6 +495,18 @@ async fn closed_worker_releases_idle_evidence_only_after_the_original_physical_a
         f.stop.idle_release_calls.lock().unwrap().is_empty(),
         "R1 occupied"
     );
+    assert!(
+        has_active_physical_attempt_for_owner(f.store.as_ref(), &identity.lease_owner())
+            .await
+            .unwrap(),
+        "R4 exact occupied owner"
+    );
+    assert!(
+        !has_active_physical_attempt_for_owner(f.store.as_ref(), "foreign:1:boot")
+            .await
+            .unwrap(),
+        "R5 foreign owner"
+    );
     assert_eq!(
         f.store
             .load_physical_attempt(&f.old.run_id)
@@ -503,6 +520,12 @@ async fn closed_worker_releases_idle_evidence_only_after_the_original_physical_a
     assert!(
         f.store.finish_attempt(&f.old).await.unwrap().applied(),
         "R2 original ACK"
+    );
+    assert!(
+        !has_active_physical_attempt_for_owner(f.store.as_ref(), &identity.lease_owner())
+            .await
+            .unwrap(),
+        "R6 original slot acknowledged"
     );
     assert!(
         request().send().await.unwrap().status().is_success(),

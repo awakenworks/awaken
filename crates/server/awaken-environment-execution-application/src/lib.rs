@@ -78,6 +78,16 @@ impl EnvironmentExecutionApplication {
         self
     }
 
+    /// Read exact incarnation-qualified WorkQueue occupancy across every
+    /// Environment. Expired but unreleased claims still count; the caller must
+    /// preserve an error as unavailable rather than infer an empty owner.
+    pub async fn has_worker_owner_claims(
+        &self,
+        worker_owner: &str,
+    ) -> Result<bool, WorkQueueError> {
+        self.work.has_owner_claims(worker_owner).await
+    }
+
     pub async fn get(
         &self,
         environment_id: &str,

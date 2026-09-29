@@ -669,3 +669,26 @@ historical identity can therefore lose stale Ready state without gaining an
 exit receipt, binding or Dispatch retirement; its unknown physical attempt
 remains occupied. A live lease remains unchanged and no provider operation is
 issued for an unowned identity.
+
+## Amendment: exact Worker-domain observation for transport cutover (2026-09-30)
+
+A release crossing an incompatible Worker transport must observe the exact old
+incarnation through Coordinator's existing service-authenticated, read-only
+Worker observation boundary. Registry supplies the exact durable incarnation,
+Dispatch supplies active physical slots, and the Environment application asks
+the existing WorkQueue whether the complete incarnation-qualified owner still
+holds any claim. The Dispatch occupancy scan is also the one used by closed-idle
+evidence release; it cannot become a parallel release inventory. A missing
+incarnation, unavailable store, inconsistent active slot, or nonempty occupancy
+cannot be interpreted as safe absence. Observations carry no mutation capability
+and do not substitute for a closed Registry lease or Kubernetes Pod termination.
+
+The cutover closes old admission first and then samples this projection again
+under the retained release barrier, along with exact Pod UID/image and release
+phase facts. Only the release owner decides whether its already-frozen phase
+may advance. It must keep an incompatible Phase A floor distinct from the
+ordinary healthy rollback floor: after a forward-only boundary it cannot
+compensate by reviving the invalid transport. A historical occupied slot with
+no original execution binding remains unknown even if a newer incarnation has
+no slots; no query, current-Pod inspection or phase transition may clear it or
+replay its original Run.
