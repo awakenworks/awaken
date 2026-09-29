@@ -183,16 +183,7 @@ mod postgres {
     }
 
     async fn schema_pool() -> Option<(PgPool, String)> {
-        let url = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
-            Ok(url) => url,
-            Err(std::env::VarError::NotPresent) => {
-                println!("[skip] PostgreSQL conformance requires AWAKEN_TEST_DATABASE_URL");
-                return None;
-            }
-            Err(std::env::VarError::NotUnicode(_)) => {
-                panic!("explicit PostgreSQL fixture URL is not UTF-8")
-            }
-        };
+        let url = awaken_reliability_testkit::postgres_fixture_url()?;
         assert!(
             !url.trim().is_empty(),
             "explicit PostgreSQL fixture URL is empty"
@@ -228,7 +219,7 @@ mod postgres {
 
     #[test]
     fn postgres_fixture_absence_and_configured_failure_have_distinct_outcomes() {
-        // Fixture cause/effect table: F1 no explicit URL -> visible [skip]
+        // Fixture cause/effect table: F1 no explicit URL -> visible canonical SKIPPED
         // without contacting any second/default database; F2 explicit but
         // unreachable loopback URL -> child test fails, never successful skip.
         // Run the actual backend case in isolated processes so environment
@@ -249,7 +240,7 @@ mod postgres {
         let absent = run(None);
         assert!(absent.status.success(), "F1");
         assert!(
-            String::from_utf8_lossy(&absent.stdout).contains("[skip]"),
+            String::from_utf8_lossy(&absent.stderr).contains("SKIPPED PostgreSQL fixture"),
             "F1 explicit skip"
         );
         for url in ["postgres://127.0.0.1:1/unreachable", ""] {
@@ -259,7 +250,7 @@ mod postgres {
                 "F2 explicit failure must fail"
             );
             assert!(
-                !String::from_utf8_lossy(&configured.stdout).contains("[skip]"),
+                !String::from_utf8_lossy(&configured.stderr).contains("SKIPPED PostgreSQL fixture"),
                 "F2 no skip"
             );
         }

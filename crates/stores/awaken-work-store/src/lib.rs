@@ -59,6 +59,9 @@ mod inmem;
 #[cfg(any(test, feature = "test-support"))]
 pub use inmem::InMemoryWorkQueue;
 mod schema;
+#[cfg(all(test, not(feature = "loom")))]
+#[path = "../tests/support/work_postgres.rs"]
+mod work_postgres_fixture;
 use awaken_lease_contract::WallClockExt;
 use schema::*;
 mod session_access;
@@ -1871,25 +1874,44 @@ mod tests {
 
     #[tokio::test]
     async fn file_open_and_pg_connect_entry_points() {
-        // The file-backed `open` (not just `open_in_memory`).
-        let dir = std::env::temp_dir().join(format!("wq-cov-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("wq.db");
+        // F1 file path -> exact SQLite read under an owned tempdir.
+        // F2 no PG URL -> canonical visible skip; configured setup failure
+        // -> hard failure. F3 live PG -> connect() reads its own schema and
+        // cleanup removes only that schema. No second DB URL is selected.
+        let dir = tempfile::tempdir().expect("owned Work SQLite fixture directory");
+        let path = dir.path().join("wq.db");
         let q =
             SqliteWorkQueue::open(path.to_str().unwrap(), system_clock()).expect("open file db");
         let id = q
             .enqueue_session("e", &awaken_session_types::SessionId::from("s"))
             .await
             .expect("enqueue");
-        assert!(q.get("e", &id).await.expect("get").is_some());
-        std::fs::remove_dir_all(&dir).ok();
-        // The `connect(url)` path over a live Postgres (skips when unreachable).
-        if let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL")
-            && let Ok(q) = PostgresWorkQueue::connect(&url, system_clock()).await
-        {
+        assert!(q.get("e", &id).await.expect("get").is_some(), "F1");
+        drop(q);
+        if let Some(url) = awaken_reliability_testkit::postgres_fixture_url() {
+            let fixture = crate::work_postgres_fixture::WorkPostgresFixture::new(&url, 16).await;
+            let q = PostgresWorkQueue::connect(&fixture.scoped_url, system_clock())
+                .await
+                .expect("explicit Work connect entrypoint");
             let id = q.enqueue_healthcheck("cov_env").await.expect("enqueue");
-            assert!(q.get("cov_env", &id).await.expect("get").is_some());
-            q.remove_env("cov_env").await.unwrap();
+            assert!(q.get("cov_env", &id).await.expect("get").is_some(), "F3");
+            let owned_rows: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND work_id = $2",
+            )
+            .bind("cov_env")
+            .bind(&id)
+            .fetch_one(&fixture.pool)
+            .await
+            .expect("inspect exact owned Work schema");
+            assert_eq!(
+                owned_rows, 1,
+                "F3 connect(url) wrote inside this owned schema"
+            );
+            q.remove_env("cov_env")
+                .await
+                .expect("remove only owned env");
+            drop(q);
+            fixture.cleanup().await;
         }
     }
 
@@ -1898,42 +1920,18 @@ mod tests {
     /// with one queued item and N workers claiming at once, exactly ONE wins the lease
     /// and the rest get `None` after they observe the winner's active row.
     /// Distinct pool connections per task make the transactions genuinely concurrent.
-    /// Skips when no Postgres is reachable (`AWAKEN_TEST_DATABASE_URL`), own schema.
+    /// No configured URL skips visibly; an explicit connection/setup failure
+    /// fails. Each invocation creates and removes only its own schema.
     #[tokio::test]
     async fn postgres_concurrent_claim_yields_a_single_active_lease() {
         use std::sync::Arc;
 
-        use sqlx::Executor;
-        use sqlx::postgres::{PgPool, PgPoolOptions};
-
-        let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-        });
-        let Ok(admin) = PgPool::connect(&url).await else {
-            println!("[skip] no Postgres reachable");
+        let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
             return;
         };
-        let _ = admin
-            .execute("DROP SCHEMA IF EXISTS t_work_queue_claim CASCADE")
-            .await;
-        admin
-            .execute("CREATE SCHEMA t_work_queue_claim")
-            .await
-            .expect("schema");
-        admin.close().await;
-        let pool = PgPoolOptions::new()
-            .max_connections(16)
-            .after_connect(|conn, _| {
-                Box::pin(async move {
-                    conn.execute("SET search_path = t_work_queue_claim").await?;
-                    Ok(())
-                })
-            })
-            .connect(&url)
-            .await
-            .expect("schema pool");
+        let fixture = crate::work_postgres_fixture::WorkPostgresFixture::new(&url, 16).await;
         let q = Arc::new(
-            PostgresWorkQueue::with_pool(pool, system_clock())
+            PostgresWorkQueue::with_pool(fixture.pool.clone(), system_clock())
                 .await
                 .expect("store"),
         );
@@ -1967,6 +1965,8 @@ mod tests {
             "the single-active cap holds: one active lease, nothing left queued"
         );
         q.remove_env("env_a").await.unwrap();
+        drop(q);
+        fixture.cleanup().await;
     }
 }
 

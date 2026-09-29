@@ -409,6 +409,7 @@ dependencies = [
  "async-trait",
  "awaken-lease-contract",
  "awaken-lease-testkit",
+ "awaken-reliability-testkit",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
@@ -3099,6 +3100,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3370,6 +3372,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-lease-contract",
  "awaken-lease-testkit",
+ "awaken-reliability-testkit",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-session-types",
@@ -3382,7 +3385,10 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "sqlx",
+ "tempfile",
  "tokio",
+ "url",
+ "uuid",
 ]
 
 [[package]]
