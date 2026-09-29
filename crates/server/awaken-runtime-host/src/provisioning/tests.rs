@@ -58,6 +58,9 @@ fn host() -> SharedHost {
     SharedHost::new(Arc::new(NoLlm), "test")
 }
 
+#[path = "tests/file_fence.rs"]
+mod file_fence;
+
 #[derive(Default)]
 struct RecordingPublicationRealizer {
     calls: std::sync::Mutex<usize>,
