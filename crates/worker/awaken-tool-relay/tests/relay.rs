@@ -113,14 +113,18 @@ async fn a_reconnected_session_joins_the_live_operation_instead_of_replaying() {
         release: release.clone(),
     }) as Arc<dyn RawTool>;
     let request = HandRequest::new(1, call("call-live", "blocking_echo", "x"));
-    let mut first = HandSession::new([tool.clone()], ledger.clone());
+    let mut first = HandSession::new(
+        [tool.clone()],
+        ledger.clone(),
+        awaken_lease_contract::system_clock(),
+    );
     let first_request = request.clone();
     let first_task = tokio::spawn(async move { first.handle(first_request).await });
     tokio::time::timeout(std::time::Duration::from_secs(30), started.notified())
         .await
         .expect("timed out waiting for started.notified()");
 
-    let mut second = HandSession::new([tool], ledger);
+    let mut second = HandSession::new([tool], ledger, awaken_lease_contract::system_clock());
     let mut retry = request;
     retry.correlation_id = 2;
     let second_task = tokio::spawn(async move { second.handle(retry).await });
@@ -143,6 +147,7 @@ fn test_session(tools: impl IntoIterator<Item = Arc<dyn RawTool>>) -> HandSessio
             _directory: directory,
             inner,
         }),
+        awaken_lease_contract::system_clock(),
     )
 }
 
@@ -498,6 +503,7 @@ async fn filesystem_ledger_fences_replay_but_never_persists_tool_output() {
     let mut first = HandSession::new(
         [tool()],
         Arc::new(FsOperationLedger::open(directory.path()).expect("open first ledger")),
+        awaken_lease_contract::system_clock(),
     );
     let secret = "credential-secret-must-not-reach-disk"; // awaken-allow: secret
     let request = HandRequest::new(1, call("c1", "echo", secret));
@@ -519,6 +525,7 @@ async fn filesystem_ledger_fences_replay_but_never_persists_tool_output() {
     let mut restarted = HandSession::new(
         [tool()],
         Arc::new(FsOperationLedger::open(directory.path()).expect("reopen ledger")),
+        awaken_lease_contract::system_clock(),
     );
     let mut retry = request;
     retry.correlation_id = 99;
@@ -706,14 +713,18 @@ async fn an_in_flight_join_deadline_returns_indeterminate_without_replay() {
         release: release.clone(),
     }) as Arc<dyn RawTool>;
     let request = HandRequest::new(1, call("deadline", "blocking_echo", "x"));
-    let mut owner = HandSession::new([tool.clone()], ledger.clone());
+    let mut owner = HandSession::new(
+        [tool.clone()],
+        ledger.clone(),
+        awaken_lease_contract::system_clock(),
+    );
     let owner_request = request.clone();
     let owner_task = tokio::spawn(async move { owner.handle(owner_request).await });
     tokio::time::timeout(std::time::Duration::from_secs(30), started.notified())
         .await
         .expect("timed out waiting for started.notified()");
 
-    let mut waiter = HandSession::new([tool], ledger)
+    let mut waiter = HandSession::new([tool], ledger, awaken_lease_contract::system_clock())
         .with_in_flight_wait_timeout(std::time::Duration::from_millis(10));
     let reply = waiter.handle(request).await;
     assert_eq!(reply.result, HandResult::Indeterminate, "H8/E1");
@@ -842,30 +853,35 @@ async fn catalog_fingerprint_mismatch_fails_closed() {
 
 #[tokio::test]
 async fn an_expired_request_does_not_claim_its_operation_identity() {
+    // Cause/effect table: clock t=1000 x deadline {999,1000,1001}.
+    // R1/R2 before-or-at expiry -> DeadlineExceeded, no tool effect and no
+    // operation ledger claim; R3 future expiry -> exactly one tool effect.
+    // Reusing one operation identity proves rejected rows did not reserve it.
     let runs = Arc::new(AtomicU32::new(0));
-    let mut session = test_session([Arc::new(CountingEcho {
-        id: "echo".into(),
-        runs: runs.clone(),
-    }) as Arc<dyn RawTool>]);
-    let mut expired = HandRequest::new(1, call("deadline-call", "echo", "x"));
-    expired.deadline_unix_ms = Some(0);
-    let operation_id = expired.operation_id.clone();
-
+    let mut session = HandSession::new(
+        [Arc::new(CountingEcho {
+            id: "echo".into(),
+            runs: runs.clone(),
+        }) as Arc<dyn RawTool>],
+        Arc::new(awaken_tool_relay::InMemoryOperationLedger::default()),
+        Arc::new(awaken_lease_testkit::ManualClock::new(1_000)),
+    );
+    let mut request = HandRequest::new(1, call("deadline-call", "echo", "x"));
+    for deadline in [999, 1_000] {
+        request.deadline_unix_ms = Some(deadline);
+        assert!(matches!(session.handle(request.clone()).await.result,
+            HandResult::Err { error } if error.kind == HandErrorKind::DeadlineExceeded));
+        assert_eq!(runs.load(Ordering::SeqCst), 0, "R1/R2 no effect");
+    }
+    request.deadline_unix_ms = Some(1_001);
     assert!(matches!(
-        session.handle(expired).await.result,
-        HandResult::Err { error } if error.kind == HandErrorKind::DeadlineExceeded
-    ));
-
-    let mut retry = HandRequest::new(2, call("deadline-call", "echo", "x"));
-    retry.operation_id = operation_id;
-    assert!(matches!(
-        session.handle(retry).await.result,
+        session.handle(request).await.result,
         HandResult::Ok { .. }
     ));
     assert_eq!(
         runs.load(Ordering::SeqCst),
         1,
-        "the expired envelope never entered the operation ledger"
+        "R3 expired envelopes never claimed the ledger"
     );
 }
 

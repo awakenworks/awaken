@@ -105,7 +105,10 @@ fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
 async fn memory_store_mount_realizes_and_persists_an_edit() {
     let fs = Arc::new(VolatileMemoryRepository::new());
     fs.create("s", "/note.md", "v1").await.unwrap();
-    let mounter = Arc::new(MemoryStoreMounter::new(fs.clone()));
+    let mounter = Arc::new(MemoryStoreMounter::new(
+        fs.clone(),
+        awaken_lease_contract::system_clock(),
+    ));
 
     let tmp = tempfile::tempdir().unwrap();
     let provider = LocalProvider::new(tmp.path()).with_memory_mounter(mounter);

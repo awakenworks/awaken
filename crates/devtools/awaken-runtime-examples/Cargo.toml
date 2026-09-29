@@ -62,7 +62,9 @@ awaken-agent-channel = { workspace = true }
 # `remote_hand_sandbox_e2e` composes the remote hand with a real OS sandbox: the
 # hand's tool executes inside a provisioned sandbox (ADR-0044 hand × ADR-0041 sandbox).
 awaken-sandbox-local = { workspace = true }
-awaken-provisioning-contract = { workspace = true }
+# The scoped Hand fixture belongs to the existing dev-only support module;
+# package-local tests must not borrow its activation from a workspace union.
+awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
 
 [[example]]
 name = "coding_agent"

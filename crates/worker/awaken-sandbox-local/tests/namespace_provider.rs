@@ -1124,8 +1124,9 @@ async fn bwrap_splices_a_live_fuse_memory_mount_into_the_namespace() {
     let tmp = tempfile::tempdir().unwrap();
     // The FUSE-preferring mounter (not `copy_only`): it FUSE-mounts the store at the
     // host path the provider then binds into the namespace.
-    let provider = NamespaceProvider::new(tmp.path())
-        .with_memory_mounter(Arc::new(MemoryStoreMounter::new(fs.clone())));
+    let provider = NamespaceProvider::new(tmp.path()).with_memory_mounter(Arc::new(
+        MemoryStoreMounter::new(fs.clone(), awaken_lease_contract::system_clock()),
+    ));
 
     let mut spec = spec("t-mem-fuse");
     spec.mounts.push(pc::MountRequirement {

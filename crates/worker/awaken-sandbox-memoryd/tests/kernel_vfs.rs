@@ -63,8 +63,13 @@ fn kernel_reads_writes_renames_and_persists_across_remount() {
     rt.block_on(backend.create(store, "/notes/a.md", "note-a"))
         .unwrap();
 
-    let mut handle = spawn_mount(backend.clone(), store.into(), mnt.clone())
-        .expect("FUSE mount must succeed on a FUSE-capable host");
+    let mut handle = spawn_mount(
+        backend.clone(),
+        store.into(),
+        mnt.clone(),
+        &*awaken_lease_contract::system_clock(),
+    )
+    .expect("FUSE mount must succeed on a FUSE-capable host");
     // Give the mount a beat to settle before issuing syscalls.
     std::thread::sleep(Duration::from_millis(100));
 
@@ -115,7 +120,13 @@ fn kernel_reads_writes_renames_and_persists_across_remount() {
     // A fresh handle over the same durable store re-exposes the writes — they were
     // in the store of record, not a first-mount cache artifact.
     let backend2 = Arc::new(SqliteMemoryRepository::open(store_db.to_str().unwrap()).unwrap());
-    let mut handle2 = spawn_mount(backend2, store.into(), mnt.clone()).expect("remount");
+    let mut handle2 = spawn_mount(
+        backend2,
+        store.into(),
+        mnt.clone(),
+        &*awaken_lease_contract::system_clock(),
+    )
+    .expect("remount");
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(
         std::fs::read_to_string(mnt.join("renamed.md")).unwrap(),
@@ -146,7 +157,7 @@ fn independent_mounter_projections_invalidate_peer_caches_and_teardown_independe
 
     let backend = Arc::new(SqliteMemoryRepository::open(store_db.to_str().unwrap()).unwrap());
     rt.block_on(backend.create(store, "/x.md", "one")).unwrap();
-    let mounter = MemoryStoreMounter::new(backend.clone());
+    let mounter = MemoryStoreMounter::new(backend.clone(), awaken_lease_contract::system_clock());
 
     // Cause/effect design (ADR-0053 D5): C1=same store, C2=two distinct sandbox
     // paths, C3=peer cache warmed, C4=write through A, C5=A torn down first.
@@ -214,9 +225,14 @@ fn kernel_exercises_metadata_truncate_offsets_dirs_and_errors() {
     rt.block_on(backend.create(store, "/f.md", "0123456789"))
         .unwrap();
 
-    let mut handle = spawn_mount(backend.clone(), store.into(), mnt.clone())
-        .expect("mount")
-        .with_drain_timeout(Duration::from_secs(2));
+    let mut handle = spawn_mount(
+        backend.clone(),
+        store.into(),
+        mnt.clone(),
+        &*awaken_lease_contract::system_clock(),
+    )
+    .expect("mount")
+    .with_drain_timeout(Duration::from_secs(2));
     assert_eq!(handle.open_fd_count(), 0, "no fds open before any syscall");
     std::thread::sleep(Duration::from_millis(100));
 

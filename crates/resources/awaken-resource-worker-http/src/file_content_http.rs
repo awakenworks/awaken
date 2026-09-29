@@ -24,7 +24,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::worker_authority::{
-    SessionWorkerEffectTemporalRule, unix_now_ms, verify_session_worker_effect,
+    SessionWorkerEffectTemporalRule, clock_ms, verify_session_worker_effect,
 };
 
 const FILE_CONTENT_PATH: &str = "/v1/worker/resources/files/content";
@@ -59,6 +59,8 @@ pub struct WorkerFileContentService {
     recovery: Option<Arc<dyn RunRecoverySource>>,
     materialization_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionResourceMaterializationControl>>,
+    /// The Coordinator's wall clock: the instant claims and leases are judged at.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl WorkerFileContentService {
@@ -67,6 +69,7 @@ impl WorkerFileContentService {
         source: Arc<dyn FileContentSource<ResourceOperationFence>>,
         dispatch: Arc<dyn DispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self {
             source,
@@ -76,6 +79,7 @@ impl WorkerFileContentService {
             session_repository: None,
             recovery: None,
             materialization_control: None,
+            clock,
         }
     }
 
@@ -238,7 +242,7 @@ async fn read_file_content(
     if request.workspace_id.trim().is_empty() || request.file_id.trim().is_empty() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let now_ms = unix_now_ms();
+    let now_ms = clock_ms(service.clock.as_ref());
     let mut run_guard = None;
     match &request.authority {
         ResourceOperationFence::Run(claim) => {

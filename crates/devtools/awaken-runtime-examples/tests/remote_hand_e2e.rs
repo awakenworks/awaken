@@ -121,9 +121,10 @@ async fn local_remote_and_lost_reply_uncertainty_share_one_runtime_terminal_path
             let effects = effects.clone();
             hand = Some(tokio::spawn(async move {
                 if transport == 1 {
-                    let session = HandSession::in_memory([
-                        Arc::new(UnknownEffect(effects)) as Arc<dyn RawTool>
-                    ]);
+                    let session = HandSession::in_memory(
+                        [Arc::new(UnknownEffect(effects)) as Arc<dyn RawTool>],
+                        awaken_lease_contract::system_clock(),
+                    );
                     serve_hand(hand_end, session).await.unwrap();
                 } else {
                     use tokio::io::AsyncReadExt;
@@ -241,8 +242,10 @@ async fn brain_runs_its_tool_on_an_in_process_hand() {
     // executor must invoke the remote Hand exactly once; the Brain trap must
     // remain untouched. A Brain-targeted tool intentionally stays local.
     let ran = Arc::new(AtomicUsize::new(0));
-    let session =
-        HandSession::in_memory([Arc::new(HandEcho { ran: ran.clone() }) as Arc<dyn RawTool>]);
+    let session = HandSession::in_memory(
+        [Arc::new(HandEcho { ran: ran.clone() }) as Arc<dyn RawTool>],
+        awaken_lease_contract::system_clock(),
+    );
 
     // The degenerate topology: an in-memory pair. Hand served on a task.
     let (brain_end, hand_end) = awaken_connection_plan::in_process_pair();
@@ -291,8 +294,10 @@ async fn brain_runs_its_tool_on_a_unix_socket_hand() {
     let hand_ran = ran.clone();
     let hand = tokio::spawn(async move {
         let channel = listener.accept().await.expect("accept");
-        let session =
-            HandSession::in_memory([Arc::new(HandEcho { ran: hand_ran }) as Arc<dyn RawTool>]);
+        let session = HandSession::in_memory(
+            [Arc::new(HandEcho { ran: hand_ran }) as Arc<dyn RawTool>],
+            awaken_lease_contract::system_clock(),
+        );
         let _ = serve_hand(channel, session).await;
     });
 

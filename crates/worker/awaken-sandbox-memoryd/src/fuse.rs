@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use awaken_lease_contract::WallClock;
+
 use awaken_resource_contract::{MemErr, Memory, MemoryGeneration, MemoryRepository};
 use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyCreate,
@@ -37,13 +39,6 @@ const CONTENT_CACHE_CAPACITY: usize = 256;
 const CONTENT_CACHE_TTL: Duration = Duration::from_secs(1);
 const MAX_DIRTY_OPEN_FILES: usize = 128;
 const DEFAULT_UNMOUNT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
-
-fn now_nanos() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-}
 
 fn to_systime(nanos: u128) -> SystemTime {
     UNIX_EPOCH + Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
@@ -231,8 +226,9 @@ pub fn spawn_mount(
     fs: Arc<dyn MemoryRepository>,
     store_id: String,
     mountpoint: PathBuf,
+    clock: &dyn WallClock,
 ) -> Result<MemoryMountHandle, FuseError> {
-    spawn_mount_inner(fs, store_id, mountpoint, None)
+    spawn_mount_inner(fs, store_id, mountpoint, None, clock)
 }
 
 /// Like [`spawn_mount`], but the mount also drains `invalidations` and drops stale
@@ -244,8 +240,9 @@ pub fn spawn_mount_with_invalidations(
     store_id: String,
     mountpoint: PathBuf,
     invalidations: broadcast::Receiver<Invalidation>,
+    clock: &dyn WallClock,
 ) -> Result<MemoryMountHandle, FuseError> {
-    spawn_mount_inner(fs, store_id, mountpoint, Some(invalidations))
+    spawn_mount_inner(fs, store_id, mountpoint, Some(invalidations), clock)
 }
 
 fn spawn_mount_inner(
@@ -253,9 +250,10 @@ fn spawn_mount_inner(
     store_id: String,
     mountpoint: PathBuf,
     invalidations: Option<broadcast::Receiver<Invalidation>>,
+    clock: &dyn WallClock,
 ) -> Result<MemoryMountHandle, FuseError> {
     let state = Arc::new(MountState::default());
-    let fuse = MemoryFuse::new_with_state(fs, store_id.clone(), state.clone())?;
+    let fuse = MemoryFuse::new_with_state(fs, store_id.clone(), state.clone(), clock)?;
     // Capture a cache handle before `fuse` is moved into the kernel session.
     let listener = invalidations.map(|rx| {
         let cache = fuse.cache_handle();
@@ -403,17 +401,24 @@ impl ContentLruCache {
 }
 
 impl MemoryFuse {
-    /// Build a filesystem over `fs` for one `store_id` (no mount yet).
-    pub fn new(fs: Arc<dyn MemoryRepository>, store_id: String) -> Result<Self, FuseError> {
-        Self::new_with_state(fs, store_id, Arc::new(MountState::default()))
+    /// Build a filesystem over `fs` for one `store_id` (no mount yet). `clock`
+    /// stamps the mount instant: the synthetic root's times and the fallback
+    /// for an entry whose store row records none.
+    pub fn new(
+        fs: Arc<dyn MemoryRepository>,
+        store_id: String,
+        clock: &dyn WallClock,
+    ) -> Result<Self, FuseError> {
+        Self::new_with_state(fs, store_id, Arc::new(MountState::default()), clock)
     }
 
     fn new_with_state(
         fs: Arc<dyn MemoryRepository>,
         store_id: String,
         mount_state: Arc<MountState>,
+        clock: &dyn WallClock,
     ) -> Result<Self, FuseError> {
-        let mount_time = now_nanos();
+        let mount_time = clock.now().duration_since_epoch().as_nanos();
         let mut table = InodeTable {
             next: ROOT_INO + 1,
             next_fh: 1,

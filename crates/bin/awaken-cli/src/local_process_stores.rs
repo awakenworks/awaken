@@ -18,7 +18,7 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
     );
     let data_subjects = Arc::new(awaken_data_subject_store::InMemoryDataSubjectRepo::new());
     let captured_content =
-        Arc::new(awaken_captured_content_store::InMemoryCapturedContentStore::new());
+        Arc::new(awaken_captured_content_store::InMemoryCapturedContentStore::new(clock.clone()));
     ProcessStores {
         workspace_root: None,
         platform_workspace: SharedHost::mint_local_workspace(),

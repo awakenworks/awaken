@@ -34,6 +34,7 @@ fuser = { version = "0.16", default-features = false, optional = true }
 libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
+awaken-lease-testkit.workspace = true
 tempfile = "3"
 rusqlite = { workspace = true, features = ["functions"] }
 awaken-memory-store = { workspace = true, features = ["sqlite", "test-support"] }

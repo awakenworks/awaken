@@ -32,7 +32,7 @@ use awaken_worker_transport_security::{
 };
 
 use crate::worker_authority::{
-    SessionWorkerEffectTemporalRule, unix_now_ms, verify_session_worker_effect,
+    SessionWorkerEffectTemporalRule, clock_ms, verify_session_worker_effect,
 };
 
 const SKILL_BUNDLE_PATH: &str = "/v1/worker/resources/skills/bundle";
@@ -62,6 +62,8 @@ pub struct WorkerSkillBundleService {
     directory: Option<Arc<dyn WorkerDirectory>>,
     materialization_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionResourceMaterializationControl>>,
+    /// The Coordinator's wall clock: the instant claims and leases are judged at.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl WorkerSkillBundleService {
@@ -70,6 +72,7 @@ impl WorkerSkillBundleService {
         source: Arc<dyn SkillBundleSource<RunClaim>>,
         dispatch: Arc<dyn DispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self {
             source,
@@ -77,6 +80,7 @@ impl WorkerSkillBundleService {
             authenticator,
             directory: None,
             materialization_control: None,
+            clock,
         }
     }
 
@@ -119,7 +123,7 @@ async fn read_skill_bundle(
     if request.workspace_id.trim().is_empty() || request.binding.kind != AgentSkillKind::Custom {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let now_ms = unix_now_ms();
+    let now_ms = clock_ms(service.clock.as_ref());
     let mut run_guard = None;
     match &request.authority {
         ResourceOperationFence::Run(claim) => {

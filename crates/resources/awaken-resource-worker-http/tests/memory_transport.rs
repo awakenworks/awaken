@@ -205,6 +205,7 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
             ),
             dispatch.clone(),
             Arc::new(HeaderWorkerAuthenticator),
+            awaken_lease_contract::system_clock(),
         )
         .with_worker_directory(directory.clone())
         .with_session_control(control(file_intent.clone()));
@@ -214,6 +215,7 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
             )),
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
+            awaken_lease_contract::system_clock(),
         )
         .with_worker_directory(directory.clone())
         .with_session_control(control(skill_intent.clone()));
@@ -377,6 +379,7 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
         dispatch.clone(),
         Arc::new(HeaderWorkerAuthenticator),
         directory,
+        awaken_lease_contract::system_clock(),
     ));
     let address = support::serve(worker_memory_router(service)).await;
     let client = Arc::new(HttpMemoryRepository::new(
@@ -625,6 +628,7 @@ async fn realization_memory_is_read_only_and_fenced_by_worker_and_session_root()
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
             directory,
+            awaken_lease_contract::system_clock(),
         )
         .with_materialization_control(Arc::new(ExactResourceControl {
             workspace_id: "workspace-memory".into(),
@@ -840,6 +844,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
             dispatch.clone(),
             Arc::new(HeaderWorkerAuthenticator),
             directory.clone(),
+            awaken_lease_contract::system_clock(),
         )
         .with_terminal_memory_control(Arc::new(ExactTerminalMemoryControl {
             workspace_id: "workspace-memory".into(),
@@ -1075,6 +1080,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
             dispatch.clone(),
             Arc::new(HeaderWorkerAuthenticator),
             directory.clone(),
+            awaken_lease_contract::system_clock(),
         )
         .with_terminal_memory_control(Arc::new(ExactTerminalMemoryControl {
             workspace_id: "workspace-memory".into(),
@@ -1112,6 +1118,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
             dispatch.clone(),
             Arc::new(HeaderWorkerAuthenticator),
             directory.clone(),
+            awaken_lease_contract::system_clock(),
         )
         .with_terminal_memory_control(Arc::new(ExactTerminalMemoryControl {
             workspace_id: "workspace-memory".into(),
@@ -1156,6 +1163,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
             dispatch.clone(),
             Arc::new(HeaderWorkerAuthenticator),
             directory.clone(),
+            awaken_lease_contract::system_clock(),
         )
         .with_terminal_memory_control(Arc::new(ExactTerminalMemoryControl {
             workspace_id: "workspace-memory".into(),
@@ -1232,6 +1240,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         dispatch,
         Arc::new(HeaderWorkerAuthenticator),
         directory,
+        awaken_lease_contract::system_clock(),
     ));
     let no_control_address = support::serve(worker_memory_router(no_control)).await;
     let no_control_client = HttpMemoryRepository::new(

@@ -578,7 +578,11 @@ async fn standalone_control_rejects_missing_environment_registration_wiring() {
 
 #[cfg(test)]
 fn test_coordinator_content_eraser() -> Arc<dyn awaken_runtime_contract::ContentEraser> {
-    Arc::new(awaken_captured_content_store::InMemoryCapturedContentStore::new())
+    Arc::new(
+        awaken_captured_content_store::InMemoryCapturedContentStore::new(
+            awaken_lease_contract::system_clock(),
+        ),
+    )
 }
 
 #[cfg(not(test))]

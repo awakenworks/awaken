@@ -36,7 +36,10 @@ fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
 async fn full_lifecycle_harvests_memory_collects_outputs_then_shreds_and_reaps() {
     let fs = Arc::new(VolatileMemoryRepository::new());
     fs.create("mem", "/notes.md", "seed").await.unwrap();
-    let mounter = Arc::new(MemoryStoreMounter::new(fs.clone()));
+    let mounter = Arc::new(MemoryStoreMounter::new(
+        fs.clone(),
+        awaken_lease_contract::system_clock(),
+    ));
 
     let tmp = tempfile::tempdir().unwrap();
     let provider = LocalProvider::new(tmp.path())
