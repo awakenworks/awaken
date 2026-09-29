@@ -260,6 +260,14 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_managed_wire_naming.py --self-test && python3 scripts/ci/check_managed_wire_naming.py
 
+    # A declared budget checker must use its existing decision-table self-test;
+    # leaving it unwired makes the generated hook ownership check fail.
+    formal-budget:
+      # >>> generated glob from formal_budget.py INPUT_GLOBS — do not edit
+      glob: "scripts/ci/formal_budget.py"
+      # <<< generated glob
+      run: python3 scripts/ci/formal_budget.py --self-test
+
     # Generated wire artifacts are derived from the admin-config and Managed
     # DTOs; a DTO edit without regeneration is refused here, not at release.
     generated-contracts:
