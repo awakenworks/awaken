@@ -10,7 +10,7 @@
 //! it returns serializable data only. The brain commits the result.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use awaken_agent_channel::AgentChannel;
 use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolError, ToolExecutor};
@@ -29,6 +29,9 @@ pub struct HandSession {
     catalog_fingerprint: Option<String>,
     ledger: Arc<dyn HandOperationLedger>,
     in_flight_wait_timeout: Duration,
+    /// The Hand process's wall clock: the instant a request's absolute
+    /// deadline is judged at.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 const DEFAULT_IN_FLIGHT_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -38,6 +41,7 @@ impl HandSession {
     pub fn new(
         tools: impl IntoIterator<Item = Arc<dyn RawTool>>,
         ledger: Arc<dyn HandOperationLedger>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         let registry = RawToolRegistry::new(tools);
         Self {
@@ -45,14 +49,22 @@ impl HandSession {
             catalog_fingerprint: None,
             ledger,
             in_flight_wait_timeout: DEFAULT_IN_FLIGHT_WAIT_TIMEOUT,
+            clock,
         }
     }
 
     /// Process-local constructor available only to tests and explicit test-support
     /// consumers. Production composition must select a durable ledger.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn in_memory(tools: impl IntoIterator<Item = Arc<dyn RawTool>>) -> Self {
-        Self::new(tools, Arc::new(crate::InMemoryOperationLedger::default()))
+    pub fn in_memory(
+        tools: impl IntoIterator<Item = Arc<dyn RawTool>>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Self {
+        Self::new(
+            tools,
+            Arc::new(crate::InMemoryOperationLedger::default()),
+            clock,
+        )
     }
 
     /// Fail closed on any request whose fingerprint does not match `fingerprint`.
@@ -98,12 +110,9 @@ impl HandSession {
                 let wait = request
                     .deadline_unix_ms
                     .map(|deadline| {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis();
-                        let remaining = u128::from(deadline).saturating_sub(now);
-                        Duration::from_millis(u64::try_from(remaining).unwrap_or(u64::MAX))
+                        awaken_lease_contract::Expiry::from_epoch_ms(deadline)
+                            .remaining_at(self.clock.now())
+                            .unwrap_or(Duration::ZERO)
                             .min(self.in_flight_wait_timeout)
                     })
                     .unwrap_or(self.in_flight_wait_timeout);
@@ -170,17 +179,14 @@ impl HandSession {
                 format!("catalog fingerprint mismatch: hand={expected} run={got}"),
             )));
         }
-        if let Some(deadline) = request.deadline_unix_ms {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis();
-            if now >= u128::from(deadline) {
-                return Some(HandResult::err(HandError::new(
-                    HandErrorKind::DeadlineExceeded,
-                    format!("hand request deadline {deadline} has expired"),
-                )));
-            }
+        if let Some(deadline) = request.deadline_unix_ms
+            && awaken_lease_contract::Expiry::from_epoch_ms(deadline)
+                .is_expired_at(self.clock.now())
+        {
+            return Some(HandResult::err(HandError::new(
+                HandErrorKind::DeadlineExceeded,
+                format!("hand request deadline {deadline} has expired"),
+            )));
         }
         None
     }

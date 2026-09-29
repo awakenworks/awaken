@@ -9,7 +9,9 @@
 //! capability lifetime or create a second cache inside the workload.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+
+use awaken_lease_contract::{Expiry, WallClock};
 
 use awaken_sandbox_control::{
     CapabilityExpiresAtUnixMs, RepositoryGitCredentialQuery, SandboxControlRequest,
@@ -119,22 +121,19 @@ fn set_authority_field(target: &mut Option<String>, value: &str) -> Result<(), G
     Ok(())
 }
 
-fn unix_now_ms() -> Result<u64, GitCredentialError> {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| GitCredentialError::Unavailable)?
-        .as_millis();
-    u64::try_from(millis).map_err(|_| GitCredentialError::Unavailable)
-}
-
-async fn get<R, W>(socket: &Path, input: &mut R, output: &mut W) -> Result<(), GitCredentialError>
+async fn get<R, W>(
+    socket: &Path,
+    input: &mut R,
+    output: &mut W,
+    clock: &dyn WallClock,
+) -> Result<(), GitCredentialError>
 where
     R: AsyncRead + Unpin + ?Sized,
     W: AsyncWrite + Unpin + ?Sized,
 {
     let bytes = read_credential_input(input).await?;
     let query = parse_query(&bytes)?;
-    get_for_query(socket, query, output).await
+    get_for_query(socket, query, output, clock).await
 }
 
 #[cfg(unix)]
@@ -142,6 +141,7 @@ async fn get_for_query<W>(
     socket: &Path,
     query: RepositoryGitCredentialQuery,
     output: &mut W,
+    clock: &dyn WallClock,
 ) -> Result<(), GitCredentialError>
 where
     W: AsyncWrite + Unpin + ?Sized,
@@ -176,13 +176,10 @@ where
             // Sample liveness only after the authority response has been fully
             // decoded and the output is ready. Bound the write by the remaining
             // capability lifetime so a blocked stdout cannot emit stale material.
-            let now_unix_ms = unix_now_ms()?;
-            let remaining_ms = expires_at_unix_ms
-                .checked_sub(now_unix_ms)
-                .filter(|remaining| *remaining > 0)
+            let remaining = Expiry::from_epoch_ms(expires_at_unix_ms)
+                .remaining_at(clock.now())
                 .ok_or(GitCredentialError::Unavailable)?;
-            let output_deadline =
-                Duration::from_millis(remaining_ms).min(GIT_CREDENTIAL_OPERATION_TIMEOUT);
+            let output_deadline = remaining.min(GIT_CREDENTIAL_OPERATION_TIMEOUT);
             tokio::time::timeout(output_deadline, async {
                 output.write_all(&rendered).await?;
                 output.flush().await
@@ -201,6 +198,7 @@ async fn get_for_query<W>(
     _socket: &Path,
     _query: RepositoryGitCredentialQuery,
     _output: &mut W,
+    _clock: &dyn WallClock,
 ) -> Result<(), GitCredentialError>
 where
     W: AsyncWrite + Unpin + ?Sized,
@@ -251,6 +249,7 @@ async fn run_operation<R, W>(
     operation: Operation,
     input: &mut R,
     output: &mut W,
+    clock: &dyn WallClock,
 ) -> Result<(), GitCredentialError>
 where
     R: AsyncRead + Unpin + ?Sized,
@@ -258,20 +257,22 @@ where
 {
     match operation {
         Operation::Store | Operation::Erase => consume_input(input).await,
-        Operation::Get => get(socket, input, output).await,
+        Operation::Get => get(socket, input, output, clock).await,
         Operation::Ignore => Ok(()),
     }
 }
 
-async fn run_inner(args: &[String]) -> Result<(), GitCredentialError> {
+async fn run_inner(args: &[String], clock: &dyn WallClock) -> Result<(), GitCredentialError> {
     let (socket, operation) = parse_args(args)?;
     let mut input = tokio::io::stdin();
     let mut output = tokio::io::stdout();
-    run_operation(&socket, operation, &mut input, &mut output).await
+    run_operation(&socket, operation, &mut input, &mut output, clock).await
 }
 
-pub async fn run(args: &[String]) -> Result<(), GitCredentialError> {
-    tokio::time::timeout(GIT_CREDENTIAL_OPERATION_TIMEOUT, run_inner(args))
+/// Run one Git credential-helper operation. `clock` is the Sandbox process's
+/// wall clock: the instant a returned capability's expiry is judged at.
+pub async fn run(args: &[String], clock: &dyn WallClock) -> Result<(), GitCredentialError> {
+    tokio::time::timeout(GIT_CREDENTIAL_OPERATION_TIMEOUT, run_inner(args, clock))
         .await
         .map_err(|_| GitCredentialError::Unavailable)?
 }
@@ -378,6 +379,7 @@ mod tests {
                     operation,
                     &mut reader,
                     &mut output,
+                    &*awaken_lease_contract::system_clock(),
                 ),
             )
             .await
@@ -432,7 +434,10 @@ mod tests {
          * R4 C1+C2=>E1; R6 C3=>E2; R10 C4=>E3; R12 C5=>E3.
          */
         let input = b"protocol=https\r\nhost=gateway.test\r\npath=git/repo\r\nusername=old\r\npassword=old\r\nwwwauth[]=Bearer realm=test\r\ncapability[]=authtype\r\nauthtype=Bearer\r\ncredential=old\r\nstate[]=retry\r\n\r\n";
-        let live_expiry = unix_now_ms().unwrap() + 10_000;
+        // R12 uses t=1000 from the injected clock, before/at/after expiry,
+        // proving the helper never substitutes the process wall clock.
+        let clock = awaken_lease_testkit::ManualClock::new(1_000);
+        let live_expiry = 11_000;
         let (directory, socket, server) =
             response_socket(SandboxControlResponse::RepositoryGitCredential {
                 username: awaken_sandbox_control::SandboxControlSecret::new("git-user").unwrap(),
@@ -443,7 +448,7 @@ mod tests {
             .await;
         let mut source = input.as_slice();
         let mut output = Vec::new();
-        run_operation(&socket, Operation::Get, &mut source, &mut output)
+        run_operation(&socket, Operation::Get, &mut source, &mut output, &clock)
             .await
             .expect("live credential");
         assert_eq!(
@@ -465,9 +470,16 @@ mod tests {
                     username: awaken_sandbox_control::SandboxControlSecret::new("git-user")
                         .unwrap(),
                     password: awaken_sandbox_control::SandboxControlSecret::new("expired").unwrap(),
-                    expires_at_unix_ms: CapabilityExpiresAtUnixMs(
-                        unix_now_ms().unwrap().saturating_sub(1),
-                    ),
+                    expires_at_unix_ms: CapabilityExpiresAtUnixMs(1_000),
+                },
+                GitCredentialError::Unavailable,
+            ),
+            (
+                SandboxControlResponse::RepositoryGitCredential {
+                    username: awaken_sandbox_control::SandboxControlSecret::new("git-user")
+                        .unwrap(),
+                    password: awaken_sandbox_control::SandboxControlSecret::new("expired").unwrap(),
+                    expires_at_unix_ms: CapabilityExpiresAtUnixMs(999),
                 },
                 GitCredentialError::Unavailable,
             ),
@@ -476,7 +488,7 @@ mod tests {
             let mut source = input.as_slice();
             let mut output = Vec::new();
             assert_eq!(
-                run_operation(&socket, Operation::Get, &mut source, &mut output)
+                run_operation(&socket, Operation::Get, &mut source, &mut output, &clock)
                     .await
                     .unwrap_err(),
                 expected,
@@ -502,6 +514,7 @@ mod tests {
                 operation,
                 &mut source,
                 &mut output,
+                &*awaken_lease_contract::system_clock(),
             )
             .await
             .expect("stateless no-op");
@@ -517,6 +530,7 @@ mod tests {
                 Operation::Store,
                 &mut reader,
                 &mut output,
+                &*awaken_lease_contract::system_clock(),
             ),
         )
         .await;

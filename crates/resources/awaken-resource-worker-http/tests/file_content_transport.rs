@@ -284,6 +284,8 @@ fn frozen_application_session(
 /// | F9 | valid | yes | yes | record references absent blob | surface unavailable; no partial bytes |
 #[tokio::test]
 async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
+    let clock_start = support::unix_now_ms();
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(clock_start));
     let store = Arc::new(awaken_file_store::InMemoryFileStore::new());
     let digest = store.put(b"exact-file").await.unwrap();
     store
@@ -306,16 +308,14 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
         .await
         .unwrap();
     let (directory, identity) = support::ready_worker("worker-file").await;
-    let dispatch = Arc::new(MemoryDispatchStore::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let dispatch = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let claim = claimed_dispatch(&dispatch, "file-public", &identity.lease_owner()).await;
     let lifecycle = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
     let application = Arc::new(awaken_resource_application::FileApplication::new(
         store.clone(),
         store.clone(),
         lifecycle,
-        awaken_lease_contract::system_clock(),
+        clock.clone(),
     ));
     let source = Arc::new(ApplicationFileContentSource::new(application));
     let service = Arc::new(
@@ -323,6 +323,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
             source,
             dispatch.clone(),
             Arc::new(HeaderWorkerAuthenticator),
+            clock.clone(),
         )
         .with_worker_directory(directory),
     );
@@ -398,6 +399,23 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
         .await
         .expect_err("F6 stale incarnation must be denied");
     assert!(stale_identity.to_string().contains("403"), "F6");
+
+    // F10 cause/effect row: the service's injected clock reaches the exact
+    // 60s claim expiry while the Worker identity remains current -> 409 and
+    // no immutable bytes. Resetting the clock keeps later independent rows
+    // on their original lease; an ambient read would wrongly return bytes.
+    clock.set(clock_start + 60_000);
+    let at_expiry = source
+        .read(
+            "workspace-file",
+            "file-public",
+            &FileReadPurpose::SessionResource,
+            Some(&ResourceOperationFence::Run(claim.clone())),
+        )
+        .await
+        .expect_err("F10 injected exact expiry must reject");
+    assert!(at_expiry.to_string().contains("409"), "F10: {at_expiry}");
+    clock.set(clock_start);
 
     dispatch
         .settle(
@@ -601,6 +619,7 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
             Arc::new(ApplicationFileContentSource::new(application)),
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
+            awaken_lease_contract::system_clock(),
         )
         .with_worker_directory(directory)
         .with_session_repository(sessions),
@@ -692,6 +711,7 @@ async fn model_content_file_requires_its_claimed_thread_and_strong_input_referen
             Arc::new(ApplicationFileContentSource::new(application)),
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
+            awaken_lease_contract::system_clock(),
         )
         .with_worker_directory(directory),
     );
@@ -831,6 +851,7 @@ async fn model_content_recovery_uses_parent_partition_for_a_child_thread() {
             Arc::new(ApplicationFileContentSource::new(application)),
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
+            awaken_lease_contract::system_clock(),
         )
         .with_worker_directory(directory)
         .with_recovery(recovery.clone()),

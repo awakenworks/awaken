@@ -8,8 +8,8 @@
 //! [`ContentEraser`] (erase) over the Coordinator-owned
 //! `coordinator_data_capture` migration scope.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use awaken_runtime_contract::{
@@ -33,40 +33,42 @@ fn open_migrated(conn: Connection) -> Result<SharedSqliteConnection, StoreError>
     Ok(SharedSqliteConnection::new(conn))
 }
 
-fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 /// A SQLite-backed captured-content store.
 pub struct SqliteCapturedContentStore {
     conn: SharedSqliteConnection,
     seq: AtomicU64,
+    /// The wall clock capture records and erasure fences are stamped with.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl SqliteCapturedContentStore {
     /// Open (or create) a database file and apply the migrations.
-    pub fn open(path: &str) -> Result<Self, StoreError> {
+    pub fn open(
+        path: &str,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Result<Self, StoreError> {
         let conn = SqliteConnectionFactory::file(path)
             .open()
             .map_err(|e| StoreError::Open(e.to_string()))?;
         Ok(Self {
             conn: open_migrated(conn)?,
             seq: AtomicU64::new(0),
+            clock,
         })
     }
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory() -> Result<Self, StoreError> {
+    pub fn open_in_memory(
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Result<Self, StoreError> {
         let conn = SqliteConnectionFactory::memory()
             .open()
             .map_err(|e| StoreError::Open(e.to_string()))?;
         Ok(Self {
             conn: open_migrated(conn)?,
             seq: AtomicU64::new(0),
+            clock,
         })
     }
 
@@ -200,9 +202,9 @@ impl CaptureSink for SqliteCapturedContentStore {
         let sequence = self.seq.fetch_add(1, Ordering::SeqCst);
         let subject = subject.clone();
         let content = content.to_string();
+        let now = self.clock.now().as_epoch_ms_i64();
         awaken_sqlite_pool::with_connection(self.conn.clone(), move |conn| {
-            Self::try_insert_on(conn, sequence, &subject, purpose, &content, now_millis())
-                .map(|_| ())
+            Self::try_insert_on(conn, sequence, &subject, purpose, &content, now).map(|_| ())
         })
         .await
         .map_err(|error| CaptureError::Store(error.to_string()))?
@@ -216,6 +218,7 @@ impl ContentEraser for SqliteCapturedContentStore {
         subject: &DataSubjectId,
     ) -> Result<usize, awaken_runtime_contract::ErasureError> {
         let subject = subject.clone();
+        let erased_at = self.clock.now().as_epoch_ms_i64();
         awaken_sqlite_pool::with_connection(self.conn.clone(), move |conn| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -245,7 +248,7 @@ impl ContentEraser for SqliteCapturedContentStore {
                 "INSERT INTO {NS}_fence (subject, erased_at, records_removed) VALUES (?1, ?2, ?3) \
                  ON CONFLICT(subject) DO UPDATE SET records_removed = excluded.records_removed"
             ),
-            params![subject.0, now_millis(), receipt],
+            params![subject.0, erased_at, receipt],
         )
         .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
             tx.commit()
@@ -265,7 +268,8 @@ mod tests {
 
     #[tokio::test]
     async fn erase_and_ttl_over_sqlite() {
-        let s = SqliteCapturedContentStore::open_in_memory().unwrap();
+        let s = SqliteCapturedContentStore::open_in_memory(awaken_lease_contract::system_clock())
+            .unwrap();
         s.insert(
             &DataSubjectId("a".into()),
             Purpose::TelemetryContent,
@@ -311,7 +315,8 @@ mod tests {
 
     #[tokio::test]
     async fn restricted_rows_survive_erasure_and_ttl_over_sqlite() {
-        let s = SqliteCapturedContentStore::open_in_memory().unwrap();
+        let s = SqliteCapturedContentStore::open_in_memory(awaken_lease_contract::system_clock())
+            .unwrap();
         s.insert(
             &DataSubjectId("a".into()),
             Purpose::TelemetryContent,
@@ -350,7 +355,9 @@ mod tests {
         // R3 later capture for it -> SubjectErased; R4 another subject ->
         // unaffected. Immediate transactions serialize write/erase without a
         // check-then-insert race.
-        let store = SqliteCapturedContentStore::open_in_memory().unwrap();
+        let store =
+            SqliteCapturedContentStore::open_in_memory(awaken_lease_contract::system_clock())
+                .unwrap();
         let erased = DataSubjectId("erased".into());
         store.insert(&erased, Purpose::TelemetryContent, "old", 1);
         assert_eq!(store.erase_subject(&erased).await.unwrap(), 1, "R1");

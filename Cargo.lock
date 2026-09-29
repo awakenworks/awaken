@@ -406,6 +406,8 @@ name = "awaken-captured-content-store"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
@@ -2372,6 +2374,8 @@ dependencies = [
  "awaken-agent-channel",
  "awaken-connection-plan",
  "awaken-ext-builtin-tools",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-local-process",
  "awaken-memory-store",
  "awaken-provisioning-contract",
@@ -2390,6 +2394,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "uuid",
  "zeroize",
 ]
 
@@ -2474,6 +2479,7 @@ dependencies = [
  "awaken-agent-channel",
  "awaken-ext-builtin-tools",
  "awaken-file-store",
+ "awaken-lease-contract",
  "awaken-local-process",
  "awaken-memory-store",
  "awaken-provisioning-contract",
@@ -2505,6 +2511,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-memory-store",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
@@ -3251,6 +3258,8 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-channel",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-runtime-contract",
  "bytes",
  "futures-util",

@@ -160,6 +160,9 @@ COMPOSITION_ROOTS: frozenset[str] = frozenset(
         # The Worker daemon's bootstrap: it composes the Worker transport and
         # chooses the clock its signed request assertions are stamped with.
         "crates/bin/awaken-worker/src/bootstrap.rs",
+        # The Sandbox process's `main`: each role it dispatches to (the Hand,
+        # the Git credential helper) is composed here and handed its clock.
+        "crates/bin/awaken-sandbox/src/main.rs",
         # Standalone example programs: each `main` composes one embedded
         # runtime and chooses the clock its commit store stamps with.
         "crates/devtools/awaken-runtime-examples/examples/direct_runtime.rs",

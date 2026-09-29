@@ -32,10 +32,14 @@ async fn the_hand_role_reverse_dials_the_brain_and_serves_a_real_tool() {
 
     // Start the hand role in reverse-dial mode — the exact path
     // `awaken-sandbox hand --dial <addr>` runs. It dials OUT to our rendezvous.
-    let hand =
-        tokio::spawn(
-            async move { serve_with_operation_ledger(HandBind::Dial(addr), ledger).await },
-        );
+    let hand = tokio::spawn(async move {
+        serve_with_operation_ledger(
+            HandBind::Dial(addr),
+            ledger,
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+    });
 
     // Accept the hand's outbound dial-back. `accept()` blocks until the hand connects,
     // so this is the readiness signal (no sleep): reaching it proves the reverse

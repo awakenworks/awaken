@@ -29,7 +29,7 @@ use awaken_worker_transport_security::{
 };
 
 use crate::worker_authority::{
-    SessionWorkerEffectTemporalRule, unix_now_ms, verify_session_worker_effect,
+    SessionWorkerEffectTemporalRule, clock_ms, verify_session_worker_effect,
 };
 
 const MEMORY_PATH: &str = "/v1/worker/resources/memory/operation";
@@ -433,6 +433,8 @@ pub struct WorkerMemoryService {
         Option<Arc<dyn awaken_session_realization_contract::SessionResourceMaterializationControl>>,
     terminal_memory_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionTerminalMemoryControl>>,
+    /// The Coordinator's wall clock: the instant claims and leases are judged at.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl WorkerMemoryService {
@@ -443,6 +445,7 @@ impl WorkerMemoryService {
         dispatch: Arc<dyn DispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
         directory: Arc<dyn WorkerDirectory>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self {
             repository,
@@ -452,6 +455,7 @@ impl WorkerMemoryService {
             directory,
             materialization_control: None,
             terminal_memory_control: None,
+            clock,
         }
     }
 
@@ -599,7 +603,7 @@ async fn memory_operation(
     // reach Control after its original expiry. Control must still prove a live
     // current same-generation root before returning the exact target; Registry
     // binding and A-base admission follow before repository I/O.
-    let now_unix_ms = unix_now_ms();
+    let now_unix_ms = clock_ms(service.clock.as_ref());
     let mut run_guard = None;
     let (workspace_id, memory_store_id, config_version, terminal_target) = match &reference {
         MemoryMaterializationReference::RunV1(reference) => {

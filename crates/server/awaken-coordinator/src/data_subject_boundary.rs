@@ -250,7 +250,9 @@ mod tests {
         // receipt; R3 wrong token -> reject before mutation; R4 non-HTTP,
         // query-bearing, or empty-token client configuration -> fail before a
         // request. The Coordinator factory is the only fanout owner.
-        let store = Arc::new(InMemoryCapturedContentStore::new());
+        let store = Arc::new(InMemoryCapturedContentStore::new(
+            awaken_lease_contract::system_clock(),
+        ));
         store.insert(
             DataSubjectId("dsub_a".into()),
             awaken_runtime_contract::Purpose::TelemetryContent,

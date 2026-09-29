@@ -33,19 +33,24 @@ pub struct MemoryStoreMounter {
     /// The shared invalidation bus every FUSE mount subscribes to.
     #[cfg(all(feature = "fuse", target_os = "linux"))]
     bus: Arc<LocalInvalidator>,
-    /// When false, never mount FUSE — always copy. Set for container isolation
-    /// tiers that cannot bind a host FUSE mount reliably. Workdir mounts directly
-    /// in the host namespace; Namespace binds that host projection into bwrap.
+    /// The clock a FUSE projection stamps its mount instant with; `None` never
+    /// mounts FUSE — always copy. Absent for container isolation tiers that
+    /// cannot bind a host FUSE mount reliably. Workdir mounts directly in the
+    /// host namespace; Namespace binds that host projection into bwrap. A copy
+    /// projection carries the store's own times, so it needs no clock.
     #[cfg(all(feature = "fuse", target_os = "linux"))]
-    prefer_fuse: bool,
+    fuse_clock: Option<Arc<dyn awaken_lease_contract::WallClock>>,
 }
 
 impl MemoryStoreMounter {
     /// Wrap `durable` (the resources-plane store) with the invalidation bus, FUSE
     /// where available. For the Workdir tier (host mount namespace).
     #[must_use]
-    pub fn new(durable: Arc<dyn MemoryRepository>) -> Self {
-        Self::with_fuse(durable, true)
+    pub fn new(
+        durable: Arc<dyn MemoryRepository>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Self {
+        Self::with_fuse(durable, Some(clock))
     }
 
     /// A copy-only mounter (never FUSE) for a tier that cannot expose a host FUSE
@@ -54,12 +59,15 @@ impl MemoryStoreMounter {
     /// plain files that bind into the namespace, and harvested back on teardown.
     #[must_use]
     pub fn copy_only(durable: Arc<dyn MemoryRepository>) -> Self {
-        Self::with_fuse(durable, false)
+        Self::with_fuse(durable, None)
     }
 
-    fn with_fuse(durable: Arc<dyn MemoryRepository>, prefer_fuse: bool) -> Self {
+    fn with_fuse(
+        durable: Arc<dyn MemoryRepository>,
+        fuse_clock: Option<Arc<dyn awaken_lease_contract::WallClock>>,
+    ) -> Self {
         #[cfg(not(all(feature = "fuse", target_os = "linux")))]
-        let _ = prefer_fuse;
+        let _ = fuse_clock;
         let bus = Arc::new(LocalInvalidator::default());
         let invalidator: Arc<dyn Invalidator> = bus.clone();
         let fs: Arc<dyn MemoryRepository> =
@@ -69,7 +77,7 @@ impl MemoryStoreMounter {
             #[cfg(all(feature = "fuse", target_os = "linux"))]
             bus,
             #[cfg(all(feature = "fuse", target_os = "linux"))]
-            prefer_fuse,
+            fuse_clock,
         }
     }
 }
@@ -188,12 +196,15 @@ impl MemoryMounter for MemoryStoreMounter {
             })?;
 
             #[cfg(all(feature = "fuse", target_os = "linux"))]
-            if self.prefer_fuse && copy::fuse_available() {
+            if let Some(clock) = self.fuse_clock.as_ref()
+                && copy::fuse_available()
+            {
                 let handle = crate::fuse::spawn_mount_with_invalidations(
                     self.fs.clone(),
                     store_id.to_string(),
                     host_path.to_path_buf(),
                     self.bus.subscribe(),
+                    clock.as_ref(),
                 )
                 .map_err(|error| {
                     SandboxError::backend(
@@ -391,7 +402,8 @@ mod tests {
         // directly to assert the harvest-on-teardown contract deterministically.
         let durable = Arc::new(VolatileMemoryRepository::new());
         durable.create("s", "/note.md", "v1").await.unwrap();
-        let mounter = MemoryStoreMounter::new(durable.clone());
+        let mounter =
+            MemoryStoreMounter::new(durable.clone(), awaken_lease_contract::system_clock());
         let dir = temp("copy");
 
         let snapshot = copy::materialize(&*mounter.fs, "s", &dir).await.unwrap();
@@ -533,7 +545,8 @@ mod tests {
     async fn a_read_only_copy_mount_does_not_harvest() {
         let durable = Arc::new(VolatileMemoryRepository::new());
         durable.create("s", "/note.md", "v1").await.unwrap();
-        let mounter = MemoryStoreMounter::new(durable.clone());
+        let mounter =
+            MemoryStoreMounter::new(durable.clone(), awaken_lease_contract::system_clock());
         let dir = temp("ro");
         let snapshot = copy::materialize(&*mounter.fs, "s", &dir).await.unwrap();
 
@@ -676,7 +689,8 @@ mod tests {
 
         let durable = Arc::new(VolatileMemoryRepository::new());
         durable.create("s", "/note.md", "v1").await.unwrap();
-        let mounter = MemoryStoreMounter::new(durable.clone());
+        let mounter =
+            MemoryStoreMounter::new(durable.clone(), awaken_lease_contract::system_clock());
         let dir = temp("platform-copy-fallback");
 
         let guard = mounter

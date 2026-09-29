@@ -24,7 +24,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use crate::worker_authority::{
-    SessionWorkerEffectTemporalRule, unix_now_ms, verify_session_worker_effect,
+    SessionWorkerEffectTemporalRule, clock_ms, verify_session_worker_effect,
 };
 
 pub const ARTIFACT_PUBLICATION_PATH: &str = "/v1/worker/resources/files/artifacts";
@@ -408,6 +408,8 @@ pub struct WorkerArtifactPublicationService {
         Option<Arc<dyn awaken_session_realization_contract::SessionTerminalPreparationControl>>,
     checkpoint_artifact_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionCheckpointArtifactControl>>,
+    /// The Coordinator's wall clock: the instant claims and leases are judged at.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl WorkerArtifactPublicationService {
@@ -417,6 +419,7 @@ impl WorkerArtifactPublicationService {
         dispatch: Arc<dyn DispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
         directory: Arc<dyn WorkerDirectory>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self {
             application,
@@ -425,6 +428,7 @@ impl WorkerArtifactPublicationService {
             directory,
             terminal_preparation_control: None,
             checkpoint_artifact_control: None,
+            clock,
         }
     }
 
@@ -505,7 +509,7 @@ async fn authorize_session_worker_lease(
         worker,
         identity,
         lease,
-        unix_now_ms(),
+        clock_ms(service.clock.as_ref()),
         temporal_rule,
     )
     .await
@@ -622,7 +626,7 @@ async fn authorize_artifact_effect(
                 worker,
                 identity,
                 claim,
-                unix_now_ms(),
+                clock_ms(service.clock.as_ref()),
             )
             .await
             .is_err()
@@ -630,7 +634,7 @@ async fn authorize_artifact_effect(
                 return Err(StatusCode::FORBIDDEN);
             }
             let guard = match service.dispatch.lock_commit_epoch(claim).await {
-                Ok(Some(guard)) if guard.is_live_at(unix_now_ms()) => guard,
+                Ok(Some(guard)) if guard.is_live_at(clock_ms(service.clock.as_ref())) => guard,
                 Ok(_) => return Err(StatusCode::CONFLICT),
                 Err(_) => return Err(StatusCode::SERVICE_UNAVAILABLE),
             };

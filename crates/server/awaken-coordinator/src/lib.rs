@@ -146,7 +146,7 @@ pub fn install_platform_memory_data_plane(host: &SharedHost) {
         let repository = host.memory_repository();
         let mounter = match platform_memory_projection(host.sandbox_tier()) {
             PlatformMemoryProjection::FusePreferred => {
-                awaken_sandbox_memoryd::MemoryStoreMounter::new(repository)
+                awaken_sandbox_memoryd::MemoryStoreMounter::new(repository, host.clock())
             }
             PlatformMemoryProjection::CopyOnly => {
                 awaken_sandbox_memoryd::MemoryStoreMounter::copy_only(repository)
@@ -1532,6 +1532,7 @@ fn mount_with_managed_over_and_models(
             host.worker_file_content_source(),
             dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
             worker_authenticator.clone(),
+            worker_clock.clone(),
         )
         .with_worker_directory(worker_directory.clone())
         .with_session_repository(session_application.session_repository_handle())
@@ -1545,6 +1546,7 @@ fn mount_with_managed_over_and_models(
                 dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
                 worker_authenticator.clone(),
                 worker_directory.clone(),
+                worker_clock.clone(),
             )
             .with_session_control(session_application.clone()),
         ));
@@ -1555,6 +1557,7 @@ fn mount_with_managed_over_and_models(
             dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
             worker_authenticator.clone(),
             worker_directory.clone(),
+            worker_clock.clone(),
         )
         .with_materialization_control(session_application.clone())
         .with_terminal_memory_control(session_application.clone()),
@@ -1563,6 +1566,7 @@ fn mount_with_managed_over_and_models(
         resource_registry,
         dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
         worker_authenticator.clone(),
+        worker_clock.clone(),
     )
     .with_worker_directory(worker_directory.clone())
     .with_session_control(session_application.clone());
@@ -1582,6 +1586,7 @@ fn mount_with_managed_over_and_models(
                     worker_skill_bundles,
                     dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
                     worker_authenticator.clone(),
+                    worker_clock.clone(),
                 )
                 .with_worker_directory(worker_directory.clone())
                 .with_session_control(session_application.clone()),
