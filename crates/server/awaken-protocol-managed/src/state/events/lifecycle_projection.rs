@@ -116,33 +116,6 @@ impl ManagedState {
         Ok(())
     }
 
-    /// Whether the latest public lifecycle edge for the primary Thread is open.
-    /// The committed event tail is the existing projector idempotency authority;
-    /// no parallel primary-status cell is maintained.
-    pub(super) fn primary_thread_status_is_open(record: &SessionRecord) -> bool {
-        let primary_id = public_thread_id(&record.session.id, &record.session.id);
-        record
-            .events
-            .iter()
-            .rev()
-            .find_map(|event| match &event.kind {
-                OutboundKind::SessionThreadStatusRunning {
-                    session_thread_id, ..
-                } if session_thread_id == &primary_id => Some(true),
-                OutboundKind::SessionThreadStatusRescheduled {
-                    session_thread_id, ..
-                } if session_thread_id == &primary_id => Some(true),
-                OutboundKind::SessionThreadStatusIdle {
-                    session_thread_id, ..
-                } if session_thread_id == &primary_id => Some(false),
-                OutboundKind::SessionThreadStatusTerminated {
-                    session_thread_id, ..
-                } if session_thread_id == &primary_id => Some(false),
-                _ => None,
-            })
-            .unwrap_or(false)
-    }
-
     /// Sole Runtime relationship -> Managed child Thread/event projector. Warm
     /// refresh and cold rehydration call this same function. Its inputs are real
     /// child Thread links, parent-partition transcripts, and ordinary Run

@@ -26,10 +26,13 @@ use awaken_session_state_contract::{
     PersistedSession, SessionExecutionState, SessionRuntimeInterval,
 };
 
+use crate::historical::historical_message_boundaries;
 use crate::interval::{budget_reach_projection_close_cursor, interval_close_cursor, is_opening};
 use crate::order::historical_pending_projection_order;
 use crate::role::{TranscriptRole, phase};
-use crate::transcript::assistant_response_coordinates;
+use crate::transcript::{
+    CommittedTranscriptEvidence, assistant_response_coordinates, committed_transcript_evidence,
+};
 use crate::{AnchoredOutcome, CanonicalOrder, FactKey, FactProvenance, FactRole, Ordinal};
 
 /// The committed evidence one candidate is ordered over, all borrowed.
@@ -52,8 +55,6 @@ pub struct OrderEvidence<'a> {
     pub links: &'a [CoordinatedThreadLink],
     pub outcomes: &'a [AnchoredOutcome<'a>],
     pub historical_pending: &'a HashMap<RunLifecycleCursor, Pending>,
-    pub root_pending: Option<&'a Pending>,
-    pub child_pending: &'a HashMap<String, Pending>,
 }
 
 /// One budget-reach transition and the commit of the pause that exposes it,
@@ -120,6 +121,7 @@ struct ThreadIndex<'a> {
     aligned: bool,
     messages_by_id: HashMap<&'a str, Vec<usize>>,
     messages_by_response: HashMap<(String, usize, usize), Vec<usize>>,
+    transcript: CommittedTranscriptEvidence,
 }
 
 impl<'a> ThreadIndex<'a> {
@@ -149,6 +151,7 @@ impl<'a> ThreadIndex<'a> {
             aligned,
             messages_by_id,
             messages_by_response,
+            transcript: committed_transcript_evidence(&snapshot.messages, None),
         }
     }
 
@@ -254,13 +257,12 @@ impl<'a> OrderIndex<'a> {
             .or_insert(order);
     }
 
-    // Synthetic pending-tool cause/effect table: C1 the Runtime has one
-    // committed ResumeTicket; C2 its owning Awaiting lifecycle fact is
-    // committed; C3 the ToolUse transcript block has not arrived yet.
-    // C1+C2+C3 projects one client-answerable tool event whose immutable
-    // order is the Awaiting fact; C1+!C2 remains unindexed and therefore
-    // fails the canonicalization guard. A later transcript-owned occurrence
-    // has a message-qualified id and keeps its own message cursor.
+    // Synthetic pending-tool cause/effect table: C1 an accepted Awaiting
+    // lifecycle fact has its exact committed audit target; C2 no matching
+    // ToolUse Message has committed yet. C1+C2 orders the one answerable event
+    // at that Awaiting fact. A later transcript-owned occurrence has a
+    // message-qualified id and keeps its own Message cursor. A current ticket
+    // cannot re-anchor a historical call to an earlier unaudited wait.
     fn index_pending_orders(&self) -> HashMap<(String, String, String), CanonicalOrder> {
         let lifecycle = self.evidence.lifecycle;
         let mut orders = HashMap::new();
@@ -293,37 +295,6 @@ impl<'a> OrderIndex<'a> {
                         pending.tool_use_id.clone(),
                     ),
                     order,
-                );
-            }
-        }
-        let current = std::iter::once((self.evidence.session_id, self.evidence.root_pending))
-            .chain(
-                self.evidence
-                    .child_pending
-                    .iter()
-                    .map(|(thread_id, pending)| (thread_id.as_str(), Some(pending))),
-            )
-            .filter_map(|(thread_id, pending)| pending.map(|pending| (thread_id, pending)));
-        for (thread_id, pending) in current {
-            if let Some(awaiting) = lifecycle.iter().rev().find(|event| {
-                event.thread_id.0 == thread_id
-                    && event.kind == RunLifecycleEventKind::Awaiting
-                    && self.evidence.historical_pending.get(&event.cursor) != Some(pending)
-            }) {
-                Self::retain_earliest(
-                    &mut orders,
-                    (
-                        awaiting.thread_id.0.clone(),
-                        awaiting.run_id.0.clone(),
-                        pending.tool_use_id.clone(),
-                    ),
-                    CanonicalOrder {
-                        processed_at_unix_ms: self
-                            .time_for(&awaiting.thread_id.0, awaiting.source_commit_cursor),
-                        source_commit_cursor: awaiting.source_commit_cursor,
-                        phase: phase::TRANSCRIPT,
-                        ordinal: Ordinal::FIRST,
-                    },
                 );
             }
         }
@@ -379,15 +350,53 @@ impl<'a> OrderIndex<'a> {
             .get(message_id)?
             .iter()
             .filter_map(|&index| {
-                let block = thread.snapshot.messages[index]
-                    .content
-                    .iter()
-                    .position(|block| match block {
-                        ContentBlock::ToolUse { id, .. } => id == call_id,
-                        ContentBlock::ToolResult { tool_use_id, .. } => tool_use_id == call_id,
-                        _ => false,
-                    })?;
-                thread.message_order(index, block)
+                let message = &thread.snapshot.messages[index];
+                let block = message.content.iter().position(|block| match block {
+                    ContentBlock::ToolUse { id, .. } => id == call_id,
+                    ContentBlock::ToolResult { tool_use_id, .. } => tool_use_id == call_id,
+                    _ => false,
+                })?;
+                let mut order = thread.message_order(index, block)?;
+                if let ContentBlock::ToolUse { id, input, .. } = &message.content[block] {
+                    let awaiting = historical_message_boundaries(
+                        message,
+                        self.evidence.historical_pending,
+                        self.evidence.lifecycle,
+                        thread_id,
+                        message.id.assistant_coordinates().map(|(run, _, _)| run),
+                    )
+                    .into_iter()
+                    .find(|(pending, _)| pending.tool_use_id == *id && pending.input == *input);
+                    // Classification is per ToolUse block, not per Message:
+                    // a sibling call in the same Message may become visible at
+                    // a later result even while another call was already
+                    // answerable. The first committed proof of this exact call
+                    // is its Awaiting audit or matching ToolResult commit.
+                    let visible_cursor = if let Some((_, run)) = awaiting {
+                        self.pending_orders
+                            .get(&(thread_id.to_string(), run.0.clone(), id.clone()))
+                            .map(|pending| pending.source_commit_cursor)
+                    } else {
+                        thread
+                            .transcript
+                            .result_message_index(message_id, block, call_id)
+                            .and_then(|result_index| {
+                                thread
+                                    .snapshot
+                                    .message_commit_cursors
+                                    .get(result_index)
+                                    .copied()
+                            })
+                    };
+                    if let Some(cursor) =
+                        visible_cursor.filter(|cursor| *cursor > order.source_commit_cursor)
+                    {
+                        order.source_commit_cursor = cursor;
+                        order.processed_at_unix_ms =
+                            thread.snapshot.commit_timestamps.get(&cursor).copied();
+                    }
+                }
+                Some(order)
             })
             .min()
     }
@@ -1072,8 +1081,7 @@ mod tests {
             client_executed: false,
         };
         let children = HashMap::new();
-        let historical = HashMap::new();
-        let child_pending = HashMap::new();
+        let historical = HashMap::from([(cursor(5), pending.clone())]);
         let budget = [
             BudgetReachAnchor {
                 generation: 1,
@@ -1108,8 +1116,6 @@ mod tests {
             links: &links,
             outcomes: &[],
             historical_pending: &historical,
-            root_pending: Some(&pending),
-            child_pending: &child_pending,
         });
         let at = |source| FactProvenance::Lifecycle {
             cursor: cursor(source).0,
@@ -1294,7 +1300,7 @@ mod tests {
         assert_eq!(
             order(index.tool_order(SESSION, "run", "ticket")),
             Some((5, 50, (0, 0), None)),
-            "T2 current pause at its Awaiting commit"
+            "T2 audited pause at its own Awaiting commit"
         );
         assert_eq!(
             order(index.tool_order(SESSION, "run", "other")),
@@ -1395,7 +1401,6 @@ mod tests {
         };
         let children = HashMap::new();
         let history = HashMap::new();
-        let child_pending = HashMap::new();
         let base = root.clone();
         // E5 a retained historical batch owns the operation even when its
         // recorded step differs from the Message; E6 duplicate source ids are
@@ -1446,8 +1451,6 @@ mod tests {
                 links: &[],
                 outcomes: &[],
                 historical_pending: &history,
-                root_pending: None,
-                child_pending: &child_pending,
             });
             assert_eq!(
                 index.tool_operation(SESSION, &message.id.0, "root-call"),
@@ -1538,7 +1541,6 @@ mod tests {
         };
         let children = HashMap::new();
         let historical = HashMap::new();
-        let child_pending = HashMap::new();
         macro_rules! index_over {
             ($batches:expr) => {
                 OrderIndex::new(OrderEvidence {
@@ -1553,8 +1555,6 @@ mod tests {
                     links: &[],
                     outcomes: &[],
                     historical_pending: &historical,
-                    root_pending: None,
-                    child_pending: &child_pending,
                 })
             };
         }

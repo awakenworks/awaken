@@ -10,18 +10,16 @@ use awaken_runtime_contract::llm::ModelRequestObservation;
 
 use crate::{FactKey, FactKind, FactProvenance, FactRole, ProjectionError, TimelineFact};
 
-/// The observation facts of one Thread prefix not yet published. `published`
-/// answers whether a fact's key already names a published event; a request
-/// whose end is published is skipped whole.
+/// The observation facts of one committed Thread prefix. Publication progress
+/// does not enter this domain decision; the Managed adapter deduplicates the
+/// resulting stable fact keys at its existing event boundary.
 pub fn run_observation_facts(
     thread_id: &str,
     snapshot: &RunRecoverySnapshot,
-    published: impl Fn(&FactKey) -> bool,
 ) -> Result<Vec<TimelineFact>, ProjectionError> {
     let at = |role, provenance| FactKey::new(thread_id, role, provenance);
     let mut facts = Vec::new();
-    // A fact emitted earlier in this same pass counts as published, exactly
-    // as it would once appended.
+    // A repeated audit row in the same committed prefix emits one fact.
     let mut emitted = std::collections::HashSet::new();
     for run in &snapshot.runs {
         if RunCompactionMarker::is_recorded(&snapshot.state, &run.id.0) {
@@ -31,7 +29,7 @@ pub fn run_observation_facts(
                     run_id: run.id.0.clone(),
                 },
             );
-            if !published(&key) && emitted.insert(key.clone()) {
+            if emitted.insert(key.clone()) {
                 facts.push(TimelineFact::new(key, FactKind::ContextCompacted));
             }
         }
@@ -55,7 +53,7 @@ pub fn run_observation_facts(
             };
             let start = at(FactRole::ModelRequestStart, provenance());
             let end = at(FactRole::ModelRequestEnd, provenance());
-            if published(&end) || !emitted.insert(end.clone()) {
+            if !emitted.insert(end.clone()) {
                 continue;
             }
             facts.push(TimelineFact::new(
@@ -124,12 +122,14 @@ mod tests {
     #[test]
     fn observation_facts_decision_table() {
         // Causes: C1 a recorded compaction marker; C2 model-request audit rows,
-        // one repeated; C3 which facts are already published. Effects: E1 one
-        // compaction fact unless published; E2 one start/end pair per request
-        // unless its end is published; E3 a repeated row emits once.
+        // one repeated; C3 the function is called again over the same prefix.
+        // Effects: E1 one compaction fact; E2 one start/end pair per request;
+        // E3 repeated audit rows emit once; E4 C3 returns the same facts,
+        // independent of any process-local publication state. Rules:
+        // R1=C1+C2=>E1+E2+E3; R2=C1+C2+C3=>E1+E2+E3+E4.
         let prefix = snapshot(vec![(2, false), (3, true), (3, true)]);
-        let roles = |published: &dyn Fn(&FactKey) -> bool| {
-            run_observation_facts("thread", &prefix, published)
+        let roles = || {
+            run_observation_facts("thread", &prefix)
                 .unwrap()
                 .into_iter()
                 .map(|fact| (fact.key.role, fact.key.provenance))
@@ -142,8 +142,9 @@ mod tests {
         let compaction = FactProvenance::RunState {
             run_id: "run".into(),
         };
+        let first = roles();
         assert_eq!(
-            roles(&|_| false),
+            first,
             vec![
                 (FactRole::RunContextCompacted, compaction.clone()),
                 (FactRole::ModelRequestStart, audit(2)),
@@ -153,13 +154,6 @@ mod tests {
             ],
             "E1+E2+E3"
         );
-        assert_eq!(
-            roles(&|key| key.provenance == compaction || key.provenance == audit(2)),
-            vec![
-                (FactRole::ModelRequestStart, audit(3)),
-                (FactRole::ModelRequestEnd, audit(3)),
-            ],
-            "E1+E2 published facts are not repeated"
-        );
+        assert_eq!(roles(), first, "R2/E4 stable from committed prefix alone");
     }
 }

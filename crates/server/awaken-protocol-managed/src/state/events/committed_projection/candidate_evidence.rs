@@ -107,6 +107,20 @@ impl CandidateEvidence {
             .read_projection_evidence(persisted, started)
             .await
             .map_err(StateError::Run)?;
+        // ThreadCommit validation does not have the previous transcript, so
+        // a repeated Message id can reach recovery. Exact replay is
+        // idempotent; conflicting content under one id cannot select a stable
+        // public payload or result cursor and must fail before any candidate
+        // changes the warm cache.
+        for snapshot in root.iter().chain(children.values()) {
+            awaken_managed_session_events::validate_committed_message_identities(&snapshot.messages)
+                .map_err(|error| {
+                    StateError::projection_recovery_required(format!(
+                        "Runtime recovery for Thread {:?} has conflicting committed Message identity: {error}; interrupt the Session to settle it",
+                        snapshot.thread_id.0
+                    ))
+                })?;
+        }
         let outcomes = outcome_terminals
             .into_iter()
             .map(|(outcome_id, terminal)| validate_durable_outcome_projection(outcome_id, terminal))
@@ -125,10 +139,6 @@ impl CandidateEvidence {
             if let Some(run) = ManagedState::current_recovery_run(snapshot)? {
                 child_latest_run_states.insert(thread_id.clone(), run.state.clone());
             }
-        }
-        // A paused current Run must name its answerable target in its audit.
-        for snapshot in root.iter().chain(children.values()) {
-            ManagedState::committed_pause_health(snapshot)?;
         }
         let child_dispositions = children
             .iter()
@@ -207,6 +217,11 @@ impl CandidateEvidence {
             }
         })
         .map_err(projection_error)?;
+        // Health and fact admission consume the same exact-cursor audit map.
+        // A later repeated Awaiting audit cannot authorize an older wait.
+        for snapshot in root.iter().chain(children.values()) {
+            ManagedState::committed_pause_health(snapshot, &lifecycle, &targets)?;
+        }
         let audited = targets
             .iter()
             .filter_map(|(cursor, target)| Some((*cursor, Pending::from_await_target(target)?)))

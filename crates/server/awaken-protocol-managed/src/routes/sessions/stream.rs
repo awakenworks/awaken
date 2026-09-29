@@ -139,6 +139,10 @@ where
         observation.tick().await;
         let mut tail_due = true;
         let mut refresh_due = !current;
+        // The HTTP body may remain unpolled after subscription while commits
+        // accumulate. Probe its indexed tail once before delivering it in
+        // change order; if anything changed, catch up in canonical order.
+        let mut canonical_catchup_due = true;
         loop {
             if refresh_due {
                 refresh_due = false;
@@ -167,19 +171,51 @@ where
                 break;
             }
             if tail_due {
-                let page = match source.state.stream_delivery_page(&source.session_id, cursor) {
+                if canonical_catchup_due && !current {
+                    tail_due = false;
+                    continue;
+                }
+                let indexed = match source.state.stream_delivery_page(&source.session_id, cursor) {
                     Ok(page) => page,
                     Err(StateError::NotFound) => {
                         // Deletion may remove the cache between snapshot and
-                        // this read. Observe its exact durable fact on the next
-                        // iteration; 404 alone never manufactures a terminal.
+                        // this read. The exact durable fact is observed next.
                         current = false;
                         tail_due = false;
                         continue;
                     },
                     Err(error) => { yield Err(error); return; },
                 };
-                tail_due = page.len() == ManagedState::STREAM_DELIVERY_PAGE_SIZE;
+                // A lagged receiver lost change-order frames. Re-subscribe
+                // before reading the one published canonical vector, then
+                // resume the indexed tail at that cache revision. The same
+                // delivery equality kernel below suppresses already sent ids
+                // and allows only None->timestamp enrichment.
+                let page = if canonical_catchup_due {
+                    if indexed.is_empty() {
+                        canonical_catchup_due = false;
+                        tail_due = false;
+                        continue;
+                    }
+                    let (canonical, receiver, revision) = match source.state
+                        .stream_projection_subscribe(&source.session_id) {
+                            Ok(snapshot) => snapshot,
+                            Err(StateError::NotFound) => {
+                                current = false;
+                                tail_due = false;
+                                continue;
+                            },
+                            Err(error) => { yield Err(error); return; },
+                        };
+                    rx = receiver;
+                    cursor = (revision, usize::MAX);
+                    canonical_catchup_due = false;
+                    tail_due = false;
+                    canonical.into_iter().map(|event| (cursor, event)).collect::<Vec<_>>()
+                } else {
+                    tail_due = indexed.len() == ManagedState::STREAM_DELIVERY_PAGE_SIZE;
+                    indexed
+                };
                 for (position, event) in page {
                     cursor = position;
                     let Some(event) = project(event) else { continue; };
@@ -250,7 +286,10 @@ where
                         break;
                     }
                     Ok(_) => { tail_due = true; }
-                    Err(broadcast::error::RecvError::Lagged(_)) => { refresh_due = true; }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        refresh_due = true;
+                        canonical_catchup_due = true;
+                    }
                     Err(broadcast::error::RecvError::Closed) => break,
                 },
                 live = async {

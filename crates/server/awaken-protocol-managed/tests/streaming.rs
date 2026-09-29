@@ -26,6 +26,7 @@ use std::sync::Arc;
 use awaken_protocol_managed::ManagedState;
 use awaken_protocol_managed::test_support::CoordinatedRuntimeFake;
 use awaken_protocol_managed::types::Event;
+use awaken_session_execution_contract::SessionAgentCoordination as _;
 
 /// The Managed router as a real deployment mounts it — behind the trusted edge
 /// stamp the composition root installs. Handlers fail closed on an absent
@@ -162,11 +163,17 @@ async fn http_json(
         })
         .unwrap();
     let resp = Box::pin(app.clone().oneshot(req)).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "{method} {uri}");
+    let status = resp.status();
     let bytes = Box::pin(resp.into_body().collect())
         .await
         .unwrap()
         .to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{method} {uri}: {}",
+        String::from_utf8_lossy(&bytes)
+    );
     if bytes.is_empty() {
         serde_json::Value::Null
     } else {
@@ -251,7 +258,8 @@ async fn http_primary_thread_id(app: &Router, session_id: &str) -> String {
 /// commits one primary Run plus its coordinated child Run; C3 GET invokes the
 /// sole projector after application settlement. Effects: E1 the receipt is live;
 /// E2 aggregate, primary, child, messages, usage, and idle follow in committed
-/// order exactly once; E3 no lag. Decision rule L1=C1+C2+C3=>E1+E2+E3.
+/// order exactly once; E3 no lag; E4 the same accepted input id is enriched
+/// only after its Run settles. Decision rule L1=C1+C2+C3=>E1+E2+E3+E4.
 #[tokio::test]
 async fn live_broadcast_delivers_one_runs_committed_frames_in_order() {
     // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
@@ -277,7 +285,6 @@ async fn live_broadcast_delivers_one_runs_committed_frames_in_order() {
         committed_types(&frames),
         vec![
             "user.message",
-            "user.message",
             "session.status_running",
             "session.thread_status_running",
             "agent.message",
@@ -289,22 +296,31 @@ async fn live_broadcast_delivers_one_runs_committed_frames_in_order() {
             "agent.thread_message_received",
             "session.thread_status_idle",
             "session.thread_status_idle",
+            "user.message",
             "session.usage",
             "session.status_idle"
         ],
         "the Run's committed frames arrive live, in order"
     );
-    // L1 same accepted identity is enriched, not a second User command. This
-    // pair was previously hidden by id-only publication; both payloads remain
-    // immutable and only the processing observation advances.
-    assert_eq!(frames[0].id, frames[1].id, "L1 exact receipt identity");
+    // L1 the full committed reducer publishes one accepted identity first;
+    // the same id is enriched after the Run commits. A second User command is
+    // never synthesized and the accepted id remains the listable GET cursor.
+    let user_frames = frames
+        .iter()
+        .filter(|event| event.type_str() == "user.message")
+        .collect::<Vec<_>>();
+    assert_eq!(user_frames.len(), 2, "L1 acceptance and completion");
+    assert_eq!(
+        user_frames[0].id, user_frames[1].id,
+        "L1 exact receipt identity"
+    );
     assert!(
-        frames[0].processed_at.is_none() && frames[1].processed_at.is_some(),
+        user_frames[0].processed_at.is_none() && user_frames[1].processed_at.is_some(),
         "L1 monotonic completion"
     );
     assert_eq!(
-        serde_json::to_value(&frames[0].kind).unwrap(),
-        serde_json::to_value(&frames[1].kind).unwrap(),
+        serde_json::to_value(&user_frames[0].kind).unwrap(),
+        serde_json::to_value(&user_frames[1].kind).unwrap(),
         "L1 unchanged authored payload"
     );
 }
@@ -334,7 +350,6 @@ async fn live_broadcast_preserves_order_across_two_runs() {
         committed_types(&frames),
         vec![
             "user.message",
-            "user.message",
             "session.status_running",
             "session.thread_status_running",
             "agent.message",
@@ -346,9 +361,9 @@ async fn live_broadcast_preserves_order_across_two_runs() {
             "agent.thread_message_received",
             "session.thread_status_idle",
             "session.thread_status_idle",
+            "user.message",
             "session.usage",
             "session.status_idle",
-            "user.message",
             "user.message",
             "session.status_running",
             "session.thread_status_running",
@@ -360,6 +375,7 @@ async fn live_broadcast_preserves_order_across_two_runs() {
             "agent.thread_message_received",
             "session.thread_status_idle",
             "session.thread_status_idle",
+            "user.message",
             "session.usage",
             "session.status_idle",
         ],
@@ -769,7 +785,8 @@ async fn stream_thread_events_accepts_the_preview_opt_in() {
 /// Managed child live-preview cause/effect table:
 /// C0 the reserved Event batch is activated, then the completion-woken
 /// supervisor turn anchors its initial committed prefix and exposes the real
-/// child selector; C1 exact child text is followed by a tool
+/// child selector; the child Run then obtains its own Session activity receipt
+/// before writing. C1 exact child text is followed by a tool
 /// delta (ordinary-message proof); C2 child
 /// stream opts into `agent.message`; C3 child reasoning is observed; C4
 /// primary/Session share only the committed broadcast; C5 later text becomes the
@@ -778,7 +795,9 @@ async fn stream_thread_events_accepts_the_preview_opt_in() {
 /// E1 C1+C2 emits child-only start/delta; E2 C3 emits nothing; E3 C4 receives no
 /// child preview; E4 C5 emits no preview and commits only child sent/primary
 /// received; E5 C6 commits the ordinary `agent.message` with E1's id, settles the
-/// application-owned activity epoch, then projects child and aggregate Idle.
+/// application-owned child activity epoch at its exact terminal observation,
+/// then projects child and aggregate Idle. The root's settlement alone cannot
+/// close the interval while that admitted child remains active.
 ///
 /// | Rule | Ordinary proof | Terminal report | Stream | Effects |
 /// |---|---|---|---|---|
@@ -813,6 +832,25 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
     .await;
     support::drive_retained_session_events(&state, &id).await;
     support::drive_retained_session_events(&state, &id).await;
+    // Production Host/Run ingress admits each coordinated child here before
+    // it can commit messages. The Runtime fake's link is topology, not a
+    // Session activity receipt.
+    let admitted = state
+        .session_application()
+        .admit_session_run_activity(
+            &awaken_session_types::SessionId::from(&id),
+            "researcher",
+            &awaken_agent_contract::agent::run::Id("coord-run-1".into()),
+            awaken_session_execution_contract::SessionRunActivityAdmissionMode::RecoverOrAdmit,
+        )
+        .await
+        .unwrap();
+    let awaken_session_execution_contract::SessionRunActivityAdmission::Admitted {
+        session_activity_epoch: child_epoch,
+    } = admitted
+    else {
+        panic!("L0 child Run must own its committed Session activity");
+    };
 
     let child_id = CoordinatedRuntimeFake::CHILD_THREAD_ID;
     let threads = http_json(
@@ -862,9 +900,18 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
     .await;
     runtime.publish_child_live_reasoning("terminal private chain");
     runtime.publish_child_live_text("terminal report");
-    runtime.complete_deferred_child("terminal report");
+    let child_boundary = runtime.complete_deferred_child("terminal report", admitted);
     support::drive_completed_user_dispatches(&state, &id, &runtime.completed_user_dispatches())
         .await;
+    state
+        .session_application()
+        .settle_activity_observed(
+            &awaken_session_types::SessionId::from(&id),
+            child_epoch,
+            Some(child_boundary),
+        )
+        .await
+        .unwrap();
     let terminal_events = http_json(
         &app,
         "GET",

@@ -5,7 +5,7 @@
 // @formal entrypoint session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
 //! Atomic publication of one fully reduced Managed projection candidate.
 
-use super::super::delivery::committed_delivery_delta;
+use super::super::delivery::committed_projection_delivery_delta;
 use super::*;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use std::collections::HashMap;
@@ -188,7 +188,11 @@ impl ManagedState {
         // The locked current projection, not a pre-read id set, owns the
         // delivery base. Validate every immutable field before installing or
         // broadcasting any part of the candidate.
-        let delta = committed_delivery_delta(&current.events, &mut candidate.events)?;
+        let delta = committed_projection_delivery_delta(
+            session_id,
+            &current.events,
+            &mut candidate.events,
+        )?;
         // A weaker observation can reconcile into an exact repeat. Reapply
         // the same kernel to the actual reconciled content before any write.
         if decide_projection_publish(

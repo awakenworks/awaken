@@ -11,7 +11,7 @@
 use super::candidate_evidence::{BudgetReachProjection, CandidateEvidence};
 use super::*;
 use awaken_managed_session_events::{
-    FactKey, FactKind, FactProvenance, FactRole, TimelineFact, TranscriptRole, is_opening,
+    FactKey, FactKind, FactProvenance, FactRole, TimelineFact, TranscriptRole,
 };
 
 /// Primary-thread input not already owned by a retained Managed admission.
@@ -145,8 +145,8 @@ impl ManagedState {
             session_id,
             all_accepted_lifecycle,
             historical_pending,
-            messages,
-            &evidence.transcripts,
+            evidence.root.as_ref(),
+            &evidence.children,
         )?;
         let projected_budget_reach = evidence
             .budget_reach
@@ -156,7 +156,6 @@ impl ManagedState {
             })
             .cloned()
             .collect::<Vec<_>>();
-        let accepted_lifecycle = &evidence.new_lifecycle;
         if evidence.acceptance.cursor > record.checkpoint.source.lifecycle_cursor {
             record.checkpoint.source.lifecycle_cursor = evidence.acceptance.cursor;
         }
@@ -174,71 +173,18 @@ impl ManagedState {
                 .cloned()
                 .collect::<Vec<_>>()
         };
-        let root_terminal = accepted_lifecycle.iter().rev().find(|event| {
+        let root_terminal = all_accepted_lifecycle.iter().rev().find(|event| {
             event.thread_id.0 == session_id
                 && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(event.kind)
         });
-        let projected_root_terminal = root_terminal.filter(|event| {
-            !record
-                .checkpoint
-                .progress
-                .terminal_cursors
-                .contains(&event.cursor)
-        });
-        // Root Thread lifecycle is projected from the same accepted lifecycle
-        // prefix as the aggregate Session edges. A foreground command already
-        // inserted the bracket when its terminal cursor is present in the one
-        // terminal set; otherwise warm/cold recovery emits every newly accepted
-        // Running/Rescheduled edge. If a cold prefix starts at a terminal, the
-        // event tail reconstructs the missing opening edge before output.
-        let project_root_transitions = root_terminal.is_none() || projected_root_terminal.is_some();
-        let mut projected_root_opening = false;
-        if project_root_transitions {
-            for lifecycle in accepted_lifecycle
-                .iter()
-                .filter(|event| event.thread_id.0 == session_id && is_opening(event.kind))
-            {
-                let at = |role| {
-                    FactKey::new(
-                        session_id,
-                        role,
-                        FactProvenance::Lifecycle {
-                            cursor: lifecycle.cursor.0,
-                        },
-                    )
-                };
-                let transitions: &[(FactRole, FactKind)] = match lifecycle.kind {
-                    RunLifecycleEventKind::Running | RunLifecycleEventKind::Resumed => &[(
-                        FactRole::RootLifecycleStatusRunning,
-                        FactKind::ThreadRunning,
-                    )],
-                    RunLifecycleEventKind::Rescheduled => &[
-                        (
-                            FactRole::RootLifecycleSessionStatusRescheduled,
-                            FactKind::SessionRescheduled,
-                        ),
-                        (
-                            FactRole::RootLifecycleStatusRescheduled,
-                            FactKind::ThreadRescheduled,
-                        ),
-                        (
-                            FactRole::RootRescheduledLifecycleStatusRunning,
-                            FactKind::ThreadRunning,
-                        ),
-                    ],
-                    _ => unreachable!("filtered root lifecycle transition"),
-                };
-                for (role, kind) in transitions {
-                    record.publish_fact(&TimelineFact::new(at(*role), kind.clone()), None)?;
-                }
-                projected_root_opening = true;
-            }
-        }
-        if !projected_root_opening
-            && !Self::primary_thread_status_is_open(record)
-            && let Some(terminal) = projected_root_terminal
-        {
-            Self::append_terminal_thread_running_once(record, terminal);
+        // Each opening is decided from the entire committed lifecycle. A
+        // boundary following a boundary without an intervening opening owns
+        // its own Running fact on both an incremental and a cold reader.
+        for fact in awaken_managed_session_events::root_lifecycle_opening_facts(
+            session_id,
+            all_accepted_lifecycle,
+        ) {
+            record.publish_fact_once(&fact, None)?;
         }
         if !evidence.root_blocked(session_id)
             && let Some(snapshot) = evidence.root.as_ref()
@@ -248,7 +194,6 @@ impl ManagedState {
         let root_pending_source_run_id = root_terminal
             .filter(|event| event.kind == RunLifecycleEventKind::Awaiting)
             .map(|event| &event.run_id);
-        let mut pending_is_in_new_message = false;
         let folds = awaken_managed_session_events::plan_folds(
             session_id,
             &new_messages,
@@ -269,17 +214,12 @@ impl ManagedState {
                 message_source_run_id.map(|run_id| run_id.0.as_str()),
                 &pending_history,
             );
-            pending_is_in_new_message |= selected.pending_occurrence;
-            // The exact current ticket wins over any earlier call in this
-            // source message. Historical permissions are applied per call by
-            // the shared encoder, never chosen by HashMap iteration order.
-            let message_pending = selected
-                .retained_pending_occurrence
-                .then_some(root_pending)
-                .flatten();
+            // This Message's exact committed Awaiting history classifies its
+            // calls. Supplying the current wait to an unrelated older Message
+            // would synthesize a Run-qualified tool before the owning Message.
             let mut projected = project_messages_with_mcp_ids(
                 std::slice::from_ref(&selected.message),
-                message_pending,
+                None,
                 &tool_index.all,
                 tool_index.mcp,
                 transcript_evidence.advisor_blocks(),
@@ -332,40 +272,6 @@ impl ManagedState {
                 record.consume_message(session_id, &message.id.0);
             }
         }
-        // A committed ticket may precede its ToolUse transcript block. Retain
-        // the existing synthetic path, qualified by the Awaiting Run, but only
-        // when no revisitable source Message already owns that occurrence.
-        if root_pending.is_some() && !pending_is_in_new_message {
-            let tool_index = record.projected_tool_index_for(None);
-            let mut projected = project_messages_with_mcp_ids(
-                &[],
-                root_pending,
-                &tool_index.all,
-                tool_index.mcp,
-                transcript_evidence.advisor_blocks(),
-                &[],
-            );
-            self.qualify_tool_projection(
-                record,
-                None,
-                &[],
-                root_pending_source_run_id,
-                &mut projected,
-            )?;
-            for projected in projected {
-                let id = projected.id.ok_or_else(|| {
-                    StateError::Run(RunError::internal(
-                        "synthetic root pending projection has no qualified tool id",
-                    ))
-                })?;
-                record.append_event_once(Event {
-                    id,
-                    kind: projected.kind,
-                    processed_at: None,
-                });
-            }
-        }
-
         // Outcome observation is an immediate, side-effect-free committed fact.
         // The retained DefineOutcome selects the aggregate: Completed adds only
         // evaluation facts, while Errored adds one infrastructure error and no

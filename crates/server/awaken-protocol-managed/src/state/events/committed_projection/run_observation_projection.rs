@@ -19,13 +19,10 @@ impl ManagedState {
         thread_id: &str,
         snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
     ) -> Result<(), StateError> {
-        record.refresh_event_index();
-        let facts = awaken_managed_session_events::run_observation_facts(thread_id, snapshot, |key| {
-            record.event_positions(&record.fact_id(key)).is_some()
-        })
-        .map_err(projection_error)?;
+        let facts = awaken_managed_session_events::run_observation_facts(thread_id, snapshot)
+            .map_err(projection_error)?;
         for fact in &facts {
-            record.publish_fact(fact, None)?;
+            record.publish_fact_once(fact, None)?;
         }
         Ok(())
     }
