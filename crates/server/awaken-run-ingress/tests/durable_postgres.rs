@@ -53,6 +53,12 @@ struct BlockingCommit {
     release: tokio::sync::Notify,
 }
 
+async fn hold_dispatch_thread(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, thread: &str) {
+    // One physical contention injector for exact/discovery/namespace rules.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array('runtime_dispatch'::regclass::oid, $1::text)::text, 0))")
+        .bind(thread).execute(&mut **tx).await.unwrap();
+}
+
 #[tokio::test]
 async fn postgres_pending_mutations_lock_revision_before_effect_and_preserve_exhaustion() {
     // Cause/effect graph: P1 a third transaction holds this exact pending row;
@@ -1669,11 +1675,7 @@ async fn exact_claim_mints_lease_after_waiting_for_thread_lock() {
             .fetch_one(&mut *blocker)
             .await
             .unwrap();
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-            .bind(name)
-            .execute(&mut *blocker)
-            .await
-            .unwrap();
+        hold_dispatch_thread(&mut blocker, name).await;
         let task = tokio::spawn({
             let store = store.clone();
             async move {
@@ -1928,11 +1930,7 @@ async fn discovery_skips_busy_thread_without_changing_exact_claim_or_epoch_autho
         .await
         .unwrap();
     let mut blocker = pool.begin().await.unwrap();
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
-        .bind("thread-busy")
-        .execute(&mut *blocker)
-        .await
-        .unwrap();
+    hold_dispatch_thread(&mut blocker, "thread-busy").await;
     let peer = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         store.claim("discover", 60_000, &Default::default()),
@@ -1978,4 +1976,92 @@ async fn discovery_skips_busy_thread_without_changing_exact_claim_or_epoch_autho
             .await
             .unwrap()
     );
+}
+
+#[tokio::test]
+async fn thread_locks_follow_the_resolved_dispatch_relation_not_a_search_path_prefix() {
+    // N1 different dispatch relations + identical Thread/Run ids -> independent;
+    // N2 SAME relation via different first schemas -> the same busy fence;
+    // N3 release -> the pending exact Thread becomes claimable with fresh epoch.
+    // Hold a real transaction throughout: no timer or concurrent test can turn
+    // namespace isolation into an accidental success. The old global key fails
+    // N1; a current_schema()-based key fails N2. Real SQL and store entrypoints.
+    let Some(a) = harness::schema_pool("t_pg_thread_namespace_a").await else {
+        return;
+    };
+    let Some(b) = harness::schema_pool("t_pg_thread_namespace_b").await else {
+        return;
+    };
+    let store_a = PostgresDispatchStore::with_pool(a.clone()).await.unwrap();
+    let store_b = PostgresDispatchStore::with_pool(b.clone()).await.unwrap();
+    for store in [&store_a, &store_b] {
+        store
+            .enqueue(RunDispatch::new(activation_on("same-run", "same-thread")))
+            .await
+            .unwrap();
+    }
+    let mut held = a.begin().await.unwrap();
+    hold_dispatch_thread(&mut held, "same-thread").await;
+    let independent = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        store_b.claim("independent", 60_000, &Default::default()),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .expect("N1 independent schema must progress");
+    assert_eq!(independent.lease.epoch, 1, "N1");
+    assert!(
+        store_a
+            .claim("busy", 60_000, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
+        "N2 same table busy"
+    );
+    let alias = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .after_connect(|conn, _| {
+            Box::pin(async move {
+                sqlx::query("SET search_path = t_pg_thread_namespace_a")
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&harness::database_url())
+        .await
+        .unwrap();
+    let alias_store = PostgresDispatchStore::with_pool(alias.clone())
+        .await
+        .unwrap();
+    sqlx::query("CREATE SCHEMA IF NOT EXISTS t_pg_thread_namespace_empty")
+        .execute(&alias)
+        .await
+        .unwrap();
+    sqlx::query("SET search_path = t_pg_thread_namespace_empty,t_pg_thread_namespace_a")
+        .execute(&alias)
+        .await
+        .unwrap();
+    assert!(
+        alias_store
+            .claim("alias", 60_000, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
+        "N2 same resolved table through another prefix must remain fenced"
+    );
+    held.rollback().await.unwrap();
+    assert_eq!(
+        alias_store
+            .claim("released", 60_000, &Default::default())
+            .await
+            .unwrap()
+            .unwrap()
+            .lease
+            .epoch,
+        1,
+        "N3"
+    );
+    alias.close().await;
 }
