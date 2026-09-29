@@ -332,6 +332,7 @@ pub(super) async fn drive_resumed(
             resolved,
             env,
             context,
+            batch: waiting_batch.as_ref(),
             execution_admission,
         },
         run_id,
