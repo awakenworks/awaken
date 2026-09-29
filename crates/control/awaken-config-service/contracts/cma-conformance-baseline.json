@@ -1,0 +1,19 @@
+{
+  "comment": [
+    "Claude Managed Agents roster rules this repository does not enforce yet.",
+    "Each entry is one documented CMA validation that a managed agent create/update",
+    "currently accepts. The list is a ratchet: it may only shrink. Enforcing a rule",
+    "means deleting its entry; the conformance test fails while an enforced rule is",
+    "still listed, so the two cannot drift apart.",
+    "Source: platform.claude.com Managed Agents multiagent orchestration reference."
+  ],
+  "unenforced": [
+    "roster_entry_count_is_one_to_twenty",
+    "roster_holds_at_most_one_self",
+    "roster_names_are_unique",
+    "roster_member_is_not_named_self",
+    "roster_holds_at_most_one_advisor",
+    "roster_member_does_not_take_the_reserved_advisor_name",
+    "delegation_is_one_level_deep"
+  ]
+}
