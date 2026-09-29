@@ -263,7 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn child_adapters_preserve_installed_profiles_across_transport_topologies() {
-        // Causes: C1 local/remote Control transport; C2 materializer installed;
+        // Causes: C1 store-owning/database-less Worker role; C2 materializer installed;
         // C3 ACP adapter installed. Effects: E1 exact Host profile preserved in
         // both fresh delegation and cold recovery (one constructor); E2 only
         // installed WorkerRelay / ACP process-field profiles are admitted.
@@ -281,17 +281,13 @@ mod tests {
             crate::session_environment::SandboxEnvironment::workdir(sandbox)
                 .into_session_environment(),
         );
-        for upstream in [false, true] {
+        for database_less_worker in [false, true] {
             for material_access in [false, true] {
                 for acp_installed in [false, true] {
                     let mut host =
                         SharedHost::new(Arc::new(crate::host::MemoryHostModel), "test-model");
-                    if upstream {
-                        host = host.with_worker_upstream(
-                            awaken_worker_transport_security::WorkerUpstream::new(
-                                "http://127.0.0.1:1",
-                            ),
-                        );
+                    if database_less_worker {
+                        host = host.with_database_less_worker_role_for_test();
                     }
                     if material_access {
                         host = host.with_credential_materializer(

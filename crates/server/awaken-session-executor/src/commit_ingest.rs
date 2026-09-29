@@ -77,7 +77,7 @@ impl SharedHost {
     pub(crate) fn worker_claimed_commit(
         &self,
     ) -> Result<Option<Arc<dyn ClaimedRunCommit>>, HostError> {
-        if self.upstream.is_none() {
+        if !self.is_database_less_worker() {
             return Ok(None);
         }
         self.worker.claimed_commit.clone().map(Some).ok_or_else(|| {
@@ -884,8 +884,10 @@ mod tests {
 
     #[test]
     fn worker_claimed_commit_is_the_injected_port_only_for_a_worker() {
-        // Decision table: C1 the Host has a Worker upstream; C2 startup injected
-        // a claimed-commit transport. W1 !C1 (any C2) -> None: a store-owning
+        // Decision table: C1 the Host role is database-less Worker (selected
+        // by its product constructor, varied by the test-only role seam here);
+        // C2 startup injected a claimed-commit transport.
+        // W1 !C1 (any C2) -> None: a store-owning
         // Host commits through its own authority. W2 C1+C2 -> exactly the
         // injected port. W3 C1+!C2 -> fails closed instead of a local fallback.
         struct SelectedOnly;
@@ -904,9 +906,6 @@ mod tests {
         }
         let injected: Arc<dyn ClaimedRunCommit> = Arc::new(SelectedOnly);
         let host = || SharedHost::new(Arc::new(crate::NoModelConfiguredExecutor), "stub");
-        let upstream =
-            || awaken_worker_transport_security::WorkerUpstream::new("http://coordinator.invalid");
-
         assert!(host().worker_claimed_commit().unwrap().is_none(), "W1");
         assert!(
             host()
@@ -917,14 +916,14 @@ mod tests {
             "W1 injected"
         );
         let selected = host()
-            .with_worker_upstream(upstream())
+            .with_database_less_worker_role_for_test()
             .with_worker_claimed_commit(injected.clone())
             .worker_claimed_commit()
             .unwrap()
             .expect("W2");
         assert!(Arc::ptr_eq(&selected, &injected), "W2 exact port");
         let error = match host()
-            .with_worker_upstream(upstream())
+            .with_database_less_worker_role_for_test()
             .worker_claimed_commit()
         {
             Ok(_) => panic!("W3 must fail closed"),

@@ -29,7 +29,7 @@ impl SharedHost {
         // A database-less Worker persists checkpoints through its authenticated,
         // claim-fenced dispatch transport. Installing a local store here would
         // create a second authority that cannot survive Worker replacement.
-        if self.upstream.is_some() {
+        if self.is_database_less_worker() {
             return Ok(None);
         }
         self.authority

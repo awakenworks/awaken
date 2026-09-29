@@ -1084,7 +1084,8 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
     // the outbox nor binds a commit and returns normally; E5 direct Worker
     // authority access still fails closed. Constraints: the Coordinator's
     // guarded settlement observer remains the sole remote terminal/extraction
-    // owner; no Worker repository, role flag, or second reconciler is added.
+    // owner; the Worker constructor selects the one Host role, while no
+    // Memory-specific role flag, repository, or reconciler is added.
     //
     // | Rule | role     | binding/use          | repository  | intent | C5 | effects |
     // | R1   | local    | RW                   | available   | yes    | any | E1      |
@@ -1092,26 +1093,27 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
     // | R3   | local    | RO                   | any         | any    | any | E3      |
     // | R4   | upstream | RW                   | unavailable | any    | yes | E4      |
     // | R5   | upstream | direct authority call| unavailable | any   | any | E5      |
+    // R0 the actual Worker constructor selects that role before any optional
+    // claimed-commit port; W1-W3 in commit_ingest cover missing/extra ports.
     // R1-R3 are exercised by
     // `parent_rehydration_recovers_a_child_intent_after_enqueue_crash`;
     // R5 is owned by `every_worker_extraction_authority_operation_fails_closed`.
     let session = "database-less-worker-memory-session";
     let content = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
-    let host = Arc::new(
-        SharedHost::new_worker_with_deployment(
-            Arc::new(ExtractorModel),
-            "stub",
-            Arc::new(awaken_resource_contract::UnavailableFileContentSource),
-            content.clone(),
-            crate::HostProcess {
-                local_workspace: SharedHost::mint_local_workspace(),
-                deployment: crate::DeploymentConfig::ephemeral(),
-                clock: awaken_lease_contract::system_clock(),
-            },
-        )
-        .with_worker_upstream(awaken_worker_transport_security::WorkerUpstream::new(
-            "http://coordinator.invalid",
-        )),
+    let host = Arc::new(SharedHost::new_worker_with_deployment(
+        Arc::new(ExtractorModel),
+        "stub",
+        Arc::new(awaken_resource_contract::UnavailableFileContentSource),
+        content.clone(),
+        crate::HostProcess {
+            local_workspace: SharedHost::mint_local_workspace(),
+            deployment: crate::DeploymentConfig::ephemeral(),
+            clock: awaken_lease_contract::system_clock(),
+        },
+    ));
+    assert!(
+        host.is_database_less_worker(),
+        "the Worker constructor alone selects the database-less role"
     );
     let config = awaken_resource_contract::MemoryStoreConfigVersion {
         memory_store_id: "worker-memory-store".into(),

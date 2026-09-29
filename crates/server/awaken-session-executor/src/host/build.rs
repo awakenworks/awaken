@@ -80,6 +80,7 @@ impl SharedHost {
                 deployment,
                 clock: awaken_lease_contract::system_clock(),
             },
+            HostAuthorityRole::StoreOwning,
         )
     }
 
@@ -144,6 +145,7 @@ impl SharedHost {
                 deployment: crate::deployment_config::DeploymentConfig::ephemeral(),
                 clock,
             },
+            HostAuthorityRole::StoreOwning,
         )
     }
 
@@ -173,6 +175,7 @@ impl SharedHost {
                 deployment,
                 clock,
             },
+            HostAuthorityRole::StoreOwning,
         )
     }
 
@@ -202,6 +205,7 @@ impl SharedHost {
                 extraction_repository: None,
             },
             process,
+            HostAuthorityRole::DatabaseLessWorker,
         )
     }
 
@@ -232,6 +236,7 @@ impl SharedHost {
                 extraction_repository: Some(extraction_repository),
             },
             process,
+            HostAuthorityRole::StoreOwning,
         )
     }
 
@@ -240,6 +245,7 @@ impl SharedHost {
         model_ref: String,
         resources: capability::ResourceInputs,
         process: HostProcess,
+        authority_role: HostAuthorityRole,
     ) -> Self {
         let HostProcess {
             local_workspace,
@@ -296,7 +302,7 @@ impl SharedHost {
             hub: hub.clone(),
             // `with_store_dir` still overrides this environment-derived default.
             store_dir,
-            upstream: None,
+            authority_role,
             deployment,
             authority: {
                 #[cfg(any(test, feature = "test-support"))]
@@ -411,14 +417,17 @@ impl SharedHost {
         self.completion.install_committed_progress_wakeup(wakeup)
     }
 
-    /// Configure an authenticated worker upstream shared by dispatch and commit
-    /// clients (for example a client carrying an mTLS identity).
-    #[must_use]
-    pub fn with_worker_upstream(
-        mut self,
-        upstream: awaken_worker_transport_security::WorkerUpstream,
-    ) -> Self {
-        self.upstream = Some(upstream);
+    /// The role selected at construction, independent of whether any one
+    /// claim-fenced transport has been installed yet.
+    pub(crate) fn is_database_less_worker(&self) -> bool {
+        self.authority_role == HostAuthorityRole::DatabaseLessWorker
+    }
+
+    /// Vary only the role in unit tests that exercise missing-port rejection.
+    /// Product Worker composition always uses `new_worker_with_deployment`.
+    #[cfg(test)]
+    pub(crate) fn with_database_less_worker_role_for_test(mut self) -> Self {
+        self.authority_role = HostAuthorityRole::DatabaseLessWorker;
         self
     }
 
@@ -592,11 +601,54 @@ mod startup_tests {
                 deployment: crate::DeploymentConfig::ephemeral(),
                 clock: awaken_lease_contract::system_clock(),
             },
+            HostAuthorityRole::StoreOwning,
         );
 
         assert!(
             Arc::ptr_eq(&expected, &host.resources.memory.extraction_repository()),
             "T1/E1"
         );
+    }
+
+    #[test]
+    fn constructor_selects_worker_role_without_a_transport_marker() {
+        // C1 constructor={database-less Worker, Coordinator-local}; C2 both
+        // receive the same File/Memory content ports; C3 claimed-commit port
+        // is absent. R1 Worker => remote role and fail-closed missing commit;
+        // R2 Coordinator => store-owning role and no remote commit request.
+        // A content port or an injected commit port alone cannot choose C1;
+        // commit_ingest W1-W3 covers the independent port combinations.
+        let file: Arc<dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>> =
+            Arc::new(awaken_resource_contract::UnavailableFileContentSource);
+        let memory: Arc<dyn awaken_resource_contract::MemoryRepository> =
+            Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+        let extraction: Arc<dyn awaken_ext_memory::MemoryExtractionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("test extraction repository"),
+        );
+        let process = || HostProcess {
+            local_workspace: SharedHost::mint_local_workspace(),
+            deployment: crate::DeploymentConfig::ephemeral(),
+            clock: awaken_lease_contract::system_clock(),
+        };
+        let worker = SharedHost::new_worker_with_deployment(
+            Arc::new(crate::NoModelConfiguredExecutor),
+            "stub",
+            file.clone(),
+            memory.clone(),
+            process(),
+        );
+        let coordinator = SharedHost::new_with_runtime_resources_and_deployment(
+            Arc::new(crate::NoModelConfiguredExecutor),
+            "stub",
+            file,
+            memory,
+            extraction,
+            process(),
+        );
+        assert!(worker.is_database_less_worker(), "R1 role");
+        assert!(worker.worker_claimed_commit().is_err(), "R1 missing port");
+        assert!(!coordinator.is_database_less_worker(), "R2 role");
+        assert!(coordinator.worker_claimed_commit().unwrap().is_none(), "R2");
     }
 }

@@ -229,9 +229,8 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
     let local = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let _managed = install_test_dispatch_runtime(&local);
     let ctx = local.ctx_for("worker-stop", None).await.unwrap();
-    let worker = SharedHost::new(Arc::new(OkModel), "stub").with_worker_upstream(
-        awaken_worker_transport_security::WorkerUpstream::new("http://127.0.0.1:1"),
-    );
+    let worker =
+        SharedHost::new(Arc::new(OkModel), "stub").with_database_less_worker_role_for_test();
     for direct in [true, false] {
         let run_id = RunId(format!("worker-stop-{direct}"));
         let cancelled = awaken_runtime_contract::CancellationToken::new();

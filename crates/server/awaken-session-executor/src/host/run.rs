@@ -360,7 +360,7 @@ impl SharedHost {
                 .expect("active run mutex poisoned")
                 .clone()
         });
-        if self.upstream.is_some() {
+        if self.is_database_less_worker() {
             // A Worker revokes its resident attempt, not the Coordinator's
             // durable cancellation intent. Its transport deliberately cannot
             // list/requeue/cancel the global queue. Reuse the installed claim

@@ -60,7 +60,6 @@ awaken-provisioning-contract = { workspace = true }
 awaken-tenancy = { workspace = true }
 awaken-dispatch = { workspace = true, default-features = false }
 awaken-dispatch-contract.workspace = true
-awaken-worker-transport-security = { workspace = true }
 awaken-run-executor-acp = { workspace = true }
 awaken-connection-plan.workspace = true
 awaken-acp-contract = { workspace = true }

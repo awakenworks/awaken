@@ -408,7 +408,11 @@ impl crate::ManagedHost {
             &awaken_session_resource_contract::SessionRealizationLease,
         )>,
     ) -> Result<Vec<awaken_resource_contract::SkillVersion>, RunError> {
-        let skill_realization = self.host.upstream.as_ref().and(realization);
+        let skill_realization = if self.host.is_database_less_worker() {
+            realization
+        } else {
+            None
+        };
         self.host
             .tools
             .skills
@@ -1566,8 +1570,8 @@ impl crate::ManagedHost {
         )>,
         environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
     ) -> Result<crate::provisioning::StagedResources, awaken_session_error_contract::RunError> {
-        let authority = if let (Some((session_id, resource_revision, lease)), Some(_)) =
-            (realization, self.host.upstream.as_ref())
+        let authority = if let (Some((session_id, resource_revision, lease)), true) =
+            (realization, self.host.is_database_less_worker())
         {
             Some(
                 awaken_dispatch::ResourceOperationFence::SessionMaterialization(
@@ -1700,8 +1704,12 @@ impl crate::ManagedHost {
                 memory_store_id,
                 config,
             } => {
-                let materialization_reference = match (&self.host.upstream, claim, realization) {
-                    (Some(_), _, Some(_)) => {
+                let materialization_reference = match (
+                    self.host.is_database_less_worker(),
+                    claim,
+                    realization,
+                ) {
+                    (true, _, Some(_)) => {
                         let Some(
                             awaken_dispatch::ResourceOperationFence::SessionMaterialization(
                                 intent,
@@ -1734,7 +1742,7 @@ impl crate::ManagedHost {
                             .map_err(|error| RunError::internal(error.to_string()))?,
                         )
                     }
-                    (Some(_), Some(claim), None) => Some(
+                    (true, Some(claim), None) => Some(
                         awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
                             awaken_dispatch::RunClaim,
                         >::encode(
@@ -1756,12 +1764,12 @@ impl crate::ManagedHost {
                         )
                         .map_err(|error| RunError::internal(error.to_string()))?,
                     ),
-                    (Some(_), None, None) => {
+                    (true, None, None) => {
                         return Err(RunError::bad_request(
                             "remote Memory materialization requires a dispatch claim or Session realization lease",
                         ));
                     }
-                    (None, _, _) => None,
+                    (false, _, _) => None,
                 };
                 if materialization_reference.is_none() {
                     let validator = self.resource_validator.as_ref().ok_or_else(|| {
@@ -1815,12 +1823,12 @@ impl crate::ManagedHost {
                             "repository `{repository_id}` cannot be realized: {error}"
                         ))
                     })?;
-                let transport = match (resource_authority, &self.host.upstream) {
+                let transport = match (resource_authority, self.host.is_database_less_worker()) {
                     (
                         Some(awaken_dispatch::ResourceOperationFence::RepositoryPublication {
                             ..
                         }),
-                        None,
+                        false,
                     ) => Ok(awaken_resource_contract::RepositoryTransport::Direct),
                     (authority, _) => {
                         self.repository_binding_verifier
