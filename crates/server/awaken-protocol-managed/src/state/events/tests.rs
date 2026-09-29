@@ -1254,6 +1254,11 @@ struct LifecycleRuntime {
     /// original transport has already begun cold recovery. No receipt is faked.
     reads: crate::state::test_support::ReadControl,
     pending: Arc<Mutex<Option<Pending>>>,
+    /// The audited target of every pause a live ticket opened (see
+    /// `crate::test_support::remember_ticket_await_target`).
+    await_targets: Arc<Mutex<crate::test_support::AwaitTargets>>,
+    /// Awaiting commits that model a legacy audit row without a target.
+    unaudited_awaits: Arc<Mutex<std::collections::HashSet<RunLifecycleCursor>>>,
     /// Advance only the committed Thread coordinate for a finite/infinite burst
     /// at the existing snapshot port; zero preserves every ordinary fixture.
     projection_version_changes: Arc<AtomicUsize>,
@@ -1901,7 +1906,7 @@ impl awaken_session_runtime_contract::ThreadReadRuntime for LifecycleRuntime {
         else {
             return Ok(None);
         };
-        let resume_tickets = self
+        let resume_tickets: Vec<awaken_agent_contract::thread::read::recovery::RunResumeTicket> = self
             .pending
             .lock()
             .unwrap()
@@ -1965,10 +1970,13 @@ impl awaken_session_runtime_contract::ThreadReadRuntime for LifecycleRuntime {
         // One fixture commit owns transitions and enriched audit payloads.
         // An explicit row supplies details such as an historical await target
         // at that exact coordinate; it cannot exist only on a second feed.
-        let mut audit = crate::test_support::lifecycle_audit_records(
-            lifecycle
-                .iter()
-                .filter(|event| event.thread_id.0 == thread_id),
+        let mut audit = crate::test_support::fixture_thread_audit(
+            &lifecycle,
+            thread_id,
+            u64::MAX,
+            resume_tickets.first().map(|ticket| ticket.ticket.target()),
+            &self.unaudited_awaits.lock().unwrap(),
+            &mut self.await_targets.lock().unwrap(),
         );
         for explicit in self.audit_events.lock().unwrap().iter().cloned() {
             if let Some(existing) = audit.iter_mut().find(|record| {
@@ -2132,6 +2140,25 @@ impl awaken_session_runtime_contract::OutcomeRuntime for LifecycleRuntime {
             .continue_outcome(thread)
             .await
     }
+}
+
+/// The call a committed pause names in the audit of the Thread's latest
+/// Awaiting commit, once the snapshot passes the timeline's pause health check.
+fn audited_current_pause(
+    snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+    runtime: &LifecycleRuntime,
+) -> Option<String> {
+    ManagedState::committed_pause_health(snapshot).ok()?;
+    let lifecycle = runtime.lifecycle.lock().unwrap();
+    let audited =
+        awaken_session_projection::historical_pending_by_lifecycle(&lifecycle, |_| Some(snapshot))
+            .unwrap();
+    lifecycle
+        .iter()
+        .rev()
+        .find(|event| event.thread_id == snapshot.thread_id)
+        .and_then(|event| audited.get(&event.cursor))
+        .map(|pending| pending.tool_use_id.clone())
 }
 
 fn lifecycle_cursor(source_commit_cursor: u64) -> RunLifecycleCursor {
@@ -2681,7 +2708,7 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
         .unwrap()
         .unwrap();
     assert!(
-        ManagedState::pending_from_recovery_snapshot(&empty).is_err(),
+        ManagedState::committed_pause_health(&empty).is_err(),
         "P1/E1 committed projection exposes unreconstructable damage"
     );
     assert!(
@@ -2708,11 +2735,8 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        ManagedState::pending_from_recovery_snapshot(&one)
-            .unwrap()
-            .unwrap()
-            .tool_use_id,
-        "call-single-ticket",
+        audited_current_pause(&one, &runtime).as_deref(),
+        Some("call-single-ticket"),
         "P2/E2"
     );
 
@@ -2732,11 +2756,8 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
         "P3/E3 strict reply admission"
     );
     assert_eq!(
-        ManagedState::pending_from_recovery_snapshot(&one)
-            .unwrap()
-            .unwrap()
-            .tool_use_id,
-        "call-single-ticket",
+        audited_current_pause(&one, &runtime).as_deref(),
+        Some("call-single-ticket"),
         "P3/C2 list projection reconstructs without choosing a duplicate ticket"
     );
 
@@ -2840,7 +2861,7 @@ async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
         .unwrap()
         .unwrap();
     assert!(
-        ManagedState::pending_from_recovery_snapshot(&no_target).is_err(),
+        ManagedState::committed_pause_health(&no_target).is_err(),
         "DI0/E0 no authority makes committed projection unhealthy"
     );
     // The ownership guard is fail-closed: an unstamped request is refused
@@ -2941,11 +2962,8 @@ async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        ManagedState::pending_from_recovery_snapshot(&snapshot)
-            .unwrap()
-            .unwrap()
-            .tool_use_id,
-        call_id,
+        audited_current_pause(&snapshot, &runtime).as_deref(),
+        Some(call_id),
         "DI1/E1"
     );
     state
@@ -5608,8 +5626,9 @@ async fn root_terminal_defers_idle_until_the_session_activity_cas_settles() {
     // durable aggregate state; C3 that exact epoch settles before a later
     // refresh; C4 the root lifecycle cursor was already consumed by C2.
     // Effects: E1 C1+C2 projects the root output/terminal once but no false
-    // aggregate idle; E2 it preserves the terminal stop reason in the sole
-    // disposable projector continuation; E3 C3+C4 emits exactly one idle
+    // aggregate idle; E2 the one idle carries the terminal's stop reason,
+    // decided from the committed lifecycle rather than from a reason held
+    // in the replica between refreshes; E3 C3+C4 emits exactly one idle
     // without requiring a second lifecycle event; E4 further refreshes are
     // idempotent. This is the commit-order window exercised by coordinated
     // child reports: the report Run terminal can precede Session settlement.
@@ -5656,14 +5675,6 @@ async fn root_terminal_defers_idle_until_the_session_activity_cas_settles() {
             0,
             "R1/E1"
         );
-        assert_eq!(
-            record
-                .deferred_session_stop_reason
-                .as_ref()
-                .map(|(_, reason)| reason),
-            Some(&StopReason::EndTurn),
-            "R1/E2"
-        );
     }
 
     state
@@ -5686,8 +5697,13 @@ async fn root_terminal_defers_idle_until_the_session_activity_cas_settles() {
         "R2-R3/E3-E4"
     );
     assert!(
-        record.deferred_session_stop_reason.is_none(),
-        "R2/E3 consumes the one projector continuation"
+        record.events.iter().any(|event| matches!(
+            event.kind,
+            OutboundKind::SessionStatusIdle {
+                stop_reason: StopReason::EndTurn
+            }
+        )),
+        "R1-R2/E2 the idle carries the terminal's reason"
     );
 }
 
@@ -5697,10 +5713,11 @@ async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
     // answerable tool while its Session activity remains Running; C2 the Worker
     // autonomously resumes that same Run and commits NaturalEnd before the
     // aggregate activity settles; C3 the exact activity epoch then settles.
-    // Effects: E1 C1 defers RequiresAction and emits no aggregate idle; E2 C2
-    // replaces that disposable reason with EndTurn but still emits no early idle;
-    // E3 C3 emits exactly one aggregate idle with EndTurn and no stale
-    // RequiresAction. K1 committed Run lifecycle and pending truth are the sole
+    // Effects: E1 C1 publishes the answerable tool and no aggregate idle; E2
+    // C2's newer same-Run terminal supersedes the pause's reason but still
+    // emits no early idle; E3 C3 emits exactly one aggregate idle with EndTurn
+    // and no stale RequiresAction. The reason is decided from the committed
+    // lifecycle walk, never held in the replica between refreshes. K1 committed Run lifecycle and pending truth are the sole
     // authority; K2 pending action and BudgetReached remain higher priority.
     //
     // | Rule | Root terminal | Same Run | Activity | Pending | Effect |
@@ -5760,23 +5777,12 @@ async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
     {
         let records = state.sessions.lock().unwrap();
         let record = records.get(&session.id).unwrap();
-        let (owner, reason) = record
-            .deferred_session_stop_reason
-            .as_ref()
-            .expect("S1/E1 deferred reason");
-        assert_eq!(owner.as_ref(), Some(&run_id), "S1/E1 exact root owner");
-        let StopReason::RequiresAction { event_ids } = reason else {
-            panic!("S1/E1 expected RequiresAction, got {reason:?}");
-        };
-        assert_eq!(
-            event_ids,
-            &[record
+        assert!(
+            record
                 .projected_tool_index_for(None)
                 .latest
-                .get(call_id)
-                .cloned()
-                .expect("S1 answerable public tool id")],
-            "S1/E1 exact deferred public tool id"
+                .contains_key(call_id),
+            "S1/E1 answerable public tool"
         );
         assert!(
             record
@@ -5808,11 +5814,6 @@ async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
     {
         let records = state.sessions.lock().unwrap();
         let record = records.get(&session.id).unwrap();
-        assert_eq!(
-            record.deferred_session_stop_reason,
-            Some((Some(run_id.clone()), StopReason::EndTurn)),
-            "S2/E2 newer same-Run terminal replaces stale Awaiting"
-        );
         assert!(
             record
                 .events
@@ -5839,11 +5840,7 @@ async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(idle_reasons, [&StopReason::EndTurn], "S3/E3");
-    assert!(
-        record.deferred_session_stop_reason.is_none(),
-        "S3/E3 clears the one projector continuation"
-    );
+    assert_eq!(idle_reasons, [&StopReason::EndTurn], "S2-S3/E2-E3");
 }
 
 #[tokio::test]
@@ -12201,9 +12198,15 @@ async fn committed_lifecycle_closes_cross_protocol_managed_projection_once() {
     let rendered =
         serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
             .unwrap();
+    // Timeline class B/D: the cold rebuild keeps every earlier answerable
+    // call (the first cross-protocol submit, the resumed local submit and
+    // this cold submit), because each pause's target is in the audit of its
+    // own Awaiting commit. The count used to be 1: the earlier calls were
+    // classified only from live tickets that had since been consumed, so a
+    // restarted replica retracted what a warm one had published.
     assert_eq!(
         rendered.matches("agent.custom_tool_use").count(),
-        1,
+        3,
         "R6/E6"
     );
     assert!(!rendered.contains("\"type\":\"agent.tool_use\""), "R6/E6");

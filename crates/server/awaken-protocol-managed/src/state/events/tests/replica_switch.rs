@@ -18,10 +18,7 @@ const KNOWN_BREAKS: &[(&str, &str)] = &[
     ("run_terminating_several_times", "C/F"),
     ("cancelled_pause", "E"),
     ("cancelled_pause_without_activity", "A/E"),
-    ("child_audited_pause", "A/B"),
     ("child_unaudited_pause", "B/D"),
-    ("child_pausing_twice", "A/B"),
-    ("child_cancelled_pause", "A/E"),
 ];
 
 #[tokio::test]

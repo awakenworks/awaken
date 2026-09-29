@@ -344,7 +344,13 @@ impl RootTimeline {
             authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
         };
         let await_reason = target.reason();
-        if reason != ToolAwaitKind::PermissionUnaudited {
+        if reason == ToolAwaitKind::PermissionUnaudited {
+            self.runtime
+                .unaudited_awaits
+                .lock()
+                .unwrap()
+                .insert(lifecycle_cursor(cursor));
+        } else {
             let draft: awaken_agent_contract::audit::draft::Draft =
                 awaken_agent_contract::audit::run_event::RunEvent::RunStateChanged {
                     state: RunState::Awaiting,
@@ -901,6 +907,12 @@ impl Timeline for ChildTimeline {
                         .lock()
                         .unwrap()
                         .insert(lifecycle_cursor(cursor), target);
+                } else {
+                    self.runtime
+                        .unaudited_awaits
+                        .lock()
+                        .unwrap()
+                        .insert(lifecycle_cursor(cursor));
                 }
                 self.runtime.lifecycle.lock().unwrap().push(awaiting);
             }

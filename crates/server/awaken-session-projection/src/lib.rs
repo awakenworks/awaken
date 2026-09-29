@@ -34,8 +34,8 @@ mod usage;
 pub use acceptance::{AcceptanceFence, LifecycleAcceptance, accept_lifecycle};
 pub use activation::activation_failure_fact;
 pub use aggregate::{
-    IntervalAggregatePlan, IntervalStep, IntervalUsage, latest_interval_opening,
-    plan_interval_aggregate,
+    IntervalAggregatePlan, IntervalHold, IntervalStep, IntervalUsage, interval_hold,
+    latest_interval_opening, plan_interval_aggregate,
 };
 pub use coordination::{
     CoordinationReceipts, IssuedToolEvent, SEND_MESSAGE_TOOL_ID, coordination_orders, cross_posts,

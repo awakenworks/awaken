@@ -33,8 +33,8 @@ async fn check<T: Timeline>(name: &str, steps: &[T::Step], expect: Expect) {
         ),
         Expect::KnownDivergence(class) => assert!(
             result.is_err(),
-            "{name} no longer diverges (class {class}): pin its sequence and remove it from \
-             the known divergences"
+            "{name} no longer diverges (class {class}): pin its sequence {result:?} and remove \
+             it from the known divergences"
         ),
     }
 }
@@ -294,12 +294,27 @@ scenario!(
     Expect::KnownDivergence("E"),
 );
 
-// B: a child pauses on an audited ticket, is answered and completes.
+// B: a child pauses on an audited ticket, is answered and completes. The
+// pause and its aggregate close come from the pause's own audit.
 scenario!(
     child_audited_pause,
     ChildTimeline,
     CHILD_AUDITED_PAUSE,
-    Expect::KnownDivergence("B"),
+    Expect::Sequence(&[
+        "agent.tool_use",
+        "agent.tool_result",
+        "session.thread_created",
+        "session.thread_status_running",
+        "agent.thread_message_sent",
+        "agent.tool_use",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+        "session.thread_status_running",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+    ]),
 );
 
 // B/E: the same pause left no audit of its target.
@@ -310,20 +325,54 @@ scenario!(
     Expect::KnownDivergence("B/E"),
 );
 
-// B/E: the child pauses twice before completing.
+// B/E: the child pauses twice before completing; every pause and every
+// resumption is published once.
 scenario!(
     child_pausing_twice,
     ChildTimeline,
     CHILD_PAUSING_TWICE,
-    Expect::KnownDivergence("B/E"),
+    Expect::Sequence(&[
+        "agent.tool_use",
+        "agent.tool_result",
+        "session.thread_created",
+        "session.thread_status_running",
+        "agent.thread_message_sent",
+        "agent.tool_use",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+        "session.thread_status_running",
+        "agent.tool_use",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+        "session.thread_status_running",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+    ]),
 );
 
-// E: the paused child is cancelled.
+// A/E: the paused child is cancelled; the aggregate closes again at the
+// cancellation.
 scenario!(
     child_cancelled_pause,
     ChildTimeline,
     CHILD_CANCELLED_PAUSE,
-    Expect::KnownDivergence("E"),
+    Expect::Sequence(&[
+        "agent.tool_use",
+        "agent.tool_result",
+        "session.thread_created",
+        "session.thread_status_running",
+        "agent.thread_message_sent",
+        "agent.tool_use",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+    ]),
 );
 
 /// Step kinds whose histories may still diverge; a drawn history that

@@ -41,11 +41,7 @@ fn transcript_user_input(
 }
 
 /// What the root reduction decided that the aggregate close reuses.
-pub(super) struct RootProjection<'e> {
-    /// The latest accepted root Run boundary of this candidate's new suffix.
-    pub(super) root_terminal: Option<&'e RunLifecycleEvent>,
-    /// `root_terminal`, unless an earlier refresh already projected it.
-    pub(super) projected_root_terminal: Option<&'e RunLifecycleEvent>,
+pub(super) struct RootProjection {
     /// Budget-reach transitions not yet projected by an earlier refresh.
     pub(super) projected_budget_reach: Vec<BudgetReachProjection>,
 }
@@ -120,13 +116,13 @@ impl ManagedState {
         Ok(())
     }
 
-    pub(super) fn project_root_prefix<'e>(
+    pub(super) fn project_root_prefix(
         &self,
         record: &mut SessionRecord,
         session_id: &str,
         persisted: &awaken_session_state_contract::PersistedSession,
-        evidence: &'e CandidateEvidence,
-    ) -> Result<RootProjection<'e>, StateError> {
+        evidence: &CandidateEvidence,
+    ) -> Result<RootProjection, StateError> {
         let persisted_status = Self::wire_session_status(persisted);
         let all_accepted_lifecycle = &evidence.acceptance.accepted;
         let messages = evidence.root_messages();
@@ -464,8 +460,6 @@ impl ManagedState {
         // the sole owner unless an exact failure source Run is correlated below.
         append_durable_outcome_projections(record, &evidence.outcomes);
         Ok(RootProjection {
-            root_terminal,
-            projected_root_terminal,
             projected_budget_reach,
         })
     }

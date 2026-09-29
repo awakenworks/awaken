@@ -18,11 +18,7 @@ const KNOWN_VIOLATIONS: &[(&str, &str)] = &[
     ("unaudited_permission_pause", "D"),
     ("scheduled_autonomous_resume", "F"),
     ("run_terminating_several_times", "C/F"),
-    ("cancelled_pause_without_activity", "A/E"),
-    ("child_audited_pause", "A/B"),
     ("child_unaudited_pause", "B/D"),
-    ("child_pausing_twice", "A/B"),
-    ("child_cancelled_pause", "A/E"),
 ];
 
 #[tokio::test]

@@ -21,7 +21,6 @@ pub(super) fn assert_record_frame_eq(actual: &SessionRecord, expected: &SessionR
         event_page_index,
         checkpoint,
         overlay,
-        deferred_session_stop_reason,
         event_thread_owners,
         child_threads,
         primary_thread_usage,
@@ -50,10 +49,6 @@ pub(super) fn assert_record_frame_eq(actual: &SessionRecord, expected: &SessionR
     assert!(
         checkpoint == &expected.checkpoint,
         "frame: source/progress pair"
-    );
-    assert_eq!(
-        deferred_session_stop_reason, &expected.deferred_session_stop_reason,
-        "frame: deferred terminal continuation"
     );
     assert_eq!(
         event_thread_owners, &expected.event_thread_owners,

@@ -302,6 +302,118 @@ pub fn latest_interval_opening<'a>(
         .or_else(|| closed.last().and_then(|last| last.opening))
 }
 
+/// How admitted Session intervals hold the lifecycle boundaries of a prefix.
+///
+/// Consumer: the protocol adapter's aggregate close outside intervals, which
+/// closes the aggregate at a boundary only when no interval holds it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IntervalHold {
+    /// Boundaries inside an observed closed interval, whose own usage/idle
+    /// pair closes the aggregate for them.
+    pub closed_by_interval: std::collections::HashSet<RunLifecycleCursor>,
+    /// Boundaries at which a Session interval was still admitted: inside the
+    /// running interval, or inside an interval that settled without an
+    /// observation other than its last boundary, where it ended.
+    pub session_active: std::collections::HashSet<RunLifecycleCursor>,
+}
+
+/// Where each admitted interval starts: its resolved opening, else the fence
+/// of the batch that admitted it, else its predecessor's close.
+fn interval_start(
+    opening: Option<&RunLifecycleEvent>,
+    opened_revision: awaken_session_types::SessionRevision,
+    batches: &[awaken_session_event_contract::SessionEventBatch],
+    prior_close: u64,
+) -> u64 {
+    opening.map_or_else(
+        || {
+            crate::interval::interval_admission_fence(opened_revision, batches)
+                .unwrap_or(prior_close)
+                .max(prior_close)
+                .saturating_add(1)
+        },
+        |opening| opening.source_commit_cursor,
+    )
+}
+
+/// How the admitted intervals of `persisted` hold the boundaries of
+/// `lifecycle_events` (see [`IntervalHold`]).
+#[must_use]
+pub fn interval_hold(
+    persisted: &PersistedSession,
+    lifecycle_events: &[RunLifecycleEvent],
+) -> IntervalHold {
+    let closed = closed_interval_openings(persisted, lifecycle_events);
+    let mut prior_close = 0_u64;
+    // (start, end, observed): an unobserved interval ends where the next
+    // interval starts.
+    let mut spans = Vec::<(u64, Option<u64>, bool)>::new();
+    for interval in &closed {
+        let start = interval_start(
+            interval.opening,
+            interval.interval.opened_revision,
+            &persisted.event_batches,
+            prior_close,
+        );
+        let observed = !interval.interval.observations.is_empty();
+        if let Some(previous) = spans.last_mut()
+            && previous.1.is_none()
+        {
+            previous.1 = Some(start.saturating_sub(1));
+        }
+        spans.push((start, observed.then_some(interval.close), observed));
+        prior_close = interval.close;
+    }
+    if let Some(interval) = persisted.running_interval.as_ref() {
+        let opening = running_interval_lifecycle_open_event(
+            persisted.session_id.as_str(),
+            interval,
+            prior_close,
+            &persisted.event_batches,
+            lifecycle_events,
+        );
+        let start = interval_start(
+            opening,
+            interval.opened_revision,
+            &persisted.event_batches,
+            prior_close,
+        );
+        if let Some(previous) = spans.last_mut()
+            && previous.1.is_none()
+        {
+            previous.1 = Some(start.saturating_sub(1));
+        }
+        spans.push((start, None, true));
+    }
+    let boundaries = lifecycle_events
+        .iter()
+        .filter(|event| SessionAgentRunBoundary::is_boundary(event.kind))
+        .collect::<Vec<_>>();
+    let mut hold = IntervalHold::default();
+    let running = persisted.running_interval.is_some();
+    for (index, (start, end, observed)) in spans.iter().copied().enumerate() {
+        let inside = boundaries
+            .iter()
+            .filter(|event| {
+                event.source_commit_cursor >= start
+                    && end.is_none_or(|end| event.source_commit_cursor <= end)
+            })
+            .map(|event| event.cursor)
+            .collect::<Vec<_>>();
+        let is_running = running && index + 1 == spans.len();
+        if is_running {
+            hold.session_active.extend(inside);
+        } else if observed {
+            hold.closed_by_interval.extend(inside);
+        } else if let Some((_, earlier)) = inside.split_last() {
+            // Settled without an observation: the Session stayed active up
+            // to its last boundary, where it ended.
+            hold.session_active.extend(earlier.iter().copied());
+        }
+    }
+    hold
+}
+
 /// A closed interval with the opening selected against its predecessor.
 struct ClosedIntervalOpening<'a> {
     interval: &'a SessionRuntimeInterval,

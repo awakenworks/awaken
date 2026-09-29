@@ -5,14 +5,6 @@ use super::*;
 use awaken_session_projection::{CoordinatedThread, ThreadStatus};
 
 impl ManagedState {
-    pub(super) fn run_stop_reason(
-        state: &awaken_agent_contract::agent::run::RunState,
-        pending: Option<&Pending>,
-        await_reason: Option<&awaken_agent_contract::agent::awaiting::AwaitReason>,
-    ) -> StopReason {
-        project::terminal_stop_reason(state, pending, await_reason, false)
-    }
-
     pub(super) fn public_run_stop_reason(
         record: &SessionRecord,
         owner_thread_id: Option<&str>,
@@ -25,13 +17,6 @@ impl ManagedState {
             owner_thread_id,
             &awaken_session_projection::terminal_stop(state, pending, await_reason, false),
         )
-    }
-
-    pub(super) fn child_stop_reason(
-        event: &RunLifecycleEvent,
-        pending: Option<&Pending>,
-    ) -> StopReason {
-        Self::run_stop_reason(&event.state, pending, event.await_reason.as_ref())
     }
 
     /// The coordinated children as the timeline domain sees them.
@@ -56,7 +41,6 @@ impl ManagedState {
         &self,
         record: &mut SessionRecord,
         events: &[RunLifecycleEvent],
-        pending: &std::collections::HashMap<String, Pending>,
         historical_pending: &std::collections::HashMap<RunLifecycleCursor, Pending>,
         snapshots: &std::collections::HashMap<
             String,
@@ -67,7 +51,6 @@ impl ManagedState {
         let projection = awaken_session_projection::project_child_lifecycle(
             &mut threads,
             events,
-            pending,
             historical_pending,
             snapshots,
         )
@@ -300,7 +283,6 @@ impl ManagedState {
         self.append_child_lifecycle_projection(
             record,
             lifecycle_events,
-            pending,
             historical_pending,
             snapshots,
         )?;

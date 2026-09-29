@@ -35,20 +35,8 @@ const KNOWN_DIVERGENCES: &[(&str, usize)] = &[
         2,
     ),
     (
-        "state::events::tests::completed_tool_only_child_revisits_withheld_occurrences_before_results",
-        3,
-    ),
-    (
         "state::events::tests::first_interval_lineage_preserves_the_issued_legacy_lifecycle_prefix",
         4,
-    ),
-    (
-        "state::events::tests::legacy_tool_reply_id_rejects_ambiguous_pending_owners",
-        2,
-    ),
-    (
-        "state::events::tests::lifecycle_scope_uses_the_root_fence_and_later_relationship_snapshot",
-        1,
     ),
     (
         "state::events::tests::newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason",
@@ -58,23 +46,11 @@ const KNOWN_DIVERGENCES: &[(&str, usize)] = &[
         "state::events::tests::pending_without_transcript_uses_awaiting_lifecycle_anchor",
         1,
     ),
-    (
-        "state::events::tests::qualified_event_id_routes_every_child_tool_reply_variant",
-        3,
-    ),
-    (
-        "state::events::tests::terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt",
-        16,
-    ),
-    (
-        "state::tests::terminal::parent_terminal_closes_every_derived_child_live_and_after_restart",
-        4,
-    ),
 ];
 
 /// Suite-wide ceiling on divergent publication points: the sum of
 /// [`KNOWN_DIVERGENCES`]. It may only fall; the timeline's final value is 0.
-const DIVERGENCE_CEILING: usize = 54;
+const DIVERGENCE_CEILING: usize = 25;
 
 /// Divergent publication points observed per test in this process.
 static OBSERVED: LazyLock<Mutex<HashMap<String, usize>>> = LazyLock::new(Mutex::default);

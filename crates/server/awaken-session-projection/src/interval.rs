@@ -242,6 +242,28 @@ fn lifecycle_opening_order(
         .then_with(|| left.cursor.cmp(&right.cursor))
 }
 
+/// The admission fence of the retained batch that owns an interval: every
+/// effect of that batch, the interval's opening included, commits after it.
+/// `None` for an interval no retained batch owns (a Run admitted without a
+/// user Event).
+#[must_use]
+pub fn interval_admission_fence(
+    opened_revision: awaken_session_types::SessionRevision,
+    batches: &[SessionEventBatch],
+) -> Option<u64> {
+    let owning_revision = batches
+        .iter()
+        .filter(|batch| batch.admitted_revision <= opened_revision)
+        .map(|batch| batch.admitted_revision)
+        .max()?;
+    batches
+        .iter()
+        .filter(|batch| batch.admitted_revision == owning_revision)
+        .filter_map(|batch| batch.admission_projection_anchor)
+        .map(|anchor| anchor.source_commit_cursor)
+        .max()
+}
+
 fn interval_owner_openings(
     opened_revision: awaken_session_types::SessionRevision,
     batches: &[SessionEventBatch],
