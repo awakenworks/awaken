@@ -184,6 +184,8 @@ struct RecordingAgentAdmissionRuntime {
     generic_recovery_available: AtomicBool,
     lifecycle_visible: AtomicBool,
     source_valid: AtomicBool,
+    installed_projections: Mutex<Vec<awaken_session_realization_contract::FrozenSessionProjection>>,
+    projection_failure: AtomicBool,
 }
 
 type RecordedBoundaryKey = (String, String);
@@ -313,6 +315,8 @@ impl RecordingAgentAdmissionRuntime {
             generic_recovery_available: AtomicBool::new(true),
             lifecycle_visible: AtomicBool::new(true),
             source_valid: AtomicBool::new(true),
+            installed_projections: Mutex::new(Vec::new()),
+            projection_failure: AtomicBool::new(false),
         }
     }
 
@@ -2032,11 +2036,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingAgentAdm
         crate::tests::test_realization_request_started()
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Reconcile the existing Runtime projections through the given Control
-    /// owner. Local and Worker deployment use one slot-based selection and
-    /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
     async fn renew_session_realization_projections(
         &self,
         control: &dyn awaken_session_realization_contract::SessionRealizationControl,
@@ -2049,13 +2048,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingAgentAdm
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Validate the exact provider-effective Sandbox layout without publishing
-    /// process-local state or performing provider, cache, Skill, File, Vault,
-    /// Repository, or Git I/O. Session creation and Resource mutation call this
-    /// before their durable/effect boundaries; Runtime repeats it at the final
-    /// realization edge as defense in depth.
     fn validate_session_sandbox_layout(
         &self,
         thread: &str,
@@ -2071,14 +2063,16 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingAgentAdm
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
+        self.installed_projections
+            .lock()
+            .unwrap()
+            .push(projection.clone());
+        if self.projection_failure.load(Ordering::SeqCst) {
+            return Err(RunError::unavailable("fixture projection unavailable"));
+        }
         install_complete_test_projection(self, thread, projection, mode).await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Install a monotonic same-owner/same-incarnation/same-epoch successor of
-    /// an already-installed realization fence. This is the only lease-only
-    /// Runtime mutation; it deliberately carries no projection or phase action.
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
@@ -2089,12 +2083,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingAgentAdm
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Forget one failed realization fence from disposable Runtime state. The
-    /// aggregate remains the sole lease authority: this hook only prevents a
-    /// later retry from authorizing effects with a lease that Control has
-    /// already failed or may have failed before losing its response.
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
@@ -2105,9 +2093,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingAgentAdm
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Install the durable callback used at the exact sandbox creation boundary.
     fn install_environment_binding_sink(
         &self,
         sink: std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
@@ -2214,6 +2199,10 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingAgentAd
         &self,
         command: awaken_session_execution_contract::CoordinatedRunCommand,
     ) -> Result<awaken_session_execution_contract::SessionAgentMessageReceipt, RunError> {
+        assert!(
+            !self.installed_projections.lock().unwrap().is_empty(),
+            "coordination must install its complete projection before admission"
+        );
         let accepted_thread = command.thread_id.clone();
         self.admissions.lock().unwrap().push(command);
         match self

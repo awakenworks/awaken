@@ -15,6 +15,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_state_contract::ManagedLifecycleFact;
 use awaken_session_types::SessionId;
+mod coordinated_resources;
 mod lost_root_cas_replay;
 
 fn coordinated_session(id: &str) -> PersistedSession {
