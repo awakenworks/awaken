@@ -193,19 +193,24 @@ impl CandidateEvidence {
             .iter()
             .map(|link| link.thread_id.0.as_str())
             .collect::<HashSet<_>>();
-        // The answerable target of every Awaiting commit, read from that
-        // commit's own audit row. A live ticket is never an input: the audit
-        // is committed with the ticket and outlives it, so a pause classifies
-        // the same before and after its ticket is consumed.
-        let audited =
-            awaken_session_projection::historical_pending_by_lifecycle(&lifecycle, |thread_id| {
-                if thread_id == session_id {
-                    root.as_ref()
-                } else {
-                    children.get(thread_id)
-                }
-            })
-            .map_err(projection_error)?;
+        // The target of every Awaiting commit, read from that commit's own
+        // audit row. A live ticket is never an input: the audit is committed
+        // with the ticket and outlives it, so a pause classifies the same
+        // before and after its ticket is consumed. A pause whose target no
+        // client answers (a scheduled action, a delegation) is still
+        // classified by it; only a pause that left no target blocks.
+        let targets = awaken_session_projection::audited_await_targets(&lifecycle, |thread_id| {
+            if thread_id == session_id {
+                root.as_ref()
+            } else {
+                children.get(thread_id)
+            }
+        })
+        .map_err(projection_error)?;
+        let audited = targets
+            .iter()
+            .filter_map(|(cursor, target)| Some((*cursor, Pending::from_await_target(target)?)))
+            .collect::<HashMap<_, _>>();
         let acceptance = accept_lifecycle(
             lifecycle,
             &AcceptanceFence {
@@ -215,7 +220,7 @@ impl CandidateEvidence {
                 known_children: &known_children,
             },
             initial_cursor,
-            |event| audited.contains_key(&event.cursor),
+            |event| targets.contains_key(&event.cursor),
         );
         let historical_pending = acceptance
             .accepted

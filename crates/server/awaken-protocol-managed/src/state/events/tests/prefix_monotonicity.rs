@@ -14,10 +14,7 @@ use super::timeline_scenarios::*;
 
 /// Histories whose cold rebuild is still not monotone, with their class.
 const KNOWN_VIOLATIONS: &[(&str, &str)] = &[
-    ("consecutive_runs_without_activity", "A/C"),
     ("unaudited_permission_pause", "D"),
-    ("scheduled_autonomous_resume", "F"),
-    ("run_terminating_several_times", "C/F"),
     ("child_unaudited_pause", "B/D"),
 ];
 

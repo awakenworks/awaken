@@ -244,13 +244,50 @@ scenario!(
     ]),
 );
 
+// C (latent bug): a Run without Session activity pauses and resumes. A reader
+// that saw the pause and the resume in one read keyed the aggregate opening of
+// the pause's period at the resume, the Run's latest opening, not bounded by
+// the pause that ends the period, so the opening followed that period's idle.
+// Each aggregate period opens at its own first opening.
+scenario!(
+    pause_then_resume_without_activity,
+    RootTimeline,
+    &[Step::Legacy(0), Step::Ask(0), Step::Reply(0)],
+    Expect::Sequence(&[
+        "session.status_running",
+        "session.thread_status_running",
+        "agent.tool_use",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+        "session.status_running",
+        "session.thread_status_running",
+        "agent.tool_result",
+    ]),
+);
+
 // A/C: two Runs without Session activity; a cold replica that first reads
-// after both sees two openings and two boundaries in one prefix.
+// after both sees two openings and two boundaries in one prefix, and opens
+// and closes the aggregate once per Run as a replica that read each did.
 scenario!(
     consecutive_runs_without_activity,
     RootTimeline,
     CONSECUTIVE_RUNS_WITHOUT_ACTIVITY,
-    Expect::KnownDivergence("A/C"),
+    Expect::Sequence(&[
+        "session.status_running",
+        "session.thread_status_running",
+        "agent.message",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+        "session.status_running",
+        "session.thread_status_running",
+        "agent.message",
+        "agent.message",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+    ]),
 );
 
 // D: the ticket is set and consumed, but its Awaiting commit left no audit.
@@ -262,20 +299,55 @@ scenario!(
 );
 
 // F: a scheduled action pauses the Run while its Session activity stays
-// admitted, then resumes autonomously and completes.
+// admitted, then resumes autonomously and completes. The interval's span
+// starts after the Runtime cursor its admission recorded, so every reader
+// holds the pause inside it and the aggregate stays open through it.
 scenario!(
     scheduled_autonomous_resume,
     RootTimeline,
     SCHEDULED_AUTONOMOUS_RESUME,
-    Expect::KnownDivergence("F"),
+    Expect::Sequence(&[
+        "session.status_running",
+        "session.thread_status_running",
+        "agent.tool_use",
+        "session.thread_status_idle",
+        "session.thread_status_running",
+        "agent.tool_result",
+        "agent.message",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+    ]),
 );
 
-// F: one Run without Session activity reaches three boundaries.
+// C: one Run without Session activity reaches three boundaries; each
+// aggregate period opens at its own first opening.
 scenario!(
     run_terminating_several_times,
     RootTimeline,
     RUN_TERMINATING_SEVERAL_TIMES,
-    Expect::KnownDivergence("F"),
+    Expect::Sequence(&[
+        "session.status_running",
+        "session.thread_status_running",
+        "agent.tool_use",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+        "session.status_running",
+        "session.thread_status_running",
+        "agent.tool_result",
+        "agent.tool_use",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+        "session.status_running",
+        "session.thread_status_running",
+        "agent.tool_result",
+        "agent.message",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+    ]),
 );
 
 // E: the Run pauses, then is cancelled.
@@ -295,12 +367,16 @@ scenario!(
 );
 
 // B: a child pauses on an audited ticket, is answered and completes. The
-// pause and its aggregate close come from the pause's own audit.
+// pause and its aggregate close come from the pause's own audit. C: the
+// aggregate opens at the root's opening and again at the child's resumption
+// after the pause closed it (it used to open only where a root terminal's Run
+// opened, so a child-driven period closed without having opened).
 scenario!(
     child_audited_pause,
     ChildTimeline,
     CHILD_AUDITED_PAUSE,
     Expect::Sequence(&[
+        "session.status_running",
         "agent.tool_use",
         "agent.tool_result",
         "session.thread_created",
@@ -310,6 +386,7 @@ scenario!(
         "session.thread_status_idle",
         "session.usage",
         "session.status_idle",
+        "session.status_running",
         "session.thread_status_running",
         "session.thread_status_idle",
         "session.usage",
@@ -326,12 +403,13 @@ scenario!(
 );
 
 // B/E: the child pauses twice before completing; every pause and every
-// resumption is published once.
+// resumption is published once. C: each resumption reopens the aggregate.
 scenario!(
     child_pausing_twice,
     ChildTimeline,
     CHILD_PAUSING_TWICE,
     Expect::Sequence(&[
+        "session.status_running",
         "agent.tool_use",
         "agent.tool_result",
         "session.thread_created",
@@ -341,11 +419,13 @@ scenario!(
         "session.thread_status_idle",
         "session.usage",
         "session.status_idle",
+        "session.status_running",
         "session.thread_status_running",
         "agent.tool_use",
         "session.thread_status_idle",
         "session.usage",
         "session.status_idle",
+        "session.status_running",
         "session.thread_status_running",
         "session.thread_status_idle",
         "session.usage",
@@ -354,12 +434,13 @@ scenario!(
 );
 
 // A/E: the paused child is cancelled; the aggregate closes again at the
-// cancellation.
+// cancellation. C: the aggregate opens at the root's opening.
 scenario!(
     child_cancelled_pause,
     ChildTimeline,
     CHILD_CANCELLED_PAUSE,
     Expect::Sequence(&[
+        "session.status_running",
         "agent.tool_use",
         "agent.tool_result",
         "session.thread_created",
@@ -377,7 +458,7 @@ scenario!(
 
 /// Step kinds whose histories may still diverge; a drawn history that
 /// diverges without one of them fails the property. The list only shrinks.
-const KNOWN_DIVERGENT_KINDS: &[&str] = &["Legacy", "AskUnaudited", "Schedule", "Cancel"];
+const KNOWN_DIVERGENT_KINDS: &[&str] = &["AskUnaudited", "Cancel"];
 
 fn kind(step: Step) -> &'static str {
     match step {

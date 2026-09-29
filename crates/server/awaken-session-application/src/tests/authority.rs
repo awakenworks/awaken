@@ -3588,7 +3588,7 @@ async fn recovered_scalar_activity_is_settled_or_superseded_without_parallel_tru
 
     let mut recovered = persisted("activity-recovered-settle", false, "running");
     recovered.activity_epoch = 7;
-    assert!(recovered.begin_runtime_interval(1), "A10 fixture");
+    assert!(recovered.begin_runtime_interval(1, 0), "A10 fixture");
     assert!(recovered.active_activity_epochs.is_empty(), "A10/C1");
     create(repo.as_ref(), recovered).await;
     let idle = app
@@ -3600,7 +3600,7 @@ async fn recovered_scalar_activity_is_settled_or_superseded_without_parallel_tru
 
     let mut recovered = persisted("activity-recovered-successor", false, "running");
     recovered.activity_epoch = 9;
-    assert!(recovered.begin_runtime_interval(1), "A11 fixture");
+    assert!(recovered.begin_runtime_interval(1, 0), "A11 fixture");
     create(repo.as_ref(), recovered).await;
     let successor = app
         .begin_activity(&SessionId::from("activity-recovered-successor"))
@@ -6362,6 +6362,7 @@ async fn cancellation_before_external_realization_settles_without_a_runtime_inte
         true,
         false,
         awaken_lease_contract::system_clock().now().as_epoch_ms(),
+        0,
     )
     .expect("P1/C2 activity admitted during external realization");
     assert!(

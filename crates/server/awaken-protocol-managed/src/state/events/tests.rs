@@ -740,6 +740,7 @@ fn budget_reach_uses_the_first_closed_interval_whose_cumulative_usage_crossed_it
             ended_at_unix_ms: close,
             opened_revision: awaken_session_types::SessionRevision(close),
             closed_revision: awaken_session_types::SessionRevision(close + 1),
+            admitted_after_commit_cursor: None,
             observations: vec![
                 awaken_session_state_contract::SessionRuntimeIntervalObservation {
                     activity_epoch: close,
@@ -828,6 +829,7 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
             ended_at_unix_ms: close,
             opened_revision: awaken_session_types::SessionRevision(open),
             closed_revision: awaken_session_types::SessionRevision(close),
+            admitted_after_commit_cursor: None,
             observations: vec![
                 awaken_session_state_contract::SessionRuntimeIntervalObservation {
                     activity_epoch: close,
@@ -4489,103 +4491,6 @@ async fn legacy_tool_reply_id_rejects_ambiguous_pending_owners() {
     assert!(
         runtime.thread_tool_replies.lock().unwrap().is_empty(),
         "L2/E2 no delivery"
-    );
-}
-
-#[tokio::test]
-async fn aggregate_running_edge_is_decided_from_the_locked_event_tail() {
-    // Causes: the fixtures below establish `aggregate running edge` with the concrete inputs,
-    // state, dependencies, and failure triggers used by this case.
-    // Constraints/invariants: committed Session, Run, and transcript facts are the only durable
-    // truth; live, warm, and cold projections may not diverge or mint a second lifecycle.
-    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
-    // selects only its stated effect and preserves the authority constraint.
-    // Cause/effect graph: C1 durable Session state is Running/non-Running;
-    // C2 the disposable Session DTO is already Running or not; C3 the latest
-    // aggregate wire state is absent, Idle/Rescheduled, Running, or
-    // Terminated; C4 arbitrary observational events trail that state.
-    // Effects: E1 emit one Running edge for absent/idle/rescheduled whenever
-    // C1 is Running, independently of C2; E2 suppress a duplicate after the
-    // first refresh appends Running; E3 never reopen Terminated; E4
-    // non-Running durable state emits nothing. The event tail, not the
-    // current DTO, is the sole projection idempotency authority.
-    //
-    // | Rule | DTO | Durable | Latest aggregate | Effect |
-    // |---|---|---|---|---|
-    // | R1 | any | Running | absent | E1 |
-    // | R2 | any | Running | Idle/Rescheduled | E1 |
-    // | R3 | any | Running | Running | E2 |
-    // | R4 | any | Running | Terminated | E3 |
-    // | R5 | any | Idle | any | E4 |
-    // | R6 | Running | Running | absent | E1; DTO is not event history |
-    let state = ManagedState::new(LifecycleRuntime::default());
-    let session = state
-        .create_session(
-            serde_json::from_value(serde_json::json!({
-                "agent":"coder", "environment_id":"env_local"
-            }))
-            .unwrap(),
-            awaken_tenancy::DEFAULT_WORKSPACE_ID,
-        )
-        .await
-        .unwrap();
-    let mut sessions = state.sessions.lock().unwrap();
-    let record = sessions.get_mut(&session.id).unwrap();
-    let event = |kind| Event {
-        id: "test-event".into(),
-        kind,
-        processed_at: Some(LEGACY_UNRECORDED_AT.into()),
-    };
-
-    record.events.clear();
-    assert!(
-        ManagedState::should_append_aggregate_running(record, SessionStatus::Running),
-        "R1/E1"
-    );
-    assert!(
-        !ManagedState::should_append_aggregate_running(record, SessionStatus::Idle),
-        "R5/E4"
-    );
-    record.session.status = SessionStatus::Running;
-    assert!(
-        ManagedState::should_append_aggregate_running(record, SessionStatus::Running),
-        "R6/E1"
-    );
-
-    record.events.extend([
-        event(OutboundKind::SessionStatusIdle {
-            stop_reason: StopReason::EndTurn,
-        }),
-        event(OutboundKind::AgentThinking {}),
-    ]);
-    assert!(
-        ManagedState::should_append_aggregate_running(record, SessionStatus::Running),
-        "R2/E1"
-    );
-    record.events.clear();
-    record.events.extend([
-        event(OutboundKind::SessionStatusRescheduled {}),
-        event(OutboundKind::AgentThinking {}),
-    ]);
-    assert!(
-        ManagedState::should_append_aggregate_running(record, SessionStatus::Running),
-        "R2/E1 rescheduled"
-    );
-    record
-        .events
-        .push(event(OutboundKind::SessionStatusRunning {}));
-    record.events.push(event(OutboundKind::AgentThinking {}));
-    assert!(
-        !ManagedState::should_append_aggregate_running(record, SessionStatus::Running),
-        "R2-R3/E2"
-    );
-
-    record
-        .events
-        .push(event(OutboundKind::SessionStatusTerminated {}));
-    assert!(
-        !ManagedState::should_append_aggregate_running(record, SessionStatus::Running),
-        "R4/E3"
     );
 }
 

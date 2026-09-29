@@ -17,6 +17,14 @@ pub struct SessionRuntimeIntervalStart {
     /// fence; process-local observation order is never a replay coordinate.
     #[serde(default)]
     pub opened_revision: crate::SessionRevision,
+    /// The root Thread's Runtime commit cursor when this interval was
+    /// admitted. Every lifecycle commit the interval owns follows it, and one
+    /// at or before it predates the interval, so a reader places the
+    /// interval's span from this durable coordinate rather than from how much
+    /// lifecycle it has seen. `None` for an interval recorded before this
+    /// coordinate was kept, which the legacy selection places.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admitted_after_commit_cursor: Option<u64>,
     /// Exact Runtime boundaries observed while this aggregate interval remains
     /// open. Multiple overlapping activities and a child-to-primary handoff share
     /// one interval, so one Run id or one terminal cursor is not sufficient.
@@ -49,6 +57,9 @@ pub struct SessionRuntimeInterval {
     pub opened_revision: crate::SessionRevision,
     #[serde(default)]
     pub closed_revision: crate::SessionRevision,
+    /// See [`SessionRuntimeIntervalStart::admitted_after_commit_cursor`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admitted_after_commit_cursor: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub observations: Vec<SessionRuntimeIntervalObservation>,
     /// Exact cumulative neutral usage at the closing boundary. This is retained

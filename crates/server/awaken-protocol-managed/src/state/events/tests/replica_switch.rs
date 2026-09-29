@@ -12,10 +12,7 @@ use super::timeline_scenarios::*;
 
 /// Histories whose warm cursors still do not resume on a cold replica.
 const KNOWN_BREAKS: &[(&str, &str)] = &[
-    ("consecutive_runs_without_activity", "A/C"),
     ("unaudited_permission_pause", "D"),
-    ("scheduled_autonomous_resume", "F"),
-    ("run_terminating_several_times", "C/F"),
     ("cancelled_pause", "E"),
     ("cancelled_pause_without_activity", "A/E"),
     ("child_unaudited_pause", "B/D"),

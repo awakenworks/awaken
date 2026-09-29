@@ -1,7 +1,7 @@
 // @formal entrypoint session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
 //! Aggregate close of one projection candidate: the primary Thread's terminal
-//! idles, the budget-reach pause, and the aggregate usage/idle pair of every
-//! boundary that no admitted interval owns.
+//! idles, the budget-reach pause, and the aggregate Running edge and
+//! usage/idle pair of every period that no admitted interval owns.
 //!
 //! Consumer: the candidate builder, after the root and delegation projectors.
 
@@ -100,12 +100,14 @@ impl ManagedState {
                 record.checkpoint.source.budget_reach_generation = generation;
             }
         }
-        self.close_aggregate_outside_intervals(record, session_id, persisted, evidence)
+        self.bracket_aggregate_outside_intervals(record, session_id, persisted, evidence)
     }
 
-    /// The aggregate usage/idle pair of every lifecycle boundary no admitted
-    /// Session interval owns, decided by walking the committed lifecycle in
-    /// order: the aggregate closes at every boundary after which neither the
+    /// The aggregate Running edge and usage/idle pair of every period no
+    /// admitted Session interval owns, decided by walking the committed
+    /// lifecycle in order. The aggregate opens at the first opening after it
+    /// closed (or, for a period first committed at its boundary, at that
+    /// boundary's prefix), and closes at every boundary after which neither the
     /// root nor a coordinated child runs and no Session interval holds it. The
     /// pair is keyed by that boundary and carries the usage and
     /// stop reason as of it, so a reader that sees the boundary alone and one
@@ -115,7 +117,11 @@ impl ManagedState {
     /// keyed by the latest terminal a refresh had seen and to carry the usage
     /// and stop reason of that refresh, so a reader that saw two boundaries in
     /// one read published one pair and a reader that saw each published two.
-    fn close_aggregate_outside_intervals(
+    /// Class C: the opening used to be one per refresh, keyed by the latest
+    /// opening of the latest terminal's Run, unbounded by that terminal, so a
+    /// reader that saw a pause and its resume in one read opened the pause's
+    /// period at the resume and published no opening for the pause's period.
+    fn bracket_aggregate_outside_intervals(
         &self,
         record: &mut SessionRecord,
         session_id: &str,
@@ -140,6 +146,8 @@ impl ManagedState {
         let mut paused = std::collections::BTreeMap::<&str, &Pending>::new();
         let mut deferred: Option<(Option<&awaken_agent_contract::agent::run::Id>, StopReason)> =
             None;
+        let mut aggregate_open = false;
+        let mut openings = Vec::new();
         let mut closes = Vec::new();
         for event in accepted {
             let thread = event.thread_id.0.as_str();
@@ -148,6 +156,16 @@ impl ManagedState {
                 continue;
             }
             if awaken_session_projection::is_opening(event.kind) {
+                if !aggregate_open {
+                    openings.push(FactKey::new(
+                        session_id,
+                        FactRole::AggregateStatusRunning,
+                        FactProvenance::Lifecycle {
+                            cursor: event.cursor.0,
+                        },
+                    ));
+                    aggregate_open = true;
+                }
                 if is_root {
                     root_running = true;
                 } else {
@@ -158,6 +176,19 @@ impl ManagedState {
             }
             if !awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(event.kind) {
                 continue;
+            }
+            if is_root && !aggregate_open {
+                // A period first committed at its boundary (a fast Run, or a
+                // pause ended without resuming) opens at that boundary's
+                // prefix.
+                openings.push(FactKey::new(
+                    session_id,
+                    FactRole::AggregateTerminalStatusRunning,
+                    FactProvenance::LifecyclePrefix {
+                        cursor: event.cursor.0,
+                    },
+                ));
+                aggregate_open = true;
             }
             if is_root {
                 root_running = false;
@@ -215,13 +246,18 @@ impl ManagedState {
                 deferred.get_or_insert((None, reason));
             }
             if hold.closed_by_interval.contains(&event.cursor) {
-                // The admitted interval's own close publishes this pause.
+                // The admitted interval's own close publishes this pause, at
+                // its latest boundary.
                 deferred = None;
+                if hold.interval_closes.contains(&event.cursor) {
+                    aggregate_open = false;
+                }
                 continue;
             }
             if !idle {
                 continue;
             }
+            aggregate_open = false;
             let budget_reached = budget_reach.iter().any(|anchor| {
                 anchor
                     .close_cursor
@@ -259,6 +295,9 @@ impl ManagedState {
                 continue;
             }
             closes.push((event, stop));
+        }
+        for opening in openings {
+            Self::append_aggregate_running_once(record, opening);
         }
         for (boundary, stop_reason) in closes {
             let at = |role| {

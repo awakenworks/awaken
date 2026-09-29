@@ -116,38 +116,6 @@ impl ManagedState {
         Ok(())
     }
 
-    /// Decide the aggregate Running edge from committed Session state and the
-    /// event projection while the record lock is held. `record.session.status`
-    /// is only the current disposable DTO: a foreground command can refresh it
-    /// to Running before the matching public edge is projected. The latest
-    /// aggregate status event is the projector's existing idempotency cursor and
-    /// needs no parallel status flag.
-    pub(super) fn should_append_aggregate_running(
-        record: &SessionRecord,
-        persisted_status: SessionStatus,
-    ) -> bool {
-        persisted_status == SessionStatus::Running && Self::needs_aggregate_running_edge(record)
-    }
-
-    /// Whether the append-only wire history still needs an aggregate Running
-    /// opening edge. Both a live Running refresh and a later terminal-prefix
-    /// reconstruction use this one tail classification, so observing durable
-    /// Running before the terminal commit cannot mint a second opening edge.
-    pub(super) fn needs_aggregate_running_edge(record: &SessionRecord) -> bool {
-        record
-            .events
-            .iter()
-            .rev()
-            .find_map(|event| match event.kind {
-                OutboundKind::SessionStatusRunning { .. }
-                | OutboundKind::SessionStatusTerminated { .. } => Some(false),
-                OutboundKind::SessionStatusIdle { .. }
-                | OutboundKind::SessionStatusRescheduled { .. } => Some(true),
-                _ => None,
-            })
-            .unwrap_or(true)
-    }
-
     /// Whether the latest public lifecycle edge for the primary Thread is open.
     /// The committed event tail is the existing projector idempotency authority;
     /// no parallel primary-status cell is maintained.

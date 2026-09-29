@@ -28,29 +28,17 @@ const KNOWN_DIVERGENCES: &[(&str, usize)] = &[
     ),
     (
         "state::events::tests::committed_lifecycle_closes_cross_protocol_managed_projection_once",
-        7,
-    ),
-    (
-        "state::events::tests::committed_tool_occurrences_project_only_after_exact_disposition_evidence",
         2,
-    ),
-    (
-        "state::events::tests::first_interval_lineage_preserves_the_issued_legacy_lifecycle_prefix",
-        4,
     ),
     (
         "state::events::tests::newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason",
         3,
     ),
-    (
-        "state::events::tests::pending_without_transcript_uses_awaiting_lifecycle_anchor",
-        1,
-    ),
 ];
 
 /// Suite-wide ceiling on divergent publication points: the sum of
 /// [`KNOWN_DIVERGENCES`]. It may only fall; the timeline's final value is 0.
-const DIVERGENCE_CEILING: usize = 25;
+const DIVERGENCE_CEILING: usize = 13;
 
 /// Divergent publication points observed per test in this process.
 static OBSERVED: LazyLock<Mutex<HashMap<String, usize>>> = LazyLock::new(Mutex::default);

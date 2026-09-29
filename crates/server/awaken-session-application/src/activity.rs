@@ -407,6 +407,7 @@ impl SessionApplication {
         allow_external_realization: bool,
         continue_committed_await: bool,
         now_ms: u64,
+        admitted_after_commit_cursor: u64,
     ) -> Result<u64, SessionActivityError> {
         let epoch = match session_activity_open_plan(
             session.execution,
@@ -435,8 +436,26 @@ impl SessionApplication {
                 .transition_execution(SessionExecutionState::Running)
                 .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?;
         }
-        session.begin_runtime_interval(now_ms);
+        session.begin_runtime_interval(now_ms, admitted_after_commit_cursor);
         Ok(epoch)
+    }
+
+    /// The root Thread's Runtime commit cursor before an admission: every
+    /// lifecycle commit of the interval that admission opens follows it. Read
+    /// only when the admission may open an interval, since a joining activity
+    /// keeps the running interval's own cursor.
+    async fn interval_admission_cursor(
+        &self,
+        session: &PersistedSession,
+    ) -> Result<u64, SessionActivityError> {
+        if session.running_interval.is_some() {
+            return Ok(0);
+        }
+        self.runtime()
+            .session_thread_recovery_snapshot(&session.session_id, session.session_id.as_str())
+            .await
+            .map(|snapshot| snapshot.map_or(0, |snapshot| snapshot.store_cursor))
+            .map_err(|error| SessionActivityError::Unavailable(error.to_string()))
     }
 
     /// Recover/admit the frozen Session binding, then open exactly one activity
@@ -515,12 +534,14 @@ impl SessionApplication {
             // `running` would let a failed Stage look like an ordinary Run and
             // a later settlement could erase `activation_failed` back to idle.
             let external = self.requires_external_realization(&session);
+            let admitted_after = self.interval_admission_cursor(&session).await?;
             Self::open_activity_on_snapshot(
                 &mut session,
                 None,
                 external,
                 false,
                 self.clock.now_ms(),
+                admitted_after,
             )?;
             match self
                 .commit_session_snapshot_with_record(
@@ -715,12 +736,14 @@ impl SessionApplication {
                 .checked_add(1)
                 .ok_or(SessionActivityError::EpochExhausted)?;
             let external = self.requires_external_realization(&session);
+            let admitted_after = self.interval_admission_cursor(&session).await?;
             Self::open_activity_on_snapshot(
                 &mut session,
                 Some(epoch),
                 external,
                 continue_committed_await,
                 self.clock.now_ms(),
+                admitted_after,
             )?;
             if let Some(prior_activity_epoch) = prior_activity_epoch {
                 // The new epoch was inserted first, so removing the old one can

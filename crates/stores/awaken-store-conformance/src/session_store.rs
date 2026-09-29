@@ -1040,6 +1040,7 @@ pub async fn lifecycle_outbox_tracks_every_committed_transition<
         ended_at_unix_ms: 1_700_000_000_900,
         opened_revision: Default::default(),
         closed_revision: Default::default(),
+        admitted_after_commit_cursor: None,
         observations: Vec::new(),
         usage: Default::default(),
         max_list_cost_minor: None,

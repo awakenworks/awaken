@@ -721,7 +721,10 @@ impl SessionApplication {
                     .transition_execution(SessionExecutionState::Running)
                     .map_err(unavailable)?;
             }
-            session.begin_runtime_interval(self.clock.now_ms());
+            // The activity was admitted before its realization; the interval
+            // it opens now owns no commit this root recorded before.
+            let admitted_after = session.recorded_runtime_commit_cursor();
+            session.begin_runtime_interval(self.clock.now_ms(), admitted_after);
         } else if session.execution != SessionExecutionState::Running {
             session
                 .transition_execution(SessionExecutionState::Idle)

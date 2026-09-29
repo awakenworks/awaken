@@ -6294,6 +6294,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
         activity_epoch: 1,
         started_at_unix_ms: 1,
         opened_revision: Default::default(),
+        admitted_after_commit_cursor: None,
         observations: Vec::new(),
     };
 
