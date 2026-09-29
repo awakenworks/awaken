@@ -1,6 +1,7 @@
 //! Local and ephemeral stores for product-process startup.
 
 use super::*;
+use crate::process_stores::ControlStores;
 
 /// Ephemeral deployment stores: everything in process memory (dev / e2e default).
 #[cfg(any(test, feature = "test-support"))]
