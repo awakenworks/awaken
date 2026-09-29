@@ -697,6 +697,14 @@ mod tests {
         (request_line, headers)
     }
 
+    /// A nonblocking listener may yield nonblocking accepted sockets on macOS.
+    /// All local Git HTTP fixtures perform complete blocking request/response
+    /// I/O after accept; normalize their sockets at this one boundary.
+    fn blocking_fixture_stream(stream: std::net::TcpStream) -> std::net::TcpStream {
+        stream.set_nonblocking(false).unwrap();
+        stream
+    }
+
     fn has_basic_authorization(headers: &[String]) -> bool {
         headers.iter().any(|line| {
             line.to_ascii_lowercase()
@@ -725,15 +733,8 @@ mod tests {
                 std::thread::spawn(move || {
                     while !shutdown.load(Ordering::SeqCst) {
                         match listener.accept() {
-                            Ok((mut stream, _)) => {
-                                // The listener is nonblocking so Drop can stop
-                                // this fixture. macOS also makes accepted
-                                // streams nonblocking; restore request I/O to
-                                // blocking mode before the canonical parser
-                                // reads the complete HTTP header. Otherwise
-                                // a partial first read yields WouldBlock and
-                                // the client observes a spurious reset.
-                                stream.set_nonblocking(false).unwrap();
+                            Ok((stream, _)) => {
+                                let mut stream = blocking_fixture_stream(stream);
                                 let (request_line, headers) = read_http_request(&mut stream);
                                 if !has_basic_authorization(&headers) {
                                     stream
@@ -830,7 +831,8 @@ mod tests {
                 std::thread::spawn(move || {
                     while !shutdown.load(Ordering::SeqCst) {
                         match listener.accept() {
-                            Ok((mut stream, _)) => {
+                            Ok((stream, _)) => {
+                                let mut stream = blocking_fixture_stream(stream);
                                 saw_connection.store(true, Ordering::SeqCst);
                                 let _ = stream.write_all(
                                     b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -890,7 +892,8 @@ mod tests {
                 std::thread::spawn(move || {
                     while !shutdown.load(Ordering::SeqCst) {
                         match source.accept() {
-                            Ok((mut stream, _)) => {
+                            Ok((stream, _)) => {
+                                let mut stream = blocking_fixture_stream(stream);
                                 let (request_line, headers) = read_http_request(&mut stream);
                                 if has_basic_authorization(&headers) {
                                     source_saw_authorization.store(true, Ordering::SeqCst);
@@ -923,7 +926,8 @@ mod tests {
                 std::thread::spawn(move || {
                     while !shutdown.load(Ordering::SeqCst) {
                         match attacker.accept() {
-                            Ok((mut stream, _)) => {
+                            Ok((stream, _)) => {
+                                let mut stream = blocking_fixture_stream(stream);
                                 let (_, headers) = read_http_request(&mut stream);
                                 attacker_saw_request.store(true, Ordering::SeqCst);
                                 if has_basic_authorization(&headers) {
