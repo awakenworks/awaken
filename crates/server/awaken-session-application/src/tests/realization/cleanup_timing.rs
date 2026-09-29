@@ -26,8 +26,15 @@ async fn live_session_usage_projects_the_same_clock_that_opened_its_root_interva
         generation: None,
         idle_since_unix_ms: None,
     };
-    SessionApplication::open_activity_on_snapshot(&mut session, None, false, false, clock.now_ms())
-        .unwrap();
+    SessionApplication::open_activity_on_snapshot(
+        &mut session,
+        None,
+        false,
+        false,
+        clock.now_ms(),
+        0,
+    )
+    .unwrap();
     create(repo.as_ref(), session).await;
     let app = application(
         repo.clone(),

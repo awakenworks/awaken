@@ -59,19 +59,15 @@ fn find<'a>(
 /// retry and its replacement opening under one cursor; a Run boundary
 /// publishes the Run's fault (if any) and then Idle, or Terminated directly
 /// for a failed ordinary Run; an Advisor consultation terminates after its
-/// Idle. A historical Awaiting whose ticket was already consumed publishes
-/// nothing: `requires_action` with no answerable call would be a false state.
+/// Idle. An Awaiting whose committed audit names no answerable target
+/// publishes nothing: `requires_action` with no answerable call would be a
+/// false state. Whether a ticket is still live never decides it.
 pub fn project_child_lifecycle(
     threads: &mut [CoordinatedThread],
     events: &[RunLifecycleEvent],
-    pending: &HashMap<String, Pending>,
     historical_pending: &HashMap<RunLifecycleCursor, Pending>,
     snapshots: &HashMap<String, RunRecoverySnapshot>,
 ) -> Result<ChildLifecycle, ProjectionError> {
-    let latest_cursor_by_thread = events.iter().fold(HashMap::new(), |mut latest, event| {
-        latest.insert(event.thread_id.0.as_str(), event.cursor);
-        latest
-    });
     let mut projection = ChildLifecycle::default();
     for event in events {
         let thread_id = event.thread_id.0.as_str();
@@ -124,11 +120,10 @@ pub fn project_child_lifecycle(
                 ));
             }
             Some(_) => {
-                let terminal_pending = historical_pending.get(&event.cursor).or_else(|| {
-                    (latest_cursor_by_thread.get(thread_id) == Some(&event.cursor))
-                        .then(|| pending.get(thread_id))
-                        .flatten()
-                });
+                // The pause's answerable target comes from its own committed
+                // audit, so it is the same while the ticket is live and after
+                // it was consumed.
+                let terminal_pending = historical_pending.get(&event.cursor);
                 let budget_reached = event.await_reason.as_ref()
                     == Some(&awaken_agent_contract::agent::awaiting::AwaitReason::BudgetReached);
                 if event.kind == RunLifecycleEventKind::Awaiting
@@ -289,7 +284,8 @@ mod tests {
     #[test]
     fn child_lifecycle_decision_table() {
         // Causes: C1 the child's published status; C2 the lifecycle kind; C3
-        // ordinary child or Advisor; C4 a ticket for the pause. Effects: the
+        // ordinary child or Advisor; C4 an audited answerable target for the
+        // pause. Effects: the
         // published facts in order and the child's advanced status.
         use RunLifecycleEventKind::*;
         let pending = Pending {
@@ -406,7 +402,7 @@ mod tests {
                 ThreadStatus::Idle,
             ),
             (
-                "R8 consumed pause publishes nothing",
+                "R8 unaudited pause publishes nothing",
                 ThreadStatus::Running,
                 false,
                 event(2, "c", Awaiting, RunState::Awaiting),
@@ -434,16 +430,15 @@ mod tests {
             ),
         ] {
             let mut threads = vec![child("c", advisor, status)];
-            let pending = if ticket {
-                HashMap::from([("c".to_string(), pending.clone())])
+            let audited = if ticket {
+                HashMap::from([(lifecycle.cursor, pending.clone())])
             } else {
                 HashMap::new()
             };
             let projected = project_child_lifecycle(
                 &mut threads,
                 std::slice::from_ref(&lifecycle),
-                &pending,
-                &HashMap::new(),
+                &audited,
                 &HashMap::new(),
             )
             .unwrap();

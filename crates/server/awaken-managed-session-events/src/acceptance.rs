@@ -44,13 +44,18 @@ impl AcceptanceFence<'_> {
 /// it lies inside the root fence (it advances the cursor and is dropped) and
 /// stops acceptance otherwise (its link may not be visible yet); an event
 /// beyond its own Thread's observed prefix stops acceptance; the current
-/// Awaiting commit of a Thread without its answerable ticket (and not a budget
-/// pause) stops acceptance and blocks that Thread's transcript.
+/// Awaiting commit of a Thread whose committed audit names no target (and not
+/// a budget pause) stops acceptance and blocks that Thread's transcript.
+///
+/// `has_audited_target` reads the Awaiting commit's own audit, never a live
+/// ticket: the audit row is committed with the ticket and outlives it, so
+/// the classification of a pause is the same for a reader that saw its
+/// ticket and for one that reads after the ticket was consumed.
 pub fn accept_lifecycle(
     lifecycle: Vec<RunLifecycleEvent>,
     fence: &AcceptanceFence<'_>,
     initial_cursor: RunLifecycleCursor,
-    has_pending_ticket: impl Fn(&str) -> bool,
+    has_audited_target: impl Fn(&RunLifecycleEvent) -> bool,
 ) -> LifecycleAcceptance {
     let root_store_cursor = fence.root.map(|snapshot| snapshot.store_cursor);
     let latest_cursor_by_thread = lifecycle
@@ -96,9 +101,9 @@ pub fn accept_lifecycle(
         let is_budget_pause = event.await_reason.as_ref()
             == Some(&awaken_agent_contract::agent::awaiting::AwaitReason::BudgetReached);
         // A current Awaiting transition cannot be published without its exact
-        // answerable ticket. Historical Awaiting transitions may be followed by
-        // a committed resume and therefore need no live ticket.
-        if is_current_awaiting && !has_pending_ticket(thread_id) && !is_budget_pause {
+        // audited target. Historical Awaiting transitions may be followed by
+        // a committed resume and therefore need none.
+        if is_current_awaiting && !has_audited_target(&event) && !is_budget_pause {
             // Transcript and lifecycle are one public classification. If the
             // message were marked projected before its ticket became visible,
             // a ToolUse would be irreversibly downgraded to allow and could
@@ -246,6 +251,7 @@ mod tests {
             ),
         ] {
             let result = accept_lifecycle(lifecycle, &fence, cursor(0), |_| ticket);
+            // The target is read from the audit of the Awaiting commit itself.
             assert_eq!(result.accepted.len(), accepted, "{rule}");
             assert_eq!(result.cursor, cursor(advanced), "{rule}");
             assert_eq!(

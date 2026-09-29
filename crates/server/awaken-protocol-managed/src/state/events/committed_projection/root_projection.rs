@@ -12,7 +12,6 @@ use super::candidate_evidence::{BudgetReachProjection, CandidateEvidence};
 use super::*;
 use awaken_managed_session_events::{
     FactKey, FactKind, FactProvenance, FactRole, TimelineFact, TranscriptRole, is_opening,
-    period_opening,
 };
 
 /// Primary-thread input not already owned by a retained Managed admission.
@@ -41,11 +40,7 @@ fn transcript_user_input(
 }
 
 /// What the root reduction decided that the aggregate close reuses.
-pub(super) struct RootProjection<'e> {
-    /// The latest accepted root Run boundary of this candidate's new suffix.
-    pub(super) root_terminal: Option<&'e RunLifecycleEvent>,
-    /// `root_terminal`, unless an earlier refresh already projected it.
-    pub(super) projected_root_terminal: Option<&'e RunLifecycleEvent>,
+pub(super) struct RootProjection {
     /// Budget-reach transitions not yet projected by an earlier refresh.
     pub(super) projected_budget_reach: Vec<BudgetReachProjection>,
 }
@@ -120,14 +115,13 @@ impl ManagedState {
         Ok(())
     }
 
-    pub(super) fn project_root_prefix<'e>(
+    pub(super) fn project_root_prefix(
         &self,
         record: &mut SessionRecord,
         session_id: &str,
         persisted: &awaken_session_state_contract::PersistedSession,
-        evidence: &'e CandidateEvidence,
-    ) -> Result<RootProjection<'e>, StateError> {
-        let persisted_status = Self::wire_session_status(persisted);
+        evidence: &CandidateEvidence,
+    ) -> Result<RootProjection, StateError> {
         let all_accepted_lifecycle = &evidence.acceptance.accepted;
         let messages = evidence.root_messages();
         let historical_pending = &evidence.historical_pending;
@@ -191,91 +185,6 @@ impl ManagedState {
                 .terminal_cursors
                 .contains(&event.cursor)
         });
-        // The public aggregate opening belongs to the exact committed root
-        // opening transition, not to this Coordinator's process-local
-        // observation order. A warm replica can see Running before a cold peer
-        // first sees the same prefix at terminal; a resumed Run can also open a
-        // later interval under the same Run id. The lifecycle cursor is the one
-        // durable coordinate that is both known at the opening and unique for
-        // every reopen.
-        let is_root_opening =
-            |event: &&RunLifecycleEvent| event.thread_id.0 == session_id && is_opening(event.kind);
-        let latest_interval_opening =
-            awaken_managed_session_events::latest_interval_opening(persisted, all_accepted_lifecycle);
-        let aggregate_running_key = latest_interval_opening
-            .or_else(|| {
-                root_terminal
-                    .and_then(|terminal| {
-                        // The opening may have been consumed by an earlier refresh
-                        // while Session activity was not yet Running. A later terminal
-                        // must still recover that exact bracket from the complete
-                        // accepted prefix. Start from the latest opening of this same
-                        // Run: one Run can Await and Resume more than once.
-                        all_accepted_lifecycle
-                            .iter()
-                            .rev()
-                            .filter(is_root_opening)
-                            .find(|event| event.run_id == terminal.run_id)
-                    })
-                    .or_else(|| accepted_lifecycle.iter().rev().find(is_root_opening))
-                    // The aggregate opens at the first commit of that period, not
-                    // at whichever later Rescheduled commit this read saw last.
-                    .map(|latest| period_opening(latest, 0, all_accepted_lifecycle))
-            })
-            .map(|event| {
-                FactKey::new(
-                    record.session.id.clone(),
-                    FactRole::AggregateStatusRunning,
-                    FactProvenance::Lifecycle {
-                        cursor: event.cursor.0,
-                    },
-                )
-            })
-            .or_else(|| {
-                // A fast Run can be first observed only at its terminal
-                // boundary. In that case there is no retained opening cursor,
-                // but the terminal prefix already reconstructs the primary
-                // Thread Running edge. Use the same immutable terminal cursor
-                // for a distinct aggregate fallback identity; an exact opening
-                // always wins when one is available.
-                root_terminal.map(|terminal| {
-                    FactKey::new(
-                        record.session.id.clone(),
-                        FactRole::AggregateTerminalStatusRunning,
-                        FactProvenance::LifecyclePrefix {
-                            cursor: terminal.cursor.0,
-                        },
-                    )
-                })
-            });
-        let aggregate_running_transition =
-            Self::should_append_aggregate_running(record, persisted_status);
-        if aggregate_running_transition && let Some(key) = aggregate_running_key.clone() {
-            // A recovery refresh may see the same opening while the aggregate
-            // status and lifecycle prefix catch up independently. Reuse the one
-            // interval projection identity owner; repeated reads are not events.
-            Self::append_aggregate_running_once(record, key);
-        }
-        // A warm reader or a restarted replica may first observe a Run only
-        // after its terminal commit and the aggregate has already returned to
-        // Idle. Reconstruct the missing opening edge before projecting output;
-        // otherwise cold recovery yields agent output before
-        // `session.status_running`, unlike the ordinary foreground path. The
-        // terminal lifecycle cursor plus the aggregate Event tail are the
-        // existing idempotency authorities, so no create-specific marker is
-        // needed. An active child would keep the durable aggregate Running; an
-        // Idle root is therefore already the closed-interval case.
-        if projected_root_terminal.is_some()
-            && persisted_status == SessionStatus::Idle
-            && !aggregate_running_transition
-            && Self::needs_aggregate_running_edge(record)
-            && let Some(key) = aggregate_running_key
-        {
-            // A recovery refresh may see the same opening while the aggregate
-            // status and lifecycle prefix catch up independently. Reuse the one
-            // interval projection identity owner; repeated reads are not events.
-            Self::append_aggregate_running_once(record, key);
-        }
         // Root Thread lifecycle is projected from the same accepted lifecycle
         // prefix as the aggregate Session edges. A foreground command already
         // inserted the bracket when its terminal cursor is present in the one
@@ -464,8 +373,6 @@ impl ManagedState {
         // the sole owner unless an exact failure source Run is correlated below.
         append_durable_outcome_projections(record, &evidence.outcomes);
         Ok(RootProjection {
-            root_terminal,
-            projected_root_terminal,
             projected_budget_reach,
         })
     }

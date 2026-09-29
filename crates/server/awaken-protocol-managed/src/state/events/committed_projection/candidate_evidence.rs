@@ -126,11 +126,9 @@ impl CandidateEvidence {
                 child_latest_run_states.insert(thread_id.clone(), run.state.clone());
             }
         }
-        let mut child_pending = HashMap::new();
-        for (thread_id, snapshot) in &children {
-            if let Some(pending) = ManagedState::pending_from_recovery_snapshot(snapshot)? {
-                child_pending.insert(thread_id.clone(), pending);
-            }
+        // A paused current Run must name its answerable target in its audit.
+        for snapshot in root.iter().chain(children.values()) {
+            ManagedState::committed_pause_health(snapshot)?;
         }
         let child_dispositions = children
             .iter()
@@ -144,11 +142,6 @@ impl CandidateEvidence {
                     })
             })
             .collect::<Result<HashMap<_, _>, _>>()?;
-        let root_pending = root
-            .as_ref()
-            .map(ManagedState::pending_from_recovery_snapshot)
-            .transpose()?
-            .flatten();
         let root_response_coordinates = root.as_ref().map_or_else(HashMap::new, |snapshot| {
             let run_ids = snapshot
                 .runs
@@ -200,6 +193,24 @@ impl CandidateEvidence {
             .iter()
             .map(|link| link.thread_id.0.as_str())
             .collect::<HashSet<_>>();
+        // The target of every Awaiting commit, read from that commit's own
+        // audit row. A live ticket is never an input: the audit is committed
+        // with the ticket and outlives it, so a pause classifies the same
+        // before and after its ticket is consumed. A pause whose target no
+        // client answers (a scheduled action, a delegation) is still
+        // classified by it; only a pause that left no target blocks.
+        let targets = awaken_managed_session_events::audited_await_targets(&lifecycle, |thread_id| {
+            if thread_id == session_id {
+                root.as_ref()
+            } else {
+                children.get(thread_id)
+            }
+        })
+        .map_err(projection_error)?;
+        let audited = targets
+            .iter()
+            .filter_map(|(cursor, target)| Some((*cursor, Pending::from_await_target(target)?)))
+            .collect::<HashMap<_, _>>();
         let acceptance = accept_lifecycle(
             lifecycle,
             &AcceptanceFence {
@@ -209,25 +220,37 @@ impl CandidateEvidence {
                 known_children: &known_children,
             },
             initial_cursor,
-            |thread_id| {
-                if thread_id == session_id {
-                    root_pending.is_some()
-                } else {
-                    child_pending.contains_key(thread_id)
-                }
-            },
+            |event| targets.contains_key(&event.cursor),
         );
-        let historical_pending = awaken_managed_session_events::historical_pending_by_lifecycle(
-            &acceptance.accepted,
-            |thread_id| {
-                if thread_id == session_id {
-                    root.as_ref()
-                } else {
-                    children.get(thread_id)
-                }
-            },
-        )
-        .map_err(projection_error)?;
+        let historical_pending = acceptance
+            .accepted
+            .iter()
+            .filter_map(|event| {
+                audited
+                    .get(&event.cursor)
+                    .map(|pending| (event.cursor, pending.clone()))
+            })
+            .collect::<HashMap<_, _>>();
+        // A Thread's current answerable call is its latest accepted
+        // lifecycle commit when that commit is an audited pause.
+        let mut latest_by_thread = HashMap::<&str, &RunLifecycleEvent>::new();
+        for event in &acceptance.accepted {
+            latest_by_thread.insert(event.thread_id.0.as_str(), event);
+        }
+        let current_pending = |thread_id: &str| {
+            latest_by_thread
+                .get(thread_id)
+                .filter(|event| event.kind == RunLifecycleEventKind::Awaiting)
+                .and_then(|event| historical_pending.get(&event.cursor))
+                .cloned()
+        };
+        let root_pending = current_pending(session_id);
+        let child_pending = children
+            .keys()
+            .filter_map(|thread_id| {
+                current_pending(thread_id).map(|pending| (thread_id.clone(), pending))
+            })
+            .collect::<HashMap<_, _>>();
         for thread_id in &acceptance.blocked_threads {
             transcripts.remove(thread_id);
         }
@@ -260,6 +283,59 @@ impl CandidateEvidence {
             timings,
             usage_done,
         })
+    }
+
+    /// The Session usage as of one commit: every Thread's committed state
+    /// commands up to `source_commit_cursor`, and the active time of the
+    /// intervals closed by then. A pause published at a boundary carries this
+    /// value, so reading it later does not change it.
+    pub(super) fn usage_as_of(
+        &self,
+        persisted: &awaken_session_state_contract::PersistedSession,
+        session_id: &str,
+        source_commit_cursor: u64,
+    ) -> SessionUsage {
+        let thread_usage = |snapshot: &RunRecoverySnapshot| {
+            let state = if snapshot.state_commit_cursors.len() == snapshot.state.len() {
+                snapshot
+                    .state
+                    .iter()
+                    .zip(&snapshot.state_commit_cursors)
+                    .filter(|(_, cursor)| **cursor <= source_commit_cursor)
+                    .map(|(command, _)| command.clone())
+                    .collect::<Vec<_>>()
+            } else {
+                snapshot.state.clone()
+            };
+            awaken_session_application_contract::session_usage_from_thread_usage(
+                awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&state),
+            )
+        };
+        let mut usage = awaken_session_application::SessionApplication::project_session_usage(
+            persisted,
+            self.root.iter().map(thread_usage).chain(
+                self.children
+                    .iter()
+                    .filter(|(id, _)| id.as_str() != session_id)
+                    .map(|(_, snapshot)| thread_usage(snapshot)),
+            ),
+            0,
+        );
+        let active_millis = persisted
+            .closed_runtime_intervals
+            .iter()
+            .filter(|interval| {
+                awaken_managed_session_events::interval_close_cursor(interval)
+                    .is_some_and(|close| close <= source_commit_cursor)
+            })
+            .map(|interval| {
+                interval
+                    .ended_at_unix_ms
+                    .saturating_sub(interval.started_at_unix_ms)
+            })
+            .sum::<u64>();
+        usage.active_seconds = active_millis / 1_000;
+        usage
     }
 
     /// Whether the root transcript is blocked on a ticket not yet visible.

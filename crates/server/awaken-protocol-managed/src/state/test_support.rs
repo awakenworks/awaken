@@ -195,7 +195,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::agent::state::StateKey as _;
 use awaken_session_execution_contract::ToolPermissionDecision;
 use awaken_session_state_contract::PersistedSession;
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -331,6 +330,17 @@ pub(crate) struct RehydrateFake {
     pub(super) child_commit_after_history_snapshot:
         Arc<std::sync::Mutex<Option<ChildCommitAfterHistorySnapshot>>>,
     pub(super) pending: Arc<std::sync::Mutex<Option<awaken_session_application_contract::Pending>>>,
+    /// `RunStateChanged.await_target` of an Awaiting commit that opened a
+    /// ticket, by lifecycle cursor; absent models a commit left unaudited.
+    pub(super) await_targets: Arc<std::sync::Mutex<crate::test_support::AwaitTargets>>,
+    /// Every state command each Thread has exposed, with the commit it first
+    /// appeared at: committed state is append-only, so a later snapshot
+    /// keeps an earlier value and its coordinate.
+    pub(super) state_log:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, crate::test_support::StateLog>>>,
+    /// Awaiting commits that model a legacy audit row without a target.
+    pub(super) unaudited_awaits:
+        Arc<std::sync::Mutex<std::collections::HashSet<awaken_agent_contract::RunLifecycleCursor>>>,
     pub(super) ended: Arc<std::sync::Mutex<Vec<String>>>,
     pub(super) reject_mcp_publication: Arc<std::sync::atomic::AtomicBool>,
     pub(super) reject_environment_adoption: Arc<std::sync::atomic::AtomicBool>,
@@ -1496,35 +1506,8 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
             .unwrap_or_default();
         if let Some(usage) = self.usage_by_thread.lock().unwrap().get(thread_id).cloned() {
             // Production derives accounting from this exact committed state
-            // prefix. Keep the shared fake structurally faithful instead of
-            // maintaining a test-only second usage read path.
-            let mut attributed = awaken_runtime_contract::llm::ThreadUsage::default();
-            if usage.by_model.is_empty() {
-                attributed.record(
-                    "test-fixture",
-                    awaken_runtime_contract::llm::TokenUsage {
-                        prompt_tokens: usage.input_tokens,
-                        completion_tokens: usage.output_tokens,
-                        cache_read_tokens: usage.cache_read_tokens,
-                        cache_creation_tokens: usage.cache_creation_tokens,
-                    },
-                );
-            } else {
-                for (model, model_usage) in usage.by_model {
-                    attributed.record(
-                        &model,
-                        awaken_runtime_contract::llm::TokenUsage {
-                            prompt_tokens: model_usage.input_tokens,
-                            completion_tokens: model_usage.output_tokens,
-                            cache_read_tokens: model_usage.cache_read_tokens,
-                            cache_creation_tokens: model_usage.cache_creation_tokens,
-                        },
-                    );
-                }
-            }
-            state.push(awaken_runtime_contract::llm::ThreadUsageKey::write(
-                &attributed,
-            ));
+            // prefix; keep the fake structurally faithful.
+            state.push(crate::test_support::fixture_usage_command(usage));
         }
         if self
             .disposition_by_thread
@@ -1634,13 +1617,24 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
             .get(thread_id)
             .cloned()
             .unwrap_or_else(|| vec![atomic_fixture_cursor; messages.len()]);
-        let state_commit_cursors = self
+        let explicit_state_cursors = self
             .state_cursors_by_thread
             .lock()
             .unwrap()
             .get(thread_id)
-            .cloned()
-            .unwrap_or_else(|| vec![atomic_fixture_cursor; state.len()]);
+            .cloned();
+        let (state, state_commit_cursors) = match explicit_state_cursors {
+            Some(cursors) => (state, cursors),
+            None => crate::test_support::fixture_state_log(
+                state,
+                atomic_fixture_cursor,
+                self.state_log
+                    .lock()
+                    .unwrap()
+                    .entry(thread_id.to_string())
+                    .or_default(),
+            ),
+        };
         let store_cursor = std::iter::once(base_store_cursor)
             .chain(message_commit_cursors.iter().copied())
             .chain(state_commit_cursors.iter().copied())
@@ -1662,11 +1656,14 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
             message_commit_cursors,
             state,
             state_commit_cursors,
-            events: crate::test_support::lifecycle_audit_records(lifecycle.iter().filter(
-                |event| {
-                    event.thread_id.0 == thread_id && event.source_commit_cursor <= store_cursor
-                },
-            )),
+            events: crate::test_support::fixture_thread_audit(
+                &lifecycle,
+                thread_id,
+                store_cursor,
+                resume_tickets.first().map(|ticket| ticket.ticket.target()),
+                &self.unaudited_awaits.lock().unwrap(),
+                &mut self.await_targets.lock().unwrap(),
+            ),
             resume_tickets,
             thread_version: lifecycle.len() as u64,
             store_cursor,

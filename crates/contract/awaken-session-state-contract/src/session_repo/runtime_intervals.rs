@@ -7,8 +7,13 @@ use crate::SessionRevision;
 impl PersistedSession {
     /// Open the one continuous Running interval after the execution transition
     /// has committed its logical owner. Replays and overlapping activities join
-    /// the existing interval.
-    pub fn begin_runtime_interval(&mut self, started_at_unix_ms: u64) -> bool {
+    /// the existing interval. `admitted_after_commit_cursor` is the root
+    /// Thread's Runtime commit cursor read before this admission.
+    pub fn begin_runtime_interval(
+        &mut self,
+        started_at_unix_ms: u64,
+        admitted_after_commit_cursor: u64,
+    ) -> bool {
         if !runtime_interval_may_open(
             self.execution == SessionExecutionState::Running,
             self.running_interval.is_some(),
@@ -27,9 +32,34 @@ impl PersistedSession {
             activity_epoch: self.activity_epoch,
             started_at_unix_ms,
             opened_revision,
+            admitted_after_commit_cursor: Some(admitted_after_commit_cursor),
             observations: Vec::new(),
         });
         true
+    }
+
+    /// The latest Runtime commit cursor this root has recorded: a retained
+    /// batch's admission anchor or an interval observation. Every Runtime
+    /// commit an interval opened now owns follows it; a composition that opens
+    /// an interval without reading the Runtime anchors it here.
+    #[must_use]
+    pub fn recorded_runtime_commit_cursor(&self) -> u64 {
+        let anchors = self
+            .event_batches
+            .iter()
+            .filter_map(|batch| batch.admission_projection_anchor)
+            .map(|anchor| anchor.source_commit_cursor);
+        let observations = self
+            .closed_runtime_intervals
+            .iter()
+            .flat_map(|interval| &interval.observations)
+            .chain(
+                self.running_interval
+                    .iter()
+                    .flat_map(|interval| &interval.observations),
+            )
+            .map(|observation| observation.source_commit_cursor);
+        anchors.chain(observations).fold(0, u64::max)
     }
 
     /// Retain one exact Runtime commit boundary under the activity epoch that
@@ -108,6 +138,7 @@ impl PersistedSession {
                 ended_at_unix_ms,
                 opened_revision: start.opened_revision,
                 closed_revision,
+                admitted_after_commit_cursor: start.admitted_after_commit_cursor,
                 observations: start.observations,
                 usage: self.usage_cursor.clone(),
                 max_list_cost_minor: self.budget.max_list_cost_minor(),
@@ -183,10 +214,10 @@ mod tests {
             super::super::mutation_tests::session("interval-history", SessionRevision(7));
         value.execution = SessionExecutionState::Running;
         assert_eq!(value.begin_activity_epoch(), Some(1));
-        assert!(value.begin_runtime_interval(1_000));
+        assert!(value.begin_runtime_interval(1_000, 0));
         value.revision = SessionRevision(8);
         assert_eq!(value.begin_activity_epoch(), Some(2));
-        assert!(!value.begin_runtime_interval(1_100), "R1 one interval");
+        assert!(!value.begin_runtime_interval(1_100, 0), "R1 one interval");
         value.usage_cursor.by_model.insert(
             "model-a".into(),
             crate::ManagedModelUsageCursor {
@@ -228,7 +259,7 @@ mod tests {
             (4, "child-only", 8_000, 8),
         ] {
             assert_eq!(value.begin_activity_epoch(), Some(epoch), "R4 setup");
-            assert!(value.begin_runtime_interval(epoch * 1_000));
+            assert!(value.begin_runtime_interval(epoch * 1_000, 0));
             value.revision = SessionRevision(value.revision.0 + 1);
             assert!(
                 value.observe_runtime_interval(crate::SessionRuntimeIntervalObservation {
@@ -265,7 +296,7 @@ mod tests {
         );
         value.execution = SessionExecutionState::Running;
         assert_eq!(value.begin_activity_epoch(), Some(1));
-        assert!(value.begin_runtime_interval(1_000), "X1/E1");
+        assert!(value.begin_runtime_interval(1_000, 0), "X1/E1");
         let open = value.running_interval.clone();
         value.revision = SessionRevision(u64::MAX);
         assert!(value.close_runtime_interval(2_000).is_none(), "X2/E2");
@@ -279,7 +310,7 @@ mod tests {
         );
         never_opened.execution = SessionExecutionState::Running;
         assert_eq!(never_opened.begin_activity_epoch(), Some(1));
-        assert!(!never_opened.begin_runtime_interval(1_000), "X3/E3");
+        assert!(!never_opened.begin_runtime_interval(1_000, 0), "X3/E3");
         assert!(never_opened.running_interval.is_none(), "X3/E3");
     }
 }

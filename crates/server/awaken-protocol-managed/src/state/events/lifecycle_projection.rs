@@ -5,14 +5,6 @@ use super::*;
 use awaken_managed_session_events::{CoordinatedThread, ThreadStatus};
 
 impl ManagedState {
-    pub(super) fn run_stop_reason(
-        state: &awaken_agent_contract::agent::run::RunState,
-        pending: Option<&Pending>,
-        await_reason: Option<&awaken_agent_contract::agent::awaiting::AwaitReason>,
-    ) -> StopReason {
-        project::terminal_stop_reason(state, pending, await_reason, false)
-    }
-
     pub(super) fn public_run_stop_reason(
         record: &SessionRecord,
         owner_thread_id: Option<&str>,
@@ -25,13 +17,6 @@ impl ManagedState {
             owner_thread_id,
             &awaken_managed_session_events::terminal_stop(state, pending, await_reason, false),
         )
-    }
-
-    pub(super) fn child_stop_reason(
-        event: &RunLifecycleEvent,
-        pending: Option<&Pending>,
-    ) -> StopReason {
-        Self::run_stop_reason(&event.state, pending, event.await_reason.as_ref())
     }
 
     /// The coordinated children as the timeline domain sees them.
@@ -56,7 +41,6 @@ impl ManagedState {
         &self,
         record: &mut SessionRecord,
         events: &[RunLifecycleEvent],
-        pending: &std::collections::HashMap<String, Pending>,
         historical_pending: &std::collections::HashMap<RunLifecycleCursor, Pending>,
         snapshots: &std::collections::HashMap<
             String,
@@ -67,7 +51,6 @@ impl ManagedState {
         let projection = awaken_managed_session_events::project_child_lifecycle(
             &mut threads,
             events,
-            pending,
             historical_pending,
             snapshots,
         )
@@ -131,38 +114,6 @@ impl ManagedState {
             record.publish_fact(&fact, None)?;
         }
         Ok(())
-    }
-
-    /// Decide the aggregate Running edge from committed Session state and the
-    /// event projection while the record lock is held. `record.session.status`
-    /// is only the current disposable DTO: a foreground command can refresh it
-    /// to Running before the matching public edge is projected. The latest
-    /// aggregate status event is the projector's existing idempotency cursor and
-    /// needs no parallel status flag.
-    pub(super) fn should_append_aggregate_running(
-        record: &SessionRecord,
-        persisted_status: SessionStatus,
-    ) -> bool {
-        persisted_status == SessionStatus::Running && Self::needs_aggregate_running_edge(record)
-    }
-
-    /// Whether the append-only wire history still needs an aggregate Running
-    /// opening edge. Both a live Running refresh and a later terminal-prefix
-    /// reconstruction use this one tail classification, so observing durable
-    /// Running before the terminal commit cannot mint a second opening edge.
-    pub(super) fn needs_aggregate_running_edge(record: &SessionRecord) -> bool {
-        record
-            .events
-            .iter()
-            .rev()
-            .find_map(|event| match event.kind {
-                OutboundKind::SessionStatusRunning { .. }
-                | OutboundKind::SessionStatusTerminated { .. } => Some(false),
-                OutboundKind::SessionStatusIdle { .. }
-                | OutboundKind::SessionStatusRescheduled { .. } => Some(true),
-                _ => None,
-            })
-            .unwrap_or(true)
     }
 
     /// Whether the latest public lifecycle edge for the primary Thread is open.
@@ -300,7 +251,6 @@ impl ManagedState {
         self.append_child_lifecycle_projection(
             record,
             lifecycle_events,
-            pending,
             historical_pending,
             snapshots,
         )?;

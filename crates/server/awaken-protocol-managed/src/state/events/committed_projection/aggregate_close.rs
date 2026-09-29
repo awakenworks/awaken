@@ -1,7 +1,7 @@
 // @formal entrypoint session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
-//! Aggregate close of one projection candidate: the deferred stop reason, the
-//! primary Thread's terminal idles, the aggregate usage and the one aggregate
-//! idle (or budget-reach pause) per terminal prefix.
+//! Aggregate close of one projection candidate: the primary Thread's terminal
+//! idles, the budget-reach pause, and the aggregate Running edge and
+//! usage/idle pair of every period that no admitted interval owns.
 //!
 //! Consumer: the candidate builder, after the root and delegation projectors.
 
@@ -18,98 +18,14 @@ impl ManagedState {
         persisted: &awaken_session_state_contract::PersistedSession,
         persisted_status: SessionStatus,
         evidence: &CandidateEvidence,
-        root: &RootProjection<'_>,
+        root: &RootProjection,
     ) -> Result<(), StateError> {
         let RootProjection {
-            root_terminal,
-            projected_root_terminal,
             projected_budget_reach,
         } = root;
-        let (root_terminal, projected_root_terminal) = (*root_terminal, *projected_root_terminal);
         let historical_pending = &evidence.historical_pending;
-        let root_pending = evidence.root_pending.as_ref();
-        let child_pending = &evidence.child_pending;
-        let known_children = evidence
-            .links
-            .iter()
-            .map(|link| link.thread_id.0.as_str())
-            .collect::<std::collections::HashSet<_>>();
-        let child_terminal = evidence.new_lifecycle.iter().rev().find(|event| {
-            known_children.contains(event.thread_id.0.as_str())
-                && evidence.child_dispositions.get(event.thread_id.0.as_str())
-                    != Some(&awaken_agent_contract::ThreadDisposition::Archived)
-                && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(event.kind)
-        });
-        let child_terminal_reached_budget = child_terminal.is_some_and(|event| {
-            event.kind == RunLifecycleEventKind::Awaiting
-                && event.await_reason.as_ref()
-                    == Some(&awaken_agent_contract::agent::awaiting::AwaitReason::BudgetReached)
-        });
-        let active_child = record.child_threads.iter().any(|child| {
-            matches!(
-                child.status,
-                SessionThreadStatus::Running | SessionThreadStatus::Rescheduling
-            )
-        });
-        let can_idle = persisted_status == SessionStatus::Idle && !active_child;
-        let aggregate_budget_reached = !persisted.budget.can_admit_model_request();
-        if let Some(terminal) = projected_root_terminal {
-            let thread_reason = Self::public_run_stop_reason(
-                record,
-                None,
-                &terminal.state,
-                historical_pending.get(&terminal.cursor).or(root_pending),
-                terminal.await_reason.as_ref(),
-            )?;
-            let aggregate_reason = match thread_reason {
-                reason @ StopReason::RequiresAction { .. } | reason @ StopReason::BudgetReached => {
-                    reason
-                }
-                _ if aggregate_budget_reached => StopReason::BudgetReached,
-                reason => reason,
-            };
-            // A scheduled action can commit Awaiting while the Session activity
-            // is still Running, then autonomously resume and commit a newer
-            // terminal for the same root Run before the aggregate may idle. The
-            // newer same-Run reason supersedes that disposable continuation;
-            // BudgetReached remains absorbing across every later terminal.
-            let replace = match record.deferred_session_stop_reason.as_ref() {
-                None => true,
-                Some((_, StopReason::BudgetReached)) => false,
-                Some((Some(owner), _)) => owner == &terminal.run_id,
-                Some((None, _)) => false,
-            };
-            if replace || matches!(aggregate_reason, StopReason::BudgetReached) {
-                record.deferred_session_stop_reason =
-                    Some((Some(terminal.run_id.clone()), aggregate_reason));
-            }
-        }
-        if !can_idle && let Some(terminal) = child_terminal {
-            let reason = if child_terminal_reached_budget {
-                StopReason::BudgetReached
-            } else {
-                Self::public_run_stop_reason(
-                    record,
-                    Some(terminal.thread_id.0.as_str()),
-                    &terminal.state,
-                    child_pending.get(terminal.thread_id.0.as_str()),
-                    terminal.await_reason.as_ref(),
-                )?
-            };
-            if matches!(reason, StopReason::BudgetReached) {
-                record.deferred_session_stop_reason = Some((None, reason));
-            } else {
-                record
-                    .deferred_session_stop_reason
-                    .get_or_insert((None, reason));
-            }
-        }
-        if can_idle && child_terminal_reached_budget {
-            record.deferred_session_stop_reason = Some((None, StopReason::BudgetReached));
-        }
-        // All root terminals use this one reducer. A current-ticket-only fast
-        // path would freeze an empty approval payload when the latest terminal
-        // is historical and its reply has already resumed the Run.
+        // Every root Run boundary publishes its Thread idle (and fault) once,
+        // from its own committed lifecycle and audit.
         for terminal in evidence.acceptance.accepted.iter().filter(|event| {
             event.thread_id.0 == session_id
                 && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(event.kind)
@@ -136,9 +52,7 @@ impl ManagedState {
             )?;
             let stop = awaken_managed_session_events::terminal_stop(
                 &terminal.state,
-                historical_pending
-                    .get(&terminal.cursor)
-                    .or(root_pending.filter(|_| root_terminal == Some(terminal))),
+                historical_pending.get(&terminal.cursor),
                 terminal.await_reason.as_ref(),
                 false,
             );
@@ -155,126 +69,260 @@ impl ManagedState {
         let projected_usage =
             session_usage_value(evidence.usage.clone(), evidence.price_snapshot.as_ref())
                 .map_err(StateError::Run)?;
-        record.session.usage = projected_usage.clone();
-        let mut pending_event_ids = Vec::new();
-        if let Some(pending) = root_pending {
-            pending_event_ids.push(
-                record
-                    .projected_tool_index_for(None)
-                    .latest
-                    .get(&pending.tool_use_id)
-                    .cloned()
-                    .ok_or_else(|| {
-                        StateError::Run(RunError::internal(
-                            "root pending ticket has no public Managed tool event",
-                        ))
-                    })?,
-            );
-        }
-        for (thread_id, pending) in child_pending {
-            pending_event_ids.push(
-                record
-                    .projected_tool_index_for(Some(thread_id))
-                    .latest
-                    .get(&pending.tool_use_id)
-                    .cloned()
-                    .ok_or_else(|| {
-                        StateError::Run(RunError::internal(
-                            "child pending ticket has no public Managed tool event",
-                        ))
-                    })?,
-            );
-        }
-        pending_event_ids.sort();
-        pending_event_ids.dedup();
-        if can_idle
-            && (projected_root_terminal.is_some()
-                || child_terminal.is_some()
-                || record.deferred_session_stop_reason.is_some()
-                || (!projected_budget_reach.is_empty() && pending_event_ids.is_empty()))
-        {
-            if pending_event_ids.is_empty() && !projected_budget_reach.is_empty() {
-                for (generation, usage, budget) in projected_budget_reach.iter().cloned() {
-                    let at = |role| {
-                        FactKey::new(session_id, role, FactProvenance::BudgetReach { generation })
-                    };
-                    record.push_fact(
-                        at(FactRole::BudgetReachUsage),
-                        OutboundKind::SessionUsage {
-                            usage,
-                            budget: Some(budget),
-                        },
-                    );
-                    record.push_fact(
-                        at(FactRole::BudgetReachStatusIdle),
-                        OutboundKind::SessionStatusIdle {
-                            stop_reason: StopReason::BudgetReached,
-                        },
-                    );
-                    record.checkpoint.source.budget_reach_generation = generation;
-                }
-            } else {
-                let stop_reason = if pending_event_ids.is_empty() {
-                    record
-                        .deferred_session_stop_reason
-                        .clone()
-                        .map(|(_, reason)| reason)
-                        .unwrap_or_else(|| {
-                            root_terminal.map_or(StopReason::EndTurn, |event| {
-                                Self::child_stop_reason(event, None)
-                            })
-                        })
-                } else {
-                    StopReason::RequiresAction {
-                        event_ids: pending_event_ids,
-                    }
+        record.session.usage = projected_usage;
+        // A budget-reach transition owns its own aggregate pause once its
+        // interval has closed and no call awaits an answer.
+        let active_child = record.child_threads.iter().any(|child| {
+            matches!(
+                child.status,
+                SessionThreadStatus::Running | SessionThreadStatus::Rescheduling
+            )
+        });
+        let answerable = evidence.root_pending.is_some() || !evidence.child_pending.is_empty();
+        if persisted_status == SessionStatus::Idle && !active_child && !answerable {
+            for (generation, usage, budget) in projected_budget_reach.iter().cloned() {
+                let at = |role| {
+                    FactKey::new(session_id, role, FactProvenance::BudgetReach { generation })
                 };
-                // The durable BudgetReachTransition is the sole aggregate
-                // budget-pause authority. A lifecycle Awaiting fact may become
-                // visible one refresh before that transition, or after its
-                // generation was already projected; publishing it here would
-                // create a second `session.status_idle:budget_reached` for one
-                // cap transition. Thread lifecycle remains projected above.
-                if !matches!(stop_reason, StopReason::BudgetReached) {
-                    // Only a terminal lifecycle prefix not yet represented by an
-                    // aggregate idle is replayable here. The shared terminal-cursor
-                    // set covers root and children.
-                    let aggregate_terminal_cursor = record
-                        .checkpoint
-                        .progress
-                        .terminal_cursors
-                        .iter()
-                        .max()
-                        .copied()
-                        .ok_or_else(|| {
-                            StateError::Run(RunError::internal(
-                                "idle aggregate has no committed terminal lifecycle boundary",
-                            ))
-                        })?;
-                    let at = |role| {
-                        FactKey::new(
-                            session_id,
-                            role,
-                            FactProvenance::LifecyclePrefix {
-                                cursor: aggregate_terminal_cursor.0,
-                            },
-                        )
-                    };
-                    let budget = record.session.budget.clone();
-                    record.push_fact(
-                        at(FactRole::AggregateUsage),
-                        OutboundKind::SessionUsage {
-                            usage: projected_usage,
-                            budget,
+                record.push_fact(
+                    at(FactRole::BudgetReachUsage),
+                    OutboundKind::SessionUsage {
+                        usage,
+                        budget: Some(budget),
+                    },
+                );
+                record.push_fact(
+                    at(FactRole::BudgetReachStatusIdle),
+                    OutboundKind::SessionStatusIdle {
+                        stop_reason: StopReason::BudgetReached,
+                    },
+                );
+                record.checkpoint.source.budget_reach_generation = generation;
+            }
+        }
+        self.bracket_aggregate_outside_intervals(record, session_id, persisted, evidence)
+    }
+
+    /// The aggregate Running edge and usage/idle pair of every period no
+    /// admitted Session interval owns, decided by walking the committed
+    /// lifecycle in order. The aggregate opens at the first opening after it
+    /// closed (or, for a period first committed at its boundary, at that
+    /// boundary's prefix), and closes at every boundary after which neither the
+    /// root nor a coordinated child runs and no Session interval holds it. The
+    /// pair is keyed by that boundary and carries the usage and
+    /// stop reason as of it, so a reader that sees the boundary alone and one
+    /// that reads long after it publish the same pair.
+    ///
+    /// Class A of the timeline's schedule independence: the pair used to be
+    /// keyed by the latest terminal a refresh had seen and to carry the usage
+    /// and stop reason of that refresh, so a reader that saw two boundaries in
+    /// one read published one pair and a reader that saw each published two.
+    /// Class C: the opening used to be one per refresh, keyed by the latest
+    /// opening of the latest terminal's Run, unbounded by that terminal, so a
+    /// reader that saw a pause and its resume in one read opened the pause's
+    /// period at the resume and published no opening for the pause's period.
+    fn bracket_aggregate_outside_intervals(
+        &self,
+        record: &mut SessionRecord,
+        session_id: &str,
+        persisted: &awaken_session_state_contract::PersistedSession,
+        evidence: &CandidateEvidence,
+    ) -> Result<(), StateError> {
+        let accepted = &evidence.acceptance.accepted;
+        let historical_pending = &evidence.historical_pending;
+        let known_children = evidence
+            .links
+            .iter()
+            .map(|link| link.thread_id.0.as_str())
+            .filter(|thread| {
+                evidence.child_dispositions.get(*thread)
+                    != Some(&awaken_agent_contract::ThreadDisposition::Archived)
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let hold = awaken_managed_session_events::interval_hold(persisted, accepted);
+        let budget_reach = awaken_managed_session_events::BudgetReachAnchor::of(persisted, accepted);
+        let mut root_running = false;
+        let mut running_children = std::collections::HashSet::<&str>::new();
+        let mut paused = std::collections::BTreeMap::<&str, &Pending>::new();
+        let mut deferred: Option<(Option<&awaken_agent_contract::agent::run::Id>, StopReason)> =
+            None;
+        let mut aggregate_open = false;
+        let mut openings = Vec::new();
+        let mut closes = Vec::new();
+        for event in accepted {
+            let thread = event.thread_id.0.as_str();
+            let is_root = thread == session_id;
+            if !is_root && !known_children.contains(thread) {
+                continue;
+            }
+            if awaken_managed_session_events::is_opening(event.kind) {
+                if !aggregate_open {
+                    openings.push(FactKey::new(
+                        session_id,
+                        FactRole::AggregateStatusRunning,
+                        FactProvenance::Lifecycle {
+                            cursor: event.cursor.0,
                         },
-                    );
-                    record.push_fact(
-                        at(FactRole::AggregateStatusIdle),
-                        OutboundKind::SessionStatusIdle { stop_reason },
-                    );
+                    ));
+                    aggregate_open = true;
+                }
+                if is_root {
+                    root_running = true;
+                } else {
+                    running_children.insert(thread);
+                }
+                paused.remove(thread);
+                continue;
+            }
+            if !awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(event.kind) {
+                continue;
+            }
+            if is_root && !aggregate_open {
+                // A period first committed at its boundary (a fast Run, or a
+                // pause ended without resuming) opens at that boundary's
+                // prefix.
+                openings.push(FactKey::new(
+                    session_id,
+                    FactRole::AggregateTerminalStatusRunning,
+                    FactProvenance::LifecyclePrefix {
+                        cursor: event.cursor.0,
+                    },
+                ));
+                aggregate_open = true;
+            }
+            if is_root {
+                root_running = false;
+            } else {
+                running_children.remove(thread);
+            }
+            let pending = historical_pending
+                .get(&event.cursor)
+                .filter(|_| event.kind == RunLifecycleEventKind::Awaiting);
+            match pending {
+                Some(pending) => {
+                    paused.insert(thread, pending);
+                }
+                None => {
+                    paused.remove(thread);
                 }
             }
-            record.deferred_session_stop_reason = None;
+            let budget_pause = event.await_reason.as_ref()
+                == Some(&awaken_agent_contract::agent::awaiting::AwaitReason::BudgetReached);
+            let idle = !root_running
+                && running_children.is_empty()
+                && !hold.session_active.contains(&event.cursor);
+            if is_root {
+                // The root Run's newest reason supersedes its own earlier
+                // one; a child reason recorded first, or a budget pause,
+                // stands; a budget reason always stands.
+                let reason = Self::public_run_stop_reason(
+                    record,
+                    None,
+                    &event.state,
+                    pending,
+                    event.await_reason.as_ref(),
+                )?;
+                let replace = match &deferred {
+                    None => true,
+                    Some((_, StopReason::BudgetReached)) => false,
+                    Some((Some(owner), _)) => *owner == &event.run_id,
+                    Some((None, _)) => false,
+                };
+                if replace || matches!(reason, StopReason::BudgetReached) {
+                    deferred = Some((Some(&event.run_id), reason));
+                }
+            } else if budget_pause {
+                deferred = Some((None, StopReason::BudgetReached));
+            } else if !idle {
+                // A child boundary that cannot close the aggregate records
+                // its reason for the close a later boundary makes.
+                let reason = Self::public_run_stop_reason(
+                    record,
+                    Some(thread),
+                    &event.state,
+                    pending,
+                    event.await_reason.as_ref(),
+                )?;
+                deferred.get_or_insert((None, reason));
+            }
+            if hold.closed_by_interval.contains(&event.cursor) {
+                // The admitted interval's own close publishes this pause, at
+                // its latest boundary.
+                deferred = None;
+                if hold.interval_closes.contains(&event.cursor) {
+                    aggregate_open = false;
+                }
+                continue;
+            }
+            if !idle {
+                continue;
+            }
+            aggregate_open = false;
+            let budget_reached = budget_reach.iter().any(|anchor| {
+                anchor
+                    .close_cursor
+                    .is_some_and(|close| close <= event.source_commit_cursor)
+            });
+            let stop = if paused.is_empty() {
+                match deferred.take() {
+                    Some((_, reason)) => reason,
+                    None => StopReason::EndTurn,
+                }
+            } else {
+                let mut event_ids = paused
+                    .iter()
+                    .map(|(thread, pending)| {
+                        let owner = (*thread != session_id).then_some(*thread);
+                        record
+                            .projected_tool_index_for(owner)
+                            .latest
+                            .get(&pending.tool_use_id)
+                            .cloned()
+                            .ok_or_else(|| {
+                                StateError::Run(RunError::internal(
+                                    "an answerable pause has no public Managed tool event",
+                                ))
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                event_ids.sort();
+                event_ids.dedup();
+                deferred = None;
+                StopReason::RequiresAction { event_ids }
+            };
+            if matches!(stop, StopReason::BudgetReached) || budget_reached {
+                // The durable budget-reach transition owns this pause.
+                continue;
+            }
+            closes.push((event, stop));
+        }
+        for opening in openings {
+            Self::append_aggregate_running_once(record, opening);
+        }
+        for (boundary, stop_reason) in closes {
+            let at = |role| {
+                FactKey::new(
+                    session_id,
+                    role,
+                    FactProvenance::LifecyclePrefix {
+                        cursor: boundary.cursor.0,
+                    },
+                )
+            };
+            let usage = session_usage_value(
+                evidence.usage_as_of(persisted, session_id, boundary.source_commit_cursor),
+                evidence.price_snapshot.as_ref(),
+            )
+            .map_err(StateError::Run)?;
+            let budget = record.session.budget.clone();
+            record.append_fact_once(
+                at(FactRole::AggregateUsage),
+                OutboundKind::SessionUsage { usage, budget },
+            );
+            record.append_fact_once(
+                at(FactRole::AggregateStatusIdle),
+                OutboundKind::SessionStatusIdle { stop_reason },
+            );
         }
         Ok(())
     }

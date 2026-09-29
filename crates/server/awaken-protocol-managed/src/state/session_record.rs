@@ -218,13 +218,6 @@ pub(super) struct SessionRecord {
     /// answer instead of inferring one from the shape of the result — an
     /// inference that read a refusal as a permission.
     pub(super) permission_decisions: HashMap<String, crate::types::session::RecordedPermission>,
-    /// The optional root Run owner and reason whose aggregate idle event is
-    /// waiting for coordinated Thread settlement. The owner lets a later terminal
-    /// of that same Run supersede an earlier Awaiting reason without allowing an
-    /// unrelated terminal to overwrite it. This is disposable event-projector
-    /// continuation state, never Session lifecycle authority.
-    pub(super) deferred_session_stop_reason:
-        Option<(Option<awaken_agent_contract::agent::run::Id>, StopReason)>,
     /// Disposable visibility owner for transcript-derived events. Most entries
     /// name the child whose local stream owns the event; advisor advice names the
     /// primary because the official wire excludes that delivery from the
@@ -270,7 +263,6 @@ impl SessionRecord {
             && self.resource_state == other.resource_state
             && self.checkpoint == other.checkpoint
             && self.overlay.anchors == other.overlay.anchors
-            && self.deferred_session_stop_reason == other.deferred_session_stop_reason
             && self.event_thread_owners == other.event_thread_owners
             && self_wire == other_wire)
     }
@@ -502,7 +494,6 @@ impl SessionRecord {
             checkpoint,
             overlay: Default::default(),
             permission_decisions: HashMap::new(),
-            deferred_session_stop_reason: None,
             event_thread_owners: Default::default(),
             child_threads: Vec::new(),
             primary_thread_usage: None,

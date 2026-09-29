@@ -109,7 +109,7 @@ awaken_session_execution_contract::neutral_role!(BudgetRuntime for ActivationOnl
 
 awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for ActivationOnlySessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for ActivationOnlySessionRunRuntime);
+no_committed_threads!(ActivationOnlySessionRunRuntime);
 
 awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for ActivationOnlySessionRunRuntime);
 
@@ -1251,7 +1251,7 @@ awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for Blockin
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for BlockingSessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for BlockingSessionRunRuntime);
+no_committed_threads!(BlockingSessionRunRuntime);
 
 awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for BlockingSessionRunRuntime);
 

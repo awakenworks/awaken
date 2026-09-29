@@ -1760,6 +1760,7 @@ mod mutation_tests {
             ended_at_unix_ms: 200,
             opened_revision: SessionRevision(7),
             closed_revision: SessionRevision(8),
+            admitted_after_commit_cursor: None,
             observations: Vec::new(),
             usage: Default::default(),
             max_list_cost_minor: None,
@@ -1786,7 +1787,7 @@ mod mutation_tests {
         running.execution = SessionExecutionState::Running;
         running.activity_epoch = 3;
         running.active_activity_epochs.insert(3);
-        assert!(running.begin_runtime_interval(100), "R1 setup");
+        assert!(running.begin_runtime_interval(100, 0), "R1 setup");
         let ordinary_fact = ManagedLifecycleFact {
             id: "ordinary".into(),
             object_id: "session-1".into(),
@@ -1874,7 +1875,7 @@ mod mutation_tests {
         value.execution = SessionExecutionState::Running;
         value.activity_epoch = 1;
         value.active_activity_epochs.insert(1);
-        assert!(value.begin_runtime_interval(10_000), "T2 setup");
+        assert!(value.begin_runtime_interval(10_000, 0), "T2 setup");
         assert_eq!(value.effective_runtime_active_millis(9_000), 2_000, "T2/E2");
         assert_eq!(
             value.effective_runtime_active_millis(13_500),
