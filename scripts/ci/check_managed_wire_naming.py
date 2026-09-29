@@ -32,6 +32,15 @@ import re
 import sys
 from pathlib import Path
 
+# The three inputs read below, so `generate_hooks.py` renders this checker's
+# trigger instead of anyone maintaining it by hand. Declaring them is what keeps
+# the hook from drifting narrower than what the checker actually reads.
+INPUT_GLOBS: tuple[str, ...] = (
+    "crates/server/awaken-protocol-managed/src/types/**/*.rs",
+    "crates/server/awaken-protocol-managed/contracts/wire-naming-baseline.json",
+    "contracts/anthropic-managed/upstream-oracle.generated.json",
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TYPES_ROOT = REPO_ROOT / "crates/server/awaken-protocol-managed/src/types"
 ORACLE = REPO_ROOT / "contracts/anthropic-managed/upstream-oracle.generated.json"

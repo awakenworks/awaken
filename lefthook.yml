@@ -255,7 +255,9 @@ pre-commit:
     # none). Reads the generated oracle's declared-type vocabulary, so it runs
     # when the types, the baseline, or the oracle change.
     managed-wire-naming:
-      glob: "{lefthook.yml,scripts/ci/check_managed_wire_naming.py,crates/server/awaken-protocol-managed/src/types/**/*.rs,crates/server/awaken-protocol-managed/contracts/wire-naming-baseline.json,contracts/anthropic-managed/upstream-oracle.generated.json}"
+      # >>> generated glob from check_managed_wire_naming.py INPUT_GLOBS — do not edit
+      glob: "{contracts/anthropic-managed/upstream-oracle.generated.json,crates/server/awaken-protocol-managed/contracts/wire-naming-baseline.json,crates/server/awaken-protocol-managed/src/types/**/*.rs,scripts/ci/check_managed_wire_naming.py}"
+      # <<< generated glob
       run: python3 scripts/ci/check_managed_wire_naming.py --self-test && python3 scripts/ci/check_managed_wire_naming.py
 
     # Generated wire artifacts are derived from the admin-config and Managed

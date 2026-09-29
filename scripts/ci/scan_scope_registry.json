@@ -1,6 +1,6 @@
 {
   "baseline": {
-    "scanners_without_input_globs": 19,
+    "scanners_without_input_globs": 18,
     "scope_lists": 33
   },
   "comment": [
@@ -52,10 +52,6 @@
     "check_formal_web_surface.py": {
       "reason": "runs inside the formal gate, which is scheduled rather than file-triggered because a proof run costs minutes, not milliseconds",
       "runner": "scripts/ci/check_formal.sh"
-    },
-    "check_managed_wire_naming.py": {
-      "reason": "has a pre-commit command whose glob is still hand-written; declaring inputs here belongs with the hook-hygiene work, not with this scope change",
-      "runner": "scripts/ci/check-all.sh"
     },
     "check_node_dependencies.py": {
       "reason": "has a pre-commit command whose glob is still hand-written; declaring inputs here belongs with the hook-hygiene work, not with this scope change",

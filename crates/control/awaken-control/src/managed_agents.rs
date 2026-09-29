@@ -32,6 +32,8 @@ use awaken_tenancy::ScopeId;
 
 mod lifecycle_identity;
 mod projection;
+#[cfg(test)]
+mod test_support;
 use lifecycle_identity::{lifecycle_timestamp, new_agent_id};
 use projection::{
     acp_configuration_to_preserve, client_tools, config_from_create, project, register_roster_name,
@@ -633,15 +635,9 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use awaken_agent_config::ModelSelection;
-    use awaken_config_service::{
-        ConfigService, ModelPublicationResolver, ResolvedPublicationModels, StaticToolCatalog,
-    };
-    use awaken_config_store::SqliteConfigStore;
-    use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
-    use awaken_protocol_managed::types::agent::{AgentCreateParams, AgentUpdateParams, ModelInput};
+    use awaken_protocol_managed::types::agent::{AgentUpdateParams, ModelInput};
     use awaken_protocol_managed::types::{
         ModelConfigParams, ModelEffort, ModelEffortInput, ModelInferenceGeo, ModelSpeed,
     };
@@ -649,119 +645,10 @@ mod tests {
         InferenceGeography, InferenceOptions, InferenceSpeed, ReasoningEffort, ToolExecutionPolicy,
         ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
     };
-    use awaken_runtime_contract::resolved::{
-        InferenceEndpoint, InferencePlacement, InferencePlacementMechanism, ModelBinding,
-        ResolvedModelCandidate, ToolDescriptor, ToolKind,
-    };
     use serde_json::json;
 
+    use super::test_support::*;
     use super::*;
-
-    struct TestModelResolver;
-
-    struct RejectModelResolver;
-
-    #[async_trait::async_trait]
-    impl ModelPublicationResolver for TestModelResolver {
-        async fn resolve_models(
-            &self,
-            workspace: &awaken_tenancy::ScopeId,
-            selection: &ModelSelection,
-            candidates: &[ModelBinding],
-        ) -> Result<ResolvedPublicationModels, awaken_config_service::PublicationResolutionError>
-        {
-            let primary = selection
-                .resolved()
-                .cloned()
-                .or_else(|| {
-                    selection.target().map(|(target, backend_ref)| {
-                        ModelBinding::new(
-                            target.provider_id.as_deref().unwrap_or("test-provider"),
-                            &target.model_id,
-                            backend_ref,
-                        )
-                    })
-                })
-                .ok_or_else(|| "test requires a pinned model".to_string())?;
-            let resolved = |binding: ModelBinding| {
-                let model = binding.identity().1.to_owned();
-                ResolvedModelCandidate::try_provider(
-                    binding,
-                    "test-provider",
-                    format!("test-route:{model}"),
-                    workspace.clone(),
-                    None,
-                    InferenceEndpoint {
-                        adapter_kind: "anthropic_messages".into(),
-                        api_dialect: "anthropic_messages".into(),
-                        base_url: "https://provider.example.test".into(),
-                        upstream_model: model,
-                        processing_placement: Some(InferencePlacement {
-                            geography: InferenceGeography::Us,
-                            mechanism: InferencePlacementMechanism::AnthropicRequestBody,
-                        }),
-                    },
-                )
-            };
-            Ok(ResolvedPublicationModels {
-                primary: resolved(primary).map_err(|error| error.to_string())?,
-                candidates: candidates
-                    .iter()
-                    .cloned()
-                    .map(resolved)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| error.to_string())?,
-                context_window: None,
-                max_output_tokens: None,
-            })
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl ModelPublicationResolver for RejectModelResolver {
-        async fn resolve_models(
-            &self,
-            _workspace: &awaken_tenancy::ScopeId,
-            _selection: &ModelSelection,
-            _candidates: &[ModelBinding],
-        ) -> Result<ResolvedPublicationModels, awaken_config_service::PublicationResolutionError>
-        {
-            Err(awaken_config_service::PublicationResolutionError::MissingPrimary)
-        }
-    }
-
-    fn create_params(name: &str) -> AgentCreateParams {
-        AgentCreateParams {
-            name: name.into(),
-            model: ModelInput::Id("model-a".into()),
-            description: None,
-            system: Some("be helpful".into()),
-            metadata: BTreeMap::new(),
-            mcp_servers: vec![
-                serde_json::from_value(json!({
-                    "type": "url",
-                    "name": "docs",
-                    "url": "https://mcp.example.test"
-                }))
-                .unwrap(),
-            ],
-            skills: vec![
-                serde_json::from_value(json!({
-                    "type": "custom",
-                    "skill_id": "skill-docs"
-                }))
-                .unwrap(),
-            ],
-            tools: vec![
-                serde_json::from_value(json!({
-                    "type": "mcp_toolset",
-                    "mcp_server_name": "docs"
-                }))
-                .unwrap(),
-            ],
-            multiagent: None,
-        }
-    }
 
     #[test]
     fn resolved_roster_callable_names_follow_one_decision_table() {
@@ -790,21 +677,6 @@ mod tests {
             register_roster_name(&mut BTreeMap::new(), "agent-empty", " \t").is_err(),
             "R4 blank is not callable"
         );
-    }
-
-    fn update_params(version: u64) -> AgentUpdateParams {
-        AgentUpdateParams {
-            version: Some(version),
-            name: Some("renamed".into()),
-            model: None,
-            description: None,
-            system: None,
-            metadata: None,
-            mcp_servers: None,
-            skills: None,
-            tools: None,
-            multiagent: None,
-        }
     }
 
     #[test]
@@ -836,65 +708,6 @@ mod tests {
             ),
             "U2"
         );
-    }
-
-    fn plane(path: &str) -> ConfigPlane {
-        plane_with_catalog(path).0
-    }
-
-    fn plane_with_catalog(path: &str) -> (ConfigPlane, Arc<ExecutableAgentCatalog>) {
-        let catalog = Arc::new(ExecutableAgentCatalog::new());
-        (
-            ConfigPlane::new(
-                Arc::new(ConfigService::new(
-                    Arc::new(TestModelResolver),
-                    Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
-                )),
-                Arc::new(SqliteConfigStore::open(path).expect("config store")),
-                Arc::new(StaticToolCatalog(Vec::new())),
-            ),
-            catalog,
-        )
-    }
-
-    fn plane_with_delegation(path: &str) -> ConfigPlane {
-        plane_with_delegation_and_catalog(path).0
-    }
-
-    fn plane_with_delegation_and_catalog(path: &str) -> (ConfigPlane, Arc<ExecutableAgentCatalog>) {
-        let catalog = Arc::new(ExecutableAgentCatalog::new());
-        (
-            ConfigPlane::new(
-                Arc::new(ConfigService::new(
-                    Arc::new(TestModelResolver),
-                    Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
-                )),
-                Arc::new(SqliteConfigStore::open(path).expect("config store")),
-                Arc::new(StaticToolCatalog(vec![
-                    ToolDescriptor::pinned(
-                        "managed",
-                        "agent_run",
-                        "Run an exact roster Agent",
-                        json!({"type": "object"}),
-                    )
-                    .with_kind(ToolKind::AgentDelegation),
-                ])),
-            ),
-            catalog,
-        )
-    }
-
-    fn rejecting_plane(path: &str) -> ConfigPlane {
-        ConfigPlane::new(
-            Arc::new(ConfigService::new(
-                Arc::new(RejectModelResolver),
-                Arc::new(LocalExecutableAgentRegistrar::new(Arc::new(
-                    ExecutableAgentCatalog::new(),
-                ))),
-            )),
-            Arc::new(SqliteConfigStore::open(path).expect("config store")),
-            Arc::new(StaticToolCatalog(Vec::new())),
-        )
     }
 
     #[tokio::test]
@@ -1430,6 +1243,129 @@ mod tests {
                 inference_geo: Some(InferenceGeography::Us),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn multiagent_roster_resolution_refuses_every_unusable_reference() {
+        // Cause/effect graph: resolving a coordinator roster loads each referenced
+        // Agent's exact revision before the coordinator write boundary, so a
+        // reference that cannot be frozen is refused there rather than becoming a
+        // session that cannot start. The geo rule has its own table below; this one
+        // covers the four refusals that had no test, including the one that holds
+        // Claude Managed Agents' single documented delegation level: a roster
+        // member that is itself a coordinator is rejected rather than flattened.
+        //
+        // Decision table:
+        // | Rule | reference                        | effect                     |
+        // | R1   | published, no roster of its own  | admitted, version frozen   |
+        // | R2   | an Agent id nobody published     | refused: unknown Agent     |
+        // | R3   | a published Agent, then archived | refused: disabled/archived |
+        // | R4   | a version that was never written | refused: no such version   |
+        // | R5   | a published Agent that rosters   | refused: one level only    |
+        // Constraints: every refusal leaves no coordinator behind, so R1 proves the
+        // table cannot pass by refusing everything.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.sqlite");
+        let plane = plane_with_delegation(path.to_str().unwrap());
+        let repository = ConfigPlaneManagedAgentRepository::new(plane, "workspace-a");
+
+        let worker = repository
+            .create("workspace-a", create_params("worker"))
+            .await
+            .expect("a plain Agent publishes");
+        let doomed = repository
+            .create("workspace-a", create_params("doomed"))
+            .await
+            .expect("a second plain Agent publishes");
+
+        // A coordinator is itself a roster holder, so it is the R5 reference.
+        let mut nested = create_params("nested-coordinator");
+        nested.multiagent = Some(
+            serde_json::from_value(json!({
+                "type": "coordinator",
+                "agents": [{"type": "agent", "id": worker.id.clone()}]
+            }))
+            .unwrap(),
+        );
+        let nested = repository
+            .create("workspace-a", nested)
+            .await
+            .expect("R5 fixture: a one-level coordinator is itself admissible");
+
+        let coordinator = |name: &str, target: serde_json::Value| {
+            let mut params = create_params(name);
+            params.multiagent = Some(
+                serde_json::from_value(json!({
+                    "type": "coordinator",
+                    "agents": [target]
+                }))
+                .unwrap(),
+            );
+            params
+        };
+
+        let admitted = repository
+            .create(
+                "workspace-a",
+                coordinator("lead-r1", json!({"type": "agent", "id": worker.id.clone()})),
+            )
+            .await
+            .expect("R1");
+        assert!(
+            admitted.multiagent.is_some(),
+            "R1 admits the roster it resolved: {:?}",
+            admitted.multiagent
+        );
+
+        repository
+            .archive("workspace-a", &doomed.id)
+            .await
+            .expect("R3 fixture archives the reference");
+
+        for (rule, name, target, expected) in [
+            (
+                "R2",
+                "lead-r2",
+                json!({"type": "agent", "id": "agent-nobody-published"}),
+                "references unknown Agent",
+            ),
+            (
+                "R3",
+                "lead-r3",
+                json!({"type": "agent", "id": doomed.id.clone()}),
+                "is disabled or archived",
+            ),
+            (
+                "R4",
+                "lead-r4",
+                json!({"type": "agent", "id": worker.id.clone(), "version": 99}),
+                "has no version",
+            ),
+            (
+                "R5",
+                "lead-r5",
+                json!({"type": "agent", "id": nested.id.clone()}),
+                "is itself a coordinator",
+            ),
+        ] {
+            let error = repository
+                .create("workspace-a", coordinator(name, target))
+                .await
+                .expect_err(rule);
+            assert!(
+                matches!(error, ManagedAgentError::Invalid(ref message) if message.contains(expected)),
+                "{rule} must name its cause: {error}"
+            );
+            // A refused admission writes no coordinator, so the name stays free.
+            let listed = repository
+                .list("workspace-a", &AgentListParams::default())
+                .await
+                .expect("list after refusal");
+            assert!(
+                listed.iter().all(|agent| agent.name != name),
+                "{rule} left a coordinator behind"
+            );
+        }
     }
 
     #[tokio::test]
