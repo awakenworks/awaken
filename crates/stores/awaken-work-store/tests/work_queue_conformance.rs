@@ -20,6 +20,7 @@
 //! The suite itself lives in `awaken_store_conformance::work_queue` so a closed
 //! backend can run the identical checks; this file only supplies the backends.
 
+use awaken_session_work_contract::WorkQueue;
 use awaken_store_conformance::work_queue::run_suite;
 use awaken_work_store::{InMemoryWorkQueue, LEASE_TTL_MS, PostgresWorkQueue, SqliteWorkQueue};
 
@@ -48,64 +49,97 @@ fn sqlite_backend_conforms() {
     ));
 }
 
-/// Fixture decision table: absent URL => explicit local skip; supplied URL plus
-/// connection/schema failure => fail; supplied reachable URL => every shared
-/// rule runs with fresh tables. Each schema has a generated unique name, so
-/// simultaneous test processes cannot erase each other's authority or data.
+#[path = "support/work_postgres.rs"]
+mod work_postgres_fixture;
+
+/// Fixture cause/effect table: F1 absent URL -> canonical visible skip;
+/// F2 configured bad URL or schema failure -> hard failure; F3 live URL ->
+/// each backend instance owns a unique schema and the unchanged generic
+/// WorkQueue rules run against it. Only those exact schemas are dropped.
 #[tokio::test]
 async fn postgres_backend_conforms() {
-    use sqlx::Executor;
-    use sqlx::postgres::{PgPool, PgPoolOptions};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
-        eprintln!("[skip] postgres_backend_conforms: AWAKEN_TEST_DATABASE_URL absent");
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
         return;
     };
-    let admin = PgPool::connect(&url)
-        .await
-        .expect("explicit PostgreSQL URL must connect");
-    let prefix = format!(
-        "work_conformance_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    let sequence = AtomicUsize::new(0);
+    let fixtures = tokio::sync::Mutex::new(Vec::new());
     run_suite(
         awaken_lease_contract::system_clock(),
         async |clock| {
-            let index = sequence.fetch_add(1, Ordering::Relaxed);
-            let schema = format!("{prefix}_{index}");
-            admin
-                .execute(format!("CREATE SCHEMA {schema}").as_str())
+            let fixture = work_postgres_fixture::WorkPostgresFixture::new(&url, 16).await;
+            let store = PostgresWorkQueue::with_pool(fixture.pool.clone(), clock)
                 .await
-                .expect("isolated schema");
-            let pool = PgPoolOptions::new()
-                .after_connect(move |connection, _| {
-                    let statement = format!("SET search_path = {schema}");
-                    Box::pin(async move {
-                        connection.execute(statement.as_str()).await?;
-                        Ok(())
-                    })
-                })
-                .connect(&url)
-                .await
-                .expect("schema pool");
-            PostgresWorkQueue::with_pool(pool, clock)
-                .await
-                .expect("queue schema migrations")
+                .expect("queue schema migrations");
+            fixtures.lock().await.push(fixture);
+            store
         },
         LEASE_TTL_MS,
     )
     .await;
-    for index in 0..sequence.load(Ordering::Relaxed) {
-        admin
-            .execute(format!("DROP SCHEMA {prefix}_{index} CASCADE").as_str())
-            .await
-            .expect("remove owned schema");
+    for fixture in fixtures.into_inner() {
+        fixture.cleanup().await;
     }
-    admin.close().await;
+}
+
+#[test]
+fn fixture_absence_and_configured_failure_are_distinct() {
+    // F1 no URL -> visible skip without a fallback DB; F2 explicit empty or
+    // unreachable URL -> failed backend test, never a passing skip. The actual
+    // backend case runs in a subprocess, avoiding process-global env races.
+    let run = |url: Option<&str>| {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child.args(["postgres_backend_conforms", "--exact", "--nocapture"]);
+        child.env_remove("AWAKEN_TEST_DATABASE_URL");
+        if let Some(url) = url {
+            child.env("AWAKEN_TEST_DATABASE_URL", url);
+        }
+        child.output().expect("Work fixture rule child")
+    };
+    let absent = run(None);
+    assert!(absent.status.success(), "F1");
+    assert!(
+        String::from_utf8_lossy(&absent.stderr).contains("SKIPPED PostgreSQL fixture"),
+        "F1 visible skip"
+    );
+    for url in ["", "postgres://127.0.0.1:1/unreachable"] {
+        let bad = run(Some(url));
+        assert!(!bad.status.success(), "F2 configured failure");
+        assert!(
+            !String::from_utf8_lossy(&bad.stderr).contains("SKIPPED PostgreSQL fixture"),
+            "F2 no false skip"
+        );
+    }
+}
+
+#[tokio::test]
+async fn work_fixture_cleanup_preserves_another_live_schema() {
+    // F3 two concurrent fixture owners -> separate schema identities. Dropping
+    // the first must leave the second's actual Work row readable.
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
+    let first = work_postgres_fixture::WorkPostgresFixture::new(&url, 16).await;
+    let second = work_postgres_fixture::WorkPostgresFixture::new(&url, 16).await;
+    assert_ne!(first.scoped_url, second.scoped_url, "F3 different schemas");
+    let first_store =
+        PostgresWorkQueue::with_pool(first.pool.clone(), awaken_lease_contract::system_clock())
+            .await
+            .unwrap();
+    let second_store =
+        PostgresWorkQueue::with_pool(second.pool.clone(), awaken_lease_contract::system_clock())
+            .await
+            .unwrap();
+    first_store.enqueue_healthcheck("first").await.unwrap();
+    let second_id = second_store.enqueue_healthcheck("second").await.unwrap();
+    drop(first_store);
+    first.cleanup().await;
+    assert!(
+        second_store
+            .get("second", &second_id)
+            .await
+            .unwrap()
+            .is_some(),
+        "F3 second row survives first cleanup"
+    );
+    drop(second_store);
+    second.cleanup().await;
 }

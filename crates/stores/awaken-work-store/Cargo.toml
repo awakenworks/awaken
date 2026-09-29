@@ -35,12 +35,16 @@ awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 awaken-scoped-migration-sqlite.workspace = true
 
 [dev-dependencies]
+awaken-reliability-testkit.workspace = true
+uuid = { version = "1", features = ["v4"] }
 awaken-lease-testkit.workspace = true
 awaken-store-conformance.workspace = true
 # Property-based verification of the shared lease/reclaim + poll-window algorithm (ADR-0059).
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 loom = "0.7"
+tempfile = "3"
+url.workspace = true
 
 [[test]]
 name = "work_queue_conformance"
