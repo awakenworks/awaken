@@ -19,7 +19,7 @@ use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
 
 /// Creates/adopts the one Session environment while auxiliary housekeeping Runs
 /// may continue using their deliberately-fresh LocalProvider.
-pub(crate) enum SandboxEnvironmentProvider {
+pub enum SandboxEnvironmentProvider {
     Workdir {
         provider: LocalProvider,
         hand: Option<WorkdirHandConfig>,
@@ -44,8 +44,11 @@ pub(crate) enum SandboxEnvironmentProvider {
     },
 }
 
+/// The Hand a TrustedHost Workdir environment binds; configured once by the
+/// process composition through
+/// [`SandboxEnvironmentProvider::install_workdir_hand`].
 #[derive(Clone)]
-pub(crate) struct WorkdirHandConfig {
+pub struct WorkdirHandConfig {
     pub(super) factory: Arc<dyn HandExecutorFactory>,
     pub(super) binary: String,
     pub(super) idle_after: std::time::Duration,
@@ -56,37 +59,19 @@ pub(crate) use awaken_session_environment_contract::{
 };
 
 impl SandboxEnvironmentProvider {
-    /// Construct the in-process adapter for a non-container Deployment tier.
-    /// Both initial Host construction and asynchronous provider selection use this one mapping;
-    /// container tiers return `None` because their provider requires async setup.
-    pub(crate) fn for_host_tier(
-        tier: crate::SandboxTier,
-        base: impl Into<std::path::PathBuf>,
-        inherit_agent_stderr: bool,
-        hand_factory: Option<Arc<dyn HandExecutorFactory>>,
-        namespace_hand_bin: impl Into<String>,
-        hand_idle_after: std::time::Duration,
-    ) -> Result<Option<Self>, String> {
-        let base = base.into();
-        Ok(match tier {
-            crate::SandboxTier::Local => {
-                Some(Self::workdir_with_agent_stderr(base, inherit_agent_stderr))
-            }
-            crate::SandboxTier::Namespace => {
-                let hand_factory = hand_factory
-                    .ok_or("namespace Session environments require a hand executor factory")?;
-                Some(Self::namespace_with_agent_stderr(
-                    base,
-                    inherit_agent_stderr,
-                    hand_factory,
-                    namespace_hand_bin,
-                    hand_idle_after,
-                ))
-            }
-            crate::SandboxTier::Docker | crate::SandboxTier::Podman | crate::SandboxTier::K8s => {
-                None
-            }
-        })
+    /// Whether a TrustedHost Workdir Hand is installed, for the composition
+    /// that configured it to verify its startup.
+    #[must_use]
+    pub fn has_workdir_hand(&self) -> bool {
+        matches!(self, Self::Workdir { hand: Some(_), .. })
+    }
+
+    /// Whether scoped host execution is installed, for the composition that
+    /// configured it to verify its startup.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn has_scoped_execution(&self) -> bool {
+        matches!(self, Self::Workdir { provider, .. } if provider.execution_deployment().is_some())
     }
 
     pub(crate) fn supports_host_identity(&self) -> bool {
@@ -101,24 +86,21 @@ impl SandboxEnvironmentProvider {
         }
     }
 
-    pub(crate) fn workdir(base: impl Into<std::path::PathBuf>) -> Self {
+    pub fn workdir(base: impl Into<std::path::PathBuf>) -> Self {
         Self::Workdir {
             provider: LocalProvider::new(base),
             hand: None,
         }
     }
 
-    pub(crate) fn workdir_with_agent_stderr(
-        base: impl Into<std::path::PathBuf>,
-        inherit: bool,
-    ) -> Self {
+    pub fn workdir_with_agent_stderr(base: impl Into<std::path::PathBuf>, inherit: bool) -> Self {
         Self::Workdir {
             provider: LocalProvider::new(base).with_agent_stderr(inherit),
             hand: None,
         }
     }
 
-    pub(crate) fn trusted_host_workdir_with_agent_stderr(
+    pub fn trusted_host_workdir_with_agent_stderr(
         base: impl Into<std::path::PathBuf>,
         inherit: bool,
     ) -> Self {
@@ -128,7 +110,7 @@ impl SandboxEnvironmentProvider {
         }
     }
 
-    pub(crate) fn install_workdir_hand(
+    pub fn install_workdir_hand(
         &mut self,
         factory: Arc<dyn HandExecutorFactory>,
         binary: String,
@@ -144,7 +126,7 @@ impl SandboxEnvironmentProvider {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) async fn install_scoped_execution(
+    pub async fn install_scoped_execution(
         &mut self,
         execution: awaken_sandbox_local::LocalExecutionDeployment,
     ) -> Result<(), pc::SandboxError> {
@@ -171,7 +153,7 @@ impl SandboxEnvironmentProvider {
         provider.install_execution_deployment(execution)
     }
 
-    pub(crate) fn namespace_with_agent_stderr(
+    pub fn namespace_with_agent_stderr(
         base: impl Into<std::path::PathBuf>,
         inherit: bool,
         hand_factory: Arc<dyn HandExecutorFactory>,
@@ -227,7 +209,7 @@ impl SandboxEnvironmentProvider {
     // Every argument is one independently configured part of the one container
     // Session provider the startup composition installs.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn container_with_capacity_hand_idle_and_residency(
+    pub fn container_with_capacity_hand_idle_and_residency(
         provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
         capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
         extra_mounts: Vec<pc::MountRequirement>,
@@ -250,7 +232,7 @@ impl SandboxEnvironmentProvider {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn at_root(&self, base: impl Into<std::path::PathBuf>) -> Self {
+    pub fn at_root(&self, base: impl Into<std::path::PathBuf>) -> Self {
         let base = base.into();
         match self {
             Self::Workdir { provider, hand } => {
@@ -1048,7 +1030,7 @@ impl SandboxEnvironmentProvider {
 impl SandboxEnvironmentProvider {
     /// Hand this provider to the Host as one handle per consuming role.
     #[must_use]
-    pub(crate) fn into_session_provider(
+    pub fn into_session_provider(
         self,
     ) -> awaken_session_environment_contract::SessionEnvironmentProvider {
         awaken_session_environment_contract::SessionEnvironmentProvider::new(Arc::new(self))

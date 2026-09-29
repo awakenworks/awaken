@@ -15,7 +15,7 @@ use awaken_resource_application::{
 };
 use awaken_resource_contract::SkillStore;
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_session_executor::{LocalResourcePorts, LocalSkillPorts, SharedHost};
+use awaken_session_executor::{DeploymentConfig, LocalResourcePorts, LocalSkillPorts, SharedHost};
 
 /// The Host's Resource ports over one selected set of Resources
 /// authorities: their Memory, File and Skill stores, reclamation state and
@@ -73,18 +73,49 @@ pub fn memory_extraction_repository(
 }
 
 /// A volatile Host over `llm`: ephemeral Memory and extraction databases,
-/// in-memory Files, no Skill catalog or reclamation state, and the system
-/// clock. Consumer: Worker and Run-ingress tests that need a bare Host.
+/// in-memory Files, no Skill catalog or reclamation state, the system clock,
+/// and the Workdir Session environment as a fallback Deployment selection
+/// replaces. Consumer: Worker and Run-ingress tests that need a bare Host.
 ///
 /// # Panics
 /// When an ephemeral database cannot be opened.
 #[must_use]
 pub fn volatile_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> SharedHost {
-    SharedHost::new_with_resources(
+    with_workdir_fallback(SharedHost::new_with_resources(
         llm,
         model_ref,
         volatile_resource_ports(),
         memory_extraction_repository(None),
+    ))
+}
+
+/// [`volatile_host`] over an explicit typed Deployment. Consumer: startup
+/// tests of the compositions that select a Session environment from it.
+///
+/// # Panics
+/// When an ephemeral database cannot be opened.
+#[must_use]
+pub fn volatile_host_with_deployment(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    deployment: DeploymentConfig,
+) -> SharedHost {
+    with_workdir_fallback(SharedHost::new_with_resources_and_deployment(
+        llm,
+        model_ref,
+        volatile_resource_ports(),
+        memory_extraction_repository(None),
+        SharedHost::mint_local_workspace(),
+        deployment,
+    ))
+}
+
+/// Install the Workdir adapter under the Deployment's sandbox root as the
+/// non-authoritative fallback Session provider.
+fn with_workdir_fallback(host: SharedHost) -> SharedHost {
+    let base = awaken_session_executor::session_sandbox_base(host.deployment_config());
+    host.with_fallback_session_environment_provider(
+        awaken_session_executor::SandboxEnvironmentProvider::workdir(base).into_session_provider(),
     )
 }
 

@@ -576,15 +576,10 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
             !namespace_workspace_required,
             "NR/E4 required Namespace /workspace substrate is unavailable: {probe_error}"
         );
-        let rejection = crate::sandbox_source::resolve_sandbox_tier(
-            crate::deployment_config::SandboxTier::Namespace,
-            false,
-            base.path(),
-        )
-        .await
-        .expect_err("an unavailable namespace must not silently degrade");
-        assert!(rejection.contains("OS-native sandbox unavailable"));
-        assert!(rejection.contains(&probe_error.to_string()));
+        // Startup tier selection (`awaken-execution-composition`) owns the
+        // fail-closed refusal of an unavailable Namespace; this row has no
+        // substrate to observe.
+        let _ = probe_error;
         return;
     }
     let capabilities = provider.capabilities();

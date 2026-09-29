@@ -19,7 +19,6 @@ pub(crate) use agent::AgentExecution;
 pub(crate) use capture::ContentCaptureCapability;
 pub(crate) use dispatch::DispatchCapability;
 pub use dispatch::DispatchPoolSizing;
-pub use environment::ContainerEnvironmentComponents;
 pub(crate) use environment::EnvironmentProviders;
 pub(crate) use execution::AttemptBackends;
 pub(crate) use mcp::McpRelayCapability;

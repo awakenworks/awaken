@@ -84,6 +84,7 @@ mod terminal_repository_publication;
 mod test_mcp;
 mod tool_output_spill;
 mod unavailable_worker;
+mod uninstalled_environment;
 mod web_search;
 mod worker_services;
 
@@ -116,7 +117,6 @@ pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::cache_volume::{
     CacheVolumeInitializer, CacheVolumeWarmup, SandboxCacheVolumeInitializer,
 };
-pub use crate::host::capability::ContainerEnvironmentComponents;
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts};
 pub use crate::host::{
@@ -129,7 +129,12 @@ use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialM
 use awaken_resource_contract::{FileContentSource, RepositoryBindingVerifier};
 // ACP launch projection consumes the Session environment selected by the host.
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
-pub use crate::sandbox_source::{AcpLaunchRegistry, LaunchSource, resolve_sandbox_tier};
+pub use crate::sandbox_source::{AcpLaunchRegistry, LaunchSource};
+// The root every composition selects its Session environment providers under.
+pub use crate::acp_backend::session_sandbox_base;
+// Until `awaken-session-environment` owns the sandbox-backed providers, the
+// process composition builds them from here.
+pub use crate::session_environment::SandboxEnvironmentProvider;
 pub use crate::skills::SkillForkPlacement;
 use managed_adapter_error::{to_live_inbox_error, to_run_error};
 pub(crate) use managed_input_projection::{
