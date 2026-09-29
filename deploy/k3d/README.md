@@ -314,6 +314,21 @@ Session, and requires p95 ≤ 5 seconds. A failing window stops the run; no aver
 or best-window selection masks it. The separate cold-start bound remains 30
 seconds. Record host pressure alongside the run when evaluating shared hosts.
 
+The same driver supports independent arrivals with
+`ADR71_LOAD_RATE_PER_SECOND`. Set at least 100 `ADR71_LOAD_REQUESTS` to report
+a numeric p99, and declare `ADR71_TURN_P99_MS` (default 10000). Arrivals continue
+while earlier requests execute; `ADR71_LOAD_MAX_OUTSTANDING` (default 256) and
+`ADR71_LOAD_MAX_START_LAG_MS` (default 1000) bound the generator. Exhausting either
+budget fails explicitly rather than tapering offered traffic. Completion latency
+starts at the scheduled arrival, and the report includes offered duration,
+drain duration, throughput, every raw admission/completion sample and every
+history/generator error. `ADR71_EVIDENCE_DIR` retains the load report, exact image
+provenance, role topology and current claim/connection/lock/WAL observations.
+Its source and provider fields label these as local fixture measurements;
+one hundred samples is a reporting minimum, not a production tail qualification.
+Load Sessions are disposed through the same public lifecycle on success or
+failure. The cluster-owned teardown still owns physical fixture deletion.
+
 The 2026-09-25 local run on `awaken-adr71-cellscale-20260925` completed
 48/48 requests with zero errors, a 3.52-second warm p95, a 24.01-second
 maximum cold batch, synchronous PostgreSQL standby promotion, and the exact

@@ -4,6 +4,9 @@ import {
   auditLoadResults,
   hasCompletedProviderMarker,
   loadShape,
+  arrivalShape,
+  runArrivalWindow,
+  createParallelSessions,
   disposeFixtureSessions,
   nativeCrashHistoryErrors,
   nativeProviderInvocationErrors,
@@ -11,7 +14,104 @@ import {
   validateFleetEnvironmentIds,
 } from './distributed_control_driver.ts';
 
+test('open arrivals continue while all execution futures remain blocked', async () => {
+  // O1 scheduled arrivals are independent of completion; O2 four held effects
+  // remain below the generator budget; O3 all effects later return. O1+O2 must
+  // launch at 0/500/1000/1500ms; O3 joins every effect and reports drain time.
+  // A closed-loop mutant waiting for send before the next arrival fails here.
+  let now = 0;
+  const starts: number[] = [];
+  const releases: (() => void)[] = [];
+  const shape = arrivalShape({ ADR71_LOAD_RATE_PER_SECOND: '2' })!;
+  const running = runArrivalWindow(4, shape, async (_, scheduled) => {
+    starts.push(scheduled);
+    await new Promise<void>((resolve) => releases.push(resolve));
+  }, { now: () => now, sleep: async (ms) => { now += ms; } });
+  for (let tick = 0; tick < 20; tick += 1) await Promise.resolve();
+  assert.deepEqual(starts, [0, 500, 1000, 1500]);
+  now = 2500;
+  releases.forEach((release) => release());
+  const observed = await running;
+  assert.equal(observed.launched, 4);
+  assert.equal(observed.drainMs, 500);
+  assert.deepEqual(observed.errors, []);
+});
+
+test('arrival decision table rejects generator saturation and keeps effect errors', async () => {
+  // O4 outstanding budget reached OR start-lag budget exceeded => explicit
+  // unoffered request; never silently taper pressure. O5 synchronous/asynchronous
+  // send failure => joined diagnostic; later schedules continue and cannot hide
+  // the failure. Cross success/failure with latency and bounded outstanding.
+  for (const failure of ['none', 'sync', 'async']) {
+    let now = 0;
+    const result = await runArrivalWindow(3, arrivalShape({ ADR71_LOAD_RATE_PER_SECOND: '1' })!, () => {
+      if (failure === 'sync') throw new Error('sync effect');
+      return failure === 'async' ? Promise.reject(new Error('async effect')) : Promise.resolve();
+    }, { now: () => now, sleep: async (ms) => { now += ms; } });
+    assert.equal(result.launched, 3);
+    assert.equal(result.errors.length, failure === 'none' ? 0 : 3);
+  }
+  for (const reason of ['lag', 'outstanding']) {
+    let now = 0;
+    let release = () => {};
+    const running = runArrivalWindow(3, arrivalShape({ ADR71_LOAD_RATE_PER_SECOND: '1', ADR71_LOAD_MAX_OUTSTANDING: '1' })!,
+      () => new Promise<void>((resolve) => { release = resolve; }),
+      { now: () => now, sleep: async (ms) => { now += ms + (reason === 'lag' ? 1001 : 0); } });
+    for (let tick = 0; tick < 20; tick += 1) await Promise.resolve();
+    release();
+    const result = await running;
+    assert.equal(result.launched, reason === 'lag' ? 0 : 1);
+    assert.equal(result.errors.length, 1);
+  }
+});
+
+test('arrival configuration rejects each invalid axis before admission', () => {
+  // O6 absent rate retains the existing closed regression mode. O7 explicit
+  // rate/budget/lag/p99 must all be positive finite bounded values. Negate each
+  // axis independently; accepted boundaries prevent reject-all false greens.
+  assert.equal(arrivalShape({}), null);
+  assert.equal(arrivalShape({ ADR71_LOAD_RATE_PER_SECOND: '10000' })!.rate, 10000);
+  for (const field of ['ADR71_LOAD_RATE_PER_SECOND', 'ADR71_LOAD_MAX_OUTSTANDING',
+    'ADR71_LOAD_MAX_START_LAG_MS', 'ADR71_TURN_P99_MS']) {
+    for (const value of ['', '0', '-1', 'NaN', 'Infinity']) {
+      assert.throws(() => arrivalShape({ ADR71_LOAD_RATE_PER_SECOND: '1', [field]: value }), /invalid arrival/);
+    }
+  }
+  assert.throws(() => arrivalShape({ ADR71_LOAD_RATE_PER_SECOND: '10001' }), /invalid arrival/);
+  assert.throws(() => arrivalShape({ ADR71_LOAD_RATE_PER_SECOND: '1', ADR71_LOAD_MAX_OUTSTANDING: '1.5' }), /invalid arrival/);
+});
+
 const response = (marker: string) => ({ type: 'agent.message', content: [{ type: 'text', text: `ADR71-PROVIDER:${marker}` }] });
+
+test('partial Session admission joins all effects before canonical disposal', async () => {
+  // A1 one create fails/replies without id while its peers succeed; A2 one
+  // cleanup may fail. A1=>dispose both exact peer ids, never replay create;
+  // A1+A2=>retain admission AND cleanup errors. A3 all creates succeed=>no
+  // early deletion. Independent complete and partial rules cover both effects.
+  for (const failure of ['none', 'reject', 'missing-id']) {
+    for (const cleanupFailure of [false, true]) {
+      const deleted: string[] = [];
+      let creates = 0;
+      const client = { beta: { sessions: {
+        create: async ({ environment_id }: {environment_id: string}) => {
+          creates += 1;
+          if (environment_id === 'b' && failure === 'reject') throw new Error('lost response');
+          return environment_id === 'b' && failure === 'missing-id' ? {} : {id: environment_id};
+        },
+        delete: async (id: string) => { deleted.push(id); if (cleanupFailure) throw new Error('cleanup unavailable'); },
+      } } };
+      if (failure === 'none') {
+        assert.deepEqual(await createParallelSessions(client as any, ['a','b','c']), ['a','b','c']);
+        assert.deepEqual(deleted, []);
+      } else {
+        await assert.rejects(createParallelSessions(client as any, ['a','b','c']),
+          cleanupFailure ? /Session admission failed:.*partial admission cleanup/ : /Session admission failed/);
+        assert.deepEqual(deleted.sort(), ['a','c']);
+      }
+      assert.equal(creates, 3);
+    }
+  }
+});
 
 test('independent Provider double reports exact started work and retained completion', () => {
   // I1 running + one accepted/started => admit pre-crash injection; I2 one
