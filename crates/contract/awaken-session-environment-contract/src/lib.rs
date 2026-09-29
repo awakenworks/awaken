@@ -49,6 +49,18 @@
 
 use std::sync::Arc;
 
+mod agent_view;
+mod files;
+mod hand;
+mod proofs;
+mod provider_effect;
+
+pub use agent_view::{AgentFilesystemClient, AgentFilesystemView, AgentPathView};
+pub use files::{CapturedArtifact, DiscoveredSkillFile};
+pub use hand::{ContainerHandResidency, HandExecutorFactory};
+pub use proofs::{EnvironmentQuiescenceProof, EnvironmentStopProof, HandStopProof};
+pub use provider_effect::{EnvironmentAdoptionLayout, ProviderEffect};
+
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_tool_contract::tool::RawTool;

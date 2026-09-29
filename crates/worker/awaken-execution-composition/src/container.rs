@@ -8,9 +8,9 @@ use awaken_sandbox_container::ContainerProvider;
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 use awaken_sandbox_container::{ContainerEnvironmentCapacity, ContainerEnvironmentProvider};
 
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-use awaken_runtime_host::ContainerHandResidency;
 use awaken_runtime_host::SandboxTier;
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+use awaken_session_environment_contract::ContainerHandResidency;
 
 /// Deployment-owned security coordinates of the container tier that the plain
 /// deployment configuration cannot synthesize: a no-bypass allowlist proxy

@@ -21,17 +21,7 @@ use tokio::sync::Mutex;
 
 use super::container_skills::ContainerSkillCache;
 
-/// Session environment service that binds a live hand channel to the runtime's tool
-/// executor. The framing implementation belongs to an outer startup crate;
-/// this host owns only the Session lifecycle and never imports the relay adapter.
-pub trait HandExecutorFactory: Send + Sync {
-    fn bind(
-        &self,
-        channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
-        operation_scope: &str,
-        recovery: ToolRecoveryCapability,
-    ) -> Arc<dyn ToolExecutor>;
-}
+pub(crate) use awaken_session_environment_contract::HandExecutorFactory;
 
 #[cfg(test)]
 pub(crate) struct UnusedHandExecutorFactory;
@@ -225,15 +215,7 @@ enum RetireError {
     ReapFailed,
 }
 
-/// Typed evidence produced by the canonical Hand binding owner. A resident
-/// Hand is deliberately reported as retained: dropping its channel is not
-/// proof that the Session-Pod workload has terminated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HandStopProof {
-    NoBinding,
-    AttachedProcessReaped,
-    ResidentProcessRetained,
-}
+pub(crate) use awaken_session_environment_contract::HandStopProof;
 
 struct HandLifecycle {
     binding: Mutex<HandBindingState>,
@@ -565,10 +547,14 @@ enum HandMode {
 }
 
 impl HandMode {
-    fn from_residency(residency: crate::deployment_config::ContainerHandResidency) -> Self {
+    fn from_residency(
+        residency: awaken_session_environment_contract::ContainerHandResidency,
+    ) -> Self {
         match residency {
-            crate::deployment_config::ContainerHandResidency::AttachedExec => Self::AttachedExec,
-            crate::deployment_config::ContainerHandResidency::Resident => Self::Resident,
+            awaken_session_environment_contract::ContainerHandResidency::AttachedExec => {
+                Self::AttachedExec
+            }
+            awaken_session_environment_contract::ContainerHandResidency::Resident => Self::Resident,
         }
     }
 
@@ -602,7 +588,7 @@ impl SessionHandExecutor {
             factory,
             hand_bin.into(),
             idle_after,
-            crate::deployment_config::ContainerHandResidency::AttachedExec,
+            awaken_session_environment_contract::ContainerHandResidency::AttachedExec,
             None,
         )
     }
@@ -640,7 +626,7 @@ impl SessionHandExecutor {
             factory,
             hand_bin.into(),
             idle_after,
-            crate::deployment_config::ContainerHandResidency::AttachedExec,
+            awaken_session_environment_contract::ContainerHandResidency::AttachedExec,
             None,
         )
     }
@@ -651,7 +637,7 @@ impl SessionHandExecutor {
         factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
         idle_after: Duration,
-        residency: crate::deployment_config::ContainerHandResidency,
+        residency: awaken_session_environment_contract::ContainerHandResidency,
     ) -> Self {
         let launcher = Arc::new(SessionAgentLauncher::Container {
             sandbox: sandbox.clone(),
@@ -672,7 +658,7 @@ impl SessionHandExecutor {
         factory: Arc<dyn HandExecutorFactory>,
         hand_bin: String,
         idle_after: Duration,
-        residency: crate::deployment_config::ContainerHandResidency,
+        residency: awaken_session_environment_contract::ContainerHandResidency,
         container_skills: Option<(
             Arc<dyn awaken_container_contract::ContainerEnvironment>,
             Arc<ContainerSkillCache>,

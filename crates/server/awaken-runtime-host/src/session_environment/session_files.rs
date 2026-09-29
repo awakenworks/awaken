@@ -7,7 +7,7 @@
 use super::SessionEnvironment;
 use super::container_files;
 use awaken_provisioning_contract as pc;
-use awaken_sandbox_local::DiscoveredSkillFile;
+use awaken_session_environment_contract::DiscoveredSkillFile;
 
 /// A typed read root prevents a Workspace-relative request from silently
 /// acquiring the authority of a frozen sandbox-absolute mount path.
@@ -34,13 +34,7 @@ struct FileReadPathFacts {
     lexically_safe: bool,
 }
 
-/// One process-local Artifact capture. The Sandbox remains the byte source and
-/// ArtifactPublisher remains the durable owner; this value only keeps metadata
-/// and the exact bytes from one harvest pass together.
-pub(crate) struct CapturedArtifact {
-    pub(crate) metadata: pc::Artifact,
-    pub(crate) bytes: Vec<u8>,
-}
+pub(crate) use awaken_session_environment_contract::CapturedArtifact;
 
 async fn capture_sandbox_artifacts(
     sandbox: &dyn pc::Sandbox,

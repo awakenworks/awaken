@@ -349,7 +349,7 @@ impl crate::host::SharedHost {
     /// Model backend selection must not create a parallel sandbox-tier decision.
     pub async fn with_session_environment_from_deployment(
         self,
-        hand_factory: Option<Arc<dyn crate::HandExecutorFactory>>,
+        hand_factory: Option<Arc<dyn awaken_session_environment_contract::HandExecutorFactory>>,
     ) -> Result<Self, String> {
         // Production bundles install both executables as siblings. Resolve at
         // this composition edge; providers never search host paths themselves.
@@ -369,7 +369,7 @@ impl crate::host::SharedHost {
     /// never bypasses capability validation or changes provider selection.
     pub async fn with_session_environment_from_deployment_at(
         self,
-        hand_factory: Option<Arc<dyn crate::HandExecutorFactory>>,
+        hand_factory: Option<Arc<dyn awaken_session_environment_contract::HandExecutorFactory>>,
         namespace_hand_path: std::path::PathBuf,
     ) -> Result<Self, String> {
         self.deployment.validate_local_execution()?;
@@ -482,7 +482,7 @@ impl crate::host::SharedHost {
     /// deterministic dev fixtures may supply [`crate::LaunchSource::Fixed`] directly.
     pub async fn with_acp_launch_source(
         self,
-        hand_factory: Arc<dyn crate::HandExecutorFactory>,
+        hand_factory: Arc<dyn awaken_session_environment_contract::HandExecutorFactory>,
         source: crate::LaunchSource,
     ) -> Result<Self, String> {
         Ok(self
@@ -701,7 +701,7 @@ mod tests {
 
     struct NoHandFactory;
 
-    impl crate::HandExecutorFactory for NoHandFactory {
+    impl awaken_session_environment_contract::HandExecutorFactory for NoHandFactory {
         fn bind(
             &self,
             _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,

@@ -75,7 +75,6 @@ mod session_environment;
 mod session_memory_tools;
 mod session_slot;
 mod session_tools;
-pub use session_environment::HandExecutorFactory;
 mod skill_catalog;
 mod skills;
 mod step_projection;
@@ -146,10 +145,9 @@ pub use crate::config::{
     platform_plugin_capabilities_with_web_search,
 };
 pub use crate::deployment_config::{
-    AcpWorkerProfile, ContainerHandResidency, ContainerMcpRelayExposure, ContentCaptureSettings,
-    ContentRedaction, DeploymentConfig, DispatchBackend, PackageImageBuilder,
-    SandboxPackageSettingsInput, SandboxSettings, SandboxTier, StoreKind, Wake,
-    default_postgres_max_connections,
+    AcpWorkerProfile, ContainerMcpRelayExposure, ContentCaptureSettings, ContentRedaction,
+    DeploymentConfig, DispatchBackend, PackageImageBuilder, SandboxPackageSettingsInput,
+    SandboxSettings, SandboxTier, StoreKind, Wake, default_postgres_max_connections,
 };
 // The model-route seam (R1/R2/R5): a process startup supplies its own
 // `InferenceExecutorMaterializer` to map a session's model ref to a labeled executor.

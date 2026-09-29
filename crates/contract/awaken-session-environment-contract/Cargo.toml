@@ -16,6 +16,8 @@ authority = "session-environment"
 awaken-provisioning-contract.workspace = true
 # A rooted sandbox exposes its in-process tools as runtime tools.
 awaken-tool-contract.workspace = true
+# The Hand and ACP processes speak over the neutral Agent channel.
+awaken-agent-channel.workspace = true
 async-trait.workspace = true
 
 [lints]

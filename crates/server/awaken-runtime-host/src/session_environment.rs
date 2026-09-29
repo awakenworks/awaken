@@ -17,7 +17,7 @@ mod session_hand;
 pub(crate) use agent_sandbox::{AgentFilesystemClient, AgentFilesystemView, AgentSandbox};
 pub(crate) use environment::SessionEnvironment;
 pub(crate) use provider::{ProviderEffect, SessionEnvironmentProvider};
-pub use session_hand::HandExecutorFactory;
+pub(crate) use session_hand::HandExecutorFactory;
 #[cfg(test)]
 pub(crate) use session_hand::UnusedHandExecutorFactory;
 

@@ -1426,16 +1426,9 @@ pub(crate) fn rooted_raw_tools(
 /// Canonical Resource content identity used to verify provisioning bytes.
 pub use awaken_resource_contract::content_id as content_fingerprint;
 
-/// A `SKILL.md`-bearing directory discovered under the environment. Neutral file
-/// data — no skill semantics — so the sandbox stays unaware of the skill model
-/// (the host parses it). `dir` is a **logical** path under the root (usable by
-/// jailed tools and for `${SKILL_DIR}`), never a host absolute path (G3).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiscoveredSkillFile {
-    pub id: String,
-    pub content: String,
-    pub dir: String,
-}
+/// A `SKILL.md`-bearing directory discovered under the environment; the
+/// Session environment contract owns the value (G3: `dir` is logical).
+pub use awaken_session_environment_contract::DiscoveredSkillFile;
 
 /// Local helpers report the one provisioning error class set; there is no
 /// second provider-private string error to lose a class through conversion.
