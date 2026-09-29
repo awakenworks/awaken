@@ -648,3 +648,24 @@ failed dependency assembly leaves a discoverable Registry record. Withdrawal
 and the original Dispatch maintenance loop retry the same closed-idle release,
 including exact lease expiry, with bounded provider I/O. Retention creates no
 historical process binding and never repairs a legacy occupied unbound slot.
+
+WorkQueue ownership observation stays on its existing port and stored lease
+owner. `has_owner_claims` is read-only and compares the complete
+incarnation-qualified owner, across Environments and Work payloads. An expired
+but unreleased claim still counts; querying neither reclaims nor releases it.
+Storage failure is an error, never an empty observation. This narrow read is
+not process-exit or physical-attempt evidence, and cannot retire another Worker
+generation or authorize replay. The shared backend conformance suite owns the
+decision cases; no second occupancy store or release-owned queue reader is added.
+The PostgreSQL WorkQueue implementation now lives in its own source module,
+but retains the same schema, migration scope, port and transaction owner. Its
+new exact-owner read shares one statement with SQLite; the original backend
+conformance suite still runs against both durable stores.
+
+The same maintenance pass closes an exact expired Registry incarnation before
+checking whether the selected provider owns its evidence. Provider ownership
+limits retention/stop operations, not Registry lease semantics. An unsupported
+historical identity can therefore lose stale Ready state without gaining an
+exit receipt, binding or Dispatch retirement; its unknown physical attempt
+remains occupied. A live lease remains unchanged and no provider operation is
+issued for an unowned identity.

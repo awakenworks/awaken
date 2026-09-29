@@ -631,6 +631,14 @@ impl WorkQueue for InMemoryWorkQueue {
         Ok(WorkMutationResult::accepted(out))
     }
 
+    async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError> {
+        let authority = self.authority.lock().unwrap();
+        Ok(authority
+            .works
+            .keys()
+            .any(|id| authority.book.is_owned_by(id, worker_owner)))
+    }
+
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
         let mut authority = self.authority.lock().unwrap();
         let InMemoryQueueAuthority {

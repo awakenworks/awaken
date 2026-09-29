@@ -118,14 +118,16 @@ impl SharedHost {
         for record in records.into_iter().skip(start).take(1) {
             let identity = &record.snapshot.identity;
             *after = Some(identity.worker_id.clone());
-            if !source.owns_worker_evidence(identity) {
-                continue;
-            }
             if record.snapshot.expires_at_ms <= now {
                 directory
                     .expire_incarnation(identity, now)
                     .await
                     .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
+            }
+            // Registry expiry applies to every exact incarnation. Provider
+            // ownership controls evidence operations, never lease closure.
+            if !source.owns_worker_evidence(identity) {
+                continue;
             }
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -522,6 +524,122 @@ mod tests {
     }
 
     struct TerminalProjectionView(Option<RunRecord>);
+
+    struct UnownedEvidence;
+
+    #[async_trait]
+    impl awaken_run_ingress::WorkerExecutionStopSource for UnownedEvidence {
+        async fn release_closed_idle_worker_evidence(
+            &self,
+            _: &awaken_run_ingress::WorkerIdentity,
+        ) -> Result<(), awaken_run_ingress::ApplicationError> {
+            panic!("an unowned domain cannot release provider evidence")
+        }
+        async fn stop_closed_worker(
+            &self,
+            _: &awaken_run_ingress::ClosedWorkerExecution,
+        ) -> Result<awaken_run_ingress::WorkerProcessStopStatus, awaken_run_ingress::ApplicationError>
+        {
+            panic!("expiry is not physical termination")
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_expiry_does_not_depend_on_provider_ownership_or_retire_unknown_attempts() {
+        // Cause/effect graph: U1 the selected provider does not own a legacy
+        // identity; U2 its exact Registry lease has expired; U3 another legacy
+        // identity is live; U4 an unbound physical attempt remains occupied.
+        // Effects: E1 U1+U2 closes only Registry admission; E2 U1+U3 preserves
+        // the live identity; E3 no provider call/exit receipt is invented; E4
+        // U4 keeps the exact original slot. Rules UE1=U1+U2=>E1+E3+E4;
+        // UE2=U1+U3=>E2+E3. This uses normal registration/claim/admission APIs,
+        // not a database backfill or synthetic termination assertion.
+        use awaken_run_ingress::{DispatchQueue as _, WorkerDirectory as _};
+        let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
+        let mut identities = Vec::new();
+        for (id, ttl) in [("legacy-a", 1), ("legacy-b", u64::MAX)] {
+            identities.push(
+                directory
+                    .register(
+                        awaken_run_ingress::WorkerRegistration {
+                            worker_id: id.into(),
+                            incarnation_id: "boot".into(),
+                            manifest: Default::default(),
+                        },
+                        0,
+                        ttl,
+                    )
+                    .await
+                    .unwrap()
+                    .snapshot
+                    .identity,
+            );
+        }
+        let clock = Arc::new(awaken_run_ingress::ManualClock::new(0));
+        let dispatch = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(clock.clone()).unwrap(),
+        );
+        let claimed = claim(
+            &dispatch,
+            "legacy-thread",
+            "legacy-run",
+            &identities[0].lease_owner(),
+            0,
+            &clock,
+        )
+        .await;
+        assert_eq!(
+            dispatch
+                .begin_attempt(&awaken_run_ingress::RunClaim::from(&claimed.lease), None)
+                .await
+                .unwrap(),
+            awaken_run_ingress::AttemptAdmission::Applied
+        );
+        let before = dispatch
+            .load_physical_attempt(&claimed.lease.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(before.binding.is_none(), "U4 historical unbound slot");
+        let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "fixture")
+            .with_dispatch_store(dispatch.clone());
+        host.bind_worker_evidence_reconciliation(directory.clone(), Arc::new(UnownedEvidence))
+            .unwrap();
+        for _ in 0..2 {
+            host.reconcile_worker_evidence().await.unwrap();
+        }
+        let expired = directory
+            .incarnation(&identities[0])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            expired.snapshot.state,
+            awaken_run_ingress::WorkerState::Dead,
+            "UE1/E1"
+        );
+        assert!(expired.process_exit.is_none(), "UE1/E3");
+        let live = directory
+            .incarnation(&identities[1])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            live.snapshot.state,
+            awaken_run_ingress::WorkerState::Starting,
+            "UE2/E2"
+        );
+        assert!(live.process_exit.is_none(), "UE2/E3");
+        let after = dispatch
+            .load_physical_attempt(&claimed.lease.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after, before,
+            "UE1/E4 exact unknown physical attempt retained"
+        );
+    }
 
     impl CommittedThreadView for TerminalProjectionView {
         fn committed_messages(&self, _thread_id: &ThreadId) -> Vec<Message> {

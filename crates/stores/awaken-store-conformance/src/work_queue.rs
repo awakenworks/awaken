@@ -606,6 +606,85 @@ pub async fn graceful_owner_release_is_exact<Q: WorkQueue>(q: &Q) {
     );
 }
 
+pub async fn exact_owner_observation_is_read_only(
+    q: &impl WorkQueue,
+    clock: &ManualClock,
+    lease_ttl_ms: u64,
+) {
+    // Causes: O1 no lease; O2 a Session in env-a belongs to generation 1;
+    // O3 a healthcheck in env-b belongs to generation 2; O4 time crosses expiry;
+    // O5 the ordinary queue owner releases/reclaims a lease. Effects: E1 absent
+    // exact owner is false; E2 any payload/environment owned by the exact owner
+    // is true; E3 another incarnation never aliases it; E4 reads, including an
+    // expired lease, leave state and heartbeat unchanged; E5 only the existing
+    // mutation makes the original owner's observation false. Rules:
+    // QO1=O1=>E1; QO2=O2+O3=>E2+E3; QO3=O4=>E2+E4; QO4=O5=>E5.
+    let old = "worker:1:old";
+    let new = "worker:2:new";
+    assert!(!q.has_owner_claims(old).await.expect("QO1"));
+    let session = q
+        .enqueue_session("owner-env-a", &SessionId::from("owner-session"))
+        .await
+        .expect("fixture Session");
+    let health = q
+        .enqueue_healthcheck("owner-env-b")
+        .await
+        .expect("fixture healthcheck");
+    q.claim("owner-env-a", old, 0).await.unwrap().unwrap();
+    q.claim("owner-env-b", new, 0).await.unwrap().unwrap();
+    let before_session = q.get("owner-env-a", &session).await.unwrap().unwrap();
+    let before_health = q.get("owner-env-b", &health).await.unwrap().unwrap();
+    assert!(q.has_owner_claims(old).await.expect("QO2 Session"));
+    assert!(q.has_owner_claims(new).await.expect("QO2 healthcheck"));
+    assert!(
+        !q.has_owner_claims("worker:1:new")
+            .await
+            .expect("QO2 exact incarnation")
+    );
+    // A read after the lease deadline must not invoke the queue's reclamation.
+    let after_expiry = lease_ttl_ms
+        .checked_add(1)
+        .expect("fixture expiry has a successor");
+    clock.set(after_expiry);
+    assert!(
+        q.has_owner_claims(old)
+            .await
+            .expect("QO3 unreleased expiry")
+    );
+    let after_session = q.get("owner-env-a", &session).await.unwrap().unwrap();
+    let after_health = q.get("owner-env-b", &health).await.unwrap().unwrap();
+    assert_eq!(after_session.state, before_session.state, "QO3 state");
+    assert_eq!(
+        after_session.latest_heartbeat_at, before_session.latest_heartbeat_at,
+        "QO3 heartbeat"
+    );
+    assert_eq!(after_health.state, before_health.state, "QO3 other payload");
+    assert_eq!(
+        q.release_owner(old).await.expect("QO4 canonical release"),
+        1
+    );
+    assert!(!q.has_owner_claims(old).await.expect("QO4 released"));
+    assert!(
+        q.has_owner_claims(new)
+            .await
+            .expect("QO4 other owner retained")
+    );
+    q.claim("owner-env-b", "worker:3:replacement", after_expiry)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !q.has_owner_claims(new)
+            .await
+            .expect("QO4 canonical reclaim")
+    );
+    assert!(
+        q.has_owner_claims("worker:3:replacement")
+            .await
+            .expect("QO4 replacement")
+    );
+}
+
 pub async fn reclaim_age_boundary_cases(q: &impl WorkQueue) {
     // Adapter decision table: live TTL throughout; absent age or age > now
     // must retain the current lease. age == now selects refresh zero;
@@ -790,6 +869,9 @@ pub async fn run_suite<Q: WorkQueue, F: std::future::Future<Output = Q>>(
     heartbeat_compare_and_extend(&fresh().await).await;
     session_ownership_lifecycle_is_single_and_fenced(&fresh().await).await;
     graceful_owner_release_is_exact(&fresh().await).await;
+    let owner_clock = Arc::new(ManualClock::new(0));
+    let owner_queue = fresh_with(owner_clock.clone()).await;
+    exact_owner_observation_is_read_only(&owner_queue, &owner_clock, lease_ttl_ms).await;
     reclaim_age_boundary_cases(&fresh().await).await;
     session_access::capability_and_metadata_contract(&fresh().await, lease_ttl_ms).await;
     let clock = Arc::new(ManualClock::new(0));

@@ -39,6 +39,11 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
 
+// Exact-owner observation is a read of durable claims, with no clock or state
+// filter and no reclamation side effect.
+const HAS_OWNER_CLAIMS: &str =
+    "SELECT EXISTS(SELECT 1 FROM work_queue_item WHERE lease_owner = $1)";
+
 // Poll-liveness bookkeeping is shared by the durable stores. Lease authority remains
 // in their rows. The volatile executable specification is never part of a default
 // product build.
@@ -425,6 +430,15 @@ impl WorkQueue for SqliteWorkQueue {
                 LeaseFence::Exact(access.lease_epoch),
                 stopped_at,
             )
+        })
+        .await
+    }
+
+    async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError> {
+        let worker_owner = worker_owner.to_string();
+        self.with_connection(move |conn| {
+            conn.query_row(HAS_OWNER_CLAIMS, params![worker_owner], |row| row.get(0))
+                .map_err(storage)
         })
         .await
     }
@@ -944,6 +958,14 @@ impl WorkQueue for PostgresWorkQueue {
             LeaseFence::Exact(access.lease_epoch),
         )
         .await
+    }
+
+    async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError> {
+        sqlx::query_scalar::<_, bool>(HAS_OWNER_CLAIMS)
+            .bind(worker_owner)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(storage)
     }
 
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {

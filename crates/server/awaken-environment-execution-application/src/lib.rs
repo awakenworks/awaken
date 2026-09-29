@@ -1502,6 +1502,9 @@ mod tests {
         async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
             self.inner.release_owner(worker_owner).await
         }
+        async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError> {
+            self.inner.has_owner_claims(worker_owner).await
+        }
         async fn update_metadata(
             &self,
             env: &str,
