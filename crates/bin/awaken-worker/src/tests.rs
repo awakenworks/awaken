@@ -589,6 +589,128 @@ fn worker_manifest_reports_trusted_host_only_from_operator_configuration() {
     }
 }
 
+/// Fallback claim decision table. Causes: C1 a Namespace launcher is missing;
+/// C2 the operator explicitly permits Local fallback; C3 the Worker has run its
+/// pre-registration provider preparation; C4 the manifest is standard or an
+/// explicit stale Namespace claim. Effects: C1+C2+C3 publishes Local's exact
+/// capability/backend while retaining the configured Namespace's lack of
+/// TrustedHost consent; C1+C2+!C3 refuses build before registration; an
+/// explicit Namespace claim is refused. The participant runs in a child with
+/// an empty PATH so it cannot race this test process's ambient environment.
+#[tokio::test]
+async fn namespace_fallback_manifest_uses_the_probed_provider() {
+    let binary = std::env::current_exe().unwrap();
+    let empty_path = tempfile::tempdir().unwrap();
+    let child = tokio::process::Command::new(binary)
+        .args([
+            "--ignored",
+            "--exact",
+            "tests::namespace_fallback_manifest_participant",
+        ])
+        .env("PATH", empty_path.path())
+        .env("AWAKEN_WORKER_FALLBACK_PARTICIPANT", "1")
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), child)
+        .await
+        .expect("fallback participant stayed bounded")
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "fallback participant: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("test tests::namespace_fallback_manifest_participant ... ok"),
+        "the isolated participant must actually execute: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[tokio::test]
+#[ignore = "isolated PATH participant invoked by namespace_fallback_manifest_uses_the_probed_provider"]
+async fn namespace_fallback_manifest_participant() {
+    assert_eq!(
+        std::env::var("AWAKEN_WORKER_FALLBACK_PARTICIPANT").as_deref(),
+        Ok("1")
+    );
+    let mut deployment = deployment();
+    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Namespace;
+    deployment.sandbox.allow_local_fallback = true;
+    deployment.sandbox.trusted_host_enabled = false;
+    let make = || {
+        WorkerNodeBuilder::new(
+            awaken_worker_transport_security::WorkerUpstream::new("http://control"),
+            awaken_lease_contract::system_clock(),
+        )
+        .with_deployment_config(deployment.clone())
+    };
+
+    assert!(
+        make()
+            .with_standard_manifest(Default::default())
+            .build()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("requires preparing"),
+        "F2 no probe cannot advertise Namespace"
+    );
+
+    let worker = make()
+        .with_standard_manifest(Default::default())
+        .prepare_session_environment_from_deployment()
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    let manifest = worker.manifest();
+    let (local, backend) =
+        deployment.sandbox_support_for_tier(awaken_session_executor::SandboxTier::Local);
+    assert_eq!(manifest.sandbox, local, "F1 actual Workdir capabilities");
+    assert_eq!(
+        manifest.sandbox_backends,
+        std::collections::BTreeSet::from([backend.to_string()])
+    );
+    assert!(
+        manifest.trusted_host_sandbox.is_none(),
+        "F1 fallback is not host consent"
+    );
+    assert_eq!(
+        worker.deployment.sandbox_tier,
+        awaken_session_executor::SandboxTier::Namespace
+    );
+
+    let stale = derive_standard_manifest(StandardManifestInputs {
+        deployment: &deployment,
+        materializer: None,
+        credential_materializer: None,
+        brokered_acp_model_access: None,
+        worker_local_credential_resolver_installed: false,
+        remote_credential_realization: None,
+        sandbox_override: None,
+        checkpoint_formats: Default::default(),
+        resource_support: ResourceManifestSupport::None,
+        application_capabilities: Default::default(),
+        config: &StandardManifestConfig::default(),
+    });
+    assert!(
+        make()
+            .with_manifest(stale)
+            .prepare_session_environment_from_deployment()
+            .await
+            .unwrap()
+            .build()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("must match the prepared effective"),
+        "F3 explicit stale Namespace claim refused"
+    );
+}
+
 #[test]
 fn standard_builder_derives_from_its_installed_materializer() {
     let worker = WorkerNodeBuilder::new(

@@ -733,14 +733,30 @@ impl DeploymentConfig {
         awaken_provisioning_contract::SandboxCapabilities,
         &'static str,
     ) {
+        self.sandbox_support_for_tier(self.sandbox_tier)
+    }
+
+    /// Project an already-resolved local tier through the same capability
+    /// mapping as the configured tier. The Worker probes an explicitly allowed
+    /// Namespace fallback before registration; changing the Deployment's
+    /// configured tier would also grant TrustedHost access, which fallback
+    /// alone does not authorize.
+    #[must_use]
+    pub fn sandbox_support_for_tier(
+        &self,
+        tier: SandboxTier,
+    ) -> (
+        awaken_provisioning_contract::SandboxCapabilities,
+        &'static str,
+    ) {
         use awaken_provisioning_contract::{IsolationClass, SandboxCapabilities};
 
         let projection = sandbox_support_projection(
-            self.sandbox_tier,
+            tier,
             self.sandbox.package_image_registry.is_some(),
             self.sandbox.package_image_builder.is_some(),
         );
-        let capabilities = match self.sandbox_tier {
+        let capabilities = match tier {
             SandboxTier::Local => awaken_session_environment_contract::workdir_capabilities(),
             SandboxTier::Docker | SandboxTier::Podman | SandboxTier::K8s => {
                 SandboxCapabilities {

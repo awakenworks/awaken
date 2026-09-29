@@ -141,6 +141,10 @@ pub struct WorkerNodeBuilder {
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     enclosing_sandbox_boundary: Option<InstalledSandboxBoundary>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
+    prepared_local_sandbox: Option<(
+        awaken_provisioning_contract::SandboxCapabilities,
+        &'static str,
+    )>,
     environment_checkpoint_store:
         Option<Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>>,
     mcp_attachment_realizer:
@@ -259,6 +263,7 @@ impl WorkerNodeBuilder {
             acp_capability_observation_source: None,
             enclosing_sandbox_boundary: None,
             session_container_provider: None,
+            prepared_local_sandbox: None,
             environment_checkpoint_store: None,
             mcp_attachment_realizer: None,
             web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
@@ -273,6 +278,7 @@ impl WorkerNodeBuilder {
 
     fn with_process_config(mut self, config: WorkerProcessConfig) -> Self {
         self.deployment = config.deployment;
+        self.prepared_local_sandbox = None;
         self.standard_manifest_config = config.manifest;
         self.admin_listen = config.admin_listen;
         self.graceful_drain = config.graceful_drain;
@@ -323,6 +329,7 @@ impl WorkerNodeBuilder {
         deployment: awaken_session_executor::DeploymentConfig,
     ) -> Self {
         self.deployment = deployment;
+        self.prepared_local_sandbox = None;
         self
     }
 
@@ -537,6 +544,7 @@ impl WorkerNodeBuilder {
             extra_mounts: Vec::new(),
             cache_volume_initializer: None,
         });
+        self.prepared_local_sandbox = None;
         self
     }
 
@@ -555,6 +563,7 @@ impl WorkerNodeBuilder {
             extra_mounts: components.extra_mounts,
             cache_volume_initializer: components.cache_volume_initializer,
         });
+        self.prepared_local_sandbox = None;
         self
     }
 
@@ -562,8 +571,22 @@ impl WorkerNodeBuilder {
     /// Worker manifest. The resulting instance is shared by capability evidence,
     /// readiness probes, capacity lifecycle, and Runtime Host realization.
     pub async fn prepare_session_environment_from_deployment(
-        self,
+        mut self,
     ) -> Result<Self, WorkerNodeBuildError> {
+        if self.deployment.sandbox_tier == awaken_session_executor::SandboxTier::Namespace
+            && self.deployment.sandbox.allow_local_fallback
+            && self.session_container_provider.is_none()
+            && self.enclosing_sandbox_boundary.is_none()
+        {
+            let tier = awaken_execution_composition::resolve_sandbox_tier(
+                self.deployment.sandbox_tier,
+                true,
+                &awaken_session_executor::session_sandbox_base(&self.deployment),
+            )
+            .await
+            .map_err(WorkerNodeBuildError)?;
+            self.prepared_local_sandbox = Some(self.deployment.sandbox_support_for_tier(tier));
+        }
         if !self.deployment.sandbox_tier.is_container() || self.session_container_provider.is_some()
         {
             return Ok(self);
@@ -611,6 +634,7 @@ impl WorkerNodeBuilder {
             backend: backend.into(),
             capabilities,
         });
+        self.prepared_local_sandbox = None;
         self
     }
 
@@ -674,6 +698,16 @@ impl WorkerNodeBuilder {
                     .to_string(),
             ));
         }
+        if self.deployment.sandbox_tier == awaken_session_executor::SandboxTier::Namespace
+            && self.deployment.sandbox.allow_local_fallback
+            && self.session_container_provider.is_none()
+            && self.enclosing_sandbox_boundary.is_none()
+            && self.prepared_local_sandbox.is_none()
+        {
+            return Err(WorkerNodeBuildError(
+                "Namespace local fallback requires preparing the effective Session provider before Worker registration".into(),
+            ));
+        }
         if self.deployment.sandbox_tier.is_container() && self.session_container_provider.is_none()
         {
             return Err(WorkerNodeBuildError(
@@ -730,6 +764,11 @@ impl WorkerNodeBuilder {
                 self.enclosing_sandbox_boundary
                     .as_ref()
                     .map(|installed| (installed.capabilities.clone(), installed.backend.as_str()))
+            })
+            .or_else(|| {
+                self.prepared_local_sandbox
+                    .as_ref()
+                    .map(|(capabilities, backend)| (capabilities.clone(), *backend))
             });
         let manifest = match self.manifest {
             ManifestSelection::Selected(ManifestSource::Explicit(manifest)) => *manifest,
@@ -772,6 +811,19 @@ impl WorkerNodeBuilder {
                 )));
             }
         };
+        if let Some((capabilities, backend)) = &self.prepared_local_sandbox {
+            let mut expected_backends = std::collections::BTreeSet::from([(*backend).to_string()]);
+            if self.deployment.trusted_host_enabled() {
+                expected_backends
+                    .insert(awaken_worker_contract::TRUSTED_HOST_SANDBOX_BACKEND.to_string());
+            }
+            if manifest.sandbox != *capabilities || manifest.sandbox_backends != expected_backends {
+                return Err(WorkerNodeBuildError(
+                    "Worker manifest must match the prepared effective local Session provider"
+                        .into(),
+                ));
+            }
+        }
         validate_worker_manifest(&manifest, &self.deployment)?;
         if !provider_checkpoint_formats.is_subset(&manifest.checkpoint_formats) {
             return Err(WorkerNodeBuildError(
@@ -793,6 +845,7 @@ impl WorkerNodeBuilder {
             credential_observation_resolver,
             acp_capability_observation_source: self.acp_capability_observation_source,
             session_container_provider: self.session_container_provider,
+            prepared_local_sandbox: self.prepared_local_sandbox,
             environment_checkpoint_store: self.environment_checkpoint_store,
             mcp_attachment_realizer: self.mcp_attachment_realizer,
             web_search_providers: self.web_search_providers,
@@ -892,6 +945,10 @@ pub struct WorkerNode {
     acp_capability_observation_source:
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
+    prepared_local_sandbox: Option<(
+        awaken_provisioning_contract::SandboxCapabilities,
+        &'static str,
+    )>,
     environment_checkpoint_store:
         Option<Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>>,
     mcp_attachment_realizer:
@@ -1371,6 +1428,15 @@ impl WorkerNode {
         .map_err(std::io::Error::other)?
         .with_acp_from_deployment(self.credential_materializer, self.brokered_acp_model_access)
             .await;
+        if let Some((_, backend)) = &self.prepared_local_sandbox {
+            let installed = host.installed_session_environment_provider().realizer().capabilities();
+            if installed != self.manifest.sandbox {
+                return Err(std::io::Error::other(format!(
+                    "effective local Session provider changed after Worker registration for {backend}; refusing Ready"
+                ))
+                .into());
+            }
+        }
 
         let authority = Arc::new(lifecycle::WorkerAuthorityProof::default());
         let host = Arc::new(host.with_execution_authority(authority.clone()));
