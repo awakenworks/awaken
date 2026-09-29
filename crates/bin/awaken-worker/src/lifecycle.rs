@@ -235,7 +235,7 @@ impl WorkerSupervisor {
             .refresh(
                 self.credential_observation_resolver.as_deref(),
                 self.acp_capability_observation_source.as_deref(),
-                wall_clock_ms(),
+                self.host.clock().as_ref(),
                 self.observation_ttl,
             )
             .await
@@ -340,13 +340,6 @@ impl WorkerSupervisor {
             Ok(ready)
         }
     }
-}
-
-pub(crate) fn wall_clock_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 pub(crate) fn new_incarnation_id() -> Result<String, getrandom::Error> {
@@ -705,11 +698,10 @@ pub(crate) fn spawn_session_realization_reconciliation(
             move || {
                 let lifecycle = cold_lifecycle.clone();
                 async move {
-                    let now = wall_clock_ms();
                     // The cold claim is a child grant of the observed Worker
                     // Registry authority: it never outlives it, and a lapsed
                     // registry proof mints no claim this cycle.
-                    let now_at = awaken_lease_contract::UtcTime::from_epoch_ms(now);
+                    let now_at = lifecycle.host.clock().now();
                     let Some(claim_expiry) = awaken_lease_contract::Expiry::child_within(
                         awaken_lease_contract::Expiry::after(now_at, lifecycle.authority.remaining()),
                         now_at,

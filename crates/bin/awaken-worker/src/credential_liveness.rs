@@ -13,6 +13,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationSource};
+use awaken_lease_contract::{WallClock, WallClockExt};
 use awaken_runtime_contract::{
     CredentialMaterialError, CredentialObservation, WorkerLocalCredentialResolver,
 };
@@ -163,9 +164,10 @@ impl WorkerObservationCache {
         &self,
         resolver: Option<&dyn WorkerLocalCredentialResolver>,
         capability_source: Option<&dyn AcpCapabilityObservationSource>,
-        now_ms: u64,
+        clock: &dyn WallClock,
         ttl: Duration,
     ) -> Result<(), String> {
+        let started_at_ms = clock.now_ms();
         // Every trigger uses this one operation. A caller that waited behind a
         // successful concurrent refresh consumes that causal batch instead of
         // probing the same host identity a second time.
@@ -181,7 +183,7 @@ impl WorkerObservationCache {
         // A slow adapter handshake is part of the observation operation. Start
         // the full lease only after the complete causal batch has finished so
         // probe latency cannot consume (or entirely exhaust) fresh evidence.
-        let observed_at_ms = crate::wall_clock_ms().max(now_ms);
+        let observed_at_ms = clock.now_ms().max(started_at_ms);
         // Both probes form one causal batch. A hard failure in either source
         // cannot renew only half of the evidence or create mixed-generation
         // credential/capability truth.
@@ -219,6 +221,7 @@ pub(crate) fn spawn_probe(
     capability_source: Option<Arc<dyn AcpCapabilityObservationSource>>,
     probe_interval: Duration,
     observation_ttl: Duration,
+    clock: Arc<dyn WallClock>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(probe_interval);
@@ -231,7 +234,7 @@ pub(crate) fn spawn_probe(
                 .refresh(
                     resolver.as_deref(),
                     capability_source.as_deref(),
-                    crate::wall_clock_ms(),
+                    clock.as_ref(),
                     observation_ttl,
                 )
                 .await
@@ -511,7 +514,7 @@ mod tests {
             .refresh(
                 Some(&AvailableResolver),
                 None,
-                100,
+                &awaken_lease_testkit::ManualClock::new(100),
                 Duration::from_millis(30),
             )
             .await
@@ -520,7 +523,12 @@ mod tests {
 
         assert!(
             cache
-                .refresh(Some(&FailedResolver), None, 120, Duration::from_millis(30),)
+                .refresh(
+                    Some(&FailedResolver),
+                    None,
+                    &awaken_lease_testkit::ManualClock::new(120),
+                    Duration::from_millis(30),
+                )
                 .await
                 .is_err()
         );
@@ -560,7 +568,7 @@ mod tests {
             .refresh(
                 Some(&AvailableResolver),
                 Some(&VerifiedCapabilitySource),
-                100,
+                &awaken_lease_testkit::ManualClock::new(100),
                 Duration::from_millis(30),
             )
             .await
@@ -582,7 +590,7 @@ mod tests {
                 .refresh(
                     Some(&AvailableResolver),
                     Some(&FailedCapabilitySource),
-                    120,
+                    &awaken_lease_testkit::ManualClock::new(120),
                     Duration::from_millis(30),
                 )
                 .await
@@ -595,55 +603,54 @@ mod tests {
 
     #[tokio::test]
     async fn capability_probe_latency_does_not_consume_the_observation_lease() {
-        // Test design — Cause: a capability probe blocks before completing one
-        // otherwise successful credential/capability batch. Effects: observation
-        // time is stamped after release and both facts receive the full TTL with
-        // one deadline. Constraints: probe latency cannot shorten the lease or
-        // split batch time. Decision rule H1-slow=success after delay=>full window.
-        let cache = Arc::new(WorkerObservationCache::default());
-        let entered = Arc::new(Notify::new());
-        let release = Arc::new(Notify::new());
-        let source = Arc::new(BlockingCapabilitySource {
-            entered: entered.clone(),
-            release: release.clone(),
-        });
-        let refresh = {
-            let cache = cache.clone();
-            let source = source.clone();
-            tokio::spawn(async move {
-                cache
-                    .refresh(
-                        Some(&AvailableResolver),
-                        Some(source.as_ref()),
-                        crate::wall_clock_ms(),
-                        Duration::from_millis(30),
-                    )
-                    .await
-            })
-        };
-
-        tokio::time::timeout(std::time::Duration::from_secs(30), entered.notified())
-            .await
-            .expect("timed out waiting for entered.notified()");
-        let released_at_ms = crate::wall_clock_ms();
-        release.notify_one();
-        refresh.await.expect("refresh task").expect("refresh batch");
-
-        let credential = cache
-            .snapshot()
-            .credentials
-            .into_iter()
-            .next()
-            .expect("one credential");
-        let capability = cache
-            .snapshot()
-            .acp_capabilities
-            .into_iter()
-            .next()
-            .expect("one capability");
-        assert!(credential.observed_at_ms >= released_at_ms);
-        assert_eq!(credential.valid_until_ms, credential.observed_at_ms + 30);
-        assert_eq!(capability.valid_until_ms, credential.valid_until_ms);
+        // Cause/effect table, started_at=100 and TTL=30:
+        // | probe outcome | injected reading after probe | effect |
+        // | success | 1000 (forward) | credential stamp 1000, both deadlines 1030 |
+        // | success | 100 (same) | credential stamp 100, both deadlines 130 |
+        // | success | 50 (rollback) | credential stamp 100, both deadlines 130 |
+        // All rows publish only after the complete probe and preserve one
+        // causal batch. Hard errors retain the prior batch in sibling tests.
+        for released_at_ms in [1_000, 100, 50] {
+            let clock = Arc::new(awaken_lease_testkit::ManualClock::new(100));
+            let cache = Arc::new(WorkerObservationCache::default());
+            let entered = Arc::new(Notify::new());
+            let release = Arc::new(Notify::new());
+            let source = Arc::new(BlockingCapabilitySource {
+                entered: entered.clone(),
+                release: release.clone(),
+            });
+            let refresh = {
+                let cache = cache.clone();
+                let source = source.clone();
+                let clock = clock.clone();
+                tokio::spawn(async move {
+                    cache
+                        .refresh(
+                            Some(&AvailableResolver),
+                            Some(source.as_ref()),
+                            clock.as_ref(),
+                            Duration::from_millis(30),
+                        )
+                        .await
+                })
+            };
+            tokio::time::timeout(Duration::from_secs(30), entered.notified())
+                .await
+                .expect("probe entered");
+            assert!(cache.snapshot().credentials.is_empty(), "no partial batch");
+            clock.set(released_at_ms);
+            release.notify_one();
+            refresh.await.expect("refresh task").expect("refresh batch");
+            let batch = cache.snapshot();
+            let credential = batch.credentials.iter().next().expect("one credential");
+            let capability = &batch.acp_capabilities[0];
+            assert_eq!(credential.observed_at_ms, released_at_ms.max(100));
+            assert_eq!(credential.valid_until_ms, credential.observed_at_ms + 30);
+            // ACP's protocol evidence retains its source-owned timestamp;
+            // only its publication lease is projected from the batch clock.
+            assert_eq!(capability.observation.observed_at_ms(), 1);
+            assert_eq!(capability.valid_until_ms, credential.valid_until_ms);
+        }
     }
 
     #[tokio::test]
@@ -671,6 +678,7 @@ mod tests {
             })),
             Duration::from_secs(3600),
             Duration::from_secs(60),
+            Arc::new(awaken_lease_testkit::ManualClock::new(100)),
         );
 
         tokio::time::timeout(Duration::from_millis(100), entered.notified())
@@ -709,7 +717,7 @@ mod tests {
                     .refresh(
                         Some(resolver.as_ref()),
                         None,
-                        100,
+                        &awaken_lease_testkit::ManualClock::new(100),
                         Duration::from_millis(30),
                     )
                     .await
@@ -724,7 +732,7 @@ mod tests {
                     .refresh(
                         Some(resolver.as_ref()),
                         None,
-                        101,
+                        &awaken_lease_testkit::ManualClock::new(101),
                         Duration::from_millis(30),
                     )
                     .await

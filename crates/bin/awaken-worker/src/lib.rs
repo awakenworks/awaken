@@ -43,7 +43,7 @@ mod relay_hand;
 use credential_liveness::WorkerObservationCache;
 use lifecycle::{
     WorkerSupervisor, grace_window, new_incarnation_id, spawn_environment_warmup_reconciliation,
-    spawn_heartbeat, spawn_session_realization_reconciliation, wall_clock_ms,
+    spawn_heartbeat, spawn_session_realization_reconciliation,
 };
 use manifest::{
     CredentialMaterializerSupport, ManifestSelection, ManifestSource, ResourceManifestSupport,
@@ -1507,6 +1507,7 @@ impl WorkerNode {
             lifecycle.acp_capability_observation_source.clone(),
             self.credential_probe_interval,
             self.credential_observation_ttl,
+            self.clock.clone(),
         );
         let environment_warmups = spawn_environment_warmup_reconciliation(lifecycle.clone());
         let session_realizations =
@@ -1571,7 +1572,8 @@ impl WorkerNode {
         } else {
             std::time::Duration::ZERO
         };
-        let deadline_ms = wall_clock_ms().saturating_add(grace.as_millis() as u64);
+        let deadline_ms = awaken_lease_contract::Expiry::after(self.clock.now(), grace)
+            .deadline().as_epoch_ms();
         match tokio::time::timeout(
             std::time::Duration::from_secs(5),
             lifecycle.begin_drain(Some(deadline_ms)),

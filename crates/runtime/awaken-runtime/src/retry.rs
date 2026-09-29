@@ -24,10 +24,11 @@ pub(crate) fn jitter_draw() -> u64 {
 }
 
 fn seed() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0x5EED)
-        ^ (std::process::id() as u64) << 32
+    use std::hash::{BuildHasher, Hasher};
+    // The standard randomized hash state supplies entropy independently of
+    // wall time. SplitMix and the pure retry policy remain the sole draw and
+    // decision paths; clock rollback cannot repeat a timestamp/PID seed.
+    std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish()
 }

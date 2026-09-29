@@ -82,6 +82,7 @@ toml.workspace = true
 tracing = "0.1"
 
 [dev-dependencies]
+awaken-lease-testkit.workspace = true
 awaken-runtime-host-testkit.workspace = true
 awaken-reliability-testkit = { workspace = true, features = ["tracing"] }
 # The admin router tests drive the axum router directly (oneshot).

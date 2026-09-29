@@ -182,30 +182,37 @@ mod postgres {
         }
     }
 
-    fn database_url() -> String {
-        std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-        })
-    }
-
-    async fn schema_pool(schema: &'static str) -> Option<PgPool> {
-        let admin = match PgPool::connect(&database_url()).await {
-            Ok(pool) => pool,
-            Err(error) => {
-                println!("[skip] no Postgres reachable: {error}");
+    async fn schema_pool() -> Option<(PgPool, String)> {
+        let url = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
+            Ok(url) => url,
+            Err(std::env::VarError::NotPresent) => {
+                println!("[skip] PostgreSQL conformance requires AWAKEN_TEST_DATABASE_URL");
                 return None;
             }
+            Err(std::env::VarError::NotUnicode(_)) => {
+                panic!("explicit PostgreSQL fixture URL is not UTF-8")
+            }
         };
-        let _ = admin
-            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
-            .await;
+        assert!(
+            !url.trim().is_empty(),
+            "explicit PostgreSQL fixture URL is empty"
+        );
+        let admin = PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("explicit PostgreSQL fixture is unavailable");
+        let schema = format!("t_captured_content_{}", uuid::Uuid::new_v4().simple());
         admin
             .execute(format!("CREATE SCHEMA {schema}").as_str())
             .await
-            .expect("create schema");
+            .expect("create owned schema");
         admin.close().await;
-        PgPoolOptions::new()
+        let owned_schema = schema.clone();
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_secs(5))
             .after_connect(move |connection, _metadata| {
+                let schema = owned_schema.clone();
                 Box::pin(async move {
                     connection
                         .execute(format!("SET search_path = {schema}").as_str())
@@ -213,22 +220,99 @@ mod postgres {
                     Ok(())
                 })
             })
-            .connect(&database_url())
+            .connect(&url)
             .await
-            .ok()
+            .expect("connect owned PostgreSQL schema");
+        Some((pool, schema))
+    }
+
+    #[test]
+    fn postgres_fixture_absence_and_configured_failure_have_distinct_outcomes() {
+        // Fixture cause/effect table: F1 no explicit URL -> visible [skip]
+        // without contacting any second/default database; F2 explicit but
+        // unreachable loopback URL -> child test fails, never successful skip.
+        // Run the actual backend case in isolated processes so environment
+        // choices never race the parent harness or another fixture consumer.
+        let run = |configured: Option<&str>| {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child.args([
+                "postgres::postgres_captured_content_conforms",
+                "--exact",
+                "--nocapture",
+            ]);
+            child.env_remove("AWAKEN_TEST_DATABASE_URL");
+            if let Some(url) = configured {
+                child.env("AWAKEN_TEST_DATABASE_URL", url);
+            }
+            child.output().expect("fixture rule child")
+        };
+        let absent = run(None);
+        assert!(absent.status.success(), "F1");
+        assert!(
+            String::from_utf8_lossy(&absent.stdout).contains("[skip]"),
+            "F1 explicit skip"
+        );
+        for url in ["postgres://127.0.0.1:1/unreachable", ""] {
+            let configured = run(Some(url));
+            assert!(
+                !configured.status.success(),
+                "F2 explicit failure must fail"
+            );
+            assert!(
+                !String::from_utf8_lossy(&configured.stdout).contains("[skip]"),
+                "F2 no skip"
+            );
+        }
     }
 
     #[tokio::test]
     async fn postgres_captured_content_conforms() {
-        let Some(pool) = schema_pool("t_captured_content").await else {
+        // F3 each invocation owns a random schema: it never drops a shared
+        // predecessor. The live contract executes in that schema; cleanup is
+        // restricted to the exact name returned by this fixture owner.
+        let Some((pool, schema)) = schema_pool().await else {
             return;
         };
         let store = PgCapturedContentStore::with_pool(
-            pool,
+            pool.clone(),
             std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(500)),
         )
         .await
         .unwrap();
         captured_content_contract(&store).await;
+        let (other_pool, other_schema) = schema_pool().await.expect("explicit second fixture");
+        assert_ne!(
+            schema, other_schema,
+            "F3 concurrent consumers own different schemas"
+        );
+        let other = PgCapturedContentStore::with_pool(
+            other_pool.clone(),
+            std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(500)),
+        )
+        .await
+        .unwrap();
+        CaptureSink::record(
+            &other,
+            &DataSubjectId("isolated".into()),
+            Purpose::TelemetryContent,
+            ContentKind::InputMessages,
+            "other fixture",
+        )
+        .await
+        .unwrap();
+        pool.execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+            .await
+            .expect("drop owned schema");
+        pool.close().await;
+        assert_eq!(
+            other.len().await,
+            1,
+            "F3 first cleanup cannot destroy the other schema"
+        );
+        other_pool
+            .execute(format!("DROP SCHEMA {other_schema} CASCADE").as_str())
+            .await
+            .expect("drop second owned schema");
+        other_pool.close().await;
     }
 }

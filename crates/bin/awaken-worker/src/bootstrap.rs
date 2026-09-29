@@ -1093,7 +1093,7 @@ mod tests {
                     .refresh(
                         worker.credential_observation_resolver.as_deref(),
                         worker.acp_capability_observation_source.as_deref(),
-                        1,
+                        &awaken_lease_testkit::ManualClock::new(1),
                         std::time::Duration::from_secs(30),
                     )
                     .await
@@ -1120,7 +1120,7 @@ mod tests {
                         .refresh(
                             Some(resolver.as_ref()),
                             worker.acp_capability_observation_source.as_deref(),
-                            2,
+                            &awaken_lease_testkit::ManualClock::new(2),
                             std::time::Duration::from_secs(30),
                         )
                         .await

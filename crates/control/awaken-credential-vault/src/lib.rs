@@ -1049,7 +1049,11 @@ pub(crate) fn validate_create_params(
 pub(crate) fn prepare_source(
     params: CredentialCreateParams,
 ) -> (CredentialSource, Option<RedactedString>) {
-    let id = CredentialSourceId(format!("cred:{}:{}", params.workspace_id, next_id()));
+    let id = CredentialSourceId(format!(
+        "cred:{}:{}",
+        params.workspace_id,
+        awaken_agent_contract::id::fresh_process_id("credential")
+    ));
     prepare_source_with_id(id, params)
 }
 
@@ -1139,17 +1143,6 @@ pub async fn materialize(
             source.id.0.clone(),
         )),
     }
-}
-
-fn next_id() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQ: AtomicU64 = AtomicU64::new(1);
-    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    format!("{}-{timestamp}-{seq}", std::process::id())
 }
 
 #[cfg(test)]
