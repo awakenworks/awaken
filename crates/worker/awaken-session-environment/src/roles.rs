@@ -22,7 +22,7 @@ use super::SandboxEnvironment;
 impl SandboxEnvironment {
     /// Hand this environment to the Host as one handle per consuming role.
     #[must_use]
-    pub(crate) fn into_session_environment(self) -> SessionEnvironment {
+    pub fn into_session_environment(self) -> SessionEnvironment {
         let environment = Arc::new(self);
         let scoped_execution = scoped_execution(&environment);
         SessionEnvironment::new(environment, scoped_execution)

@@ -424,12 +424,18 @@ impl SharedHost {
 
     /// Test-support upgrade of a volatile fixture to local durable storage
     /// under `dir`, with the durable Memory extraction repository the caller
-    /// opened there (`awaken-runtime-host-testkit` opens the canonical one).
+    /// opened there and the relocation of its Session environment providers
+    /// under that root (`awaken-runtime-host-testkit` supplies both for the
+    /// sandbox-backed providers it links; this crate never does).
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_durable_store_dir(
         mut self,
         dir: impl Into<PathBuf>,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
+        relocate: impl Fn(
+            &awaken_session_environment_contract::SessionEnvironmentProvider,
+            PathBuf,
+        ) -> awaken_session_environment_contract::SessionEnvironmentProvider,
     ) -> Self {
         let dir = dir.into();
         self.resources
@@ -438,20 +444,12 @@ impl SharedHost {
         // A durable host must place its Workdir sandboxes under a stable root too;
         // otherwise the dispatch row survives restart but its persisted handle
         // points into the previous process's random temp directory.
-        self.env.session_provider = crate::session_environment::relocated_provider(
-            &self.env.session_provider,
-            dir.join("sandboxes"),
-        );
+        self.env.session_provider = relocate(&self.env.session_provider, dir.join("sandboxes"));
         self.env.backend_owned_session_provider = self
             .env
             .backend_owned_session_provider
             .as_ref()
-            .map(|provider| {
-                crate::session_environment::relocated_provider(
-                    provider,
-                    dir.join("trusted-local-sandboxes"),
-                )
-            });
+            .map(|provider| relocate(provider, dir.join("trusted-local-sandboxes")));
         if let Some(mounter) = self.memory_mounter() {
             self.env
                 .session_provider
@@ -466,7 +464,8 @@ impl SharedHost {
     }
 
     /// [`Self::with_durable_store_dir`] with the local SQLite extraction
-    /// repository at `dir/sessions.db`, for this crate's own unit tests.
+    /// repository at `dir/sessions.db` and the sandbox-backed relocation, for
+    /// this crate's own unit tests.
     #[cfg(test)]
     pub fn with_store_dir(self, dir: impl Into<PathBuf>) -> Self {
         let dir = dir.into();
@@ -478,7 +477,9 @@ impl SharedHost {
             )
             .expect("open durable Memory extraction repository"),
         );
-        self.with_durable_store_dir(dir, repository)
+        self.with_durable_store_dir(dir, repository, |provider, base| {
+            crate::session_environment::relocated_provider(provider, base)
+        })
     }
 
     /// Bind the exact published delegation targets to a prepared Session.

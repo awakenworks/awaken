@@ -168,44 +168,6 @@ impl SandboxEnvironmentProvider {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn container(
-        provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
-        extra_mounts: Vec<pc::MountRequirement>,
-        hand_factory: Arc<dyn HandExecutorFactory>,
-        hand_bin: impl Into<String>,
-    ) -> Self {
-        Self::container_with_capacity_and_hand_idle(
-            provider,
-            None,
-            extra_mounts,
-            hand_factory,
-            hand_bin,
-            std::time::Duration::ZERO,
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn container_with_capacity_and_hand_idle(
-        provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
-        capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
-        extra_mounts: Vec<pc::MountRequirement>,
-        hand_factory: Arc<dyn HandExecutorFactory>,
-        hand_bin: impl Into<String>,
-        hand_idle_after: std::time::Duration,
-    ) -> Self {
-        Self::container_with_capacity_hand_idle_and_residency(
-            provider,
-            capacity,
-            extra_mounts,
-            hand_factory,
-            hand_bin,
-            hand_idle_after,
-            ContainerHandResidency::AttachedExec,
-            awaken_lease_contract::system_clock(),
-        )
-    }
-
     // Every argument is one independently configured part of the one container
     // Session provider the startup composition installs.
     #[allow(clippy::too_many_arguments)]
@@ -1247,7 +1209,7 @@ mod provider_effect_tests {
         // | P3   | some  | none      | FenceRejected, never Unattached         |
         let fence = pc::SandboxEffectFence::new("op", "owner", "boot", 1, u64::MAX).unwrap();
         let authority = pc::test_support::EffectAuthority::new(&fence);
-        let spec = crate::session_environment::environment_test_spec();
+        let spec = crate::test_support::spec();
         for authority in [None, Some(&authority as &dyn pc::CurrentExecutionAuthority)] {
             let effect = ProviderEffect::from_parts(None, authority).expect("P1");
             assert!(matches!(effect, ProviderEffect::Unattached), "P1");
@@ -1298,7 +1260,7 @@ mod execution_installation_tests {
         let mut namespace = SandboxEnvironmentProvider::namespace_with_agent_stderr(
             root.path(),
             false,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(crate::test_support::UnusedHandExecutorFactory),
             "/missing-helper",
             std::time::Duration::from_secs(1),
         );

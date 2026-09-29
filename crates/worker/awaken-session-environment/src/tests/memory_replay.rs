@@ -247,7 +247,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             .realizer()
             .create_effective_for_effect(
                 &fuse_spec,
-                crate::session_environment::ProviderEffect::Fenced {
+                awaken_session_environment_contract::ProviderEffect::Fenced {
                     fence: &fuse_effect,
                     authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                         &fuse_effect,
@@ -284,7 +284,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             .realizer()
             .create_effective_for_effect(
                 &fuse_spec,
-                crate::session_environment::ProviderEffect::Fenced {
+                awaken_session_environment_contract::ProviderEffect::Fenced {
                     fence: &fuse_effect,
                     authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                         &fuse_effect,
@@ -306,7 +306,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             .adopt_effective_for_effect(
                 &fuse_spec,
                 &fuse_handle,
-                crate::session_environment::ProviderEffect::Fenced {
+                awaken_session_environment_contract::ProviderEffect::Fenced {
                     fence: &fuse_effect,
                     authority: &pc::test_support::EffectAuthority::new(&fuse_effect),
                 },
@@ -389,7 +389,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .realizer()
         .create_effective_for_effect(
             &copy_spec,
-            crate::session_environment::ProviderEffect::Fenced {
+            awaken_session_environment_contract::ProviderEffect::Fenced {
                 fence: &copy_effect,
                 authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                     &copy_effect,
@@ -423,7 +423,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .realizer()
         .create_effective_for_effect(
             &copy_spec,
-            crate::session_environment::ProviderEffect::Fenced {
+            awaken_session_environment_contract::ProviderEffect::Fenced {
                 fence: &copy_effect,
                 authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                     &copy_effect,
@@ -440,7 +440,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .adopt_effective_for_effect(
             &copy_spec,
             &copy_handle,
-            crate::session_environment::ProviderEffect::Fenced {
+            awaken_session_environment_contract::ProviderEffect::Fenced {
                 fence: &copy_effect,
                 authority: &pc::test_support::EffectAuthority::new(&copy_effect),
             },
@@ -483,7 +483,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .realizer()
         .create_effective_for_effect(
             &drift_spec,
-            crate::session_environment::ProviderEffect::Fenced {
+            awaken_session_environment_contract::ProviderEffect::Fenced {
                 fence: &drift_effect,
                 authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                     &drift_effect,
@@ -508,7 +508,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .realizer()
         .create_effective_for_effect(
             &drift_spec,
-            crate::session_environment::ProviderEffect::Fenced {
+            awaken_session_environment_contract::ProviderEffect::Fenced {
                 fence: &drift_effect,
                 authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                     &drift_effect,
@@ -568,7 +568,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
         .realizer()
         .create_effective_for_effect(
             &hot_spec,
-            crate::session_environment::ProviderEffect::Fenced {
+            awaken_session_environment_contract::ProviderEffect::Fenced {
                 fence: &hot_create,
                 authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                     &hot_create,
@@ -654,7 +654,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
             .realizer()
             .create_effective_for_effect(
                 &spec,
-                crate::session_environment::ProviderEffect::Fenced {
+                awaken_session_environment_contract::ProviderEffect::Fenced {
                     fence: &create,
                     authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                         &create,
@@ -869,7 +869,7 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                     .realizer()
                     .create_effective_for_effect(
                         &spec,
-                        crate::session_environment::ProviderEffect::Fenced {
+                        awaken_session_environment_contract::ProviderEffect::Fenced {
                             fence: &create,
                             authority:
                                 &awaken_provisioning_contract::test_support::EffectAuthority::new(
@@ -883,8 +883,7 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                     .unwrap();
                 let handle = created.lifecycle().handle();
                 drop(created);
-                let cold_provider =
-                    crate::session_environment::relocated_provider(&provider, root.path());
+                let cold_provider = crate::test_support::relocated_provider(&provider, root.path());
                 drop(provider);
                 let provider = cold_provider;
                 provider
@@ -1056,7 +1055,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
     let created = namespace
         .create_effective_for_effect(
             &namespace_spec,
-            crate::session_environment::ProviderEffect::Fenced {
+            awaken_session_environment_contract::ProviderEffect::Fenced {
                 fence: &create_fence,
                 authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                     &create_fence,
@@ -1073,7 +1072,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
         .adopt_effective_for_effect(
             &namespace_spec,
             &handle,
-            crate::session_environment::ProviderEffect::Fenced {
+            awaken_session_environment_contract::ProviderEffect::Fenced {
                 fence: &create_fence,
                 authority: &pc::test_support::EffectAuthority::new(&create_fence),
             },

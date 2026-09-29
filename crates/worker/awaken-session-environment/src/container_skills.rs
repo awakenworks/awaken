@@ -6,7 +6,9 @@
 use awaken_provisioning_contract as pc;
 use awaken_session_environment_contract::DiscoveredSkillFile;
 
-pub(crate) struct ContainerSkillCache {
+/// The container environment's cache of discovered Skill directories.
+/// Opaque: consumers reach Skills through the environment's Skill role.
+pub struct ContainerSkillCache {
     dirs: std::sync::Mutex<std::collections::BTreeSet<String>>,
     snapshot: std::sync::RwLock<ContainerSkillSnapshot>,
 }

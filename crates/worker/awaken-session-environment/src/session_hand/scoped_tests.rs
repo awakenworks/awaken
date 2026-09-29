@@ -6,12 +6,10 @@
 
 use super::super::environment::EnvironmentStopProof;
 use super::super::tests::{DoneProcess, FakeHandExecutor, UnreapableProcess, spec};
-use super::super::{
-    SandboxEnvironment, SandboxEnvironmentAccess as _, SandboxEnvironmentProvider,
-    SessionEnvironment,
-};
 use super::*;
-use crate::acp_backend::deployment_test_binary;
+use crate::test_support::deployment_test_binary;
+use crate::test_support::{SandboxEnvironmentAccess as _, UnusedHandExecutorFactory};
+use crate::{SandboxEnvironment, SandboxEnvironmentProvider, SessionEnvironment};
 use std::path::Path;
 
 struct CurrentAuthority;
@@ -40,7 +38,7 @@ async fn environment(base: &Path, failing_hand: bool) -> SessionEnvironment {
     let environment = provider
         .create_effective_for_effect(
             &spec(),
-            crate::session_environment::ProviderEffect::Fenced {
+            awaken_session_environment_contract::ProviderEffect::Fenced {
                 fence: &fence,
                 authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                     &fence,

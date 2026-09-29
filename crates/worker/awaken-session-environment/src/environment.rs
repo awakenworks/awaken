@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
+use awaken_agent_channel::AgentChannel;
 use awaken_provisioning_contract as pc;
-use awaken_run_executor_acp::AgentChannelType;
 use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
 use awaken_sandbox_local::{LocalSandbox, NamespaceSandbox};
 
@@ -16,7 +16,7 @@ pub(crate) use awaken_session_environment_contract::{
 };
 
 /// One realized sandbox shared by every Run attempt in a Session.
-pub(crate) enum SandboxEnvironment {
+pub enum SandboxEnvironment {
     Workdir {
         sandbox: Arc<LocalSandbox>,
         hand: Option<Arc<SessionHandExecutor>>,
@@ -79,7 +79,9 @@ impl SandboxEnvironment {
                         protocol_cwd: sandbox.workspace_path().to_string_lossy().into_owned(),
                         command_cwd: "/".into(),
                         prompt_paths:
-                            crate::managed_resource_projection::AgentPathView::workdir_relative("/"),
+                            awaken_session_environment_contract::AgentPathView::workdir_relative(
+                                "/",
+                            ),
                     };
                 }
                 // working_directory is an ACP session option. The Native Hand
@@ -117,7 +119,7 @@ impl SandboxEnvironment {
                         },
                     ),
                     prompt_paths:
-                        crate::managed_resource_projection::AgentPathView::workdir_relative(
+                        awaken_session_environment_contract::AgentPathView::workdir_relative(
                             logical_cwd,
                         ),
                 }
@@ -137,14 +139,14 @@ impl SandboxEnvironment {
                     command_cwd: protocol_cwd.clone(),
                     protocol_cwd,
                     prompt_paths:
-                        crate::managed_resource_projection::AgentPathView::sandbox_absolute(),
+                        awaken_session_environment_contract::AgentPathView::sandbox_absolute(),
                 }
             }
         }
     }
 
     #[must_use]
-    pub(crate) fn workdir(sandbox: LocalSandbox) -> Self {
+    pub fn workdir(sandbox: LocalSandbox) -> Self {
         Self::Workdir {
             sandbox: Arc::new(sandbox),
             hand: None,
@@ -167,7 +169,7 @@ impl SandboxEnvironment {
     }
 
     #[must_use]
-    pub(crate) fn namespace(
+    pub fn namespace(
         sandbox: NamespaceSandbox,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
@@ -302,7 +304,7 @@ impl SandboxEnvironment {
     pub(crate) async fn spawn_agent(
         &self,
         command: pc::Command,
-    ) -> Result<(Box<dyn pc::ProcessHandle>, Box<dyn AgentChannelType>), pc::SandboxError> {
+    ) -> Result<(Box<dyn pc::ProcessHandle>, Box<dyn AgentChannel>), pc::SandboxError> {
         match self {
             Self::Workdir {
                 sandbox,

@@ -23,21 +23,6 @@ use super::container_skills::ContainerSkillCache;
 
 pub(crate) use awaken_session_environment_contract::HandExecutorFactory;
 
-#[cfg(test)]
-pub(crate) struct UnusedHandExecutorFactory;
-
-#[cfg(test)]
-impl HandExecutorFactory for UnusedHandExecutorFactory {
-    fn bind(
-        &self,
-        _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
-        _operation_scope: &str,
-        _recovery: ToolRecoveryCapability,
-    ) -> Arc<dyn ToolExecutor> {
-        panic!("this test does not dispatch a Session Hand tool")
-    }
-}
-
 pub(super) enum SessionAgentLauncher {
     Workdir(Arc<LocalSandbox>),
     Namespace(Arc<NamespaceSandbox>),
@@ -77,7 +62,7 @@ impl SessionAgentLauncher {
     ) -> Result<
         (
             Box<dyn pc::ProcessHandle>,
-            Box<dyn awaken_run_executor_acp::AgentChannelType>,
+            Box<dyn awaken_agent_channel::AgentChannel>,
         ),
         pc::SandboxError,
     > {
@@ -93,7 +78,7 @@ impl SessionAgentLauncher {
 
     async fn open_resident_channel(
         &self,
-    ) -> Result<Box<dyn awaken_run_executor_acp::AgentChannelType>, pc::SandboxError> {
+    ) -> Result<Box<dyn awaken_agent_channel::AgentChannel>, pc::SandboxError> {
         match self {
             Self::Container { sandbox } => sandbox.open_agent_channel().await,
             Self::Workdir(_) | Self::Namespace(_) => Err(pc::SandboxError::unsupported(
@@ -525,7 +510,9 @@ async fn launch_hand(
 }
 
 /// The one Session-Environment-owned Hand binding.
-pub(crate) struct SessionHandExecutor {
+/// The one Hand lifecycle bound to a Hand-equipped environment. Opaque:
+/// consumers reach its tools through the environment's roles.
+pub struct SessionHandExecutor {
     launcher: Arc<SessionAgentLauncher>,
     factory: Arc<dyn HandExecutorFactory>,
     hand_bin: String,
@@ -1047,7 +1034,7 @@ impl Drop for HandProjectionUpdate<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_environment::SandboxEnvironmentAccess as _;
+    use crate::test_support::{SandboxEnvironmentAccess as _, UnusedHandExecutorFactory};
     use std::sync::Barrier;
 
     #[tokio::test]
