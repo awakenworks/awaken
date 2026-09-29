@@ -209,7 +209,10 @@ impl SharedHost {
                 store.clone(),
             )),
             application: Arc::new(
-                awaken_resource_application::StoreSkillCatalogApplication::new(store.clone()),
+                awaken_resource_application::StoreSkillCatalogApplication::new(
+                    store.clone(),
+                    self.clock(),
+                ),
             ),
             store,
         };
