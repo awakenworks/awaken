@@ -81,9 +81,14 @@ scenario!(
     RootTimeline,
     EXTERNAL_CUSTOMER_INPUT,
     Expect::Sequence(&[
-        "session.status_running", "session.thread_status_running", "user.message",
-        "agent.message", "agent.message", "session.thread_status_idle",
-        "session.usage", "session.status_idle",
+        "session.status_running",
+        "session.thread_status_running",
+        "user.message",
+        "agent.message",
+        "agent.message",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
     ]),
 );
 

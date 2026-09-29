@@ -119,6 +119,7 @@ impl ManagedState {
         &self,
         record: &mut SessionRecord,
         session_id: &str,
+        persisted: &awaken_session_state_contract::PersistedSession,
         evidence: &CandidateEvidence,
     ) -> Result<RootProjection, StateError> {
         let all_accepted_lifecycle = &evidence.acceptance.accepted;

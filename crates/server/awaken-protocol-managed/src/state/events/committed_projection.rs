@@ -106,7 +106,7 @@ impl ManagedState {
         let mut staged_record = base_record;
         Self::apply_persisted_session(&mut staged_record, &persisted);
         let record = &mut staged_record;
-        let root = self.project_root_prefix(record, session_id, &evidence)?;
+        let root = self.project_root_prefix(record, session_id, &persisted, &evidence)?;
         let delegation = evidence.delegation();
         self.append_delegation_projections(record, delegation)?;
         self.close_aggregate(
