@@ -291,7 +291,7 @@ async fn hot_thread_history_open_reports_its_scoped_cost() {
     // C2 an unrelated Thread opens first; C3 the hot Thread opens after restart;
     // C4 sixteen independent Threads commit while C3 is opening. Effects:
     // E1 C2 remains scoped; E2 C3 restores the complete ordered prefix;
-    // E3 C4 commits remain exact, are absent from C3, and report their p95
+    // E3 C4 commits remain exact, are absent from C3, and report their maximum
     // alongside hot-open cost. Rules H1=C1+C2->E1, H2=C1+C3->E2,
     // H3=C1+C3+C4->E2+E3. This is a capacity observation, not a latency pass
     // threshold: the current view still materializes that one Thread.
@@ -348,7 +348,7 @@ async fn hot_thread_history_open_reports_its_scoped_cost() {
     let gate = Arc::new(tokio::sync::Barrier::new(2));
     let hot_gate = gate.clone();
     let peer_gate = gate.clone();
-    let ((hot, hot_ms), mut peer_samples) = tokio::join!(
+    let ((hot, hot_ms), peer_samples) = tokio::join!(
         async {
             hot_gate.wait().await;
             let started = std::time::Instant::now();
@@ -393,12 +393,16 @@ async fn hot_thread_history_open_reports_its_scoped_cost() {
         1,
         "H3/E3 independent fact remains queryable"
     );
-    peer_samples.sort_by(f64::total_cmp);
+    // H3 observes only sixteen peer commits. Report their maximum explicitly:
+    // this sparse sample cannot qualify a p95 tail (at least twenty samples).
+    let peer_max_ms = peer_samples
+        .into_iter()
+        .reduce(f64::max)
+        .expect("H3 observes independent peer commits");
     println!(
         "hot_thread_history facts={} unrelated_open_ms={unrelated_ms:.3} \
-         hot_open_ms={hot_ms:.3} peer_commit_p95_ms={:.3}",
+         hot_open_ms={hot_ms:.3} peer_commit_max_ms={peer_max_ms:.3}",
         rows + 1,
-        peer_samples[peer_samples.len() * 95 / 100],
     );
 }
 
