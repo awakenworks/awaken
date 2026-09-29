@@ -12,6 +12,12 @@ pub fn provider_model_effect_scope(
     adapter: &str,
     request: &ChatRequest,
 ) -> ModelEffectScope {
+    // Published provider references may carry a pinned instance suffix. Its
+    // native kind still owns the wire contract; model names grant no capability.
+    let provider = provider
+        .split_once('@')
+        .map_or(provider, |(kind, _)| kind)
+        .trim();
     if provider == "deepseek"
         && adapter == "openai"
         && matches!(dialect, "open_ai_chat" | "open_ai_responses")
@@ -42,7 +48,12 @@ mod tests {
             messages: Vec::new(),
             tools: Vec::new(),
         };
-        for provider in ["deepseek", "compatible-gateway"] {
+        for provider in [
+            "deepseek",
+            "deepseek@instance-1",
+            "deepseek-compatible",
+            "compatible-gateway",
+        ] {
             for (dialect, adapter) in [
                 ("open_ai_chat", "openai"),
                 ("open_ai_responses", "openai"),
@@ -51,7 +62,8 @@ mod tests {
             ] {
                 assert_eq!(
                     provider_model_effect_scope(provider, dialect, adapter, &request),
-                    if provider == "deepseek" && adapter == "openai" {
+                    if matches!(provider, "deepseek" | "deepseek@instance-1") && adapter == "openai"
+                    {
                         ModelEffectScope::ResponseOnly
                     } else {
                         ModelEffectScope::Opaque
