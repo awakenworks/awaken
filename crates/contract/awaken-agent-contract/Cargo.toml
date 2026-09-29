@@ -23,6 +23,7 @@ sha2 = "0.10"
 thiserror.workspace = true
 zeroize = "1"
 http = "1"
+uuid = { version = "1", features = ["v4"] }
 schemars = { version = "1", optional = true }
 
 [dev-dependencies]

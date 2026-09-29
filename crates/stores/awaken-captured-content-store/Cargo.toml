@@ -26,6 +26,7 @@ thiserror.workspace = true
 awaken-lease-testkit.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
 
 [features]
 default = []
