@@ -17,7 +17,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
 import { Chat } from '@ai-sdk/react';
 import {
-  SKILLS_BETA, bindSandboxExecutionPolicy, managedFileUploadForm,
+  SKILLS_BETA, bindSandboxExecutionPolicy, createCrossProtocolApplicationThread, managedFileUploadForm,
   provisionProviderTestModel, waitForPort, waitForSessionEventReceipt, waitForValue,
 } from './harness.mjs';
 
@@ -143,8 +143,9 @@ async function clientQuestionTurn(environmentId, agent, instructions) {
     tools: [...agent.tools, { type: 'custom', name: 'AskUserQuestion',
       description: 'Ask the customer one question, then await the frontend answer.',
       input_schema: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] } }] });
+  const { headers } = await createCrossProtocolApplicationThread(baseURL, agent.id, id);
   const chat = new Chat({ id, transport: new DefaultChatTransport({
-    api: `${baseURL}/v1/ai-sdk/threads/${id}/runs`, headers: { 'x-api-key': client.apiKey },
+    api: `${baseURL}/v1/ai-sdk/threads/${id}/runs`, headers,
     fetch: (input, init) => fetch(input, { ...init,
       signal: AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(90_000)]) }),
   }), sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls });

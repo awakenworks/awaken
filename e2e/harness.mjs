@@ -1046,7 +1046,13 @@ export async function publishAlwaysAskManagementProbeAgent(
 export async function createCrossProtocolApplicationThread(
   baseUrl,
   agentId = 'assistant',
+  existingSessionId,
 ) {
+  // XPA2 a real fixture already created its exact Agent/Environment Session:
+  // bind that same identity; do not create an unrelated default Session.
+  if (existingSessionId !== undefined && (typeof existingSessionId !== 'string' || !existingSessionId.trim())) {
+    throw new TypeError('existing application Session id must be non-empty');
+  }
   const request = async (route, body) => {
     const response = await fetch(`${baseUrl}${route}`, {
       method: 'POST',
@@ -1062,17 +1068,17 @@ export async function createCrossProtocolApplicationThread(
     }
     return responseBody;
   };
-  const session = await request('/v1/sessions', {
+  const threadId = existingSessionId ?? (await request('/v1/sessions', {
     agent: agentId,
     environment_id: 'env_local',
     title: 'cross-protocol application fixture',
-  });
+  })).id;
   const capability = await request('/v1/application-access-tokens', {
     protocols: ['ai-sdk', 'ag-ui'],
     operations: ['thread.run', 'thread.messages.read'],
     thread_bindings: [{
-      external_thread_id: session.id,
-      managed_session_id: session.id,
+      external_thread_id: threadId,
+      managed_session_id: threadId,
     }],
     expires_in_seconds: 300,
   });
@@ -1080,7 +1086,7 @@ export async function createCrossProtocolApplicationThread(
     throw new Error('application access issuer returned no aat_ capability');
   }
   return {
-    threadId: session.id,
+    threadId,
     accessToken: capability.access_token,
     headers: { authorization: `Bearer ${capability.access_token}` },
   };
