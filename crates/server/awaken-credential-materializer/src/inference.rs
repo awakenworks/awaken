@@ -339,7 +339,6 @@ impl LlmExecutor for PinnedCandidateExecutor {
             .find(|candidate| candidate.binding() == &request.model_binding);
         match candidate.map(|candidate| candidate.provisioning()) {
             Some(awaken_runtime_contract::resolved::ModelProvisioning::Provider {
-                access_kind: ProviderAccessKind::Direct,
                 provider_ref,
                 endpoint,
                 ..
@@ -811,6 +810,83 @@ mod tests {
         CredentialInferenceMaterializer::from_pinned(PinnedCredentialMaterializer::external_only(
             Arc::new(NoCredentialAccess),
         ))
+    }
+
+    #[test]
+    fn pinned_candidate_preserves_qualified_effect_scope_for_direct_and_brokered_access() {
+        use awaken_runtime_contract::model_operation::ModelEffectScope;
+        use awaken_runtime_contract::resolved::{ProviderServerTool, ToolDescriptor};
+        // Causes: C1 exact pinned binding; C2 qualified provider+wire; C3
+        // Direct/Brokered placement; C4 provider-hosted tool absent/present.
+        // Effects: E1 response-only classification survives either placement;
+        // E2 wrong binding/provider or hosted execution stays opaque. Rules:
+        // C1+C2+!C4=>E1 for both C3; every missing safety conjunct=>E2.
+        // No credential resolution, grant or model call is needed to classify.
+        for brokered in [false, true] {
+            for provider in ["deepseek", "openai"] {
+                let binding = ModelBinding::parse(provider, "model-a", "genai").unwrap();
+                let endpoint = awaken_runtime_contract::InferenceEndpoint {
+                    adapter_kind: "openai".into(),
+                    api_dialect: "open_ai_chat".into(),
+                    base_url: "https://gateway.invalid".into(),
+                    upstream_model: "model-a".into(),
+                    processing_placement: None,
+                };
+                let reference = format!("{provider}@1");
+                let candidate = if brokered {
+                    ResolvedModelCandidate::try_brokered_provider(
+                        binding.clone(),
+                        reference,
+                        "route-a",
+                        "workspace-a",
+                        endpoint,
+                    )
+                } else {
+                    ResolvedModelCandidate::try_provider(
+                        binding.clone(),
+                        reference,
+                        "route-a",
+                        "workspace-a",
+                        None,
+                        endpoint,
+                    )
+                }
+                .unwrap();
+                let router = PinnedCandidateExecutor {
+                    materializer: neutral_materializer(),
+                    candidates: vec![candidate],
+                    realization: None,
+                    ownership: None,
+                    local_run_correlation: None,
+                };
+                let mut request = ChatRequest {
+                    model_binding: binding,
+                    inference: Default::default(),
+                    messages: Vec::new(),
+                    tools: Vec::new(),
+                };
+                assert_eq!(
+                    router.effect_scope(&request),
+                    if provider == "deepseek" {
+                        ModelEffectScope::ResponseOnly
+                    } else {
+                        ModelEffectScope::Opaque
+                    }
+                );
+                let mut hosted = ToolDescriptor::pinned(
+                    "test",
+                    "search",
+                    "search",
+                    serde_json::json!({"type":"object"}),
+                );
+                hosted.provider_server_tool = Some(ProviderServerTool::DeepSeekResponsesWebSearch);
+                request.tools.push(hosted);
+                assert_eq!(router.effect_scope(&request), ModelEffectScope::Opaque);
+                request.tools.clear();
+                request.model_binding = ModelBinding::parse("foreign", "other", "genai").unwrap();
+                assert_eq!(router.effect_scope(&request), ModelEffectScope::Opaque);
+            }
+        }
     }
 
     #[cfg(feature = "brokered")]
