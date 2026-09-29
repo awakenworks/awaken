@@ -831,6 +831,9 @@ pub(super) enum ChildStep {
     Cancel,
     /// The child commits its final response and `Completed`.
     Close,
+    /// Commit the absorbing child Thread disposition after its completed
+    /// period; prior Session/child facts must remain listable.
+    Archive,
 }
 
 const CHILD: &str = "sthr-timeline-child";
@@ -1087,6 +1090,17 @@ impl Timeline for ChildTimeline {
                     RunState::Ended(EndCause::NaturalEnd),
                 );
             }
+            ChildStep::Archive => {
+                self.runtime.disposition_by_thread.lock().unwrap().insert(
+                    (self.session_id.clone(), CHILD.into()),
+                    awaken_agent_contract::ThreadDisposition::Archived,
+                );
+                self.runtime
+                    .state_cursors_by_thread
+                    .lock()
+                    .unwrap()
+                    .insert(CHILD.into(), vec![cursor]);
+            }
         }
     }
 }
@@ -1186,6 +1200,12 @@ pub(super) const CHILD_CANCELLED_PAUSE: &[ChildStep] = &[
     ChildStep::Ask { audited: true },
     ChildStep::Cancel,
 ];
+pub(super) const CHILD_ARCHIVED_AFTER_CLOSE: &[ChildStep] = &[
+    ChildStep::Link,
+    ChildStep::Say,
+    ChildStep::Close,
+    ChildStep::Archive,
+];
 
 /// Every named Session-root history.
 pub(super) const ROOT_SCENARIOS: &[(&str, &[Step])] = &[
@@ -1227,6 +1247,7 @@ pub(super) const CHILD_SCENARIOS: &[(&str, &[ChildStep])] = &[
     ("child_unaudited_pause", CHILD_UNAUDITED_PAUSE),
     ("child_pausing_twice", CHILD_PAUSING_TWICE),
     ("child_cancelled_pause", CHILD_CANCELLED_PAUSE),
+    ("child_archived_after_close", CHILD_ARCHIVED_AFTER_CLOSE),
 ];
 
 async fn repeated_message_identity<T: Timeline>(

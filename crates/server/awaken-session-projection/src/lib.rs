@@ -39,7 +39,7 @@ pub use aggregate::{
 };
 pub use coordination::{
     CoordinationReceipts, IssuedToolEvent, SEND_MESSAGE_TOOL_ID, coordination_orders, cross_posts,
-    is_coordination_send, link_facts,
+    is_coordination_send, link_facts, project_child_activity,
 };
 pub use error::ProjectionError;
 pub use evidence::{

@@ -181,6 +181,18 @@ pub(super) struct ManagedLiveOverlay {
     pub(super) anchors: HashMap<String, String>,
 }
 
+/// The only state a warm record lends to a committed-prefix rebuild. The
+/// consumer is the one candidate builder: its CAS coordinate and local
+/// `evt_N` overlays survive, while every durable Event, child, checkpoint and
+/// message-consumption decision is rebuilt from committed evidence.
+#[derive(Default)]
+pub(super) struct ProjectionDeliveryMemo {
+    pub(super) cache_revision: u64,
+    pub(super) overlay: ManagedLiveOverlay,
+    pub(super) transient_events: Vec<Event>,
+    pub(super) transient_owners: HashMap<String, String>,
+}
+
 #[derive(Clone)]
 pub(super) struct SessionRecord {
     /// Process-local compare-and-swap coordinate. It is advanced by every
@@ -233,6 +245,46 @@ pub(super) struct SessionRecord {
 }
 
 impl SessionRecord {
+    /// Consume a published record at the candidate boundary without lending
+    /// any of its durable projection fields to the next reduction. Exhaustive
+    /// destructuring makes a new record field require an explicit authority
+    /// decision here before it can enter the rebuild.
+    pub(super) fn into_delivery_memo(self) -> ProjectionDeliveryMemo {
+        let Self {
+            cache_revision,
+            committed_projection_ready: _,
+            agent_id: _,
+            session: _,
+            resource_state: _,
+            events,
+            event_page_index: _,
+            checkpoint: _,
+            overlay,
+            permission_decisions: _,
+            event_thread_owners,
+            child_threads: _,
+            primary_thread_usage: _,
+        } = self;
+        let transient_events = events
+            .into_iter()
+            .filter(|event| super::helpers::is_transient_event_id(&event.id))
+            .collect::<Vec<_>>();
+        let transient_ids = transient_events
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<HashSet<_>>();
+        let transient_owners = event_thread_owners
+            .into_iter()
+            .filter(|(id, _)| transient_ids.contains(id.as_str()))
+            .collect();
+        ProjectionDeliveryMemo {
+            cache_revision,
+            overlay,
+            transient_events,
+            transient_owners,
+        }
+    }
+
     /// Compare every projection and continuation field while deliberately
     /// excluding the process-local CAS token. Equal durable coordinates are not
     /// sufficient: legacy and auxiliary committed sources may lack an
@@ -358,16 +410,6 @@ impl SessionRecord {
             &self.event_thread_owners,
         );
         true
-    }
-
-    /// Index every appended event, so [`Self::event_positions`] answers for
-    /// the current vector without further mutation.
-    pub(super) fn refresh_event_index(&mut self) {
-        Arc::make_mut(&mut self.event_page_index).extend(
-            &self.session.id,
-            &self.events,
-            &self.event_thread_owners,
-        );
     }
 
     pub(super) fn has_event_id(&mut self, event_id: &str) -> bool {

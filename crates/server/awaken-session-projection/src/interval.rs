@@ -3,7 +3,10 @@
 //! Consumers: the timeline's aggregate projection (which Running edge opens an
 //! interval, where its usage/idle pair closes) and the canonical order.
 
-use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
+use std::collections::{HashMap, HashSet};
+
+use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind};
+use awaken_session_application_contract::Pending;
 use awaken_session_event_contract::{
     SessionAgentRunBoundary, SessionEventBatch, SessionEventCommand,
 };
@@ -341,9 +344,10 @@ pub fn budget_reach_projection_close_cursor(
     persisted: &PersistedSession,
     transition: &awaken_session_budget_contract::BudgetReachTransition,
     lifecycle_events: &[RunLifecycleEvent],
+    historical_pending: &HashMap<RunLifecycleCursor, Pending>,
 ) -> Option<u64> {
     let crossing = budget_reach_close_cursor(persisted, transition)?;
-    persisted
+    let explicit_budget_pause = persisted
         .closed_runtime_intervals
         .iter()
         .filter(|interval| {
@@ -363,8 +367,33 @@ pub fn budget_reach_projection_close_cursor(
                 })
             })
         })
-        .and_then(interval_close_cursor)
-        .or(Some(crossing))
+        .and_then(interval_close_cursor);
+    if explicit_budget_pause.is_some() {
+        return explicit_budget_pause;
+    }
+    // An answerable wait at the crossing close owns requires_action. Its
+    // ticket can be consumed long before a later cold rebuild, so use the
+    // committed lifecycle and exact historical targets as of this cursor,
+    // never the current ticket. A later explicit BudgetReached boundary above
+    // takes over once it actually commits.
+    let mut answerable = HashSet::new();
+    for event in lifecycle_events
+        .iter()
+        .filter(|event| event.source_commit_cursor <= crossing)
+    {
+        if is_opening(event.kind) {
+            answerable.remove(&event.thread_id);
+        } else if SessionAgentRunBoundary::is_boundary(event.kind) {
+            if event.kind == RunLifecycleEventKind::Awaiting
+                && historical_pending.contains_key(&event.cursor)
+            {
+                answerable.insert(&event.thread_id);
+            } else {
+                answerable.remove(&event.thread_id);
+            }
+        }
+    }
+    answerable.is_empty().then_some(crossing)
 }
 
 #[cfg(test)]

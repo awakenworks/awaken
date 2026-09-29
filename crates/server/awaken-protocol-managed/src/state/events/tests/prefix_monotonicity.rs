@@ -21,7 +21,9 @@ async fn every_named_history_is_monotone_in_its_prefix() {
     // R2 C1+C3 => E1+E2; R3 missing exact Awaiting audit => typed rejection,
     // unchanged memo, then normal projection when a healthy prefix commits.
     // `late_root_tool_message` and `late_child_tool_message` exercise later
-    // Message commits after Awaiting.
+    // Message commits after Awaiting. C4 an absorbing child Archive commits
+    // after that child's complete period; R4=C1+C4 => E1+E3, because current
+    // Archive cannot retract earlier child/aggregate lifecycle facts.
     let mut unexpected = Vec::new();
     for (name, steps) in ROOT_SCENARIOS {
         if let Err(violation) = prefix_monotone::<RootTimeline>(steps).await {
