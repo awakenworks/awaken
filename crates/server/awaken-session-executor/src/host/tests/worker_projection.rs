@@ -1651,10 +1651,19 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     // R2=C1+C2+execution=>E2; R3=C1+C2+Outcome prepare/read=>E1. Outcome
     // orchestration is a Coordinator operation even after a Worker has used
     // its durable Environment; preparing/querying it cannot require adoption.
-    // The same context constructor owns these rules, so
+    // R4=C1+C2+child-report/replay=>one self-affine dispatch, E1;
+    // R5=C1+C2+invalid report provenance=>reject without another dispatch.
+    // The same context constructor and existing dispatch identity own these rules, so
     // this test does not introduce a second topology or recovery mechanism.
     let thread = "worker-owned-reservation";
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let dispatch = Arc::new(
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
+            awaken_lease_testkit::ManualClock::new(0),
+        ))
+        .expect("report continuation queue"),
+    );
+    let host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone()));
     install_test_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
     managed
@@ -1706,6 +1715,37 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
             .is_none()
     );
     assert!(host.session_environment(thread).await.is_none(), "R3/E1");
+
+    let child_run = RunId("worker-owned-child-report".into());
+    let report = awaken_session_execution_contract::SessionAgentReportContinuation {
+        session_id: thread.into(),
+        source_thread_id: ThreadId("worker-owned-child".into()),
+        source_run_id: child_run.clone(),
+        session_activity_epoch: 7,
+        message: Message::text(
+            MessageId::agent_thread_report(&child_run),
+            Role::User,
+            "report files are ready",
+        ),
+    };
+    // Eviction also exercises cold Coordinator reconstruction, rather than
+    // accidentally succeeding through a previously cached envelope.
+    host.evict_session_for_rebuild(thread).await;
+    for _ in 0..2 {
+        host.continue_session_agent_report(report.clone())
+            .await
+            .expect("R4 report admission needs no local Environment");
+    }
+    let queued = dispatch.list_dispatches().await.expect("R4 queue");
+    assert_eq!(queued.len(), 1, "R4 exact replay has one dispatch");
+    assert_eq!(queued[0].thread_id.0, thread, "R4 primary target");
+    assert_eq!(queued[0].session_thread_id, Some(ThreadId(thread.into())));
+    assert_eq!(queued[0].session_activity_epoch, Some(7));
+    assert!(host.session_environment(thread).await.is_none(), "R4/E1");
+    let mut invalid = report;
+    invalid.message.role = Role::Assistant;
+    assert!(host.continue_session_agent_report(invalid).await.is_err());
+    assert_eq!(dispatch.list_dispatches().await.unwrap().len(), 1, "R5");
 
     host.evict_session_for_rebuild(thread).await;
     let error = match host
