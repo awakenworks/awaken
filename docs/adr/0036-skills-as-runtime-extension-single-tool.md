@@ -29,6 +29,15 @@ condition inside that profile.
 
 There is one authority and one projection for each profile:
 
+The filesystem prompt discloses metadata and paths, not a second instruction
+body. A relevant Skill's full instructions may already be supplied by the Agent
+system or retained conversation. In that case the prompt directs the model to
+apply that context without a mandatory reread. Metadata alone is insufficient:
+otherwise the model reads the pinned `SKILL.md` through the existing file tool.
+Scripts and supporting resources still use the same listed directory and
+ordinary execution permissions. Restoring a Session reuses these rules; it does
+not add an activation flag, body-text detector, registry or installation path.
+
 - An attached Managed Skill is selected by `AgentSkillBinding`, resolved to an
   exact `ResolvedSkillBinding`, and loaded as hash-verified `SkillVersion` bytes.
   The runtime exposes those bytes under its read-only `.skills` projection.
