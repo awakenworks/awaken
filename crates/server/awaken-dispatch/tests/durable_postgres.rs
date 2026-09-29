@@ -1903,3 +1903,79 @@ async fn postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_rep
         "the run has a single terminal record"
     );
 }
+
+#[tokio::test]
+async fn discovery_skips_busy_thread_without_changing_exact_claim_or_epoch_authority() {
+    // D1 first eligible Thread has an externally held advisory transaction;
+    // D2 an independent eligible Thread exists or has already been claimed;
+    // D3 the peer releases the lock. D1+D2 => discovery claims only the peer
+    // before D1 releases; D1+!D2 => bounded None and unchanged Pending/epoch0;
+    // D3 => original candidate becomes claimable with its own fresh epoch.
+    // Exact ordinary/terminal waits and fresh DB-clock minting remain covered
+    // by exact_claim_mints_lease_after_waiting_for_thread_lock above.
+    let Some(pool) = harness::schema_pool("t_pg_discovery_thread_contention").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .unwrap();
+    store
+        .enqueue(RunDispatch::new(activation_on("a-busy", "thread-busy")))
+        .await
+        .unwrap();
+    store
+        .enqueue(RunDispatch::new(activation_on("b-free", "thread-free")))
+        .await
+        .unwrap();
+    let mut blocker = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind("thread-busy")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    let peer = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        store.claim("discover", 60_000, &Default::default()),
+    )
+    .await
+    .expect("D1/D2 discovery must not wait for this held Thread")
+    .unwrap()
+    .unwrap();
+    assert_eq!(peer.lease.run_id.0, "b-free", "D1/D2");
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            store.claim("discover-next", 60_000, &Default::default())
+        )
+        .await
+        .expect("D1/!D2 busy-only discovery is bounded")
+        .unwrap()
+        .is_none()
+    );
+    let row: (String, i64) =
+        sqlx::query_as("SELECT status,lease_epoch FROM runtime_dispatch WHERE run_id=$1")
+            .bind("a-busy")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(row, ("pending".into(), 0), "D1/!D2 no authority minted");
+    blocker.rollback().await.unwrap();
+    let released = store
+        .claim("after-release", 60_000, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(released.lease.run_id.0, "a-busy", "D3");
+    assert!(
+        store
+            .claim_is_current(&RunClaim::from(&released.lease))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .claim_is_current(&RunClaim::from(&peer.lease))
+            .await
+            .unwrap()
+    );
+}

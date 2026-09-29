@@ -1002,9 +1002,17 @@ log "11/11 hard-crash a Pod-bound Native Worker and recover without model replay
 # E4 the successor Pod remains live and the old deletion evidence stays retained.
 # Rules K1 C1+C2+C3=>E1; K2 C4+C5+C6=>E2; K3 E2+C6=>E3+E4. Missing evidence,
 # stale UID, opaque execution history or response timeout must retain the slot.
+TRANSPORT_TEST=worker_transport::kubernetes::tests::live::real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_attempt
+# T1 shared transport moved from CLI to Coordinator; a stale filter otherwise
+# exits successfully with zero tests. Enumerate this exact feature/target first;
+# only the one current test enters the existing real Kubernetes qualification.
+TRANSPORT_TESTS=$(cargo test --locked -p awaken-coordinator --features container-k8s --lib \
+  "$TRANSPORT_TEST" -- --list --exact)
+grep -Fqx "$TRANSPORT_TEST: test" <<<"$TRANSPORT_TESTS" \
+  || { err "exact Kubernetes transport qualification test was not selected"; exit 1; }
 AWAKEN_K8S_E2E=1 AWAKEN_K3D_CLUSTER="$CLUSTER" AWAKEN_K8S_FIXTURE_IMAGE="$IMAGE" \
-  cargo test -p awaken-cli --features container-k8s --lib \
-  real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_attempt
+  cargo test --locked -p awaken-coordinator --features container-k8s --lib \
+  "$TRANSPORT_TEST" -- --exact --nocapture
 kubectl -n "$NS" scale statefulset/worker --replicas=0 >/dev/null
 kubectl -n "$NS" wait --for=delete pod/worker-0 pod/worker-1 --timeout=180s
 
@@ -1139,8 +1147,12 @@ IFS='|' read -r NATIVE_INFLIGHT_RUN NATIVE_INFLIGHT_OWNER NATIVE_INFLIGHT_EPOCH 
 hard_crash_native_worker "$NATIVE_CRASH_NEXT" "$NATIVE_INFLIGHT_UID"
 node "$DRIVER" observe-provider-inflight "$PROVIDER_URL" "$NATIVE_INFLIGHT_MARKER"
 for _ in $(seq 1 90); do
+  # U3 observes the exact WorkerIdentity::lease_owner vocabulary: worker id,
+  # generation and incarnation together. Comparing the composite dispatch
+  # owner with worker_id alone can never prove expiry and falsely times out.
   NATIVE_INFLIGHT_EXPIRED=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -Atc \
-    "SELECT count(*) FROM worker_registry_worker WHERE worker_id='${NATIVE_INFLIGHT_OWNER}'
+    "SELECT count(*) FROM worker_registry_worker
+       WHERE worker_id || ':' || generation::text || ':' || incarnation_id = '${NATIVE_INFLIGHT_OWNER}'
        AND expires_at_ms < FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint
        AND EXISTS(SELECT 1 FROM runtime_dispatch WHERE run_id='${NATIVE_INFLIGHT_RUN}'
          AND active_attempt_owner='${NATIVE_INFLIGHT_OWNER}' AND active_attempt_epoch=${NATIVE_INFLIGHT_EPOCH}
