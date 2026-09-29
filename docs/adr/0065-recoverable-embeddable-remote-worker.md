@@ -604,3 +604,47 @@ the actual dependency output must match that declaration before Host creation or
 Ready. Errors, unwind, missing dependencies or capability drift use the existing
 bounded registration withdrawal. Backend selection, registry generations,
 Dispatch claims and Session lifecycle remain unchanged.
+
+## Amendment: closed-Worker evidence release fences late admission (2026-09-29)
+
+Physical admission holds the existing Registry incarnation exclusion only across
+its final authority check and Dispatch slot transaction, never across provider
+I/O. Registry closure uses the same exclusion, so a request admitted before
+closure is visible to the subsequent physical-slot check and a late request
+cannot install a slot after it. The guard carries the exact snapshot and no new
+state, lease or identity cache.
+
+PostgreSQL passes the Registry's original advisory-lock transaction into the
+paired Dispatch adapter, verifies their process-pool identity, and commits the
+physical slot using that one connection. A single-connection process pool must
+admit normally; two adapters cannot nest pool acquisition while holding an
+incarnation lock. Different pools fail closed. Memory and SQLite retain their
+original exclusion through the narrow Dispatch completion task; HTTP receipt
+loss cannot drop it ahead of a still-running SQLite transaction.
+
+Guarded server admission is a required port on the existing
+`ControlDispatchQueue` capability rung. Worker transport implements only the
+ordinary claim-scoped `DispatchQueue` rung and cannot receive a Registry
+transaction. Registry exclusion is a required `WorkerDirectory` port, not an
+optional capability default. Adapter orchestration stays in run-ingress's
+existing application; the contract contains only its seven-line port declaration
+and neutral guard re-export. The contract-shape growth record covers those
+necessary declarations instead of an orchestration body or a new facade crate.
+
+Normal quiescence and failed startup may release the exact Worker Pod's evidence
+finalizer only after the Registry incarnation is irreversibly closed and the
+Dispatch authority proves that it owns no active physical slots. Unknown,
+corrupt or occupied observations retain evidence. This metadata release creates
+no process-exit receipt and grants no replay or physical retirement. Blocked
+predecessors keep the existing independent stop, stored exit readback and
+whole-attempt proof path. Both releases use the same Kubernetes finalizer CAS;
+no Pod cleanup controller or second active-attempt inventory is added.
+
+The Pod template does not install retention. After durable Worker registration,
+the Coordinator retains the exact live UID before returning the Starting
+receipt; physical binding still requires that retained metadata. A Pod that
+never registers therefore cannot pin a rollout. A lost retention response or
+failed dependency assembly leaves a discoverable Registry record. Withdrawal
+and the original Dispatch maintenance loop retry the same closed-idle release,
+including exact lease expiry, with bounded provider I/O. Retention creates no
+historical process binding and never repairs a legacy occupied unbound slot.

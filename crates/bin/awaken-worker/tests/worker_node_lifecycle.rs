@@ -1242,6 +1242,44 @@ async fn incompatible_control_registration_withdraws_before_runtime_startup() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closed_registration_receipt_withdraws_before_application_factories() {
+    // R1 registration response loss/lease expiry may return the original
+    // Draining/Quiesced/Dead record. All closed receipts retain the exact
+    // identity for the original withdrawal, but invoke no factory/probe/Ready
+    // or claim. R2 Starting/Ready continues through existing lifecycle cases.
+    for state in ["draining", "quiesced", "dead"] {
+        let upstream = FakeWorkerUpstream::start();
+        upstream.set_registration_state(state);
+        let factories = Arc::new(AtomicUsize::new(0));
+        let calls = factories.clone();
+        let worker =
+            lifecycle_worker(WorkerUpstream::new(upstream.url()).with_worker_id("closed-receipt"))
+                .with_deployment_config(local_coordinator_deployment())
+                .with_attempt_decorator_factory(Arc::new(move |_| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Err("closed receipt must precede factory".into())
+                }))
+                .with_manifest(manifest())
+                .without_admin_surface()
+                .build()
+                .unwrap();
+        let error = tokio::time::timeout(
+            Duration::from_secs(8),
+            worker.run_until(std::future::pending()),
+        )
+        .await
+        .expect("bounded original withdrawal")
+        .expect_err("closed admission");
+        assert!(error.to_string().contains("admission is already closed"));
+        assert_eq!(factories.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            upstream.requests(),
+            ["/v1/worker/register", "/v1/worker/deregister"]
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn startup_failure_and_cancellation_share_one_registration_exit() {
     // Cause/effect table, first failed stage wins (later stages cannot run):
     // S1 decorator error/unwind; S2 Memory factory error/unwind; S3 external

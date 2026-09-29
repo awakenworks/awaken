@@ -803,3 +803,10 @@
   to connect profiled reads/replies to existing native execution authorities.
 - Session ownership, Run truth, dispatch settlement and reply receipts retain
   their existing owners.
+
+## 2026-09-29 — Retain Worker evidence within the original lifecycle
+
+- [ADR-0065](../adr/0065-recoverable-embeddable-remote-worker.md#amendment-closed-worker-evidence-release-fences-late-admission-2026-09-29)
+  closes late physical admission under Registry exclusion. Registered Pod
+  retention and closed-idle release reuse the original transport and Dispatch
+  maintenance loop; metadata release does not prove historical execution ended.

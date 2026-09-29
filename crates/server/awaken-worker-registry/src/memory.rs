@@ -4,20 +4,71 @@
 #[cfg(all(test, feature = "loom"))]
 use loom::sync::Mutex;
 use std::collections::BTreeMap;
-#[cfg(not(all(test, feature = "loom")))]
-use std::sync::Mutex;
 
+#[cfg(not(all(test, feature = "loom")))]
 use async_trait::async_trait;
 use awaken_worker_contract::{
-    RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerObservationSource, WorkerProcessExit, WorkerRegistration,
+    RegisteredWorker, RegistryError, RegistryMutation, WorkerHeartbeat, WorkerIdentity,
+    WorkerRegistration,
 };
+
+#[cfg(not(all(test, feature = "loom")))]
+use awaken_worker_contract::{WorkerDirectory, WorkerObservationSource, WorkerProcessExit};
 
 use crate::transition;
 
 #[derive(Default)]
 pub struct MemoryWorkerDirectory {
-    workers: Mutex<BTreeMap<String, BTreeMap<u64, RegisteredWorker>>>,
+    #[cfg(all(test, feature = "loom"))]
+    workers: Mutex<WorkerRecords>,
+    #[cfg(not(all(test, feature = "loom")))]
+    workers: std::sync::Arc<tokio::sync::Mutex<WorkerRecords>>,
+}
+
+type WorkerRecords = BTreeMap<String, BTreeMap<u64, RegisteredWorker>>;
+
+fn register_records(
+    workers: &mut WorkerRecords,
+    registration: WorkerRegistration,
+    now_ms: u64,
+    ttl_ms: u64,
+) -> Result<RegisteredWorker, RegistryError> {
+    let records = workers.entry(registration.worker_id.clone()).or_default();
+    let history = transition::RegistrationHistory {
+        incarnation_seen: records
+            .values()
+            .any(|record| record.snapshot.identity.incarnation_id == registration.incarnation_id),
+        complete: records.contains_key(&1),
+    };
+    let (record, changed) = transition::register(
+        records.last_key_value().map(|(_, record)| record),
+        history,
+        registration,
+        now_ms,
+        ttl_ms,
+    )?;
+    if changed {
+        records.insert(record.snapshot.identity.generation, record.clone());
+    }
+    Ok(record)
+}
+
+fn mutate_records(
+    workers: &mut WorkerRecords,
+    identity: &WorkerIdentity,
+    decide: impl FnOnce(Option<&RegisteredWorker>) -> (Option<RegisteredWorker>, RegistryMutation),
+) -> Result<RegistryMutation, RegistryError> {
+    let records = workers.get_mut(&identity.worker_id);
+    let (next, outcome) = decide(
+        records
+            .as_ref()
+            .and_then(|rows| rows.last_key_value())
+            .map(|(_, record)| record),
+    );
+    if let (Some(next), Some(records)) = (next, records) {
+        records.insert(next.snapshot.identity.generation, next);
+    }
+    Ok(outcome)
 }
 
 impl MemoryWorkerDirectory {
@@ -26,36 +77,25 @@ impl MemoryWorkerDirectory {
         Self::default()
     }
 
+    #[cfg(all(test, feature = "loom"))]
+    fn workers_lock(&self) -> Result<loom::sync::MutexGuard<'_, WorkerRecords>, RegistryError> {
+        self.workers
+            .lock()
+            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))
+    }
+
+    #[cfg(all(test, feature = "loom"))]
     fn register_sync(
         &self,
         registration: WorkerRegistration,
         now_ms: u64,
         ttl_ms: u64,
     ) -> Result<RegisteredWorker, RegistryError> {
-        let mut workers = self
-            .workers
-            .lock()
-            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
-        let records = workers.entry(registration.worker_id.clone()).or_default();
-        let history = transition::RegistrationHistory {
-            incarnation_seen: records.values().any(|record| {
-                record.snapshot.identity.incarnation_id == registration.incarnation_id
-            }),
-            complete: records.contains_key(&1),
-        };
-        let (record, changed) = transition::register(
-            records.last_key_value().map(|(_, record)| record),
-            history,
-            registration,
-            now_ms,
-            ttl_ms,
-        )?;
-        if changed {
-            records.insert(record.snapshot.identity.generation, record.clone());
-        }
-        Ok(record)
+        let mut workers = self.workers_lock()?;
+        register_records(&mut workers, registration, now_ms, ttl_ms)
     }
 
+    #[cfg(all(test, feature = "loom"))]
     fn heartbeat_sync(
         &self,
         identity: &WorkerIdentity,
@@ -68,6 +108,7 @@ impl MemoryWorkerDirectory {
         })
     }
 
+    #[cfg(all(test, feature = "loom"))]
     fn begin_drain_sync(
         &self,
         identity: &WorkerIdentity,
@@ -78,36 +119,37 @@ impl MemoryWorkerDirectory {
         })
     }
 
+    #[cfg(all(test, feature = "loom"))]
     fn mutate(
         &self,
         identity: &WorkerIdentity,
         decide: impl FnOnce(Option<&RegisteredWorker>) -> (Option<RegisteredWorker>, RegistryMutation),
     ) -> Result<RegistryMutation, RegistryError> {
-        let mut workers = self
-            .workers
-            .lock()
-            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
-        let records = workers.get_mut(&identity.worker_id);
-        let (next, outcome) = decide(
-            records
-                .as_ref()
-                .and_then(|rows| rows.last_key_value())
-                .map(|(_, record)| record),
-        );
-        if let (Some(next), Some(records)) = (next, records) {
-            records.insert(next.snapshot.identity.generation, next);
-        }
-        Ok(outcome)
+        let mut workers = self.workers_lock()?;
+        mutate_records(&mut workers, identity, decide)
     }
 }
 
+#[cfg(not(all(test, feature = "loom")))]
+impl MemoryWorkerDirectory {
+    async fn mutate_async(
+        &self,
+        identity: &WorkerIdentity,
+        decide: impl FnOnce(Option<&RegisteredWorker>) -> (Option<RegisteredWorker>, RegistryMutation),
+    ) -> Result<RegistryMutation, RegistryError> {
+        let mut workers = self.workers.lock().await;
+        mutate_records(&mut workers, identity, decide)
+    }
+}
+
+#[cfg(not(all(test, feature = "loom")))]
 #[async_trait]
 impl WorkerObservationSource for MemoryWorkerDirectory {
     async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
         Ok(self
             .workers
             .lock()
-            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?
+            .await
             .values()
             .filter_map(|rows| rows.last_key_value().map(|(_, record)| record))
             .cloned()
@@ -115,15 +157,30 @@ impl WorkerObservationSource for MemoryWorkerDirectory {
     }
 }
 
+#[cfg(not(all(test, feature = "loom")))]
 #[async_trait]
 impl WorkerDirectory for MemoryWorkerDirectory {
+    async fn lock_incarnation(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<Option<awaken_worker_contract::WorkerIncarnationGuard>, RegistryError> {
+        let held = self.workers.clone().lock_owned().await;
+        let current = held
+            .get(&identity.worker_id)
+            .and_then(|rows| rows.last_key_value().map(|(_, r)| r))
+            .cloned();
+        Ok(current
+            .filter(|r| r.snapshot.identity == *identity)
+            .map(|r| awaken_worker_contract::WorkerIncarnationGuard::new(held, r.snapshot)))
+    }
     async fn register(
         &self,
         registration: WorkerRegistration,
         now_ms: u64,
         ttl_ms: u64,
     ) -> Result<RegisteredWorker, RegistryError> {
-        self.register_sync(registration, now_ms, ttl_ms)
+        let mut workers = self.workers.lock().await;
+        register_records(&mut workers, registration, now_ms, ttl_ms)
     }
 
     async fn heartbeat(
@@ -133,7 +190,10 @@ impl WorkerDirectory for MemoryWorkerDirectory {
         now_ms: u64,
         ttl_ms: u64,
     ) -> Result<RegistryMutation, RegistryError> {
-        self.heartbeat_sync(identity, heartbeat, now_ms, ttl_ms)
+        self.mutate_async(identity, |current| {
+            transition::heartbeat(current, identity, heartbeat, now_ms, ttl_ms)
+        })
+        .await
     }
 
     async fn begin_drain(
@@ -141,30 +201,35 @@ impl WorkerDirectory for MemoryWorkerDirectory {
         identity: &WorkerIdentity,
         deadline_ms: u64,
     ) -> Result<RegistryMutation, RegistryError> {
-        self.begin_drain_sync(identity, deadline_ms)
+        self.mutate_async(identity, |current| {
+            transition::begin_drain(current, identity, deadline_ms)
+        })
+        .await
     }
 
     async fn mark_quiesced(
         &self,
         identity: &WorkerIdentity,
     ) -> Result<RegistryMutation, RegistryError> {
-        self.mutate(identity, |current| transition::quiesce(current, identity))
+        self.mutate_async(identity, |current| transition::quiesce(current, identity))
+            .await
     }
 
     async fn deregister(
         &self,
         identity: &WorkerIdentity,
     ) -> Result<RegistryMutation, RegistryError> {
-        self.mutate(identity, |current| {
+        self.mutate_async(identity, |current| {
             transition::deregister(current, identity)
         })
+        .await
     }
 
     async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
         Ok(self
             .workers
             .lock()
-            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?
+            .await
             .get(worker_id)
             .and_then(|rows| rows.last_key_value().map(|(_, record)| record))
             .cloned())
@@ -177,7 +242,7 @@ impl WorkerDirectory for MemoryWorkerDirectory {
         Ok(self
             .workers
             .lock()
-            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?
+            .await
             .get(&identity.worker_id)
             .and_then(|rows| rows.get(&identity.generation))
             .filter(|record| record.snapshot.identity == *identity)
@@ -189,9 +254,10 @@ impl WorkerDirectory for MemoryWorkerDirectory {
         identity: &WorkerIdentity,
         now_ms: u64,
     ) -> Result<RegistryMutation, RegistryError> {
-        self.mutate(identity, |current| {
+        self.mutate_async(identity, |current| {
             transition::expire(current, identity, now_ms)
         })
+        .await
     }
 
     async fn record_process_exit(
@@ -200,10 +266,7 @@ impl WorkerDirectory for MemoryWorkerDirectory {
         receipt: WorkerProcessExit,
     ) -> Result<RegistryMutation, RegistryError> {
         receipt.validate()?;
-        let mut workers = self
-            .workers
-            .lock()
-            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
+        let mut workers = self.workers.lock().await;
         let record = workers
             .get_mut(&identity.worker_id)
             .and_then(|rows| rows.get_mut(&identity.generation));

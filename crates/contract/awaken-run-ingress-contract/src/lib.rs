@@ -38,9 +38,9 @@ pub use awaken_worker_contract::{
     WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAcpCapabilityObservation,
     WorkerAcpCapabilityRequirement, WorkerAssignment, WorkerCredentialObservation,
     WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerProcessExit, WorkerRecoveryMode,
-    WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
-    place_assignment,
+    WorkerIdentity, WorkerIncarnationGuard, WorkerManifest, WorkerObservationSource,
+    WorkerProcessExit, WorkerRecoveryMode, WorkerRegistration, WorkerSnapshot, WorkerState,
+    can_assign, can_claim, can_claim_locally, place_assignment,
 };
 pub use claimed_commit::ClaimedRunCommit;
 pub use claimed_session::{

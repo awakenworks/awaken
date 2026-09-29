@@ -114,6 +114,63 @@ where
     .await?
 }
 
+/// Hold a store-owned transaction on the same scheduler/connection while its
+/// caller finishes a narrow external transaction. The store opens and reads the
+/// transaction; this adapter owns only bounded connection admission and release.
+pub async fn with_held_connection<T, F>(
+    connection: SharedSqliteConnection,
+    prepare: F,
+) -> Result<(T, HeldSqliteConnection), SqliteTaskError>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut Connection) -> T + Send + 'static,
+{
+    let permit = Arc::clone(&connection.admission)
+        .acquire_owned()
+        .await
+        .map_err(|_| SqliteTaskError::SchedulerClosed)?;
+    let (prepared, read) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let task = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let mut connection = connection.lock().map_err(|_| SqliteTaskError::Poisoned)?;
+        let value = prepare(&mut connection);
+        if prepared.send(value).is_ok() {
+            let _ = released.blocking_recv();
+        }
+        // Store-specific prepare owns BEGIN; cancellation and normal release
+        // both roll back that read/lock-only transaction before another caller.
+        if !connection.is_autocommit() {
+            connection
+                .execute_batch("ROLLBACK")
+                .map_err(|_| SqliteTaskError::SchedulerClosed)?;
+        }
+        Ok(())
+    });
+    let value = read.await.map_err(|_| SqliteTaskError::SchedulerClosed)?;
+    Ok((
+        value,
+        HeldSqliteConnection {
+            release: Some(release),
+            task,
+        },
+    ))
+}
+
+pub struct HeldSqliteConnection {
+    release: Option<tokio::sync::oneshot::Sender<()>>,
+    task: tokio::task::JoinHandle<Result<(), SqliteTaskError>>,
+}
+
+impl HeldSqliteConnection {
+    pub async fn release(mut self) -> Result<(), SqliteTaskError> {
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+        self.task.await?
+    }
+}
+
 impl SqliteConnectionFactory {
     #[must_use]
     pub fn file(path: impl AsRef<Path>) -> Self {
@@ -468,5 +525,94 @@ mod tests {
             matches!(later, Err(SqliteTaskError::Poisoned)),
             "F4/E4 the connection stays fail-closed for every later caller"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn held_transactions_release_or_drop_without_committing_and_preserve_fifo() {
+        // Cause/effect rules: H1 successful prepare + explicit release; H2
+        // successful prepare + dropped guard; H3 domain-error prepare. All
+        // roll back the store-owned transaction before the next caller enters.
+        // Two queued callers retain the scheduler's established FIFO order;
+        // an authority timer stays runnable while the connection is held.
+        for rule in ["release", "drop", "domain-error"] {
+            let connection = SharedSqliteConnection::new(Connection::open_in_memory().unwrap());
+            with_connection(connection.clone(), |db| {
+                db.execute_batch("CREATE TABLE evidence (id INTEGER)")
+                    .unwrap();
+            })
+            .await
+            .unwrap();
+            let (prepared, held) = with_held_connection(connection.clone(), move |db| {
+                db.execute_batch("BEGIN IMMEDIATE; INSERT INTO evidence VALUES (1)")
+                    .unwrap();
+                if rule == "domain-error" {
+                    Err("domain")
+                } else {
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(prepared.is_err(), rule == "domain-error");
+            let order = Arc::new(Mutex::new(Vec::new()));
+            let first = enqueue(&connection, record(&order, "first")).await;
+            let second = enqueue(&connection, record(&order, "second")).await;
+            tokio::time::timeout(Duration::from_secs(1), tokio::spawn(async { 7 }))
+                .await
+                .expect("authority runtime remains schedulable")
+                .unwrap();
+            if rule == "drop" {
+                drop(held);
+            } else {
+                held.release().await.unwrap();
+            }
+            tokio::time::timeout(Duration::from_secs(5), async {
+                first.await.unwrap().unwrap();
+                second.await.unwrap().unwrap();
+            })
+            .await
+            .expect("released admission");
+            assert_eq!(*order.lock().unwrap(), ["first", "second"]);
+            let (autocommit, count) = with_connection(connection, |db| {
+                (
+                    db.is_autocommit(),
+                    db.query_row("SELECT count(*) FROM evidence", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                )
+            })
+            .await
+            .unwrap();
+            assert!(autocommit);
+            assert_eq!(count, 0, "{rule} cannot commit the prepared transaction");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_during_held_prepare_rolls_back_before_next_admission() {
+        // H4 caller disappears before prepared value delivery: the blocking
+        // prepare may finish, but failed delivery rolls back and releases its
+        // original scheduler permit. No guard or cancellation ledger survives.
+        let connection = SharedSqliteConnection::new(Connection::open_in_memory().unwrap());
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+        let preparing = tokio::spawn(with_held_connection(connection.clone(), move |db| {
+            db.execute_batch("BEGIN IMMEDIATE").unwrap();
+            entered_tx.send(()).unwrap();
+            resume_rx.recv().unwrap();
+        }));
+        entered_rx.await.unwrap();
+        preparing.abort();
+        assert!(preparing.await.err().unwrap().is_cancelled());
+        resume_tx.send(()).unwrap();
+        let autocommit = tokio::time::timeout(
+            Duration::from_secs(5),
+            with_connection(connection, |db| db.is_autocommit()),
+        )
+        .await
+        .expect("H4 admission released")
+        .unwrap();
+        assert!(autocommit, "H4 rollback precedes successor access");
     }
 }

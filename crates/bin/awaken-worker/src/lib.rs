@@ -1303,6 +1303,11 @@ impl WorkerNode {
                 "Control did not select the current Worker runtime protocol; upgrade Control and Worker together",
             ).into());
         }
+        if !matches!(registration.snapshot.state,
+            awaken_worker_contract::WorkerState::Starting | awaken_worker_contract::WorkerState::Ready)
+        {
+            return Err(std::io::Error::other("registered Worker admission is already closed").into());
+        }
         let (host, lifecycle, heartbeat_timing, environment_proof_started) = {
         let startup = std::panic::AssertUnwindSafe(async {
         let registered_context =

@@ -16,6 +16,7 @@ pub struct FakeWorkerUpstream {
     environment_warmups: Arc<Mutex<String>>,
     deregistration_response: Arc<Mutex<Option<String>>>,
     registration_protocol: Arc<Mutex<Option<String>>>,
+    registration_state: Arc<Mutex<String>>,
     initial_heartbeat_blocked: Arc<AtomicBool>,
     heartbeat_sequences: Arc<Mutex<Vec<u64>>>,
     applied_heartbeat_sequence: Arc<AtomicU64>,
@@ -144,6 +145,8 @@ impl FakeWorkerUpstream {
         let registration_protocol = Arc::new(Mutex::new(Some(
             awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION.to_string(),
         )));
+        let registration_state = Arc::new(Mutex::new("starting".into()));
+        let thread_registration_state = registration_state.clone();
         let heartbeat_sequences = Arc::new(Mutex::new(Vec::new()));
         let initial_heartbeat_blocked = Arc::new(AtomicBool::new(false));
         let applied_heartbeat_sequence = Arc::new(AtomicU64::new(0));
@@ -187,6 +190,7 @@ impl FakeWorkerUpstream {
                                 environment_warmups: &thread_environment_warmups,
                                 deregistration_response: &thread_deregistration_response,
                                 registration_protocol: &thread_registration_protocol,
+                                registration_state: &thread_registration_state,
                             },
                         );
                     }
@@ -205,6 +209,7 @@ impl FakeWorkerUpstream {
             environment_warmups,
             deregistration_response,
             registration_protocol,
+            registration_state,
             heartbeat_sequences,
             initial_heartbeat_blocked,
             applied_heartbeat_sequence,
@@ -239,6 +244,10 @@ impl FakeWorkerUpstream {
     }
 
     #[allow(dead_code)] // Only lifecycle protocol tests inject legacy declarations.
+    pub fn set_registration_state(&self, state: &str) {
+        *self.registration_state.lock().unwrap() = state.into();
+    }
+
     pub fn set_registration_protocol(&self, value: Option<&str>) {
         *self.registration_protocol.lock().unwrap() = value.map(str::to_owned);
     }
@@ -273,6 +282,7 @@ struct HandleContext<'a> {
     initial_heartbeat_blocked: &'a AtomicBool,
     deregistration_response: &'a Mutex<Option<String>>,
     registration_protocol: &'a Mutex<Option<String>>,
+    registration_state: &'a Mutex<String>,
     requests: &'a Mutex<Vec<String>>,
     request_headers: &'a Mutex<Vec<String>>,
     stop: &'a AtomicBool,
@@ -292,6 +302,7 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
         initial_heartbeat_blocked,
         deregistration_response,
         registration_protocol,
+        registration_state,
         requests,
         request_headers,
         stop,
@@ -337,6 +348,7 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
             let worker_id = json_string_field(body, "worker_id");
             let incarnation_id = json_string_field(body, "incarnation_id");
             let manifest = json_object_field(body, "manifest");
+            let state = registration_state.lock().unwrap().clone();
             let protocol = registration_protocol
                 .lock()
                 .unwrap()
@@ -344,7 +356,7 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
                 .map(|value| format!(",\"runtime_protocol_version\":{value}"))
                 .unwrap_or_default();
             format!(
-                r#"{{"worker":{{"snapshot":{{"identity":{{"worker_id":"{worker_id}","incarnation_id":"{incarnation_id}","generation":1}},"state":"starting","manifest":{manifest},"capability_fingerprint":"startup-test","in_flight":0,"expires_at_ms":{registry_ttl_ms}}},"heartbeat_sequence":0,"registered_at_ms":0,"heartbeat_at_ms":0,"drain_deadline_ms":null}},"lease_ttl_ms":{registry_ttl_ms}{protocol}}}"#
+                r#"{{"worker":{{"snapshot":{{"identity":{{"worker_id":"{worker_id}","incarnation_id":"{incarnation_id}","generation":1}},"state":"{state}","manifest":{manifest},"capability_fingerprint":"startup-test","in_flight":0,"expires_at_ms":{registry_ttl_ms}}},"heartbeat_sequence":0,"registered_at_ms":0,"heartbeat_at_ms":0,"drain_deadline_ms":null}},"lease_ttl_ms":{registry_ttl_ms}{protocol}}}"#
             )
         }
         "/v1/worker/heartbeat" => {

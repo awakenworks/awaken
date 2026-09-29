@@ -20,6 +20,11 @@ pub(crate) struct TerminalReconciliationState {
     /// Local pools already own the same canonical maintenance mechanism.
     dispatch_reconciler: std::sync::OnceLock<awaken_run_ingress::DispatchReconciler>,
     terminal_scan: awaken_run_ingress::TerminalReconciliationScan,
+    worker_evidence: std::sync::OnceLock<(
+        Arc<dyn awaken_run_ingress::WorkerDirectory>,
+        Arc<dyn awaken_run_ingress::WorkerExecutionStopSource>,
+    )>,
+    worker_evidence_after: tokio::sync::Mutex<Option<String>>,
 }
 
 /// Deliver one direct cold-recovery fact from the Runtime contract's sole
@@ -71,6 +76,76 @@ where
 }
 
 impl SharedHost {
+    /// Bind the exact transport/Registry owners before maintenance startup.
+    /// Retention retry joins the original Dispatch reconciliation schedule.
+    pub fn bind_worker_evidence_reconciliation(
+        &self,
+        directory: Arc<dyn awaken_run_ingress::WorkerDirectory>,
+        source: Arc<dyn awaken_run_ingress::WorkerExecutionStopSource>,
+    ) -> Result<(), HostError> {
+        self.dispatch.terminal_reconciliation.worker_evidence
+            .set((directory, source))
+            .map_err(|_| HostError::internal("Worker evidence reconciliation already bound"))
+    }
+
+    pub(super) async fn reconcile_worker_evidence(&self) -> Result<(), awaken_run_ingress::Error> {
+        let Some((directory, source)) = self.dispatch.terminal_reconciliation.worker_evidence.get() else {
+            return Ok(());
+        };
+        let dispatch = self
+            .dispatch_store()
+            .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
+        let now = awaken_run_ingress::Clock::now_ms(&awaken_run_ingress::SystemClock);
+        let mut records = directory
+            .list()
+            .await
+            .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
+        let Ok(mut after) = self.dispatch.terminal_reconciliation.worker_evidence_after.try_lock() else {
+            return Ok(());
+        };
+        records.sort_by(|a, b| {
+            a.snapshot
+                .identity
+                .worker_id
+                .cmp(&b.snapshot.identity.worker_id)
+        });
+        let start = after.as_ref().map_or(0, |cursor| {
+            records.partition_point(|r| r.snapshot.identity.worker_id <= *cursor)
+        });
+        let start = if start == records.len() { 0 } else { start };
+        // One candidate per original maintenance tick. Advance scheduling before
+        // provider I/O so cancellation/failure cannot starve a later Worker.
+        for record in records.into_iter().skip(start).take(1) {
+            let identity = &record.snapshot.identity;
+            *after = Some(identity.worker_id.clone());
+            if !source.owns_worker_evidence(identity) {
+                continue;
+            }
+            if record.snapshot.expires_at_ms <= now {
+                directory
+                    .expire_incarnation(identity, now)
+                    .await
+                    .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
+            }
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                awaken_run_ingress::release_closed_idle_worker_evidence(
+                    dispatch.as_ref(),
+                    directory.as_ref(),
+                    source.as_ref(),
+                    identity,
+                ),
+            )
+            .await;
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(%error, "exact Worker retention retry pending"),
+                Err(_) => tracing::warn!("exact Worker retention retry timed out"),
+            }
+        }
+        Ok(())
+    }
+
     /// Repair direct-ingress terminal Memory work before ordinary Session
     /// construction can enter the physical Environment lifecycle. This is a
     /// cold recovery wake only: resident contexts already own their observer and
@@ -356,6 +431,95 @@ mod tests {
     use awaken_agent_contract::agent::run::Record as RunRecord;
     use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct IdleEvidence {
+        released: std::sync::Mutex<Vec<awaken_run_ingress::WorkerIdentity>>,
+        fail_first: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl awaken_run_ingress::WorkerExecutionStopSource for IdleEvidence {
+        fn owns_worker_evidence(&self, _: &awaken_run_ingress::WorkerIdentity) -> bool {
+            true
+        }
+        async fn release_closed_idle_worker_evidence(
+            &self,
+            identity: &awaken_run_ingress::WorkerIdentity,
+        ) -> Result<(), awaken_run_ingress::ApplicationError> {
+            if self.fail_first.swap(false, Ordering::SeqCst) {
+                return Err(awaken_run_ingress::ApplicationError::unavailable(
+                    "provider unavailable",
+                ));
+            }
+            self.released.lock().unwrap().push(identity.clone());
+            Ok(())
+        }
+        async fn stop_closed_worker(
+            &self,
+            _: &awaken_run_ingress::ClosedWorkerExecution,
+        ) -> Result<awaken_run_ingress::WorkerProcessStopStatus, awaken_run_ingress::ApplicationError>
+        {
+            panic!("idle maintenance cannot issue a physical stop")
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_retention_retries_expired_originals_without_starving_later_workers() {
+        // M1 expired exact registrations + empty original Dispatch -> close and
+        // release metadata, no physical-stop receipt. M2 first provider failure
+        // -> retain and advance scheduling; M3 next tick handles later Worker;
+        // M4 cursor wraps -> original retry succeeds. The cursor is scheduling
+        // only; Registry closure and physical-slot authority are re-read.
+        use awaken_run_ingress::WorkerDirectory as _;
+        let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
+        let mut identities = Vec::new();
+        for id in ["retention-a", "retention-b"] {
+            identities.push(
+                directory
+                    .register(
+                        awaken_run_ingress::WorkerRegistration {
+                            worker_id: id.into(),
+                            incarnation_id: "boot".into(),
+                            manifest: Default::default(),
+                        },
+                        0,
+                        1,
+                    )
+                    .await
+                    .unwrap()
+                    .snapshot
+                    .identity,
+            );
+        }
+        let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "fixture")
+            .with_dispatch_store(Arc::new(
+                awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
+                    awaken_run_ingress::ManualClock::new(0),
+                ))
+                .unwrap(),
+            ));
+        let source = Arc::new(IdleEvidence {
+            released: Default::default(),
+            fail_first: std::sync::atomic::AtomicBool::new(true),
+        });
+        host.bind_worker_evidence_reconciliation(directory.clone(), source.clone())
+            .unwrap();
+        for _ in 0..3 {
+            host.reconcile_worker_evidence().await.unwrap();
+        }
+        assert_eq!(
+            *source.released.lock().unwrap(),
+            [identities[1].clone(), identities[0].clone()]
+        );
+        for identity in identities {
+            let record = directory.incarnation(&identity).await.unwrap().unwrap();
+            assert_eq!(record.snapshot.state, awaken_run_ingress::WorkerState::Dead);
+            assert!(
+                record.process_exit.is_none(),
+                "M1 metadata release does not mint exit"
+            );
+        }
+    }
 
     struct TerminalProjectionView(Option<RunRecord>);
 

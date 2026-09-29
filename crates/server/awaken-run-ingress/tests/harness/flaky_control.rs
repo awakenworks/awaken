@@ -4,6 +4,18 @@ use super::*;
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
 impl awaken_run_ingress::ControlDispatchQueue for FlakyDispatchStore {
+    async fn admit_attempt_guarded(
+        &self,
+        claim: &awaken_run_ingress::RunClaim,
+        binding: Option<&awaken_run_ingress::AttemptExecutionBinding>,
+        guard: awaken_run_ingress_contract::WorkerIncarnationGuard,
+        handoff: bool,
+    ) -> Result<awaken_run_ingress::AttemptAdmission, awaken_run_ingress::DispatchError> {
+        self.inner
+            .admit_attempt_guarded(claim, binding, guard, handoff)
+            .await
+    }
+
     async fn finish_attempt_closure(
         &self,
         claim: &awaken_run_ingress::RunClaim,
