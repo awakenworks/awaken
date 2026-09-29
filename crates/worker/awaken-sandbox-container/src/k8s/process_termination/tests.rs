@@ -289,6 +289,91 @@ fn binding_must_precede_execution_and_cannot_be_reconstructed_from_terminal_stat
 }
 
 #[test]
+fn deployment_process_exit_requires_frozen_policy_retention_and_deletion() {
+    // Causes: C1 exact private original container set/UID/node/start; C2 Always
+    // policy frozen before effects; C3 retained binding and live finalizer;
+    // C4 accepted deletion intent; C5 every exact runtime exit; C6 zero restarts.
+    // E1(C1..C6) local exit observed; E2(!C3 before admission) bind rejected;
+    // E3(!C1|!C3|!C4|!C5|!C6 after admission) Unknown, no retirement.
+    // Rules D1 all => observed; D2 natural exit => Unknown; D3 deletion/live =>
+    // Unknown; D4 change one necessary cause => Unknown (MC/DC). D5 a legacy
+    // Never binding cannot acquire Always semantics by later Pod observation.
+    let mut live = running();
+    live["spec"]["restartPolicy"] = json!("Always");
+    assert!(
+        bind("ns", "worker", "uid-a", &decode(live.clone())).is_err(),
+        "D2 admission"
+    );
+    live["metadata"]["finalizers"] = json!([WORKER_PROCESS_EVIDENCE_FINALIZER]);
+    let binding = bind("ns", "worker", "uid-a", &decode(live.clone())).unwrap();
+    let serialized = serde_json::to_value(&binding).unwrap();
+    assert_eq!(serialized["restartable"], true);
+    assert_eq!(
+        serde_json::from_value::<PodProcessBinding>(serialized).unwrap(),
+        binding
+    );
+    let mut exited = terminal();
+    exited["spec"]["restartPolicy"] = json!("Always");
+    exited["metadata"]["finalizers"] = live["metadata"]["finalizers"].clone();
+    assert_eq!(
+        observe(&binding, &decode(exited.clone())),
+        PodProcessTermination::Unknown,
+        "D2 natural exit"
+    );
+    exited["metadata"]["deletionTimestamp"] = json!("2026-09-08T00:00:02Z");
+    assert!(
+        matches!(
+            observe(&binding, &decode(exited.clone())),
+            PodProcessTermination::Observed(_)
+        ),
+        "D1"
+    );
+    let mut deleting_live = live.clone();
+    deleting_live["metadata"]["deletionTimestamp"] =
+        exited["metadata"]["deletionTimestamp"].clone();
+    assert_eq!(
+        observe(&binding, &decode(deleting_live)),
+        PodProcessTermination::Unknown,
+        "D3"
+    );
+    for (pointer, value) in [
+        ("/metadata/uid", json!("replacement")),
+        ("/metadata/finalizers", json!([])),
+        ("/metadata/resourceVersion", Value::Null),
+        ("/spec/restartPolicy", json!("Never")),
+        ("/status/containerStatuses/0/restartCount", json!(1)),
+        (
+            "/status/containerStatuses/0/containerID",
+            json!("containerd://replacement"),
+        ),
+        (
+            "/status/containerStatuses/0/state/terminated/reason",
+            json!("ContainerStatusUnknown"),
+        ),
+    ] {
+        let mut changed = exited.clone();
+        *changed.pointer_mut(pointer).unwrap() = value;
+        assert_eq!(
+            observe(&binding, &decode(changed)),
+            PodProcessTermination::Unknown,
+            "D4 {pointer}"
+        );
+    }
+    let legacy = bind("ns", "worker", "uid-a", &decode(running())).unwrap();
+    assert!(
+        serde_json::to_value(&legacy)
+            .unwrap()
+            .get("restartable")
+            .is_none()
+    );
+    assert_eq!(
+        observe(&legacy, &decode(exited)),
+        PodProcessTermination::Unknown,
+        "D5"
+    );
+}
+
+#[test]
 fn deletion_and_legacy_exit_information_do_not_upgrade_unknown_to_stopped() {
     // R8 deleting + live => Unknown; R9 Failed + no exact exit => Unknown;
     // R10 deleting + exact completed exit => local observed only. Deletion is

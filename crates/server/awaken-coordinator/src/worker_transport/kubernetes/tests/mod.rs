@@ -255,7 +255,7 @@ async fn pod_replacement_and_unobservable_processes_never_degrade_to_unbound_adm
     for (pointer, value) in [
         ("/metadata/uid", json!("uid-replacement")),
         ("/metadata/finalizers", json!([])),
-        ("/spec/restartPolicy", json!("Always")),
+        ("/spec/restartPolicy", json!("OnFailure")),
         (
             "/spec/containers/0/securityContext/allowPrivilegeEscalation",
             json!(true),
@@ -309,6 +309,30 @@ async fn pod_replacement_and_unobservable_processes_never_degrade_to_unbound_adm
         );
     }
     assert_eq!(facts.reads.load(Ordering::SeqCst), before, "R5 no API read");
+}
+
+#[tokio::test]
+async fn deployment_binding_freezes_restart_policy_through_the_same_transport_owner() {
+    // D1 reviewed UID + Registry incarnation + retained original Deployment
+    // container => the existing binding source freezes Always. D2 removing the
+    // finalizer before admission => Unavailable, not an unbound fallback.
+    let (transport, facts) = fixture();
+    let source = transport.binding_source().unwrap();
+    let worker = WorkerIdentity::new("k8s:workers:worker-a:uid-a", "uid-a", 1);
+    let mut pod = running();
+    pod["spec"]["restartPolicy"] = json!("Always");
+    *facts.pod.lock().unwrap() = (StatusCode::OK, pod.clone());
+    let binding = source.binding_for(&worker).await.unwrap();
+    let coordinate: Value = serde_json::from_str(binding.execution_ref()).unwrap();
+    assert_eq!(coordinate["restartable"], true, "D1");
+    assert_eq!(
+        coordinate["containers"][0]["container_id"],
+        "containerd://exact"
+    );
+    pod["metadata"]["finalizers"] = json!([]);
+    *facts.pod.lock().unwrap() = (StatusCode::OK, pod);
+    assert!(source.binding_for(&worker).await.is_err(), "D2");
+    assert!(facts.deletes.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

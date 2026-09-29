@@ -5,6 +5,101 @@ use awaken_sandbox_container::k8s::{
     PodProcessTermination, WORKER_PROCESS_EVIDENCE_FINALIZER,
 };
 
+#[tokio::test]
+async fn deployment_restart_policy_requires_actual_closed_exit_evidence() {
+    // Live rules DP1 retained original Always Pod -> exact pre-effect binding;
+    // DP2 DELETE acceptance -> Unknown; DP3 accepted deletion + original runtime
+    // exit -> observed; DP4 only then release the owned evidence finalizer.
+    // This runs the production adapter against a real kubelet, without claiming
+    // a Dispatch receipt, remote-effect termination, or a product E2E outcome.
+    if !require_live_cluster() {
+        return;
+    }
+    let expected_context = std::env::var("AWAKEN_K8S_E2E_CONTEXT").unwrap_or_else(|_| {
+        format!(
+            "k3d-{}",
+            std::env::var("AWAKEN_K3D_CLUSTER").expect("explicit live context")
+        )
+    });
+    let current = kubectl(&["config", "current-context"]);
+    assert_eq!(
+        String::from_utf8(current.stdout).unwrap().trim(),
+        expected_context
+    );
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
+    let name = format!("worker-process-policy-{}", std::process::id());
+    let client = awaken_sandbox_container::k8s::connect_control_client()
+        .await
+        .unwrap();
+    let pods: kube::Api<k8s_openapi::api::core::v1::Pod> =
+        kube::Api::namespaced(client.clone(), &namespace);
+    let mut value = serde_json::json!({
+        "apiVersion":"v1", "kind":"Pod",
+        "metadata":{"name":name,"namespace":namespace,"finalizers":[WORKER_PROCESS_EVIDENCE_FINALIZER]},
+        "spec":{"restartPolicy":"Always","automountServiceAccountToken":false,
+            "containers":[{"name":"worker","image":fixture_image(),
+                "command":["/bin/sh","-c","while :; do sleep 1; done"],
+                "securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}
+            }]}
+    });
+    if let Ok(secret) = std::env::var("AWAKEN_K8S_IMAGE_PULL_SECRET") {
+        value["spec"]["imagePullSecrets"] = serde_json::json!([{"name":secret}]);
+    }
+    let created = pods
+        .create(
+            &kube::api::PostParams::default(),
+            &serde_json::from_value(value).unwrap(),
+        )
+        .await
+        .unwrap();
+    let uid = created.metadata.uid.unwrap();
+    let observer = PodProcessObserver::new(client.clone(), &namespace).unwrap();
+    let binding = wait_for_binding(&observer, &name, &uid).await;
+    assert_eq!(
+        serde_json::to_value(&binding).unwrap()["restartable"],
+        true,
+        "DP1"
+    );
+    let stopper = PodProcessStopper::new(observer);
+    assert_eq!(
+        stopper.request_stop(&binding).await.unwrap(),
+        PodProcessTermination::Unknown,
+        "DP2"
+    );
+    let receipt = stop_and_observe(&stopper, &binding).await;
+    assert_eq!(receipt.binding(), &binding, "DP3 exact subject");
+    let closed = pods.get(&name).await.unwrap();
+    assert_eq!(closed.metadata.uid.as_deref(), Some(uid.as_str()));
+    assert!(
+        closed.metadata.deletion_timestamp.is_some(),
+        "DP3 launch lifecycle closed"
+    );
+    assert!(
+        closed
+            .status
+            .unwrap()
+            .container_statuses
+            .unwrap()
+            .iter()
+            .all(|s| s.restart_count == 0
+                && s.state.as_ref().is_some_and(|s| s.terminated.is_some()))
+    );
+    stopper.release_evidence(&binding).await.unwrap();
+    // The existing Kubernetes wait owner observes API resource deletion; this
+    // test must not introduce another poll loop or settle on a timer.
+    let removed = kubectl(&[
+        "wait",
+        "--for=delete",
+        &format!("pod/{name}"),
+        "--timeout=60s",
+    ]);
+    assert!(
+        removed.status.success(),
+        "DP4 owned Pod removed after evidence release"
+    );
+    assert!(matches!(pods.get(&name).await, Err(kube::Error::Api(error)) if error.code == 404));
+}
+
 async fn wait_for_binding(
     observer: &PodProcessObserver,
     pod: &str,
