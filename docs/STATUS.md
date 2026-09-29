@@ -85,6 +85,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/plugin-configuration.md` | Role owner | Required | self |
 | `design/distributed-acp-execution.md` | Design narrative | Not required | n/a |
 | `design/brain-hand-coverage.md` | Coverage report | Not required | n/a |
+| `design/managed-agents-behavior-conformance.md` | Conformance inventory | Not required | n/a |
 | `design/sandbox-scope-closure-qualification.md` | Qualification report | Not required | n/a |
 | `adr/0001-documentation-model-and-vocabulary-alignment.md` | Decision record | Not required | n/a |
 | `adr/0002-resolver-role-demarcation.md` | Decision record | Not required | n/a |
