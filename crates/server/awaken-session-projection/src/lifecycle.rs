@@ -45,6 +45,77 @@ pub struct ChildLifecycle {
     pub terminal_cursors: Vec<RunLifecycleCursor>,
 }
 
+/// Every primary Thread opening in the complete accepted lifecycle prefix.
+///
+/// Consumer: the Managed wire encoder. A boundary with no opening since the
+/// previous boundary needs its own synthetic Running fact even if a live
+/// replica saw the earlier boundary. Decisions never read published events,
+/// terminal checkpoints, or a current-status cache. The committed cursor is
+/// the exact existing public identity; later lifecycle facts only append.
+#[must_use]
+pub fn root_lifecycle_opening_facts(
+    session_id: &str,
+    lifecycle: &[RunLifecycleEvent],
+) -> Vec<TimelineFact> {
+    let mut facts = Vec::new();
+    let mut open = false;
+    for event in lifecycle
+        .iter()
+        .filter(|event| event.thread_id.0 == session_id)
+    {
+        let at = |role, kind| {
+            TimelineFact::new(
+                FactKey::new(
+                    session_id,
+                    role,
+                    FactProvenance::Lifecycle {
+                        cursor: event.cursor.0,
+                    },
+                ),
+                kind,
+            )
+        };
+        if !crate::is_opening(event.kind) {
+            if SessionAgentRunBoundary::is_boundary(event.kind) {
+                if !open {
+                    facts.push(at(
+                        FactRole::RootTerminalStatusRunning,
+                        FactKind::ThreadRunning,
+                    ));
+                }
+                open = false;
+            }
+            continue;
+        }
+        match event.kind {
+            RunLifecycleEventKind::Running | RunLifecycleEventKind::Resumed => {
+                facts.push(at(
+                    FactRole::RootLifecycleStatusRunning,
+                    FactKind::ThreadRunning,
+                ));
+                open = true;
+            }
+            RunLifecycleEventKind::Rescheduled => {
+                facts.push(at(
+                    FactRole::RootLifecycleSessionStatusRescheduled,
+                    FactKind::SessionRescheduled,
+                ));
+                facts.push(at(
+                    FactRole::RootLifecycleStatusRescheduled,
+                    FactKind::ThreadRescheduled,
+                ));
+                facts.push(at(
+                    FactRole::RootRescheduledLifecycleStatusRunning,
+                    FactKind::ThreadRunning,
+                ));
+                open = true;
+            }
+            _ => unreachable!("the canonical opening law admitted only Run openings"),
+        }
+    }
+    facts
+}
+
 fn find<'a>(
     threads: &'a mut [CoordinatedThread],
     thread: &str,
@@ -279,6 +350,120 @@ mod tests {
             .iter()
             .map(|fact| (fact.key.role, fact.kind.clone()))
             .collect()
+    }
+
+    #[test]
+    fn primary_openings_are_prefix_stable_across_every_boundary() {
+        // Causes: O1 initial boundary without Running; O2 consecutive
+        // boundaries, including cancel; O3 actual Running/Resumed between
+        // boundaries; O4 a Rescheduled receipt; O5 interleaved child facts.
+        // Effects: E1 each root period lacking an actual opening gets exactly
+        // its boundary-owned Running key; E2 actual openings retain their
+        // lifecycle roles, including all three retry edges; E3 every shorter
+        // committed prefix's facts are an exact prefix of the longer one.
+        // Rules R1=O1/O2=>E1; R2=O3/O4=>E2; R3=O5=>no root change;
+        // R4=every R1-R3 prefix extension=>E3. No published tail, timestamp,
+        // ticket or current status is an input to the production projector.
+        use RunLifecycleEventKind::*;
+        let e = |source, thread, kind| {
+            let state = match kind {
+                Awaiting => RunState::Awaiting,
+                Completed => RunState::Ended(EndCause::NaturalEnd),
+                Cancelled => RunState::Ended(EndCause::Cancelled),
+                _ => RunState::Running,
+            };
+            event(source, thread, kind, state)
+        };
+        let cases = [
+            (
+                "R1 consecutive waits and cancel",
+                vec![
+                    e(1, "root", Awaiting),
+                    e(2, "root", Awaiting),
+                    e(3, "root", Cancelled),
+                ],
+                vec![
+                    (FactRole::RootTerminalStatusRunning, 1),
+                    (FactRole::RootTerminalStatusRunning, 2),
+                    (FactRole::RootTerminalStatusRunning, 3),
+                ],
+            ),
+            (
+                "R2 actual reopening",
+                vec![
+                    e(1, "root", Running),
+                    e(2, "root", Awaiting),
+                    e(3, "root", Resumed),
+                    e(4, "root", Completed),
+                ],
+                vec![
+                    (FactRole::RootLifecycleStatusRunning, 1),
+                    (FactRole::RootLifecycleStatusRunning, 3),
+                ],
+            ),
+            (
+                "R2 retry has three roles",
+                vec![
+                    e(1, "root", Running),
+                    e(2, "root", Rescheduled),
+                    e(3, "root", Awaiting),
+                ],
+                vec![
+                    (FactRole::RootLifecycleStatusRunning, 1),
+                    (FactRole::RootLifecycleSessionStatusRescheduled, 2),
+                    (FactRole::RootLifecycleStatusRescheduled, 2),
+                    (FactRole::RootRescheduledLifecycleStatusRunning, 2),
+                ],
+            ),
+            (
+                "R3 child cannot open primary",
+                vec![
+                    e(1, "child", Running),
+                    e(2, "root", Awaiting),
+                    e(3, "child", Cancelled),
+                    e(4, "root", Cancelled),
+                ],
+                vec![
+                    (FactRole::RootTerminalStatusRunning, 2),
+                    (FactRole::RootTerminalStatusRunning, 4),
+                ],
+            ),
+        ];
+        for (rule, events, expected) in cases {
+            let mut previous = Vec::new();
+            for end in 0..=events.len() {
+                let facts = root_lifecycle_opening_facts("root", &events[..end]);
+                assert!(facts.starts_with(&previous), "R4/E3 {rule} prefix {end}");
+                previous = facts;
+            }
+            let actual = previous
+                .iter()
+                .map(|fact| {
+                    assert_eq!(fact.key.thread, "root", "{rule} root scope");
+                    let FactProvenance::Lifecycle { cursor } = fact.key.provenance else {
+                        panic!("{rule} requires a committed lifecycle identity");
+                    };
+                    (fact.key.role, cursor)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actual,
+                expected
+                    .iter()
+                    .map(|(role, source)| (*role, e(*source, "root", Running).cursor.0))
+                    .collect::<Vec<_>>(),
+                "R1-R3/E1-E2 {rule}"
+            );
+            assert_eq!(
+                previous
+                    .iter()
+                    .map(|fact| &fact.key)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                previous.len(),
+                "each event id has one fact owner"
+            );
+        }
     }
 
     #[test]

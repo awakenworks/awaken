@@ -145,16 +145,35 @@ pub struct CommittedToolOccurrence {
 pub struct CommittedTranscriptEvidence {
     advisor_blocks: AdvisorConsultationBlocks,
     dispositions: std::collections::HashMap<CommittedToolOccurrence, RuntimeToolProjectionPhase>,
+    /// The result commit that first made a previously unclassified call
+    /// visible. Indexed by the same exact ToolUse occurrence as disposition.
+    result_message_indices: std::collections::HashMap<CommittedToolOccurrence, usize>,
 }
 
 pub struct CommittedMessageProjection {
     pub message: awaken_agent_contract::agent::message::Message,
     pub fully_classified: bool,
-    pub pending_occurrence: bool,
-    pub retained_pending_occurrence: bool,
 }
 
 impl CommittedTranscriptEvidence {
+    /// Matching result Message for an exact committed ToolUse occurrence.
+    /// Consumers attach the late-visible tool to this commit's frontier.
+    #[must_use]
+    pub fn result_message_index(
+        &self,
+        message_id: &str,
+        block_ordinal: usize,
+        call_id: &str,
+    ) -> Option<usize> {
+        self.result_message_indices
+            .get(&CommittedToolOccurrence {
+                message_id: message_id.to_string(),
+                block_ordinal,
+                call_id: call_id.to_string(),
+            })
+            .copied()
+    }
+
     pub fn advisor_blocks(&self) -> &AdvisorConsultationBlocks {
         &self.advisor_blocks
     }
@@ -175,8 +194,6 @@ impl CommittedTranscriptEvidence {
 
         let mut projected = message.clone();
         let mut fully_classified = true;
-        let mut pending_occurrence = false;
-        let mut retained_pending_occurrence = false;
         projected.content = message
             .content
             .iter()
@@ -217,7 +234,6 @@ impl CommittedTranscriptEvidence {
                         RuntimeToolProjectionPhase::from_pending(historical.client_executed);
                 }
                 let is_pending = disposition.is_pending();
-                pending_occurrence |= is_pending;
                 let already_projected = projected_tool_sources
                     .contains(&(message.id.0.clone(), id.clone()))
                     || (is_pending
@@ -233,10 +249,7 @@ impl CommittedTranscriptEvidence {
                 }
                 match disposition {
                     RuntimeToolProjectionPhase::PendingClient
-                    | RuntimeToolProjectionPhase::PendingBuiltin => {
-                        retained_pending_occurrence = true;
-                        Some(block.clone())
-                    }
+                    | RuntimeToolProjectionPhase::PendingBuiltin => Some(block.clone()),
                     RuntimeToolProjectionPhase::Processed
                     | RuntimeToolProjectionPhase::Resolving => Some(block.clone()),
                     RuntimeToolProjectionPhase::Unclassified => {
@@ -248,10 +261,32 @@ impl CommittedTranscriptEvidence {
         CommittedMessageProjection {
             message: projected,
             fully_classified,
-            pending_occurrence,
-            retained_pending_occurrence,
         }
     }
+}
+
+/// The committed transcript can replay an id exactly, but a conflicting reuse
+/// would give one public id two payloads. The candidate reader calls this once
+/// for every Thread before the fold or publication can change the warm cache.
+pub fn validate_committed_message_identities(
+    messages: &[awaken_agent_contract::agent::message::Message],
+) -> Result<(), crate::ProjectionError> {
+    let mut first = std::collections::HashMap::new();
+    for message in messages {
+        match first.entry(message.id.0.as_str()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(message);
+            }
+            std::collections::hash_map::Entry::Occupied(entry) if *entry.get() == message => {}
+            std::collections::hash_map::Entry::Occupied(_) => {
+                return Err(crate::ProjectionError::corrupt(format!(
+                    "committed Message id {} has conflicting content",
+                    message.id.0
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Fold the full committed prefix once into exact occurrence evidence. A result
@@ -271,14 +306,20 @@ pub fn committed_transcript_evidence(
         key: CommittedToolOccurrence,
         advisor: bool,
         classification: RuntimeToolProjectionPhase,
+        result_message_index: Option<usize>,
     }
 
     let mut occurrences = Vec::<Occurrence>::new();
+    // Exact replay of a committed Message id is idempotent. Its first source
+    // cursor owns the ToolUse/ToolResult pairing and public order; a later
+    // identical row cannot rekey an already visible occurrence. Production
+    // callers validate conflicting same-id payloads before this fold.
+    let mut seen_messages = std::collections::HashSet::new();
     let mut unmatched =
         std::collections::HashMap::<String, std::collections::VecDeque<usize>>::new();
     let mut advisor_blocks = AdvisorConsultationBlocks::default();
-    for message in messages {
-        if message.id.is_agent_thread_report() {
+    for (message_index, message) in messages.iter().enumerate() {
+        if message.id.is_agent_thread_report() || !seen_messages.insert(message.id.0.as_str()) {
             continue;
         }
         match message.role {
@@ -302,6 +343,7 @@ pub fn committed_transcript_evidence(
                         },
                         advisor,
                         classification: RuntimeToolProjectionPhase::Unclassified,
+                        result_message_index: None,
                     });
                     unmatched.entry(id.clone()).or_default().push_back(index);
                 }
@@ -323,6 +365,7 @@ pub fn committed_transcript_evidence(
                             .insert((message.id.0.clone(), block_ordinal));
                     } else {
                         occurrences[index].classification = RuntimeToolProjectionPhase::Processed;
+                        occurrences[index].result_message_index = Some(message_index);
                     }
                 }
             }
@@ -340,14 +383,21 @@ pub fn committed_transcript_evidence(
         occurrences[index].classification =
             RuntimeToolProjectionPhase::from_pending(pending.client_executed);
     }
-    let dispositions = occurrences
+    let mut dispositions = std::collections::HashMap::new();
+    let mut result_message_indices = std::collections::HashMap::new();
+    for occurrence in occurrences
         .into_iter()
         .filter(|occurrence| !occurrence.advisor)
-        .map(|occurrence| (occurrence.key, occurrence.classification))
-        .collect();
+    {
+        if let Some(index) = occurrence.result_message_index {
+            result_message_indices.insert(occurrence.key.clone(), index);
+        }
+        dispositions.insert(occurrence.key, occurrence.classification);
+    }
     CommittedTranscriptEvidence {
         advisor_blocks,
         dispositions,
+        result_message_indices,
     }
 }
 
@@ -555,7 +605,52 @@ fn fold_with_pending(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::Id as MessageId;
+
+    #[test]
+    fn repeated_message_identity_preserves_first_result_cursor_or_rejects_conflict() {
+        // Causes: D1 first exact ToolUse/ToolResult pair; D2 a later byte-equal
+        // replay of both ids; D3 same id with changed tool arguments. Effects:
+        // E1 D1 owns result index 1; E2 D2 cannot move that public order to its
+        // later result index 3; E3 D3 refuses the committed prefix. Rules:
+        // R1=D1=>E1; R2=D1+D2=>E1+E2; R3=D1+D3=>E3.
+        let call = Message::new(
+            MessageId("run-assistant-1".into()),
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                "call",
+                "read",
+                serde_json::json!({"x": 1}),
+            )],
+        );
+        let result = Message::new(
+            MessageId("result".into()),
+            Role::Tool,
+            vec![ContentBlock::tool_result(
+                "call",
+                vec![ContentBlock::text("ok")],
+            )],
+        );
+        let exact = [call.clone(), result.clone(), call.clone(), result];
+        validate_committed_message_identities(&exact).unwrap();
+        let evidence = committed_transcript_evidence(&exact, None);
+        assert_eq!(
+            evidence.result_message_index(&call.id.0, 0, "call"),
+            Some(1),
+            "R1-R2/E1-E2"
+        );
+        let mut changed = call;
+        changed.content = vec![ContentBlock::tool_use(
+            "call",
+            "read",
+            serde_json::json!({"x": 2}),
+        )];
+        assert!(
+            validate_committed_message_identities(&[exact[0].clone(), changed]).is_err(),
+            "R3/E3"
+        );
+    }
 
     #[test]
     fn indexed_assistant_coordinates_match_ordered_response_rules() {

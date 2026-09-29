@@ -31,6 +31,10 @@ pub(crate) fn session_deletion_event(owner_scope: &str, session_id: &str) -> Eve
 pub(crate) enum EventDeliveryConflict {
     Payload,
     ProcessedAt,
+    Withdrawn,
+    Reordered,
+    InsertedBeforeFrontier,
+    DuplicateId,
 }
 
 /// This exact comparison kernel is called by production after deriving the
@@ -81,10 +85,7 @@ impl CommittedEventDelivery {
             .get(&event.id)
             .map(|stamp| (&stamp.payload, stamp.processed_at.as_deref()));
         let publish = delivery_decision(previous, &payload, processed_at).map_err(|cause| {
-            StateError::Run(RunError::internal(format!(
-                "committed Managed event {} has conflicting {cause:?}",
-                event.id,
-            )))
+            StateError::event_history_conflict(&event.id, &format!("{cause:?}"))
         })?;
         if publish {
             self.0.insert(
@@ -132,6 +133,102 @@ pub(in crate::state) fn committed_delivery_delta(
             Err(error) => Some(Err(error)),
         })
         .collect()
+}
+
+/// A committed refresh extends the exact listable history held by this
+/// replica. The deletion command uses `committed_delivery_delta` directly
+/// because its one terminal event is delivered as the record is removed.
+/// Here the existing delivery kernel still owns payload and completion
+/// equality; this guard adds the position and membership rule before CAS.
+pub(in crate::state) fn committed_projection_delivery_delta(
+    session_id: &str,
+    previous: &[Event],
+    incoming: &mut [Event],
+) -> Result<Vec<Event>, StateError> {
+    // `evt_N` overlays are live previews rather than committed facts. The
+    // canonicalizer can reattach them to a newly committed predecessor; only
+    // durable ids belong to the cross-refresh pagination frontier.
+    let previous_durable = previous
+        .iter()
+        .filter(|event| !is_transient_event_id(&event.id))
+        .collect::<Vec<_>>();
+    let incoming_durable = incoming
+        .iter()
+        .filter(|event| !is_transient_event_id(&event.id))
+        .collect::<Vec<_>>();
+    let previous_positions = previous_durable
+        .iter()
+        .enumerate()
+        .map(|(position, event)| (event.id.as_str(), position))
+        .collect::<HashMap<_, _>>();
+    let mut incoming_positions = HashMap::new();
+    for (position, event) in incoming_durable.iter().enumerate() {
+        if incoming_positions
+            .insert(event.id.as_str(), position)
+            .is_some()
+        {
+            return Err(log_history_conflict(
+                session_id,
+                event,
+                EventDeliveryConflict::DuplicateId,
+                Some(event),
+            ));
+        }
+    }
+    for (position, old) in previous_durable.iter().enumerate() {
+        let Some(current) = incoming_durable.get(position) else {
+            return Err(log_history_conflict(
+                session_id,
+                old,
+                EventDeliveryConflict::Withdrawn,
+                None,
+            ));
+        };
+        if current.id != old.id {
+            let cause = if !incoming_positions.contains_key(old.id.as_str()) {
+                EventDeliveryConflict::Withdrawn
+            } else if previous_positions.contains_key(current.id.as_str()) {
+                EventDeliveryConflict::Reordered
+            } else {
+                EventDeliveryConflict::InsertedBeforeFrontier
+            };
+            return Err(log_history_conflict(session_id, old, cause, Some(current)));
+        }
+    }
+    committed_delivery_delta(previous, incoming).map_err(|error| {
+        tracing::error!(session_id, error = %error, "Managed committed event history conflict");
+        error
+    })
+}
+
+fn log_history_conflict(
+    session_id: &str,
+    old: &Event,
+    cause: EventDeliveryConflict,
+    candidate: Option<&Event>,
+) -> StateError {
+    let candidate_id = candidate.map(|event| event.id.as_str());
+    let candidate_type = candidate.map(Event::type_str);
+    tracing::error!(
+        session_id,
+        old_id = %old.id,
+        old_type = old.type_str(),
+        ?candidate_id,
+        ?candidate_type,
+        ?cause,
+        "Managed committed event history conflict"
+    );
+    let detail = match candidate {
+        Some(event) => format!(
+            "{cause:?} after {} ({}) before {} ({})",
+            old.id,
+            old.type_str(),
+            event.id,
+            event.type_str()
+        ),
+        None => format!("{cause:?} after {} ({})", old.id, old.type_str()),
+    };
+    StateError::event_history_conflict(&old.id, &detail)
 }
 
 #[cfg(test)]
@@ -208,6 +305,71 @@ mod tests {
             "D8"
         );
         assert_eq!(delayed, known, "D8 unchanged completion");
+    }
+
+    #[test]
+    fn committed_refresh_preserves_the_entire_published_frontier() {
+        // Causes: H1 an old listable [a,b] exists; H2 the candidate appends,
+        // completes a prior None timestamp, withdraws a, reorders a/b, inserts
+        // a new fact before b, duplicates an id, changes payload, or changes a
+        // completed timestamp; H3 a transient `evt_N` preview reattaches
+        // around the same durable event. Effects: E1 append and None->Some
+        // completion produce a complete delta; E2 every other durable change
+        // returns one typed conflict before install/broadcast; E3 H3 leaves
+        // the committed frontier unchanged.
+        // Rules: R1=H1+append=>E1; R2=H1+completion=>E1;
+        // R3=H1+withdraw/reorder/insert/duplicate/payload/time change=>E2;
+        // R4=H1+H3=>E3.
+        let old = [event("a", None, true), event("b", None, false)];
+        let mut appended = [old[0].clone(), old[1].clone(), event("c", None, true)];
+        assert_eq!(
+            committed_projection_delivery_delta("session", &old, &mut appended).unwrap(),
+            vec![event("c", None, true)],
+            "R1"
+        );
+        let mut completed = [event("a", Some("t1"), true), old[1].clone()];
+        assert_eq!(
+            committed_projection_delivery_delta("session", &old, &mut completed).unwrap(),
+            vec![event("a", Some("t1"), true)],
+            "R2"
+        );
+        let mut invalid = [
+            vec![old[0].clone()],
+            vec![old[1].clone(), old[0].clone()],
+            vec![old[0].clone(), event("new", None, true), old[1].clone()],
+            vec![old[0].clone(), old[1].clone(), old[1].clone()],
+            vec![event("a", None, false), old[1].clone()],
+        ];
+        for (candidate, cause) in invalid.iter_mut().zip([
+            "Withdrawn",
+            "Reordered",
+            "InsertedBeforeFrontier",
+            "DuplicateId",
+            "Payload",
+        ]) {
+            let error = committed_projection_delivery_delta("session", &old, candidate)
+                .expect_err("R3 candidate must fail before publication");
+            assert!(error.to_string().contains(cause), "R3 {cause}: {error}");
+            assert!(
+                matches!(error, StateError::Run(ref run)
+                if run.code == "session_event_history_conflict"),
+                "R3 typed {cause}"
+            );
+        }
+        let completed_old = [event("a", Some("t1"), true)];
+        let mut changed_time = [event("a", Some("t2"), true)];
+        let error =
+            committed_projection_delivery_delta("session", &completed_old, &mut changed_time)
+                .expect_err("R3 completed timestamp mutation");
+        assert!(error.to_string().contains("ProcessedAt"), "R3 {error}");
+        let old_with_preview = [event("evt_1", None, true), event("a", None, true)];
+        let mut reattached = [event("a", None, true), event("evt_1", None, true)];
+        assert!(
+            committed_projection_delivery_delta("session", &old_with_preview, &mut reattached)
+                .unwrap()
+                .is_empty(),
+            "R4 transient preview does not define committed order"
+        );
     }
 }
 

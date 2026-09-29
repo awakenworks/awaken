@@ -2,51 +2,30 @@
 //! fresh cold one pages after every warm id to exactly the warm suffix. The
 //! warm replica refreshes after every commit, as a live reader would.
 //!
-//! Every named history is checked; a history that still breaks the switch
-//! is listed with its timeline class and asserted to break it, so fixing the
-//! class fails this test until the name leaves the list.
+//! Every named history is checked; a damaged Awaiting prefix rejects without
+//! publication, then a fresh replica must resume after the healthy suffix.
 //!
 //! Consumer: event-list cursors and SSE resumption across replicas.
 
 use super::timeline_scenarios::*;
 
-/// Histories whose warm cursors still do not resume on a cold replica.
-const KNOWN_BREAKS: &[(&str, &str)] = &[
-    ("unaudited_permission_pause", "D"),
-    ("cancelled_pause", "E"),
-    ("cancelled_pause_without_activity", "A/E"),
-    ("child_unaudited_pause", "B/D"),
-];
-
 #[tokio::test]
 async fn every_warm_cursor_resumes_on_a_cold_replica() {
-    // Rules: R1 a history off the list resumes every warm cursor on a cold
-    // replica to the warm suffix; R2 a listed history still breaks.
+    // Causes: C1 warm facts issued at each valid prefix; C2 a damaged Awaiting
+    // prefix; C3 a later healthy prefix; C4 a ToolUse Message arriving after
+    // its audit. Effects: E1 C2 rejects with no partial publication; E2 every
+    // issued cursor has the same suffix on a cold replica after C3/C4. Rules:
+    // R1 C1+C3 => E2; R2 C1+C2+C3 => E1+E2; R3 C1+C4 => E2.
     let mut unexpected = Vec::new();
     for (name, steps) in ROOT_SCENARIOS {
-        judge(
-            name,
-            replica_switch_preserves_suffixes::<RootTimeline>(steps).await,
-            &mut unexpected,
-        );
+        if let Err(broken) = replica_switch_preserves_suffixes::<RootTimeline>(steps).await {
+            unexpected.push(format!("{name}: {broken}"));
+        }
     }
     for (name, steps) in CHILD_SCENARIOS {
-        judge(
-            name,
-            replica_switch_preserves_suffixes::<ChildTimeline>(steps).await,
-            &mut unexpected,
-        );
+        if let Err(broken) = replica_switch_preserves_suffixes::<ChildTimeline>(steps).await {
+            unexpected.push(format!("{name}: {broken}"));
+        }
     }
     assert!(unexpected.is_empty(), "{}", unexpected.join("\n"));
-}
-
-fn judge(name: &str, result: Result<(), String>, unexpected: &mut Vec<String>) {
-    let known = KNOWN_BREAKS.iter().find(|(known, _)| *known == name);
-    match (result, known) {
-        (Ok(()), None) | (Err(_), Some(_)) => {}
-        (Err(broken), None) => unexpected.push(format!("R1 {name}: {broken}")),
-        (Ok(()), Some((_, class))) => unexpected.push(format!(
-            "R2 {name} (class {class}) now resumes: remove it from KNOWN_BREAKS"
-        )),
-    }
 }

@@ -265,12 +265,13 @@ async fn indexed_deep_pages_scan_only_the_cursor_and_bounded_matching_suffix() {
 
 #[tokio::test]
 async fn page_index_tracks_published_references_owners_replacement_and_order() {
-    // C1 action owner changes without changing row count; C2 referenced id
-    // changes under a fresh immutable Event id; C3 ids/owners are replaced at
-    // the same positions; C4 order changes;
-    // C5 processed time changes. Each successful publication must project current
-    // rows and visibility exactly. C6 no-op/error/stale CAS must retain the current
-    // index and frame. Only the canonical publisher mutates this fixture.
+    // Causes: C1 owner changes without changing rows; C2 a referenced id is
+    // replaced; C3 id/owner pairs are replaced; C4 old rows reorder; C5 a
+    // None processed time completes; C6 no-op/error/stale CAS. Effects: E1
+    // C1/C5 publish an index matching current visibility; E2 C2-C4 fail before
+    // publication and preserve index/history; E3 C6 keeps the current frame.
+    // Rules: R1=C1/C5=>E1; R2=C2-C4=>E2; R3=C6=>E3. This exercises the index
+    // through its canonical publisher under append-only committed history.
     let (state, id) = page_state().await;
     state
         .publish_projection_update(&id, |record| {
@@ -283,42 +284,54 @@ async fn page_index_tracks_published_references_owners_replacement_and_order() {
         .unwrap();
     let original = state.sessions.lock().unwrap().get(&id).unwrap().clone();
     for change in 0..6 {
-        state
-            .publish_projection_update(&id, |record| {
-                match change {
-                    0 => {
-                        record
-                            .event_thread_owners
-                            .insert("ask".into(), "child".into());
-                    }
-                    1 => {
-                        record.event_thread_owners.insert("ask".into(), id.clone());
-                    }
-                    2 => {
-                        record.events[1] = action("missing");
-                        record.events[1].id = "ask-missing".into();
-                    }
-                    3 => {
-                        record.events[0].id = "replacement".into();
-                        record.events[1] = action("replacement");
-                        record.events[1].id = "ask-replacement".into();
-                        record.event_thread_owners.remove("tool");
-                        record
-                            .event_thread_owners
-                            .insert("replacement".into(), "child".into());
-                    }
-                    4 => {
-                        record.events.rotate_right(1);
-                    }
-                    5 => {
-                        record.events[0].processed_at = Some("2026-09-13T00:00:00Z".into());
-                    }
-                    _ => unreachable!(),
+        let before = state.sessions.lock().unwrap().get(&id).unwrap().clone();
+        let result = state.publish_projection_update(&id, |record| {
+            match change {
+                0 => {
+                    record
+                        .event_thread_owners
+                        .insert("ask".into(), "child".into());
                 }
-                Ok(())
-            })
-            .unwrap();
+                1 => {
+                    record.event_thread_owners.insert("ask".into(), id.clone());
+                }
+                2 => {
+                    record.events[1] = action("missing");
+                    record.events[1].id = "ask-missing".into();
+                }
+                3 => {
+                    record.events[0].id = "replacement".into();
+                    record.events[1] = action("replacement");
+                    record.events[1].id = "ask-replacement".into();
+                    record.event_thread_owners.remove("tool");
+                    record
+                        .event_thread_owners
+                        .insert("replacement".into(), "child".into());
+                }
+                4 => {
+                    record.events.rotate_right(1);
+                }
+                5 => {
+                    record.events[0].processed_at = Some("2026-09-13T00:00:00Z".into());
+                }
+                _ => unreachable!(),
+            }
+            Ok(())
+        });
+        if (2..=4).contains(&change) {
+            let error = result.expect_err("R2 published id/order cannot be replaced");
+            assert!(
+                matches!(error, StateError::Run(ref run)
+                if run.code == "session_event_history_conflict"),
+                "R2 {error}"
+            );
+        } else {
+            result.unwrap();
+        }
         let current = state.sessions.lock().unwrap().get(&id).unwrap().clone();
+        if (2..=4).contains(&change) {
+            refresh_failure::assert_record_frame_eq(&current, &before);
+        }
         assert_eq!(current.events.len(), 3, "C1-C5 fixed cardinality");
         for cursor in [
             None,

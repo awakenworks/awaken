@@ -765,8 +765,6 @@ mod tests {
         let selected =
             evidence.project_message(&current, &std::collections::HashSet::new(), None, &[]);
         assert!(!selected.fully_classified, "F1/E3");
-        assert!(selected.pending_occurrence, "F1/E2");
-        assert!(selected.retained_pending_occurrence, "F1/E2");
         assert!(
             matches!(
                 &selected.message.content[..],
@@ -785,8 +783,6 @@ mod tests {
             &[],
         );
         assert!(!selected.fully_classified, "F2/E3");
-        assert!(selected.pending_occurrence, "F2/E4 source remains known");
-        assert!(!selected.retained_pending_occurrence, "F2/E4");
         assert!(
             matches!(&selected.message.content[..], [ContentBlock::Text { .. }]),
             "F2/E4 only stable non-tool content is revisited"

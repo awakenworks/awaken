@@ -148,8 +148,6 @@ impl ManagedState {
                 root_snapshot: evidence.root.as_ref(),
                 outcome_projections: &evidence.outcomes,
                 delegation,
-                root_pending: evidence.root_pending.as_ref(),
-                child_pending: &evidence.child_pending,
             },
         )?;
         if persisted.is_hidden() && persisted.is_terminal() {

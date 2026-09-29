@@ -455,7 +455,7 @@ async fn child_thread_archive_failure_commits_no_terminal_projection() {
 /// Decision table:
 /// | rule | selector | target state | runtime keys | persisted receipt |
 /// |---|---|---|---|---|
-/// | I1 | child id | fresh Running link; cache absent | child only | yes |
+/// | I1 | child id | fresh Running link; cache absent | child only | yes; earlier child facts precede interrupt |
 /// | I2 | primary id | live | Session id only | yes |
 /// | I3 | absent | root + live child | parent partition root + child | yes |
 /// | I4 | unknown/retired id | absent | none | no |
@@ -476,7 +476,9 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     // selects only its stated effect and preserves the authority constraint. The shared
     // Runtime fixture first returns one root/child recovery prefix with exact
     // same-index Message commit coordinates; selector behavior never relies on
-    // a read-time anchor fallback.
+    // a read-time anchor fallback. I1 also proves the accepted interrupt uses
+    // the complete committed reducer before publication: the first refresh
+    // cannot insert previously unseen child facts before its issued cursor.
     let runtime = crate::test_support::CoordinatedRuntimeFake::default();
     runtime.defer_child_completion();
     let state = Arc::new(ManagedState::new(runtime.clone()));
@@ -529,6 +531,20 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
         "I1"
     );
     state.refresh_committed_events(&session.id).await.unwrap();
+    let issued = state
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data;
+    let interrupt_position = issued
+        .iter()
+        .position(|event| event.type_str() == "user.interrupt")
+        .expect("I1 committed interrupt receipt");
+    assert!(
+        issued[..interrupt_position]
+            .iter()
+            .any(|event| event.type_str() == "session.thread_created"),
+        "I1 earlier committed child facts precede the newly accepted interrupt"
+    );
     assert_eq!(
         state
             .list_thread_events(&session.id, child_id, None, None)

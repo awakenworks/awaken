@@ -25,8 +25,6 @@ pub(super) struct CanonicalizationEvidence<'a> {
         Option<&'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     pub(super) outcome_projections: &'a [AnchoredOutcomeProjection],
     pub(super) delegation: DelegationProjectionEvidence<'a>,
-    pub(super) root_pending: Option<&'a Pending>,
-    pub(super) child_pending: &'a std::collections::HashMap<String, Pending>,
 }
 
 fn retain_earliest<K: std::hash::Hash + Eq>(
@@ -79,8 +77,6 @@ impl ManagedState {
             root_snapshot,
             outcome_projections,
             delegation: delegation_evidence,
-            root_pending,
-            child_pending,
         } = evidence;
         let DelegationProjectionEvidence {
             links,
@@ -111,8 +107,6 @@ impl ManagedState {
             links,
             outcomes: &outcomes,
             historical_pending,
-            root_pending,
-            child_pending,
         });
 
         // An evaluation's public completion time is its evaluation command's.
