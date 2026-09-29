@@ -68,6 +68,7 @@ pub awaken_agent_contract::agent::awaiting::ResumeTicket::correlation_id: alloc:
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::data_subject_id: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::deadline_ms: core::option::Option<u64>
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::delegation_origin: core::option::Option<awaken_agent_contract::agent::delegation::DelegationOrigin>
+pub awaken_agent_contract::agent::awaiting::ResumeTicket::inherited_toolsets: core::option::Option<awaken_agent_contract::toolset::InheritedToolsets>
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::snapshot_id: alloc::string::String
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::thread_id: awaken_agent_contract::agent::thread::Id
@@ -83,6 +84,7 @@ pub const fn awaken_agent_contract::agent::awaiting::ResumeTicket::tool_call_aut
 pub fn awaken_agent_contract::agent::awaiting::ResumeTicket::with_data_subject(self, core::option::Option<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::awaiting::ResumeTicket::with_deadline(self, core::option::Option<u64>) -> Self
 pub fn awaken_agent_contract::agent::awaiting::ResumeTicket::with_delegation_origin(self, core::option::Option<awaken_agent_contract::agent::delegation::DelegationOrigin>) -> Self
+pub fn awaken_agent_contract::agent::awaiting::ResumeTicket::with_inherited_toolsets(self, core::option::Option<awaken_agent_contract::toolset::InheritedToolsets>) -> Self
 impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::awaiting::ResumeTicket
 pub fn awaken_agent_contract::agent::awaiting::ResumeTicket::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub mod awaken_agent_contract::agent::content
@@ -1166,6 +1168,11 @@ pub awaken_agent_contract::toolset::GrantedAutonomy::None
 impl awaken_agent_contract::toolset::GrantedAutonomy
 pub const fn awaken_agent_contract::toolset::GrantedAutonomy::rank(self) -> u8
 pub const fn awaken_agent_contract::toolset::GrantedAutonomy::within(self, Self) -> bool
+pub enum awaken_agent_contract::toolset::InheritedToolsets
+pub awaken_agent_contract::toolset::InheritedToolsets::V1(alloc::vec::Vec<alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>>)
+impl awaken_agent_contract::toolset::InheritedToolsets
+pub fn awaken_agent_contract::toolset::InheritedToolsets::sources(&self) -> &[alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>]
+pub fn awaken_agent_contract::toolset::InheritedToolsets::with_caller(alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>, core::option::Option<&Self>) -> Self
 pub enum awaken_agent_contract::toolset::ToolPermissionRequirement
 pub awaken_agent_contract::toolset::ToolPermissionRequirement::AlwaysAllow
 pub awaken_agent_contract::toolset::ToolPermissionRequirement::AlwaysAsk

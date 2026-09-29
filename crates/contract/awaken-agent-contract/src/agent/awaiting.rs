@@ -243,6 +243,10 @@ pub struct ResumeTicket {
     /// Kept as a plain id so the agent contract does not depend on runtime types.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_subject_id: Option<String>,
+    /// Frozen extension configuration inherited by this Run. Resuming an
+    /// awaiting Run cannot replace it with its caller's newer configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited_toolsets: Option<crate::toolset::InheritedToolsets>,
     target: AwaitTarget,
     /// Optional expiry (epoch millis). A resume after this is stale.
     pub deadline_ms: Option<u64>,
@@ -259,6 +263,8 @@ struct ResumeTicketWire {
     delegation_origin: Option<crate::agent::delegation::DelegationOrigin>,
     #[serde(default)]
     data_subject_id: Option<String>,
+    #[serde(default)]
+    inherited_toolsets: Option<crate::toolset::InheritedToolsets>,
     #[serde(default)]
     target: Option<AwaitTarget>,
     #[serde(default)]
@@ -340,6 +346,7 @@ impl<'de> Deserialize<'de> for ResumeTicket {
             catalog_fingerprint: wire.catalog_fingerprint,
             delegation_origin: wire.delegation_origin,
             data_subject_id: wire.data_subject_id,
+            inherited_toolsets: wire.inherited_toolsets,
             target,
             deadline_ms: wire.deadline_ms,
         })
@@ -363,6 +370,7 @@ impl ResumeTicket {
             catalog_fingerprint: catalog_fingerprint.into(),
             delegation_origin: None,
             data_subject_id: None,
+            inherited_toolsets: None,
             target,
             deadline_ms: None,
         }
@@ -380,6 +388,15 @@ impl ResumeTicket {
     #[must_use]
     pub fn with_data_subject(mut self, data_subject_id: Option<String>) -> Self {
         self.data_subject_id = data_subject_id;
+        self
+    }
+
+    #[must_use]
+    pub fn with_inherited_toolsets(
+        mut self,
+        inherited: Option<crate::toolset::InheritedToolsets>,
+    ) -> Self {
+        self.inherited_toolsets = inherited;
         self
     }
 

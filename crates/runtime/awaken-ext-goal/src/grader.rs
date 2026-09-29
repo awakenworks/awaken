@@ -5,7 +5,6 @@
 
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{ThreadUsage, TokenUsage};
-use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
 use awaken_runtime_contract::resolved::InvalidModelBinding;
 use awaken_runtime_contract::{
     CommittedThreadView, EndCause, ExecutableAgentSnapshot, Message, MessageId, ModelBinding, Role,
@@ -174,7 +173,7 @@ impl Grader for AgentGrader<'_> {
                     grading_prompt(input)?,
                 )],
             );
-            activation.tool_capability_narrowing = ToolCapabilityNarrowing::DenyAll;
+            activation = activation.without_tools();
             self.executor
                 .execute(activation, self.context.clone())
                 .await

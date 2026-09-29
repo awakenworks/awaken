@@ -1379,6 +1379,9 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     manifest
         .capabilities
         .insert("application:test-session-envelope/v1".into());
+    manifest
+        .capabilities
+        .insert(awaken_runtime_contract::activation::INHERITED_TOOLSETS_CAPABILITY.to_string());
     let capability_fingerprint = manifest
         .fingerprint()
         .expect("R1 deterministic Worker capability fingerprint");
@@ -1400,7 +1403,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         .expect("R1 inspect executable dispatch")
         .expect("R1 exact executable dispatch");
     assert_eq!(
-        claimed.request.activation.tool_capability_narrowing,
+        claimed.request.activation.tool_capability_narrowing(),
         awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
         "R1/E4 application restrictions only narrow Session tool authority"
     );

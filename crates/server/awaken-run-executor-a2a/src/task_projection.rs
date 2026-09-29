@@ -117,6 +117,7 @@ pub(super) fn awaiting_ticket(activation: &RunActivation, task: &Task) -> Resume
         },
     )
     .with_delegation_origin(activation.delegation_origin.clone())
+    .with_inherited_toolsets(activation.inherited_toolsets().cloned())
     .with_data_subject(
         activation
             .data_subject_id

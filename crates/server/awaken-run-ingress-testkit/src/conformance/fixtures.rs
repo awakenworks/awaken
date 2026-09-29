@@ -75,7 +75,7 @@ fn current_session_command_with_operation(
             .map(|subject| subject.0.clone()),
         traceparent: request.traceparent.clone(),
         execution_requirements: SessionRunExecutionRequirements {
-            tool_capability_narrowing: request.activation.tool_capability_narrowing,
+            tool_capability_narrowing: request.activation.tool_capability_narrowing(),
             required_worker_capabilities: request.placement.required_capabilities.clone(),
         },
         replacement: request.session_run_replacement,

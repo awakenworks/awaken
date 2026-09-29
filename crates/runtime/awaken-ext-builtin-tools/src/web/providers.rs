@@ -56,9 +56,9 @@ impl WebFetchProvider for AwakenDirectFetchProvider {
         &self,
         request: WebFetchRequest,
         _credential: Option<&Credential>,
-        domain_filter: Option<&WebDomainFilter>,
+        domain_filters: &[WebDomainFilter],
     ) -> Result<String, ToolError> {
-        let filter_active = domain_filter.is_some();
+        let filter_active = !domain_filters.is_empty();
         blocking(move || {
             let call = if filter_active {
                 ureq::AgentBuilder::new()

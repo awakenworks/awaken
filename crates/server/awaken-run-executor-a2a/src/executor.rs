@@ -15,7 +15,7 @@ pub(super) fn ensure_supported_narrowing(
     activation: &RunActivation,
     context: &RuntimeRunContext,
 ) -> Result<()> {
-    if activation.tool_capability_narrowing == ToolCapabilityNarrowing::DenyAll
+    if activation.tool_capability_narrowing() == ToolCapabilityNarrowing::DenyAll
         || context.tool_permission_policy.is_some()
     {
         return Err(Error::Execution(

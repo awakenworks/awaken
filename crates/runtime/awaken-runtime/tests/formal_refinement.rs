@@ -504,20 +504,16 @@ fn snapshot(tool_ids: &[&str]) -> ExecutableAgentSnapshot {
 }
 
 fn activation(snapshot: ExecutableAgentSnapshot) -> RunActivation {
-    RunActivation {
-        run_id: RunId(RUN_ID.to_string()),
-        thread_id: ThreadId(THREAD_ID.to_string()),
+    RunActivation::new(
+        RunId(RUN_ID.to_string()),
+        ThreadId(THREAD_ID.to_string()),
         snapshot,
-        input: vec![Message {
+        vec![Message {
             id: MessageId("formal-input".to_string()),
             role: Role::User,
             content: vec![ContentBlock::text("run")],
         }],
-        delegation_origin: None,
-        model_ref_override: None,
-        data_subject_id: None,
-        tool_capability_narrowing: Default::default(),
-    }
+    )
 }
 
 async fn seed_executing_batch(

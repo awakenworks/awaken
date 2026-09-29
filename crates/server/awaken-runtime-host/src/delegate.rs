@@ -114,6 +114,8 @@ pub(crate) struct HostRunDelegationService {
     publications: Option<Arc<dyn PublishedAgentSnapshotSource>>,
     workspace: String,
     scheduler: Option<RunScheduler>,
+    caller_toolsets: Vec<awaken_runtime_contract::agent_bindings::ToolsetPolicy>,
+    inherited_toolsets: Option<awaken_runtime_contract::activation::InheritedToolsets>,
 }
 
 #[derive(Clone, Debug)]
@@ -176,6 +178,13 @@ impl HostRunDelegationService {
             publications,
             workspace,
             scheduler: None,
+            caller_toolsets: parent_snapshot
+                .resolved_spec
+                .plugin_config
+                .agent
+                .toolsets
+                .clone(),
+            inherited_toolsets: None,
         })
     }
 
@@ -209,6 +218,16 @@ impl HostRunDelegationService {
 
     pub(crate) fn with_scheduler(mut self, scheduler: Option<RunScheduler>) -> Self {
         self.scheduler = scheduler;
+        self
+    }
+
+    pub(crate) fn with_tool_configuration(
+        mut self,
+        caller: Vec<awaken_runtime_contract::agent_bindings::ToolsetPolicy>,
+        inherited: Option<awaken_runtime_contract::activation::InheritedToolsets>,
+    ) -> Self {
+        self.caller_toolsets = caller;
+        self.inherited_toolsets = inherited;
         self
     }
 
@@ -318,6 +337,9 @@ impl HostRunDelegationService {
             // ordinary recursive delegate must not leak its parent's advisor
             // candidate into that child.
             child_service.advisor = None;
+            child_service.caller_toolsets =
+                snapshot.resolved_spec.plugin_config.agent.toolsets.clone();
+            child_service.inherited_toolsets = context.inherited_toolsets.clone();
             Some(Arc::new(child_service) as Arc<dyn RunDelegationService>)
         };
         let boundary = crate::agent_runner::run_configured_agent_until_boundary(
@@ -478,6 +500,13 @@ impl RunDelegationService for HostRunDelegationService {
         }
         let agent_id = input.agent_id;
         let input = input.input;
+        let mut context = request.context;
+        context.inherited_toolsets = Some(
+            awaken_runtime_contract::activation::InheritedToolsets::with_caller(
+                self.caller_toolsets.clone(),
+                self.inherited_toolsets.as_ref(),
+            ),
+        );
         let snapshot = self
             .targets
             .get(&agent_id)
@@ -501,7 +530,7 @@ impl RunDelegationService for HostRunDelegationService {
                 resume: None,
                 parent_thread_id: request.parent_thread_id,
             },
-            request.context,
+            context,
         )
         .await
     }
@@ -539,6 +568,8 @@ impl RunDelegationService for HostRunDelegationService {
                 DelegationExecutionError::new("delegated child Run has no resume ticket")
             })?;
         let snapshot = self.exact_snapshot(&CatalogFingerprint(ticket.catalog_fingerprint))?;
+        let mut context = request.context;
+        context.inherited_toolsets = ticket.inherited_toolsets;
         if snapshot.root_agent_id != agent_id {
             return Err(DelegationExecutionError::new(
                 "recovered delegate snapshot identity does not match its target",
@@ -553,7 +584,7 @@ impl RunDelegationService for HostRunDelegationService {
                 resume: Some(request.result),
                 parent_thread_id: request.parent_thread_id,
             },
-            request.context,
+            context,
         )
         .await
     }

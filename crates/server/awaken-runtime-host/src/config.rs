@@ -1047,6 +1047,113 @@ mod tests {
                 "{rule} `{tool}` must be decided by the evaluator"
             );
         }
+        // H5: exercise the same policy through the real Runtime. Auto-deny
+        // commits an error result, never invokes the tool, and never creates a
+        // reply ticket. The managed resolver's R10 rejects a confirmation when
+        // no pending owner exists; the SDK A4 checks HTTP non-ask rejection.
+        // This injectable deterministic evaluator is not a claim about the
+        // shipped observing evaluator's ability to classify session content.
+        use awaken_runtime_contract::execution::RunExecutor as _;
+        struct OneRead;
+        #[async_trait::async_trait]
+        impl awaken_runtime_contract::llm::LlmExecutor for OneRead {
+            async fn infer(
+                &self,
+                request: awaken_runtime_contract::llm::ChatRequest,
+            ) -> awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>
+            {
+                let output = if request.messages.iter().any(|message| {
+                    message.role == awaken_agent_contract::agent::message::Role::Tool
+                }) {
+                    awaken_runtime_contract::llm::AssistantOutput::text("denial observed")
+                } else {
+                    awaken_runtime_contract::llm::AssistantOutput::from_tool_calls(vec![ToolCall {
+                        tool_id: "read".into(),
+                        call_id: "auto-denied-read".into(),
+                        arguments: serde_json::json!({}),
+                    }])
+                };
+                Ok(awaken_runtime_contract::llm::ChatResponse {
+                    output,
+                    usage: None,
+                    stop_reason: None,
+                })
+            }
+        }
+        struct ReadCounter(Arc<std::sync::atomic::AtomicUsize>);
+        #[async_trait::async_trait]
+        impl awaken_runtime_contract::tool::RawTool for ReadCounter {
+            fn id(&self) -> &str {
+                "read"
+            }
+            async fn invoke(
+                &self,
+                call: ToolCall,
+            ) -> Result<
+                awaken_runtime_contract::tool::ToolOutput,
+                awaken_runtime_contract::tool::ToolError,
+            > {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(awaken_runtime_contract::tool::ToolOutput::ok(
+                    call.call_id,
+                    "read",
+                ))
+            }
+        }
+        let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let runtime = awaken_runtime::Runtime::new()
+            .with_llm(Arc::new(OneRead))
+            .with_tool(Arc::new(ReadCounter(effects.clone())));
+        let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("auto-deny")
+            .instructions("read once")
+            .model(
+                awaken_runtime_contract::resolved::ModelBinding::parse("test", "stub", "native")
+                    .expect("admitted literal test binding"),
+            )
+            .build();
+        let (run_id, activation) = runtime.prepare(&snapshot, "auto-deny".into(), "read");
+        let commit = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
+        let outcome = runtime
+            .execute(
+                activation,
+                awaken_runtime_contract::RuntimeRunContext::new()
+                    .with_commit(commit.clone())
+                    .with_tool_permission_policy(Arc::new(denies)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            awaken_agent_contract::agent::run::RunState::Ended(
+                awaken_agent_contract::agent::run::EndCause::NaturalEnd
+            ),
+            "H5 denial is an error result, not an operator pause"
+        );
+        assert_eq!(
+            effects.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "H5 no tool effect"
+        );
+        assert!(
+            commit.resume_ticket_for(&run_id).is_none(),
+            "H5 no confirmation authority"
+        );
+        assert!(
+            commit
+                .committed()
+                .messages
+                .iter()
+                .any(|message| message.content.iter().any(|block| matches!(
+                    block,
+                    awaken_agent_contract::agent::content::ContentBlock::ToolResult {
+                        is_error: true,
+                        ..
+                    }
+                ))),
+            "H5 committed error tool result"
+        );
     }
 
     #[test]

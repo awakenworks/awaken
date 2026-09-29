@@ -161,20 +161,16 @@ fn runtime(ran: Arc<AtomicUsize>) -> Runtime {
 }
 
 fn activation() -> RunActivation {
-    RunActivation {
-        run_id: RunId("run-1".to_string()),
-        thread_id: ThreadId("thread-1".to_string()),
-        snapshot: snapshot(),
-        input: vec![Message {
+    RunActivation::new(
+        RunId("run-1".to_string()),
+        ThreadId("thread-1".to_string()),
+        snapshot(),
+        vec![Message {
             id: MessageId("m1".to_string()),
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        delegation_origin: None,
-        model_ref_override: None,
-        data_subject_id: None,
-        tool_capability_narrowing: Default::default(),
-    }
+    )
 }
 
 fn resume_command(result: ResumeResult) -> ResumeCommand {
@@ -289,6 +285,274 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
         replay_latest_state(&committed, &RunId("run-1".to_string())),
         Some(RunState::Ended(EndCause::NaturalEnd))
     );
+}
+
+#[tokio::test]
+async fn inherited_configuration_is_ticket_truth_after_serialization_and_resume() {
+    // Causes: C1 activation has inherited settings A; C2 tool suspends; C3 a
+    // resume supplies different live settings B, or no process-local settings;
+    // C4 the committed ticket crosses serde. Effects: T1 A is retained exactly;
+    // T2 B cannot execute/consume the ticket; T3 a bare resume restores A and
+    // executes exactly once. This is real Runtime/commit/resume coverage; the
+    // deterministic model is not a vendor risk-classification oracle.
+    // | Rule | Input | Ticket | Live resume | Effect |
+    // | T1 | A | serde round-trip | - | exact A |
+    // | T2 | A | A | B | error, zero effects, ticket retained |
+    // | T3 | A | A | none | restore A, one effect, ticket cleared |
+    use awaken_runtime_contract::activation::InheritedToolsets;
+    use awaken_runtime_contract::agent_bindings::{
+        ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+    };
+    let source = |domain: &str| {
+        InheritedToolsets::with_caller(
+            vec![ToolsetPolicy {
+                source: ToolsetSource::Agent,
+                default: ToolExecutionPolicy::default(),
+                overrides: vec![ToolPolicyOverride::with_optional_configuration(
+                    "web_fetch",
+                    ToolExecutionPolicy::default(),
+                    Some(
+                        serde_json::json!({"type":"web_fetch","domains":{"type":"allow","domains":[domain]}}),
+                    ),
+                )],
+            }],
+            None,
+        )
+    };
+    let a = source("example.com");
+    let b = source("example.net");
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = runtime(ran.clone());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
+    let state = runtime
+        .execute(
+            activation().with_inherited_toolsets(Some(a.clone())),
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(state, RunState::Awaiting, "T1");
+    let ticket = commit.resume_ticket_for(&RunId("run-1".into())).unwrap();
+    let restored: awaken_agent_contract::agent::awaiting::ResumeTicket =
+        serde_json::from_slice(&serde_json::to_vec(&ticket).unwrap()).unwrap();
+    assert_eq!(
+        restored.inherited_toolsets,
+        Some(a.clone()),
+        "T1 exact frozen source"
+    );
+    let error = runtime
+        .resume(
+            resume_command(ResumeResult::allow()),
+            commit.as_ref(),
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_inherited_toolsets(Some(b)),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("committed ticket"),
+        "T2 source conflict"
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "T2 no tool effect");
+    assert_eq!(
+        commit
+            .resume_ticket_for(&RunId("run-1".into()))
+            .unwrap()
+            .inherited_toolsets,
+        Some(a),
+        "T2 ticket not consumed"
+    );
+    assert_eq!(
+        runtime
+            .resume(
+                resume_command(ResumeResult::allow()),
+                commit.as_ref(),
+                RuntimeRunContext::new().with_commit(commit.clone())
+            )
+            .await
+            .unwrap(),
+        RunState::Ended(EndCause::NaturalEnd),
+        "T3 bare context uses ticket"
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "T3 one effect");
+    assert!(
+        commit.resume_ticket_for(&RunId("run-1".into())).is_none(),
+        "T3 terminal ticket cleared"
+    );
+}
+
+#[tokio::test]
+async fn runtime_convenience_entries_freeze_inherited_sources_before_await() {
+    // Causes: C1 caller supplies an explicit v1 source in live context; C2 the
+    // entry is one-shot run, start_run, completion, or stable-id completion;
+    // C3 the tool suspends. Effects: E1 every committed ticket retains exactly
+    // C1; E2 an approved completion executes once. No entry may produce a
+    // ticket without C1 and then rely on a live context to repair it.
+    // | Rule | Entry | Await exposed | Effects |
+    // | R1 | run | yes | E1 |
+    // | R2 | start_run | yes | E1 |
+    // | R3 | run_to_completion | answered internally | E1,E2 |
+    // | R4 | run_to_completion_with_id | answered internally | E1,E2 |
+    use awaken_runtime_contract::activation::InheritedToolsets;
+    let source = InheritedToolsets::with_caller(Vec::new(), None);
+    let context = |commit: &Arc<MemoryCommitCoordinator>| {
+        RuntimeRunContext::new()
+            .with_commit(commit.clone())
+            .with_reader(commit.clone())
+            .with_inherited_toolsets(Some(source.clone()))
+    };
+    for entry in ["run", "start_run"] {
+        let ran = Arc::new(AtomicUsize::new(0));
+        let runtime = runtime(ran.clone());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
+        let run_id = if entry == "run" {
+            assert_eq!(
+                runtime
+                    .run(&snapshot(), "go", context(&commit))
+                    .await
+                    .unwrap(),
+                RunState::Awaiting,
+                "R1"
+            );
+            commit.committed().run_facts.last().unwrap().run_id.clone()
+        } else {
+            let (id, state) = runtime
+                .start_run(&snapshot(), "thread-start", "go", context(&commit))
+                .await
+                .unwrap();
+            assert_eq!(state, RunState::Awaiting, "R2");
+            id
+        };
+        assert_eq!(
+            commit
+                .resume_ticket_for(&run_id)
+                .unwrap()
+                .inherited_toolsets,
+            Some(source.clone()),
+            "R1/R2 E1"
+        );
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            0,
+            "R1/R2 no side effect before approval"
+        );
+    }
+    for entry in ["run_to_completion", "run_to_completion_with_id"] {
+        let ran = Arc::new(AtomicUsize::new(0));
+        let runtime = runtime(ran.clone());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
+        let mut tickets = 0;
+        let mut decide = |ticket: &awaken_agent_contract::agent::awaiting::ResumeTicket| {
+            assert_eq!(ticket.inherited_toolsets, Some(source.clone()), "R3/R4 E1");
+            tickets += 1;
+            ResumeResult::allow()
+        };
+        let state = if entry == "run_to_completion" {
+            runtime
+                .run_to_completion(
+                    &snapshot(),
+                    "thread-complete",
+                    "go",
+                    context(&commit),
+                    &mut decide,
+                )
+                .await
+                .unwrap()
+        } else {
+            runtime
+                .run_to_completion_with_id(
+                    &snapshot(),
+                    RunId("stable-inherited".into()),
+                    "thread-stable",
+                    "go",
+                    context(&commit),
+                    &mut decide,
+                )
+                .await
+                .unwrap()
+        };
+        assert_eq!(
+            state,
+            RunState::Ended(EndCause::NaturalEnd),
+            "R3/R4 E2 terminal"
+        );
+        assert_eq!(tickets, 1, "R3/R4 one committed await");
+        assert_eq!(ran.load(Ordering::SeqCst), 1, "R3/R4 E2 one effect");
+    }
+}
+
+#[tokio::test]
+async fn activated_resume_rejects_a_different_source_before_tool_effect() {
+    // Causes: A committed awaiting ticket carries A; a dispatched resume
+    // activation carries B, no source, or A. Effects: B/none reject without
+    // changing the ticket or running the tool; A resumes exactly once.
+    // | Rule | Ticket | Activation | Effect |
+    // | P1 | A | B | reject, zero effect |
+    // | P2 | A | none | reject, zero effect |
+    // | P3 | A | A | one effect, terminal |
+    use awaken_runtime_contract::activation::InheritedToolsets;
+    use awaken_runtime_contract::execution::RunAttemptExecutor;
+    let a = InheritedToolsets::with_caller(Vec::new(), None);
+    let b = InheritedToolsets::with_caller(Vec::new(), Some(&a));
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = runtime(ran.clone());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
+    assert_eq!(
+        runtime
+            .execute(
+                activation().with_inherited_toolsets(Some(a.clone())),
+                RuntimeRunContext::new().with_commit(commit.clone())
+            )
+            .await
+            .unwrap(),
+        RunState::Awaiting
+    );
+    for (rule, source) in [("P1", Some(b)), ("P2", None)] {
+        let err = RunAttemptExecutor::resume(
+            &runtime,
+            activation().with_inherited_toolsets(source),
+            resume_command(ResumeResult::allow()),
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(commit.clone()),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("committed ticket"), "{rule}");
+        assert_eq!(ran.load(Ordering::SeqCst), 0, "{rule} no effect");
+        assert_eq!(
+            commit
+                .resume_ticket_for(&RunId("run-1".into()))
+                .unwrap()
+                .inherited_toolsets,
+            Some(a.clone()),
+            "{rule} ticket retained"
+        );
+    }
+    assert_eq!(
+        RunAttemptExecutor::resume(
+            &runtime,
+            activation().with_inherited_toolsets(Some(a)),
+            resume_command(ResumeResult::allow()),
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(commit.clone())
+        )
+        .await
+        .unwrap(),
+        RunState::Ended(EndCause::NaturalEnd),
+        "P3"
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "P3 one tool effect");
 }
 
 #[tokio::test]

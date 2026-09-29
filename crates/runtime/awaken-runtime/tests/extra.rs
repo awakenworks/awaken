@@ -54,10 +54,10 @@ async fn a_system_role_message_is_carried_into_inference() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm));
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
 
-    let activation = RunActivation {
-        run_id: RunId("run-1".to_string()),
-        thread_id: ThreadId("thread-1".to_string()),
-        snapshot: ExecutableAgentSnapshot {
+    let activation = RunActivation::new(
+        RunId("run-1".to_string()),
+        ThreadId("thread-1".to_string()),
+        ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("snapshot-1".to_string()),
             metadata: Default::default(),
             root_agent_id: AgentId("agent-1".to_string()),
@@ -78,7 +78,7 @@ async fn a_system_role_message_is_carried_into_inference() {
             },
             fingerprint,
         },
-        input: vec![
+        vec![
             Message {
                 id: MessageId("sys".to_string()),
                 role: Role::System,
@@ -90,11 +90,7 @@ async fn a_system_role_message_is_carried_into_inference() {
                 content: vec![ContentBlock::text("hi")],
             },
         ],
-        delegation_origin: None,
-        model_ref_override: None,
-        data_subject_id: None,
-        tool_capability_narrowing: Default::default(),
-    };
+    );
 
     let outcome = runtime
         .execute(activation, RuntimeRunContext::new())

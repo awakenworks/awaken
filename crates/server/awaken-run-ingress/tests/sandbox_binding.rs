@@ -34,10 +34,10 @@ fn activation(run: &str, thread: &str) -> RunActivation {
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
     let fp = CatalogFingerprint("fp".into());
-    RunActivation {
-        run_id: RunId(run.into()),
-        thread_id: ThreadId(thread.into()),
-        snapshot: ExecutableAgentSnapshot {
+    RunActivation::new(
+        RunId(run.into()),
+        ThreadId(thread.into()),
+        ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("snap".into()),
             metadata: Default::default(),
             root_agent_id: AgentId("agent".into()),
@@ -58,12 +58,8 @@ fn activation(run: &str, thread: &str) -> RunActivation {
             },
             fingerprint: fp,
         },
-        input: vec![],
-        delegation_origin: None,
-        model_ref_override: None,
-        data_subject_id: None,
-        tool_capability_narrowing: Default::default(),
-    }
+        vec![],
+    )
 }
 
 fn req(run: &str, thread: &str) -> RunDispatch {

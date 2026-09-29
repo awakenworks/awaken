@@ -14,15 +14,60 @@ use crate::resolved::ResolvedModelCandidate;
 /// Ordinal zero is the primary route. Ordinal `n + 1` is fallback `n`. An
 /// out-of-range ordinal fails closed instead of substituting another route.
 #[must_use]
-pub fn pinned_candidate_at<'a>(
-    primary: &'a ResolvedModelCandidate,
-    fallbacks: &'a [ResolvedModelCandidate],
+pub fn pinned_candidate_at<'a, T>(
+    primary: &'a T,
+    fallbacks: &'a [T],
     ordinal: usize,
-) -> Option<&'a ResolvedModelCandidate> {
+) -> Option<&'a T> {
     if ordinal == 0 {
         Some(primary)
     } else {
         fallbacks.get(ordinal - 1)
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use crate::resolved::ModelBinding;
+
+    #[test]
+    fn selection_returns_the_complete_real_candidate_or_none() {
+        // Cause/effect table: P1 ordinal 0 -> primary; P2 ordinals 1/2 ->
+        // corresponding fallback; P3 first out-of-range and usize::MAX -> None.
+        // Distinct admitted model coordinates witness payload preservation;
+        // reference identity proves no binding/provisioning fields are mixed.
+        let candidate = |model| {
+            ResolvedModelCandidate::host(
+                ModelBinding::parse("provider", model, "native")
+                    .expect("admitted literal test binding"),
+            )
+        };
+        let primary = candidate("primary");
+        let fallbacks = [candidate("fallback-one"), candidate("fallback-two")];
+        for (ordinal, expected) in [(0, &primary), (1, &fallbacks[0]), (2, &fallbacks[1])] {
+            let selected = pinned_candidate_at(&primary, &fallbacks, ordinal).unwrap();
+            assert!(
+                std::ptr::eq(selected, expected),
+                "P1/P2 exact complete member"
+            );
+            assert_eq!(
+                selected.binding().identity(),
+                expected.binding().identity(),
+                "P1/P2 coordinates"
+            );
+            assert_eq!(
+                selected.provisioning(),
+                expected.provisioning(),
+                "P1/P2 provisioning"
+            );
+        }
+        for ordinal in [3, usize::MAX] {
+            assert!(
+                pinned_candidate_at(&primary, &fallbacks, ordinal).is_none(),
+                "P3"
+            );
+        }
     }
 }
 
@@ -56,11 +101,6 @@ pub fn exact_candidate_identity(
 #[cfg(kani)]
 mod kani_proofs {
     use super::{pinned_candidate_at, route_pin_axes_are_exact};
-    use crate::resolved::{ModelBinding, ResolvedModelCandidate};
-
-    fn candidate() -> ResolvedModelCandidate {
-        ResolvedModelCandidate::host(ModelBinding::new("provider", "model", "native"))
-    }
 
     /// @obligation config.inference_access_resolved_once_at_publication
     /// @obligation model_route.fallback_preserves_the_complete_publication_pin
@@ -72,8 +112,14 @@ mod kani_proofs {
         // selector may not reconstruct or mix any route field. Decision rules:
         // R1 ordinal 0 -> primary; R2 ordinal 1/2 -> matching fallback;
         // R3 ordinal 3 -> None.
-        let primary = candidate();
-        let fallbacks = [candidate(), candidate()];
+        // The production selector is payload-transparent: it never decodes or
+        // reconstructs T. Prove its actual address selection without expanding
+        // unrelated ModelBinding/String admission (proved by its own owner).
+        // The ordinary test above instantiates this same function with complete
+        // admitted ModelCandidates. This harness retains the same ordinal and
+        // address-identity assertions; no duplicate Boolean selector is used.
+        let primary = 1_u8;
+        let fallbacks = [2_u8, 3_u8];
         let ordinal: usize = kani::any();
         kani::assume(ordinal <= fallbacks.len() + 1);
 
@@ -86,11 +132,6 @@ mod kani_proofs {
             _ => false,
         };
         assert!(exact);
-
-        // Candidate internals are immaterial to an address-preserving selector;
-        // avoid expanding their unrelated collection destructors in CBMC.
-        std::mem::forget(primary);
-        std::mem::forget(fallbacks);
     }
 
     /// @obligation config.inference_access_resolved_once_at_publication

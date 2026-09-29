@@ -4,7 +4,13 @@ use crate::DataSubjectId;
 use crate::permission::ToolCapabilityNarrowing;
 use crate::runtime_context::RuntimeRunContext;
 
+/// A Worker can reconstruct extension policies from frozen caller toolsets.
+pub const INHERITED_TOOLSETS_CAPABILITY: &str = "inherited-toolsets/v1";
+
+pub use awaken_agent_contract::toolset::InheritedToolsets;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RunActivationWire")]
 pub struct RunActivation {
     pub run_id: awaken_agent_contract::agent::run::Id,
     pub thread_id: awaken_agent_contract::agent::thread::Id,
@@ -33,14 +39,111 @@ pub struct RunActivation {
     /// Durable, backend-neutral restriction on the executor's configured tool
     /// authority. It belongs to the activation because recovery must enforce the
     /// same restriction on every attempt and every worker process.
-    #[serde(
-        default,
-        skip_serializing_if = "ToolCapabilityNarrowing::is_configured"
-    )]
-    pub tool_capability_narrowing: ToolCapabilityNarrowing,
+    #[serde(default, skip_serializing_if = "ToolCapabilityNarrowing::is_default")]
+    tool_capability_narrowing: ToolCapabilityNarrowing,
+    /// Exact inherited extension configuration for this Run. Missing means a
+    /// legacy/root activation, not an explicitly unrestricted delegated Run.
+    /// A child extension requiring this evidence must reject a missing value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inherited_toolsets: Option<InheritedToolsets>,
+}
+
+#[derive(Deserialize)]
+struct RunActivationWire {
+    run_id: awaken_agent_contract::agent::run::Id,
+    thread_id: awaken_agent_contract::agent::thread::Id,
+    snapshot: crate::snapshot::ExecutableAgentSnapshot,
+    input: Vec<awaken_agent_contract::agent::message::Message>,
+    #[serde(default, alias = "initiator")]
+    delegation_origin: Option<awaken_agent_contract::agent::delegation::DelegationOrigin>,
+    #[serde(default)]
+    model_ref_override: Option<String>,
+    #[serde(default)]
+    data_subject_id: Option<DataSubjectId>,
+    #[serde(default)]
+    tool_capability_narrowing: ToolCapabilityNarrowing,
+    #[serde(default)]
+    inherited_toolsets: Option<InheritedToolsets>,
+}
+
+impl TryFrom<RunActivationWire> for RunActivation {
+    type Error = &'static str;
+    fn try_from(wire: RunActivationWire) -> Result<Self, Self::Error> {
+        Self::parse(wire)
+    }
 }
 
 impl RunActivation {
+    fn verify_inherited_marker(
+        narrowing: ToolCapabilityNarrowing,
+        inherited: Option<&InheritedToolsets>,
+    ) -> Result<(), &'static str> {
+        let marked = narrowing == ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets;
+        if (marked && inherited.is_none())
+            || (inherited.is_some() && narrowing == ToolCapabilityNarrowing::Configured)
+        {
+            return Err("inherited toolsets require their closed execution-format marker");
+        }
+        Ok(())
+    }
+
+    fn parse(wire: RunActivationWire) -> Result<Self, &'static str> {
+        Self::verify_inherited_marker(
+            wire.tool_capability_narrowing,
+            wire.inherited_toolsets.as_ref(),
+        )?;
+        Ok(Self {
+            run_id: wire.run_id,
+            thread_id: wire.thread_id,
+            snapshot: wire.snapshot,
+            input: wire.input,
+            delegation_origin: wire.delegation_origin,
+            model_ref_override: wire.model_ref_override,
+            data_subject_id: wire.data_subject_id,
+            tool_capability_narrowing: wire.tool_capability_narrowing,
+            inherited_toolsets: wire.inherited_toolsets,
+        })
+    }
+
+    #[must_use]
+    pub const fn tool_capability_narrowing(&self) -> ToolCapabilityNarrowing {
+        self.tool_capability_narrowing
+    }
+
+    /// Intersect an admission ceiling without detaching inherited inputs from
+    /// their format marker. A caller cannot mint that marker without sources.
+    pub fn narrow_tools(mut self, ceiling: ToolCapabilityNarrowing) -> Result<Self, &'static str> {
+        let narrowed = self.tool_capability_narrowing.intersect(ceiling);
+        Self::verify_inherited_marker(narrowed, self.inherited_toolsets.as_ref())?;
+        self.tool_capability_narrowing = narrowed;
+        Ok(self)
+    }
+    /// The only authoring entry for inherited execution inputs. Binding the
+    /// marker here prevents older readers from executing a weakened projection.
+    #[must_use]
+    pub fn with_inherited_toolsets(mut self, inherited: Option<InheritedToolsets>) -> Self {
+        self.inherited_toolsets = inherited;
+        if self.tool_capability_narrowing != ToolCapabilityNarrowing::DenyAll {
+            self.tool_capability_narrowing = if self.inherited_toolsets.is_some() {
+                ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets
+            } else {
+                ToolCapabilityNarrowing::Configured
+            };
+        }
+        debug_assert!(
+            Self::verify_inherited_marker(
+                self.tool_capability_narrowing,
+                self.inherited_toolsets.as_ref()
+            )
+            .is_ok()
+        );
+        self
+    }
+
+    #[must_use]
+    pub fn inherited_toolsets(&self) -> Option<&InheritedToolsets> {
+        self.inherited_toolsets.as_ref()
+    }
     /// A fresh activation carrying only the runtime-core inputs. *How* the run
     /// reaches its model is not here: the resolve seam turns the run's model ref into
     /// a concrete provider (executor) before execution — the runtime only ever names a
@@ -58,7 +161,7 @@ impl RunActivation {
         snapshot: crate::snapshot::ExecutableAgentSnapshot,
         input: Vec<awaken_agent_contract::agent::message::Message>,
     ) -> Self {
-        Self {
+        Self::parse(RunActivationWire {
             run_id,
             thread_id,
             snapshot,
@@ -67,7 +170,9 @@ impl RunActivation {
             model_ref_override: None,
             data_subject_id: None,
             tool_capability_narrowing: ToolCapabilityNarrowing::Configured,
-        }
+            inherited_toolsets: None,
+        })
+        .expect("fresh activation has matching default execution-format fields")
     }
 
     #[cfg(test)]
@@ -137,9 +242,11 @@ impl RunActivation {
     /// context. Deny-all is the strongest intersection, so replacing any
     /// existing policy cannot widen authority.
     #[must_use]
-    pub fn narrow_context(&self, context: RuntimeRunContext) -> RuntimeRunContext {
+    pub fn narrow_context(&self, mut context: RuntimeRunContext) -> RuntimeRunContext {
+        context.inherited_toolsets = self.inherited_toolsets.clone();
         match self.tool_capability_narrowing {
-            ToolCapabilityNarrowing::Configured => context,
+            ToolCapabilityNarrowing::Configured
+            | ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets => context,
             ToolCapabilityNarrowing::DenyAll => {
                 context.with_tool_capability_narrowing(ToolCapabilityNarrowing::DenyAll)
             }
@@ -164,6 +271,104 @@ impl RunActivation {
 #[cfg(test)]
 mod tests {
     use super::RunActivation;
+
+    #[test]
+    fn inherited_toolsets_are_versioned_frozen_run_input() {
+        // Cause/effect table: V1 legacy activation -> no inherited evidence;
+        // V2 new activation -> exact round-trip without changing its snapshot;
+        // V3 unknown version/member -> deserialize refusal; V4 a stale live
+        // context -> replace with activation truth; V5 a root -> clear stale
+        // inherited input. None and an explicit v1 source are distinct.
+        use super::InheritedToolsets;
+        let legacy = RunActivation::for_binding("bound");
+        let old = serde_json::to_value(&legacy).unwrap();
+        assert!(old.get("inherited_toolsets").is_none(), "V1");
+        assert!(
+            serde_json::from_value::<RunActivation>(old)
+                .unwrap()
+                .inherited_toolsets
+                .is_none(),
+            "V1"
+        );
+        let source = InheritedToolsets::with_caller(Vec::new(), None);
+        let activation = legacy.clone().with_inherited_toolsets(Some(source.clone()));
+        let value = serde_json::to_value(&activation).unwrap();
+        assert_eq!(
+            serde_json::from_value::<RunActivation>(value.clone()).unwrap(),
+            activation,
+            "V2 exact"
+        );
+        assert_eq!(
+            activation.snapshot, legacy.snapshot,
+            "V2 publication unchanged"
+        );
+        // V6: old readers ignore additional fields, but reject the closed
+        // marker. New readers reject a missing marker or missing source.
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum OldNarrowing {
+            Configured,
+            DenyAll,
+        }
+        #[derive(serde::Deserialize)]
+        struct OldReader {
+            #[serde(default)]
+            tool_capability_narrowing: Option<OldNarrowing>,
+        }
+        assert!(
+            serde_json::from_value::<OldReader>(value.clone()).is_err(),
+            "V6 old reader cannot weaken execution"
+        );
+        let old_read =
+            serde_json::from_value::<OldReader>(serde_json::to_value(&legacy).unwrap()).unwrap();
+        assert!(
+            old_read.tool_capability_narrowing.is_none(),
+            "V6 old root encoding unchanged"
+        );
+        let mut unmarked = value.clone();
+        unmarked
+            .as_object_mut()
+            .unwrap()
+            .remove("tool_capability_narrowing");
+        assert!(
+            serde_json::from_value::<RunActivation>(unmarked).is_err(),
+            "V6 marker required"
+        );
+        let mut missing = value.clone();
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("inherited_toolsets");
+        assert!(
+            serde_json::from_value::<RunActivation>(missing).is_err(),
+            "V6 source required"
+        );
+        let mut future = value.clone();
+        future["inherited_toolsets"]["version"] = serde_json::json!("v2");
+        assert!(
+            serde_json::from_value::<RunActivation>(future).is_err(),
+            "V3 unknown version"
+        );
+        let mut invalid = value;
+        invalid["inherited_toolsets"]["unexpected"] = serde_json::json!(true);
+        assert!(
+            serde_json::from_value::<RunActivation>(invalid).is_err(),
+            "V3 unknown member"
+        );
+        let mut live = crate::runtime_context::RuntimeRunContext::new();
+        live.inherited_toolsets = Some(InheritedToolsets::with_caller(Vec::new(), Some(&source)));
+        assert_eq!(
+            activation.narrow_context(live).inherited_toolsets,
+            Some(source.clone()),
+            "V4"
+        );
+        let mut live = crate::runtime_context::RuntimeRunContext::new();
+        live.inherited_toolsets = Some(source);
+        assert!(
+            legacy.narrow_context(live).inherited_toolsets.is_none(),
+            "V5"
+        );
+    }
 
     // Cause-effect coverage for `effective_model_ref`. Causes: the override is
     // present / blank / absent. Effect: the ref used is the override, else the

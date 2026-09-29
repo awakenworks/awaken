@@ -853,16 +853,12 @@ mod tests {
                     tool_presentation: Default::default(),
                 },
             };
-            let activation = awaken_runtime_contract::activation::RunActivation {
-                run_id: run_id.clone(),
-                thread_id: thread_id.clone(),
-                snapshot: snapshot.clone(),
-                input: Vec::new(),
-                delegation_origin: None,
-                model_ref_override: None,
-                data_subject_id: None,
-                tool_capability_narrowing: Default::default(),
-            };
+            let activation = awaken_runtime_contract::activation::RunActivation::new(
+                run_id.clone(),
+                thread_id.clone(),
+                snapshot.clone(),
+                Vec::new(),
+            );
             let call = ToolCall {
                 call_id: "owned-call".into(),
                 tool_id: "write".into(),

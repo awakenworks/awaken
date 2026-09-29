@@ -28,7 +28,7 @@ mod fixtures;
 mod root_execution;
 pub(crate) use child_attempt::{
     ChildAcpExecutorFactory, ChildExecutionAdapters, child_attempt_executor,
-    configure_child_native_runtime,
+    configure_child_native_runtime, validate_child_tool_configuration,
 };
 pub(crate) use child_dispatch::child_dispatch_request;
 pub(crate) use child_execution::{

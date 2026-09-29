@@ -335,7 +335,7 @@ impl RunDispatch {
             &self.activation.input,
             &self.activation.delegation_origin,
             &self.activation.data_subject_id,
-            &self.activation.tool_capability_narrowing,
+            &self.activation.tool_capability_narrowing(),
             &self.session_thread_id,
         ))
         .expect("Session reservation identity has no fallible serializable value")
@@ -416,7 +416,7 @@ impl RunDispatch {
             &self.activation.input,
             &self.activation.delegation_origin,
             &self.activation.data_subject_id,
-            &self.activation.tool_capability_narrowing,
+            &self.activation.tool_capability_narrowing(),
             &self.session_thread_id,
         ))
         .expect("legacy Session reservation identity has no fallible serializable value");

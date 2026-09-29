@@ -12,4 +12,4 @@ evidence = [
 production_entrypoints = []
 
 [[bounds]]
-text = '''The linked bounded TLA+ model checks publication immutability across route updates. The named Kani harnesses prove that the production selector returns only an address-identical primary or fallback and that all four complete route identity axes are mandatory. Publication construction, collection memory safety, asynchronous materialization, and host execution remain runtime TCB.'''
+text = '''The linked bounded TLA+ model checks publication immutability across route updates. The Kani harness calls the payload-transparent production selector with two stack fallback values and proves exact reference identity for ordinals 0-3; the real ResolvedModelCandidate instantiation has a separate unit witness. A second Kani harness proves all four complete route identity axes are mandatory. These do not prove ModelBinding admission or universally verify every compiler monomorphization. Publication construction, collection memory safety, asynchronous materialization, and host execution remain runtime TCB.'''

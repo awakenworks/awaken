@@ -165,6 +165,7 @@ pub(super) fn resume_ticket(
         },
     )
     .with_delegation_origin(delegation_origin.cloned())
+    .with_inherited_toolsets(context.inherited_toolsets.clone())
     .with_data_subject(
         context
             .capture

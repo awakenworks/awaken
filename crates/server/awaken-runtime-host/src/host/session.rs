@@ -876,6 +876,8 @@ impl SharedHost {
                         commit.clone(),
                         installed.as_ref(),
                         publication_source.clone(),
+                        None,
+                        &toolsets,
                     )?
                 {
                     runtime = runtime.with_run_delegation(service);
@@ -887,6 +889,8 @@ impl SharedHost {
                     commit.clone(),
                     installed.as_ref(),
                     publication_source.clone(),
+                    None,
+                    &toolsets,
                 )?
             {
                 runtime = runtime.with_run_delegation(service);

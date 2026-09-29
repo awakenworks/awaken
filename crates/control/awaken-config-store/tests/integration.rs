@@ -648,20 +648,16 @@ async fn config_compiles_stores_and_the_runtime_executes_the_snapshot() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm));
     runtime.register_snapshot(loaded.snapshot.clone());
 
-    let activation = RunActivation {
-        run_id: RunId("run-1".to_string()),
-        thread_id: ThreadId("thread-1".to_string()),
-        snapshot: loaded.snapshot,
-        input: vec![Message {
+    let activation = RunActivation::new(
+        RunId("run-1".to_string()),
+        ThreadId("thread-1".to_string()),
+        loaded.snapshot,
+        vec![Message {
             id: MessageId("m1".to_string()),
             role: Role::User,
             content: vec![ContentBlock::text("hi")],
         }],
-        delegation_origin: None,
-        model_ref_override: None,
-        data_subject_id: None,
-        tool_capability_narrowing: Default::default(),
-    };
+    );
     let commit = Arc::new(MemoryCommitCoordinator::new(
         awaken_lease_contract::system_clock(),
     ));

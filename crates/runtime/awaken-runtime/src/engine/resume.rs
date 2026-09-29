@@ -66,6 +66,11 @@ pub(super) async fn drive_resumed(
     resume_checkpoint: Option<StreamCheckpoint>,
     mut store: Store,
 ) -> Result<RunState> {
+    if context.inherited_toolsets != ticket.inherited_toolsets {
+        return Err(Error::Execution(
+            "resume tool configuration differs from the committed ticket".into(),
+        ));
+    }
     let committed = reader.committed_messages(thread_id);
     // Cause/effect decision table for resumed assistant ids:
     // R1 no prior assistant for this Run -> start at step 0;

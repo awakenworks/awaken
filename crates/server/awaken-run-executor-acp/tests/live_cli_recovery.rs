@@ -94,10 +94,10 @@ impl SessionHomeProvider for TmpHome {
 }
 
 fn activation(cli: &str, prompt: &str) -> RunActivation {
-    RunActivation {
-        run_id: RunId("run-live".into()),
-        thread_id: ThreadId("thread-live".into()),
-        snapshot: ExecutableAgentSnapshot {
+    RunActivation::new(
+        RunId("run-live".into()),
+        ThreadId("thread-live".into()),
+        ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("snap".into()),
             metadata: Default::default(),
             root_agent_id: AgentId("agent".into()),
@@ -118,12 +118,8 @@ fn activation(cli: &str, prompt: &str) -> RunActivation {
             },
             fingerprint: CatalogFingerprint("fp".into()),
         },
-        input: vec![Message::text(MessageId("u1".into()), Role::User, prompt)],
-        delegation_origin: None,
-        model_ref_override: None,
-        data_subject_id: None,
-        tool_capability_narrowing: Default::default(),
-    }
+        vec![Message::text(MessageId("u1".into()), Role::User, prompt)],
+    )
 }
 
 /// Build a real launch for `cli`: its catalog argv + the config-home env pointing

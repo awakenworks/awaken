@@ -225,10 +225,10 @@ impl LlmExecutor for SubmitThenEnd {
 
 fn activation(plugin_ids: Vec<String>) -> RunActivation {
     let fingerprint = CatalogFingerprint("background-catalog".into());
-    RunActivation {
-        run_id: RunId("run-1".into()),
-        thread_id: ThreadId("thread-1".into()),
-        snapshot: ExecutableAgentSnapshot {
+    RunActivation::new(
+        RunId("run-1".into()),
+        ThreadId("thread-1".into()),
+        ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("snapshot-1".into()),
             metadata: Default::default(),
             root_agent_id: AgentId("agent-1".into()),
@@ -257,16 +257,12 @@ fn activation(plugin_ids: Vec<String>) -> RunActivation {
             },
             fingerprint,
         },
-        input: vec![Message {
+        vec![Message {
             id: MessageId("input-1".into()),
             role: Role::User,
             content: vec![ContentBlock::text("run it")],
         }],
-        delegation_origin: None,
-        model_ref_override: None,
-        data_subject_id: None,
-        tool_capability_narrowing: Default::default(),
-    }
+    )
 }
 
 #[tokio::test]

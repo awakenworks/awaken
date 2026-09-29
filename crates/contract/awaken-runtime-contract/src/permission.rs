@@ -291,12 +291,24 @@ pub trait ToolPermissionPolicy: Send + Sync {
 pub enum ToolCapabilityNarrowing {
     #[default]
     Configured,
+    /// Configured authority further constrained by the activation's exact
+    /// inherited extension inputs. Older decoders reject this variant rather
+    /// than silently ignore those inputs on an unregistered local executor.
+    ConfiguredWithInheritedToolsets,
     DenyAll,
 }
 
 impl ToolCapabilityNarrowing {
     #[must_use]
     pub fn is_configured(&self) -> bool {
+        matches!(
+            self,
+            Self::Configured | Self::ConfiguredWithInheritedToolsets
+        )
+    }
+
+    #[must_use]
+    pub fn is_default(&self) -> bool {
         *self == Self::Configured
     }
 
@@ -305,8 +317,9 @@ impl ToolCapabilityNarrowing {
     #[must_use]
     pub const fn intersect(self, other: Self) -> Self {
         match (self, other) {
+            (Self::DenyAll, _) | (_, Self::DenyAll) => Self::DenyAll,
             (Self::Configured, Self::Configured) => Self::Configured,
-            _ => Self::DenyAll,
+            _ => Self::ConfiguredWithInheritedToolsets,
         }
     }
 }
@@ -439,24 +452,33 @@ mod kani_proofs {
     /// @obligation permission.runtime_capability_and_verdict_projection_never_widens_authority
     #[kani::proof]
     fn tool_capability_intersection_never_widens_configured_authority() {
-        let left = if kani::any() {
-            ToolCapabilityNarrowing::Configured
-        } else {
-            ToolCapabilityNarrowing::DenyAll
+        // Cause/effect table: configured, inherited configured, and deny-all
+        // intersect in all nine combinations. Deny is absorbing; inherited
+        // format survives either configured operand; no combination grants
+        // authority removed by either operand.
+        let restriction = |tag: u8| match tag % 3 {
+            0 => ToolCapabilityNarrowing::Configured,
+            1 => ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets,
+            _ => ToolCapabilityNarrowing::DenyAll,
         };
-        let right = if kani::any() {
-            ToolCapabilityNarrowing::Configured
-        } else {
-            ToolCapabilityNarrowing::DenyAll
-        };
+        let left = restriction(kani::any());
+        let right = restriction(kani::any());
         let effective = left.intersect(right);
 
         assert_eq!(
-            effective == ToolCapabilityNarrowing::Configured,
-            left == ToolCapabilityNarrowing::Configured
-                && right == ToolCapabilityNarrowing::Configured
+            effective.is_configured(),
+            left.is_configured() && right.is_configured()
         );
         assert_eq!(effective, right.intersect(left));
+        if effective.is_configured()
+            && (left == ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets
+                || right == ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets)
+        {
+            assert_eq!(
+                effective,
+                ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets
+            );
+        }
     }
 
     /// @obligation permission.runtime_capability_and_verdict_projection_never_widens_authority

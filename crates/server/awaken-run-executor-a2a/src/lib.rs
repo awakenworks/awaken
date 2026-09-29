@@ -378,10 +378,10 @@ mod tests {
     }
 
     pub(super) fn activation(backend_ref: &str) -> RunActivation {
-        RunActivation {
-            run_id: RunId("r".into()),
-            thread_id: ThreadId("t".into()),
-            snapshot: ExecutableAgentSnapshot {
+        RunActivation::new(
+            RunId("r".into()),
+            ThreadId("t".into()),
+            ExecutableAgentSnapshot {
                 id: ExecutableAgentSnapshotId("s".into()),
                 metadata: Default::default(),
                 root_agent_id: AgentId("a".into()),
@@ -402,12 +402,8 @@ mod tests {
                 },
                 fingerprint: CatalogFingerprint("fp".into()),
             },
-            input: vec![Message::text(MessageId("u".into()), Role::User, "go")],
-            delegation_origin: None,
-            model_ref_override: None,
-            data_subject_id: None,
-            tool_capability_narrowing: Default::default(),
-        }
+            vec![Message::text(MessageId("u".into()), Role::User, "go")],
+        )
     }
 
     #[test]
