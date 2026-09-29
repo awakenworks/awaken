@@ -585,7 +585,12 @@ mod tests {
             Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
                 store.clone(),
             )),
-            Arc::new(awaken_resource_application::StoreSkillCatalogApplication::new(store)),
+            Arc::new(
+                awaken_resource_application::StoreSkillCatalogApplication::new(
+                    store,
+                    Arc::new(awaken_lease_testkit::ManualClock::new(0)),
+                ),
+            ),
         );
     }
 

@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use awaken_ext_memory::MemoryExtractionRepository;
+use awaken_lease_contract::WallClock;
 use awaken_resource_application::{
     ResourceAuthorities, StoreSkillBundleSource, StoreSkillCatalogApplication,
 };
@@ -26,7 +27,10 @@ pub fn local_resource_ports(authorities: &ResourceAuthorities) -> LocalResourceP
         memory_repository: authorities.memory_repository(),
         file_store: authorities.file_store(),
         file_catalog: authorities.file_catalog(),
-        skills: Some(local_skill_ports(authorities.skill_store())),
+        skills: Some(local_skill_ports(
+            authorities.skill_store(),
+            authorities.clock(),
+        )),
         reclamation: Some(authorities.reclamation()),
         clock: authorities.clock(),
     }
@@ -35,10 +39,10 @@ pub fn local_resource_ports(authorities: &ResourceAuthorities) -> LocalResourceP
 /// The Skill catalog ports over `store`: the store and the Resources
 /// applications the Host reads and freezes custom Skills through.
 #[must_use]
-pub fn local_skill_ports(store: Arc<dyn SkillStore>) -> LocalSkillPorts {
+pub fn local_skill_ports(store: Arc<dyn SkillStore>, clock: Arc<dyn WallClock>) -> LocalSkillPorts {
     LocalSkillPorts {
         bundle_source: Arc::new(StoreSkillBundleSource::new(store.clone())),
-        application: Arc::new(StoreSkillCatalogApplication::new(store.clone())),
+        application: Arc::new(StoreSkillCatalogApplication::new(store.clone(), clock)),
         store,
     }
 }
