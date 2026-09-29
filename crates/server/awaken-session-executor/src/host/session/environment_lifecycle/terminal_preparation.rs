@@ -469,6 +469,7 @@ impl SharedHost {
             binding,
             provider,
             resolved_resources,
+            None,
         )?;
         let (resident, committed_candidate) = match candidate {
             Some(candidate) => (
