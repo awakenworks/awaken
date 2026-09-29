@@ -20,7 +20,10 @@ mod terminal_cleanup;
 mod terminal_preparation;
 
 pub(super) use state::committed_identity;
-use state::{RetirementSelection, checkpoint_source_identity, projected_environment_owner};
+use state::{
+    RetirementSelection, checkpoint_source_identity, pending_revoked_resource_reservation,
+    projected_environment_owner,
+};
 
 impl crate::session_slot::SessionRuntimeSlot {
     /// Stage only the rebuildable owner coordinates. No physical owner is
@@ -32,9 +35,30 @@ impl crate::session_slot::SessionRuntimeSlot {
         state: &awaken_session_state_contract::SessionEnvironmentState,
         newer: bool,
     ) -> Result<SessionEnvironmentOwner, HostError> {
+        self.projected_environment_owner_for_resource_reservation(
+            thread,
+            workspace_id,
+            state,
+            newer,
+            false,
+        )
+    }
+
+    pub(crate) fn projected_environment_owner_for_resource_reservation(
+        &self,
+        thread: &str,
+        workspace_id: &str,
+        state: &awaken_session_state_contract::SessionEnvironmentState,
+        newer: bool,
+        pending_resource_reservation: bool,
+    ) -> Result<SessionEnvironmentOwner, HostError> {
         let projected = projected_environment_owner(state, workspace_id, thread)?;
         let mut owner = self.environment_owner.clone();
-        owner.install_projection(projected, newer)?;
+        owner.install_projection_with_resource_reservation(
+            projected,
+            newer,
+            pending_resource_reservation,
+        )?;
         Ok(owner)
     }
 
@@ -649,12 +673,54 @@ impl SharedHost {
     /// cleanup supplies the previous endpoint that the bound substrate actually
     /// contains. Keeping this projection shared prevents two handle/layout
     /// validators from drifting.
+    fn revoked_owner_for_binding(
+        &self,
+        thread: &str,
+        binding: &str,
+        source_generation_id: Option<&str>,
+    ) -> Option<RetiringSessionEnvironment> {
+        self.session_slots
+            .read(thread, |slot| match &slot.environment_owner {
+                SessionEnvironmentOwner::Retiring(retiring)
+                    if retiring.cause
+                        == SessionEnvironmentRetirementCause::RealizationRevocation =>
+                {
+                    let matches = match &retiring.owned {
+                        RetiringEnvironmentOwner::Bound(owned)
+                            if matches!(
+                                &owned.identity,
+                                BoundSessionEnvironmentIdentity::Durable { .. }
+                            ) =>
+                        {
+                            owned.binding == binding
+                                || (matches!(&owned.identity,
+                                    BoundSessionEnvironmentIdentity::Durable { generation, .. }
+                                        if Some(generation.id()) == source_generation_id)
+                                    && pending_revoked_resource_reservation(
+                                        owned,
+                                        &owned.identity,
+                                        binding,
+                                    ))
+                        }
+                        RetiringEnvironmentOwner::Unbound(candidate) => {
+                            candidate.binding == binding
+                        }
+                        _ => false,
+                    };
+                    matches.then(|| retiring.clone())
+                }
+                _ => None,
+            })
+            .flatten()
+    }
+
     fn validated_session_environment_adoption(
         &self,
         thread: &str,
         encoded: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
         resolved_resources: Option<&awaken_session_resource_contract::ResolvedSessionResources>,
+        source_generation_id: Option<&str>,
     ) -> Result<ValidatedSessionEnvironmentAdoption, HostError> {
         let handle: awaken_provisioning_contract::SandboxHandle = serde_json::from_str(encoded)
             .map_err(|error| {
@@ -692,13 +758,22 @@ impl SharedHost {
         let resident = retained
             .map(|(binding, environment)| {
                 if binding != encoded {
+                    let successor = self
+                        .revoked_owner_for_binding(thread, encoded, source_generation_id)
+                        .is_some_and(|retiring| {
+                            matches!(retiring.owned, RetiringEnvironmentOwner::Bound(_))
+                        });
+                    if successor {
+                        return Ok(None);
+                    }
                     return Err(HostError::internal(
                         "Session Environment retry conflicts with its retained binding",
                     ));
                 }
-                Ok(environment)
+                Ok(Some(environment))
             })
-            .transpose()?;
+            .transpose()?
+            .flatten();
         if let Some(candidate) = &candidate
             && (candidate.binding != encoded
                 || candidate.environment.lifecycle().handle() != handle)
@@ -902,8 +977,13 @@ impl SharedHost {
                 "unpublished terminal or cleanup ownership cannot resume ordinary adoption",
             ));
         }
-        let (handle, spec, mut resident, candidate) =
-            self.validated_session_environment_adoption(thread, encoded, provider, None)?;
+        let (handle, spec, mut resident, candidate) = self.validated_session_environment_adoption(
+            thread,
+            encoded,
+            provider,
+            None,
+            source_generation_id,
+        )?;
         // Realization revocation permanently closed the old process-level Hand,
         // but the retained owner still names the physical Sandbox. Retain its
         // exact fence through typed observation; only Ready may enroll a fresh
@@ -911,32 +991,7 @@ impl SharedHost {
         // commit response requires aggregate adoption authority. LegacyDirect is
         // excluded: its claimed recovery owns physical disposal and same-id
         // creation instead.
-        let revoked_owner = self
-            .session_slots
-            .read(thread, |slot| match &slot.environment_owner {
-                SessionEnvironmentOwner::Retiring(retiring)
-                    if retiring.cause
-                        == SessionEnvironmentRetirementCause::RealizationRevocation =>
-                {
-                    let matches = match &retiring.owned {
-                        RetiringEnvironmentOwner::Bound(owned)
-                            if matches!(
-                                &owned.identity,
-                                BoundSessionEnvironmentIdentity::Durable { .. }
-                            ) =>
-                        {
-                            owned.binding == encoded
-                        }
-                        RetiringEnvironmentOwner::Unbound(candidate) => {
-                            candidate.binding == encoded
-                        }
-                        _ => false,
-                    };
-                    matches.then(|| retiring.clone())
-                }
-                _ => None,
-            })
-            .flatten();
+        let revoked_owner = self.revoked_owner_for_binding(thread, encoded, source_generation_id);
         // Capture the exact pending identity before provider I/O. Closed
         // observation may clear only this value; a same-binding aggregate ABA
         // installed while observation is in flight must survive.
@@ -976,11 +1031,17 @@ impl SharedHost {
         // A revoked Hand is unusable, but its retained physical Sandbox still
         // owns the original create attempt. Borrow that proof for observation;
         // do not turn a warm rebind into an unprovable cold adoption.
-        let retained = resident.as_deref().or_else(|| {
-            candidate
-                .as_ref()
-                .map(|candidate| candidate.environment.as_ref())
-        });
+        let revoked_environment = revoked_owner
+            .as_ref()
+            .map(|retiring| retiring.owned.environment());
+        let retained = resident
+            .as_deref()
+            .or_else(|| {
+                candidate
+                    .as_ref()
+                    .map(|candidate| candidate.environment.as_ref())
+            })
+            .or_else(|| revoked_environment.as_deref());
         let authority = effect
             .provider_fence
             .as_ref()

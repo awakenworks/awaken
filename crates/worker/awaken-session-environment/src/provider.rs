@@ -508,6 +508,7 @@ impl SandboxEnvironmentProvider {
         spec: &'a pc::SandboxSpec,
         handle: &'a pc::SandboxHandle,
         retained: Option<&'a super::SessionEnvironment>,
+        allow_monotonic_retained: bool,
     ) -> Result<awaken_container_contract::ContainerEnvironmentAdoption<'a>, pc::SandboxError> {
         let mut adoption =
             awaken_container_contract::ContainerEnvironmentAdoption::new(spec, handle);
@@ -518,7 +519,11 @@ impl SandboxEnvironmentProvider {
                     "retained Environment belongs to another provider",
                 ));
             };
-            if &environment.handle() != handle {
+            let retained_handle = environment.handle();
+            if &retained_handle != handle
+                && !(allow_monotonic_retained
+                    && retained_handle.owned_paths_are_monotonic_to(handle))
+            {
                 return Err(pc::SandboxError::conflict(
                     "retained Environment differs from observed handle",
                 ));
@@ -551,7 +556,12 @@ impl SandboxEnvironmentProvider {
                 pc::SandboxProvider::observe(provider, handle, basis).await
             }
             Self::Container { provider, .. } => {
-                let mut adoption = Self::container_observation_adoption(spec, handle, retained)?;
+                let mut adoption = Self::container_observation_adoption(
+                    spec,
+                    handle,
+                    retained,
+                    purpose == ObservationPurpose::Recovery,
+                )?;
                 adoption.observation_purpose = match purpose {
                     ObservationPurpose::Recovery => {
                         awaken_container_contract::ContainerObservationPurpose::Recovery
@@ -644,8 +654,18 @@ impl SandboxEnvironmentProvider {
         retained: &SessionEnvironment,
         effect: ProviderEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
+        let retained_role = retained;
         let retained = own_environment(retained)?;
-        if &retained.handle() != handle {
+        let retained_handle = retained.handle();
+        if &retained_handle != handle {
+            if matches!(self, Self::Container { .. })
+                && retained_handle.owned_paths_are_monotonic_to(handle)
+            {
+                retained.stop_bound_processes().await?;
+                return self
+                    .adopt_effective_with_retained(spec, handle, Some(retained_role), effect)
+                    .await;
+            }
             return Err(pc::SandboxError::conflict(
                 "retained Environment differs from rebound handle",
             ));
@@ -730,6 +750,17 @@ impl SandboxEnvironmentProvider {
         handle: &pc::SandboxHandle,
         effect: ProviderEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
+        self.adopt_effective_with_retained(spec, handle, None, effect)
+            .await
+    }
+
+    async fn adopt_effective_with_retained(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: &pc::SandboxHandle,
+        retained: Option<&SessionEnvironment>,
+        effect: ProviderEffect<'_>,
+    ) -> Result<SessionEnvironment, pc::SandboxError> {
         effect.admit()?;
         let environment = match self {
             Self::Workdir { provider, hand } => match effect {
@@ -781,8 +812,7 @@ impl SandboxEnvironmentProvider {
                 ..
             } => {
                 let capabilities = provider.sandbox_capabilities();
-                let adoption =
-                    awaken_container_contract::ContainerEnvironmentAdoption::new(spec, handle);
+                let adoption = Self::container_observation_adoption(spec, handle, retained, true)?;
                 let environment = match effect {
                     ProviderEffect::Fenced { fence, authority } => {
                         provider

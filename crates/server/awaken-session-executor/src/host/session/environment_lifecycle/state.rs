@@ -116,14 +116,40 @@ fn compatible_durable_projection(
     identity: &BoundSessionEnvironmentIdentity,
     binding: &str,
 ) -> bool {
-    let current =
-        serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(&owned.binding);
-    let projected = serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(binding);
-    let same_generation = same_durable_generation(&owned.identity, identity);
-    matches!((current, projected), (Ok(current), Ok(projected))
-        if same_generation
-            && current.owned_paths_are_monotonic_to(&projected)
-            && owned.environment.lifecycle().handle() == projected)
+    durable_reservation_handles(owned, identity, binding)
+        .is_some_and(|(_, projected)| owned.environment.lifecycle().handle() == projected)
+}
+
+pub(super) fn pending_revoked_resource_reservation(
+    owned: &BoundSessionEnvironment,
+    identity: &BoundSessionEnvironmentIdentity,
+    binding: &str,
+) -> bool {
+    durable_reservation_handles(owned, identity, binding).is_some_and(|(current, projected)| {
+        owned
+            .environment
+            .lifecycle()
+            .handle()
+            .owned_paths_are_monotonic_to(&projected)
+            && current.owned_paths() != projected.owned_paths()
+    })
+}
+
+fn durable_reservation_handles(
+    owned: &BoundSessionEnvironment,
+    identity: &BoundSessionEnvironmentIdentity,
+    binding: &str,
+) -> Option<(
+    awaken_provisioning_contract::SandboxHandle,
+    awaken_provisioning_contract::SandboxHandle,
+)> {
+    let current: awaken_provisioning_contract::SandboxHandle =
+        serde_json::from_str(&owned.binding).ok()?;
+    let projected: awaken_provisioning_contract::SandboxHandle =
+        serde_json::from_str(binding).ok()?;
+    (same_durable_generation(&owned.identity, identity)
+        && current.owned_paths_are_monotonic_to(&projected))
+    .then_some((current, projected))
 }
 
 fn same_durable_generation(
@@ -287,6 +313,15 @@ impl SessionEnvironmentOwner {
         projected: ProjectedEnvironmentOwner,
         newer: bool,
     ) -> Result<(), HostError> {
+        self.install_projection_with_resource_reservation(projected, newer, false)
+    }
+
+    pub(super) fn install_projection_with_resource_reservation(
+        &mut self,
+        projected: ProjectedEnvironmentOwner,
+        newer: bool,
+        pending_resource_reservation: bool,
+    ) -> Result<(), HostError> {
         // A pending adoption is only a cached descriptor, never a physical Arc.
         // A newer complete root snapshot may replace it; all actual owners still
         // pass through the exact observation/retirement protocol below.
@@ -317,6 +352,20 @@ impl SessionEnvironmentOwner {
                 | Self::Resident(_) => Ok(()),
             },
             ProjectedEnvironmentOwner::AwaitingAdoption { identity, binding } => {
+                if pending_resource_reservation
+                    && let Self::Retiring(RetiringSessionEnvironment {
+                        cause: SessionEnvironmentRetirementCause::RealizationRevocation,
+                        owned: RetiringEnvironmentOwner::Bound(owned),
+                    }) = self
+                    && pending_revoked_resource_reservation(owned, &identity, &binding)
+                {
+                    // Root Resource truth has advanced, while the revoked Arc
+                    // still holds its prior physical handle. Preserve that
+                    // cleanup owner until the canonical Ready/adopt edge proves
+                    // and installs the exact successor. Projection alone cannot
+                    // mint either a new Arc or a completed effect.
+                    return Ok(());
+                }
                 if let Self::Resident(owned) = self
                     && (owned.identity != identity || owned.binding != binding)
                 {
@@ -814,8 +863,17 @@ impl SessionEnvironmentOwner {
                 ));
             }
         };
-        if &binding != expected_binding
-            || environment.lifecycle().handle() != current.owned.environment().lifecycle().handle()
+        let prior =
+            serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(expected_binding);
+        let successor = environment.lifecycle().handle();
+        let physical = current.owned.environment().lifecycle().handle();
+        let same_physical_successor = matches!(&current.owned,
+            RetiringEnvironmentOwner::Bound(owned)
+                if pending_revoked_resource_reservation(owned, &owned.identity, &binding)
+                    && physical.owned_paths_are_monotonic_to(&successor));
+        if !(&binding == expected_binding && successor == physical)
+            && !(same_physical_successor
+                && prior.is_ok_and(|prior| prior.owned_paths_are_monotonic_to(&successor)))
         {
             return Err(HostError::internal(
                 "Session Environment re-adoption changed its exact physical target",
