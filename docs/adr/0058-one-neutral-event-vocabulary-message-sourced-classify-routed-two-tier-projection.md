@@ -66,6 +66,17 @@ explicit decision.
   checkpoint). AgentEvents for a query are **folded from messages on demand**, not read
   from an event store.
 
+Managed history must include inputs submitted through the other public Run
+adapters. A retained Managed admission already owns its exact input identity;
+otherwise the same committed primary-thread Message owns the customer event.
+The one Managed projector uses its existing fact identity, prefix fence and
+canonical order for both, without another input journal or HTTP interface.
+Internal child reports and Run feedback are excluded by typed identity, not
+prose. An authored custom-tool answer remains `user.custom_tool_result` with
+the exact public call identity, regardless of the interface that delivered it;
+it cannot also become `agent.tool_result`. Warm reads and cold reconstruction
+consume the same committed sources and must publish identical history.
+
 ### Axis 2 — Producer vocabulary: one `journal::AgentEvent`.
 
 - **Decision.** Merge `stream::Kind` + `project::AgentEvent` + the *content-lifecycle*

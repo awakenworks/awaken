@@ -66,7 +66,7 @@ impl Id {
     /// `{run}-assistant-{step}-truncated-{nth}`.
     #[must_use]
     pub fn assistant_truncated(run: &crate::agent::run::Id, step: usize, nth: usize) -> Self {
-        Self(format!("{}-assistant-{step}-truncated-{nth}", run.0))
+        Self(format!("{}-truncated-{nth}", Self::assistant(run, step).0))
     }
 
     /// The user message asking a truncated Step response to continue:
@@ -74,6 +74,18 @@ impl Id {
     #[must_use]
     pub fn continuation(run: &crate::agent::run::Id, step: usize, nth: usize) -> Self {
         Self(format!("{}-continuation-{step}-{nth}", run.0))
+    }
+
+    /// Whether this is an internal truncated-response continuation for `run`.
+    /// Public history can exclude feedback by identity, without inspecting prose.
+    #[must_use]
+    pub fn is_continuation_of(&self, run: &crate::agent::run::Id) -> bool {
+        self.0
+            .strip_prefix(&format!("{}-continuation-", run.0))
+            .and_then(|suffix| suffix.split_once('-'))
+            .is_some_and(|(step, nth)| {
+                step.parse::<usize>().is_ok() && nth.parse::<usize>().is_ok()
+            })
     }
 
     /// A tool-role result addressed to `call_id`: `tool-{call_id}`.
@@ -140,11 +152,7 @@ impl Id {
     /// same id without colliding with another Session's operation.
     #[must_use]
     pub fn session_event_input(session_id: &str, operation_id: &str) -> Self {
-        Self(format!(
-            "{}{session_len}:{session_id}{operation_id}",
-            Self::SESSION_EVENT_INPUT_PREFIX,
-            session_len = session_id.len(),
-        ))
+        Self::session_scoped(Self::SESSION_EVENT_INPUT_PREFIX, session_id, operation_id)
     }
 
     /// Stable identity for one Session Event system message. The opaque
@@ -152,10 +160,13 @@ impl Id {
     /// coordinate used by [`Self::session_event_input`].
     #[must_use]
     pub fn session_system(session_id: &str, operation_id: &str) -> Self {
+        Self::session_scoped(Self::SESSION_SYSTEM_PREFIX, session_id, operation_id)
+    }
+
+    fn session_scoped(prefix: &str, session_id: &str, operation_id: &str) -> Self {
         Self(format!(
-            "{}{session_len}:{session_id}{operation_id}",
-            Self::SESSION_SYSTEM_PREFIX,
-            session_len = session_id.len(),
+            "{prefix}{}:{session_id}{operation_id}",
+            session_id.len()
         ))
     }
 }
@@ -374,6 +385,24 @@ mod tests {
         assert!(!Id::steer(&other, 0).is_steer_of(&run));
         // A non-steer id (an assistant Step message) is never a steer.
         assert!(!Id::assistant(&run, 0).is_steer_of(&run));
+    }
+
+    #[test]
+    fn continuation_provenance_is_exact_and_requires_both_numeric_coordinates() {
+        // C1 canonical continuation; C2 wrong Run; C3 ordinary or malformed
+        // identity. R1 C1+owner => internal feedback; R2 C2 or C3 => not
+        // feedback. No message text participates in the classification.
+        let run = RunId("r-with-delimiters".into());
+        assert!(Id::continuation(&run, 2, 3).is_continuation_of(&run));
+        assert!(!Id::continuation(&run, 2, 3).is_continuation_of(&RunId("r".into())));
+        for value in [
+            "ordinary",
+            "r-with-delimiters-continuation-2",
+            "r-with-delimiters-continuation-x-3",
+            "r-with-delimiters-continuation-2-3-x",
+        ] {
+            assert!(!Id(value.into()).is_continuation_of(&run), "R2 {value}");
+        }
     }
 
     #[test]
