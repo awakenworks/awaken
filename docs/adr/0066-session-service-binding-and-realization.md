@@ -44,7 +44,7 @@ validation and root creation. The Host projects that frozen fact during
 realization and replay without reconstructing or widening authority.
 
 The [verification boundaries](../../formal/VERIFICATION_BOUNDARIES.md) and
-[obligation ledger](../../formal/coverage.json) own the abstract sequence proofs
+[obligation ledger](../../formal/coverage.toml) own the abstract sequence proofs
 and executable cross-checks. Universal Rust String/Vec refinement, DNS semantics
 and provider network enforcement remain outside these proofs.
 
