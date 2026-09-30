@@ -17,9 +17,10 @@
 //! *Leaking* is the broader one. A warm pool mints its own capacity scopes
 //! internally, and no test can name them, so a scope sweep cannot reach them.
 //! But every managed container carries the id of the runtime incarnation that
-//! created it, and that id starts with the creating process's pid — so a test
-//! can always name everything it caused, even what it cannot name directly.
-//! That is the key for the way out.
+//! created it, and that id starts with the creating process's pid. A guard
+//! without a scope may use that key only when one test owns the process;
+//! sweeping by pid from a scoped guard would remove another concurrently
+//! running test's container in an ordinary `cargo test` binary.
 
 use std::process::Command;
 
@@ -51,10 +52,11 @@ impl Backend {
 
 /// One live suite's claim on everything it makes a daemon create.
 ///
-/// Arming sweeps the scope, so a leftover from any earlier run is gone before
-/// this one creates anything. Dropping sweeps twice — the scope again, and
-/// then every container this process caused — and `Drop` runs while a panic
-/// unwinds, which is the path that leaked.
+/// Arming sweeps an exact scope, so a leftover from an earlier run is gone
+/// before this one creates anything. Dropping a scoped guard sweeps only that
+/// scope. A guard without a scope sweeps this process's containers, and is
+/// reserved for suites running one test per process with unnameable scopes.
+/// Both kinds of `Drop` run while a panic unwinds.
 pub(crate) struct TestResidue {
     /// `None` for a suite whose scopes are minted where it cannot name them —
     /// a warm pool's capacity, or a run under its own realization namespace.
@@ -75,9 +77,9 @@ impl TestResidue {
         armed
     }
 
-    /// Claim everything this process causes, for a suite that cannot name its
-    /// own scopes. There is nothing to sweep on the way in: a scope this suite
-    /// cannot name is also one it cannot collide with.
+    /// Claim everything this one-test process causes, for a suite that cannot
+    /// name its own scopes. There is nothing to sweep on the way in: a scope
+    /// this suite cannot name is also one it cannot collide with.
     #[allow(dead_code)]
     pub(crate) fn for_this_process(backend: Backend) -> Self {
         Self {
@@ -172,8 +174,11 @@ impl TestResidue {
 
 impl Drop for TestResidue {
     fn drop(&mut self) {
-        self.sweep_scope();
-        self.sweep_this_process();
+        if self.scope.is_some() {
+            self.sweep_scope();
+        } else {
+            self.sweep_this_process();
+        }
     }
 }
 

@@ -732,3 +732,42 @@ async fn allowlist_rejects_a_forward_proxy_before_docker_creation() {
         "an Allowlist without enforcement must fail closed"
     );
 }
+
+/// Residue decision table: C1 two live scopes share one test-process owner;
+/// C2 the guard for scope A is dropped; C3 the guard for scope B is dropped.
+/// R1 C1+C2 -> A is gone and B remains executable. R2 C1+C2+C3 -> B is gone.
+/// A scoped guard may remove only its own scope; process-wide residue cleanup
+/// belongs to an isolated one-test process with unnameable capacity scopes.
+#[tokio::test]
+async fn scoped_residue_drop_preserves_another_live_container_in_the_same_process() {
+    let Some((provider, _)) = setup().await else {
+        return;
+    };
+    let scope_a = format!("residue-a-{}", std::process::id());
+    let scope_b = format!("residue-b-{}", std::process::id());
+    let guard_a = residue::TestResidue::arm(&scope_a, residue::Backend::Docker);
+    let a = provider
+        .create(&egress_probe_spec(&scope_a, pc::NetworkPolicy::None))
+        .await
+        .expect("create A");
+    let guard_b = residue::TestResidue::arm(&scope_b, residue::Backend::Docker);
+    let b = provider
+        .create(&egress_probe_spec(&scope_b, pc::NetworkPolicy::None))
+        .await
+        .expect("create B");
+    let a_id = a.handle().container_payload().unwrap().container_id.clone();
+    let b_id = b.handle().container_payload().unwrap().container_id.clone();
+    assert!(daemon_holds(&a_id) && daemon_holds(&b_id), "C1");
+
+    drop(guard_a);
+    assert!(!daemon_holds(&a_id), "R1: A was removed");
+    assert!(daemon_holds(&b_id), "R1: B was not removed by A's guard");
+    let process = b
+        .spawn(pc::Command::new(["true"]))
+        .await
+        .expect("R1: B still execs");
+    assert_eq!(process.wait().await.unwrap().code, Some(0), "R1");
+
+    drop(guard_b);
+    assert!(!daemon_holds(&b_id), "R2: B was removed by its own guard");
+}
