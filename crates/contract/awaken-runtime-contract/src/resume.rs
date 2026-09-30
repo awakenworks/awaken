@@ -729,7 +729,8 @@ mod tests {
         // position can fail alone or together, so length/prefix/suffix-only
         // comparisons cannot pass. The exact call remains a positive witness.
         // Clock rows exercise None, inclusive boundary, immediate expiry and
-        // both u64 endpoints; Kani retains all 128^6 ASCII calls and u64 clocks.
+        // both u64 endpoints; Kani partitions identity, deadline/kind and all
+        // 128^6 ASCII calls without claiming their full symbolic cross product.
         let mut call_ids: Vec<[u8; 6]> = (0..64)
             .map(|mask| {
                 let mut bytes = *b"call-1";
@@ -774,23 +775,41 @@ mod tests {
     #[kani::proof]
     #[kani::unwind(16)]
     fn resume_validator_preserves_complete_binding_decision_table() {
-        // Same R1-R9 oracle and actual validator as the native Cartesian table.
-        // Modulo selects every closed target/result and all 32 independent
-        // mismatch masks; deadline/clock are unconstrained u64 with both Option
-        // states. All six call bytes range over ASCII; other identity contents
-        // remain fixed equal-length matching/foreign fixtures and optional
-        // context is empty. Original exact/foreign calls remain in this domain.
-        // The independent byte-XOR oracle must agree with the real validator.
-        // This proves validation only:
-        // ticket acquisition, child dispatch, consumption, terminal commit and
-        // SQL/transport histories retain their own owners and evidence gaps.
+        // The same R1-R9 oracle and production validator serve three disjoint
+        // cause/effect partitions; the native Cartesian table owns their full
+        // cross product. I1: every target/result and all 32 identity masks at
+        // an expired boundary => first immutable mismatch wins, then expiry.
+        // I2: exact identities/call with every target/result and absent/live/
+        // exact-boundary deadlines => expiry precedes result-kind admission.
+        // I3: a ClientExecution or Delegation ToolResult with all six ASCII
+        // call bytes => exact client call matches, while Delegation forwards
+        // the typed child answer. Optional context remains empty; other
+        // identity strings are fixed equal-length exact/foreign fixtures.
+        // This proves validation only; ticket acquisition, child dispatch,
+        // consumption, commit and SQL/transport remain separate boundaries.
         check_resume_decision_table(
             kani::any::<u8>() % 9,
             kani::any::<u8>() % 5,
             kani::any::<u8>() % 32,
+            *b"call-1",
+            Some(0),
+            0,
+        );
+        check_resume_decision_table(
+            kani::any::<u8>() % 9,
+            kani::any::<u8>() % 5,
+            0,
+            *b"call-1",
+            kani::any::<bool>().then_some(50),
+            if kani::any::<bool>() { 49 } else { 50 },
+        );
+        check_resume_decision_table(
+            if kani::any::<bool>() { 1 } else { 3 },
+            1,
+            0,
             kani::any::<[u8; 6]>().map(|byte| byte % 128),
-            if kani::any() { Some(kani::any()) } else { None },
-            kani::any(),
+            None,
+            0,
         );
     }
 }
