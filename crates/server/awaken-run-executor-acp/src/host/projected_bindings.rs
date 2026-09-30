@@ -357,7 +357,14 @@ mod tests {
     fn projected(path: &Path, discovery: Arc<Discovery>) -> Arc<ProjectedAcpCredentials> {
         Arc::new(
             ProjectedAcpCredentials::new(
-                Arc::new(AcpLocalCredentialResolver::from_bindings(discovery, []).unwrap()),
+                Arc::new(
+                    AcpLocalCredentialResolver::from_bindings(
+                        discovery,
+                        [],
+                        awaken_lease_contract::system_clock(),
+                    )
+                    .unwrap(),
+                ),
                 path.into(),
                 ["codex".into(), "claude".into()].into_iter().collect(),
             )

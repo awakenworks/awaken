@@ -470,7 +470,7 @@ impl WorkerDaemonConfig {
                 credentials.clone(),
             );
         let mut runtime = self.runtime.clone();
-        let mut builder = crate::WorkerNodeBuilder::new(upstream, clock);
+        let mut builder = crate::WorkerNodeBuilder::new(upstream, clock.clone());
         if matches!(
             runtime.sandbox_tier,
             awaken_session_executor::SandboxTier::Local | awaken_session_executor::SandboxTier::Namespace
@@ -488,6 +488,7 @@ impl WorkerDaemonConfig {
                     probe_cwd: root.join("acp-probe"),
                     wrapper_root: root.join("acp-wrappers"),
                     selected_cli_ids: Some(profile.cli_ids().map(str::to_string).collect()),
+                    clock: clock.clone(),
                 },
                 adapters.discovery,
                 adapters.installer,

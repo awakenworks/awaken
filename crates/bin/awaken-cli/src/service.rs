@@ -155,11 +155,15 @@ async fn run_service_with_adapters(
         .map_err(|error| format!("Awaken Cloud login task failed: {error}"))??;
     }
     let seal_key = role_seal_key(&deployment)?;
+    // Select one process clock before local ACP preparation and pass the same
+    // handle to the later Coordinator/Worker assembly.
+    let process_clock = awaken_lease_contract::system_clock();
     let local_worker = prepare_configured_local_worker(
         &mut deployment,
         role,
         seal_key.as_ref(),
         installations.platform_workspace_before_write()?,
+        process_clock.clone(),
     )
     .await?;
     if role != ServiceRole::Control
@@ -176,6 +180,7 @@ async fn run_service_with_adapters(
         local_worker,
         all_in_one_services,
         installations,
+        process_clock,
     )
     .await;
     awaken_observability::shutdown();
@@ -190,6 +195,7 @@ async fn prepare_configured_local_worker(
     role: ServiceRole,
     seal_key: Option<&[u8; 32]>,
     workspace: Option<String>,
+    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<Option<crate::PreparedLocalWorker>, String> {
     if !deployment.run_local_pool
         || !awaken_service_lifecycle::startup_requires(
@@ -203,6 +209,7 @@ async fn prepare_configured_local_worker(
         deployment,
         seal_key.expect("AllInOne owns Control seal key"),
         workspace,
+        clock,
     )
     .await
     .map(Some)
@@ -347,6 +354,7 @@ async fn serve_resolved(
         crate::CoordinatorServiceAdapters,
     )>,
     installations: crate::installation_binding::PreparedDeploymentInstallations,
+    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<(), String> {
     let process = match role {
         ServiceRole::AllInOne => match all_in_one_services {
@@ -356,9 +364,9 @@ async fn serve_resolved(
                     Some(seal_key.as_ref().expect("AllInOne owns Control seal key")),
                     Role::AllInOne,
                     crate::PublicationModelSupply::PublishedProviders,
-                    managed,
-                    coordinator,
+                    (managed, coordinator),
                     installations,
+                    clock.clone(),
                 )
                 .await?
             }
@@ -368,9 +376,12 @@ async fn serve_resolved(
                     Some(seal_key.as_ref().expect("AllInOne owns Control seal key")),
                     Role::AllInOne,
                     crate::PublicationModelSupply::PublishedProviders,
-                    crate::ManagedServiceAdapters::default(),
-                    crate::CoordinatorServiceAdapters::default(),
+                    (
+                        crate::ManagedServiceAdapters::default(),
+                        crate::CoordinatorServiceAdapters::default(),
+                    ),
                     installations,
+                    clock.clone(),
                 )
                 .await?
             }
@@ -380,6 +391,7 @@ async fn serve_resolved(
                 &deployment,
                 seal_key.as_ref().expect("Control owns Control seal key"),
                 installations,
+                clock,
             )
             .await?
         }
@@ -389,9 +401,12 @@ async fn serve_resolved(
                 None,
                 Role::Coordinator,
                 crate::PublicationModelSupply::PublishedProviders,
-                crate::ManagedServiceAdapters::default(),
-                crate::CoordinatorServiceAdapters::default(),
+                (
+                    crate::ManagedServiceAdapters::default(),
+                    crate::CoordinatorServiceAdapters::default(),
+                ),
                 installations,
+                clock,
             )
             .await?
         }
@@ -1089,10 +1104,16 @@ mod tests {
                 deployment.run_local_pool = enabled;
                 let original_pool = deployment.runtime.disable_local_pool;
                 assert!(
-                    prepare_configured_local_worker(&mut deployment, role, None, None)
-                        .await
-                        .unwrap()
-                        .is_none()
+                    prepare_configured_local_worker(
+                        &mut deployment,
+                        role,
+                        None,
+                        None,
+                        awaken_lease_contract::system_clock(),
+                    )
+                    .await
+                    .unwrap()
+                    .is_none()
                 );
                 assert_eq!(deployment.run_local_pool, enabled);
                 assert_eq!(deployment.runtime.disable_local_pool, original_pool);

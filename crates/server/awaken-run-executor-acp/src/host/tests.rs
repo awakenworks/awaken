@@ -1,4 +1,5 @@
 use super::*;
+use awaken_lease_testkit::ManualClock;
 
 #[test]
 fn local_binding_batch_member_admission_is_exact_and_fail_closed() {
@@ -124,6 +125,38 @@ impl AcpDiscovery for AvailableDiscovery {
     }
 }
 
+#[tokio::test]
+async fn host_credential_refresh_uses_its_injected_clock_for_each_observation() {
+    // Causes: C1 one enabled WorkerLocal binding has an available Host CLI;
+    // C2 the composing Worker clock reads 1,000 then 2,000 across refreshes.
+    // Effects: R1 C1+C2 returns the same credential and Available state with
+    // each exact observed_at_ms; no resolver-local wall clock or stale cached
+    // timestamp can strengthen the later heartbeat.
+    let clock = Arc::new(ManualClock::new(1_000));
+    let resolver = AcpLocalCredentialResolver::from_bindings(
+        Arc::new(AvailableDiscovery),
+        [AcpLocalCredentialBinding {
+            credential: CredentialRef {
+                id: "ref-clock".into(),
+                revision: 1,
+            },
+            cli_id: "codex".into(),
+            enabled: true,
+        }],
+        clock.clone(),
+    )
+    .unwrap();
+    let first = resolver.credential_observations().await.unwrap();
+    let first = first.iter().next().expect("R1 first observation");
+    assert_eq!(first.observed_at_ms, 1_000, "R1 first stamp");
+    assert_eq!(first.state, CredentialObservationState::Available, "R1");
+    clock.set(2_000);
+    let later = resolver.credential_observations().await.unwrap();
+    let later = later.iter().next().expect("R1 later observation");
+    assert_eq!(later.observed_at_ms, 2_000, "R1 later stamp");
+    assert_eq!(later.credential, first.credential, "R1 exact binding");
+}
+
 #[test]
 fn worker_route_admission_follows_the_capability_decision_table() {
     // Causes: catalog selection, executable detection, current login, and
@@ -196,8 +229,14 @@ fn worker_route_admission_follows_the_capability_decision_table() {
     );
 
     let discovery: Arc<dyn AcpDiscovery> = Arc::new(AvailableDiscovery);
-    let resolver =
-        Arc::new(AcpLocalCredentialResolver::from_bindings(discovery, []).expect("empty resolver"));
+    let resolver = Arc::new(
+        AcpLocalCredentialResolver::from_bindings(
+            discovery,
+            [],
+            awaken_lease_contract::system_clock(),
+        )
+        .expect("empty resolver"),
+    );
     for (rule, capability, expected) in [
         ("R4", AcpCapabilityState::ProbeFailed, BTreeMap::new()),
         (
