@@ -861,7 +861,7 @@ async fn drain_loop<S: ControlDispatch + 'static>(
                     // Request-local pressure releases a prior recovery probe,
                     // so unrelated claims can run without a pool-wide delay.
                     admission.error_gate.record_success().await;
-                    tracing::debug!(owner = %owner, error = %error,
+                    tracing::warn!(owner = %owner, error = %error,
                         retry_delay_ms = retry_after.map(|delay| delay.as_millis()),
                         "request-local dispatch retry deferred");
                 }
