@@ -22,6 +22,7 @@ pub(super) struct CandidateEvidence {
     pub(super) links: Vec<CoordinatedThreadLink>,
     pub(super) children: awaken_session_application::ProjectionThreadSnapshots,
     pub(super) outcomes: Vec<AnchoredOutcomeProjection>,
+    pub(super) outcome_query_incomplete: bool,
     /// Child transcripts, minus every Thread whose transcript is blocked on a
     /// ticket the prefix does not expose yet.
     pub(super) transcripts: HashMap<String, Vec<awaken_agent_contract::agent::message::Message>>,
@@ -54,10 +55,11 @@ impl CandidateEvidence {
         let price_snapshot = persisted.budget.price_snapshot().cloned();
         // The Session application reads the Runtime evidence through its
         // read-only projection port, in the order that keeps it one prefix:
-        // retained terminal Outcomes before the root fence, then the root,
+        // the root snapshot before terminal Outcome queries,
         // its coordinated links and children, then their merged lifecycle.
         let awaken_session_application::SessionProjectionEvidence {
             outcome_terminals,
+            outcome_query_incomplete,
             root,
             links,
             children,
@@ -281,6 +283,7 @@ impl CandidateEvidence {
             links,
             children,
             outcomes,
+            outcome_query_incomplete,
             transcripts,
             child_latest_run_states,
             child_pending,

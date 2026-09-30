@@ -134,40 +134,16 @@ pub fn plan_interval_aggregate(
     }
 
     for &ClosedIntervalOpening {
-        interval,
-        close,
-        opening,
+        interval, close, ..
     } in &closed
     {
         if interval.observations.is_empty() {
             continue;
         }
-        // A fast interval may commit only Awaiting/Ended. Its primary Thread's
-        // terminal-prefix Running edge was public before any later interval
-        // existed and must be rebuilt on a cold reader using that same exact
-        // terminal, never a Running commit beyond this interval's retained
-        // close.
-        if opening.is_none()
-            && let Some(terminal) = interval.observations.iter().find_map(|observation| {
-                lifecycle_events.iter().find(|event| {
-                    event.cursor == observation.lifecycle_cursor
-                        && event.thread_id == observation.thread_id
-                        && event.run_id == observation.run_id
-                        && event.thread_id.0 == session_id
-                        && SessionAgentRunBoundary::is_boundary(event.kind)
-                })
-            })
-        {
-            plan.steps.push(IntervalStep::AppendOnce(TimelineFact::new(
-                aggregate(
-                    FactRole::RootTerminalStatusRunning,
-                    FactProvenance::Lifecycle {
-                        cursor: terminal.cursor.0,
-                    },
-                ),
-                FactKind::ThreadRunning,
-            )));
-        }
+        // The root lifecycle walk alone owns primary Thread Running, including
+        // a boundary-only fast Run. This interval owns only aggregate
+        // Usage/Idle; its opening selector cannot manufacture a second Thread
+        // Running behind an already-issued ToolUse cursor.
         let usage = interval
             .usage
             .to_session_usage()

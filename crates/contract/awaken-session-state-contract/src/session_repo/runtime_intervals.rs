@@ -62,6 +62,21 @@ impl PersistedSession {
         anchors.chain(observations).fold(0, u64::max)
     }
 
+    /// A Runtime boundary already committed when this interval was admitted
+    /// belongs to the earlier prefix. It may settle a late activity receipt,
+    /// but it cannot become an observation or public close of this interval.
+    /// Historical intervals with no admission fence retain their legacy rule.
+    #[must_use]
+    pub fn runtime_observation_precedes_interval_admission(
+        &self,
+        observation: &crate::SessionRuntimeIntervalObservation,
+    ) -> bool {
+        self.running_interval
+            .as_ref()
+            .and_then(|interval| interval.admitted_after_commit_cursor)
+            .is_some_and(|admitted_after| observation.source_commit_cursor <= admitted_after)
+    }
+
     /// Retain one exact Runtime commit boundary under the activity epoch that
     /// admitted it. Exact replay is a no-op; a conflicting cursor identity or an
     /// observation outside the current interval is rejected.
@@ -69,6 +84,7 @@ impl PersistedSession {
         &mut self,
         observation: crate::SessionRuntimeIntervalObservation,
     ) -> bool {
+        let before_admission = self.runtime_observation_precedes_interval_admission(&observation);
         let legacy_singleton = self.active_activity_epochs.is_empty()
             && self.execution == SessionExecutionState::Running
             && observation.activity_epoch == self.activity_epoch;
@@ -88,6 +104,9 @@ impl PersistedSession {
                     && existing.source_commit_cursor == observation.source_commit_cursor)
         }) {
             return existing == &observation;
+        }
+        if before_admission {
+            return false;
         }
         interval.observations.push(observation);
         interval.observations.sort_by_key(|observation| {
@@ -193,6 +212,82 @@ fn runtime_intervals_open_once_and_never_close_before_start() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interval_observation_must_follow_its_durable_admission_cursor() {
+        // Causes: F1 an interval is admitted after Runtime commit 7; F2 a
+        // boundary belongs to the active epoch at source 6, 7 or 8; F3 source
+        // 8 replays exactly or conflicts under its committed identity. Effects:
+        // E1 pre/equal boundaries cannot become interval observations; E2 the
+        // post-admission boundary is retained once; E3 exact replay is inert and
+        // conflicting identity is refused; F4 a legacy interval has no recorded
+        // admission fence and preserves its historical observation behavior.
+        // Decision rows R1=F1+6/7=>E1; R2=F1+8=>E2;
+        // R3=R2+exact/conflicting=>E3; R4=F4+6=>observe. The interval's admission
+        // cursor, not a later Session close, owns this causal boundary.
+        let mut session =
+            super::super::mutation_tests::session("interval-admission", SessionRevision(1));
+        session.execution = SessionExecutionState::Running;
+        assert_eq!(session.begin_activity_epoch(), Some(1));
+        assert!(session.begin_runtime_interval(1_000, 7));
+        let observation = |source, run: &str| crate::SessionRuntimeIntervalObservation {
+            activity_epoch: 1,
+            thread_id: awaken_agent_contract::agent::thread::Id("interval-admission".into()),
+            run_id: awaken_agent_contract::agent::run::Id(run.into()),
+            lifecycle_cursor: awaken_agent_contract::encode_run_lifecycle_cursor(source, 0)
+                .unwrap(),
+            source_commit_cursor: source,
+        };
+        for source in [6, 7] {
+            assert!(
+                !session.observe_runtime_interval(observation(source, "old")),
+                "R1"
+            );
+            assert!(
+                session
+                    .running_interval
+                    .as_ref()
+                    .unwrap()
+                    .observations
+                    .is_empty()
+            );
+        }
+        assert!(
+            session.observe_runtime_interval(observation(8, "new")),
+            "R2"
+        );
+        assert!(
+            session.observe_runtime_interval(observation(8, "new")),
+            "R3 exact"
+        );
+        assert!(
+            !session.observe_runtime_interval(observation(8, "other")),
+            "R3 conflict"
+        );
+        assert_eq!(
+            session
+                .running_interval
+                .as_ref()
+                .unwrap()
+                .observations
+                .len(),
+            1
+        );
+        let mut legacy =
+            super::super::mutation_tests::session("legacy-interval", SessionRevision(1));
+        legacy.execution = SessionExecutionState::Running;
+        assert_eq!(legacy.begin_activity_epoch(), Some(1));
+        assert!(legacy.begin_runtime_interval(1_000, 7));
+        legacy
+            .running_interval
+            .as_mut()
+            .unwrap()
+            .admitted_after_commit_cursor = None;
+        let mut legacy_observation = observation(6, "legacy");
+        legacy_observation.thread_id =
+            awaken_agent_contract::agent::thread::Id("legacy-interval".into());
+        assert!(legacy.observe_runtime_interval(legacy_observation), "R4");
+    }
 
     #[test]
     fn closed_interval_retains_all_runtime_boundaries_and_exact_usage() {

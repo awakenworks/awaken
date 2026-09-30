@@ -14,6 +14,7 @@ use awaken_session_types::SessionId;
 mod budget_reach;
 mod cancelled_model;
 mod damaged_await_health;
+mod hitl_frontier;
 mod outcome_order;
 mod pagination;
 mod prefix_monotonicity;
