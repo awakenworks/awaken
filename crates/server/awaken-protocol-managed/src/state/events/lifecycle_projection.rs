@@ -5,20 +5,6 @@ use super::*;
 use awaken_managed_session_events::{CoordinatedThread, ThreadStatus};
 
 impl ManagedState {
-    pub(super) fn public_run_stop_reason(
-        record: &SessionRecord,
-        owner_thread_id: Option<&str>,
-        state: &awaken_agent_contract::agent::run::RunState,
-        pending: Option<&Pending>,
-        await_reason: Option<&awaken_agent_contract::agent::awaiting::AwaitReason>,
-    ) -> Result<StopReason, StateError> {
-        timeline_encoding::resolve_stop(
-            record,
-            owner_thread_id,
-            &awaken_managed_session_events::terminal_stop(state, pending, await_reason, false),
-        )
-    }
-
     /// The coordinated children as the timeline domain sees them.
     pub(super) fn coordinated_threads(record: &SessionRecord) -> Vec<CoordinatedThread> {
         record

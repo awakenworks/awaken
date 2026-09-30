@@ -1,7 +1,224 @@
 //! The root lifecycle owns primary Thread Running across Session intervals.
 
 use super::*;
-use awaken_managed_session_events::{FactRole, IntervalStep, plan_interval_aggregate};
+use awaken_managed_session_events::{AggregateStop, FactProvenance, FactRole, plan_aggregate};
+
+#[test]
+fn aggregate_fallback_and_interval_close_require_one_prefix_plan() {
+    // Causes: A1 root Running3 then audited Awaiting7 in a legacy Session
+    // with no interval; A2 an alternative committed history has an interval
+    // admitted before 7 and closed by that boundary. Effects: E1 A1 owns one
+    // aggregate opening3 and one Usage/Idle pair keyed by lifecycle-prefix7;
+    // E2 A2 retains the same opening while the interval owns the one close
+    // pair; E3 neither history duplicates its close. Rules R1=A1=>E1;
+    // R2=A2=>E2+E3. These frozen FactKey roles/provenances are inputs hashed
+    // into public IDs. This fixture does not claim an interval may be added
+    // retroactively after the legacy fallback close has been published.
+    // The old interval-only planner cannot satisfy R1: it returns no fallback
+    // facts, which exposes the duplicate PM aggregate selection owner.
+    let session_id = "aggregate-one-owner";
+    let run = RunId("root-run".into());
+    let accepted = [
+        lifecycle(
+            3,
+            session_id,
+            &run,
+            RunLifecycleEventKind::Running,
+            RunState::Running,
+        ),
+        lifecycle(
+            7,
+            session_id,
+            &run,
+            RunLifecycleEventKind::Awaiting,
+            RunState::Awaiting,
+        ),
+    ];
+    let pending = std::collections::HashMap::from([(
+        accepted[1].cursor,
+        Pending {
+            tool_use_id: "call-7".into(),
+            name: "write".into(),
+            input: serde_json::json!({}),
+            client_executed: false,
+        },
+    )]);
+    let persisted = crate::state::tests::sample_persisted(session_id);
+    let plan = plan_aggregate(&persisted, &accepted, &pending, &[]).unwrap();
+    assert_eq!(plan.fallback_openings.len(), 1, "R1/E1 one opening");
+    assert_eq!(
+        plan.fallback_openings[0].role,
+        FactRole::AggregateStatusRunning
+    );
+    assert_eq!(
+        plan.fallback_openings[0].provenance,
+        FactProvenance::Lifecycle {
+            cursor: accepted[0].cursor.0
+        },
+        "R1/E1 frozen opening identity"
+    );
+    assert_eq!(plan.fallback_closes.len(), 1, "R1/E1 one close");
+    let fallback = &plan.fallback_closes[0];
+    assert_eq!(fallback.usage.role, FactRole::AggregateUsage);
+    assert_eq!(fallback.idle.role, FactRole::AggregateStatusIdle);
+    assert_eq!(
+        fallback.usage.provenance,
+        FactProvenance::LifecyclePrefix {
+            cursor: accepted[1].cursor.0
+        },
+        "R1/E1 frozen close identity"
+    );
+    assert_eq!(
+        fallback.stop,
+        AggregateStop::Calls {
+            thread_calls: vec![(session_id.into(), "call-7".into())]
+        },
+        "R1/E1 answerable stop stays neutral until Managed rendering"
+    );
+    assert!(plan.interval_closes.is_empty(), "R1 no interval pair");
+
+    let mut with_interval = persisted;
+    with_interval.closed_runtime_intervals.push(
+        awaken_session_state_contract::SessionRuntimeInterval {
+            interval_id: "interval-7".into(),
+            activity_epoch: 1,
+            started_at_unix_ms: 0,
+            ended_at_unix_ms: 7,
+            opened_revision: awaken_session_types::SessionRevision(1),
+            closed_revision: awaken_session_types::SessionRevision(2),
+            admitted_after_commit_cursor: Some(2),
+            observations: vec![
+                awaken_session_state_contract::SessionRuntimeIntervalObservation {
+                    activity_epoch: 1,
+                    thread_id: ThreadId(session_id.into()),
+                    run_id: run.clone(),
+                    lifecycle_cursor: accepted[1].cursor,
+                    source_commit_cursor: 7,
+                },
+            ],
+            usage: Default::default(),
+            max_list_cost_minor: None,
+        },
+    );
+    let interval_plan = plan_aggregate(&with_interval, &accepted, &pending, &[]).unwrap();
+    assert_eq!(
+        interval_plan.fallback_openings, plan.fallback_openings,
+        "R2/E2"
+    );
+    assert!(
+        interval_plan.fallback_closes.is_empty(),
+        "R2/E2-E3 one owner"
+    );
+    assert_eq!(interval_plan.interval_closes.len(), 1, "R2/E2 one close");
+    let close = &interval_plan.interval_closes[0];
+    assert!(matches!(&close.usage.key.provenance,
+        FactProvenance::RuntimeInterval { interval_id } if interval_id == "interval-7"));
+    assert_eq!(close.idle.key.provenance, close.usage.key.provenance);
+}
+
+#[test]
+fn aggregate_fallback_holds_root_and_child_answerable_calls_neutrally() {
+    // Causes: M1 root Running1 then child Running2; M2 root Awaiting3 while
+    // child still runs; M3 child Awaiting4, both with committed call targets.
+    // Effects: E1 one opening at 1 and no close at 3; E2 one close at 4 with
+    // both exact (Thread, call) pairs in Thread-key order, before Managed
+    // resolves and sorts public IDs;
+    // E3 no duplicate aggregate period. Rules R1=M1+M2=>E1;
+    // R2=M1+M2+M3=>E1+E2+E3. The adapter's existing tool index must reject a
+    // missing public ID before CAS, rather than this planner guessing one.
+    let session_id = "aggregate-calls";
+    let root_run = RunId("root-run".into());
+    let child_run = RunId("child-run".into());
+    let events = [
+        lifecycle(
+            1,
+            session_id,
+            &root_run,
+            RunLifecycleEventKind::Running,
+            RunState::Running,
+        ),
+        lifecycle(
+            2,
+            "child",
+            &child_run,
+            RunLifecycleEventKind::Running,
+            RunState::Running,
+        ),
+        lifecycle(
+            3,
+            session_id,
+            &root_run,
+            RunLifecycleEventKind::Awaiting,
+            RunState::Awaiting,
+        ),
+        lifecycle(
+            4,
+            "child",
+            &child_run,
+            RunLifecycleEventKind::Awaiting,
+            RunState::Awaiting,
+        ),
+    ];
+    let pending = std::collections::HashMap::from([
+        (
+            events[2].cursor,
+            Pending {
+                tool_use_id: "root-call".into(),
+                name: "write".into(),
+                input: serde_json::json!({}),
+                client_executed: false,
+            },
+        ),
+        (
+            events[3].cursor,
+            Pending {
+                tool_use_id: "child-call".into(),
+                name: "read".into(),
+                input: serde_json::json!({}),
+                client_executed: false,
+            },
+        ),
+    ]);
+    let link = awaken_session_execution_contract::CoordinatedThreadLink {
+        session_id: session_id.into(),
+        thread_id: ThreadId("child".into()),
+        target: awaken_session_execution_contract::CoordinatedThreadTarget::Agent {
+            agent_id: "worker".into(),
+        },
+        created_by_operation_id: "spawn-child".into(),
+        latest_run_id: Some(child_run),
+    };
+    let persisted = crate::state::tests::sample_persisted(session_id);
+    let prefix = plan_aggregate(
+        &persisted,
+        &events[..3],
+        &pending,
+        std::slice::from_ref(&link),
+    )
+    .unwrap();
+    assert_eq!(prefix.fallback_openings.len(), 1, "R1/E1");
+    assert!(prefix.fallback_closes.is_empty(), "R1/E1 child still runs");
+    let full = plan_aggregate(&persisted, &events, &pending, &[link]).unwrap();
+    assert_eq!(full.fallback_openings, prefix.fallback_openings, "R2/E3");
+    assert_eq!(full.fallback_closes.len(), 1, "R2/E2 one close");
+    assert_eq!(
+        full.fallback_closes[0].stop,
+        AggregateStop::Calls {
+            thread_calls: vec![
+                (session_id.into(), "root-call".into()),
+                ("child".into(), "child-call".into()),
+            ],
+        },
+        "R2/E2 canonical Thread-key order before public ID sort"
+    );
+    assert_eq!(
+        full.fallback_closes[0].usage.provenance,
+        FactProvenance::LifecyclePrefix {
+            cursor: events[3].cursor.0
+        },
+        "R2/E2 frozen terminal identity"
+    );
+}
 
 #[test]
 fn hitl_interval_close_cannot_insert_running_before_an_issued_tool_use() {
@@ -86,19 +303,20 @@ fn hitl_interval_close_cannot_insert_running_before_an_issued_tool_use() {
         [FactRole::RootLifecycleStatusRunning],
         "R1/E1 real Running3 owns the Thread"
     );
-    let plan = plan_interval_aggregate(&persisted, &accepted, &pending).unwrap();
+    let plan = plan_aggregate(&persisted, &accepted, &pending, &[]).unwrap();
     assert!(
-        plan.steps
-            .iter()
-            .any(|step| matches!(step, IntervalStep::Close { .. })),
+        !plan.interval_closes.is_empty(),
         "R1/E2 Session interval still closes with its Usage/Idle pair"
     );
     assert!(
-        !plan.steps.iter().any(|step| matches!(
-            step,
-            IntervalStep::AppendOnce(fact)
-                if fact.key.role == FactRole::RootTerminalStatusRunning
-        )),
+        !plan
+            .fallback_openings
+            .iter()
+            .any(|key| key.role == FactRole::RootTerminalStatusRunning)
+            && plan.interval_closes.iter().all(|close| {
+                close.usage.key.role != FactRole::RootTerminalStatusRunning
+                    && close.idle.key.role != FactRole::RootTerminalStatusRunning
+            }),
         "R1/E2-E3 no phase-20 Running7 may be inserted before ToolUse7"
     );
 }

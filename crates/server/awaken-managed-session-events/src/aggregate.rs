@@ -1,16 +1,19 @@
 // @formal entrypoint session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
-//! Aggregate Session facts owned by admitted runtime intervals: each observed
-//! interval's usage/idle close, and how the intervals hold the lifecycle
-//! boundaries of a prefix.
+//! One aggregate plan for every committed lifecycle period: the fallback
+//! opening/close and admitted-interval usage/idle are selected together.
 //!
-//! Consumer: the protocol adapter's candidate builder, which withdraws the
-//! replaced facts, then appends the planned ones in order.
+//! Consumer: the protocol adapter's candidate builder, which renders the
+//! selected facts on one fresh committed-prefix record.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
+use awaken_agent_contract::RunLifecycleEventKind;
+use awaken_agent_contract::agent::awaiting::AwaitReason;
+use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent};
 use awaken_session_application_contract::Pending;
 use awaken_session_event_contract::SessionAgentRunBoundary;
+use awaken_session_execution_contract::CoordinatedThreadLink;
 use awaken_session_state_contract::{PersistedSession, SessionRuntimeInterval};
 
 use crate::interval::{
@@ -20,25 +23,38 @@ use crate::interval::{
 use crate::stop::terminal_stop;
 use crate::{FactKey, FactKind, FactProvenance, FactRole, ProjectionError, StopFact, TimelineFact};
 
-/// One planned aggregate fact.
+/// One admitted interval's two closing facts.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum IntervalStep {
-    /// Publish unless the fact is already published.
-    AppendOnce(TimelineFact),
-    /// Publish the interval's close pair.
-    Close {
-        usage: TimelineFact,
-        idle: TimelineFact,
-    },
+pub struct AggregateIntervalClose {
+    pub usage: TimelineFact,
+    pub idle: TimelineFact,
 }
 
-/// The aggregate projection of every admitted interval.
+/// A fallback close for a period no admitted interval owns. Public usage is
+/// calculated as of `source_commit_cursor`; its keys retain the old frozen
+/// lifecycle-prefix identity regardless of when a replica first observes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AggregateFallbackClose {
+    pub source_commit_cursor: u64,
+    pub usage: FactKey,
+    pub idle: FactKey,
+    pub stop: AggregateStop,
+}
+
+/// Neutral stop evidence for one aggregate fallback. The protocol resolves
+/// the call identities to its already-issued public tool IDs when rendering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AggregateStop {
+    Run { calls_owner: String, stop: StopFact },
+    Calls { thread_calls: Vec<(String, String)> },
+}
+
+/// The sole aggregate projection plan over one committed prefix.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct IntervalAggregatePlan {
-    /// Previously published candidates this lineage supersedes; `None` for a
-    /// legacy Session without interval lineage, whose projections stand.
-    pub replaced: Option<Vec<FactKey>>,
-    pub steps: Vec<IntervalStep>,
+pub struct AggregatePlan {
+    pub interval_closes: Vec<AggregateIntervalClose>,
+    pub fallback_openings: Vec<FactKey>,
+    pub fallback_closes: Vec<AggregateFallbackClose>,
 }
 
 /// The usage an interval closes with, before the protocol prices it.
@@ -48,20 +64,22 @@ pub struct IntervalUsage {
     pub max_list_cost_minor: Option<u64>,
 }
 
-/// Plan the aggregate facts of `persisted`'s intervals over the accepted
-/// lifecycle.
+/// Plan interval-owned and fallback aggregate facts from the same accepted
+/// lifecycle, topology, budget and interval admission evidence.
 ///
 /// Session-level Usage/Idle belongs to the root-owned interval. Its Running
 /// edge is the lifecycle walk's (one per aggregate period, keyed by the
 /// period's first commit), never the interval's, so closing an interval cannot
-/// move an issued opening: only former interval-id Running facts are
-/// withdrawn. A legacy row with no interval history, and independent budget
-/// reach facts, retain their projections unchanged.
-pub fn plan_interval_aggregate(
+/// move an issued opening. The fresh-prefix candidate never withdraws facts;
+/// the plan withholds fallback closes owned by admitted intervals. A legacy
+/// row with no interval history and independent budget reach facts retain
+/// their projections unchanged.
+pub fn plan_aggregate(
     persisted: &PersistedSession,
     lifecycle_events: &[RunLifecycleEvent],
     historical_pending: &HashMap<RunLifecycleCursor, Pending>,
-) -> Result<IntervalAggregatePlan, ProjectionError> {
+    links: &[CoordinatedThreadLink],
+) -> Result<AggregatePlan, ProjectionError> {
     let session_id = persisted.session_id.as_str();
     let aggregate = |role, provenance| FactKey::new(session_id, role, provenance);
     let interval_fact = |role, interval_id: &str| {
@@ -72,66 +90,11 @@ pub fn plan_interval_aggregate(
             },
         )
     };
-    let mut plan = IntervalAggregatePlan::default();
-    // One selection per closed interval, shared by the withdrawal and the
-    // emission pass below: each interval's opening is chosen against the close
-    // of the interval before it, exactly as the live selection of the running
-    // interval chose it, so withdrawal cannot keep one opening while emission
-    // publishes another.
+    let mut plan = AggregatePlan::default();
+    // One selection per closed interval supplies the interval-owned close
+    // below and the fallback hold decision in the same plan. The candidate
+    // starts without committed Events, so no prior interval fact is withdrawn.
     let closed = closed_interval_openings(persisted, lifecycle_events);
-    let has_interval_lineage = !persisted.closed_runtime_intervals.is_empty()
-        || persisted
-            .running_interval
-            .as_ref()
-            .is_some_and(|interval| interval.opened_revision.0 != 0);
-    if has_interval_lineage {
-        let replaced = plan.replaced.insert(Vec::new());
-        for &ClosedIntervalOpening {
-            interval,
-            close,
-            opening,
-            ..
-        } in &closed
-        {
-            let open = opening
-                .map(|event| event.source_commit_cursor)
-                .unwrap_or(close);
-            let interval_lifecycle = lifecycle_events
-                .iter()
-                .filter(|event| {
-                    event.source_commit_cursor >= open && event.source_commit_cursor <= close
-                })
-                .collect::<Vec<_>>();
-            if let Some(terminal_cursor) = interval_lifecycle
-                .iter()
-                .filter(|event| SessionAgentRunBoundary::is_boundary(event.kind))
-                .map(|event| event.cursor)
-                .max()
-            {
-                for role in [FactRole::AggregateUsage, FactRole::AggregateStatusIdle] {
-                    replaced.push(aggregate(
-                        role,
-                        FactProvenance::LifecyclePrefix {
-                            cursor: terminal_cursor.0,
-                        },
-                    ));
-                }
-            }
-            for role in [FactRole::AggregateUsage, FactRole::AggregateStatusIdle] {
-                replaced.push(interval_fact(role, &interval.interval_id));
-            }
-            replaced.push(interval_fact(
-                FactRole::AggregateStatusRunning,
-                &interval.interval_id,
-            ));
-        }
-        if let Some(interval) = persisted.running_interval.as_ref() {
-            replaced.push(interval_fact(
-                FactRole::AggregateStatusRunning,
-                &interval.interval_id,
-            ));
-        }
-    }
 
     for &ClosedIntervalOpening {
         interval, close, ..
@@ -185,7 +148,7 @@ pub fn plan_interval_aggregate(
         if budget_transition_owns_pause {
             continue;
         }
-        plan.steps.push(IntervalStep::Close {
+        plan.interval_closes.push(AggregateIntervalClose {
             usage: TimelineFact::new(
                 interval_fact(FactRole::AggregateUsage, &interval.interval_id),
                 FactKind::IntervalUsage(IntervalUsage {
@@ -199,13 +162,205 @@ pub fn plan_interval_aggregate(
             ),
         });
     }
+    plan_fallback_aggregate(
+        &mut plan,
+        persisted,
+        lifecycle_events,
+        historical_pending,
+        links,
+    );
     Ok(plan)
+}
+
+/// Select fallback periods only where no admitted Session interval owns their
+/// close. This is part of `plan_aggregate`, never an adapter-side second walk.
+fn plan_fallback_aggregate(
+    plan: &mut AggregatePlan,
+    persisted: &PersistedSession,
+    lifecycle_events: &[RunLifecycleEvent],
+    historical_pending: &HashMap<RunLifecycleCursor, Pending>,
+    links: &[CoordinatedThreadLink],
+) {
+    let session_id = persisted.session_id.as_str();
+    let known_children = links
+        .iter()
+        .map(|link| link.thread_id.0.as_str())
+        .collect::<HashSet<_>>();
+    let hold = interval_hold(persisted, lifecycle_events);
+    let budget_reach =
+        crate::BudgetReachAnchor::of(persisted, lifecycle_events, historical_pending);
+    let mut root_running = false;
+    let mut running_children = HashSet::<&str>::new();
+    let mut paused = BTreeMap::<&str, &Pending>::new();
+    let mut deferred: Option<(Option<&RunId>, AggregateStop)> = None;
+    let mut aggregate_open = false;
+    for event in lifecycle_events {
+        let thread = event.thread_id.0.as_str();
+        let is_root = thread == session_id;
+        if !is_root && !known_children.contains(thread) {
+            continue;
+        }
+        if crate::interval::is_opening(event.kind) {
+            if !aggregate_open {
+                plan.fallback_openings.push(FactKey::new(
+                    session_id,
+                    FactRole::AggregateStatusRunning,
+                    FactProvenance::Lifecycle {
+                        cursor: event.cursor.0,
+                    },
+                ));
+                aggregate_open = true;
+            }
+            if is_root {
+                root_running = true;
+            } else {
+                running_children.insert(thread);
+            }
+            paused.remove(thread);
+            continue;
+        }
+        if !SessionAgentRunBoundary::is_boundary(event.kind) {
+            continue;
+        }
+        if is_root && !aggregate_open {
+            // A fast Run may first become visible at its boundary. Keep the
+            // frozen lifecycle-prefix identity and its phase ordering.
+            plan.fallback_openings.push(FactKey::new(
+                session_id,
+                FactRole::AggregateTerminalStatusRunning,
+                FactProvenance::LifecyclePrefix {
+                    cursor: event.cursor.0,
+                },
+            ));
+            aggregate_open = true;
+        }
+        if is_root {
+            root_running = false;
+        } else {
+            running_children.remove(thread);
+        }
+        let pending = historical_pending
+            .get(&event.cursor)
+            .filter(|_| event.kind == RunLifecycleEventKind::Awaiting);
+        match pending {
+            Some(pending) => {
+                paused.insert(thread, pending);
+            }
+            None => {
+                paused.remove(thread);
+            }
+        }
+        let budget_pause = event.await_reason.as_ref() == Some(&AwaitReason::BudgetReached);
+        let idle = !root_running
+            && running_children.is_empty()
+            && !hold.session_active.contains(&event.cursor);
+        if is_root {
+            let stop =
+                crate::terminal_stop(&event.state, pending, event.await_reason.as_ref(), false);
+            let replace = match &deferred {
+                None => true,
+                Some((
+                    _,
+                    AggregateStop::Run {
+                        stop: StopFact::BudgetReached,
+                        ..
+                    },
+                )) => false,
+                Some((Some(owner), _)) => *owner == &event.run_id,
+                Some((None, _)) => false,
+            };
+            if replace || stop == StopFact::BudgetReached {
+                deferred = Some((
+                    Some(&event.run_id),
+                    AggregateStop::Run {
+                        calls_owner: session_id.to_string(),
+                        stop,
+                    },
+                ));
+            }
+        } else if budget_pause {
+            deferred = Some((
+                None,
+                AggregateStop::Run {
+                    calls_owner: thread.to_string(),
+                    stop: StopFact::BudgetReached,
+                },
+            ));
+        } else if !idle {
+            let stop =
+                crate::terminal_stop(&event.state, pending, event.await_reason.as_ref(), false);
+            deferred.get_or_insert((
+                None,
+                AggregateStop::Run {
+                    calls_owner: thread.to_string(),
+                    stop,
+                },
+            ));
+        }
+        if hold.closed_by_interval.contains(&event.cursor) {
+            deferred = None;
+            if hold.interval_closes.contains(&event.cursor) {
+                aggregate_open = false;
+            }
+            continue;
+        }
+        if !idle {
+            continue;
+        }
+        aggregate_open = false;
+        let budget_reached = budget_reach.iter().any(|anchor| {
+            anchor
+                .close_cursor
+                .is_some_and(|close| close <= event.source_commit_cursor)
+        });
+        let stop = if paused.is_empty() {
+            deferred.take().map_or_else(
+                || AggregateStop::Run {
+                    calls_owner: session_id.to_string(),
+                    stop: StopFact::EndTurn,
+                },
+                |(_, stop)| stop,
+            )
+        } else {
+            let thread_calls = paused
+                .iter()
+                .map(|(thread, pending)| ((*thread).to_string(), pending.tool_use_id.clone()))
+                .collect();
+            deferred = None;
+            AggregateStop::Calls { thread_calls }
+        };
+        if matches!(
+            &stop,
+            AggregateStop::Run {
+                stop: StopFact::BudgetReached,
+                ..
+            }
+        ) || budget_reached
+        {
+            continue;
+        }
+        let at = |role| {
+            FactKey::new(
+                session_id,
+                role,
+                FactProvenance::LifecyclePrefix {
+                    cursor: event.cursor.0,
+                },
+            )
+        };
+        plan.fallback_closes.push(AggregateFallbackClose {
+            source_commit_cursor: event.source_commit_cursor,
+            usage: at(FactRole::AggregateUsage),
+            idle: at(FactRole::AggregateStatusIdle),
+            stop,
+        });
+    }
 }
 
 /// How admitted Session intervals hold the lifecycle boundaries of a prefix.
 ///
-/// Consumer: the protocol adapter's aggregate close outside intervals, which
-/// closes the aggregate at a boundary only when no interval holds it.
+/// Consumer: the sole aggregate planner, which closes the aggregate at a
+/// boundary only when no admitted interval holds it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IntervalHold {
     /// Boundaries inside an observed closed interval, whose own usage/idle
