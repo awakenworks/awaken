@@ -167,6 +167,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
             .clone(),
         &service_lifecycle,
         &mut postgres_pools,
+        stores.clock.clone(),
     )
     .await?;
     let executable_agent_wiring = executable_agent_registration::for_runtime_role(

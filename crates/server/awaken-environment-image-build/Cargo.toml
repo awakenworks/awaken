@@ -25,6 +25,7 @@ tokio = { workspace = true, features = ["sync", "time"] }
 
 [dev-dependencies]
 awaken-reliability-testkit.workspace = true
+awaken-lease-testkit.workspace = true
 awaken-env-store = { workspace = true, features = ["test-support"] }
 awaken-environment-application.workspace = true
 awaken-environment-execution-application.workspace = true

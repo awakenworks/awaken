@@ -60,11 +60,3 @@ pub(crate) fn test_demand() -> awaken_executable_environment_contract::Environme
     )
     .expect("test Environment requires an immutable image build")
 }
-
-#[must_use]
-pub fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
-        .unwrap_or_default()
-}

@@ -1109,6 +1109,7 @@ dependencies = [
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
  "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-reliability-testkit",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
