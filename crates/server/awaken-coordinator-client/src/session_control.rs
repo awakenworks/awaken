@@ -228,12 +228,13 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
     async fn claim_next_terminal_cleanup(
         &self,
         target: awaken_session_realization_contract::SessionRealizationTarget,
+        after_session_id: Option<&awaken_session_types::SessionId>,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionTerminalCleanupAssignment>,
         awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         self.control
-            .claim_next_terminal_cleanup(&self.identity, target)
+            .claim_next_terminal_cleanup(&self.identity, target, after_session_id)
             .await
     }
 }

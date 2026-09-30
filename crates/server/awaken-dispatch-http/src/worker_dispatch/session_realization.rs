@@ -24,6 +24,9 @@ pub(super) struct SessionCleanupPollReq {
 pub(super) struct SessionCleanupClaimNextReq {
     identity: WorkerIdentity,
     target: awaken_session_realization_contract::SessionRealizationTarget,
+    sweep_cursor_version: u8,
+    #[serde(default)]
+    after_session_id: Option<awaken_session_types::SessionId>,
 }
 
 #[derive(Deserialize)]
@@ -61,6 +64,13 @@ pub(super) async fn session_cleanup_claim_next(
         verify_worker_identity(&worker, &request.identity)
             .map_err(HostError::bad_request)
             .map_err(RealizationHttpError::from)?;
+        if request.sweep_cursor_version
+            != awaken_session_realization_contract::TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION
+        {
+            return Err(RealizationHttpError::from(HostError::bad_request(
+                "unsupported Session cleanup sweep cursor protocol",
+            )));
+        }
         let authority = claim_authority(&service, &worker, Some(&request.identity), false)
             .await
             .map_err(RealizationHttpError::from)?;
@@ -96,7 +106,7 @@ pub(super) async fn session_cleanup_claim_next(
         })?;
         let assignment = terminal_cleanup_control(&service)
             .map_err(RealizationHttpError::from)?
-            .claim_next_terminal_cleanup(target)
+            .claim_next_terminal_cleanup(target, request.after_session_id.as_ref())
             .await
             .map_err(RealizationHttpError::from)?;
         Ok(json!({ "assignment": assignment }))

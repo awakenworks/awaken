@@ -414,12 +414,13 @@ impl crate::SharedHost {
         }
     }
 
-    /// Claim every currently discoverable cold terminal assignment and drive
+    /// Claim every currently discoverable terminal assignment and drive
     /// at most four independent Sessions at a time. A completed slot admits
     /// the next claim without waiting for a slow sibling. The driver alone
     /// installs the current aggregate readback; the claim is routing and
     /// ownership input, not a second projection-installation path. This is the
-    /// sole recovery selector; ordinary terminal settlement stays on the
+    /// sole Worker recovery selector for exact-current continuation and
+    /// expired-lease takeover; ordinary terminal settlement stays on the
     /// initiating command path. The bound prevents one recovery sweep from
     /// monopolizing the Worker, and the lifecycle awaits the whole sweep without
     /// imposing a timeout on its durable effects.
@@ -442,14 +443,35 @@ impl crate::SharedHost {
         let mut recovered = 0;
         let mut terminal_error = None;
         let mut claims_exhausted = false;
+        let mut after_session_id: Option<awaken_session_types::SessionId> = None;
         let mut in_flight = futures_util::stream::FuturesUnordered::new();
         loop {
             while in_flight.len() < MAX_CONCURRENT_TERMINAL_CLEANUPS
                 && recovered < MAX_ASSIGNMENTS_PER_RECOVERY_SWEEP
                 && !claims_exhausted
             {
-                match control.claim_next_terminal_cleanup(target.clone()).await {
+                match control
+                    .claim_next_terminal_cleanup(target.clone(), after_session_id.as_ref())
+                    .await
+                {
                     Ok(Some(assignment)) => {
+                        if after_session_id
+                            .as_ref()
+                            .is_some_and(|previous| assignment.session_id <= *previous)
+                        {
+                            // An older Coordinator may ignore the new cursor.
+                            // Never drive the same physical cleanup twice in
+                            // this sweep; retain the already-claimed work and
+                            // retry after Control and Worker versions converge.
+                            terminal_error.get_or_insert_with(|| {
+                                crate::HostError::internal(
+                                    "terminal cleanup claim cursor did not advance",
+                                )
+                            });
+                            claims_exhausted = true;
+                            continue;
+                        }
+                        after_session_id = Some(assignment.session_id.clone());
                         recovered += 1;
                         in_flight.push(async move {
                             let result = self

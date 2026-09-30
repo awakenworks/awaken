@@ -227,6 +227,7 @@ pub(crate) struct RemoteTerminalCleanupControl {
         Mutex<Option<awaken_session_realization_contract::SessionRealizationControlFailure>>,
     pub(crate) claim_targets:
         Mutex<Vec<awaken_session_realization_contract::SessionRealizationTarget>>,
+    pub(crate) claim_after: Mutex<Vec<Option<awaken_session_types::SessionId>>>,
     pub(crate) renewal_sessions: Mutex<Vec<String>>,
     pub(crate) renewal_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     pub(crate) renewal_response_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
@@ -395,6 +396,7 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
     async fn claim_next_terminal_cleanup(
         &self,
         target: awaken_session_realization_contract::SessionRealizationTarget,
+        after_session_id: Option<&awaken_session_types::SessionId>,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionTerminalCleanupAssignment>,
         awaken_session_realization_contract::SessionRealizationControlFailure,
@@ -402,6 +404,10 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
         let call = {
             let mut targets = self.claim_targets.lock().unwrap();
             targets.push(target);
+            self.claim_after
+                .lock()
+                .unwrap()
+                .push(after_session_id.cloned());
             targets.len()
         };
         if *self.claim_failure_on_call.lock().unwrap() == Some(call) {
