@@ -11,12 +11,13 @@ use async_trait::async_trait;
 use awaken_credential_contract::{
     CredentialEnvelopeIssuance, CredentialEnvelopeIssuer, CredentialMaterialError,
 };
+use awaken_lease_contract::WallClockExt as _;
 use awaken_runtime_contract::{
     AttemptCredentialDelivery, AttemptCredentialDeliveryRequest, AttemptCredentialDeliverySource,
     credential_access_without_delivery,
 };
 
-use super::{PinnedCredentialMaterializer, unix_time_ms};
+use super::PinnedCredentialMaterializer;
 
 #[derive(Clone)]
 pub struct VaultAttemptCredentialDeliverySource {
@@ -62,7 +63,7 @@ impl AttemptCredentialDeliverySource for VaultAttemptCredentialDeliverySource {
             .map_err(|_| CredentialMaterialError::BindingMismatch.to_string())?;
         if let Some(descriptor) = &source.descriptor {
             descriptor
-                .validate_expiry(unix_time_ms())
+                .validate_expiry(self.materializer.clock.now_ms())
                 .map_err(|_| CredentialMaterialError::Expired.to_string())?;
         }
         let material = self
@@ -87,7 +88,10 @@ impl AttemptCredentialDeliverySource for VaultAttemptCredentialDeliverySource {
             )
             .map_err(|error| error.to_string())?;
         envelope
-            .validate_for_holder(&request.selected_plaintext_holder, unix_time_ms())
+            .validate_for_holder(
+                &request.selected_plaintext_holder,
+                self.materializer.clock.now_ms(),
+            )
             .map_err(|error| error.to_string())?;
         Ok(AttemptCredentialDelivery {
             candidate_fingerprint: request.candidate_fingerprint,
@@ -159,6 +163,7 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -196,10 +201,19 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let keys = root.path().join("keys.json");
         key_document(&keys, &holder);
-        let issuer =
-            Arc::new(crate::recipient_envelope::RecipientKeyEnvelope::open(&keys).unwrap());
+        let issuer = Arc::new(
+            crate::recipient_envelope::RecipientKeyEnvelope::open(
+                &keys,
+                awaken_lease_contract::system_clock(),
+            )
+            .unwrap(),
+        );
         let delivery_source = VaultAttemptCredentialDeliverySource::new(
-            PinnedCredentialMaterializer::new(credentials.clone(), secrets.clone()),
+            PinnedCredentialMaterializer::new(
+                credentials.clone(),
+                secrets.clone(),
+                awaken_lease_contract::system_clock(),
+            ),
             issuer.clone(),
         );
         let request = AttemptCredentialDeliveryRequest {
@@ -265,7 +279,11 @@ mod tests {
         credentials.put(disabled).await.unwrap();
         assert!(
             VaultAttemptCredentialDeliverySource::new(
-                PinnedCredentialMaterializer::new(credentials, secrets),
+                PinnedCredentialMaterializer::new(
+                    credentials,
+                    secrets,
+                    awaken_lease_contract::system_clock()
+                ),
                 issuer,
             )
             .deliver(AttemptCredentialDeliveryRequest {

@@ -1433,6 +1433,7 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
         },
         secrets.as_ref(),
         credentials.as_ref(),
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();

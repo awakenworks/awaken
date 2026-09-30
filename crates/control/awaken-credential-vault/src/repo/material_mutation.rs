@@ -5,11 +5,9 @@
 // @formal entrypoint credential.material_is_always_published_or_intent_tracked
 // @formal entrypoint credential.restart_recovery_compensates_unpublished_material
 // @formal entrypoint credential.visible_row_always_has_material
-use std::collections::BTreeSet;
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use awaken_lease_contract::fence::Epoch;
-use awaken_lease_contract::{Expiry, UtcTime};
+use awaken_lease_contract::{Expiry, UtcTime, WallClock, WallClockExt as _};
+use std::collections::BTreeSet;
 
 use crate::{CredentialError, CredentialSource};
 
@@ -102,7 +100,10 @@ impl Default for CredentialMaterialMutationFence {
 }
 
 impl CredentialMaterialMutationFence {
-    pub(super) fn fresh(writes_new_material: bool) -> Result<Self, CredentialError> {
+    pub(super) fn fresh(
+        writes_new_material: bool,
+        now_unix_ms: u64,
+    ) -> Result<Self, CredentialError> {
         if !writes_new_material {
             return Ok(Self {
                 format_version: CREDENTIAL_MATERIAL_MUTATION_FORMAT_VERSION,
@@ -110,7 +111,6 @@ impl CredentialMaterialMutationFence {
                 ..Self::default()
             });
         }
-        let now_unix_ms = credential_material_now_unix_ms()?;
         let writer_token = uuid::Uuid::new_v4().simple().to_string();
         Ok(Self {
             format_version: CREDENTIAL_MATERIAL_MUTATION_FORMAT_VERSION,
@@ -260,6 +260,7 @@ impl CredentialMaterialMutationFence {
         &self,
         writes_new_material: bool,
         new_refs_bound_to_attempt: bool,
+        now_unix_ms: u64,
     ) -> Result<(), CredentialError> {
         self.validate(writes_new_material, new_refs_bound_to_attempt)?;
         let fresh_shape = if writes_new_material {
@@ -267,7 +268,7 @@ impl CredentialMaterialMutationFence {
                 && !self.attempt_id.is_empty()
                 && self.is_original_writer()
                 && Expiry::from_epoch_ms(self.writer_lease_expires_at_unix_ms)
-                    .is_live_at(UtcTime::from_epoch_ms(credential_material_now_unix_ms()?))
+                    .is_live_at(UtcTime::from_epoch_ms(now_unix_ms))
         } else {
             self.phase == CredentialMaterialMutationPhase::Ready
                 && self.attempt_id.is_empty()
@@ -526,13 +527,35 @@ pub(super) fn idempotent_credential_source_matches(
     logical_credential_source_matches(&actual_identity, expected)
 }
 
-pub(super) fn credential_material_now_unix_ms() -> Result<u64, CredentialError> {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| CredentialError::Storage(format!("credential clock: {error}")))?
-        .as_millis();
-    u64::try_from(millis)
-        .map_err(|_| CredentialError::Storage("credential clock overflowed u64".into()))
+/// Sample the composing Control owner's clock before a credential material
+/// mutation. Epoch zero cannot establish a live writer or authorize recovery.
+pub fn credential_material_now_unix_ms(clock: &dyn WallClock) -> Result<u64, CredentialError> {
+    match clock.now_ms() {
+        0 => Err(CredentialError::Storage(
+            "credential clock is unavailable".into(),
+        )),
+        now_unix_ms => Ok(now_unix_ms),
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+
+    #[test]
+    fn credential_owner_clock_rejects_epoch_and_admits_a_positive_reading() {
+        // Causes: the injected Control clock reads epoch zero or a positive
+        // millisecond. Effects: epoch zero fails before writer lease/recovery
+        // decisions; a positive sample is passed to the sole fence/Expiry law.
+        // Decision table: C0 -> Storage(unavailable); C1 -> exact reading.
+        let clock = awaken_lease_testkit::ManualClock::new(0);
+        assert!(matches!(
+            credential_material_now_unix_ms(&clock),
+            Err(CredentialError::Storage(reason)) if reason == "credential clock is unavailable"
+        ));
+        clock.set(1_000);
+        assert_eq!(credential_material_now_unix_ms(&clock).unwrap(), 1_000);
+    }
 }
 
 #[cfg(any(test, kani))]

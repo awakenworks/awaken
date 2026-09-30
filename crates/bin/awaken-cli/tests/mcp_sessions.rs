@@ -94,7 +94,16 @@ async fn exact_vault_refresher(
     })
     .await
     .unwrap();
-    (VaultRefresher::new(id, access, repo.clone(), secrets), repo)
+    (
+        VaultRefresher::new(
+            id,
+            access,
+            repo.clone(),
+            secrets,
+            awaken_lease_contract::system_clock(),
+        ),
+        repo,
+    )
 }
 use axum::Router;
 use axum::body::Body;

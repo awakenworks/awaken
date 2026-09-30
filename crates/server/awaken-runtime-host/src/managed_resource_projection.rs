@@ -500,7 +500,11 @@ impl crate::ManagedHost {
         credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
         secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     ) -> Self {
-        self.with_credential_materializer(PinnedCredentialMaterializer::new(credentials, secrets))
+        self.with_credential_materializer(PinnedCredentialMaterializer::new(
+            credentials,
+            secrets,
+            awaken_lease_contract::system_clock(),
+        ))
     }
 
     /// Reuse the process startup's canonical exact materializer for MCP and

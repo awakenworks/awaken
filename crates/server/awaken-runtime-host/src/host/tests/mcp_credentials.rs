@@ -61,6 +61,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         },
         secrets.as_ref(),
         credentials.as_ref(),
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1295,7 +1296,10 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
     });
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let managed = crate::ManagedHost::new(host).with_credential_materializer(
-        awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver),
+        awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
+            resolver,
+            awaken_lease_contract::system_clock(),
+        ),
     );
 
     // Cause/effect decision table:

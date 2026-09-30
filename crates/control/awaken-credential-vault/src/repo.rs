@@ -175,13 +175,13 @@ pub use application_mcp::{
 mod material_mutation;
 pub use material_mutation::{
     CREDENTIAL_MATERIAL_WRITER_LEASE_MS, CredentialMaterialMutationFence,
-    CredentialMaterialMutationPhase,
+    CredentialMaterialMutationPhase, credential_material_now_unix_ms,
 };
 use material_mutation::{
     CredentialMaterialRecoveryPlan, CredentialMaterialRecoverySignal,
-    credential_material_now_unix_ms, credential_material_recovery_plan, fence_material_writes,
-    idempotent_credential_source_matches, logical_credential_source_matches,
-    logical_material_ref_matches, namespace_new_material_refs, new_material_refs,
+    credential_material_recovery_plan, fence_material_writes, idempotent_credential_source_matches,
+    logical_credential_source_matches, logical_material_ref_matches, namespace_new_material_refs,
+    new_material_refs,
 };
 
 /// Secret-free write-ahead intent for create, rotate, disable, archive, or
@@ -249,16 +249,18 @@ impl CredentialMutationIntent {
     pub fn prepare(
         before: Option<CredentialSource>,
         mut after: CredentialSource,
+        now_unix_ms: u64,
     ) -> Result<Self, CredentialError> {
         let writes_new_material = new_material_refs(before.as_ref(), &after).next().is_some();
-        let material_fence = CredentialMaterialMutationFence::fresh(writes_new_material)?;
+        let material_fence =
+            CredentialMaterialMutationFence::fresh(writes_new_material, now_unix_ms)?;
         namespace_new_material_refs(before.as_ref(), &mut after, material_fence.attempt_id());
         let intent = Self {
             material_fence,
             before,
             after,
         };
-        intent.validate_for_begin()?;
+        intent.validate_for_begin(now_unix_ms)?;
         Ok(intent)
     }
 
@@ -286,13 +288,16 @@ impl CredentialMutationIntent {
     /// cross-id intent identically. The repository owns only publication shape:
     /// one Workspace/kind, an active version-1 insertion, and disjoint material.
     /// A higher application layer owns provider/descriptor replacement policy.
-    pub fn validate_for_begin(&self) -> Result<(), CredentialError> {
+    pub fn validate_for_begin(&self, now_unix_ms: u64) -> Result<(), CredentialError> {
         self.validate()?;
         let (writes_new_material, new_refs_bound_to_attempt) = self
             .material_fence
             .material_input_facts(self.before.as_ref(), &self.after);
-        self.material_fence
-            .validate_fresh_for_begin(writes_new_material, new_refs_bound_to_attempt)
+        self.material_fence.validate_fresh_for_begin(
+            writes_new_material,
+            new_refs_bound_to_attempt,
+            now_unix_ms,
+        )
     }
 
     pub fn validate(&self) -> Result<(), CredentialError> {
@@ -624,7 +629,7 @@ mod publication_proofs {
     fn proof_creation_fixture_is_admitted_by_production_validation() {
         // Non-vacuity: the fixed Create fixture used by the presence proof
         // must satisfy actual command validation, not only an abstract shape.
-        pending().validate_for_begin().unwrap();
+        pending().validate_for_begin(1_000).unwrap();
     }
 
     #[cfg(kani)]
@@ -887,13 +892,16 @@ impl PendingManagedCredentialMutation {
 
     /// New commands must use the current closed construction format. Legacy
     /// rows are accepted only through recovery after deserialization.
-    pub fn validate_for_begin(&self) -> Result<(), ManagedCredentialMutationError> {
+    pub fn validate_for_begin(
+        &self,
+        now_unix_ms: u64,
+    ) -> Result<(), ManagedCredentialMutationError> {
         self.validate()?;
         let (writes_new_material, new_refs_bound_to_attempt) = self
             .material_fence
             .material_input_facts(self.before_source.as_ref(), &self.after_source);
         self.material_fence
-            .validate_fresh_for_begin(writes_new_material, new_refs_bound_to_attempt)
+            .validate_fresh_for_begin(writes_new_material, new_refs_bound_to_attempt, now_unix_ms)
             .map_err(|_| ManagedCredentialMutationError::RevisionConflict)
     }
 
@@ -1014,6 +1022,7 @@ impl PendingManagedCredentialMutation {
     pub fn create(
         mut source: CredentialSource,
         credential: ManagedVaultCredential,
+        now_unix_ms: u64,
     ) -> Result<Self, CredentialError> {
         if !managed_creation_pair_admitted(
             source.workspace_id == credential.workspace_id,
@@ -1029,7 +1038,8 @@ impl PendingManagedCredentialMutation {
             ));
         }
         let writes_new_material = source.material_refs().next().is_some();
-        let material_fence = CredentialMaterialMutationFence::fresh(writes_new_material)?;
+        let material_fence =
+            CredentialMaterialMutationFence::fresh(writes_new_material, now_unix_ms)?;
         namespace_new_material_refs(None, &mut source, material_fence.attempt_id());
         Ok(Self {
             material_fence,
@@ -1042,6 +1052,10 @@ impl PendingManagedCredentialMutation {
         })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one Managed fence needs explicit source, child and owner time; no existing context owns all three"
+    )]
     pub fn change(
         operation_id: String,
         operation: ManagedCredentialOperation,
@@ -1050,6 +1064,7 @@ impl PendingManagedCredentialMutation {
         before_credential: ManagedVaultCredential,
         after_credential: ManagedVaultCredential,
         writes_new_material: bool,
+        now_unix_ms: u64,
     ) -> Result<Self, ManagedCredentialMutationError> {
         if operation == ManagedCredentialOperation::Create
             || before_source.id != after_source.id
@@ -1068,8 +1083,9 @@ impl PendingManagedCredentialMutation {
             before_credential.revision,
             &after_credential,
         )?;
-        let material_fence = CredentialMaterialMutationFence::fresh(writes_new_material)
-            .map_err(ManagedCredentialMutationError::Store)?;
+        let material_fence =
+            CredentialMaterialMutationFence::fresh(writes_new_material, now_unix_ms)
+                .map_err(ManagedCredentialMutationError::Store)?;
         if writes_new_material {
             namespace_new_material_refs(
                 Some(&before_source),
@@ -1189,6 +1205,7 @@ pub trait ManagedCredentialRepository: CredentialRepo + ManagedVaultRepo {
     async fn begin_managed_mutation(
         &self,
         pending: PendingManagedCredentialMutation,
+        now_unix_ms: u64,
     ) -> Result<bool, CredentialError>;
     async fn commit_managed_mutation(
         &self,
@@ -1316,6 +1333,7 @@ pub async fn reconcile_managed_vault_deletion(
     vault: &ManagedVault,
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
+    clock: &dyn awaken_lease_contract::WallClock,
 ) -> Result<bool, ManagedCredentialMutationError> {
     if vault.is_deleted() {
         return Ok(true);
@@ -1347,6 +1365,7 @@ pub async fn reconcile_managed_vault_deletion(
                     .clone(),
                 store,
                 repo,
+                clock,
             )
             .await?;
         }
@@ -1421,12 +1440,13 @@ pub async fn reconcile_managed_vault_deletion(
 pub async fn reconcile_managed_vault_deletions(
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
+    clock: &dyn awaken_lease_contract::WallClock,
 ) -> Result<usize, ManagedCredentialMutationError> {
     let pending = repo.pending_managed_vault_deletions().await?;
     let mut completed = 0;
     let mut first_error = None;
     for vault in pending {
-        match reconcile_managed_vault_deletion(&vault, store, repo).await {
+        match reconcile_managed_vault_deletion(&vault, store, repo, clock).await {
             Ok(true) => completed += 1,
             Ok(false) => {}
             Err(error) if first_error.is_none() => first_error = Some(error),
@@ -1520,6 +1540,7 @@ pub trait CredentialRepo: Send + Sync {
     async fn begin_mutation(
         &self,
         intent: CredentialMutationIntent,
+        now_unix_ms: u64,
     ) -> Result<bool, CredentialError>;
     /// Fence a completed external write before publication.
     async fn mark_mutation_ready(

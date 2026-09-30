@@ -14,8 +14,9 @@ pub async fn source_cleanup_rechecks_durable_truth(repo: &dyn CredentialRepo) {
     repo.put(before.clone()).await.unwrap();
     let mut after = before.clone();
     after.version = 2;
-    let intent = CredentialMutationIntent::prepare(Some(before.clone()), after.clone()).unwrap();
-    repo.begin_mutation(intent.clone()).await.unwrap();
+    let intent =
+        CredentialMutationIntent::prepare(Some(before.clone()), after.clone(), 1_000).unwrap();
+    repo.begin_mutation(intent.clone(), 1_000).await.unwrap();
     let abort = repo.abort_mutation(&intent).await.unwrap();
     repo.put(after.clone()).await.unwrap();
     for request in [&intent, &abort] {
@@ -43,8 +44,8 @@ pub async fn source_cleanup_rechecks_durable_truth(repo: &dyn CredentialRepo) {
     assert_eq!(repo.abort_mutation(&intent).await.unwrap(), abort, "R2");
     repo.complete_mutation(&abort).await.unwrap();
     after.version = 3;
-    let next = CredentialMutationIntent::prepare(Some(before), after).unwrap();
-    repo.begin_mutation(next.clone()).await.unwrap();
+    let next = CredentialMutationIntent::prepare(Some(before), after, 1_000).unwrap();
+    repo.begin_mutation(next.clone(), 1_000).await.unwrap();
     assert!(
         matches!(
             repo.complete_mutation(&abort).await,

@@ -98,6 +98,7 @@ async fn named_material_set_rotates_and_reclaims_as_one_exact_aggregate() {
         ]),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -120,6 +121,7 @@ async fn named_material_set_rotates_and_reclaims_as_one_exact_aggregate() {
         },
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -152,6 +154,7 @@ async fn named_material_set_rotates_and_reclaims_as_one_exact_aggregate() {
             },
             &store,
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await,
         Err(CredentialError::MutationConflict(_))
@@ -168,6 +171,7 @@ async fn named_material_set_rotates_and_reclaims_as_one_exact_aggregate() {
         },
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -184,6 +188,7 @@ async fn named_material_set_rotates_and_reclaims_as_one_exact_aggregate() {
         CredentialRetirement::Archive,
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -233,6 +238,7 @@ async fn rotation_failures_preserve_one_committed_revision_and_material_set() {
         )]),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -244,6 +250,7 @@ async fn rotation_failures_preserve_one_committed_revision_and_material_set() {
         CredentialMaterialPatch::default(),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .expect("F1");
@@ -263,6 +270,7 @@ async fn rotation_failures_preserve_one_committed_revision_and_material_set() {
         },
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await;
     assert!(
@@ -285,6 +293,7 @@ async fn rotation_failures_preserve_one_committed_revision_and_material_set() {
         },
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await;
     assert!(matches!(partial, Err(CredentialError::Storage(_))), "F3");
@@ -296,6 +305,7 @@ async fn rotation_failures_preserve_one_committed_revision_and_material_set() {
         &created.id,
         awaken_credential_vault::CredentialStatus::Disabled,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -312,6 +322,7 @@ async fn rotation_failures_preserve_one_committed_revision_and_material_set() {
                 },
                 &store,
                 &repo,
+                awaken_lease_contract::system_clock().as_ref(),
             )
             .await,
             Err(CredentialError::NotActive(_))
@@ -336,7 +347,7 @@ async fn rotation_failures_preserve_one_committed_revision_and_material_set() {
                 },
                 &store,
                 &repo,
-            )
+             awaken_lease_contract::system_clock().as_ref(),)
             .await,
             Err(CredentialError::InvalidSource(message)) if message.contains("overflow")
         ),
@@ -369,6 +380,7 @@ async fn recovery_reconciles_the_complete_named_material_set() {
             )]),
             &store,
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -380,9 +392,9 @@ async fn recovery_reconciles_the_complete_named_material_set() {
             OAUTH_REFRESH_TOKEN_SLOT.into(),
             SecretRef(format!("sec:{}:r2:{OAUTH_REFRESH_TOKEN_SLOT}", after.id.0)),
         );
-        let intent = CredentialMutationIntent::prepare(Some(before), after).unwrap();
+        let intent = CredentialMutationIntent::prepare(Some(before), after, 1_000).unwrap();
         let new_refs = intent.after.material_refs().cloned().collect::<Vec<_>>();
-        repo.begin_mutation(intent.clone()).await.unwrap();
+        repo.begin_mutation(intent.clone(), 1_000).await.unwrap();
         for reference in &new_refs {
             store
                 .put(reference, RedactedString::new("new"))
@@ -403,7 +415,13 @@ async fn recovery_reconciles_the_complete_named_material_set() {
         }
 
         assert_eq!(
-            recover_credential_mutations(&store, &repo).await.unwrap(),
+            recover_credential_mutations(
+                &store,
+                &repo,
+                awaken_lease_contract::system_clock().as_ref()
+            )
+            .await
+            .unwrap(),
             1
         );
         for reference in if committed { &old_refs } else { &new_refs } {

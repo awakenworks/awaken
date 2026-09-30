@@ -514,8 +514,9 @@ impl CredentialRepo for SqliteCredentialRepo {
     async fn begin_mutation(
         &self,
         intent: CredentialMutationIntent,
+        now_unix_ms: u64,
     ) -> Result<bool, CredentialError> {
-        intent.validate_for_begin()?;
+        intent.validate_for_begin(now_unix_ms)?;
         with_conn(&self.conn, move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1195,8 +1196,9 @@ mod tests {
         let mut updated = contended.clone();
         updated.provider_id = Some("provider-after".into());
         updated.version += 1;
-        let intent = CredentialMutationIntent::prepare(Some(contended), updated.clone()).unwrap();
-        repo.begin_mutation(intent.clone()).await.unwrap();
+        let intent =
+            CredentialMutationIntent::prepare(Some(contended), updated.clone(), 1_000).unwrap();
+        repo.begin_mutation(intent.clone(), 1_000).await.unwrap();
         let blocker_path = path.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let blocker = std::thread::spawn(move || {
@@ -1390,6 +1392,7 @@ mod tests {
             "2026-09-17T00:00:01Z".into(),
             &InMemorySecretStore::new(),
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await;
         assert!(matches!(
@@ -1451,11 +1454,11 @@ mod tests {
         let healthy_source = source("cred:healthy-pending");
         let healthy_child = managed_credential(&healthy_source.id.0, "crd-healthy-pending");
         let healthy_pending =
-            PendingManagedCredentialMutation::create(healthy_source, healthy_child).unwrap();
+            PendingManagedCredentialMutation::create(healthy_source, healthy_child, 1_000).unwrap();
         let future_source = source("cred:future");
         let future_child = managed_credential(&future_source.id.0, "crd-future");
         let mut future_pending = serde_json::to_value(
-            PendingManagedCredentialMutation::create(future_source, future_child).unwrap(),
+            PendingManagedCredentialMutation::create(future_source, future_child, 1_000).unwrap(),
         )
         .unwrap();
         future_pending["format_version"] = serde_json::json!(2);
@@ -1550,9 +1553,12 @@ mod tests {
         let pending = PendingManagedCredentialMutation::create(
             source("cred:abort-cleanup"),
             managed_credential("cred:abort-cleanup", "crd-abort-cleanup"),
+            1_000,
         )
         .unwrap();
-        repo.begin_managed_mutation(pending.clone()).await.unwrap();
+        repo.begin_managed_mutation(pending.clone(), 1_000)
+            .await
+            .unwrap();
 
         let reclaiming = repo.abort_managed_mutation(&pending).await.unwrap();
         assert_eq!(

@@ -39,7 +39,7 @@ impl PinnedCredentialMaterializer {
         {
             return Ok(None);
         }
-        let now = unix_time_ms();
+        let now = self.clock.now_ms();
         let mut pending = self
             .pending_process_secrets
             .lock()
@@ -75,7 +75,7 @@ impl PinnedCredentialMaterializer {
         let Some(artifact) = delivery.credential_artifact(access.refresh.is_some()) else {
             return Ok(None);
         };
-        let now = unix_time_ms();
+        let now = self.clock.now_ms();
         let mut pending = self
             .pending_credential_artifacts
             .lock()
@@ -223,7 +223,7 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
                         "credential artifact is missing, expired, or already consumed",
                     )
                 })?;
-            if pending.expires_at_unix_ms <= unix_time_ms() {
+            if pending.expires_at_unix_ms <= self.clock.now_ms() {
                 return Err(awaken_provisioning_contract::SandboxError::gone(
                     "credential artifact expired",
                 ));
@@ -300,7 +300,7 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
                     "process-secret reference is missing, expired, or already consumed",
                 )
             })?;
-        if pending.expires_at_unix_ms <= unix_time_ms() {
+        if pending.expires_at_unix_ms <= self.clock.now_ms() {
             return Err(awaken_provisioning_contract::SandboxError::gone(
                 "process-secret reference expired",
             ));
@@ -385,6 +385,7 @@ impl PinnedCredentialMaterializer {
                 },
                 secrets.as_ref(),
                 credentials.as_ref(),
+                self.clock.as_ref(),
             )
             .await
             .map(|_| ())
@@ -408,7 +409,9 @@ impl PinnedCredentialMaterializer {
         }
         #[cfg(feature = "authority")]
         {
-            effect.authorization().validate_live_at(unix_time_ms())?;
+            effect
+                .authorization()
+                .validate_live_at(self.clock.now_ms())?;
             let request = credential_writeback_request(effect.reference(), bytes)?;
             let revision = request.revision.ok_or_else(|| {
                 awaken_provisioning_contract::SandboxError::invalid(
@@ -432,6 +435,7 @@ impl PinnedCredentialMaterializer {
                 request.material,
                 secrets.as_ref(),
                 credentials.as_ref(),
+                self.clock.as_ref(),
             )
             .await
             .map(|_| ())
@@ -538,6 +542,7 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .expect("M1 legacy source");
@@ -575,11 +580,16 @@ mod tests {
             descriptor,
             secrets.as_ref(),
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .expect("M3 described source")
         .source;
-        let broker = PinnedCredentialMaterializer::new(credentials.clone(), secrets.clone());
+        let broker = PinnedCredentialMaterializer::new(
+            credentials.clone(),
+            secrets.clone(),
+            awaken_lease_contract::system_clock(),
+        );
 
         let legacy_reference = format!("{}@{}", legacy.id.0, legacy.version);
         assert_eq!(
@@ -645,11 +655,16 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .expect("W1 source");
         let reference = format!("{}@{}", source.id.0, source.version);
-        let broker = PinnedCredentialMaterializer::new(credentials.clone(), secrets.clone());
+        let broker = PinnedCredentialMaterializer::new(
+            credentials.clone(),
+            secrets.clone(),
+            awaken_lease_contract::system_clock(),
+        );
 
         assert_eq!(broker.materialize(&reference).await.unwrap(), b"before");
         assert!(
@@ -725,11 +740,16 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .expect("F1 source");
         let reference = format!("{}@{}", source.id.0, source.version);
-        let broker = PinnedCredentialMaterializer::new(credentials.clone(), secrets.clone());
+        let broker = PinnedCredentialMaterializer::new(
+            credentials.clone(),
+            secrets.clone(),
+            awaken_lease_contract::system_clock(),
+        );
         let predecessor = awaken_provisioning_contract::SandboxEffectFence::new(
             "continuation-writeback",
             "worker-owner",

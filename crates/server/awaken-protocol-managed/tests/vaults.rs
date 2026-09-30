@@ -281,6 +281,7 @@ impl CredentialRefreshExchange for FakeExchange {
                 },
                 self.secrets.as_ref(),
                 self.credentials.as_ref(),
+                awaken_lease_contract::system_clock().as_ref(),
             )
             .await
             .expect("fake exchange reseals the exact revision");
@@ -1040,9 +1041,13 @@ async fn delete_vault_fences_children_and_converges_after_rollout_ack() {
             .unwrap();
     }
     assert_eq!(
-        reconcile_managed_vault_deletions(h.secrets.as_ref(), h.credentials.as_ref())
-            .await
-            .unwrap(),
+        reconcile_managed_vault_deletions(
+            h.secrets.as_ref(),
+            h.credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
+        )
+        .await
+        .unwrap(),
         1,
         "the supervisor completes the unblocked root"
     );
@@ -3045,40 +3050,9 @@ async fn validate_with_probe_reports_valid_and_the_probe_sees_the_materialized_t
     );
 }
 
-fn refused_initialize() -> McpProbeFailure {
-    McpProbeFailure {
-        method: "initialize".into(),
-        http_response: Some(ProbeHttpResponse {
-            status_code: 401,
-            content_type: "application/json".into(),
-            body: r#"{"error":"invalid_token","echo":"{bearer}"}"#.into(),
-            body_truncated: false,
-        }),
-    }
-}
-
-/// The exact `BetaManagedAgentsMCPProbe` projection of [`refused_initialize`]
-/// after the Vault owner scrubbed the access token the fake echoed.
-fn refused_initialize_wire() -> Value {
-    json!({
-        "method": "initialize",
-        "http_response": {
-            "body": r#"{"error":"invalid_token","echo":"[REDACTED]"}"#,
-            "body_truncated": false,
-            "content_type": "application/json",
-            "status_code": 401
-        }
-    })
-}
-
-fn oauth_refresh_config() -> Value {
-    json!({
-        "client_id": "client-1",
-        "refresh_token": "rt-secret", // awaken-allow: secret
-        "token_endpoint": "https://auth.example.com/token",
-        "token_endpoint_auth": { "type": "none" }
-    })
-}
+#[path = "vaults/refresh_fixtures.rs"]
+mod refresh_fixtures;
+use refresh_fixtures::{oauth_refresh_config, refused_initialize, refused_initialize_wire};
 
 async fn validate(h: &Harness, vault_id: &str, cred_id: &str) -> Value {
     call(

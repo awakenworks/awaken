@@ -20,13 +20,6 @@ pub(super) struct ExpectedProviderTarget<'a> {
     pub(super) protocol_endpoint_id: Option<&'a str>,
 }
 
-pub(super) fn unix_time_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
-}
-
 /// Validate one explicit adapter mechanism without introducing a capability
 /// search. The caller is the installed adapter; this function only prevents its
 /// Native, ACP, MCP, and Resource entry points from drifting in admission rules.
@@ -35,7 +28,8 @@ pub(super) fn admit_exact_adapter(
     selected_holder: &PlaintextHolder,
     realization: CredentialRealizationKind,
     capabilities: &CredentialRealizationCapabilities,
+    now_unix_ms: u64,
 ) -> Result<(), CredentialAdmissionError> {
-    access.admit(selected_holder, realization, capabilities, unix_time_ms())?;
+    access.admit(selected_holder, realization, capabilities, now_unix_ms)?;
     Ok(())
 }

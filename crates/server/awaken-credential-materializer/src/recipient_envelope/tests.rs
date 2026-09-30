@@ -106,7 +106,8 @@ async fn separate_recipient_installations_deliver_native_and_acp_without_a_vault
     let root = tempfile::tempdir().unwrap();
     let control = root.path().join("control.json");
     write(&control, &document());
-    let issuer = RecipientKeyEnvelope::open(control).unwrap();
+    let issuer =
+        RecipientKeyEnvelope::open(control, awaken_lease_contract::system_clock()).unwrap();
     for boundary in [PlaintextBoundary::Worker, PlaintextBoundary::Workload] {
         let worker = root.path().join("worker.json");
         let mut worker_document = document();
@@ -115,7 +116,8 @@ async fn separate_recipient_installations_deliver_native_and_acp_without_a_vault
             .unwrap()
             .retain(|key| key["holder"] == json!(holder(boundary)));
         write(&worker, &worker_document);
-        let resolver = RecipientKeyEnvelope::open(&worker).unwrap();
+        let resolver =
+            RecipientKeyEnvelope::open(&worker, awaken_lease_contract::system_clock()).unwrap();
         let req = request(boundary);
         let access = req
             .access
@@ -163,7 +165,7 @@ async fn acp_provider_adapter_usage_retains_its_workload_recipient() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("keys.json");
     write(&path, &document());
-    let adapter = RecipientKeyEnvelope::open(path).unwrap();
+    let adapter = RecipientKeyEnvelope::open(path, awaken_lease_contract::system_clock()).unwrap();
     let mut req = request(PlaintextBoundary::Workload);
     req.access.usage = CredentialUsage::ProviderAdapter;
     req.access
@@ -206,7 +208,7 @@ async fn exact_acp_mcp_bearer_uses_the_existing_recipient_envelope() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("keys.json");
     write(&path, &document());
-    let adapter = RecipientKeyEnvelope::open(path).unwrap();
+    let adapter = RecipientKeyEnvelope::open(path, awaken_lease_contract::system_clock()).unwrap();
     let mut req = request(PlaintextBoundary::Workload);
     req.access.usage = CredentialUsage::HttpHeader {
         name: "authorization".into(),
@@ -335,7 +337,7 @@ async fn every_independent_replay_coordinate_and_ciphertext_mutation_is_rejected
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("keys.json");
     write(&path, &document());
-    let adapter = RecipientKeyEnvelope::open(path).unwrap();
+    let adapter = RecipientKeyEnvelope::open(path, awaken_lease_contract::system_clock()).unwrap();
     for boundary in [PlaintextBoundary::Worker, PlaintextBoundary::Workload] {
         let req = request(boundary);
         let original = req
@@ -410,7 +412,7 @@ async fn key_removal_and_replacement_are_observed_before_use_without_restart() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("keys.json");
     write(&path, &document());
-    let adapter = RecipientKeyEnvelope::open(&path).unwrap();
+    let adapter = RecipientKeyEnvelope::open(&path, awaken_lease_contract::system_clock()).unwrap();
     let req = request(PlaintextBoundary::Worker);
     let access = req.access.clone().with_envelope(
         adapter
@@ -489,7 +491,7 @@ fn malformed_or_ambiguous_key_documents_fail_closed_without_echoing_secrets() {
             _ => unreachable!(),
         }
         write(&path, &doc);
-        let result = RecipientKeyEnvelope::open(&path);
+        let result = RecipientKeyEnvelope::open(&path, awaken_lease_contract::system_clock());
         assert!(result.is_err(), "D21 partition {rule}");
         assert!(
             !result
@@ -501,21 +503,27 @@ fn malformed_or_ambiguous_key_documents_fail_closed_without_echoing_secrets() {
     }
     for bytes in [Vec::new(), vec![b'x'; MAX_BYTES + 1], b"{not-json".to_vec()] {
         std::fs::write(&path, bytes).unwrap();
-        assert!(RecipientKeyEnvelope::open(&path).is_err());
+        assert!(RecipientKeyEnvelope::open(&path, awaken_lease_contract::system_clock()).is_err());
     }
     std::fs::remove_file(&path).unwrap();
-    assert!(RecipientKeyEnvelope::open(&path).is_err());
+    assert!(RecipientKeyEnvelope::open(&path, awaken_lease_contract::system_clock()).is_err());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         write(&path, &document());
         for mode in [0o600, 0o640, 0o440] {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
-            assert!(RecipientKeyEnvelope::open(&path).is_ok(), "R1/R2 {mode:o}");
+            assert!(
+                RecipientKeyEnvelope::open(&path, awaken_lease_contract::system_clock()).is_ok(),
+                "R1/R2 {mode:o}"
+            );
         }
         for mode in [0o660, 0o650, 0o644, 0o604] {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
-            assert!(RecipientKeyEnvelope::open(&path).is_err(), "R3 {mode:o}");
+            assert!(
+                RecipientKeyEnvelope::open(&path, awaken_lease_contract::system_clock()).is_err(),
+                "R3 {mode:o}"
+            );
         }
     }
 }

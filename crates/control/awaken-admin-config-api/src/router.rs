@@ -1424,6 +1424,7 @@ async fn archive_credential(
         awaken_credential_vault::repo::CredentialRetirement::Disable,
         state.secrets.as_ref(),
         state.credentials.as_ref(),
+        state.clock.as_ref(),
     )
     .await
     .map_err(|e| cred_problem(&e, &rid))?;
@@ -1630,6 +1631,7 @@ async fn post_credential(
                 descriptor,
                 state.secrets.as_ref(),
                 state.credentials.as_ref(),
+                state.clock.as_ref(),
             )
             .await
             .map(|entry| entry.source)
@@ -1641,6 +1643,7 @@ async fn post_credential(
             descriptor,
             state.secrets.as_ref(),
             state.credentials.as_ref(),
+            state.clock.as_ref(),
         )
         .await
         .map(|entry| entry.source),
@@ -1650,14 +1653,29 @@ async fn post_credential(
             None,
             state.secrets.as_ref(),
             state.credentials.as_ref(),
+            state.clock.as_ref(),
         )
         .await
         .map(|entry| entry.source),
         (None, Some(descriptor), None) => {
-            enter_credential_described(params, descriptor, &*state.secrets, &*state.credentials)
-                .await
+            enter_credential_described(
+                params,
+                descriptor,
+                &*state.secrets,
+                &*state.credentials,
+                state.clock.as_ref(),
+            )
+            .await
         }
-        (None, None, None) => enter_credential(params, &*state.secrets, &*state.credentials).await,
+        (None, None, None) => {
+            enter_credential(
+                params,
+                &*state.secrets,
+                &*state.credentials,
+                state.clock.as_ref(),
+            )
+            .await
+        }
         (_, None, Some(_)) | (None, Some(_), Some(_)) => Err(CredentialError::InvalidSource(
             "replacement_of requires a described idempotent hosted credential request".into(),
         )),
@@ -1700,6 +1718,7 @@ async fn rotate_credential(
         },
         state.secrets.as_ref(),
         state.credentials.as_ref(),
+        state.clock.as_ref(),
     )
     .await
     .map_err(|error| cred_problem(&error, &rid))?;

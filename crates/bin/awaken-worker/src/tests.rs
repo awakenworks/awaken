@@ -460,9 +460,10 @@ fn admits_native_source(
 
 fn credential_support() -> CredentialMaterializerSupport {
     CredentialMaterializerSupport::from(
-        &awaken_credential_materializer::PinnedCredentialMaterializer::external_only(Arc::new(
-            ExternalCredentialResolver,
-        )),
+        &awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
+            Arc::new(ExternalCredentialResolver),
+            awaken_lease_contract::system_clock(),
+        ),
     )
 }
 
@@ -1018,9 +1019,10 @@ fn external_credential_resolver_has_one_canonical_resolution_path() {
         awaken_lease_contract::system_clock(),
     )
     .with_credential_materializer(
-        awaken_credential_materializer::PinnedCredentialMaterializer::external_only(Arc::new(
-            ExternalCredentialResolver,
-        )),
+        awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
+            Arc::new(ExternalCredentialResolver),
+            awaken_lease_contract::system_clock(),
+        ),
     )
     .with_worker_local_credential_resolver(Arc::new(ExternalCredentialResolver))
     .with_standard_manifest(Default::default())

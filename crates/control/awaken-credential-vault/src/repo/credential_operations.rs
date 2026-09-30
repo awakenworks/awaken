@@ -8,6 +8,7 @@
 // @formal entrypoint credential.visible_row_always_has_material
 use super::*;
 use crate::persist_material_exact;
+use awaken_lease_contract::WallClock;
 
 pub async fn ensure_worker_local(
     repo: &dyn CredentialRepo,
@@ -72,8 +73,9 @@ pub async fn enter_credential(
     params: CredentialCreateParams,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialSource, CredentialError> {
-    enter_credential_with_materials(params, BTreeMap::new(), store, repo).await
+    enter_credential_with_materials(params, BTreeMap::new(), store, repo, clock).await
 }
 
 /// Result of an idempotent credential-entry command.
@@ -93,6 +95,7 @@ pub async fn enter_credential_idempotent(
     protocol_endpoint_id: Option<String>,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialEntry, CredentialError> {
     validate_create_params(&params)?;
     if protocol_endpoint_id
@@ -110,7 +113,7 @@ pub async fn enter_credential_idempotent(
     }
     let (mut expected, secret) = prepare_source_with_id(id, params);
     expected.protocol_endpoint_id = protocol_endpoint_id;
-    enter_prepared_credential_idempotent(expected, secret, store, repo).await
+    enter_prepared_credential_idempotent(expected, secret, store, repo, clock).await
 }
 
 fn prepare_described_source(
@@ -161,9 +164,10 @@ pub async fn enter_credential_described(
     descriptor: awaken_credential_contract::CredentialDescriptor,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialSource, CredentialError> {
     let (source, secret) = prepare_described_source(None, params, None, descriptor)?;
-    enter_prepared_credential(source, secret, BTreeMap::new(), store, repo).await
+    enter_prepared_credential(source, secret, BTreeMap::new(), store, repo, clock).await
 }
 
 /// Enter one described source at a stable command identity. This is the same
@@ -176,11 +180,12 @@ pub async fn enter_credential_idempotent_described(
     descriptor: awaken_credential_contract::CredentialDescriptor,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialEntry, CredentialError> {
     let (source, secret) =
         prepare_described_source(Some(id), params, protocol_endpoint_id, descriptor)?;
     let expected_material = secret.clone();
-    let entry = enter_prepared_credential_idempotent(source, secret, store, repo).await?;
+    let entry = enter_prepared_credential_idempotent(source, secret, store, repo, clock).await?;
     verify_idempotent_material(entry, expected_material.as_ref(), store).await
 }
 
@@ -189,6 +194,10 @@ pub async fn enter_credential_idempotent_described(
 /// pinned consumers can be relinked before a separate exact retirement command.
 /// A stable replacement id makes a lost-response retry return the same source
 /// and verify the same sealed material.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one replacement command needs explicit predecessor, descriptor and owner clock; no existing context owns all three"
+)]
 pub async fn enter_credential_replacement_idempotent_described(
     replacement_of: &awaken_credential_contract::CredentialRef,
     replacement_id: CredentialSourceId,
@@ -197,6 +206,7 @@ pub async fn enter_credential_replacement_idempotent_described(
     descriptor: awaken_credential_contract::CredentialDescriptor,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialEntry, CredentialError> {
     if replacement_of.id.trim().is_empty() || replacement_of.revision == 0 {
         return Err(CredentialError::InvalidSource(
@@ -278,6 +288,7 @@ pub async fn enter_credential_replacement_idempotent_described(
         Some(before),
         store,
         repo,
+        clock,
     )
     .await?;
     verify_idempotent_material(entry, expected_material.as_ref(), store).await
@@ -292,9 +303,11 @@ pub async fn enter_credential_idempotent_verified(
     protocol_endpoint_id: Option<String>,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialEntry, CredentialError> {
     let expected_material = params.secret.clone();
-    let entry = enter_credential_idempotent(id, params, protocol_endpoint_id, store, repo).await?;
+    let entry =
+        enter_credential_idempotent(id, params, protocol_endpoint_id, store, repo, clock).await?;
     verify_idempotent_material(entry, expected_material.as_ref(), store).await
 }
 
@@ -324,8 +337,10 @@ pub(super) async fn enter_prepared_credential_idempotent(
     secret: Option<awaken_agent_contract::RedactedString>,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialEntry, CredentialError> {
-    enter_prepared_credential_idempotent_with_before(expected, secret, None, store, repo).await
+    enter_prepared_credential_idempotent_with_before(expected, secret, None, store, repo, clock)
+        .await
 }
 
 async fn enter_prepared_credential_idempotent_with_before(
@@ -334,6 +349,7 @@ async fn enter_prepared_credential_idempotent_with_before(
     before: Option<CredentialSource>,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialEntry, CredentialError> {
     match repo.get(&expected.id).await {
         Ok(source) => {
@@ -354,6 +370,7 @@ async fn enter_prepared_credential_idempotent_with_before(
         before,
         store,
         repo,
+        clock,
     )
     .await
     {
@@ -395,11 +412,12 @@ pub async fn enter_credential_with_materials(
     auxiliary: BTreeMap<String, awaken_agent_contract::RedactedString>,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialSource, CredentialError> {
     validate_create_params(&params)?;
     validate_material_slots(auxiliary.keys().map(String::as_str))?;
     let (source, secret) = prepare_source(params);
-    enter_prepared_credential(source, secret, auxiliary, store, repo).await
+    enter_prepared_credential(source, secret, auxiliary, store, repo, clock).await
 }
 
 /// Create one Managed Vault child and its executable Source through the single
@@ -410,16 +428,18 @@ pub async fn create_managed_credential(
     command: ManagedCredentialCreateCommand,
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
+    clock: &dyn WallClock,
 ) -> Result<(CredentialSource, ManagedVaultCredential), ManagedCredentialCreationError> {
     let stable_command = command.source_id.is_some();
-    let (pending, materials) = prepare_managed_credential_create(command)?;
+    let (pending, materials) =
+        prepare_managed_credential_create(command, credential_material_now_unix_ms(clock)?)?;
     if stable_command
         && let Some(replayed) =
             published_managed_credential_replay(&pending, &materials, store, repo).await?
     {
         return Ok(replayed);
     }
-    match execute_managed_mutation(pending.clone(), materials.clone(), store, repo).await {
+    match execute_managed_mutation(pending.clone(), materials.clone(), store, repo, clock).await {
         Ok(committed) => Ok((committed.after_source, committed.after_credential)),
         Err(error) => {
             // An identical concurrent owner may have published after our first
@@ -438,6 +458,7 @@ pub async fn create_managed_credential(
 
 fn prepare_managed_credential_create(
     mut command: ManagedCredentialCreateCommand,
+    now_unix_ms: u64,
 ) -> Result<
     (
         PendingManagedCredentialMutation,
@@ -488,7 +509,7 @@ fn prepare_managed_credential_create(
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
-    let pending = PendingManagedCredentialMutation::create(source, credential)?;
+    let pending = PendingManagedCredentialMutation::create(source, credential, now_unix_ms)?;
     Ok((pending, materials))
 }
 
@@ -640,8 +661,10 @@ async fn reclaim_and_complete_managed_mutation(
 pub async fn recover_managed_credential_mutations(
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
+    clock: &dyn WallClock,
 ) -> Result<usize, ManagedCredentialCreationError> {
-    recover_managed_credential_mutations_at(store, repo, credential_material_now_unix_ms()?).await
+    recover_managed_credential_mutations_at(store, repo, credential_material_now_unix_ms(clock)?)
+        .await
 }
 
 /// Periodic reconciliation never races a live writer. It resumes `Ready` and
@@ -651,8 +674,10 @@ pub async fn recover_managed_credential_mutations(
 pub async fn reconcile_ready_managed_credential_mutations(
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
+    clock: &dyn WallClock,
 ) -> Result<usize, ManagedCredentialCreationError> {
-    recover_managed_credential_mutations_at(store, repo, credential_material_now_unix_ms()?).await
+    recover_managed_credential_mutations_at(store, repo, credential_material_now_unix_ms(clock)?)
+        .await
 }
 
 async fn recover_managed_credential_mutations_at(
@@ -782,6 +807,7 @@ async fn execute_managed_mutation(
     mut materials: Vec<(crate::SecretRef, awaken_agent_contract::RedactedString)>,
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
+    clock: &dyn WallClock,
 ) -> Result<PendingManagedCredentialMutation, ManagedCredentialMutationError> {
     // A late effect from a fenced writer may leave an orphan, but it can never
     // overwrite a later attempt's material. Inventory reconciliation reports
@@ -793,7 +819,10 @@ async fn execute_managed_mutation(
         &mut materials,
     )
     .map_err(ManagedCredentialMutationError::Store)?;
-    if !repo.begin_managed_mutation(pending.clone()).await? {
+    if !repo
+        .begin_managed_mutation(pending.clone(), credential_material_now_unix_ms(clock)?)
+        .await?
+    {
         return Err(ManagedCredentialMutationError::Store(
             CredentialError::MutationConflict(
                 "Managed credential command is pending under its durable material attempt; retry after publication or recovery"
@@ -913,6 +942,10 @@ fn prepare_managed_source_update(
 ///
 /// `at` is the RFC 3339 instant of this mutation and becomes the child's
 /// `updated_at`; `created_at` is carried from `before_credential` unchanged.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one Managed update needs explicit revision-fenced source, child and clock; no existing context owns all three"
+)]
 pub async fn update_managed_credential(
     before_credential: ManagedVaultCredential,
     mut after_credential: ManagedVaultCredential,
@@ -921,6 +954,7 @@ pub async fn update_managed_credential(
     at: String,
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
+    clock: &dyn WallClock,
 ) -> Result<ManagedVaultCredential, ManagedCredentialMutationError> {
     after_credential.updated_at = at;
     let before_source = repo.get(&before_credential.source_id).await?;
@@ -945,8 +979,9 @@ pub async fn update_managed_credential(
         before_credential,
         after_credential.clone(),
         !materials.is_empty(),
+        credential_material_now_unix_ms(clock)?,
     )?;
-    let committed = execute_managed_mutation(pending, materials, store, repo).await?;
+    let committed = execute_managed_mutation(pending, materials, store, repo, clock).await?;
     Ok(committed.after_credential)
 }
 
@@ -955,6 +990,10 @@ pub async fn update_managed_credential(
 /// this command still owns child revision, recovery, outbox, and cleanup.
 /// `at` becomes the child's `updated_at`, exactly as for
 /// [`update_managed_credential`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one prepared rotation needs explicit source, child, material and clock; no existing context owns all four"
+)]
 pub async fn update_managed_credential_prepared(
     before_credential: ManagedVaultCredential,
     mut after_credential: ManagedVaultCredential,
@@ -963,6 +1002,7 @@ pub async fn update_managed_credential_prepared(
     at: String,
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
+    clock: &dyn WallClock,
 ) -> Result<(CredentialSource, ManagedVaultCredential), ManagedCredentialMutationError> {
     after_credential.updated_at = at;
     if before_credential.source_id != before_source.id
@@ -984,12 +1024,14 @@ pub async fn update_managed_credential_prepared(
         before_credential,
         after_credential.clone(),
         true,
+        credential_material_now_unix_ms(clock)?,
     )?;
     let committed = execute_managed_mutation(
         pending,
         vec![(rotation.material_ref, rotation.bearer)],
         store,
         repo,
+        clock,
     )
     .await?;
     Ok((committed.after_source, committed.after_credential))
@@ -999,6 +1041,10 @@ pub async fn update_managed_credential_prepared(
 /// is a logical absorbing transition; physical purge is intentionally outside
 /// the command so an older writer can never recreate the child. `at` is the
 /// RFC 3339 transition instant and also becomes the child's `updated_at`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one retirement needs explicit Workspace, child, store and clock; no existing context owns all four"
+)]
 pub async fn retire_managed_credential(
     workspace_id: &str,
     vault_id: &str,
@@ -1007,6 +1053,7 @@ pub async fn retire_managed_credential(
     at: String,
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
+    clock: &dyn WallClock,
 ) -> Result<ManagedVaultCredential, ManagedCredentialMutationError> {
     if !matches!(
         operation,
@@ -1081,8 +1128,9 @@ pub async fn retire_managed_credential(
         before_credential,
         after_credential.clone(),
         false,
+        credential_material_now_unix_ms(clock)?,
     )?;
-    let committed = execute_managed_mutation(pending, Vec::new(), store, repo).await?;
+    let committed = execute_managed_mutation(pending, Vec::new(), store, repo, clock).await?;
     Ok(committed.after_credential)
 }
 
@@ -1092,8 +1140,9 @@ async fn enter_prepared_credential(
     auxiliary: BTreeMap<String, awaken_agent_contract::RedactedString>,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialSource, CredentialError> {
-    enter_prepared_credential_inner(source, secret, auxiliary, None, store, repo)
+    enter_prepared_credential_inner(source, secret, auxiliary, None, store, repo, clock)
         .await
         .map(|entry| entry.source)
 }
@@ -1105,6 +1154,7 @@ async fn enter_prepared_credential_inner(
     before: Option<CredentialSource>,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialEntry, CredentialError> {
     validate_material_slots(auxiliary.keys().map(String::as_str))?;
     let mut materials = Vec::new();
@@ -1118,7 +1168,8 @@ async fn enter_prepared_credential_inner(
             .insert(slot, reference.clone());
         materials.push((reference, secret));
     }
-    let committed = execute_source_mutation(before, source, materials, Some(store), repo).await?;
+    let committed =
+        execute_source_mutation(before, source, materials, Some(store), repo, clock).await?;
     Ok(CredentialEntry {
         source: committed.after,
         created: true,
@@ -1135,20 +1186,25 @@ async fn execute_source_mutation(
     mut materials: Vec<(crate::SecretRef, awaken_agent_contract::RedactedString)>,
     store: Option<&dyn SecretStore>,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialMutationIntent, CredentialError> {
     if !materials.is_empty() && store.is_none() {
         return Err(CredentialError::MutationConflict(
             "credential material mutation requires its SecretStore participant".into(),
         ));
     }
-    let mut intent = CredentialMutationIntent::prepare(before, after)?;
+    let mut intent =
+        CredentialMutationIntent::prepare(before, after, credential_material_now_unix_ms(clock)?)?;
     fence_material_writes(
         &intent.material_fence,
         intent.before.as_ref(),
         &intent.after,
         &mut materials,
     )?;
-    if !repo.begin_mutation(intent.clone()).await? {
+    if !repo
+        .begin_mutation(intent.clone(), credential_material_now_unix_ms(clock)?)
+        .await?
+    {
         return Err(CredentialError::MutationConflict(
             "credential command is pending under its durable material attempt; retry after publication or recovery"
                 .into(),
@@ -1276,6 +1332,7 @@ pub async fn write_back_credential_material_for_effect(
     material: awaken_agent_contract::RedactedString,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialSource, CredentialError> {
     let logical_ref = sandbox_writeback_material_ref(id, expected_version, writeback_id)?;
     let current = repo.get(id).await?;
@@ -1293,6 +1350,7 @@ pub async fn write_back_credential_material_for_effect(
             Some(logical_ref),
             store,
             repo,
+            clock,
         )
         .await;
     }
@@ -1329,6 +1387,7 @@ pub async fn rotate_credential_materials_exact(
     patch: CredentialMaterialPatch,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialSource, CredentialError> {
     rotate_credential_materials_exact_with_primary_ref(
         id,
@@ -1337,6 +1396,7 @@ pub async fn rotate_credential_materials_exact(
         None,
         store,
         repo,
+        clock,
     )
     .await
 }
@@ -1348,6 +1408,7 @@ pub(super) async fn rotate_credential_materials_exact_with_primary_ref(
     primary_ref: Option<crate::SecretRef>,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialSource, CredentialError> {
     validate_material_slots(patch.auxiliary.keys().map(String::as_str))?;
     let before = repo.get(id).await?;
@@ -1435,7 +1496,7 @@ pub(super) async fn rotate_credential_materials_exact_with_primary_ref(
             }
         }
     }
-    execute_source_mutation(Some(before), after, materials, Some(store), repo)
+    execute_source_mutation(Some(before), after, materials, Some(store), repo, clock)
         .await
         .map(|committed| committed.after)
 }
@@ -1477,6 +1538,7 @@ pub(super) async fn migrate_legacy_provider_to_descriptor_exact(
     migration: LegacyProviderDescriptorMigration<'_>,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialSource, CredentialError> {
     let LegacyProviderDescriptorMigration {
         id,
@@ -1519,6 +1581,7 @@ pub(super) async fn migrate_legacy_provider_to_descriptor_exact(
         vec![(primary_ref, primary)],
         Some(store),
         repo,
+        clock,
     )
     .await
     .map(|committed| committed.after)
@@ -1529,6 +1592,7 @@ pub(super) async fn migrate_legacy_provider_to_descriptor_exact(
 pub async fn advance_credential_revision(
     id: &CredentialSourceId,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialSource, CredentialError> {
     let before = repo.get(id).await?;
     if before.status != CredentialStatus::Active {
@@ -1539,7 +1603,7 @@ pub async fn advance_credential_revision(
         .version
         .checked_add(1)
         .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
-    execute_source_mutation(Some(before), after, Vec::new(), None, repo)
+    execute_source_mutation(Some(before), after, Vec::new(), None, repo, clock)
         .await
         .map(|committed| committed.after)
 }
@@ -1554,6 +1618,7 @@ pub async fn widen_credential_to_provider_scope_exact(
     expected_provider_id: &str,
     expected_endpoint_id: &str,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialSource, CredentialError> {
     let before = repo.get(id).await?;
     if before.version != expected_version {
@@ -1575,7 +1640,7 @@ pub async fn widen_credential_to_provider_scope_exact(
         .checked_add(1)
         .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
     after.protocol_endpoint_id = None;
-    execute_source_mutation(Some(before), after, Vec::new(), None, repo)
+    execute_source_mutation(Some(before), after, Vec::new(), None, repo, clock)
         .await
         .map(|committed| committed.after)
 }
@@ -1587,6 +1652,7 @@ pub async fn transition_credential_status(
     id: &CredentialSourceId,
     status: CredentialStatus,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialSource, CredentialError> {
     let before = repo.get(id).await?;
     if before.status == status {
@@ -1598,7 +1664,7 @@ pub async fn transition_credential_status(
         .checked_add(1)
         .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
     after.status = status;
-    execute_source_mutation(Some(before), after, Vec::new(), None, repo)
+    execute_source_mutation(Some(before), after, Vec::new(), None, repo, clock)
         .await
         .map(|committed| committed.after)
 }
@@ -1613,6 +1679,7 @@ pub async fn revoke_credential_exact(
     retirement: CredentialRetirement,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialSource, CredentialError> {
     let before = repo.get(id).await?;
     if before.version != expected_version {
@@ -1631,7 +1698,7 @@ pub async fn revoke_credential_exact(
     };
     after.material_ref = None;
     after.auxiliary_material_refs.clear();
-    execute_source_mutation(Some(before), after, Vec::new(), Some(store), repo)
+    execute_source_mutation(Some(before), after, Vec::new(), Some(store), repo, clock)
         .await
         .map(|committed| committed.after)
 }
@@ -1644,8 +1711,9 @@ pub async fn revoke_credential_exact(
 pub async fn recover_credential_mutations(
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<usize, CredentialError> {
-    recover_credential_mutations_at(store, repo, credential_material_now_unix_ms()?).await
+    recover_credential_mutations_at(store, repo, credential_material_now_unix_ms(clock)?).await
 }
 
 async fn abort_source_mutation_before_cleanup(

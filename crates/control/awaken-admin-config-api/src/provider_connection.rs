@@ -271,6 +271,7 @@ impl ProviderConnectionService {
                             &command.provider_id,
                             &current_endpoint_id,
                             self.credentials.as_ref(),
+                            self.clock.as_ref(),
                         )
                         .await?;
                 }
@@ -362,6 +363,7 @@ impl ProviderConnectionService {
                     Some(endpoint.id.0.clone()),
                     self.secrets.as_ref(),
                     self.credentials.as_ref(),
+                    self.clock.as_ref(),
                 )
                 .await?;
                 (entry.source, true, entry.created)
@@ -380,6 +382,7 @@ impl ProviderConnectionService {
                     Some(endpoint.id.0.clone()),
                     self.secrets.as_ref(),
                     self.credentials.as_ref(),
+                    self.clock.as_ref(),
                 )
                 .await?;
                 (entry.source, true, entry.created)
@@ -390,6 +393,7 @@ impl ProviderConnectionService {
                 &credential.id,
                 CredentialStatus::Disabled,
                 self.credentials.as_ref(),
+                self.clock.as_ref(),
             )
             .await?;
         }
@@ -407,6 +411,7 @@ impl ProviderConnectionService {
                 &credential.id,
                 CredentialStatus::Active,
                 self.credentials.as_ref(),
+                self.clock.as_ref(),
             )
             .await?;
         }

@@ -15,6 +15,7 @@ awaken-admin-config-api = { workspace = true, optional = true }
 awaken-credential.workspace = true
 awaken-credential-vault = { workspace = true, optional = true }
 awaken-credential-contract.workspace = true
+awaken-lease-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-run-executor-acp.workspace = true
 awaken-runtime-contract.workspace = true

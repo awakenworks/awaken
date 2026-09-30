@@ -565,8 +565,8 @@ pub(super) mod tests {
                     after.version = 2;
                     after.material_ref = None;
                 }
-                let intent = CredentialMutationIntent::prepare(before, after).unwrap();
-                repo.begin_mutation(intent.clone()).await.unwrap();
+                let intent = CredentialMutationIntent::prepare(before, after, 1_000).unwrap();
+                repo.begin_mutation(intent.clone(), 1_000).await.unwrap();
                 let abort = if published {
                     repo.apply_mutation(&intent).await.unwrap()
                 } else {
@@ -593,7 +593,13 @@ pub(super) mod tests {
                     .wrong_missing_identity
                     .store(fault == 2, Ordering::SeqCst);
                 assert!(
-                    recover_credential_mutations(&store, &repo).await.is_err(),
+                    recover_credential_mutations(
+                        &store,
+                        &repo,
+                        awaken_lease_contract::system_clock().as_ref()
+                    )
+                    .await
+                    .is_err(),
                     "R1"
                 );
                 assert_eq!(
@@ -607,12 +613,24 @@ pub(super) mod tests {
                 store.readback_unavailable.store(false, Ordering::SeqCst);
                 store.wrong_missing_identity.store(false, Ordering::SeqCst);
                 assert_eq!(
-                    recover_credential_mutations(&store, &repo).await.unwrap(),
+                    recover_credential_mutations(
+                        &store,
+                        &repo,
+                        awaken_lease_contract::system_clock().as_ref()
+                    )
+                    .await
+                    .unwrap(),
                     1,
                     "R2"
                 );
                 assert_eq!(
-                    recover_credential_mutations(&store, &repo).await.unwrap(),
+                    recover_credential_mutations(
+                        &store,
+                        &repo,
+                        awaken_lease_contract::system_clock().as_ref()
+                    )
+                    .await
+                    .unwrap(),
                     0,
                     "R3"
                 );
@@ -643,7 +661,7 @@ pub(super) mod tests {
                     revision: 1,
                 });
             }
-            let original = CredentialMutationIntent::prepare(before, after).unwrap();
+            let original = CredentialMutationIntent::prepare(before, after, 1_000).unwrap();
             let mut foreign_row = original.after.clone();
             foreign_row.workspace_id = "foreign-workspace".into();
             for phase in PHASES {
@@ -726,7 +744,7 @@ pub(super) mod tests {
             revision: 1,
             lifecycle: ManagedCredentialLifecycle::Active,
         };
-        let create = PendingManagedCredentialMutation::create(source, child).unwrap();
+        let create = PendingManagedCredentialMutation::create(source, child, 1_000).unwrap();
         let mut next_source = create.after_source.clone();
         next_source.version = 2;
         next_source.material_ref = Some(SecretRef("changed-material".into()));
@@ -740,6 +758,7 @@ pub(super) mod tests {
             create.after_credential.clone(),
             next_child,
             true,
+            1_000,
         )
         .unwrap();
         for original in [create, update] {
