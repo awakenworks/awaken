@@ -1,11 +1,15 @@
 use super::*;
+#[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, symlink};
 
 // Run the actual portable remote program against a private temporary workspace.
 // Only transport coordinates are remapped; quoting, validation, permissions and
-// publication execute unchanged. Real daemon/Pod coverage remains in live E2E.
+// publication execute unchanged. This fixture launches POSIX sh/chmod/mv on
+// Unix; Windows retains the pure invalid-input row below, while real Linux
+// container execution remains in live E2E.
+#[cfg(unix)]
 fn execute(
     command: &pc::Command,
     workspace: &std::path::Path,
@@ -25,6 +29,7 @@ fn execute(
     process.status().unwrap()
 }
 
+#[cfg(unix)]
 #[test]
 fn small_trees_use_one_transfer_and_one_fenced_publication() {
     // B1 empty/one/many small files => one bounded transfer + final publication.
@@ -83,6 +88,7 @@ fn small_trees_use_one_transfer_and_one_fenced_publication() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn large_tree_batches_preserve_old_tree_until_final_publication() {
     // B4 bytes exceed argv bound => bounded chunks, first setup once, final
@@ -141,6 +147,7 @@ fn every_invalid_entry_is_rejected_before_any_command_is_returned() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn failed_append_or_publication_preserves_old_tree_and_allows_cleanup() {
     // B6 decoding fails after a previous batch, or final rename fails after

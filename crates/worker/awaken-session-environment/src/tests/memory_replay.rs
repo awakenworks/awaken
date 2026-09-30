@@ -534,7 +534,8 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
 
 #[tokio::test]
 async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_convergent() {
-    // Terminal Memory decision table. Causes: C1 provider is Local/Namespace;
+    // Terminal Memory decision table. Causes: C1 provider is Local on every
+    // host, or Namespace on Linux/macOS where the OS isolator exists;
     // C2 source is an exact handle / handle-free expected restore effect; C3
     // marker is Ready/Removing/authorized Removing/Removed; C4 receipt is
     // Fuse/Copy; C5 successor is live/foreign; C6 teardown succeeds/fails once.
@@ -608,7 +609,12 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
     assert_eq!(hot_mounts.load(Ordering::SeqCst), 1, "T1 no remount");
     assert_eq!(hot_teardowns.load(Ordering::SeqCst), 1, "T1 one teardown");
 
-    for (namespace, label) in [(false, "local"), (true, "namespace")] {
+    let cases = [
+        (false, "local"),
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        (true, "namespace"),
+    ];
+    for (namespace, label) in cases {
         let root = tempfile::tempdir().unwrap();
         let mounts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let teardowns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -702,7 +708,13 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
                 &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
             )
             .await
-            .expect("T2 Ready terminal preflight")
+            .unwrap_or_else(|error| {
+                panic!(
+                    "T2 {label} Ready terminal preflight: {error:?}; mounts={}, teardowns={}",
+                    mounts.load(Ordering::SeqCst),
+                    teardowns.load(Ordering::SeqCst)
+                )
+            })
             .expect("T2 Ready participant");
         assert_eq!(
             first
