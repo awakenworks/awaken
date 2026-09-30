@@ -104,16 +104,22 @@ async fn run_service_with_adapters(
     awaken_credential_materializer::reject_ambient_api_key_environment()
         .map_err(|error| error.to_string())?;
     let deployment_role = role.deployment_role();
-    let mut deployment = ResolvedDeployment::load(ConfigOverrides {
-        config_path: args.config_path,
-        role: Some(deployment_role),
-        data_dir: args.data_dir,
-        port: args.port,
-        no_browser: args.no_browser.then_some(true),
-        identity_mode: args.identity_mode,
-        cloud_models: args.cloud_models,
-        ..Default::default()
-    })?;
+    // Config admission, the optional local ACP Worker and the eventual
+    // Control/Coordinator graph must judge one process clock.
+    let process_clock = awaken_lease_contract::system_clock();
+    let mut deployment = ResolvedDeployment::load(
+        ConfigOverrides {
+            config_path: args.config_path,
+            role: Some(deployment_role),
+            data_dir: args.data_dir,
+            port: args.port,
+            no_browser: args.no_browser.then_some(true),
+            identity_mode: args.identity_mode,
+            cloud_models: args.cloud_models,
+            ..Default::default()
+        },
+        process_clock.clone(),
+    )?;
     if matches!(role, ServiceRole::Control | ServiceRole::Coordinator)
         && deployment.mode != crate::config::OperatingMode::Server
     {
@@ -155,9 +161,6 @@ async fn run_service_with_adapters(
         .map_err(|error| format!("Awaken Cloud login task failed: {error}"))??;
     }
     let seal_key = role_seal_key(&deployment)?;
-    // Select one process clock before local ACP preparation and pass the same
-    // handle to the later Coordinator/Worker assembly.
-    let process_clock = awaken_lease_contract::system_clock();
     let local_worker = prepare_configured_local_worker(
         &mut deployment,
         role,
@@ -306,11 +309,14 @@ async fn migrate_service_for_role(
         args.initialization_reference,
         args.adoption_reference,
     )?;
-    let deployment = ResolvedDeployment::load(ConfigOverrides {
-        config_path: args.config_path,
-        role: Some(role.deployment_role()),
-        ..Default::default()
-    })?;
+    let deployment = ResolvedDeployment::load(
+        ConfigOverrides {
+            config_path: args.config_path,
+            role: Some(role.deployment_role()),
+            ..Default::default()
+        },
+        awaken_lease_contract::system_clock(),
+    )?;
     let prepared =
         crate::installation_binding::prepare_deployment_installations(&deployment, &authorization)
             .await?;
@@ -330,10 +336,13 @@ fn load_migration_deployment(
 ) -> Result<ResolvedDeployment, String> {
     // Migration selects storage adapters from the authored role. Overriding the
     // role would change its private-boundary validation and authority manifest.
-    ResolvedDeployment::load(ConfigOverrides {
-        config_path,
-        ..Default::default()
-    })
+    ResolvedDeployment::load(
+        ConfigOverrides {
+            config_path,
+            ..Default::default()
+        },
+        awaken_lease_contract::system_clock(),
+    )
 }
 
 fn role_seal_key(deployment: &ResolvedDeployment) -> Result<Option<[u8; 32]>, String> {

@@ -259,7 +259,7 @@ async fn prepare_control_process_with_model_supply(
         additional_lifecycle_delivery,
         managed_services,
         installations,
-        awaken_lease_contract::system_clock(),
+        crate::deployment_process::process_clock_for(Some(deployment)),
     )
     .await
 }

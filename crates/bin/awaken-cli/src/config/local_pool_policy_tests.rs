@@ -17,7 +17,7 @@ fn process_role_owns_one_local_pool_meaning() {
     assert!(all_in_one.run_local_pool, "P1");
     assert!(!all_in_one.runtime.disable_local_pool, "P1");
 
-    let remote_pool = ResolvedDeployment::resolve_file(
+    let remote_pool = crate::config::resolve_test_file(
         ConfigOverrides::default(),
         Some(PathBuf::from("/home/dev")),
         PathBuf::from("/home/dev/.awaken/config.toml"),
@@ -49,7 +49,7 @@ fn process_role_owns_one_local_pool_meaning() {
 
     for role in [Role::Control, Role::Coordinator, Role::Worker] {
         for setting in [false, true] {
-            let error = ResolvedDeployment::resolve_file(
+            let error = crate::config::resolve_test_file(
                 ConfigOverrides {
                     role: Some(role),
                     worker_server: (role == Role::Worker).then(|| "http://coordinator".to_owned()),
@@ -81,7 +81,7 @@ fn process_role_owns_one_local_pool_meaning() {
     assert!(!control.run_local_pool, "P5");
     assert!(control.runtime.disable_local_pool, "P5");
 
-    let missing = ResolvedDeployment::resolve_file(
+    let missing = crate::config::resolve_test_file(
         ConfigOverrides {
             role: Some(Role::Coordinator),
             ..Default::default()

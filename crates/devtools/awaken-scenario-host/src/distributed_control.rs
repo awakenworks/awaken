@@ -17,18 +17,22 @@ use axum::routing::{get, post};
 
 use crate::model_publication::{DistributedProviderPublicationResolver, scenario_model_catalog};
 
-pub async fn serve_distributed_control() -> Result<(), String> {
+pub async fn serve_distributed_control(
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
+) -> Result<(), String> {
     // The scenario process is a thin model adapter, not a second config
     // owner. Its deployment fixture supplies the same explicit file used by the
     // production Control migration command; omission retains the normal default
     // path for focused unit tests.
     let config_path = std::env::var_os("AWAKEN_SCENARIO_CONFIG").map(std::path::PathBuf::from);
-    let deployment =
-        awaken_cli::config::ResolvedDeployment::load(awaken_cli::config::ConfigOverrides {
+    let deployment = awaken_cli::config::ResolvedDeployment::load(
+        awaken_cli::config::ConfigOverrides {
             config_path,
             ..Default::default()
-        })
-        .map_err(|error| format!("distributed Control deployment configuration: {error}"))?;
+        },
+        clock,
+    )
+    .map_err(|error| format!("distributed Control deployment configuration: {error}"))?;
     if deployment.role != awaken_cli::config::Role::Control {
         return Err("distributed Control scenario requires role = \"control\"".into());
     }
