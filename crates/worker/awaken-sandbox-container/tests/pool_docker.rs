@@ -4,7 +4,7 @@
 //! warm containers.
 //!
 //! Gated on the `docker` feature AND a reachable daemon (self-skips otherwise).
-//! Run with: `cargo test -p awaken-sandbox-container --features docker --test pool_docker`
+//! Run with: `cargo nextest run -p awaken-sandbox-container --features docker --test pool_docker`
 #![cfg(feature = "docker")]
 
 #[path = "common/residue.rs"]
@@ -84,6 +84,11 @@ async fn a_warm_pool_pre_provisions_capacity_and_hands_a_ready_agent_to_a_sessio
     let _ = std::process::Command::new("docker")
         .args(["pull", "-q", "busybox:latest"])
         .status();
+
+    // R5: warm capacity mints scopes the test cannot enumerate. Under the
+    // one-test-per-process runner, this guard removes those owner-labelled
+    // leftovers on panic; the scoped guard below owns the fixed Session.
+    let _capacity_residue = residue::TestResidue::for_this_process(residue::Backend::Docker);
 
     let runtime = DockerRuntime::connect_local(AGENT_PORT).expect("docker client");
     let provider = Arc::new(
@@ -185,6 +190,9 @@ async fn a_session_with_a_mount_bypasses_the_pool() {
         eprintln!("skipping: no reachable Docker daemon");
         return;
     }
+    // R6: mounted and warm-capacity scopes coexist; per-test process cleanup
+    // reaches unnameable warm scopes only after the exact scoped guards drop.
+    let _capacity_residue = residue::TestResidue::for_this_process(residue::Backend::Docker);
     let runtime = DockerRuntime::connect_local(AGENT_PORT).expect("docker client");
     let provider = Arc::new(
         ContainerProvider::new(Arc::new(runtime), "busybox:latest")
