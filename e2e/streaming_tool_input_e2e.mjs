@@ -1,13 +1,13 @@
-// Cross-protocol verification: does each wire protocol stream a tool call's
-// arguments incrementally, or deliver them whole?
+// Cross-protocol verification: does each wire protocol expose live tool-input
+// deltas before its authoritative completion event, or deliver a unary result?
 //
 // Drives the REAL provider path (GenaiExecutor streaming) against the fake
 // Anthropic upstream, which chunks `input_json_delta` exactly as Anthropic does.
 // The `use-tool:read` prompt makes the model emit a `read` tool call with input
 // `{"pattern":"*.md"}`; each adapter is then checked over its own wire:
 //
-//   - ai-sdk : tool-input-start + N×tool-input-delta + tool-input-available
-//   - ag-ui  : TOOL_CALL_START + N×TOOL_CALL_ARGS + TOOL_CALL_END
+//   - ai-sdk : tool-input-start + live tool-input-delta + tool-input-available
+//   - ag-ui  : TOOL_CALL_START + live TOOL_CALL_ARGS + TOOL_CALL_END
 //   - a2a    : request/response (message:send returns one Task; streaming is
 //              omitted from the A2A binding by design) — verified as NON-streaming
 //
@@ -39,8 +39,12 @@ async function postSse(url, body) {
   return { status: res.status, contentType: res.headers.get('content-type') ?? '', frames };
 }
 
-// Verify the ai-sdk UI Message Stream carried the tool input as incremental
-// deltas, closed by the authoritative parsed `tool-input-available`.
+// Causes: A1 the fake provider emits multiple input_json_delta fragments; A2
+// the shared live-delta buffer may coalesce adjacent short fragments; A3 the
+// authoritative call closes. Effects: E1 at least one live input delta precedes
+// availability, E2 all delta bytes concatenate to the exact input, E3 the
+// available frame carries the parsed object. Rules A1+A2=>E1+E2 (one or more
+// wire deltas), A3=>E3; frame count is not a provider-fragment count.
 async function checkAiSdk(base) {
   const { status, frames } = await postSse(`${base}/v1/ai-sdk/chat`, {
     threadId: 'sdk-stream',
@@ -52,19 +56,24 @@ async function checkAiSdk(base) {
   assert.ok(start, 'ai-sdk emitted tool-input-start');
   const callId = start.toolCallId;
   const deltas = frames.filter((f) => f.type === 'tool-input-delta' && f.toolCallId === callId);
-  assert.ok(deltas.length >= 2, `ai-sdk streamed the args incrementally (got ${deltas.length} deltas)`);
+  assert.ok(deltas.length >= 1, 'ai-sdk emitted live tool-input-delta');
   const joined = deltas.map((f) => f.inputTextDelta).join('');
   assert.equal(joined, EXPECTED_ARGS, 'ai-sdk delta suffixes concatenate to the tool input');
 
   const available = frames.find((f) => f.type === 'tool-input-available' && f.toolCallId === callId);
   assert.ok(available, 'ai-sdk closed with tool-input-available');
+  assert.equal(frames.filter((f) => f.type === 'tool-input-available' && f.toolCallId === callId).length, 1);
+  assert.ok(frames.indexOf(start) < frames.indexOf(deltas[0]), 'ai-sdk starts before live input');
+  assert.ok(frames.indexOf(deltas.at(-1)) < frames.indexOf(available), 'ai-sdk closes after live input');
   assert.deepEqual(available.input, { pattern: '*.md' }, 'ai-sdk tool-input-available carries the parsed input');
-  pass(`ai-sdk streams tool-call args incrementally (${deltas.length} tool-input-delta frames)`);
+  pass(`ai-sdk streams tool-call args (${deltas.length} live tool-input-delta frames)`);
   return deltas.length;
 }
 
-// Verify the AG-UI event stream carried the tool args as incremental
-// TOOL_CALL_ARGS deltas, closed by TOOL_CALL_END.
+// Causes: G1 provider fragments may coalesce before the AG-UI encoder; G2 the
+// tool call closes. Effects: E1 at least one live TOOL_CALL_ARGS precedes
+// TOOL_CALL_END, E2 its bytes concatenate to the exact input. Rules G1=>E1+E2
+// regardless of wire frame count, G2=>one terminal call event.
 async function checkAgUi(base) {
   const { status, frames } = await postSse(`${base}/v1/ag-ui`, {
     threadId: 'agui-stream',
@@ -77,14 +86,15 @@ async function checkAgUi(base) {
   assert.ok(start, 'ag-ui emitted TOOL_CALL_START');
   const callId = start.toolCallId;
   const args = frames.filter((f) => f.type === 'TOOL_CALL_ARGS' && f.toolCallId === callId);
-  assert.ok(args.length >= 2, `ag-ui streamed the args incrementally (got ${args.length} deltas)`);
+  assert.ok(args.length >= 1, 'ag-ui emitted live TOOL_CALL_ARGS');
   const joined = args.map((f) => f.delta).join('');
   assert.equal(joined, EXPECTED_ARGS, 'ag-ui arg deltas concatenate to the tool input');
-  assert.ok(
-    frames.some((f) => f.type === 'TOOL_CALL_END' && f.toolCallId === callId),
-    'ag-ui closed the streamed tool call with TOOL_CALL_END',
-  );
-  pass(`ag-ui streams tool-call args incrementally (${args.length} TOOL_CALL_ARGS frames)`);
+  const end = frames.find((f) => f.type === 'TOOL_CALL_END' && f.toolCallId === callId);
+  assert.ok(end, 'ag-ui closed the streamed tool call with TOOL_CALL_END');
+  assert.equal(frames.filter((f) => f.type === 'TOOL_CALL_END' && f.toolCallId === callId).length, 1);
+  assert.ok(frames.indexOf(start) < frames.indexOf(args[0]), 'ag-ui starts before live args');
+  assert.ok(frames.indexOf(args.at(-1)) < frames.indexOf(end), 'ag-ui closes after live args');
+  pass(`ag-ui streams tool-call args (${args.length} live TOOL_CALL_ARGS frames)`);
   return args.length;
 }
 
@@ -116,8 +126,8 @@ async function main() {
       await checkA2a(base);
 
       console.log('\nStreaming tool-call support matrix:');
-      console.log(`  ai-sdk : YES — ${sdk} incremental tool-input-delta frames`);
-      console.log(`  ag-ui  : YES — ${agui} incremental TOOL_CALL_ARGS frames`);
+      console.log(`  ai-sdk : YES — ${sdk} live tool-input-delta frames`);
+      console.log(`  ag-ui  : YES — ${agui} live TOOL_CALL_ARGS frames`);
       console.log('  a2a    : N/A — request/response Task (streaming omitted from the A2A binding)');
     });
     console.log('\nE2E PASS: streaming tool calls verified across ai-sdk, ag-ui, and a2a.');
