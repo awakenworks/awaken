@@ -12,12 +12,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
+use awaken_lease_contract::WallClock;
 use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
 };
 use awaken_runtime_contract::{InferenceEndpoint, UnspecifiedReasoning};
 
 use crate::executor_from_materialized_endpoint_for_provider;
+
+mod catalog;
 
 pub const BROKERED_INFERENCE_ACCESS_CAPABILITY: &str = "inference.brokered_grant";
 
@@ -192,6 +195,7 @@ async fn fetch_brokered_catalog(
 pub struct HttpBrokeredInferenceClient {
     http: reqwest::Client,
     base_url: String,
+    clock: Arc<dyn WallClock>,
     access_token_source: Arc<awaken_agent_contract::RedactedStringSource>,
     workspace_id: String,
     client_instance_id: String,
@@ -214,6 +218,7 @@ impl HttpBrokeredInferenceClient {
         access_token_source: Arc<awaken_agent_contract::RedactedStringSource>,
         workspace_id: impl Into<String>,
         client_instance_id: impl Into<String>,
+        clock: Arc<dyn WallClock>,
     ) -> Result<Self, String> {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
         let client_instance_id = client_instance_id.into();
@@ -241,6 +246,7 @@ impl HttpBrokeredInferenceClient {
         Ok(Self {
             http: brokered_http_client(&base_url),
             base_url,
+            clock,
             access_token_source,
             workspace_id,
             client_instance_id,
@@ -637,84 +643,6 @@ impl BrokeredInferenceClient for HttpBrokeredInferenceClient {
     }
 }
 
-#[async_trait]
-impl BrokeredModelCatalogClient for HttpBrokeredInferenceClient {
-    async fn readiness(&self) -> Result<(), BrokeredInferenceError> {
-        let response = self
-            .send_with_access_token(|token| {
-                self.request(reqwest::Method::GET, "/v1/inference/readiness", token)
-            })
-            .await?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(Self::classify(response).await)
-        }
-    }
-
-    async fn list_models(&self) -> Result<Vec<BrokeredModel>, BrokeredInferenceError> {
-        #[derive(serde::Deserialize)]
-        struct Page {
-            data: Vec<BrokeredModel>,
-        }
-        let response = self
-            .send_with_access_token(|token| {
-                self.request(reqwest::Method::GET, "/v1/inference/models", token)
-            })
-            .await?;
-        if !response.status().is_success() {
-            return Err(Self::classify(response).await);
-        }
-        response
-            .json::<Page>()
-            .await
-            .map(|page| page.data)
-            .map_err(|_| BrokeredInferenceError::TemporarilyUnavailable)
-    }
-}
-
-#[async_trait]
-impl awaken_admin_config_api::BrokeredCatalogDiscovery for HttpBrokeredInferenceClient {
-    async fn projection(&self) -> Result<awaken_model_catalog::BrokeredCatalogProjection, String> {
-        let models = fetch_brokered_catalog(self)
-            .await
-            .map_err(|error| error.to_string())?;
-        let models = models
-            .into_iter()
-            .map(|model| {
-                let dialect = match model.native_protocol.as_str() {
-                    "anthropic_messages" => awaken_model_catalog::ApiDialect::AnthropicMessages,
-                    "openai_chat_completions" => awaken_model_catalog::ApiDialect::OpenAiChat,
-                    "openai_responses" => awaken_model_catalog::ApiDialect::OpenAiResponses,
-                    protocol => {
-                        return Err(format!(
-                            "Cloud returned unsupported native protocol `{protocol}`"
-                        ));
-                    }
-                };
-                Ok(awaken_model_catalog::BrokeredModelProjection {
-                    provider_id: model.provider,
-                    model_id: model.original_model_id,
-                    dialect,
-                    context_window: model.context_window,
-                    max_output_tokens: model.max_output_tokens,
-                    publication_revision: model.route_publication_revision,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let observed_at_unix_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-            .unwrap_or_default();
-        Ok(awaken_model_catalog::BrokeredCatalogProjection {
-            broker_id: "awaken-cloud".into(),
-            control_base_url: self.base_url.clone(),
-            models,
-            observed_at_unix_ms,
-        })
-    }
-}
-
 pub(crate) struct BrokeredCandidateExecutor {
     client: Arc<dyn BrokeredInferenceClient>,
     provider: String,
@@ -919,6 +847,9 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
+    use awaken_admin_config_api::BrokeredCatalogDiscovery;
+    use awaken_lease_testkit::ManualClock;
+
     use super::*;
 
     fn static_access_token(value: &str) -> Arc<awaken_agent_contract::RedactedStringSource> {
@@ -945,14 +876,16 @@ mod tests {
         })
     }
 
-    fn bearer_test_server(statuses: Vec<u16>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    fn bearer_test_server(
+        responses: Vec<(u16, &'static str)>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
         use std::io::{Read, Write};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let handle = std::thread::spawn(move || {
             let mut bearers = Vec::new();
-            for status in statuses {
+            for (status, body) in responses {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut request = Vec::new();
                 let mut chunk = [0_u8; 1024];
@@ -978,11 +911,7 @@ mod tests {
                     .to_owned();
                 bearers.push(bearer);
 
-                let (reason, body) = if status == 401 {
-                    ("Unauthorized", r#"{"error":"authentication_required"}"#)
-                } else {
-                    ("OK", "{}")
-                };
+                let reason = if status == 401 { "Unauthorized" } else { "OK" };
                 write!(
                     stream,
                     "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -1104,6 +1033,40 @@ mod tests {
     mod effect_scope;
 
     #[tokio::test]
+    async fn brokered_catalog_refresh_stamps_each_projection_from_the_injected_clock() {
+        // Causes: C1 the same valid Cloud catalog is read twice; C2 the
+        // composing process clock advances between those reads. Effects:
+        // R1 C1 at t=1,000 publishes that observation; R2 C1+C2 at t=2,000
+        // retains the exact model identity and route revision but stamps the
+        // new observation. Neither constructor time nor an ambient wall clock
+        // may become a second authority for this catalog projection.
+        const MODELS: &str = r#"{"data":[{"provider":"awaken-cloud","original_model_id":"model-a","native_protocol":"openai_responses","route_publication_revision":7}]}"#;
+        let (base_url, server) =
+            bearer_test_server(vec![(200, "{}"), (200, MODELS), (200, "{}"), (200, MODELS)]);
+        let clock = Arc::new(ManualClock::new(1_000));
+        let client = HttpBrokeredInferenceClient::new(
+            base_url,
+            static_access_token("catalog-access"),
+            "workspace-a",
+            "desktop-a",
+            clock.clone(),
+        )
+        .unwrap();
+        let first = client.projection().await.unwrap();
+        assert_eq!(first.observed_at_unix_ms, 1_000, "R1");
+        assert_eq!(first.models.len(), 1, "R1 exact catalog");
+        clock.set(2_000);
+        let second = client.projection().await.unwrap();
+        assert_eq!(second.observed_at_unix_ms, 2_000, "R2");
+        assert_eq!(second.models, first.models, "R2 model authority unchanged");
+        assert_eq!(
+            second.models[0].publication_revision, 7,
+            "R2 route revision"
+        );
+        assert_eq!(server.join().unwrap(), vec!["catalog-access"; 4]);
+    }
+
+    #[tokio::test]
     async fn brokered_web_discovery_and_resolution_share_the_cloud_client() {
         // Cause/effect graph: C1 authenticated tool discovery returns exact
         // search/fetch routes -> E1 both are installed in the existing registry
@@ -1123,6 +1086,7 @@ mod tests {
             static_access_token("cloud-access"),
             "workspace-tools",
             "desktop-tools",
+            awaken_lease_contract::system_clock(),
         )
         .unwrap();
         let mut registry = awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins();
@@ -1791,6 +1755,7 @@ mod tests {
                 static_access_token("secret-token"),
                 "workspace-1",
                 "client-1",
+                awaken_lease_contract::system_clock(),
             )
             .is_err()
         );
@@ -1799,6 +1764,7 @@ mod tests {
             static_access_token("secret-token"),
             "workspace-1",
             "client-1",
+            awaken_lease_contract::system_clock(),
         )
         .unwrap();
         let debug = format!("{client:?}");
@@ -1810,6 +1776,7 @@ mod tests {
                 static_access_token("local-emulator-token"),
                 "workspace-1",
                 "client-1",
+                awaken_lease_contract::system_clock(),
             )
             .is_ok()
         );
@@ -1826,12 +1793,13 @@ mod tests {
         // | A2   | Y  | Y  | Y  | E2     |
         // | A3   | Y  | Y  | N  | E1, terminal 401 |
         // | A4   | N  | -  | -  | E3, zero requests |
-        let (current_url, current_server) = bearer_test_server(vec![200]);
+        let (current_url, current_server) = bearer_test_server(vec![(200, "{}")]);
         let current = HttpBrokeredInferenceClient::new(
             current_url,
             static_access_token("current"),
             "workspace-1",
             "client-1",
+            awaken_lease_contract::system_clock(),
         )
         .unwrap();
         let response = current
@@ -1841,12 +1809,16 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::OK, "A1");
         assert_eq!(current_server.join().unwrap(), ["current"], "A1");
 
-        let (rotating_url, rotating_server) = bearer_test_server(vec![401, 200]);
+        let (rotating_url, rotating_server) = bearer_test_server(vec![
+            (401, r#"{"error":"authentication_required"}"#),
+            (200, "{}"),
+        ]);
         let rotating = HttpBrokeredInferenceClient::new(
             rotating_url,
             scripted_access_tokens([Ok("old"), Ok("old"), Ok("new")]),
             "workspace-1",
             "client-1",
+            awaken_lease_contract::system_clock(),
         )
         .unwrap();
         let response = rotating
@@ -1856,12 +1828,14 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::OK, "A2");
         assert_eq!(rotating_server.join().unwrap(), ["old", "new"], "A2");
 
-        let (unchanged_url, unchanged_server) = bearer_test_server(vec![401]);
+        let (unchanged_url, unchanged_server) =
+            bearer_test_server(vec![(401, r#"{"error":"authentication_required"}"#)]);
         let unchanged = HttpBrokeredInferenceClient::new(
             unchanged_url,
             static_access_token("same"),
             "workspace-1",
             "client-1",
+            awaken_lease_contract::system_clock(),
         )
         .unwrap();
         let response = unchanged
@@ -1878,6 +1852,7 @@ mod tests {
             scripted_access_tokens([Ok("initial"), Err("expired")]),
             "workspace-1",
             "client-1",
+            awaken_lease_contract::system_clock(),
         )
         .unwrap();
         assert_eq!(
