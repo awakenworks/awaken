@@ -417,8 +417,10 @@ impl SharedHost {
         // dispatch authority even when ordinary foreground delivery is direct.
         // They intentionally bypass BoundRunExecutor and therefore have no
         // process-local `active_run` hint. Fall back only when that existing
-        // authority is installed, and require the Session's one executable root
-        // row so an interrupt cannot broaden into unrelated queued work.
+        // authority is installed. A primary Thread can legally have an Awaiting
+        // customer-tool Run and queued child-report continuations at once;
+        // Session interruption covers every executable row with this exact
+        // primary Session affinity, just as child interruption does.
         if self.optional_dispatch_store().is_some() {
             let commit = commit_read.await?;
             let logical_thread_id = resident
@@ -427,20 +429,12 @@ impl SharedHost {
             let executable = self
                 .executable_session_dispatch_runs(thread, &logical_thread_id, &commit)
                 .await?;
-            match executable.as_slice() {
-                [] => {}
-                [run_id] => {
-                    self.persist_recoverable_dispatch_cancellation(
-                        run_id,
-                        resident.as_ref().map(|ctx| ctx.runtime.as_ref()),
-                    )
-                    .await?;
-                }
-                _ => {
-                    return Err(HostError::internal(format!(
-                        "Session `{thread}` has multiple executable primary dispatches"
-                    )));
-                }
+            for run_id in executable {
+                self.persist_recoverable_dispatch_cancellation(
+                    &run_id,
+                    resident.as_ref().map(|ctx| ctx.runtime.as_ref()),
+                )
+                .await?;
             }
         }
         // Direct/foreground ACP attempts retain this exact token outside the

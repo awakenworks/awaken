@@ -6,33 +6,48 @@ use awaken_session_state_contract::{PersistedSession, SessionExecutionState};
 
 use crate::{FactKey, FactKind, FactProvenance, FactRole, ProjectionError, TimelineFact};
 
-/// Derive the public terminal error from the Session root's one durable
-/// activation-failure fact. A failure whose source Run already ended in an
-/// error on the root Thread is published by that Run's own lifecycle. A
-/// missing or empty cause violates the application invariant and fails the
-/// projection closed instead of inventing public bytes.
+/// One ownership decision for both the activation error and parent terminal.
+/// A sourced failure cannot become a public prefix until that Run has a
+/// committed terminal: the Session failure is recorded before the Worker can
+/// commit its Run failure, and publishing either parent fact in that gap would
+/// require retracting or inserting before an already-issued Event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ActivationFailureProjection {
+    NotFailed,
+    AwaitingSourceRun,
+    Ready { error: Option<TimelineFact> },
+}
+
+/// Derive the terminal projection from one durable Session root and accepted
+/// lifecycle prefix. A root source Run's own error replaces the broader
+/// Session error; a child or non-error source terminal leaves the Session
+/// failure independently visible. An empty required cause fails closed.
 ///
-/// Consumer: the protocol adapter's terminal projection.
-pub fn activation_failure_fact(
+/// Consumer: the protocol adapter's sole committed-prefix candidate builder.
+pub fn activation_failure_projection(
     persisted: &PersistedSession,
     lifecycle: &[RunLifecycleEvent],
-) -> Result<Option<TimelineFact>, ProjectionError> {
+) -> Result<ActivationFailureProjection, ProjectionError> {
     if persisted.execution != SessionExecutionState::ActivationFailed {
-        return Ok(None);
+        return Ok(ActivationFailureProjection::NotFailed);
     }
-    if persisted
+    let source = persisted
         .realization_progress
         .failure_source_run_id
-        .as_deref()
-        .is_some_and(|source_run_id| {
-            lifecycle.iter().any(|event| {
-                event.thread_id.0 == persisted.session_id
-                    && &event.run_id == source_run_id
-                    && matches!(event.state, RunState::Ended(EndCause::Error(_)))
-            })
-        })
-    {
-        return Ok(None);
+        .as_deref();
+    let source_terminal = source.and_then(|run_id| {
+        lifecycle
+            .iter()
+            .find(|event| &event.run_id == run_id && matches!(event.state, RunState::Ended(_)))
+    });
+    if source.is_some() && source_terminal.is_none() {
+        return Ok(ActivationFailureProjection::AwaitingSourceRun);
+    }
+    if source_terminal.is_some_and(|event| {
+        event.thread_id.0 == persisted.session_id
+            && matches!(event.state, RunState::Ended(EndCause::Error(_)))
+    }) {
+        return Ok(ActivationFailureProjection::Ready { error: None });
     }
     let message = persisted
         .realization_progress
@@ -44,14 +59,16 @@ pub fn activation_failure_fact(
                 "activation_failed Session has no durable realization failure cause",
             )
         })?;
-    Ok(Some(TimelineFact::new(
-        FactKey::new(
-            persisted.session_id.as_str(),
-            FactRole::ActivationFailedError,
-            FactProvenance::ParentTerminal,
-        ),
-        FactKind::ActivationFailed {
-            message: message.to_string(),
-        },
-    )))
+    Ok(ActivationFailureProjection::Ready {
+        error: Some(TimelineFact::new(
+            FactKey::new(
+                persisted.session_id.as_str(),
+                FactRole::ActivationFailedError,
+                FactProvenance::ParentTerminal,
+            ),
+            FactKind::ActivationFailed {
+                message: message.to_string(),
+            },
+        )),
+    })
 }

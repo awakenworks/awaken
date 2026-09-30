@@ -145,6 +145,21 @@ impl ManagedState {
         {
             return Ok(publication::ProjectionRefreshBuild::Retry);
         }
+        let activation_failure = awaken_managed_session_events::activation_failure_projection(
+            &persisted,
+            &evidence.acceptance.accepted,
+        )
+        .map_err(projection_error)?;
+        if matches!(
+            &activation_failure,
+            awaken_managed_session_events::ActivationFailureProjection::AwaitingSourceRun
+        ) {
+            // The Session failure precedes this claimed Run's terminal commit.
+            // Reuse the existing bounded source retry; publishing either the
+            // broader error or parent terminal now would withdraw or reorder
+            // an issued Event when the Run's exact failure arrives.
+            return Ok(publication::ProjectionRefreshBuild::Retry);
+        }
         let validation_done = started.elapsed();
         // One committed ordering index serves both first-listable child
         // activity selection and the final Event sort. Neither stage may
@@ -211,14 +226,11 @@ impl ManagedState {
         // derived child lifecycle. Keeping this at the end of the sole warm/cold
         // projector preserves child output/lifecycle ordering, closes each child
         // stream, then closes only the aggregate primary stream.
-        self.append_activation_failure_error_projection(
-            record,
-            &persisted,
-            &evidence.acceptance.accepted,
-        )?;
-        if persisted.execution
-            == awaken_session_state_contract::SessionExecutionState::ActivationFailed
-            || persisted.terminal_cleanup.runtime_commit_cursor().is_some()
+        self.append_activation_failure_error_projection(record, &activation_failure)?;
+        if matches!(
+            &activation_failure,
+            awaken_managed_session_events::ActivationFailureProjection::Ready { .. }
+        ) || persisted.terminal_cleanup.runtime_commit_cursor().is_some()
         {
             self.append_parent_terminal_projection(record)?;
         }

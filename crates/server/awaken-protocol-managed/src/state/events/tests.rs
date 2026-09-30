@@ -2257,25 +2257,62 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
 #[tokio::test]
 async fn activation_failure_projects_only_the_exact_unowned_error() {
     // Cause/effect graph: C1 the Session is durably ActivationFailed; C2 its
-    // realization failure has no Run source, the same root Run source, or a
-    // different root Run source; C3 a committed root lifecycle failure is
-    // absent/present; C4 the disposable projector is warm or rebuilt cold.
+    // realization failure has no Run source or names a root/child Run; C3 the
+    // source terminal is absent, a root error, a child error, or a non-error;
+    // C4 an unrelated historical root error exists; C5 the source terminal
+    // arrives after a read, or both warm and cold project the settled prefix.
     // Effects: E1 an ownerless create/recovery failure projects the Session
-    // realization error; E2 an exact same-Run lifecycle failure replaces that
-    // broader error instead of duplicating it; E3 a different historical Run
-    // retains its own error plus the later realization error; E4 warm/cold ids
-    // and payloads are identical. Exact typed Run identity is the constraint:
-    // messages and error codes never participate in ownership selection.
+    // realization error; E2 a sourced failure with no terminal publishes no
+    // provisional error or parent terminal; E3 a root source error owns the
+    // single public error; E4 a child or non-error source retains the Session
+    // error alongside any distinct Run error; E5 the later settled candidate
+    // publishes once and warm/cold ids and payloads agree. Exact typed Run
+    // identity, never error text, is the ownership constraint.
     //
-    // | Rule | Failure source | Root lifecycle | Effect |
-    // |---|---|---|---|
-    // | AF1 | none | absent | E1 |
-    // | AF2 | exact Run | failed exact Run | E2+E4 |
-    // | AF3 | other Run | failed historical Run | E3 |
+    // | Rule | Source | Source terminal | Other error | Effect |
+    // |---|---|---|---|---|
+    // | AF1 | none | n/a | no | E1 |
+    // | AF2 | root | error | no | E3+E5 |
+    // | AF3 | root | pending then natural | yes | E2 then E4+E5 |
+    // | AF4 | root | pending then error | no | E2 then E3+E5 |
+    // | AF5 | child | pending then error | no | E2 then E4 |
+    // | AF6 | not failed | n/a | any | no activation fact |
+    // | AF7 | none, empty cause | n/a | no | corrupt, no invented error |
+    fn terminal_run(
+        session_id: &str,
+        run_id: &RunId,
+        cursor: u64,
+        terminal: RunState,
+    ) -> Vec<RunLifecycleEvent> {
+        let kind = if matches!(&terminal, RunState::Ended(EndCause::Error(_))) {
+            RunLifecycleEventKind::Failed
+        } else {
+            RunLifecycleEventKind::Completed
+        };
+        vec![
+            lifecycle(
+                cursor,
+                session_id,
+                run_id,
+                RunLifecycleEventKind::Running,
+                RunState::Running,
+            ),
+            lifecycle(cursor + 1, session_id, run_id, kind, terminal),
+        ]
+    }
+    let error_state = |message: &str| {
+        RunState::Ended(EndCause::Error(
+            awaken_agent_contract::agent::run::Failure::Inference {
+                code: "realization_failed".into(),
+                message: message.into(),
+            },
+        ))
+    };
     async fn project(
         session_id: &str,
         source_run_id: Option<RunId>,
-        lifecycle_run_id: Option<RunId>,
+        initial_lifecycle: Vec<RunLifecycleEvent>,
+        late_lifecycle: Vec<RunLifecycleEvent>,
     ) -> Vec<(String, String, Option<String>)> {
         let repository = Arc::new(ephemeral_session_repo());
         let mut persisted = crate::state::tests::sample_persisted(session_id);
@@ -2283,7 +2320,7 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
             awaken_session_state_contract::SessionExecutionState::ActivationFailed;
         persisted.realization_progress.last_error =
             Some("broader Session realization failure".into());
-        // AF4 cleanup has a later root update time. The failure owns its
+        // AF8 cleanup has a later root update time. The failure owns its
         // immutable observation and must keep it in every replica.
         persisted.realization_progress.failed_at_unix_ms = Some(100);
         persisted.updated_at_unix_ms = Some(900);
@@ -2295,30 +2332,30 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
         )
         .await;
         let runtime = RehydrateFake::default();
-        if let Some(run_id) = lifecycle_run_id {
-            runtime.lifecycle.lock().unwrap().extend([
-                lifecycle(
-                    1,
-                    session_id,
-                    &run_id,
-                    RunLifecycleEventKind::Running,
-                    RunState::Running,
-                ),
-                lifecycle(
-                    2,
-                    session_id,
-                    &run_id,
-                    RunLifecycleEventKind::Failed,
-                    RunState::Ended(EndCause::Error(
-                        awaken_agent_contract::agent::run::Failure::Inference {
-                            code: "realization_failed".into(),
-                            message: "precise Run lifecycle failure".into(),
-                        },
-                    )),
-                ),
-            ]);
-        }
+        runtime.lifecycle.lock().unwrap().extend(initial_lifecycle);
         let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+        if !late_lifecycle.is_empty() {
+            // AF3/AF4: the first source prefix cannot publish a parent error
+            // or terminal that its later exact Run commit would reorder.
+            let error = warm.refresh_committed_events(session_id).await.unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(crate::state::constants::COMMITTED_PREFIX_READ_CONFLICT),
+                "E2 only the existing retryable prefix-read boundary is exposed: {error}"
+            );
+            assert!(
+                !warm
+                    .sessions
+                    .lock()
+                    .unwrap()
+                    .get(session_id)
+                    .unwrap()
+                    .committed_projection_ready,
+                "E2 no incomplete public candidate"
+            );
+            runtime.lifecycle.lock().unwrap().extend(late_lifecycle);
+        }
         warm.refresh_committed_events(session_id).await.unwrap();
         let observe = |state: &ManagedState| {
             state
@@ -2344,7 +2381,7 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
                 assert_eq!(
                     event.processed_at.as_deref(),
                     Some("1970-01-01T00:00:00.1Z"),
-                    "AF4 failure time, not cleanup time"
+                    "AF8 failure time, not cleanup time"
                 );
             }
         }
@@ -2356,12 +2393,23 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
     }
 
     assert_eq!(
-        project("activation-ownerless", None, None).await[0].1,
+        project("activation-ownerless", None, vec![], vec![]).await[0].1,
         "broader Session realization failure",
         "AF1/E1"
     );
     let exact_run = RunId("activation-exact-run".into());
-    let exact = project("activation-exact", Some(exact_run.clone()), Some(exact_run)).await;
+    let exact = project(
+        "activation-exact",
+        Some(exact_run.clone()),
+        terminal_run(
+            "activation-exact",
+            &exact_run,
+            1,
+            error_state("precise Run lifecycle failure"),
+        ),
+        vec![],
+    )
+    .await;
     assert_eq!(
         exact
             .iter()
@@ -2370,24 +2418,88 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
         vec!["precise Run lifecycle failure"],
         "AF2/E2"
     );
+    let later_run = RunId("activation-later-run".into());
+    let historical_run = RunId("activation-historical-run".into());
     let distinct = project(
         "activation-distinct",
-        Some(RunId("activation-later-run".into())),
-        Some(RunId("activation-historical-run".into())),
+        Some(later_run.clone()),
+        terminal_run(
+            "activation-distinct",
+            &historical_run,
+            1,
+            error_state("historical Run failure"),
+        ),
+        terminal_run(
+            "activation-distinct",
+            &later_run,
+            3,
+            RunState::Ended(EndCause::NaturalEnd),
+        ),
     )
     .await;
-    assert_eq!(distinct.len(), 2, "AF3/E3");
+    assert_eq!(distinct.len(), 2, "AF3/E4");
     assert!(
         distinct
             .iter()
             .any(|(_, message, _)| message == "broader Session realization failure"),
-        "AF3/E3 current realization failure"
+        "AF3/E4 source Run ended without owning the Session failure"
     );
     assert!(
         distinct
             .iter()
-            .any(|(_, message, _)| message == "precise Run lifecycle failure"),
-        "AF3/E3 historical Run failure"
+            .any(|(_, message, _)| message == "historical Run failure"),
+        "AF3/E4 distinct historical Run failure"
+    );
+    let late_run = RunId("activation-late-error".into());
+    let late = project(
+        "activation-late",
+        Some(late_run.clone()),
+        vec![],
+        terminal_run(
+            "activation-late",
+            &late_run,
+            1,
+            error_state("late source Run failure"),
+        ),
+    )
+    .await;
+    assert_eq!(late.len(), 1, "AF4/E3 exactly one settled error");
+    assert_eq!(late[0].1, "late source Run failure", "AF4/E5");
+
+    let mut child_source = crate::state::tests::sample_persisted("activation-child");
+    child_source.execution = awaken_session_state_contract::SessionExecutionState::ActivationFailed;
+    child_source.realization_progress.last_error = Some("child-sourced Session failure".into());
+    let child_run = RunId("activation-child-run".into());
+    child_source.realization_progress.failure_source_run_id = Some(Box::new(child_run.clone()));
+    assert!(matches!(
+        awaken_managed_session_events::activation_failure_projection(&child_source, &[]).unwrap(),
+        awaken_managed_session_events::ActivationFailureProjection::AwaitingSourceRun
+    ));
+    assert!(matches!(
+        awaken_managed_session_events::activation_failure_projection(
+            &child_source,
+            &terminal_run(
+                "child-thread",
+                &child_run,
+                1,
+                error_state("child Run failure"),
+            ),
+        )
+        .unwrap(),
+        awaken_managed_session_events::ActivationFailureProjection::Ready { error: Some(_) }
+    ));
+    let healthy = crate::state::tests::sample_persisted("activation-not-failed");
+    assert!(matches!(
+        awaken_managed_session_events::activation_failure_projection(&healthy, &[]).unwrap(),
+        awaken_managed_session_events::ActivationFailureProjection::NotFailed
+    ));
+    let mut missing_cause = crate::state::tests::sample_persisted("activation-missing-cause");
+    missing_cause.execution =
+        awaken_session_state_contract::SessionExecutionState::ActivationFailed;
+    missing_cause.realization_progress.last_error = None;
+    assert!(
+        awaken_managed_session_events::activation_failure_projection(&missing_cause, &[]).is_err(),
+        "AF7 malformed ownerless failure remains closed"
     );
 }
 

@@ -9,14 +9,12 @@ impl ManagedState {
     pub(super) fn append_activation_failure_error_projection(
         &self,
         record: &mut SessionRecord,
-        persisted: &awaken_session_state_contract::PersistedSession,
-        lifecycle_events: &[RunLifecycleEvent],
+        projection: &awaken_managed_session_events::ActivationFailureProjection,
     ) -> Result<(), StateError> {
-        if let Some(fact) =
-            awaken_managed_session_events::activation_failure_fact(persisted, lifecycle_events)
-                .map_err(projection_error)?
+        if let awaken_managed_session_events::ActivationFailureProjection::Ready { error: Some(fact) } =
+            projection
         {
-            record.publish_fact_once(&fact, None)?;
+            record.publish_fact_once(fact, None)?;
         }
         Ok(())
     }

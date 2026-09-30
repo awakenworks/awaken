@@ -832,7 +832,7 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
     // |---|---|---|---|---|---|
     // | C1 | unique dead letter | absent | unavailable/unknown | accepted | E1+E2+E3 |
     // | C2 | absent | absent | unavailable/unknown | accepted | no-op+E3 (idle sibling) |
-    // | C3 | multiple | absent | any | accepted | reject (ambiguity sibling) |
+    // | C3 | multiple exact Session rows | absent | any | accepted | cancel each (sibling) |
     let thread = "cold-managed-interrupt";
     let run_id = RunId("cold-managed-interrupt-run".into());
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
@@ -967,7 +967,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
     // |---|---|---|---|---|---|
     // | M1 | unique + Session-affined | remote | absent | accepted | E1+E2+E3 |
     // | M2 | absent | any | absent | accepted | no-op (existing idle test) |
-    // | M3 | multiple executable primary rows | any | absent | accepted | fail closed |
+    // | M3 | multiple executable primary rows | any | absent | accepted | cancel each exact row |
     // | M4 | exact local hint | any | present | accepted | existing exact-id path |
     let thread = "managed-active-remote-interrupt";
     let run_id = RunId("managed-active-remote-run".into());
@@ -1069,55 +1069,89 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
 }
 
 #[tokio::test]
-async fn managed_primary_interrupt_fails_closed_on_ambiguous_dispatch_authority() {
-    // Decision rule: execute every reachable cause partition documented here and
-    // require its stated effects, including each fail-closed outcome.
-    use awaken_dispatch::{DispatchQueue as _, RunDispatch};
+async fn managed_primary_interrupt_cancels_every_exact_session_dispatch() {
+    use awaken_dispatch::{DispatchOutcome, DispatchQueue as _, RunDispatch};
 
-    // Cause/effect graph: C1 the process-local active Run hint is absent; C2 the
-    // authoritative store exposes two executable rows with the same primary
-    // Session affinity; C3 an interrupt is requested. Effects: E1 reject the
-    // inconsistent authority instead of choosing or mass-cancelling; E2 neither
-    // row receives cancellation intent. Constraint: a present exact local hint
-    // retains the established exact-id path and is covered by the neighboring
-    // durable interrupt test.
+    // Cause/effect graph: C1 the local active Run hint is absent; C2 the store
+    // has an Awaiting customer-tool Run and a queued child-report continuation
+    // on the same primary Session; C3 another Session/child has a queued Run;
+    // C4 interrupt is retried. Effects: E1 both exact primary rows receive
+    // durable cancellation; E2 unrelated rows remain untouched; E3 replay is
+    // idempotent. Constraint: selection uses the existing Session affinity and
+    // committed-terminal filter, never a new registry or a guessed latest Run.
     //
-    // | Rule | local hint | executable primary rows | interrupt | Effects |
-    // |---|---|---|---|---|
-    // | A1 | absent | two | requested | E1+E2 |
-    let thread = "ambiguous-managed-primary-interrupt";
+    // | Rule | exact rows | foreign rows | retry | Effects |
+    // | A1 | two | two | no | E1+E2 |
+    // | A2 | two | two | yes | E1+E2+E3 |
+    let thread = "queued-managed-primary-interrupt";
     let dispatch = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(system_clock())
             .expect("dispatch store"),
     );
-    for run in ["ambiguous-primary-a", "ambiguous-primary-b"] {
+    for run in ["awaiting-primary", "queued-report"] {
         dispatch
             .enqueue(
                 RunDispatch::new(crate::host::worker_resolver::test_support::test_activation(
                     thread, run,
                 ))
                 .for_session(ThreadId(thread.into()))
-                .with_session_activity_epoch(1),
+                .with_session_activity_epoch(if run == "awaiting-primary" { 5 } else { 11 }),
             )
             .await
-            .expect("A1 conflicting executable admission");
+            .expect("A1 legal queued primary admission");
+        if run == "awaiting-primary" {
+            let claimed = dispatch
+                .claim("previous-worker", 30_000, &Default::default())
+                .await
+                .expect("A1 claim predecessor")
+                .expect("A1 predecessor row");
+            dispatch
+                .settle(
+                    &claimed.lease.run_id,
+                    claimed.lease.epoch,
+                    DispatchOutcome::Awaiting,
+                    &[],
+                )
+                .await
+                .expect("A1 predecessor awaits customer");
+        }
+    }
+    for (owner, run) in [
+        ("other-session", "foreign-primary"),
+        (thread, "foreign-child"),
+    ] {
+        let logical = if run == "foreign-child" {
+            "child-thread"
+        } else {
+            owner
+        };
+        dispatch
+            .enqueue(
+                RunDispatch::new(crate::host::worker_resolver::test_support::test_activation(
+                    logical, run,
+                ))
+                .for_session(ThreadId(owner.into()))
+                .with_session_activity_epoch(11),
+            )
+            .await
+            .expect("A1 foreign admission");
     }
     let host = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone());
-
-    let error = host
-        .interrupt(thread)
+    host.interrupt(thread)
         .await
-        .expect_err("A1/E1 ambiguous primary authority must fail closed");
-    assert!(
-        error
-            .message
-            .contains("multiple executable primary dispatches"),
-        "A1/E1: {error:?}"
-    );
+        .expect("A1 exact Session interrupt");
+    host.interrupt(thread).await.expect("A2 idempotent retry");
     let rows = dispatch
         .list_dispatches()
         .await
-        .expect("A1 inspect unchanged rows");
-    assert_eq!(rows.len(), 2, "A1/C2");
-    assert!(rows.iter().all(|row| !row.cancellation_requested), "A1/E2");
+        .expect("A1 inspect durable rows");
+    assert_eq!(rows.len(), 4, "A1/C2+C3");
+    for row in rows {
+        assert_eq!(
+            row.cancellation_requested,
+            matches!(row.run_id.0.as_str(), "awaiting-primary" | "queued-report"),
+            "A1-A2/E1-E3 {}",
+            row.run_id.0
+        );
+    }
 }
