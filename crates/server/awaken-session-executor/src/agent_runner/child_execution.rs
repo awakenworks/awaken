@@ -137,6 +137,10 @@ pub(crate) struct RunScheduler {
     /// source; no execution path reopens the mutable host catalog.
     pub(crate) publication_source:
         Option<Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>>,
+    /// Rebind the existing Session model admission port to the child Worker's
+    /// own durable claim. The parent attempt's gate cannot authorize this Run.
+    pub(crate) claimed_model_request_gate:
+        Option<awaken_dispatch::ClaimedModelRequestGateFactory>,
 }
 
 impl RunScheduler {
@@ -408,6 +412,14 @@ pub(crate) async fn run_configured_agent_until_boundary(
             )
             .with_context(context.clone())
             .with_local_credential_capabilities(adapters.credential_capabilities.clone());
+            if context
+                .model_request_gate
+                .as_ref()
+                .is_some_and(|gate| gate.process_bound())
+                && let Some(factory) = &scheduler.claimed_model_request_gate
+            {
+                worker = worker.with_claimed_model_request_gate_factory(factory.clone());
+            }
             worker.install_attempt_executor(attempt_executor);
             if let Some(claimed_commit) = scheduler.claimed_commit {
                 worker = worker.with_claimed_commit(claimed_commit);
@@ -1158,6 +1170,7 @@ mod tests {
                 recovery_projection: None,
                 session_resources: None,
                 publication_source: None,
+                claimed_model_request_gate: None,
             });
             let (tx, rx) = tokio::sync::oneshot::channel();
             let model = Arc::new(Blocked {
@@ -1284,6 +1297,7 @@ mod tests {
             recovery_projection: None,
             session_resources: None,
             publication_source: None,
+            claimed_model_request_gate: None,
         };
         let parent_reader: Arc<dyn CommittedThreadView> = Arc::new(MemoryCommitCoordinator::new(
             awaken_lease_contract::system_clock(),
@@ -1355,6 +1369,7 @@ mod tests {
             recovery_projection: None,
             session_resources: None,
             publication_source: None,
+            claimed_model_request_gate: None,
         };
 
         let recovered_boundary = run_agent_until_boundary(
@@ -1424,6 +1439,7 @@ mod tests {
                 recovery_projection: None,
                 session_resources: None,
                 publication_source: None,
+                claimed_model_request_gate: None,
             }),
             AgentRunSandbox::SharedLocal(&sandbox),
             ChildRunRequest {

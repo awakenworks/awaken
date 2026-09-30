@@ -1599,16 +1599,21 @@ impl SharedHost {
                 })
                 .transpose()
                 .map_err(HostError::internal)?;
+            let mut attempt_specs = vec![&config.resolved_spec];
+            attempt_specs.extend(
+                self.agent
+                    .judge_snapshot
+                    .as_ref()
+                    .map(|snapshot| &snapshot.resolved_spec),
+            );
             let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
-                Arc::new(crate::run_exec::SessionAttemptExecutor::new(
+                Arc::new(crate::run_exec::SessionAttemptExecutor::from_executors(
                     runtime.clone(),
-                    acp_executor,
+                    acp_executor.map(|executor| {
+                        executor as Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>
+                    }),
                     self.agent.remote_attempt_executor.clone(),
-                    &config.resolved_spec,
-                    self.agent
-                        .judge_snapshot
-                        .as_ref()
-                        .map(|snapshot| &snapshot.resolved_spec),
+                    &attempt_specs,
                 ));
             let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
                 Arc::new(
