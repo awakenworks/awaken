@@ -207,7 +207,16 @@ async fn api(app: &Router, method: &str, path: &str, body: Value) -> (StatusCode
             Body::from(body.to_string())
         })
         .unwrap();
-    let response = app.clone().oneshot(request).await.unwrap();
+    // Causes: C1 an in-process fragmented or ordinary HTTP request; C2 its
+    // Session path may synchronously poll admission and terminal observation.
+    // Effect: E1 the request uses the same Router and retains every response
+    // assertion, while its polling stack starts at a server-like task boundary.
+    // Decision table: R1=C1+!C2 and R2=C1+C2 both yield E1. No extra
+    // application path or test oracle is introduced.
+    let response = tokio::spawn(app.clone().oneshot(request))
+        .await
+        .unwrap()
+        .unwrap();
     if fragmented {
         assert!(
             fragments.load(Ordering::SeqCst) > 1,
