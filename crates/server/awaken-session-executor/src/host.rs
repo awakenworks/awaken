@@ -228,6 +228,9 @@ pub struct SharedHost {
     /// schedulers all drive their Workers on it, so every time the attempt
     /// itself judges shares one timeline.
     pub(crate) clock: Arc<dyn awaken_lease_contract::WallClock>,
+    /// The Host's one process-local BackgroundTask slot registry. Native tool
+    /// submission and committed terminal observation share this exact owner.
+    pub(crate) background_supervisor: Arc<awaken_ext_background_task::BackgroundTaskSupervisor>,
     /// Owns temporary run-id registrations for event-driven durable completion,
     /// foreground stream relay, and publication into the existing Thread hub.
     /// Injected into the pool as its `CompletionSink` and into each local Session

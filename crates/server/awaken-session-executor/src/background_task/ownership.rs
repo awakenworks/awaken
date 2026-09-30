@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use awaken_ext_background_task::{BackgroundTask, BackgroundTaskSupervisor, task_state_cell};
+use awaken_lease_contract::WallClockExt;
 use awaken_runtime_contract::{AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext};
 
 use super::BackgroundTaskTerminalObserver;
@@ -34,7 +35,7 @@ impl AttemptOwnershipVerifier for BackgroundTaskOwnership {
             .map_err(|error| AttemptOwnershipError::Unavailable(error.to_string()))?
             .ok_or(AttemptOwnershipError::Lost)?;
         let expected = self.expected.attempt().ok_or(AttemptOwnershipError::Lost)?;
-        if current.admits_execution_of(&self.expected, BackgroundTaskSupervisor::now_ms())
+        if current.admits_execution_of(&self.expected, self.supervisor.clock().now_ms())
             && self
                 .supervisor
                 .is_active(&self.expected.id, &expected.tenure(&self.expected.id))
@@ -82,6 +83,7 @@ mod tests {
         BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundTaskPlugin, BackgroundWait,
         TaskExecutionPolicy,
     };
+    use awaken_lease_testkit::ManualClock;
     use awaken_runtime::{PreparedToolExecutor, Runtime};
     use awaken_runtime_contract::tool::{ToolCall, ToolError, ToolRecoveryPolicy};
     use awaken_runtime_contract::{ToolConcurrency, ToolExecutionAdmission, ToolExecutionPermit};
@@ -107,13 +109,16 @@ mod tests {
                 .committed_authority()
                 .expect("local test commit is authoritative"),
             Arc::new(BackgroundRuns::new()),
-            Arc::new(BackgroundTaskSupervisor::new("worker")),
+            Arc::new(BackgroundTaskSupervisor::new(
+                "worker",
+                awaken_lease_contract::system_clock(),
+            )),
             "session".into(),
             "generation".into(),
             None,
         );
-        let a = observer.execution_context(&task(0), Default::default());
-        let b = observer.execution_context(&task(0), Default::default());
+        let a = observer.execution_context(&task(0, &observer.supervisor), Default::default());
+        let b = observer.execution_context(&task(0, &observer.supervisor), Default::default());
         assert!(a.physical_quiescence.can_acknowledge_return(), "Q1 A");
         assert!(b.physical_quiescence.can_acknowledge_return(), "Q1 B");
         a.for_child_run().physical_quiescence.mark_uncertain();
@@ -133,7 +138,10 @@ mod tests {
         // U4 start returns Pending with malformed coordinates: use the same
         // Indeterminate branch, never normal Failed or a fabricated wait handle.
         for (boundary, malformed) in [(0, false), (1, false), (2, false), (0, true)] {
-            let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
+            let supervisor = Arc::new(BackgroundTaskSupervisor::new(
+                "worker",
+                awaken_lease_contract::system_clock(),
+            ));
             let tool = Arc::new(RemoteTaskTool {
                 uncertain_action: (!malformed).then_some(boundary),
                 malformed_created_handle: malformed,
@@ -163,7 +171,7 @@ mod tests {
                 "generation".into(),
                 None,
             );
-            let task = task(boundary);
+            let task = task(boundary, &supervisor);
             persist(&commit, &task, "initial").await;
             if boundary == 0 {
                 observer.launch(task.clone()).await;
@@ -202,7 +210,7 @@ mod tests {
         }
     }
 
-    fn task(boundary: usize) -> BackgroundTask {
+    fn task(boundary: usize, supervisor: &BackgroundTaskSupervisor) -> BackgroundTask {
         let mut task = BackgroundTask::requested(
             BackgroundTaskId::new("guarded-task").unwrap(),
             BackgroundTaskOrigin {
@@ -221,7 +229,7 @@ mod tests {
         let fence = task
             .start(
                 "worker",
-                BackgroundTaskSupervisor::now_ms(),
+                supervisor.clock().now_ms(),
                 BackgroundTaskSupervisor::lease_ms(),
                 TaskExecutionPolicy {
                     recovery: ToolRecoveryPolicy::default(),
@@ -294,7 +302,10 @@ mod tests {
         // atomic transaction spanning that read and a third-party network effect.
         for boundary in 0..3 {
             for change in 0..5 {
-                let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
+                let supervisor = Arc::new(BackgroundTaskSupervisor::new(
+                    "worker",
+                    awaken_lease_contract::system_clock(),
+                ));
                 let remote = Arc::new(RemoteTaskTool::default());
                 let runtime = Arc::new(Runtime::new().with_tool(remote.clone()).with_plugin(
                     Arc::new(BackgroundTaskPlugin::with_supervisor(
@@ -333,7 +344,7 @@ mod tests {
                     "generation".into(),
                     None,
                 );
-                let mut task = task(boundary);
+                let mut task = task(boundary, &supervisor);
                 persist(&commit, &task, "initial").await;
                 let fence = task.tenure().unwrap();
                 let token = supervisor.register(&task.id, &fence).unwrap();
@@ -448,7 +459,10 @@ mod tests {
                     effect_gate: Some(gate.clone()),
                     ..Default::default()
                 });
-                let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
+                let supervisor = Arc::new(BackgroundTaskSupervisor::new(
+                    "worker",
+                    awaken_lease_contract::system_clock(),
+                ));
                 let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
                     BackgroundTaskConfig {
                         tools: BTreeSet::from(["remote".into()]),
@@ -472,7 +486,7 @@ mod tests {
                     "generation".into(),
                     None,
                 );
-                let mut current = task(boundary);
+                let mut current = task(boundary, &supervisor);
                 persist(&commit, &current, "before-effect").await;
                 let old = current.clone();
                 let fence = old.tenure().unwrap();
@@ -565,14 +579,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn injected_host_clock_decides_the_exact_background_lease_boundary() {
+        // Causes: C1 one committed Running attempt and its matching active
+        // process slot; C2 the same injected Host clock reads just before,
+        // exactly at, and after its persisted expiry. Effects: R1 C1+C2<expiry
+        // admits; R2 C1+C2>=expiry loses ownership without changing the
+        // committed cell or process slot. The verifier must never sample an
+        // ambient clock that disagrees with the tool's submission stamp.
+        let clock = Arc::new(ManualClock::new(1_000));
+        let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker", clock.clone()));
+        let expected = task(0, &supervisor);
+        let expiry = expected.attempt().unwrap().lease_expires_at_ms;
+        supervisor
+            .register(&expected.id, &expected.tenure().unwrap())
+            .unwrap();
+        let commit = local_commit();
+        persist(&commit, &expected, "injected-clock-lease").await;
+        let authority = BackgroundTaskOwnership {
+            expected: expected.clone(),
+            commit: commit
+                .committed_authority()
+                .expect("local test commit is authoritative"),
+            supervisor: supervisor.clone(),
+        };
+        clock.set(expiry - 1);
+        assert_eq!(authority.verify_current().await, Ok(()), "R1");
+        clock.set(expiry);
+        assert_eq!(
+            authority.verify_current().await,
+            Err(AttemptOwnershipError::Lost),
+            "R2 at expiry"
+        );
+        clock.set(expiry + 1);
+        assert_eq!(
+            authority.verify_current().await,
+            Err(AttemptOwnershipError::Lost),
+            "R2 after expiry"
+        );
+        assert!(supervisor.is_active(&expected.id, &expected.tenure().unwrap()));
+    }
+
+    #[tokio::test]
     async fn missing_malformed_and_projected_authorities_fail_closed() {
         // R1 missing cell -> Lost; R2 malformed committed cell -> Unavailable;
         // R3 Worker projection (not live authority) -> cannot mint the receipt
         // required to construct this verifier; R4 live authority read failure ->
         // exact Unavailable, no cached fallback. Neither a process token nor a
         // previously valid expected snapshot grants authority.
-        let expected = task(0);
-        let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
+        let supervisor = Arc::new(BackgroundTaskSupervisor::new(
+            "worker",
+            awaken_lease_contract::system_clock(),
+        ));
+        let expected = task(0, &supervisor);
         supervisor
             .register(&expected.id, &expected.tenure().unwrap())
             .unwrap();

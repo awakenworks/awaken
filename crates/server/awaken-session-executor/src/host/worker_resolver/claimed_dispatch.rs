@@ -71,6 +71,7 @@ impl HostWorkerResolver {
             host.agent.llm.clone(),
             environment.as_ref(),
             &authorization,
+            Some(host.background_supervisor.clone()),
         );
         let commit = substrate.commit;
         let adapters = host.child_execution_adapters(&session_thread_id.0, environment.clone());

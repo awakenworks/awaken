@@ -558,9 +558,7 @@ pub fn platform_plugin_capabilities_with_web_search(
             id: awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID.to_string(),
             schema_keys: vec![awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID.to_string()],
             config_schema: Some(awaken_ext_background_task::config_schema()),
-            bound: awaken_ext_background_task::BackgroundTaskPlugin::new(Default::default())
-                .manifest()
-                .bound,
+            bound: awaken_ext_background_task::background_task_manifest().bound,
         },
         PluginCapability {
             id: STATE_MACHINE_PLUGIN_ID.to_string(),
@@ -687,6 +685,7 @@ impl RuntimeToolSource for crate::session_environment::SessionEnvironment {
 pub(crate) fn build_runtime<S: RuntimeToolSource + ?Sized>(
     llm: Arc<dyn LlmExecutor>,
     sandbox: &S,
+    background_supervisor: Option<Arc<awaken_ext_background_task::BackgroundTaskSupervisor>>,
 ) -> Runtime {
     let mut runtime = Runtime::new()
         .with_llm(llm)
@@ -696,10 +695,15 @@ pub(crate) fn build_runtime<S: RuntimeToolSource + ?Sized>(
         .with_metrics(Arc::new(awaken_observability::OtelMetricsRecorder::new()))
         // The tool state machine is available on every runtime; an agent activates
         // it via `plugin_ids` and configures its machines via `plugin_config`.
-        .with_plugin(Arc::new(StateMachinePlugin::empty()))
-        .with_plugin(Arc::new(
-            awaken_ext_background_task::BackgroundTaskPlugin::new(Default::default()),
+        .with_plugin(Arc::new(StateMachinePlugin::empty()));
+    if let Some(supervisor) = background_supervisor {
+        runtime = runtime.with_plugin(Arc::new(
+            awaken_ext_background_task::BackgroundTaskPlugin::with_supervisor(
+                Default::default(),
+                supervisor,
+            ),
         ));
+    }
     // The full capability surface (ADR-0035 D8): hand tools plus provisioned skill
     // tools. Placement-agnostic — the kernel sees `RawTool`s, not "skills".
     for tool in sandbox.runtime_tools() {
@@ -715,8 +719,9 @@ pub(crate) fn build_runtime_with_authorization<S: RuntimeToolSource + ?Sized>(
     llm: Arc<dyn LlmExecutor>,
     sandbox: &S,
     authorization: &EffectiveToolAuthorization,
+    background_supervisor: Option<Arc<awaken_ext_background_task::BackgroundTaskSupervisor>>,
 ) -> Runtime {
-    let runtime = build_runtime(llm, sandbox);
+    let runtime = build_runtime(llm, sandbox, background_supervisor);
     if authorization.explicit {
         runtime.with_gate(authorization.gate.clone())
     } else {
@@ -1810,7 +1815,7 @@ mod tests {
             .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
             .await
             .unwrap();
-        let runtime = build_runtime(Arc::new(NoLlm), &sandbox);
+        let runtime = build_runtime(Arc::new(NoLlm), &sandbox, None);
         assert!(
             runtime
                 .validate_plugins(&config_with(serde_json::json!({"machines": []})))

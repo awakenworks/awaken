@@ -19,6 +19,7 @@ use awaken_ext_background_task::{
     BackgroundTaskLifecycle, BackgroundTaskSupervisor, BackgroundTaskWaitCandidate, BackgroundWait,
     TaskTenure, tasks_from_state,
 };
+use awaken_lease_contract::WallClockExt;
 use awaken_runtime::{PreparedToolExecutor, Runtime};
 use awaken_runtime_contract::ExecutableAgentSnapshot;
 use awaken_runtime_contract::resolved::ToolKind;
@@ -588,7 +589,7 @@ impl BackgroundTaskTerminalObserver {
                 let mut cancel_sent = false;
                 let mut failures = 0usize;
                 loop {
-                    let now = BackgroundTaskSupervisor::now_ms();
+                    let now = supervisor.clock().now_ms();
                     if now >= renew_at {
                         let wait = Self::remote_wait(&handle).expect("validated task handle");
                         supervisor.wait(
@@ -624,7 +625,7 @@ impl BackgroundTaskTerminalObserver {
                         _ = tokio::time::sleep(poll_delay.min(renew_delay)) => {}
                         _ = cancellation.cancelled(), if !cancelling => cancelling = true,
                     }
-                    if BackgroundTaskSupervisor::now_ms() >= renew_at {
+                    if supervisor.clock().now_ms() >= renew_at {
                         continue;
                     }
                     let operation = format!(
@@ -1365,7 +1366,10 @@ mod tests {
         // LocalCommitQueries read seam; the Memory store remains the observable
         // stale compatibility projection. Rules: R1=C1=>E1; R2=C2=>E2;
         // R3=C2+C3=>E3; R4=C2+C4=>E4; R5=C2+C5=>E5; R6=C2+C6=>E6.
-        let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker-test"));
+        let supervisor = Arc::new(BackgroundTaskSupervisor::new(
+            "worker-test",
+            awaken_lease_contract::system_clock(),
+        ));
         let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
             BackgroundTaskConfig {
                 tools: BTreeSet::from(["count".into()]),
@@ -1441,7 +1445,7 @@ mod tests {
         let fence = task
             .start(
                 supervisor.worker_id(),
-                BackgroundTaskSupervisor::now_ms(),
+                supervisor.clock().now_ms(),
                 BackgroundTaskSupervisor::lease_ms(),
                 TaskExecutionPolicy {
                     recovery: ToolRecoveryPolicy::default(),
@@ -1621,7 +1625,10 @@ mod tests {
         // R4 explicit Completed -> terminal candidate and a distinct attention
         // identity. Constraints: no second start, no adapter/remote id in
         // System messages, and Thread State remains the only durable truth.
-        let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker-remote"));
+        let supervisor = Arc::new(BackgroundTaskSupervisor::new(
+            "worker-remote",
+            awaken_lease_contract::system_clock(),
+        ));
         let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
             BackgroundTaskConfig {
                 tools: BTreeSet::from(["remote".into()]),
@@ -1671,7 +1678,7 @@ mod tests {
         let fence = task
             .start(
                 supervisor.worker_id(),
-                BackgroundTaskSupervisor::now_ms(),
+                supervisor.clock().now_ms(),
                 BackgroundTaskSupervisor::lease_ms(),
                 TaskExecutionPolicy {
                     recovery: ToolRecoveryPolicy::default(),
