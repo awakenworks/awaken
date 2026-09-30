@@ -3,7 +3,8 @@
 // Catalog, credential, Agent publication, admin resources/webhooks, and Session
 // state are independent repository ports. This scenario selects their Postgres
 // adapters together, drives only public HTTP, restarts the process, and proves the
-// same immutable publication still executes without a node-local config truth.
+// same immutable publication and public Session Event frontier still execute
+// without a node-local config truth.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -13,6 +14,7 @@ import { execFileSync, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import type { BetaManagedAgentsSessionEvent } from '@anthropic-ai/sdk/resources/beta/sessions/events';
+// @ts-ignore -- the shared JavaScript fixture has no TypeScript declaration.
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 // @ts-ignore -- shared JS harness deliberately serves both JS and TS scenarios.
 import { spawnProduction, stopServer, waitForPort, waitForSessionEventReceipt } from './harness.mjs';
@@ -90,10 +92,15 @@ function start(directory: string, databaseUrl: string): ChildProcess {
   });
 }
 
-async function request(method: string, uri: string, body?: unknown) {
+async function request(
+  method: string,
+  uri: string,
+  body?: unknown,
+  extraHeaders: Record<string, string> = {},
+) {
   const response = await fetch(`http://127.0.0.1:${PORT}${uri}`, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...extraHeaders },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
@@ -106,25 +113,31 @@ async function request(method: string, uri: string, body?: unknown) {
   return { status: response.status, body: parsed };
 }
 
-async function executePublishedAgent(expectedCalls: number): Promise<void> {
+async function listSessionEvents(client: Anthropic, sessionId: string): Promise<BetaManagedAgentsSessionEvent[]> {
+  const events: BetaManagedAgentsSessionEvent[] = [];
+  for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
+    events.push(event);
+  }
+  return events;
+}
+
+async function executePublishedAgent(expectedCalls: number, existingSessionId?: string) {
   const client = new Anthropic({
     apiKey: 'e2e-dummy',
     baseURL: `http://127.0.0.1:${PORT}`,
   });
-  const session = await client.beta.sessions.create({
-    agent: AGENT,
-    environment_id: 'env_local',
-    betas: BETAS,
-  });
+  const sessionId = existingSessionId ?? (await client.beta.sessions.create({
+    agent: AGENT, environment_id: 'env_local', betas: BETAS,
+  })).id;
   // Durable-admission cause/effect table: R1 exact User Event receipt is still
   // unprocessed => keep observing; R2 it is processed but its later Agent
-  // message is absent => keep observing; R3 only a later matching message may
-  // prove this Run. A one-shot list can observe admission before execution and
+  // message is absent => keep observing; R3 only a later matching message plus
+  // terminal idle proves this Run. A one-shot list can observe admission before execution and
   // must not turn that legal state into a persistence failure. Causes are the
   // exact receipt and PostgreSQL-backed publication; effects are processed
   // receipt plus its later matching Agent Message. Constraints/invariant: no
   // pre-existing history or unrelated Run may satisfy expectedCalls.
-  const receipt = await client.beta.sessions.events.send(session.id, {
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: `postgres-${expectedCalls}` }] }],
     betas: BETAS,
   });
@@ -133,11 +146,13 @@ async function executePublishedAgent(expectedCalls: number): Promise<void> {
   const observed: { delta: BetaManagedAgentsSessionEvent[] } =
     await waitForSessionEventReceipt(
       client,
-      session.id,
+      sessionId,
       receiptId,
       BETAS,
       ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) =>
-        delta.some((event) => event.type === 'agent.message'
+        delta.some((event) => event.type === 'session.status_idle'
+          && event.stop_reason?.type === 'end_turn')
+        && delta.some((event) => event.type === 'agent.message'
           && event.content.some((part) => part.type === 'text'
             && part.text.includes(`FAKE:postgres-${expectedCalls}`))),
       `PostgreSQL-backed publication Run ${expectedCalls} to commit its Agent message`,
@@ -149,6 +164,7 @@ async function executePublishedAgent(expectedCalls: number): Promise<void> {
     .map((part) => part.text)
     .join('');
   assert.match(text, new RegExp(`FAKE:postgres-${expectedCalls}`));
+  return { sessionId, events: await listSessionEvents(client, sessionId) };
 }
 
 async function main(): Promise<void> {
@@ -296,12 +312,32 @@ async function main(): Promise<void> {
     response = await request('GET', `/v1/config/webhook-subscriptions/${webhookId}`);
     assert.equal(response.status, 404);
 
-    await executePublishedAgent(1);
+    const firstRun = await executePublishedAgent(1);
     assert.equal(upstream.requests.length, 1);
+    // Cause/effect table for the already-published Event frontier:
+    // C1 a complete first Run commits through the production PostgreSQL
+    // Session and Thread stores; C2 the process is replaced with a new DB
+    // connection and empty Managed cache; C3 a second Run is admitted on that
+    // exact Session. E1 C2 reconstructs C1 byte-for-byte; E2 C3 appends after
+    // every old ID; E3 an old public cursor returns exactly the appended
+    // suffix. Rules P1=C1+C2=>E1, P2=P1+C3=>E1+E2+E3. The existing production
+    // server and SDK own this test; no test-only event projector is installed.
+    const oldCursorIndex = Math.floor(firstRun.events.length / 2);
+    const oldCursor = firstRun.events[oldCursorIndex]?.id;
+    assert.ok(oldCursor, 'P1 a committed public Event cursor exists');
 
     await stopServer(server);
     server = start(directory, database.url);
     await waitForPort(PORT, 120_000, server);
+
+    const replacementClient = new Anthropic({
+      apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}`,
+    });
+    assert.deepEqual(
+      await listSessionEvents(replacementClient, firstRun.sessionId),
+      firstRun.events,
+      'P1/E1 replacement process reconstructs the exact issued Event prefix',
+    );
 
     response = await request('GET', `/v1/config/agents/${AGENT}`);
     assert.equal(response.status, 200, JSON.stringify(response.body));
@@ -312,8 +348,24 @@ async function main(): Promise<void> {
     assert.equal(response.status, 200, JSON.stringify(response.body));
     assert.equal(response.body.fingerprint, fingerprint);
 
-    await executePublishedAgent(2);
+    const secondRun = await executePublishedAgent(2, firstRun.sessionId);
     assert.equal(upstream.requests.length, 2);
+    assert.deepEqual(
+      secondRun.events.slice(0, firstRun.events.length), firstRun.events,
+      'P2/E2 the second Run appends after the issued prefix',
+    );
+    const suffix = await request(
+      'GET',
+      `/v1/sessions/${encodeURIComponent(firstRun.sessionId)}/events?page=${encodeURIComponent(oldCursor)}&limit=100`,
+      undefined,
+      { 'anthropic-beta': BETAS[0], 'x-api-key': 'e2e-dummy' },
+    );
+    assert.equal(suffix.status, 200, JSON.stringify(suffix.body));
+    assert.deepEqual(
+      suffix.body.data,
+      secondRun.events.slice(oldCursorIndex + 1),
+      'P2/E3 the old cursor sees the exact suffix after process replacement',
+    );
 
     for (const valid of [
       {
@@ -347,7 +399,7 @@ async function main(): Promise<void> {
     assert.equal(response.body.code, 'credential_invalid');
 
     console.log(
-      'POSTGRES CONTROL PLANE TS E2E PASS: catalog, credentials, Agent publication, admin resources/webhooks, and Sessions survive one process replacement.',
+      'POSTGRES CONTROL PLANE TS E2E PASS: catalog, credentials, Agent publication, admin resources/webhooks, and exact Session Event cursors survive one process replacement.',
     );
   } finally {
     await stopServer(server);
