@@ -390,5 +390,10 @@ async fn workdir_bash_cwd_is_a_lexical_convenience_not_a_security_boundary() {
         leak.text()
     );
 
+    // C3 a persistent shell still has its cwd open; E3 release its toolset
+    // before physical disposal. Windows refuses deletion of an in-use cwd,
+    // while the same quiescence ordering is required by the provider contract
+    // on every OS.
+    drop(tools);
     sandbox.dispose_unattached().await.unwrap();
 }

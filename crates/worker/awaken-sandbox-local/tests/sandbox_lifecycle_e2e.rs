@@ -11,12 +11,8 @@ use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
 use awaken_provisioning_contract::{self as pc, Sandbox};
 use awaken_sandbox_local::LocalProvider;
 use awaken_sandbox_memoryd::MemoryStoreMounter;
-
-fn sh(script: &str) -> pc::Command {
-    let mut c = pc::Command::new(["sh", "-c", script]);
-    c.stdio = pc::Stdio::Null;
-    c
-}
+mod common;
+use common::sh_command as sh;
 
 fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
     for entry in std::fs::read_dir(root).ok()?.flatten() {

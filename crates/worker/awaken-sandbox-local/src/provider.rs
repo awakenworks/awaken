@@ -25,7 +25,6 @@ use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, SplitChannel};
 use awaken_local_process::LocalProcess;
 use awaken_provisioning_contract as pc;
-use tokio::process::Command as TokioCommand;
 
 use std::sync::Arc;
 
@@ -39,6 +38,9 @@ use crate::{
 };
 
 mod checkpoint;
+mod command;
+#[cfg(target_os = "linux")]
+use command::PreparedCommand;
 #[cfg(target_os = "linux")]
 pub(crate) mod execution;
 mod restore_target;
@@ -1033,6 +1035,25 @@ impl pc::SandboxProvider for LocalProvider {
         if let Some(execution) = &self.execution_deployment {
             return execution.probe_ready().await;
         }
+        #[cfg(windows)]
+        {
+            // A prospective provider base may not exist yet. Qualify its
+            // nearest existing ancestor without creating a directory, and
+            // refuse a junction, mapped drive, or non-NTFS identity before
+            // advertising Workdir availability.
+            let mut candidate = self.base.as_path();
+            loop {
+                match awaken_sandbox_fs::directory_identity_nofollow(candidate) {
+                    Ok(_) => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        candidate = candidate.parent().ok_or_else(|| {
+                            pc::SandboxError::invalid("local provider base has no existing parent")
+                        })?;
+                    }
+                    Err(error) => return Err(pc::SandboxError::backend("probe_ready", error)),
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1247,24 +1268,6 @@ pub struct LocalSandbox {
     execution: std::sync::OnceLock<execution::ExecutionBinding>,
 }
 
-struct PreparedCommand {
-    command: pc::MaterializedCommand,
-    cwd: PathBuf,
-}
-
-impl PreparedCommand {
-    fn into_tokio(self) -> TokioCommand {
-        let mut cmd = TokioCommand::new(&self.command.argv[0]);
-        cmd.args(&self.command.argv[1..])
-            .current_dir(self.cwd)
-            .env_clear();
-        for var in &self.command.env {
-            cmd.env(&var.name, var.value.expose());
-        }
-        cmd
-    }
-}
-
 impl LocalSandbox {
     #[must_use]
     pub fn has_trusted_host_access(&self) -> bool {
@@ -1348,70 +1351,6 @@ impl LocalSandbox {
             return Ok(Vec::new());
         };
         crate::artifacts::scan_outputs(&self.root, root_identity, &self.outputs_path)
-    }
-
-    /// Build the child command (program, args, jailed cwd, reserved + declared env),
-    /// leaving stdio for the caller to configure. Shared by `spawn`/`spawn_agent`.
-    async fn build_command(
-        &self,
-        command: pc::Command,
-    ) -> Result<PreparedCommand, pc::SandboxError> {
-        let root_identity = self.require_root_identity()?;
-        let broker = self
-            .secret_broker
-            .read()
-            .expect("secret broker lock poisoned")
-            .clone();
-        let mut command =
-            pc::materialize_process_command(&self.base_env, command, broker.as_ref()).await?;
-        if command.argv.is_empty() {
-            return Err(pc::SandboxError::invalid("command argv is empty"));
-        }
-        let cwd_logical = if command.cwd.is_empty() {
-            "/"
-        } else {
-            &command.cwd
-        };
-        let host_cwd = self
-            .root
-            .resolve(cwd_logical)
-            .map_err(pc::SandboxError::from)?;
-        awaken_sandbox_fs::create_relative_directory_all(
-            self.root.root(),
-            root_identity,
-            host_cwd.strip_prefix(self.root.root()).map_err(|_| {
-                pc::SandboxError::invalid("command cwd escaped its exact sandbox root")
-            })?,
-        )
-        .map_err(|error| pc::SandboxError::backend("build_command", error))?;
-        let host_outputs = self.host_outputs()?;
-        awaken_sandbox_fs::create_relative_directory_all(
-            self.root.root(),
-            root_identity,
-            host_outputs.strip_prefix(self.root.root()).map_err(|_| {
-                pc::SandboxError::invalid("outputs path escaped its exact sandbox root")
-            })?,
-        )
-        .map_err(|error| pc::SandboxError::backend("build_command", error))?;
-
-        // Reserved, runtime-owned env: where the agent writes/works (the local tier
-        // has no path fidelity, so a process finds the outputs dir via this var).
-        let paths = crate::RuntimePathEnv::new(
-            host_cwd.to_string_lossy().into_owned(),
-            host_outputs.to_string_lossy().into_owned(),
-        );
-        for (name, value) in paths.entries() {
-            if !command.env.iter().any(|var| var.name == name) {
-                command.env.push(pc::MaterializedEnvVar {
-                    name: name.into(),
-                    value: pc::MaterializedEnvValue::Inline(value.into()),
-                });
-            }
-        }
-        Ok(PreparedCommand {
-            command,
-            cwd: host_cwd,
-        })
     }
 
     /// The tool-transparent capability (ADR-0041 amendment): launch an opaque agent

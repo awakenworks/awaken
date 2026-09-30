@@ -87,13 +87,27 @@ async fn full_declare_admit_prepare_realize_execute_retrieve() {
 
     // 5. Run an opaque process (Claude Code stand-in): consume the input, produce
     //    an artifact under the outputs dir, and use the injected env var.
+    // Platform cause/effect table: C1 Unix sh/Windows PowerShell; C2 one
+    // realized corpus, outputs directory, and injected TZ; C3 Windows child
+    // starts after inherited env is cleared. R1/R2 both execute a real opaque
+    // child and produce the same exact artifact bytes; R2 needs only the
+    // provider-owned Windows OS locators, never caller-injected test env.
+    #[cfg(not(windows))]
+    let argv = [
+        "sh",
+        "-c",
+        r#"printf '%s @ %s' "$(cat workspace/corpus.txt)" "$TZ" > "$AWAKEN_OUTPUTS_DIR/report.txt""#,
+    ];
+    #[cfg(windows)]
+    let argv = [
+        "powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "[System.IO.File]::WriteAllText((Join-Path $env:AWAKEN_OUTPUTS_DIR 'report.txt'), [System.IO.File]::ReadAllText('workspace/corpus.txt') + ' @ ' + $env:TZ)",
+    ];
     let proc = sandbox
         .spawn({
-            let mut c = pc::Command::new([
-                "sh",
-                "-c",
-                r#"printf '%s @ %s' "$(cat workspace/corpus.txt)" "$TZ" > "$AWAKEN_OUTPUTS_DIR/report.txt""#,
-            ]);
+            let mut c = pc::Command::new(argv);
             c.stdio = pc::Stdio::Null;
             c
         })

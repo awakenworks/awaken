@@ -23,6 +23,7 @@ serde_json.workspace = true
 # so the same bytes get the same id on every backend (fs / postgres / s3).
 blake3 = "1"
 tokio = { workspace = true, features = ["fs", "io-util"] }
+
 # Network / durable relational backends over the same trait. Optional: the
 # default product build retains only the durable filesystem backend.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
@@ -37,6 +38,9 @@ awaken-sqlite-pool = { workspace = true, optional = true }
 awaken-sql-storage = { workspace = true, optional = true }
 object_store = { version = "0.14", features = ["aws", "gcp"], optional = true }
 futures = { version = "0.3", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [features]
 # Process-local File authority used only by unit/integration/scenario fixtures.

@@ -69,8 +69,9 @@ pub const BUBBLEWRAP_PROCESS_BOUNDARY: [&str; 5] = [
 /// Resolve a trusted launcher (`bwrap`, `sandbox-exec`) from the operator's
 /// `PATH` — the Worker's own environment, never the environment a workload or
 /// Session configuration supplies to the child. Only absolute directories are
-/// searched, the match must be an executable regular file, and the result is
-/// canonicalized so a later launch execs exactly the file that was found.
+/// searched, the match must be an executable regular file (`.exe` only on
+/// Windows), and the result is canonicalized so a later launch execs exactly
+/// the file that was found.
 #[must_use]
 pub fn resolve_operator_executable(
     name: &str,
@@ -80,16 +81,37 @@ pub fn resolve_operator_executable(
     if candidate.is_absolute() {
         return is_executable_file(candidate)
             .then(|| std::fs::canonicalize(candidate).ok())
-            .flatten();
+            .flatten()
+            .filter(|canonical| is_executable_file(canonical));
     }
-    if candidate.components().count() != 1 {
+    let mut components = candidate.components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
         return None;
     }
+    #[cfg(windows)]
+    let name = {
+        let extension = candidate.extension().and_then(std::ffi::OsStr::to_str);
+        if extension.is_some_and(|extension| !extension.eq_ignore_ascii_case("exe")) {
+            return None;
+        }
+        if extension.is_none() {
+            let mut executable = candidate.to_path_buf();
+            executable.set_extension("exe");
+            executable
+        } else {
+            candidate.to_path_buf()
+        }
+    };
+    #[cfg(not(windows))]
+    let name = candidate.to_path_buf();
     std::env::split_paths(operator_path)
         .filter(|directory| directory.is_absolute())
-        .map(|directory| directory.join(name))
-        .find(|path| is_executable_file(path))
-        .and_then(|path| std::fs::canonicalize(path).ok())
+        .map(|directory| directory.join(&name))
+        .filter(|path| is_executable_file(path))
+        .filter_map(|path| std::fs::canonicalize(path).ok())
+        .find(|canonical| is_executable_file(canonical))
 }
 
 /// [`resolve_operator_executable`] against this process's own `PATH`.
@@ -112,7 +134,15 @@ fn is_executable_file(path: &std::path::Path) -> bool {
         use std::os::unix::fs::PermissionsExt as _;
         metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        metadata.is_file()
+            && path
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         metadata.is_file()
     }
@@ -352,6 +382,50 @@ mod tests {
             resolve_operator_executable(plain.join("tool").to_str().unwrap(), &path),
             None,
             "C5 not executable"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_operator_launcher_resolves_only_a_canonical_exe() {
+        // Causes: C1 absolute PATH directory with tool.exe/only a script;
+        // C2 relative PATH directory; C3 bare/cmd/drive-relative/absolute
+        // launcher name. R1 bare tool resolves the exact canonical .exe;
+        // R2 scripts and relative search roots are skipped; R3 non-exe and
+        // drive-relative names are refused before any process is launched.
+        let temp = tempfile::tempdir().unwrap();
+        let scripts = temp.path().join("scripts");
+        let binaries = temp.path().join("binaries");
+        std::fs::create_dir(&scripts).unwrap();
+        std::fs::create_dir(&binaries).unwrap();
+        std::fs::write(scripts.join("tool.cmd"), b"echo hostile\r\n").unwrap();
+        std::fs::write(scripts.join("tool"), b"untrusted extensionless").unwrap();
+        let executable = binaries.join("tool.exe");
+        std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+        let expected = std::fs::canonicalize(&executable).unwrap();
+        let path =
+            std::env::join_paths([std::path::Path::new("relative"), &scripts, &binaries]).unwrap();
+        assert_eq!(
+            resolve_operator_executable("tool", &path),
+            Some(expected.clone()),
+            "R1/R2"
+        );
+        assert_eq!(
+            resolve_operator_executable("tool.exe", &path),
+            Some(expected),
+            "R1"
+        );
+        for invalid in ["tool.cmd", "C:tool", "nested\\tool"] {
+            assert_eq!(
+                resolve_operator_executable(invalid, &path),
+                None,
+                "R3 {invalid}"
+            );
+        }
+        assert_eq!(
+            resolve_operator_executable(scripts.join("tool.cmd").to_str().unwrap(), &path),
+            None,
+            "R3 absolute script"
         );
     }
 

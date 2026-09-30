@@ -1,6 +1,32 @@
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Exact restoration acquisition, materialization and terminal disposal share one test owner.
 use pc::CheckpointingSandbox as _;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn restore_target_lock_refuses_a_linked_sidecar_without_touching_its_target() {
+    // Lock-admission table: C1 sidecar is absent, symlinked, or hard-linked;
+    // C2 the target is an unrelated regular file. R1 an absent sidecar creates
+    // the one stable lock inode (covered by the terminal restore table below);
+    // R2 either alias rejects before lock acquisition and leaves C2 unchanged.
+    // The existing terminal table covers C3=held/unheld lock, cancellation,
+    // authority change, and exact retry. No second lock owner is introduced.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("restore-target");
+    let lock_path = sidecar(&root, "lock").unwrap();
+    let unrelated = tmp.path().join("unrelated");
+    std::fs::write(&unrelated, b"preserve").unwrap();
+
+    std::os::unix::fs::symlink(&unrelated, &lock_path).unwrap();
+    assert!(lock_target(&root).await.is_err(), "R2 symlink rejected");
+    assert_eq!(std::fs::read(&unrelated).unwrap(), b"preserve");
+    std::fs::remove_file(&lock_path).unwrap();
+
+    std::fs::hard_link(&unrelated, &lock_path).unwrap();
+    assert!(lock_target(&root).await.is_err(), "R2 hard link rejected");
+    assert_eq!(std::fs::read(&unrelated).unwrap(), b"preserve");
+}
+
 #[tokio::test]
 async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_disposal() {
     use awaken_provisioning_contract::test_support::FenceTamper as _;
