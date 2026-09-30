@@ -120,16 +120,6 @@ PROFILES: dict[str, Profile] = {
         ),
         "cadical",  # Same default solver; global 32 retains allocation and Drop.
     ),
-    "erasure-progress-count-v1": Profile(
-        "awaken-data-subject-application",
-        ERASURE_PROGRESS_LOOPS + (
-            # index_range.rs:167: the same two-slot scan with unit adapter payloads.
-            ('_RINvXs_NtNtCsjxLPRqQEPX2_4core3ops11index_rangeNtB5_10IndexRangeNtNtNtNtB9_4iter6traits8iterator8Iterator8try_folduNCINvMs6_NtNtNtB9_5array4iter10iter_innerINtB1Y_15PolymorphicIterSINtNtNtB9_3mem12maybe_uninit11MaybeUninitTNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetINtNtB9_6option6OptionuEEEE8try_folduNCINvNvB10_4find5checkB3y_NCINvMs0_B3B_NtB3B_15ErasureProgress14pending_targetuE0E0INtNtB7_12control_flow11ControlFlowB3y_EE0B6x_EB3B_.0', 3),
-            # slice/iter/macros.rs:276: occurrence fold visits at most three target rows.
-            ('_RINvXs2J_NtNtCsjxLPRqQEPX2_4core5slice4iterINtB7_4IterNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetENtNtNtNtBb_4iter6traits8iterator8Iterator4foldjNCINvNtNtB1Z_8adapters3map8map_foldRBQ_jjNCINvNvXs1_NtB2L_6filterINtB3u_6FilterppEB1T_5count8to_usizeB3d_NCNvNtBS_20erasure_verification20check_selected_count0E0NCINvXsK_NtB1X_5accumjNtB5o_3Sum3sumINtB2J_3MapBF_B3j_EE0E0EBS_.0', 4),
-        ),
-        "cadical",  # Explicitly retains Kani's default solver.
-    ),
     # Exact final wire encoding only: SHA/FNV algorithms and enclosing request
     # histories keep their separate obligations. Every default check stays on.
     "fingerprint-fnv-hex-v1": Profile(

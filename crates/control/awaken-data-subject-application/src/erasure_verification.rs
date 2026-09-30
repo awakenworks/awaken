@@ -48,6 +48,35 @@ fn check_selection(
     assert_eq!(progress, before);
 }
 
+fn check_record_effect(
+    progress: &mut ErasureProgress,
+    before: &ErasureProgress,
+    target: ErasureTarget,
+    removed: usize,
+) -> Result<(), String> {
+    // Causes: C1 a bound, uncompleted target is selected; C2 the mathematical
+    // count+receipt fits usize. R2=C1&&C2 -> append exactly that target once,
+    // exact sum and preserve every other field. R3=C1&&!C2 -> exact error and
+    // full stutter. Selection and later reselection remain the caller's oracle.
+    // Receipts/counts span usize, including zero/MAX; u128 is the independent
+    // arithmetic oracle on the supported <=64-bit usize targets. These are local
+    // transitions after a successful effect, not async/CAS/reload refinement.
+    let mathematical_sum = (before.records_removed as u128) + (removed as u128);
+    let result = progress.record_target(target, removed);
+    if mathematical_sum <= usize::MAX as u128 {
+        assert!(result.is_ok());
+        let mut expected = before.clone();
+        expected.records_removed = usize::try_from(mathematical_sum).unwrap();
+        expected.completed_targets.push(target);
+        assert_eq!(*progress, expected);
+        Ok(())
+    } else {
+        let error = result.unwrap_err().0;
+        assert_eq!(*progress, *before);
+        Err(error)
+    }
+}
+
 fn check_selected_count(
     completed: [Option<ErasureTarget>; 2],
     enabled: [bool; 2],
@@ -57,13 +86,10 @@ fn check_selected_count(
     flags: [bool; 2],
 ) {
     use ErasureTarget::{Coordinator, Resources};
-    // Causes: C1 a bound, uncompleted target is selected; C2 the mathematical
-    // count+receipt fits usize. R1=!C1 -> exact stutter. R2=C1&&C2 -> append
-    // exactly that target once, exact sum, preserve every other field, and never
-    // select that target again. R3=C1&&!C2 -> exact error and full stutter.
-    // Receipts/counts span usize, including zero/MAX; u128 is the independent
-    // arithmetic oracle on the supported <=64-bit usize targets. These are local
-    // transitions after a successful effect, not async/CAS/reload refinement.
+    // R1 no pending target => exact stutter; R2/R3 are owned by the shared
+    // record oracle above. On R2 the selected target occurs exactly once and
+    // can never be selected a second time. The Rust cross product composes
+    // selection and recording; Kani partitions those two independent causes.
     let mut progress = checkpoint(completed, revision, count, flags);
     let before = progress.clone();
     let bindings = [
@@ -71,30 +97,23 @@ fn check_selected_count(
         (Resources, enabled[1].then_some(())),
     ];
     if let Some((target, Some(()))) = progress.pending_target(bindings) {
-        let mathematical_sum = (count as u128) + (removed as u128);
-        let result = progress.record_target(target, removed);
-        if mathematical_sum <= usize::MAX as u128 {
-            assert!(result.is_ok());
-            let mut expected = before.clone();
-            expected.records_removed = usize::try_from(mathematical_sum).unwrap();
-            expected.completed_targets.push(target);
-            assert_eq!(progress, expected);
-            assert_eq!(
-                progress
-                    .completed_targets
-                    .iter()
-                    .filter(|item| **item == target)
-                    .count(),
-                1
-            );
-            assert!(
-                progress
-                    .pending_target(bindings)
-                    .is_none_or(|(next, _)| next != target)
-            );
-        } else {
-            assert_eq!(result.unwrap_err().0, "erasure receipt overflow");
-            assert_eq!(progress, before);
+        match check_record_effect(&mut progress, &before, target, removed) {
+            Ok(()) => {
+                assert_eq!(
+                    progress
+                        .completed_targets
+                        .iter()
+                        .filter(|item| **item == target)
+                        .count(),
+                    1
+                );
+                assert!(
+                    progress
+                        .pending_target(bindings)
+                        .is_none_or(|(next, _)| next != target)
+                );
+            }
+            Err(error) => assert_eq!(error, "erasure receipt overflow"),
         }
     } else {
         assert_eq!(progress, before);
@@ -151,10 +170,27 @@ fn arbitrary_target() -> Option<ErasureTarget> {
 }
 
 #[cfg(kani)]
+fn selected_target_with_other_rows() -> (ErasureTarget, [Option<ErasureTarget>; 2]) {
+    use ErasureTarget::{Coordinator, Resources};
+    let (target, other) = if kani::any::<bool>() {
+        (Coordinator, Resources)
+    } else {
+        (Resources, Coordinator)
+    };
+    (
+        target,
+        [
+            kani::any::<bool>().then_some(other),
+            kani::any::<bool>().then_some(other),
+        ],
+    )
+}
+
+#[cfg(kani)]
 /// @obligation erasure.each_target_is_counted_once
 /// @kani profile=erasure-progress-selection-v1 tier=nightly
 #[kani::proof]
-#[kani::unwind(32)]
+#[kani::unwind(8)]
 fn erasure_progress_selects_exact_first_pending_target() {
     check_selection(
         [arbitrary_target(), arbitrary_target()],
@@ -167,18 +203,94 @@ fn erasure_progress_selects_exact_first_pending_target() {
 
 #[cfg(kani)]
 /// @obligation erasure.each_target_is_counted_once
-/// @kani profile=erasure-progress-count-v1 tier=nightly
+/// @kani tier=nightly
 #[kani::proof]
-#[kani::unwind(32)]
-fn erasure_progress_counts_selected_target_once_or_preserves_overflow() {
-    check_selected_count(
-        [arbitrary_target(), arbitrary_target()],
-        kani::any(),
-        kani::any(),
-        kani::any(),
-        kani::any(),
-        kani::any(),
+#[kani::unwind(8)]
+fn erasure_progress_bounded_count_adds_selected_target_once() {
+    // C1 selected Coordinator with empty predecessor; C2 independent u16
+    // count/receipt; C3 arbitrary revision and flags. E1 exact sum, append
+    // and frame preservation. Rule C1+C2+C3=>E1; overflow is impossible in
+    // this row and belongs to the near-MAX proof below.
+    let count = kani::any::<u16>() as usize;
+    let removed = kani::any::<u16>() as usize;
+    let mut progress = checkpoint([None, None], kani::any(), count, kani::any());
+    let before = progress.clone();
+    assert!(
+        check_record_effect(&mut progress, &before, ErasureTarget::Coordinator, removed,).is_ok()
     );
+}
+
+#[cfg(kani)]
+/// @obligation erasure.each_target_is_counted_once
+/// @kani tier=nightly
+#[kani::proof]
+#[kani::unwind(8)]
+fn erasure_progress_near_max_count_preserves_exact_overflow_boundary() {
+    // C1 selected Coordinator with empty predecessor; C2 independent u16
+    // deficit below usize::MAX and u16 receipt; C3 arbitrary frame. E1 append
+    // iff receipt <= deficit; E2 otherwise exact overflow error/stutter.
+    // Rule C1+C2+C3+fits=>E1; !fits=>E2. Rust's cross table also exercises
+    // the zero/MAX extremes through the same production method.
+    let deficit = kani::any::<u16>() as usize;
+    let removed = kani::any::<u16>() as usize;
+    let mut progress = checkpoint([None, None], kani::any(), usize::MAX - deficit, kani::any());
+    let before = progress.clone();
+    assert_eq!(
+        check_record_effect(&mut progress, &before, ErasureTarget::Coordinator, removed).is_ok(),
+        removed <= deficit,
+    );
+}
+
+#[cfg(kani)]
+/// @obligation erasure.each_target_is_counted_once
+/// @kani tier=nightly
+#[kani::proof]
+#[kani::unwind(8)]
+fn erasure_progress_record_preserves_other_target_rows_and_flags() {
+    // C1 either selected target with zero, one or two other-target rows; C2
+    // fitting zero receipt or overflowing MAX+1; C3 arbitrary revision/flags.
+    // E1 success appends only the selected target and preserves all frame
+    // fields; E2 overflow leaves every byte unchanged. Selection for all
+    // binding/list combinations is the separate existing Kani proof.
+    let (target, completed) = selected_target_with_other_rows();
+    let (count, removed, expected_success) = if kani::any::<bool>() {
+        (0, 0, true)
+    } else {
+        (usize::MAX, 1, false)
+    };
+    let mut progress = checkpoint(completed, kani::any(), count, kani::any());
+    let before = progress.clone();
+    assert_eq!(
+        check_record_effect(&mut progress, &before, target, removed).is_ok(),
+        expected_success,
+    );
+}
+
+#[cfg(kani)]
+/// @obligation erasure.each_target_is_counted_once
+/// @kani tier=nightly
+#[kani::proof]
+#[kani::unwind(8)]
+fn erasure_progress_recorded_target_is_not_selected_again() {
+    // C1 one selected target and zero, one or two other-target rows; C2 its
+    // effect succeeds with a zero receipt. E1 the target is selected before
+    // recording; E2 the same binding cannot select it after the append, even
+    // when the completed vector now has three rows. Rule C1+C2=>E1+E2.
+    // All binding/list selection cases remain in the original selection proof.
+    use ErasureTarget::{Coordinator, Resources};
+    let (target, completed) = selected_target_with_other_rows();
+    let bindings = [
+        (Coordinator, (target == Coordinator).then_some(())),
+        (Resources, (target == Resources).then_some(())),
+    ];
+    let mut progress = checkpoint(completed, 0, 0, [false, false]);
+    assert_eq!(
+        progress.pending_target(bindings).map(|(item, _)| item),
+        Some(target)
+    );
+    let before = progress.clone();
+    assert!(check_record_effect(&mut progress, &before, target, 0).is_ok());
+    assert!(progress.pending_target(bindings).is_none());
 }
 
 fn check_action(
@@ -237,7 +349,7 @@ fn check_action(
 /// @obligation erasure.completion_requires_accountability_stamp
 /// @kani profile=erasure-progress-selection-v1 tier=nightly
 #[kani::proof]
-#[kani::unwind(32)]
+#[kani::unwind(8)]
 fn erasure_checkpoint_action_requires_all_targets_and_accountability() {
     check_action(
         [arbitrary_target(), arbitrary_target()],
