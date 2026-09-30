@@ -259,7 +259,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     /// pool mints, and a reclaimer reaches it only through a claim on an
     /// expired, never-checked-out lease record (`pool::lease`), so this port
     /// cannot reach a Session-owned environment.
-    #[cfg(any(feature = "connection", test))]
+    #[cfg(all(unix, any(feature = "connection", test)))]
     pub(crate) async fn dispose_unreceipted_capacity(
         &self,
         scope: &str,

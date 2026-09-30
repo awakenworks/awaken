@@ -4,7 +4,7 @@
 //! Gated on the `podman` feature AND a Podman that can start a container
 //! (self-skips otherwise). Run with:
 //! `cargo test -p awaken-sandbox-container --features podman --test pool_lease_podman -- --test-threads=1`
-#![cfg(feature = "podman")]
+#![cfg(all(unix, feature = "podman"))]
 
 #[path = "common/residue.rs"]
 mod residue;

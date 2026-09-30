@@ -18,15 +18,7 @@ pub fn runtime_configuration_homes() -> &'static [&'static str] {
 }
 
 fn workspace_scoped_path(value: &str) -> bool {
-    let path = std::path::Path::new(value);
-    path.is_absolute()
-        && path.starts_with(pc::WorkspaceLayout::ROOT)
-        && path.components().all(|component| {
-            !matches!(
-                component,
-                std::path::Component::CurDir | std::path::Component::ParentDir
-            )
-        })
+    pc::is_canonical_sandbox_absolute_path(value) && pc::WorkspaceLayout::contains(value)
 }
 
 fn selected_workspace_path<'a>(
@@ -159,6 +151,35 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
 #[cfg(test)]
 mod configuration_home_tests {
     use super::*;
+
+    #[test]
+    fn selected_process_home_uses_canonical_sandbox_workspace_paths() {
+        /* HOME/XDG rules: C1=last canonical workspace path; C2=relative,
+         * Windows host path, prefix lookalike, or traversal; C3=no valid
+         * candidate. E1 C1 wins in original order; E2 C2 is ignored; E3 C3
+         * selects the runtime-owned default. R1=C1=>E1; R2=C1+C2=>E1+E2;
+         * R3=C2+C3=>E2+E3, identically on every host OS. */
+        let values = [
+            "/workspace/first",
+            "C:\\Users\\agent",
+            "/workspace-other/home",
+            "/workspace/../secret",
+            "/workspace/last",
+        ];
+        assert_eq!(
+            selected_workspace_path(values.into_iter(), pc::WorkspaceLayout::ROOT),
+            "/workspace/last",
+            "R2"
+        );
+        assert_eq!(
+            selected_workspace_path(
+                ["/workspace/../secret", "C:\\Users\\agent"].into_iter(),
+                pc::WorkspaceLayout::ROOT
+            ),
+            pc::WorkspaceLayout::ROOT,
+            "R3"
+        );
+    }
 
     #[test]
     fn checkpoint_sensitive_configuration_homes_have_one_open_projection() {

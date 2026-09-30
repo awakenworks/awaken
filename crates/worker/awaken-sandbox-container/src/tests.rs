@@ -192,14 +192,13 @@ fn restored_host_staging_survives_wrapper_drop_and_only_terminally_removes() {
     assert!(!path.exists(), "H2/E2");
     remove_host_staging_path(&path).expect("H4 missing after Host restart is idempotent");
 
+    let escaped_path = std::env::temp_dir().join("not-an-awaken-stage");
     let escaped = crate::ContainerContinuationHandle::HostBindRestoration(
-        crate::HostBindRestorationHandle::for_restore("/tmp/not-an-awaken-stage").unwrap(),
+        crate::HostBindRestorationHandle::for_restore(escaped_path.to_string_lossy().into_owned())
+            .unwrap(),
     );
     assert!(retained_host_staging(Some(&escaped)).is_err(), "H3/E3");
-    assert!(
-        remove_host_staging_path(std::path::Path::new("/tmp/not-an-awaken-stage")).is_err(),
-        "H3/E3"
-    );
+    assert!(remove_host_staging_path(&escaped_path).is_err(), "H3/E3");
 }
 
 #[test]
@@ -1917,6 +1916,7 @@ async fn disposal_preparation_rechecks_current_authority_after_each_credential_w
     }
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participants() {
     /* Cold terminal-participant cause/effect decision table — CN1:
@@ -4012,11 +4012,13 @@ async fn expired_effect_fence_rejects_before_runtime_or_mount_materialization() 
 
 // Inject response loss of authority at an existing dependency, without
 // replacing its effect or ownership behavior with another fake implementation.
+#[cfg(unix)]
 struct PausedCreationInput<T> {
     inner: T,
     gate: Arc<tokio::sync::Semaphore>,
 }
 
+#[cfg(unix)]
 #[async_trait]
 impl<T: pc::BlobSource> pc::BlobSource for PausedCreationInput<T> {
     async fn get(&self, id: &str) -> Option<Vec<u8>> {
@@ -4026,6 +4028,7 @@ impl<T: pc::BlobSource> pc::BlobSource for PausedCreationInput<T> {
     }
 }
 
+#[cfg(unix)]
 #[async_trait]
 impl<T: pc::MemoryMounter> pc::MemoryMounter for PausedCreationInput<T> {
     async fn mount(
@@ -4062,6 +4065,7 @@ impl<T: pc::MemoryMounter> pc::MemoryMounter for PausedCreationInput<T> {
     }
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn container_creation_rechecks_current_authority_at_provider_wait_boundaries() {
     // CA graph: entry -> scope preflight -> package -> resolved preflight ->

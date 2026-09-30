@@ -4,7 +4,7 @@
 //! Gated on the `docker` feature AND a reachable daemon (self-skips otherwise).
 //! Run with:
 //! `cargo test -p awaken-sandbox-container --features docker --test pool_lease_docker -- --test-threads=1`
-#![cfg(feature = "docker")]
+#![cfg(all(unix, feature = "docker"))]
 
 #[path = "common/residue.rs"]
 mod residue;

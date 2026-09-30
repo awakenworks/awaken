@@ -566,6 +566,13 @@ fn validate_canonical_sandbox_path(path: &str, absolute: bool) -> bool {
         .all(|component| !component.is_empty() && !matches!(component, "." | ".."))
 }
 
+/// Validate one canonical sandbox-visible absolute path on every host OS.
+/// Container paths use `/` even when the Worker itself runs on Windows.
+#[must_use]
+pub fn is_canonical_sandbox_absolute_path(path: &str) -> bool {
+    validate_canonical_sandbox_path(path, true)
+}
+
 /// Validate the sole Repository path invariant shared by new Session
 /// resolution, runtime admission, and concrete provider adapters.
 ///

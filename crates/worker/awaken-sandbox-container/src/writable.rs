@@ -1,6 +1,4 @@
 // @formal entrypoint sandbox_continuation.distinct_mutable_roots_share_one_retained_claim_without_aliasing
-use std::path::{Component, Path};
-
 use awaken_provisioning_contract as pc;
 
 use super::ContainerPlan;
@@ -85,15 +83,6 @@ fn continuation_writable_roots_share_one_claim_without_aliasing() {
     assert_ne!(first_volume, second_volume);
 }
 
-fn bounded_absolute(path: &str) -> bool {
-    !path.is_empty()
-        && path != "/"
-        && Path::new(path).is_absolute()
-        && !Path::new(path)
-            .components()
-            .any(|part| matches!(part, Component::ParentDir | Component::Prefix(_)))
-}
-
 /// Canonical archive roots for one Sandbox specification. This is the single
 /// source consumed by product checkpoint decorators; runtime-specific code must
 /// not restate the workspace/output/tmp set.
@@ -107,7 +96,7 @@ pub fn checkpoint_writable_roots_from_output_path(
     outputs_path: &str,
 ) -> Result<Vec<String>, pc::SandboxError> {
     let output = outputs_path.trim_end_matches('/');
-    if !bounded_absolute(output) {
+    if !pc::is_canonical_sandbox_absolute_path(output) {
         return Err(pc::SandboxError::invalid(
             "sandbox output root must be an absolute bounded path",
         ));
@@ -128,7 +117,7 @@ pub fn validate_checkpoint_writable_roots(roots: &[String]) -> Result<(), pc::Sa
         [workspace, output, tmp] => {
             workspace == pc::WorkspaceLayout::ROOT
                 && tmp == "/tmp"
-                && bounded_absolute(output)
+                && pc::is_canonical_sandbox_absolute_path(output)
                 && !pc::WorkspaceLayout::contains(output)
                 && output != "/tmp"
         }
@@ -223,7 +212,8 @@ mod tests {
     fn checkpoint_roots_are_canonical_and_persisted_evidence_fails_closed() {
         /* Checkpoint-root cause/effect table. C1=output is distinct/nested/tmp;
          * C2=persisted roots have the canonical order/shape; C3=root is blank,
-         * relative, `/`, parent-traversing, reordered, or adds a fourth root.
+         * relative, host-drive, `/`, parent-traversing, reordered, or adds a
+         * fourth root. Host OS does not change the logical-path result.
          * R1 valid(C1)+C2 => one open-owned compact root set; R2 C3 => reject
          * before a checkpoint command. FMECA: open projection and a product
          * decorator restating roots can silently omit a new mount (S5/O3/D4=60).
@@ -243,7 +233,15 @@ mod tests {
             checkpoint_writable_roots(&spec("/tmp")).unwrap(),
             ["/workspace", "/tmp"]
         );
-        for invalid in ["", "/", "relative", "/workspace/../etc"] {
+        for invalid in [
+            "",
+            "/",
+            "relative",
+            "C:\\outputs",
+            "/workspace/../etc",
+            "/workspace//etc",
+            "/workspace\\etc",
+        ] {
             assert!(
                 checkpoint_writable_roots(&spec(invalid)).is_err(),
                 "R2 {invalid}"

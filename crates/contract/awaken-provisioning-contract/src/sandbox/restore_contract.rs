@@ -5,7 +5,10 @@
 // @formal reason: claim.
 //! Exact provider-neutral restore identity and physical-target contract.
 
-use super::{SandboxCheckpointRef, SandboxError, SandboxHandle, SandboxRestorationEvidence};
+use super::{
+    SandboxCheckpointRef, SandboxError, SandboxHandle, SandboxRestorationEvidence,
+    is_canonical_sandbox_absolute_path,
+};
 use crate::SandboxSpec;
 
 /// Exact provider-neutral identity of one idempotent restore effect.
@@ -129,16 +132,8 @@ pub fn validate_checkpoint_exclusions_for_spec(
     exclusions: &[String],
     spec: &SandboxSpec,
 ) -> Result<(), SandboxError> {
-    if exclusions.iter().any(|path| {
-        let path = std::path::Path::new(path);
-        !path.is_absolute()
-            || path.components().any(|part| {
-                matches!(
-                    part,
-                    std::path::Component::ParentDir | std::path::Component::Prefix(_)
-                )
-            })
-    }) {
+    let mut paths = exclusions.iter().map(|p| p.trim_end_matches('/'));
+    if !paths.all(is_canonical_sandbox_absolute_path) {
         return Err(SandboxError::invalid(
             "checkpoint exclusions must be absolute bounded paths",
         ));
@@ -530,5 +525,48 @@ mod tests {
         );
         request.checkpoint.excluded_mounts.remove(1);
         assert!(request.validate_for_spec(&restore_spec).is_err(), "X2/E2");
+    }
+
+    #[test]
+    fn restore_exclusions_use_sandbox_paths_on_every_host() {
+        /* Logical-path rules: C1=slash-absolute canonical exclusion, including
+         * a historically accepted trailing slash; C2=relative, host-drive,
+         * parent, dot, empty component, or control byte. E1 C1 is accepted and
+         * preserves its exact fingerprint; E2 C2 rejects before restoration.
+         * R1=C1=>E1; R2=C2=>E2. Host OS path syntax is not an input cause. */
+        let restore_spec = spec();
+        let mut request = restore_request();
+        let mut accepted_fingerprints = Vec::new();
+        for valid in ["/workspace/input", "/workspace/input/"] {
+            request.checkpoint.excluded_mounts = vec![valid.into()];
+            assert!(
+                request.validate_for_spec(&restore_spec).is_ok(),
+                "R1 {valid}"
+            );
+            accepted_fingerprints.push(checkpoint_exclusions_fingerprint(
+                &request.checkpoint.excluded_mounts,
+            ));
+        }
+        assert_ne!(
+            accepted_fingerprints[0], accepted_fingerprints[1],
+            "R1 exact evidence"
+        );
+        for invalid in [
+            "",
+            "/",
+            "relative",
+            "C:\\host",
+            "/workspace/../secret",
+            "/workspace/./secret",
+            "/workspace//secret",
+            "/workspace\\secret",
+            "/workspace/control\n",
+        ] {
+            request.checkpoint.excluded_mounts = vec![invalid.into()];
+            assert!(
+                request.validate_for_spec(&restore_spec).is_err(),
+                "R2 {invalid:?}"
+            );
+        }
     }
 }
