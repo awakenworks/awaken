@@ -157,6 +157,9 @@ COMPOSITION_ROOTS: frozenset[str] = frozenset(
         # component it builds.
         "crates/bin/awaken-cli/src/deployment_process.rs",
         "crates/bin/awaken-cli/src/control.rs",
+        # Service startup composes its local ACP Worker before the later
+        # Control/Coordinator graph; it selects their shared clock once.
+        "crates/bin/awaken-cli/src/service.rs",
         # The Worker daemon's bootstrap: it composes the Worker transport and
         # chooses the clock its signed request assertions are stamped with.
         "crates/bin/awaken-worker/src/bootstrap.rs",

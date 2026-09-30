@@ -19,6 +19,7 @@ use crate::{AcpCli, acp_cli};
 use async_trait::async_trait;
 pub use awaken_acp_contract::AcpCapabilityNegotiator;
 use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationSource};
+use awaken_lease_contract::{WallClock, WallClockExt};
 use awaken_runtime_contract::{
     CredentialMaterialError, CredentialObservation, CredentialObservationSource,
     CredentialObservationState, CredentialRef, WorkerLocalReferenceRevalidator,
@@ -144,6 +145,7 @@ pub struct HostAcpPreparation {
     pub probe_cwd: PathBuf,
     pub wrapper_root: PathBuf,
     pub selected_cli_ids: Option<BTreeSet<String>>,
+    pub clock: Arc<dyn WallClock>,
 }
 
 /// One production assembly shared by CLI, Coordinator and standalone Worker.
@@ -238,7 +240,7 @@ pub async fn prepare_host_acp_capabilities_with(
                     &observation.cli_id,
                     observation.version.as_deref().unwrap_or("unknown"),
                     negotiated,
-                    wall_clock_ms(),
+                    input.clock.now_ms(),
                 );
                 observation.capability_state = Some(AcpCapabilityState::Verified);
                 observation.capability_fingerprint = Some(profile.fingerprint.clone());
@@ -276,11 +278,8 @@ pub async fn prepare_host_acp_capabilities_with(
         })
         .collect();
     let resolver = Arc::new(
-        AcpLocalCredentialResolver::from_bindings(discovery, [])?.with_capability_observations(
-            negotiator,
-            capability_routes,
-            input.probe_cwd,
-        ),
+        AcpLocalCredentialResolver::from_bindings(discovery, [], input.clock.clone())?
+            .with_capability_observations(negotiator, capability_routes, input.probe_cwd),
     );
     Ok(PreparedHostAcpCapabilities {
         observations,
@@ -506,6 +505,7 @@ fn local_binding_batch_publication_is_complete_or_stutters() {
 /// Liveness-only resolver for every `acp:*` WorkerLocal source on one Worker.
 pub struct AcpLocalCredentialResolver {
     discovery: Arc<dyn AcpDiscovery>,
+    clock: Arc<dyn WallClock>,
     bindings: Mutex<BTreeMap<String, LocalBinding>>,
     last_host_observations: Mutex<BTreeMap<String, AcpHostObservation>>,
     capability: Option<CapabilityObservationConfig>,
@@ -521,6 +521,7 @@ impl AcpLocalCredentialResolver {
     pub fn from_bindings(
         discovery: Arc<dyn AcpDiscovery>,
         projections: impl IntoIterator<Item = AcpLocalCredentialBinding>,
+        clock: Arc<dyn WallClock>,
     ) -> Result<Self, String> {
         let mut bindings = BTreeMap::new();
         for projection in projections {
@@ -534,6 +535,7 @@ impl AcpLocalCredentialResolver {
         }
         Ok(Self {
             discovery,
+            clock,
             bindings: Mutex::new(bindings),
             last_host_observations: Mutex::new(BTreeMap::new()),
             capability: None,
@@ -544,7 +546,8 @@ impl AcpLocalCredentialResolver {
         &self,
         projections: impl IntoIterator<Item = AcpLocalCredentialBinding>,
     ) -> Result<(), String> {
-        let additions = Self::from_bindings(self.discovery.clone(), projections)?;
+        let additions =
+            Self::from_bindings(self.discovery.clone(), projections, self.clock.clone())?;
         let additions = additions
             .bindings
             .into_inner()
@@ -574,7 +577,7 @@ impl AcpLocalCredentialResolver {
     }
 
     async fn observe(&self, binding: &LocalBinding) -> CredentialObservation {
-        let observed_at_ms = wall_clock_ms();
+        let observed_at_ms = self.clock.now_ms();
         if !binding.enabled {
             return CredentialObservation {
                 credential: binding.credential.clone(),
@@ -612,7 +615,7 @@ impl AcpCapabilityObservationSource for AcpLocalCredentialResolver {
         for (cli_id, argv) in &capability.launch_argv {
             let cli = acp_cli(cli_id)
                 .ok_or_else(|| format!("ACP capability route names unknown CLI `{cli_id}`"))?;
-            let observed_at_ms = wall_clock_ms();
+            let observed_at_ms = self.clock.now_ms();
             let cached = self
                 .last_host_observations
                 .lock()
@@ -671,13 +674,6 @@ impl AcpCapabilityObservationSource for AcpLocalCredentialResolver {
         }
         Ok(observations)
     }
-}
-
-fn wall_clock_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 fn classify_host_observation(

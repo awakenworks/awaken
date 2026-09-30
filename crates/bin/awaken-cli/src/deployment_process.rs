@@ -37,9 +37,9 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
         key,
         role,
         model_supply,
-        managed_services,
-        coordinator_services,
+        (managed_services, coordinator_services),
         installations,
+        awaken_lease_contract::system_clock(),
     )
     .await
 }
@@ -49,17 +49,17 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
     key: Option<&[u8; 32]>,
     role: config::Role,
     model_supply: PublicationModelSupply,
-    mut managed_services: ManagedServiceAdapters,
-    coordinator_services: CoordinatorServiceAdapters,
+    services: (ManagedServiceAdapters, CoordinatorServiceAdapters),
     installations: installation_binding::PreparedDeploymentInstallations,
+    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<PreparedProcess, String> {
+    let (mut managed_services, coordinator_services) = services;
     debug_assert!(matches!(
         role,
         config::Role::AllInOne | config::Role::Coordinator
     ));
     // The process's one wall clock: Worker assertions, stores and every
     // Coordinator component built below judge time with this handle.
-    let clock = awaken_lease_contract::system_clock();
     let process_clock = clock.clone();
     let worker_transport = worker_transport_security::select(
         deployment,
