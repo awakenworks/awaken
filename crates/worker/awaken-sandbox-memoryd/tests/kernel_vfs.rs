@@ -57,7 +57,13 @@ fn kernel_reads_writes_renames_and_persists_across_remount() {
     let mnt = unique("mnt");
     let store = "memstore_1";
 
-    let backend = Arc::new(SqliteMemoryRepository::open(store_db.to_str().unwrap()).unwrap());
+    let backend = Arc::new(
+        SqliteMemoryRepository::open(
+            store_db.to_str().unwrap(),
+            awaken_lease_contract::system_clock(),
+        )
+        .unwrap(),
+    );
     rt.block_on(backend.create(store, "/seed.md", "hello"))
         .unwrap();
     rt.block_on(backend.create(store, "/notes/a.md", "note-a"))
@@ -119,7 +125,13 @@ fn kernel_reads_writes_renames_and_persists_across_remount() {
 
     // A fresh handle over the same durable store re-exposes the writes — they were
     // in the store of record, not a first-mount cache artifact.
-    let backend2 = Arc::new(SqliteMemoryRepository::open(store_db.to_str().unwrap()).unwrap());
+    let backend2 = Arc::new(
+        SqliteMemoryRepository::open(
+            store_db.to_str().unwrap(),
+            awaken_lease_contract::system_clock(),
+        )
+        .unwrap(),
+    );
     let mut handle2 = spawn_mount(
         backend2,
         store.into(),
@@ -155,7 +167,13 @@ fn independent_mounter_projections_invalidate_peer_caches_and_teardown_independe
     let mnt_b = unique("cmnt-b");
     let store = "memstore_1";
 
-    let backend = Arc::new(SqliteMemoryRepository::open(store_db.to_str().unwrap()).unwrap());
+    let backend = Arc::new(
+        SqliteMemoryRepository::open(
+            store_db.to_str().unwrap(),
+            awaken_lease_contract::system_clock(),
+        )
+        .unwrap(),
+    );
     rt.block_on(backend.create(store, "/x.md", "one")).unwrap();
     let mounter = MemoryStoreMounter::new(backend.clone(), awaken_lease_contract::system_clock());
 
@@ -221,7 +239,13 @@ fn kernel_exercises_metadata_truncate_offsets_dirs_and_errors() {
     let mnt = unique("emnt");
     let store = "memstore_1";
 
-    let backend = Arc::new(SqliteMemoryRepository::open(store_db.to_str().unwrap()).unwrap());
+    let backend = Arc::new(
+        SqliteMemoryRepository::open(
+            store_db.to_str().unwrap(),
+            awaken_lease_contract::system_clock(),
+        )
+        .unwrap(),
+    );
     rt.block_on(backend.create(store, "/f.md", "0123456789"))
         .unwrap();
 

@@ -17,6 +17,7 @@ authority = "memory"
 # Port-only contract: MemoryRepository + Memory/MemoryEntry/MemErr live here; this crate
 # implements them and re-exports the contract types.
 awaken-resource-contract.workspace = true
+awaken-lease-contract.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "fs"] }
@@ -33,6 +34,7 @@ awaken-sqlite-pool = { workspace = true, optional = true }
 awaken-sql-storage.workspace = true
 
 [dev-dependencies]
+awaken-lease-testkit.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 tempfile = "3"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }

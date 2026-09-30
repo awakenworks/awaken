@@ -621,7 +621,9 @@ mod startup_tests {
         let file: Arc<dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>> =
             Arc::new(awaken_resource_contract::UnavailableFileContentSource);
         let memory: Arc<dyn awaken_resource_contract::MemoryRepository> =
-            Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+            Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                awaken_lease_contract::system_clock(),
+            ));
         let extraction: Arc<dyn awaken_ext_memory::MemoryExtractionRepository> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .expect("test extraction repository"),

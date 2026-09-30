@@ -327,7 +327,9 @@ impl awaken_session_realization_contract::SessionTerminalMemoryControl
 /// | M8 | current/live | archived store | any | n/a | typed not-active denial; no repository read |
 #[tokio::test]
 async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
-    let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+    let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+        awaken_lease_contract::system_clock(),
+    ));
     repository
         .create("memory-rw", "/seed.md", "seed")
         .await
@@ -585,7 +587,9 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
 /// | R4 | yes | yes | write | E4 |
 #[tokio::test]
 async fn realization_memory_is_read_only_and_fenced_by_worker_and_session_root() {
-    let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+    let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+        awaken_lease_contract::system_clock(),
+    ));
     repository
         .create("memory-realization", "/seed.md", "seed")
         .await
@@ -755,7 +759,9 @@ async fn realization_memory_is_read_only_and_fenced_by_worker_and_session_root()
 /// Control root remains the only current lease clock and Memory owns no timer.
 #[tokio::test]
 async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlement() {
-    let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+    let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let note_a = repository
         .create("memory-terminal", "/note.md", "A")
         .await

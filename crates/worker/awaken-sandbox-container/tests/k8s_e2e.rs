@@ -1151,7 +1151,9 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
     if !require_live_cluster() {
         return;
     }
-    let memory = Arc::new(VolatileMemoryRepository::new());
+    let memory = Arc::new(VolatileMemoryRepository::new(
+        awaken_lease_contract::system_clock(),
+    ));
     memory
         .create("k8s-rw", "/note.md", "rw-seed")
         .await

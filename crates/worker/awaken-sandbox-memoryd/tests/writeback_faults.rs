@@ -84,12 +84,19 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
                 },
             )
             .unwrap();
-            let repository = Arc::new(SqliteMemoryRepository::over(conn));
+            let repository = Arc::new(SqliteMemoryRepository::over(
+                conn,
+                awaken_lease_contract::system_clock(),
+            ));
             repository.ensure_schema().unwrap();
             if operation != "INSERT" {
                 repository.create("s", "/note.md", "base").await.unwrap();
             }
-            let observer = SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap();
+            let observer = SqliteMemoryRepository::open(
+                database.to_str().unwrap(),
+                awaken_lease_contract::system_clock(),
+            )
+            .unwrap();
             let schema = rusqlite::Connection::open(&database).unwrap();
             let (sql_operation, table) = if operation == "CONFLICT" {
                 ("INSERT", "memory_store_copy_conflicts")
@@ -216,8 +223,13 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
             drop(mount);
             drop(mounter);
             drop(repository);
-            let reopened =
-                Arc::new(SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap());
+            let reopened = Arc::new(
+                SqliteMemoryRepository::open(
+                    database.to_str().unwrap(),
+                    awaken_lease_contract::system_clock(),
+                )
+                .unwrap(),
+            );
             MemoryStoreMounter::copy_only(reopened.clone())
                 .reconcile_recovered_copy("s", &evidence, &files, MountAccess::ReadWrite)
                 .await
@@ -269,7 +281,9 @@ fn recovery_has_no_temp_directory_dependency_even_when_cancelled() {
 async fn recovery_without_temp_child() {
     assert_eq!(std::env::var("AWAKEN_RECOVERY_TEMP_TEST").unwrap(), "1");
     for after in [false, true] {
-        let repository = Arc::new(SqliteMemoryRepository::open_in_memory().unwrap());
+        let repository = Arc::new(
+            SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
+        );
         let gate = Arc::new(Gate {
             after,
             error: false,
@@ -513,8 +527,13 @@ async fn interrupted_conflict_retention_retries_without_losing_the_proposal() {
             for error in [false, true] {
                 let root = tempfile::tempdir().unwrap();
                 let database = root.path().join("memory.sqlite");
-                let repository =
-                    Arc::new(SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap());
+                let repository = Arc::new(
+                    SqliteMemoryRepository::open(
+                        database.to_str().unwrap(),
+                        awaken_lease_contract::system_clock(),
+                    )
+                    .unwrap(),
+                );
                 if operation != "create" {
                     repository.create("s", "/note.md", "base").await.unwrap();
                 }
@@ -600,8 +619,13 @@ async fn interrupted_conflict_retention_retries_without_losing_the_proposal() {
                 assert_eq!(repository.list_versions("s").await.unwrap(), history);
                 drop(mount);
                 drop(repository);
-                let reopened =
-                    Arc::new(SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap());
+                let reopened = Arc::new(
+                    SqliteMemoryRepository::open(
+                        database.to_str().unwrap(),
+                        awaken_lease_contract::system_clock(),
+                    )
+                    .unwrap(),
+                );
                 let mounter = MemoryStoreMounter::copy_only(reopened.clone());
                 let (a, b) = tokio::join!(
                     mounter.reconcile_recovered_copy(
@@ -670,8 +694,13 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                 for prefix in [false, true] {
                     let root = tempfile::tempdir().unwrap();
                     let database = root.path().join("memory.sqlite");
-                    let repository =
-                        Arc::new(SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap());
+                    let repository = Arc::new(
+                        SqliteMemoryRepository::open(
+                            database.to_str().unwrap(),
+                            awaken_lease_contract::system_clock(),
+                        )
+                        .unwrap(),
+                    );
                     if operation != "create" {
                         repository.create("s", "/z.md", "base").await.unwrap();
                     }
@@ -799,8 +828,13 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                     drop(mount);
                     drop(mounter);
                     drop(repository);
-                    let repository =
-                        Arc::new(SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap());
+                    let repository = Arc::new(
+                        SqliteMemoryRepository::open(
+                            database.to_str().unwrap(),
+                            awaken_lease_contract::system_clock(),
+                        )
+                        .unwrap(),
+                    );
                     let mut files = vec![];
                     if prefix {
                         files.push(("a.md".into(), b"prefix-edit".to_vec()));

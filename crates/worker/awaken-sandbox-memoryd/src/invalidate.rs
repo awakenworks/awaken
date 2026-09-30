@@ -222,7 +222,9 @@ mod tests {
         // MP-I: exact path => commit plus one path notification; renamed path
         // with identical bytes => conflict plus zero notifications. No timeout
         // stands in for absence: try_recv must return Empty on the live bus.
-        let inner = Arc::new(VolatileMemoryRepository::new());
+        let inner = Arc::new(VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let base = inner.create("s", "/a", "base").await.unwrap();
         let bus = Arc::new(LocalInvalidator::new(16));
         let mut rx = bus.subscribe();
@@ -256,7 +258,9 @@ mod tests {
     /// pins the behaviour that the requirement exists to protect.
     #[tokio::test]
     async fn every_forwarded_mutation_keeps_the_author_the_caller_stated() {
-        let inner = Arc::new(VolatileMemoryRepository::new());
+        let inner = Arc::new(VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let bus = Arc::new(LocalInvalidator::new(16));
         let fs = InvalidatingMemoryRepository::new(inner.clone(), bus);
         let actor = MemoryActor::UserActor {
@@ -296,7 +300,9 @@ mod tests {
         let bus = Arc::new(LocalInvalidator::new(16));
         let mut rx = bus.subscribe();
         let fs = InvalidatingMemoryRepository::new(
-            Arc::new(VolatileMemoryRepository::new()),
+            Arc::new(VolatileMemoryRepository::new(
+                awaken_lease_contract::system_clock(),
+            )),
             bus.clone(),
         );
 
@@ -367,7 +373,9 @@ mod tests {
         let bus = Arc::new(LocalInvalidator::new(16));
         let mut rx = bus.subscribe();
         let fs = InvalidatingMemoryRepository::new(
-            Arc::new(VolatileMemoryRepository::new()),
+            Arc::new(VolatileMemoryRepository::new(
+                awaken_lease_contract::system_clock(),
+            )),
             bus.clone(),
         );
         fs.create("s", "/a.md", "x").await.unwrap();
@@ -390,7 +398,9 @@ mod tests {
         let bus = Arc::new(LocalInvalidator::new(16));
         let mut rx = bus.subscribe();
         let fs = InvalidatingMemoryRepository::new(
-            Arc::new(VolatileMemoryRepository::new()),
+            Arc::new(VolatileMemoryRepository::new(
+                awaken_lease_contract::system_clock(),
+            )),
             bus.clone(),
         );
 

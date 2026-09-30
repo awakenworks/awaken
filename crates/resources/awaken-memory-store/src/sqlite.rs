@@ -7,8 +7,10 @@
 // @formal entrypoint memory.stale_conditional_delete_never_removes_live_head
 //! SQLite [`MemoryRepository`] over the crate's `memory_store` migration scope.
 
+use awaken_lease_contract::WallClock;
 use awaken_sql_storage::StoredU64;
 use rusqlite::{Connection, OptionalExtension, params};
+use std::sync::Arc;
 
 use crate::schema::{BUNDLE_ID, converged_memory_store_bundle, selected_memory_store_bundle};
 
@@ -67,7 +69,7 @@ fn migrate_guarded(conn: &awaken_sqlite_pool::SharedSqliteConnection) -> Result<
 }
 
 use crate::repository::{
-    ConditionalDeleteAdmission, HeadUpdateAdmission, now_nanos, rename_replace_identity,
+    ConditionalDeleteAdmission, HeadUpdateAdmission, rename_replace_identity, stored_now_nanos,
     under_prefix, validate_path, validate_size,
 };
 use crate::{
@@ -112,36 +114,38 @@ where
 /// atomic within the process; a cross-node CAS is the postgres backend's job.
 pub struct SqliteMemoryRepository {
     conn: awaken_sqlite_pool::SharedSqliteConnection,
+    clock: Arc<dyn WallClock>,
 }
 
 impl SqliteMemoryRepository {
     /// Open (or create) a database file and apply the memory-store migrations
     /// (one-step convenience for a store-owned database).
-    pub fn open(path: &str) -> Result<Self, StoreError> {
+    pub fn open(path: &str, clock: Arc<dyn WallClock>) -> Result<Self, StoreError> {
         let conn = awaken_sqlite_pool::SqliteConnectionFactory::file(path)
             .open()
             .map_err(|e| StoreError::Open(e.to_string()))?;
-        let store = Self::over(conn);
+        let store = Self::over(conn, clock);
         store.ensure_schema()?;
         Ok(store)
     }
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory() -> Result<Self, StoreError> {
+    pub fn open_in_memory(clock: Arc<dyn WallClock>) -> Result<Self, StoreError> {
         let conn = awaken_sqlite_pool::SqliteConnectionFactory::memory()
             .open()
             .map_err(|e| StoreError::Open(e.to_string()))?;
-        let store = Self::over(conn);
+        let store = Self::over(conn, clock);
         store.ensure_schema()?;
         Ok(store)
     }
 
     /// Wrap an existing connection **without migrating**, allowing a unified
     /// migration pipeline to own the shared database.
-    pub fn over(conn: Connection) -> Self {
+    pub fn over(conn: Connection, clock: Arc<dyn WallClock>) -> Self {
         Self {
             conn: awaken_sqlite_pool::SharedSqliteConnection::new(conn),
+            clock,
         }
     }
 
@@ -484,6 +488,7 @@ impl MemoryRepository for SqliteMemoryRepository {
         validate_size(content)?;
         let (store, path, content) = (store.to_string(), path.to_string(), content.to_string());
         let actor = actor.cloned();
+        let clock = self.clock.clone();
         with_conn_mem(&self.conn, move |conn| {
             let tx = conn.unchecked_transaction().map_err(mem_err)?;
             let exists = tx
@@ -515,7 +520,7 @@ impl MemoryRepository for SqliteMemoryRepository {
             )?;
             let id = format!("mem_{ordinal}");
             let sha = sha256_hex(&content);
-            let now = now_nanos() as i64;
+            let now = stored_now_nanos(clock.as_ref())?;
             tx.execute(
                 &format!(
                     "INSERT INTO {NS}_memories \
@@ -589,6 +594,7 @@ impl MemoryRepository for SqliteMemoryRepository {
     async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
         validate_path(to)?;
         let (store, from, to) = (store.to_string(), from.to_string(), to.to_string());
+        let clock = self.clock.clone();
         with_conn_mem(&self.conn, move |conn| {
             // Atomic POSIX replace: drop the destination and move the source in ONE
             // transaction, so a crash between the two writes can never leave the
@@ -621,7 +627,7 @@ impl MemoryRepository for SqliteMemoryRepository {
             if from == to {
                 return row_memory(id, from, content, sha, version, created, created);
             }
-            let now = now_nanos() as i64;
+            let now = stored_now_nanos(clock.as_ref())?;
             let displaced_id = tx
                 .query_row(
                     &format!("SELECT id FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
@@ -698,6 +704,7 @@ impl MemoryRepository for SqliteMemoryRepository {
     ) -> Result<(), MemErr> {
         let (store, path) = (store.to_string(), path.to_string());
         let actor = actor.cloned();
+        let clock = self.clock.clone();
         with_conn_mem(&self.conn, move |conn| {
             let tx = conn.unchecked_transaction().map_err(mem_err)?;
             let memory_id = tx
@@ -724,7 +731,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                     operation: MemoryVersionOperation::Deleted,
                     path: &path,
                     content: None,
-                    created: now_nanos() as i64,
+                    created: stored_now_nanos(clock.as_ref())?,
                     actor: actor.as_ref(),
                 },
             )?;
@@ -756,6 +763,7 @@ impl MemoryRepository for SqliteMemoryRepository {
             base.clone(),
             actor.cloned(),
         );
+        let clock = self.clock.clone();
         with_conn_mem(&self.conn, move |conn| {
             let tx = conn.unchecked_transaction().map_err(mem_err)?;
             let row = tx
@@ -812,7 +820,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                     operation: MemoryVersionOperation::Deleted,
                     path: &path,
                     content: None,
-                    created: now_nanos() as i64,
+                    created: stored_now_nanos(clock.as_ref())?,
                     actor: actor.as_ref(),
                 },
             )?;
@@ -855,6 +863,7 @@ impl MemoryRepository for SqliteMemoryRepository {
     ) -> Result<Option<MemoryVersion>, MemErr> {
         let (store, version_id) = (store.to_string(), version_id.to_string());
         let actor = actor.cloned();
+        let clock = self.clock.clone();
         with_conn_mem(&self.conn, move |conn| {
             let tx = conn.unchecked_transaction().map_err(mem_err)?;
             let existing = tx
@@ -872,7 +881,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                 return Ok(None);
             };
             if version.redacted_unix_nanos.is_none() {
-                let redacted = now_nanos() as i64;
+                let redacted = stored_now_nanos(clock.as_ref())?;
                 tx.execute(
                     &format!(
                         "UPDATE {NS}_versions SET content = NULL, redacted = ?1, redacted_by_json = ?2 \
@@ -956,6 +965,7 @@ impl SqliteMemoryRepository {
         );
         let actor = actor.cloned();
         let expected_path = expected_path.map(str::to_owned);
+        let clock = self.clock.clone();
         with_conn_mem(&self.conn, move |conn| {
             let tx = conn.unchecked_transaction().map_err(mem_err)?;
             let row = tx
@@ -1019,7 +1029,7 @@ impl SqliteMemoryRepository {
                 }
                 HeadUpdateAdmission::Apply => {}
             }
-            let now = now_nanos() as i64;
+            let now = stored_now_nanos(clock.as_ref())?;
             let displaced_id = if requested_path == path {
                 None
             } else {
@@ -1151,7 +1161,10 @@ mod migration_seam_tests {
     /// caller opts into the `memory_store` scope via `ensure_schema`.
     #[tokio::test]
     async fn over_does_not_migrate_but_ensure_schema_does() {
-        let fs = SqliteMemoryRepository::over(Connection::open_in_memory().unwrap());
+        let fs = SqliteMemoryRepository::over(
+            Connection::open_in_memory().unwrap(),
+            awaken_lease_contract::system_clock(),
+        );
         assert!(fs.create("s", "/a.md", "alpha").await.is_err());
         fs.ensure_schema().unwrap();
         assert_eq!(
@@ -1171,7 +1184,10 @@ mod memory_repository_tests {
 
     #[tokio::test]
     async fn sqlite_memory_repository_conforms() {
-        crate::conformance::conformance(&SqliteMemoryRepository::open_in_memory().unwrap()).await;
+        crate::conformance::conformance(
+            &SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
+        )
+        .await;
     }
 
     /// The same cause-effect-graph edge cases as the ephemeral backend, exercised in
@@ -1180,7 +1196,7 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn sqlite_memory_repository_extended_conformance() {
         crate::conformance::extended_conformance(
-            &SqliteMemoryRepository::open_in_memory().unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
         )
         .await;
     }
@@ -1188,7 +1204,7 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn sqlite_head_update_is_one_atomic_transaction() {
         crate::conformance::atomic_head_update_conformance(
-            &SqliteMemoryRepository::open_in_memory().unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
         )
         .await;
     }
@@ -1199,7 +1215,7 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn sqlite_rename_replace_orphans_destination_id() {
         crate::conformance::rename_replace_orphans_the_destination_id(
-            &SqliteMemoryRepository::open_in_memory().unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
         )
         .await;
     }
@@ -1209,7 +1225,7 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn durable_ids_remain_monotonic_after_delete() {
         crate::conformance::ids_stay_monotonic_across_delete(
-            &SqliteMemoryRepository::open_in_memory().unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
         )
         .await;
     }
@@ -1226,7 +1242,8 @@ mod memory_repository_tests {
         let path_str = path.to_str().unwrap();
         let version_id;
         {
-            let fs = SqliteMemoryRepository::open(path_str).unwrap();
+            let fs = SqliteMemoryRepository::open(path_str, awaken_lease_contract::system_clock())
+                .unwrap();
             let api_actor = MemoryActor::ApiActor {
                 api_key_id: "api_durable".into(),
             };
@@ -1252,7 +1269,8 @@ mod memory_repository_tests {
                 .unwrap()
                 .unwrap();
         }
-        let fs = SqliteMemoryRepository::open(path_str).unwrap();
+        let fs =
+            SqliteMemoryRepository::open(path_str, awaken_lease_contract::system_clock()).unwrap();
         assert_eq!(
             fs.get_by_path("s", "/keep.md")
                 .await
@@ -1293,7 +1311,8 @@ mod memory_repository_tests {
     /// then assert both memories are intact.
     #[tokio::test]
     async fn rename_replace_is_crash_atomic() {
-        let fs = SqliteMemoryRepository::open_in_memory().unwrap();
+        let fs =
+            SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap();
         fs.create("s", "/from.md", "src").await.unwrap();
         fs.create("s", "/to.md", "dst").await.unwrap();
 
@@ -1336,7 +1355,7 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn sqlite_store_enforces_the_shared_capacity_contract() {
         crate::repository::tests::capacity_conformance(
-            &SqliteMemoryRepository::open_in_memory().unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
         )
         .await;
     }

@@ -114,22 +114,25 @@ mod tests {
         use tower::ServiceExt;
 
         let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+        let clock = awaken_lease_contract::system_clock();
         let storage = Arc::new(
             awaken_resource_store::SqliteResourceStore::in_memory().expect("resource registry"),
         );
         let registry = Arc::new(awaken_resource_application::RegistryApplication::new(
             storage.clone(),
-            awaken_lease_contract::system_clock(),
+            clock.clone(),
         ));
         let application =
             awaken_resource_application::ResourcesApplication::new(ResourceAuthorities::new(
                 registry,
                 files.clone(),
                 files,
-                Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
+                Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                    clock.clone(),
+                )),
                 Arc::new(awaken_skill_store::InMemorySkillStore::new()),
                 storage,
-                awaken_lease_contract::system_clock(),
+                clock,
             ));
         let authorities = application.authorities();
         let router = resources_router(ResourcesRouterInput {

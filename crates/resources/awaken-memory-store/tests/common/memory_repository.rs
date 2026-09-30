@@ -3,11 +3,240 @@
 //! One backend-neutral Memory conformance authority, shared by unit and integration tests.
 #![allow(dead_code)] // Different feature selections exercise different backend rows.
 
+use awaken_lease_testkit::ManualClock;
 use awaken_resource_contract::{
     MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, MemoryGeneration, MemoryRepository,
     MemoryVersionOperation, memory_sha256_hex as sha256_hex,
 };
 use std::sync::Arc;
+
+pub(crate) async fn timestamp_mutation_conformance(fs: &dyn MemoryRepository, clock: &ManualClock) {
+    // Cause/effect table TM: C1=create, C2=changed content, C3=exact replay,
+    // C4=stale generation, C5=rename replacing another head,
+    // C6=conditional delete, C7=redaction, C8=redaction replay,
+    // C9=ordinary delete of a present head.
+    // The ManualClock is the same handle injected into the repository. Each
+    // admitted mutation stamps its head and history with that reading; C3
+    // preserves both; C4's displaced and moved history share one reading.
+    // No-op/failed admissions do not mint a new version or change timestamps.
+    const START_MS: u64 = 1_700_000_000_123;
+    let nanos = |ms| u128::from(ms) * 1_000_000;
+    clock.set(START_MS);
+    let first = fs
+        .create("timestamp-conformance", "/a.md", "one")
+        .await
+        .unwrap();
+    assert_eq!(first.created_unix_nanos, nanos(START_MS), "TM1");
+    assert_eq!(first.updated_unix_nanos, nanos(START_MS), "TM1");
+    let first_version = fs.list_versions("timestamp-conformance").await.unwrap();
+    assert_eq!(first_version[0].created_unix_nanos, nanos(START_MS), "TM1");
+
+    clock.advance(7);
+    let changed = fs
+        .update("timestamp-conformance", &first.generation(), "two")
+        .await
+        .unwrap();
+    assert_eq!(changed.created_unix_nanos, nanos(START_MS), "TM2");
+    assert_eq!(changed.updated_unix_nanos, nanos(START_MS + 7), "TM2");
+    clock.advance(1);
+    let replay = fs
+        .update("timestamp-conformance", &changed.generation(), "two")
+        .await
+        .unwrap();
+    assert_eq!(replay, changed, "TM3");
+    assert_eq!(
+        fs.list_versions("timestamp-conformance")
+            .await
+            .unwrap()
+            .len(),
+        2,
+        "TM3"
+    );
+    assert!(
+        matches!(
+            fs.update("timestamp-conformance", &first.generation(), "stale")
+                .await,
+            Err(MemErr::Conflict { .. })
+        ),
+        "TM4"
+    );
+    assert_eq!(
+        fs.list_versions("timestamp-conformance")
+            .await
+            .unwrap()
+            .len(),
+        2,
+        "TM4"
+    );
+
+    let displaced = fs
+        .create("timestamp-conformance", "/b.md", "other")
+        .await
+        .unwrap();
+    clock.advance(1);
+    let renamed = fs
+        .rename("timestamp-conformance", "/a.md", "/b.md")
+        .await
+        .unwrap();
+    assert_eq!(renamed.id, first.id, "TM5");
+    assert_eq!(renamed.updated_unix_nanos, nanos(START_MS + 9), "TM5");
+    let history = fs.list_versions("timestamp-conformance").await.unwrap();
+    let displaced_delete = history
+        .iter()
+        .rev()
+        .find(|v| v.memory_id == displaced.id && v.operation == MemoryVersionOperation::Deleted)
+        .unwrap();
+    let moved = history
+        .iter()
+        .rev()
+        .find(|v| v.memory_id == first.id && v.path == "/b.md")
+        .unwrap();
+    assert_eq!(
+        displaced_delete.created_unix_nanos,
+        nanos(START_MS + 9),
+        "TM5"
+    );
+    assert_eq!(moved.created_unix_nanos, nanos(START_MS + 9), "TM5");
+
+    clock.advance(1);
+    assert!(
+        fs.delete_if_match("timestamp-conformance", "/b.md", &renamed.generation())
+            .await
+            .unwrap()
+    );
+    let history = fs.list_versions("timestamp-conformance").await.unwrap();
+    let deleted = history.last().unwrap();
+    assert_eq!(deleted.created_unix_nanos, nanos(START_MS + 10), "TM6");
+    clock.advance(1);
+    let redacted = fs
+        .redact_version("timestamp-conformance", &first_version[0].id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        redacted.redacted_unix_nanos,
+        Some(nanos(START_MS + 11)),
+        "TM7"
+    );
+    clock.advance(1);
+    assert_eq!(
+        fs.redact_version("timestamp-conformance", &first_version[0].id)
+            .await
+            .unwrap(),
+        Some(redacted),
+        "TM8"
+    );
+    clock.advance(1);
+    fs.create("timestamp-conformance", "/ordinary.md", "ordinary")
+        .await
+        .unwrap();
+    clock.advance(1);
+    fs.delete_by_path("timestamp-conformance", "/ordinary.md")
+        .await
+        .unwrap();
+    assert_eq!(
+        fs.list_versions("timestamp-conformance")
+            .await
+            .unwrap()
+            .last()
+            .unwrap()
+            .created_unix_nanos,
+        nanos(START_MS + 14),
+        "TM9"
+    );
+}
+
+pub(crate) async fn nanosecond_timestamp_conformance(fs: &dyn MemoryRepository, expected: u128) {
+    // Cause/effect rule TN: an injected sub-millisecond reading on create
+    // remains exact in both the head and its durable history; the Memory port's
+    // u128 nanoseconds must never pass through a millisecond projection.
+    let created = fs
+        .create("timestamp-nanos", "/precise.md", "one")
+        .await
+        .unwrap();
+    assert_eq!(created.created_unix_nanos, expected, "TN head created");
+    assert_eq!(created.updated_unix_nanos, expected, "TN head updated");
+    assert_eq!(
+        fs.list_versions("timestamp-nanos").await.unwrap()[0].created_unix_nanos,
+        expected,
+        "TN history"
+    );
+}
+
+pub(crate) async fn sql_timestamp_range_conformance(
+    representable: &dyn MemoryRepository,
+    overflow: &dyn MemoryRepository,
+) {
+    // Cause/effect table TS: clock=i64::MAX nanos accepts the SQL boundary;
+    // clock=i64::MAX+1 with unchanged content or stale generation returns the
+    // existing no-op/conflict before reading time; a changed write or new head
+    // fails as Storage and rolls back head and history.
+    let head = representable
+        .create("timestamp-range", "/a.md", "one")
+        .await
+        .unwrap();
+    assert_eq!(head.created_unix_nanos, i64::MAX as u128, "TS1");
+    let before_heads = representable
+        .snapshot_heads("timestamp-range")
+        .await
+        .unwrap();
+    let before_history = representable
+        .list_versions("timestamp-range")
+        .await
+        .unwrap();
+    assert_eq!(
+        overflow
+            .update("timestamp-range", &head.generation(), "one")
+            .await
+            .unwrap(),
+        head,
+        "TS2"
+    );
+    let stale = MemoryGeneration::new(
+        head.id.clone(),
+        head.version + 1,
+        head.content_sha256.clone(),
+    );
+    assert!(
+        matches!(
+            overflow.update("timestamp-range", &stale, "two").await,
+            Err(MemErr::Conflict { .. })
+        ),
+        "TS3"
+    );
+    assert!(
+        matches!(
+            overflow
+                .update("timestamp-range", &head.generation(), "two")
+                .await,
+            Err(MemErr::Storage(_))
+        ),
+        "TS4"
+    );
+    assert!(
+        matches!(
+            overflow.create("timestamp-range", "/new.md", "two").await,
+            Err(MemErr::Storage(_))
+        ),
+        "TS5"
+    );
+    assert_eq!(
+        representable
+            .snapshot_heads("timestamp-range")
+            .await
+            .unwrap(),
+        before_heads,
+        "TS6"
+    );
+    assert_eq!(
+        representable
+            .list_versions("timestamp-range")
+            .await
+            .unwrap(),
+        before_history,
+        "TS6"
+    );
+}
 
 pub(crate) async fn copy_conflict_conformance(fs: &dyn MemoryRepository) {
     use awaken_resource_contract::{MemoryCopyBase, MemoryCopyConflict};
