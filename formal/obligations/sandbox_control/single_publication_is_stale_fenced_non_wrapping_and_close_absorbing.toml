@@ -13,10 +13,10 @@ evidence = [
 production_entrypoints = []
 
 [[bounds]]
-text = '''The named Kani harness invokes the actual generic SandboxControlPublicationSlot Mutex/Arc methods across every non-poisoned state shape: open vacant, open active with current/stale/foreign leases, replacement while the predecessor remains live, closed with retained cleanup, closed after finish and closed vacant. It proves one active publication, foreign and stale mutation/release stutter, distinct live allocation identity, absorbing close, exact retained cleanup mutation, retained retry cleanup and exactly one finish.'''
+text = '''The named Kani harness invokes the actual generic SandboxControlPublicationSlot Mutex methods and its canonical allocation-backed SlotToken lease across every non-poisoned state shape: open vacant, open active with current/stale/foreign leases, replacement while the predecessor remains live, closed with retained cleanup, closed after finish and closed vacant. It proves one active publication, foreign and stale mutation/release stutter, distinct SlotToken allocation identity through the same equality used by production, absorbing close, exact retained cleanup mutation, retained retry cleanup and exactly one finish.'''
 
 [[bounds]]
-text = '''Fixed Kani 0.67.0 with the qualified CBMC/CaDiCaL backend completed 856 checks with zero failures and six unreachable checks in 1.7885993 solver seconds and 4.92 guarded seconds, under one job, empty RUSTC_WRAPPER, a 600-second deadline and 12-GiB cgroup memory ceiling. The harness uses no assumptions, stubs or mirror transition state.'''
+text = '''Kani 0.67.0 with the qualified CBMC/CaDiCaL backend completed 904 checks with zero failures and six unreachable checks in 2.675 solver seconds on the current source. The harness uses one job and no assumptions, stubs or mirror transition state; the final-SHA full gate remains the release receipt.'''
 
 [[bounds]]
 text = '''The transport slot is the sole lifecycle owner consumed unchanged by both container and local Namespace registries. Native decision tables additionally cover poisoned-lock recovery, cancelled close/retry, join-before-cleanup, provider replacement, socket inode cleanup and real codec exchange; the finite TLA model and seven mutants remain complementary evidence.'''
