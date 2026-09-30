@@ -9,7 +9,7 @@ evidence = [
 production_entrypoints = []
 
 [[bounds]]
-text = '''Direct production validate_resume Kani decision table: all 9 closed AwaitTarget reason variants x 5 ResumeResult variants x all 32 immutable identity mismatch masks, every Option<u64> deadline and every u64 clock, including typed first-error precedence.'''
+text = '''One Kani harness calls the production validate_resume through the same decision-table oracle in three independent partitions: all 9 closed AwaitTarget variants x 5 ResumeResult variants x 32 immutable identity masks at an exact expired boundary; all 9 x 5 kinds with exact identities/call under absent, live and equal deadline fixtures; and ClientExecution or Delegation ToolResult with independent six-byte ASCII call IDs. These prove typed first-error precedence, result-kind admission and child-call forwarding without multiplying every axis in one solver formula. The native 748800-row cross table exercises their joint behavior, including zero and u64::MAX clock boundary rows; arbitrary independent full-width u64 deadline/clock pairs are not claimed Kani-proved.'''
 
 [[bounds]]
 text = '''The ticket call is call-1; reply call ranges over all 128^6 six-byte ASCII strings. Other identity strings are fixed equal-length exact/foreign fixtures. The 748800-row native cross-check includes all 64 byte-position mismatch masks and the original foreign call fixture.'''
@@ -18,7 +18,7 @@ text = '''The ticket call is call-1; reply call ranges over all 128^6 six-byte A
 text = '''ClientExecution ToolResult requires exact call bytes. Delegation deliberately forwards a typed child answer to the child ticket validator, so its reply call is not equated with the parent delegation call. All other closed target/result compatibility rules are checked by the same harness.'''
 
 [[bounds]]
-text = '''Optional context, ToolOutput content/state and Input text are empty; PendingTool arguments retain a real empty JSON object. Canonical Kani 0.67/nightly-2026-05-01 uses global unwind16 and resume-validator-empty-object-v1: fixed CaDiCaL, ten actual empty-container loop bounds and two destructor recursion bounds at1, with real allocation/Drop and every safety/unwinding assertion enabled.'''
+text = '''Optional context, ToolOutput content/state and Input text are empty; PendingTool arguments retain a real empty JSON object. Kani 0.67/nightly-2026-05-01 uses global unwind16 and the single audited resume-validator-empty-object-v1 profile: fixed CaDiCaL, ten actual empty-container loop bounds and two destructor recursion bounds at1, with real allocation/Drop and every safety/unwinding assertion enabled. The current GOTO-bound destructor IDs were refreshed with the dependency crate hash; the partitioned harness completed 8261 checks (546 unreachable), zero failures, in 266.2 seconds.'''
 
 [[bounds]]
 text = '''The original ToolResultProtocol finite model independently observes accepted and pre-transition awaiting call/commit coordinates; both removed-coordinate-guard mutants are killed and an exact-call acceptance witness is reachable. This does not establish a Rust-to-model transition refinement.'''

@@ -58,13 +58,13 @@ TOOL_RESULT_EMPTY_OBJECT_LOOPS = (
     ('_RNvXsy_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree3mapINtB5_8IntoIterNtNtBb_6string6StringNtNtCsbpSFxJTBWlC_10serde_json5value5ValueENtNtNtCsjxLPRqQEPX2_4core3ops4drop4Drop4dropB1w_.0', 1),
     ('_RINvMsj_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree8navigateINtNtB8_4node6HandleINtB11_7NodeRefNtNtB11_6marker5DyingNtNtBc_6string6StringNtNtCsbpSFxJTBWlC_10serde_json5value5ValueNtB1z_4LeafENtB1z_4EdgeE17deallocating_nextNtNtBc_5alloc6GlobalEB2h_.0', 1),
     ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeNtNtCsbpSFxJTBWlC_10serde_json5value5ValueEBK_', 1),
-    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeNtNtNtCsecBtpv2pihN_21awaken_agent_contract5agent7content12ContentBlockEBM_', 1),
-    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtNtCsecBtpv2pihN_21awaken_agent_contract5agent7content19SearchResultContentEBN_.0', 1),
-    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtNtCsecBtpv2pihN_21awaken_agent_contract5agent7content12ContentBlockEBN_.0', 1),
+    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeNtNtNtCscLP3oj2Kb40_21awaken_agent_contract5agent7content12ContentBlockEBM_', 1),
+    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtNtCscLP3oj2Kb40_21awaken_agent_contract5agent7content19SearchResultContentEBN_.0', 1),
+    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtNtCscLP3oj2Kb40_21awaken_agent_contract5agent7content12ContentBlockEBN_.0', 1),
     ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtCs5YUhLFlCshu_5alloc6string6StringECs6MUXvrZ2NgI_3std.0', 1),
-    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtNtCsecBtpv2pihN_21awaken_agent_contract5agent5state7CommandEBN_.0', 1),
+    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtNtCscLP3oj2Kb40_21awaken_agent_contract5agent5state7CommandEBN_.0', 1),
     ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtCsbpSFxJTBWlC_10serde_json5value5ValueEBL_.0', 1),
-    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtNtCsecBtpv2pihN_21awaken_agent_contract5agent7message7MessageEBN_.0', 1),
+    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtNtCscLP3oj2Kb40_21awaken_agent_contract5agent7message7MessageEBN_.0', 1),
 )
 
 # Actual ErasureProgress two-slot GOTOs, pinned nightly/Kani above. These
