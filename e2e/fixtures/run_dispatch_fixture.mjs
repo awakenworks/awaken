@@ -20,6 +20,14 @@ export function detachSessionCommandFixture(seed) {
 // eagerly created a sandbox before enqueue, which made this fixture depend on a
 // second physical-effect owner.
 export function ordinaryRunDispatchFixture(seed, runId, threadId) {
+  // Causes: C1 the seed carries frozen Session Resources/Runtime; C2 a caller
+  // requests a different Thread. Effect: E1 refuse the copy before enqueue,
+  // because those envelopes still require the original Session Work authority.
+  // Rules C1+!C2=>reuse the same Session; C1+C2=>E1. The Rust dispatch contract
+  // remains the runtime admission authority for all other Run shapes.
+  if ((seed.session_resources || seed.session_runtime) && seed.activation.thread_id !== threadId) {
+    throw new Error('frozen Session projection cannot be copied to another Thread');
+  }
   const request = detachSessionCommandFixture(seed);
   request.activation.run_id = runId;
   request.activation.thread_id = threadId;

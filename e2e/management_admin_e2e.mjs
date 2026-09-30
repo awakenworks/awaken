@@ -273,6 +273,12 @@ async function main() {
       checkContract('ResolvedInferenceView', r.json);
       assert.equal(r.json.provider_id, 'anthropic');
       assert.equal(r.json.adapter_kind, 'anthropic');
+      // Causes: C1 the connection belongs to this Workspace; C2 a later
+      // profile or direct request pins its endpoint explicitly. Effect: E1 the
+      // explicit target reuses the resolved, Workspace-qualified endpoint ID;
+      // an old global ID would select no offering and fail 404. Rule C1+C2=>E1.
+      const connectionEndpointId = r.json.protocol_endpoint_id;
+      assert.ok(connectionEndpointId, 'the resolver exposes the selected endpoint identity');
       assert.equal(r.json.base_url, `${directory.url}/v1/`);
       assert.equal(r.json.credential_present, true);
       pass('POST /v1/config/inference/resolve — resolver output matches ResolvedInferenceView contract');
@@ -426,7 +432,7 @@ async function main() {
       r = await req(base, 'PUT', '/v1/config/inference-profiles/prof1', {
         primary: {
           target: {
-            model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: 'anthropic.anthropic_messages',
+            model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: connectionEndpointId,
           },
           credential_binding: { type: 'exact', credential_source_id: credId },
         },
@@ -462,7 +468,7 @@ async function main() {
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
         workspace_id: ws,
         target: {
-          model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: 'anthropic.anthropic_messages',
+          model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: connectionEndpointId,
         },
         binding: { type: 'exact', credential_source_id: credId },
       });
@@ -474,7 +480,7 @@ async function main() {
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
         workspace_id: ws,
         target: {
-          model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: 'anthropic.anthropic_messages',
+          model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: connectionEndpointId,
         },
         binding: { type: 'none' },
       });

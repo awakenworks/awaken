@@ -218,7 +218,7 @@ async function main() {
 
       // Fetch cause/effect graph:
       // C1 published allow policy+cap3; C2 URL matches; C3 `.pdf` suffix;
-      // C4 published block policy matches. Effects: E1 physical HTTP once;
+      // C4 published block policy matches the combined domain policy. Effects: E1 physical HTTP once;
       // E2 non-PDF text=`abc`; E3 `.PDF` legacy text=`abcdef`; E4 block is an
       // error result before HTTP; E7 each Run durably links one use/result/final/idle.
       // Constraints K1 one publication snapshot selects the sole configured
@@ -260,7 +260,7 @@ async function main() {
       );
       assert.equal(fixture.requests.length, beforeBlocked, 'F3/E4 block precedes physical HTTP');
       assert.equal(blockedFetch.result.is_error, true, 'F3 blocked fetch is a model-visible error');
-      assert.match(eventText(blockedFetch.result), /outside the configured domain policy/u, 'F3 policy cause');
+      assert.match(eventText(blockedFetch.result), /outside the combined domain policy/u, 'F3 policy cause');
       assert.match(eventText(blockedFetch.message), /^web-error:/u, 'F3 model consumes the error and ends');
       pass('F1/F2/F3: allowed, capped, PDF, and pre-I/O blocked WebFetch execute end to end');
 

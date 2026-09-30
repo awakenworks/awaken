@@ -17,7 +17,6 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
-  WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
   pass,
   spawnServer,
   stopServer,
@@ -31,7 +30,11 @@ import {
   claimedCommitRequestFixture,
   terminalThreadCommitFixture,
 } from './fixtures/thread_commit_fixture.mjs';
-import { workdirWorkerManifestFixture } from './fixtures/worker_manifest_fixture.mjs';
+import {
+  workdirWorkerManifestFixture,
+  WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
+  WORKER_INHERITED_TOOLSETS_CAPABILITY,
+} from './fixtures/worker_manifest_fixture.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38812);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -46,7 +49,7 @@ const ENV = {
 const WORKER = 'ts-worker-1';
 let workerIdentity;
 
-function claimedCommitRequest(claimed, text) {
+function claimedCommitRequest(claimed, text, expectedThreadVersion = 0) {
   const runId = claimed.lease.run_id;
   return claimedCommitRequestFixture({
     claimed,
@@ -57,7 +60,7 @@ function claimedCommitRequest(claimed, text) {
       text,
     }),
     ordinal: 0,
-    expectedThreadVersion: 0,
+    expectedThreadVersion,
   });
 }
 
@@ -90,10 +93,10 @@ async function postArtifact(claim, logicalPath) {
   // `harvest_idempotency_key(thread, path, content_id)` codec; keeping only its
   // outputs here avoids a parallel JavaScript implementation of that protocol.
   const effectIds = {
-    'reports/worker-result.bin': 'ee88fe25e1e8813bec179b2037aeb40f0c9958db2faa664501e558cd911a234d',
-    'reports/late-result.bin': '5e5503f53755eade26e8bb686ad23165bcdcea9b2c97e4094f5befbe755e13b3',
+    'reports/worker-result.bin': 'bd6621118ab6791fcaad701974515e5b69b5df0e15af8fb7b143ed71acd6ebfe',
+    'reports/late-result.bin': '45ee230c33ddf619c3287b49c030f52bf751f680fe9a8251cfc33db8924aa68c',
   };
-  assert.equal(claim.request.session_thread_id, 'worker-dispatch-auth-1-grant');
+  assert.equal(claim.request.activation.thread_id, 'worker-dispatch-auth-1');
   assert.ok(effectIds[logicalPath], `missing canonical artifact effect fixture for ${logicalPath}`);
   const metadata = {
     claim: {
@@ -103,7 +106,7 @@ async function postArtifact(claim, logicalPath) {
     },
     identity: workerIdentity,
     workspace_id: claim.request.execution_scope,
-    session_id: claim.request.session_thread_id,
+    session_id: claim.request.activation.thread_id,
     logical_path: logicalPath,
     mime_type: 'application/octet-stream',
     content_id: 'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262',
@@ -139,6 +142,10 @@ async function registerReadyWorker() {
           'credential-source/v1',
           'host-executor/v1',
           'native-runtime',
+          // The fresh root activation freezes the child-toolset format. The
+          // shipped Worker advertises this same capability; this transport
+          // fixture claims and commits without executing the inherited tools.
+          WORKER_INHERITED_TOOLSETS_CAPABILITY,
           // This fixture claims a Session-owned root. The placement contract
           // therefore requires the Worker to realize its frozen Resources;
           // omitting this capability must yield no claim, not a local bypass.
@@ -290,6 +297,9 @@ async function main() {
     // Cause-effect graph for authenticated credential-bearing transport:
     // C1 current Worker identity + C2 exact realization capability + C3 allowed holder
     //   -> E1 claim persists the binding and returns the immutable candidate.
+    // C2 also includes the inherited-toolset format frozen on the root Run;
+    // omitting it is T2 in the shared Rust eligibility tests, not an alternate
+    // claim path owned by this transport test.
     // C1 + (!C2 || !C3) -> E2 skip/reject before credential materialization.
     // C4 claim owner/epoch current + C5 canonical operation/hash -> E3 commit once.
     // !C4 -> E4 unauthorized/stale; repeated C5 -> E5 duplicate receipt, no second fact.
@@ -309,11 +319,11 @@ async function main() {
     // carrying provider key material.
     const granted = structuredClone(claimed.request);
     granted.activation.run_id = `${claimed.request.activation.run_id}-grant`;
-    granted.activation.thread_id = `${claimed.request.activation.thread_id}-grant`;
-    granted.session_thread_id = granted.activation.thread_id;
-    // The seed is now a Session-owned Run. Its Workspace execution scope and
-    // frozen resource manifest are one invariant, so a credential-transport
-    // fixture may preserve that coordinate but must not rewrite either side.
+    // Causes: G1 the background root created a real Session and Thread; G2 the
+    // first Run will commit and settle before this second Run is claimed.
+    // Effect: E1 both claims use the same durable Session and a monotone
+    // Thread version, so terminal observation never targets a fabricated
+    // Session. Rule G1+G2=>E1; scope and Resources stay frozen on the copy.
     const frozenExecutionScope = structuredClone(granted.execution_scope);
     assert.ok(frozenExecutionScope, 'Session-owned seed carries its frozen execution scope');
     const pinnedCandidate = nativeProviderCandidateFixture({
@@ -427,7 +437,8 @@ async function main() {
 
     // Remote artifact-publication FMECA / cause-effect decision table:
     // C1 the registered incarnation is authenticated; C2 the claim owner/epoch
-    // is live; C3 Workspace and Session equal the frozen dispatch; C4 the body
+    // is live; C3 Workspace and execution Thread equal the frozen dispatch;
+    // C4 the body
     // matches the canonical content id. E1 persists one downloadable scoped File;
     // E2 an identical at-least-once delivery returns the same File; E3 a final
     // claim rejects every late publication before the Resource application.
@@ -443,10 +454,10 @@ async function main() {
     // the live/final claim transition over the real server binary.
     const artifact = await postArtifact(grant, 'reports/worker-result.bin');
     assert.equal(artifact.status, 200, `live claim publishes an artifact: ${artifact.text}`);
-    assert.equal(artifact.json?.record?.scope_id, grant.request.session_thread_id);
+    assert.equal(artifact.json?.record?.scope_id, grant.request.activation.thread_id);
     assert.equal(artifact.json?.record?.logical_path, 'reports/worker-result.bin');
     assert.equal(artifact.json?.record?.downloadable, true);
-    assert.equal(artifact.json?.effect_id, 'ee88fe25e1e8813bec179b2037aeb40f0c9958db2faa664501e558cd911a234d');
+    assert.equal(artifact.json?.effect_id, 'bd6621118ab6791fcaad701974515e5b69b5df0e15af8fb7b143ed71acd6ebfe');
     const artifactReplay = await postArtifact(grant, 'reports/worker-result.bin');
     assert.equal(artifactReplay.status, 200, `artifact replay is accepted: ${artifactReplay.text}`);
     assert.equal(
@@ -461,6 +472,7 @@ async function main() {
     const claimedCommit = claimedCommitRequest(
       grant,
       'claimed commit from authenticated worker',
+      1,
     );
     const wrongOwner = await postJson(
       '/v1/worker/commit-claimed',

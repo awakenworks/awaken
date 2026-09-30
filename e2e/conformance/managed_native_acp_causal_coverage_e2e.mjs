@@ -81,15 +81,15 @@ const groups = [
     ...acpPartitions('e2e/managed_namespace_session_environment_e2e.mjs', 'NAMESPACE-SKILL-OK'),
     // An outbound A2A agent owns its remote skills and cannot consume a local
     // Session mount. Compatibility here is the explicit fail-closed boundary.
-    a2a: evidence('crates/server/awaken-session-executor/src/host/tests.rs', 'R2 local input was accepted'),
+    a2a: evidence('crates/server/awaken-session-executor/src/host/tests/claimed_dispatch.rs', 'R2 local input was accepted'),
     negative: evidence('e2e/managed_skill_store_durable_e2e.mjs', 'missing `files`'),
   },
   {
     id: 'mcp',
     native: evidence('e2e/management_mcp_e2e.mjs', 'always_ask'),
     ...acpPartitions('e2e/acp_managed_mcp_e2e.mjs', 'projects only replacement'),
-    a2a: evidence('crates/server/awaken-session-executor/src/host/tests.rs', 'A2A-only IO context has no Environment and no Hand'),
-    negative: evidence('crates/server/awaken-session-executor/src/host/tests.rs', 'mcp_client_refresh_unsupported'),
+    a2a: evidence('crates/server/awaken-session-executor/src/host/tests/claimed_dispatch.rs', 'A2A-only IO context has no Environment and no Hand'),
+    negative: evidence('crates/server/awaken-session-executor/src/host/tests/mcp_credentials.rs', 'mcp_client_refresh_unsupported'),
   },
   {
     id: 'multiagent',

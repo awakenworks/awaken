@@ -40,7 +40,10 @@ import {
   claimedCommitRequestFixture,
   terminalThreadCommitFixture,
 } from './fixtures/thread_commit_fixture.mjs';
-import { workdirWorkerManifestFixture } from './fixtures/worker_manifest_fixture.mjs';
+import {
+  workdirWorkerManifestFixture,
+  WORKER_INHERITED_TOOLSETS_CAPABILITY,
+} from './fixtures/worker_manifest_fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38813);
@@ -51,7 +54,6 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const GRANT = 'grant-ts-provider-23';
 const GRANT_REVISION = 1;
 const THREAD = 'secretless-gateway-worker';
-const REVALIDATION_THREAD = 'secretless-gateway-worker-revalidation';
 
 async function post(pathname: string, body: unknown, worker?: string): Promise<any> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
@@ -76,7 +78,13 @@ async function registerReadyWorker(workerId: string): Promise<any> {
         incarnation_id: incarnationId,
         manifest: workdirWorkerManifestFixture({
           buildDigest: 'secretless-gateway-e2e',
-          capabilities: ['host-executor/v1', 'native-runtime', 'session-resources/v1'],
+          // The server-created seed is a fresh root; its frozen child-toolset
+          // format is an exact placement cause even though this peer only reads
+          // the claimed activation and never executes that format.
+          capabilities: [
+            'host-executor/v1', 'native-runtime', 'session-resources/v1',
+            WORKER_INHERITED_TOOLSETS_CAPABILITY,
+          ],
         }),
       },
     },
@@ -166,7 +174,9 @@ async function main(): Promise<void> {
     // Obtain a real serialized activation from the server, then enqueue a second
     // stable dispatch carrying only an opaque gateway capability reference.
     const seedIdentity = await registerReadyWorker('seed-worker');
-    await post(`/v1/durable/threads/${THREAD}-seed/submit_background`, { text: 'seed activation' });
+    // The copied frozen Resource/Runtime projection still belongs to a real
+    // Session, so establish it on the eventual gateway Thread itself.
+    await post(`/v1/durable/threads/${THREAD}/submit_background`, { text: 'seed activation' });
     const seed = (
       await post('/v1/worker/dispatch/claim', { identity: seedIdentity }, 'seed-worker')
     ).claimed;
@@ -221,6 +231,15 @@ async function main(): Promise<void> {
     request.placement.required_capabilities = ['worker-local-credentials/v1', 'native-runtime'];
     request.placement.required_credentials = [{ id: GRANT, revision: GRANT_REVISION }];
     await post('/v1/worker/dispatch/enqueue', { request }, 'seed-worker');
+    // Causes: a distinct gateway Run id and ordinary Thread are enqueued.
+    // Effect: the exact Run is visible before the seed finishes; a later empty
+    // queue can then be attributed to settlement instead of a no-op enqueue.
+    const queued = await fetch(`${BASE}/v1/durable/threads/${THREAD}/dispatches`)
+      .then((response) => response.json());
+    assert.ok(
+      queued.dispatches?.some((dispatch: any) => dispatch.run_id === gatewayRunId),
+      'the cloned ordinary gateway Run is durably queued',
+    );
 
     // T5/E4: enqueueing the cloned gateway Run is not committed truth for the
     // seed Run. The exact claim must first publish one durable terminal receipt;
@@ -296,26 +315,27 @@ async function main(): Promise<void> {
     assert.ok(!workerOutput.includes('provider-key'), 'worker output contains no provider credential');
     await waitForDispatchSettlement(gatewayRunId);
 
-    // Placement still sees a fresh Available observation, while the exact
-    // use-time provider check reports logout. The attempt must stop before the
-    // materializer/Agent executor is entered.
+    // Causes: the same real Session still owns the frozen projection; placement
+    // saw Available, then the exact use-time provider check sees logout.
+    // Effect: the new Run stops before the materializer/Agent executor, leaving
+    // the one earlier credential-reference message as the only model effect.
+    // A new Thread would have no Session and fail at projection admission,
+    // which would not exercise this credential boundary.
     fs.writeFileSync(credentialState, 'available_then_login_required\n');
     const rejected = structuredClone(request);
     rejected.activation.run_id = `${request.activation.run_id}-revalidation`;
-    rejected.activation.thread_id = REVALIDATION_THREAD;
     await post('/v1/worker/dispatch/enqueue', { request: rejected }, 'seed-worker');
     await waitForOutput(
       () => workerOutput,
       `worker-local credential ${GRANT} revision ${GRANT_REVISION} failed use-time revalidation`,
     );
-    const rejectedMessages = await fetch(
-      `${BASE}/v1/durable/threads/${REVALIDATION_THREAD}/messages`,
-    );
+    const rejectedMessages = await fetch(`${BASE}/v1/durable/threads/${THREAD}/messages`);
     if (rejectedMessages.status === 200) {
       const body = ((await rejectedMessages.json()) as any).messages ?? [];
-      assert.ok(
-        !body.some((message: any) => String(message.text ?? '').includes(`credential-reference:${GRANT}`)),
-        'logout after placement must not reach the model executor',
+      assert.equal(
+        body.filter((message: any) => String(message.text ?? '').includes(`credential-reference:${GRANT}`)).length,
+        1,
+        'logout after placement must not add a second model result',
       );
     }
 

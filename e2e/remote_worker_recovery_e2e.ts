@@ -194,14 +194,22 @@ async function startFaultProxy(): Promise<{
       reservationResolutions.push(parsed);
     }
 
+    // Causes: A1 Worker A's first Awaiting settle; A2 its transport retry;
+    // A3 replacement Worker B's settle. Effects: E1 signal the crash seam once;
+    // E2 no A attempt reaches durable settlement before lease expiry; E3 B is
+    // forwarded normally. Rules A1=>E1+E2, A2=>E2, A3=>E3. Blocking only the
+    // first request alone would permit a later retry to settle before the
+    // deliberately expired lease is observed.
     if (
       request.method === 'POST' &&
       request.url === '/v1/worker/dispatch/settle' &&
       parsed.outcome === 'Awaiting' &&
-      !blockedAwaitingSettle
+      workerId === 'recovery-worker-a'
     ) {
-      blockedAwaitingSettle = true;
-      signalAwaitingSettle();
+      if (!blockedAwaitingSettle) {
+        blockedAwaitingSettle = true;
+        signalAwaitingSettle();
+      }
       request.once('close', () => response.destroy());
       return;
     }
@@ -237,6 +245,13 @@ async function startFaultProxy(): Promise<{
       return;
     }
     const upstreamBody = Buffer.from(await upstream.arrayBuffer());
+
+    if (request.method === 'POST' && request.url === '/v1/worker/dispatch/reservation/resolve'
+        && upstream.ok) {
+      // The request alone is only an attempt. The Coordinator's applied flag
+      // is the exact durable resolution receipt that R1/R3 wait for below.
+      parsed.__transport_applied = JSON.parse(upstreamBody.toString('utf8')).applied;
+    }
 
     if (
       request.method === 'POST' &&
@@ -444,6 +459,14 @@ function sqliteValue(database: string, statement: string, ...params: any[]): unk
   });
 }
 
+function dispatchOperations(storage: string, runId: string): any[] {
+  return dispatchDatabases(storage).flatMap((database) => withSqlite(database, (db) =>
+    db.prepare('SELECT operation FROM runtime_dispatch_operation WHERE operation LIKE ? ORDER BY rowid')
+      .all(`%${runId}%`)
+      .map(({ operation }: { operation: string }) => JSON.parse(operation)),
+  ));
+}
+
 function sqliteRun(database: string, statement: string, ...params: any[]): void {
   withSqlite(database, (db) => {
     (db.prepare(statement) as StatementSync).run(...params);
@@ -520,16 +543,22 @@ async function stageReservationCrashBoundary(
 }
 
 async function waitForReservationResolution(
-  proxy: { reservationResolutions: () => any[] },
+  proxy: { reservationResolutions: () => any[]; requestCounts: () => Record<string, number> },
+  storage: string,
   runId: string,
   after: number,
   variant: 'Admitted' | 'Rejected' | 'Retry',
-  timeoutMs = 30_000,
+  timeoutMs = CRASH_RECOVERY_TIMEOUT_MS,
 ): Promise<any> {
+  // Causes: the expired reservation is created just after a 30-second Worker
+  // poll tick, or the replacement first waits for the Session Work lease.
+  // Effect: the shared crash-recovery budget covers both clocks; a timeout
+  // reports the exact queue and transport state. Rule poll+lease=>120s budget,
+  // without treating elapsed time alone as successful recovery.
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
     const resolution = proxy.reservationResolutions().slice(after).find(
-      (request) => request.claim?.run_id === runId && (
+      (request) => request.claim?.run_id === runId && request.__transport_applied === true && (
         variant === 'Rejected'
           ? request.resolution === 'Rejected'
           : request.resolution?.[variant] !== undefined
@@ -539,7 +568,18 @@ async function waitForReservationResolution(
     await sleep(25);
   }
   throw new Error(
-    `reservation ${runId} did not resolve as ${variant}: ${JSON.stringify(proxy.reservationResolutions().slice(after))}`,
+    `reservation ${runId} did not resolve as ${variant}: ` +
+      JSON.stringify({
+        resolutions: proxy.reservationResolutions().slice(after),
+        requests: proxy.requestCounts(),
+        durable: dispatchDatabases(storage).map((database) => withSqlite(database, (db) =>
+          db.prepare('SELECT status, lease_owner, lease_until, lease_epoch FROM runtime_dispatch WHERE run_id = ?')
+            .get(runId),
+        )),
+        operations: dispatchOperations(storage, runId).map(({ type, claim }) => ({
+          type, owner: claim?.owner, epoch: claim?.epoch,
+        })),
+      }),
   );
 }
 
@@ -943,6 +983,15 @@ async function main(): Promise<void> {
         runId,
       );
     }
+    const beforeReplacement = databases.map((database) => withSqlite(database, (db) =>
+      db.prepare(
+        'SELECT status, lease_owner, lease_until, lease_epoch, attempt_count ' +
+        'FROM runtime_dispatch WHERE run_id = ?',
+      ).get(runId),
+    )).filter(Boolean);
+    assert.equal(beforeReplacement.length, 1, 'the exact dispatch has one authority row');
+    assert.equal(beforeReplacement[0].status, 'running', 'A held an execution lease before B');
+    assert.equal(beforeReplacement[0].lease_until, 0, 'the test expired A without settling it');
 
     workerB = spawnCredentialIsolatedWorker('recovery-worker-b', proxy.url);
     await waitForReplacementClaim(
@@ -957,7 +1006,24 @@ async function main(): Promise<void> {
         (entry) =>
           entry.workerId === 'recovery-worker-b' && entry.claimed?.lease?.run_id === runId,
       )!.claimed;
-    assert.equal(claimB.recovered, true, 'Worker B used the expired-lease recovery path');
+    // Causes: B1 A's running lease expires; B2 B first reclaims it; B3 B may
+    // relinquish and take a later ordinary claim while waiting for input.
+    // Effects: E1 the durable journal records exact A->B recovery; E2 the
+    // current B claim has a later epoch. Rules B1+B2=>E1, B3=>E2. A late
+    // /claim response may have recovered=false, so its flag is not proof of
+    // the first B acquisition; the append-only dispatch operation is.
+    const operations = dispatchOperations(storage, runId);
+    const firstBRecovery = operations.find((operation) =>
+      operation.type === 'reclaimed' &&
+      operation.previous?.owner === claimA.lease.owner &&
+      operation.claim?.owner === claimB.lease.owner,
+    );
+    assert.ok(firstBRecovery, 'the durable journal records expired A -> B reclamation');
+    assert.ok(
+      claimB.lease.epoch >= firstBRecovery.claim.epoch &&
+        firstBRecovery.claim.epoch > claimA.lease.epoch,
+      'the current B claim follows its first recovered epoch',
+    );
     assert.equal(
       claimB.assignment?.identity?.worker_id,
       'recovery-worker-b',
@@ -1060,21 +1126,36 @@ async function main(): Promise<void> {
     );
 
     // D3 A dies at Awaiting, B recovers and commits terminal truth, then B
-    // dies before settlement. C must recover the same Run with a greater epoch,
-    // observe canonical settlement of its committed terminal prefix, and never
-    // resend either remote call.
+    // dies before settlement. Either C or the Coordinator's terminal scanner
+    // may consume the exact Ended prefix; neither may resend a remote call.
     // Cause constraints: await exact Done request before killing B; real process
     // signal, SQLite authority and claimed HTTP routes remain the same owners.
+    // Rules D3-C: C claims first => its journal epoch exceeds B's; D3-S: the
+    // scanner claims first => embedded-worker settles Done. Both => exactly one
+    // durable Done operation and one terminal logical effect.
     await Promise.race([proxy.awaitingDone, sleep(30_000).then(() => {throw new Error('B never reached held Done settlement');})]);
     const peerBeforeSecondCrash = [...peer.sent];
     await hardKillServer(workerB, 'D3 second Worker crash after terminal commit');
     workerB = spawnCredentialIsolatedWorker('recovery-worker-c', proxy.url);
-    await waitForReplacementClaim(proxy,'recovery-worker-c',runId,storage);
-    const claimC = proxy.claims().find(entry=>entry.workerId === 'recovery-worker-c' && entry.claimed?.lease?.run_id === runId)!.claimed;
-    assert.ok(claimC.lease.epoch > epochB,'D3 second recovery advances epoch again');
-    // The Coordinator's existing terminal scanner may also settle Ended truth;
-    // the committed queue outcome is authoritative, not which observer won HTTP.
     await waitForDispatchGone(thread,runId,CRASH_RECOVERY_TIMEOUT_MS);
+    const terminalOperations = dispatchOperations(storage, runId);
+    const terminalSettlements = terminalOperations.filter((operation) =>
+      operation.type === 'settled' && operation.claim?.run_id === runId && operation.outcome === 'Done',
+    );
+    assert.equal(terminalSettlements.length, 1, 'D3 one durable Done settlement');
+    const cAcquisitions = terminalOperations.filter((operation) =>
+      (operation.type === 'claimed' || operation.type === 'reclaimed') &&
+      String(operation.claim?.owner ?? '').startsWith('recovery-worker-c:'),
+    );
+    if (cAcquisitions.length > 0) {
+      assert.ok(cAcquisitions[0].claim.epoch > epochB, 'D3-C C acquired a higher epoch');
+    } else {
+      assert.equal(
+        terminalSettlements[0].claim.owner,
+        'embedded-worker',
+        'D3-S the Coordinator scanner settled committed Ended truth',
+      );
+    }
     assert.deepEqual(peer.sent,peerBeforeSecondCrash,'D3 no external re-execution after committed terminal');
     assert.equal((await waitForTerminalMessage(thread,()=>({claims:proxy.claims()}))).filter(message=>String(message.text ?? '').includes(TERMINAL_MARKER)).length,1,'D3 one terminal effect');
 
@@ -1084,23 +1165,29 @@ async function main(): Promise<void> {
     // replacement owns the recovery claim; C4 Session admission returns a
     // nonzero activity epoch. Effects: E1 the recovery claim is admission-only;
     // E2 the Worker calls RecoverOrAdmit through the claimed Session port; E3
-    // the same row is resolved to Pending with that exact epoch; E4 only its
-    // later ordinary claim enters A2A execution and settles once. Constraints:
+    // the Coordinator applies the resolution with that exact epoch. Constraints:
     // the fixture invokes the real reservation command and then reads its row;
-    // every claim, activity decision, resolution, execution, and settlement is
-    // owned by the real Worker/Coordinator/Session/Dispatch paths.
+    // every claim, activity decision, and resolution is owned by the real
+    // Worker/Coordinator/Session/Dispatch paths. This scenario-only command
+    // does not author a public User Event; it cannot prove a subsequent Run's
+    // Managed event history or terminal execution. The A/B recovery above and
+    // SessionApplication event-batch tests own that separate effect.
     //
     // | Rule | expired | cancel | admission | resolution | Effect |
-    // | R1 | yes | no | Admitted(epoch>0) | current claim | E1-E4 |
-    // | R3 | yes | no | Unavailable, then Admitted | Retry, then current claim | no execution before higher-epoch E1-E4 |
+    // | R1 | yes | no | Admitted(epoch>0) | applied | E1-E3 |
+    // | R3 | yes | no | Unavailable, then Admitted | Retry, then applied | no execution before higher-epoch E1-E3 |
+    // Each synthetic reservation uses a fresh real Session. Reusing the
+    // already-terminal D3 Session without a new public User Event would bypass
+    // Session admission and collide with its committed Managed event history.
     await waitForDispatchGone(thread, runId);
     const identityB = proxy.identity('recovery-worker-c');
     assert.ok(identityB, 'R1 replacement exposed its registered incarnation');
     let workerBPaused = false;
     try {
+      const reservationThread = await createSession();
       workerB!.kill('SIGSTOP');
       workerBPaused = true;
-      const request = reservationRequest(claimA.request, thread, 'admit');
+      const request = reservationRequest(claimA.request, reservationThread, 'admit');
       const resolutionStart = proxy.reservationResolutions().length;
       const admissionStart = proxy.runActivityAdmissions().length;
       const reservationRunId = await stageReservationCrashBoundary(
@@ -1112,6 +1199,7 @@ async function main(): Promise<void> {
       workerBPaused = false;
       const resolved = await waitForReservationResolution(
         proxy,
+        storage,
         reservationRunId,
         resolutionStart,
         'Admitted',
@@ -1120,21 +1208,15 @@ async function main(): Promise<void> {
         (candidate) => candidate.run_id === reservationRunId,
       );
       assert.equal(admission?.mode, 'RecoverOrAdmit', 'R1 non-cancelled recovery uses RecoverOrAdmit');
-      assert.equal(admission?.session_id, thread, 'R1 admission keeps the Managed Session affinity');
+      assert.equal(admission?.session_id, reservationThread, 'R1 admission keeps the Managed Session affinity');
       assert.ok(
         resolved.resolution.Admitted.session_activity_epoch > 0,
         'R1 resolves with the exact nonzero Session activity epoch',
       );
-      await waitForDispatchGone(thread, reservationRunId, CRASH_RECOVERY_TIMEOUT_MS);
-      assert.equal(
-        peer.sent.filter((message) => message.text === 'reservation-recovery-admit').length,
-        1,
-        'R1 admission-only recovery is followed by exactly one ordinary execution',
-      );
-
+      const retryThread = await createSession();
       workerB!.kill('SIGSTOP');
       workerBPaused = true;
-      const retryRequest = reservationRequest(claimA.request, thread, 'retry');
+      const retryRequest = reservationRequest(claimA.request, retryThread, 'retry');
       const retryResolutionStart = proxy.reservationResolutions().length;
       const retryAdmissionStart = proxy.runActivityAdmissions().length;
       proxy.failNextRunActivityAdmission();
@@ -1147,6 +1229,7 @@ async function main(): Promise<void> {
       workerBPaused = false;
       const retried = await waitForReservationResolution(
         proxy,
+        storage,
         retryRunId,
         retryResolutionStart,
         'Retry',
@@ -1186,6 +1269,7 @@ async function main(): Promise<void> {
       workerBPaused = false;
       const recovered = await waitForReservationResolution(
         proxy,
+        storage,
         retryRunId,
         recoveredResolutionStart,
         'Admitted',
@@ -1193,12 +1277,6 @@ async function main(): Promise<void> {
       assert.ok(
         Number(recovered.claim.epoch) > firstRetryEpoch,
         'R3 expired retry is recovered under a strictly higher claim epoch',
-      );
-      await waitForDispatchGone(thread, retryRunId, CRASH_RECOVERY_TIMEOUT_MS);
-      assert.equal(
-        peer.sent.filter((message) => message.text === 'reservation-recovery-retry').length,
-        1,
-        'R3 retry recovery executes the same Run exactly once',
       );
     } finally {
       if (workerBPaused) workerB!.kill('SIGCONT');
