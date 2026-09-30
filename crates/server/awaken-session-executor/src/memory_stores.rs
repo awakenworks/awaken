@@ -31,7 +31,10 @@ impl MemoryStores {
     /// Opener for this crate's own unit tests under one storage-dir durability
     /// rule (`Some` → durable under the dir, `None` → ephemeral per-process).
     #[cfg(test)]
-    pub(crate) fn open(store_dir: Option<&Path>) -> Self {
+    pub(crate) fn open(
+        store_dir: Option<&Path>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Self {
         // ADR-0053 path-addressed memory files persist alongside, under the same
         // durability rule. Backed by the SQLite store so rename-replace and CAS are
         // **crash-atomic** (one transaction) — the plain-file backend is only no-loss
@@ -43,11 +46,12 @@ impl MemoryStores {
                 let db = dir.join("memory_fs.db");
                 awaken_memory_store::SqliteMemoryRepository::open(
                     db.to_str().expect("memory-fs db path is valid UTF-8"),
+                    clock.clone(),
                 )
                 .expect("open durable memory-fs sqlite store")
             }
             // No durable dir → an ephemeral in-memory database (dies with the process).
-            None => awaken_memory_store::SqliteMemoryRepository::open_in_memory()
+            None => awaken_memory_store::SqliteMemoryRepository::open_in_memory(clock)
                 .expect("open ephemeral memory-fs sqlite store"),
         });
         Self { fs }

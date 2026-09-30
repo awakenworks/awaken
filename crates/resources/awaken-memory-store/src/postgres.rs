@@ -8,9 +8,11 @@
 //! Postgres [`MemoryRepository`] over the crate's `memory_store` migration scope — the
 //! multi-node sibling of the SQLite backend over the same portable bundle.
 
+use awaken_lease_contract::WallClock;
 use awaken_sql_storage::StoredU64;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
+use std::sync::Arc;
 
 use crate::schema::{BUNDLE_ID, converged_memory_store_bundle, selected_memory_store_bundle};
 
@@ -94,7 +96,7 @@ async fn selected_bundles(
 }
 
 use crate::repository::{
-    ConditionalDeleteAdmission, HeadUpdateAdmission, now_nanos, rename_replace_identity,
+    ConditionalDeleteAdmission, HeadUpdateAdmission, rename_replace_identity, stored_now_nanos,
     under_prefix, validate_path, validate_size,
 };
 use crate::{
@@ -124,37 +126,44 @@ fn next_domain_version(value: i64) -> Result<u64, MemErr> {
 /// guarantee holds **across nodes** (the reason ADR-0057 chose Postgres).
 pub struct PostgresMemoryRepository {
     pool: PgPool,
+    clock: Arc<dyn WallClock>,
 }
 
 impl PostgresMemoryRepository {
     /// Connect and apply the memory-store migrations (one-step convenience).
-    pub async fn connect(url: &str) -> Result<Self, PgStoreError> {
+    pub async fn connect(url: &str, clock: Arc<dyn WallClock>) -> Result<Self, PgStoreError> {
         let pool = PgPool::connect(url)
             .await
             .map_err(|e| PgStoreError::Connect(e.to_string()))?;
-        let store = Self::with_pool(pool);
+        let store = Self::with_pool(pool, clock);
         store.ensure_schema().await?;
         Ok(store)
     }
 
     /// Connect to an already-migrated schema without executing DDL.
-    pub async fn connect_existing(url: &str) -> Result<Self, PgStoreError> {
+    pub async fn connect_existing(
+        url: &str,
+        clock: Arc<dyn WallClock>,
+    ) -> Result<Self, PgStoreError> {
         let pool = PgPool::connect(url)
             .await
             .map_err(|error| PgStoreError::Connect(error.to_string()))?;
-        Self::with_existing_pool(pool).await
+        Self::with_existing_pool(pool, clock).await
     }
 
     /// Wrap an existing pool after verifying its scoped migration ledger.
-    pub async fn with_existing_pool(pool: PgPool) -> Result<Self, PgStoreError> {
+    pub async fn with_existing_pool(
+        pool: PgPool,
+        clock: Arc<dyn WallClock>,
+    ) -> Result<Self, PgStoreError> {
         verify_migrations(&pool).await?;
-        Ok(Self { pool })
+        Ok(Self { pool, clock })
     }
 
     /// Wrap an existing pool **without migrating**, allowing a unified migration
     /// pipeline to own the shared database.
-    pub fn with_pool(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn with_pool(pool: PgPool, clock: Arc<dyn WallClock>) -> Self {
+        Self { pool, clock }
     }
 
     /// Apply the `memory_store` scoped migration bundle (idempotent). Optional.
@@ -501,7 +510,7 @@ impl MemoryRepository for PostgresMemoryRepository {
         .await?;
         let id = format!("mem_{ordinal}");
         let sha = sha256_hex(content);
-        let now = now_nanos() as i64;
+        let now = stored_now_nanos(self.clock.as_ref())?;
         sqlx::query(&format!(
             "INSERT INTO {NS}_memories \
              (store_id, path, id, ordinal, content, sha, version, created, updated) \
@@ -613,7 +622,7 @@ impl MemoryRepository for PostgresMemoryRepository {
         if from == to {
             return to_memory(id, from.into(), content, sha, version, created, created);
         }
-        let now = now_nanos() as i64;
+        let now = stored_now_nanos(self.clock.as_ref())?;
         let displaced_id = sqlx::query_scalar::<_, String>(&format!(
             "SELECT id FROM {NS}_memories WHERE store_id = $1 AND path = $2 FOR UPDATE"
         ))
@@ -722,7 +731,7 @@ impl MemoryRepository for PostgresMemoryRepository {
                 operation: MemoryVersionOperation::Deleted,
                 path,
                 content: None,
-                created: now_nanos() as i64,
+                created: stored_now_nanos(self.clock.as_ref())?,
                 actor,
             },
         )
@@ -800,7 +809,7 @@ impl MemoryRepository for PostgresMemoryRepository {
                 operation: MemoryVersionOperation::Deleted,
                 path,
                 content: None,
-                created: now_nanos() as i64,
+                created: stored_now_nanos(self.clock.as_ref())?,
                 actor,
             },
         )
@@ -852,7 +861,7 @@ impl MemoryRepository for PostgresMemoryRepository {
         };
         let mut version = to_version(row)?;
         if version.redacted_unix_nanos.is_none() {
-            let redacted = now_nanos() as i64;
+            let redacted = stored_now_nanos(self.clock.as_ref())?;
             sqlx::query(&format!(
                 "UPDATE {NS}_versions SET content = NULL, redacted = $1, redacted_by_json = $2 \
                  WHERE store_id = $3 AND id = $4"
@@ -996,7 +1005,7 @@ impl PostgresMemoryRepository {
             }
             HeadUpdateAdmission::Apply => {}
         }
-        let now = now_nanos() as i64;
+        let now = stored_now_nanos(self.clock.as_ref())?;
         let displaced_id = if requested_path == path {
             None
         } else {

@@ -262,7 +262,9 @@ fn bound_test_memory(
         version: awaken_resource_contract::ConfigVersion::INITIAL,
         retention_policy: Default::default(),
     };
-    let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+    let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let platform = Arc::new(PlatformMemoryHandle::new(
         repository.clone(),
         "test-store".into(),
@@ -510,7 +512,9 @@ async fn extraction_writes_a_memory_then_recall_reads_it_back() {
 
 #[tokio::test]
 async fn platform_handle_enforces_read_only_at_the_data_plane_boundary() {
-    let fs = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+    let fs = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+        awaken_lease_contract::system_clock(),
+    ));
     fs.create("store-a", "/existing.md", "safe").await.unwrap();
     let read_only = PlatformMemoryHandle::new(fs.clone(), "store-a".into(), false);
 
@@ -534,7 +538,9 @@ async fn platform_semantic_mutations_preserve_repository_cas_and_aba_fences() {
     // create; R2 absent generation + present path -> path conflict; R3 current
     // generation -> update; R4 stale generation -> conflict/no clobber; R5 exact
     // generation -> delete; R6 recreated path + stale generation -> no ABA delete.
-    let fs = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+    let fs = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let handle = PlatformMemoryHandle::new(fs.clone(), "store".into(), true);
     let created = handle
         .write_exact("/note.md", "v1", None)
@@ -912,7 +918,9 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         version: awaken_resource_contract::ConfigVersion::INITIAL,
         retention_policy: Default::default(),
     };
-    let content = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+    let content = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let platform = Arc::new(PlatformMemoryHandle::new(
         content.clone(),
         "test-store".into(),
@@ -1099,7 +1107,9 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
     // `parent_rehydration_recovers_a_child_intent_after_enqueue_crash`;
     // R5 is owned by `every_worker_extraction_authority_operation_fails_closed`.
     let session = "database-less-worker-memory-session";
-    let content = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+    let content = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let host = Arc::new(SharedHost::new_worker_with_deployment(
         Arc::new(ExtractorModel),
         "stub",

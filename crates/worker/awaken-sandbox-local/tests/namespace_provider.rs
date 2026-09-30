@@ -939,7 +939,9 @@ async fn memory_store_realizes_as_copy_and_harvests_on_dispose() {
     use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
     use awaken_sandbox_memoryd::MemoryStoreMounter;
 
-    let fs = Arc::new(VolatileMemoryRepository::new());
+    let fs = Arc::new(VolatileMemoryRepository::new(
+        awaken_lease_contract::system_clock(),
+    ));
     fs.create("s", "/note.md", "v1").await.unwrap();
     // The bwrap tier cannot splice a host FUSE into its namespace yet (ADR-0053
     // item 2), so it uses a copy-only mounter: materialize on create, harvest on
@@ -1007,7 +1009,9 @@ async fn bwrap_multiple_memory_store_access_and_parent_boundary_are_enforced() {
     use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
     use awaken_sandbox_memoryd::MemoryStoreMounter;
 
-    let fs = Arc::new(VolatileMemoryRepository::new());
+    let fs = Arc::new(VolatileMemoryRepository::new(
+        awaken_lease_contract::system_clock(),
+    ));
     fs.create("readonly", "/note.md", "v1").await.unwrap();
     fs.create("writable", "/work.md", "w1").await.unwrap();
     let tmp = tempfile::tempdir().unwrap();
@@ -1119,7 +1123,9 @@ async fn bwrap_splices_a_live_fuse_memory_mount_into_the_namespace() {
     use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
     use awaken_sandbox_memoryd::MemoryStoreMounter;
 
-    let fs = Arc::new(VolatileMemoryRepository::new());
+    let fs = Arc::new(VolatileMemoryRepository::new(
+        awaken_lease_contract::system_clock(),
+    ));
     fs.create("s", "/note.md", "v1").await.unwrap();
     let tmp = tempfile::tempdir().unwrap();
     // The FUSE-preferring mounter (not `copy_only`): it FUSE-mounts the store at the

@@ -317,7 +317,9 @@ async fn multiple_memory_stores_enforce_exact_access_and_seal_the_parent_in_real
     let Some((provider, _)) = setup().await else {
         return;
     };
-    let memory = Arc::new(VolatileMemoryRepository::new());
+    let memory = Arc::new(VolatileMemoryRepository::new(
+        awaken_lease_contract::system_clock(),
+    ));
     memory
         .create("rw-store", "/note.md", "rw-seed")
         .await

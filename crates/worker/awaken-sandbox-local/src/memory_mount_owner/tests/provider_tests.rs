@@ -240,7 +240,9 @@ async fn copy_replay_keeps_original_bytes_and_ack_prevents_second_harvest() {
     for namespace in [false, true] {
         for adoption in [false, true] {
             let root = tempfile::tempdir().unwrap();
-            let store = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+            let store = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                awaken_lease_contract::system_clock(),
+            ));
             store
                 .create("memory", "/note.md", "original")
                 .await

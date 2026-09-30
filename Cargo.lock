@@ -1774,6 +1774,8 @@ name = "awaken-memory-store"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-resource-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
@@ -2172,6 +2174,7 @@ version = "1.0.0"
 dependencies = [
  "awaken-file-store",
  "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-memory-store",
  "awaken-resource-application",
  "awaken-resource-contract",
