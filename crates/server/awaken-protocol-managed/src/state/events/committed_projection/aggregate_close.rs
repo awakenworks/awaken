@@ -18,6 +18,7 @@ impl ManagedState {
         persisted: &awaken_session_state_contract::PersistedSession,
         evidence: &CandidateEvidence,
         root: &RootProjection,
+        plan: &awaken_managed_session_events::AggregatePlan,
     ) -> Result<(), StateError> {
         let RootProjection {
             projected_budget_reach,
@@ -90,230 +91,61 @@ impl ManagedState {
             );
             record.checkpoint.source.budget_reach_generation = generation;
         }
-        self.bracket_aggregate_outside_intervals(record, session_id, persisted, evidence)
+        Self::render_aggregate_fallback(record, persisted, evidence, plan)
     }
 
-    /// The aggregate Running edge and usage/idle pair of every period no
-    /// admitted Session interval owns, decided by walking the committed
-    /// lifecycle in order. The aggregate opens at the first opening after it
-    /// closed (or, for a period first committed at its boundary, at that
-    /// boundary's prefix), and closes at every boundary after which neither the
-    /// root nor a coordinated child runs and no Session interval holds it. The
-    /// pair is keyed by that boundary and carries the usage and
-    /// stop reason as of it, so a reader that sees the boundary alone and one
-    /// that reads long after it publish the same pair.
-    ///
-    /// Class A of the timeline's schedule independence: the pair used to be
-    /// keyed by the latest terminal a refresh had seen and to carry the usage
-    /// and stop reason of that refresh, so a reader that saw two boundaries in
-    /// one read published one pair and a reader that saw each published two.
-    /// Class C: the opening used to be one per refresh, keyed by the latest
-    /// opening of the latest terminal's Run, unbounded by that terminal, so a
-    /// reader that saw a pause and its resume in one read opened the pause's
-    /// period at the resume and published no opening for the pause's period.
-    fn bracket_aggregate_outside_intervals(
-        &self,
+    /// Render the sole domain aggregate plan after root and child tool event
+    /// identities exist. This adapter never reselects a lifecycle period.
+    fn render_aggregate_fallback(
         record: &mut SessionRecord,
-        session_id: &str,
         persisted: &awaken_session_state_contract::PersistedSession,
         evidence: &CandidateEvidence,
+        plan: &awaken_managed_session_events::AggregatePlan,
     ) -> Result<(), StateError> {
-        let accepted = &evidence.acceptance.accepted;
-        let historical_pending = &evidence.historical_pending;
-        let known_children = evidence
-            .links
-            .iter()
-            .map(|link| link.thread_id.0.as_str())
-            .collect::<std::collections::HashSet<_>>();
-        // Link membership is committed topology for the whole historical
-        // walk. A later Archived disposition terminates the child's current
-        // projection; it cannot erase the periods that child owned earlier.
-        let hold = awaken_managed_session_events::interval_hold(persisted, accepted);
-        let budget_reach = awaken_managed_session_events::BudgetReachAnchor::of(
-            persisted,
-            accepted,
-            historical_pending,
-        );
-        let mut root_running = false;
-        let mut running_children = std::collections::HashSet::<&str>::new();
-        let mut paused = std::collections::BTreeMap::<&str, &Pending>::new();
-        let mut deferred: Option<(Option<&awaken_agent_contract::agent::run::Id>, StopReason)> =
-            None;
-        let mut aggregate_open = false;
-        let mut openings = Vec::new();
-        let mut closes = Vec::new();
-        for event in accepted {
-            let thread = event.thread_id.0.as_str();
-            let is_root = thread == session_id;
-            if !is_root && !known_children.contains(thread) {
-                continue;
-            }
-            if awaken_managed_session_events::is_opening(event.kind) {
-                if !aggregate_open {
-                    openings.push(FactKey::new(
-                        session_id,
-                        FactRole::AggregateStatusRunning,
-                        FactProvenance::Lifecycle {
-                            cursor: event.cursor.0,
-                        },
-                    ));
-                    aggregate_open = true;
-                }
-                if is_root {
-                    root_running = true;
-                } else {
-                    running_children.insert(thread);
-                }
-                paused.remove(thread);
-                continue;
-            }
-            if !awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(event.kind) {
-                continue;
-            }
-            if is_root && !aggregate_open {
-                // A period first committed at its boundary (a fast Run, or a
-                // pause ended without resuming) opens at that boundary's
-                // prefix.
-                openings.push(FactKey::new(
-                    session_id,
-                    FactRole::AggregateTerminalStatusRunning,
-                    FactProvenance::LifecyclePrefix {
-                        cursor: event.cursor.0,
-                    },
-                ));
-                aggregate_open = true;
-            }
-            if is_root {
-                root_running = false;
-            } else {
-                running_children.remove(thread);
-            }
-            let pending = historical_pending
-                .get(&event.cursor)
-                .filter(|_| event.kind == RunLifecycleEventKind::Awaiting);
-            match pending {
-                Some(pending) => {
-                    paused.insert(thread, pending);
-                }
-                None => {
-                    paused.remove(thread);
-                }
-            }
-            let budget_pause = event.await_reason.as_ref()
-                == Some(&awaken_agent_contract::agent::awaiting::AwaitReason::BudgetReached);
-            let idle = !root_running
-                && running_children.is_empty()
-                && !hold.session_active.contains(&event.cursor);
-            if is_root {
-                // The root Run's newest reason supersedes its own earlier
-                // one; a child reason recorded first, or a budget pause,
-                // stands; a budget reason always stands.
-                let reason = Self::public_run_stop_reason(
-                    record,
-                    None,
-                    &event.state,
-                    pending,
-                    event.await_reason.as_ref(),
-                )?;
-                let replace = match &deferred {
-                    None => true,
-                    Some((_, StopReason::BudgetReached)) => false,
-                    Some((Some(owner), _)) => *owner == &event.run_id,
-                    Some((None, _)) => false,
-                };
-                if replace || matches!(reason, StopReason::BudgetReached) {
-                    deferred = Some((Some(&event.run_id), reason));
-                }
-            } else if budget_pause {
-                deferred = Some((None, StopReason::BudgetReached));
-            } else if !idle {
-                // A child boundary that cannot close the aggregate records
-                // its reason for the close a later boundary makes.
-                let reason = Self::public_run_stop_reason(
-                    record,
-                    Some(thread),
-                    &event.state,
-                    pending,
-                    event.await_reason.as_ref(),
-                )?;
-                deferred.get_or_insert((None, reason));
-            }
-            if hold.closed_by_interval.contains(&event.cursor) {
-                // The admitted interval's own close publishes this pause, at
-                // its latest boundary.
-                deferred = None;
-                if hold.interval_closes.contains(&event.cursor) {
-                    aggregate_open = false;
-                }
-                continue;
-            }
-            if !idle {
-                continue;
-            }
-            aggregate_open = false;
-            let budget_reached = budget_reach.iter().any(|anchor| {
-                anchor
-                    .close_cursor
-                    .is_some_and(|close| close <= event.source_commit_cursor)
-            });
-            let stop = if paused.is_empty() {
-                match deferred.take() {
-                    Some((_, reason)) => reason,
-                    None => StopReason::EndTurn,
-                }
-            } else {
-                let mut event_ids = paused
-                    .iter()
-                    .map(|(thread, pending)| {
-                        let owner = (*thread != session_id).then_some(*thread);
-                        record
-                            .projected_tool_index_for(owner)
-                            .latest
-                            .get(&pending.tool_use_id)
-                            .cloned()
-                            .ok_or_else(|| {
-                                StateError::Run(RunError::internal(
-                                    "an answerable pause has no public Managed tool event",
-                                ))
-                            })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                event_ids.sort();
-                event_ids.dedup();
-                deferred = None;
-                StopReason::RequiresAction { event_ids }
-            };
-            if matches!(stop, StopReason::BudgetReached) || budget_reached {
-                // The durable budget-reach transition owns this pause.
-                continue;
-            }
-            closes.push((event, stop));
+        let session_id = record.session.id.clone();
+        for opening in &plan.fallback_openings {
+            Self::append_aggregate_running_once(record, opening.clone());
         }
-        for opening in openings {
-            Self::append_aggregate_running_once(record, opening);
-        }
-        for (boundary, stop_reason) in closes {
-            let at = |role| {
-                FactKey::new(
-                    session_id,
-                    role,
-                    FactProvenance::LifecyclePrefix {
-                        cursor: boundary.cursor.0,
-                    },
-                )
+        for close in &plan.fallback_closes {
+            let stop_reason = match &close.stop {
+                awaken_managed_session_events::AggregateStop::Run { calls_owner, stop } => {
+                    let owner = (calls_owner != &session_id).then_some(calls_owner.as_str());
+                    timeline_encoding::resolve_stop(record, owner, stop)?
+                }
+                awaken_managed_session_events::AggregateStop::Calls { thread_calls } => {
+                    let mut event_ids = thread_calls
+                        .iter()
+                        .map(|(thread, call)| {
+                            let owner = (thread != &session_id).then_some(thread.as_str());
+                            record
+                                .projected_tool_index_for(owner)
+                                .latest
+                                .get(call)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    StateError::Run(RunError::internal(
+                                        "an answerable pause has no public Managed tool event",
+                                    ))
+                                })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    event_ids.sort();
+                    event_ids.dedup();
+                    StopReason::RequiresAction { event_ids }
+                }
             };
             let usage = session_usage_value(
-                evidence.usage_as_of(persisted, session_id, boundary.source_commit_cursor),
+                evidence.usage_as_of(persisted, &session_id, close.source_commit_cursor),
                 evidence.price_snapshot.as_ref(),
             )
             .map_err(StateError::Run)?;
             let budget = record.session.budget.clone();
             record.append_fact_once(
-                at(FactRole::AggregateUsage),
+                close.usage.clone(),
                 OutboundKind::SessionUsage { usage, budget },
             );
             record.append_fact_once(
-                at(FactRole::AggregateStatusIdle),
+                close.idle.clone(),
                 OutboundKind::SessionStatusIdle { stop_reason },
             );
         }

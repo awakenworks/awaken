@@ -177,6 +177,16 @@ impl ManagedState {
             outcomes: &outcomes,
             historical_pending: &evidence.historical_pending,
         });
+        // One domain plan selects both interval-owned and fallback aggregate
+        // facts. The adapter only renders it after root/child tool identities
+        // exist; it cannot run a second lifecycle selection walk.
+        let aggregate_plan = awaken_managed_session_events::plan_aggregate(
+            &persisted,
+            &evidence.acceptance.accepted,
+            &evidence.historical_pending,
+            &evidence.links,
+        )
+        .map_err(projection_error)?;
 
         // Build the complete disposable projection on a private result snapshot. A
         // transcript can be observed between its ToolUse and ToolResult commits,
@@ -189,7 +199,14 @@ impl ManagedState {
         let root = self.project_root_prefix(record, session_id, &persisted, &evidence)?;
         let delegation = evidence.delegation();
         self.append_delegation_projections(record, delegation, &order_index)?;
-        self.close_aggregate(record, session_id, &persisted, &evidence, &root)?;
+        self.close_aggregate(
+            record,
+            session_id,
+            &persisted,
+            &evidence,
+            &root,
+            &aggregate_plan,
+        )?;
         // Parent terminality is a durable Session fact and absorbs every
         // derived child lifecycle. Keeping this at the end of the sole warm/cold
         // projector preserves child output/lifecycle ordering, closes each child
@@ -205,11 +222,9 @@ impl ManagedState {
         {
             self.append_parent_terminal_projection(record)?;
         }
-        Self::replace_interval_aggregate_projections(
+        Self::append_interval_aggregate_projections(
             record,
-            &persisted,
-            &evidence.acceptance.accepted,
-            &evidence.historical_pending,
+            &aggregate_plan,
             evidence.price_snapshot.as_ref(),
         )?;
         let reduction_done = started.elapsed();
