@@ -90,12 +90,6 @@ formal_failure_kind=""
 formal_failure_stage=""
 formal_failure_subject=""
 formal_failure_deadline_seconds=""
-# The deadline is declared, and an override may only lower it: a batch that
-# needs longer has not been made cheaper. formal_budget.py owns that rule and
-# names the remedies that terminate.
-if ! kani_batch_timeout_seconds="$(python3 scripts/ci/formal_budget.py kani-batch-timeout-seconds)"; then
-  exit 1
-fi
 finish_formal_artifacts() {
   first_result=$?
   result=$first_result
@@ -139,14 +133,16 @@ finish_formal_artifacts() {
   exit "$result"
 }
 trap finish_formal_artifacts EXIT
-# Parse the one package-batch budget after the Running receipt and EXIT owner
-# exist, but before any verification command. Invalid configuration therefore
-# cannot leave stale green evidence or consume compilation/proof resources.
-if ! [[ "$kani_batch_timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+# The canonical budget owner rejects invalid overrides. Resolve it only after
+# the Running receipt and EXIT owner exist, but before any verification command.
+# Causes: C1 valid budget; C2 invalid or over-ceiling override. Effects:
+# E1 C1 continues with the resolved deadline; E2 C2 seals Not-passed with the
+# exact configuration subject and never invokes a proof checker.
+# Decision table: C1=>E1; C2=>E2. No second shell-side budget policy exists.
+if ! kani_batch_timeout_seconds="$(python3 scripts/ci/formal_budget.py kani-batch-timeout-seconds)"; then
   formal_failure_kind="execution-failed"
   formal_failure_stage="cargo-kani-configuration"
   formal_failure_subject="AWAKEN_KANI_BATCH_TIMEOUT_SECONDS"
-  echo "invalid cargo-kani batch deadline: $kani_batch_timeout_seconds" >&2
   exit 2
 fi
 # The bootstrap is the sole owner of compiler/backend defaults and pins.

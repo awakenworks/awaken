@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 
+import formal_budget
 import formal_plan
 from formal_run_evidence import FULL_SELECTION, ROOT, begin_record, finish_record, validate_record, write_record, begin_artifacts, finish_artifacts, verify_artifacts
 
@@ -433,15 +434,16 @@ class EvidenceTests(unittest.TestCase):
         # C1 a completed previous run; C2 the actual gate starts. R1 its first
         # checker fails (23); R2 bootstrap --paths rejects a changed patch (1),
         # before any checker. Both must retire stale Passed, preserve the exact
-        # failure and seal diagnostics. R2 specifically guards initialization
-        # order: tool selection is inside the existing receipt/EXIT lifecycle.
+        # failure and seal diagnostics. Budget resolution and receipt writing
+        # are setup calls, not proof checkers. R2 guards initialization order:
+        # tool selection stays inside the existing receipt/EXIT lifecycle.
         path = self.root / "target/test-timings/formal-run.json"
         bindir = Path(self.temporary.name) / "bin"
         bindir.mkdir()
         checker_started = bindir / "checker-started"
         shim = bindir / "python3"
         shim.write_text("#!/bin/sh\ncase \"$1\" in\n"
-                        "  scripts/ci/formal_run_evidence.py) exec " + shlex.quote(sys.executable) + " \"$@\" ;;\n"
+                        "  scripts/ci/formal_run_evidence.py|scripts/ci/formal_budget.py) exec " + shlex.quote(sys.executable) + " \"$@\" ;;\n"
                         "  *) touch \"$CHECKER_STARTED\"; exit 23 ;;\nesac\n")
         shim.chmod(0o755)
         env = dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"],
@@ -471,45 +473,49 @@ class EvidenceTests(unittest.TestCase):
                 patch.write_bytes(original)
 
     def test_invalid_kani_deadline_fails_before_the_first_gate_command(self):
-        # Cause C1: the explicit Kani batch deadline is zero. Effects: E1 the
-        # initialized receipt becomes Not-passed/execution-failed with exact exit
-        # 2; E2 the first checker is not invoked; E3 the diagnostic bundle seals
-        # as failed. Constraints: validation occurs only after receipt/trap setup
-        # and before every real gate command. Decision rule R1=C1->E1+E2+E3.
+        # Causes: C1 the explicit Kani deadline is zero; C2 it exceeds the
+        # canonical ceiling. Effects: E1 Running becomes Not-passed with exact
+        # configuration subject/exit 2; E2 the first checker is not invoked;
+        # E3 the diagnostic bundle seals as failed. Rules C1=>E1-E3 and
+        # C2=>E1-E3. The budget owner executes after receipt/trap setup.
         bindir = Path(self.temporary.name) / "invalid-config-bin"
         bindir.mkdir()
         checker_started = bindir / "checker-started"
         shim = bindir / "python3"
         shim.write_text(
             "#!/bin/sh\ncase \"$1\" in\n"
-            "  scripts/ci/formal_run_evidence.py) exec "
+            "  scripts/ci/formal_run_evidence.py|scripts/ci/formal_budget.py) exec "
             + shlex.quote(sys.executable) + " \"$@\" ;;\n"
             "  *) touch \"$CHECKER_STARTED\"; exit 0 ;;\n"
             "esac\n"
         )
         shim.chmod(0o755)
         path = self.root / "target/test-timings/formal-run.json"
-        result = subprocess.run(
-            ["bash", "scripts/ci/check_formal.sh", "--require-tools"],
-            cwd=self.root,
-            env=dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"],
-                     AWAKEN_FORMAL_RUN_EVIDENCE=str(path),
-                     AWAKEN_KANI_BATCH_TIMEOUT_SECONDS="0",
-                     CHECKER_STARTED=str(checker_started)),
-            capture_output=True, text=True, timeout=30,
-        )
-        self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertFalse(checker_started.exists())
-        record = json.loads(path.read_text())
-        self.assertEqual(record["status"], "not-passed")
-        self.assertEqual(record["outcome"], {
-            "kind": "execution-failed", "exit_code": 2,
-            "stage": "cargo-kani-configuration",
-            "subject": "AWAKEN_KANI_BATCH_TIMEOUT_SECONDS",
-        })
-        bundles = list((self.root / "target/test-timings").glob("formal-*/evidence.json"))
-        self.assertEqual(len(bundles), 1)
-        self.assertEqual(verify_artifacts(bundles[0].parent, self.root)["exit_code"], 2)
+        for override in ("0", str(formal_budget.KANI_BATCH_TIMEOUT_CEILING_SECONDS + 1)):
+            with self.subTest(override=override):
+                shutil.rmtree(self.root / "target", ignore_errors=True)
+                checker_started.unlink(missing_ok=True)
+                result = subprocess.run(
+                    ["bash", "scripts/ci/check_formal.sh", "--require-tools"],
+                    cwd=self.root,
+                    env=dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"],
+                             AWAKEN_FORMAL_RUN_EVIDENCE=str(path),
+                             AWAKEN_KANI_BATCH_TIMEOUT_SECONDS=override,
+                             CHECKER_STARTED=str(checker_started)),
+                    capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertFalse(checker_started.exists())
+                record = json.loads(path.read_text())
+                self.assertEqual(record["status"], "not-passed")
+                self.assertEqual(record["outcome"], {
+                    "kind": "execution-failed", "exit_code": 2,
+                    "stage": "cargo-kani-configuration",
+                    "subject": "AWAKEN_KANI_BATCH_TIMEOUT_SECONDS",
+                })
+                bundles = list((self.root / "target/test-timings").glob("formal-*/evidence.json"))
+                self.assertEqual(len(bundles), 1)
+                self.assertEqual(verify_artifacts(bundles[0].parent, self.root)["exit_code"], 2)
 
     def test_actual_timeout_trap_preserves_resource_bound_if_artifact_sealing_fails(self):
         # Causes: C1 the Kani boundary records package/deadline then returns 124;
