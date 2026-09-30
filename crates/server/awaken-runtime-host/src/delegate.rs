@@ -1217,6 +1217,7 @@ mod durable_cancel_tests {
             recovery_projection: None,
             session_resources: None,
             publication_source: None,
+            claimed_model_request_gate: None,
         };
         let candidate = ResolvedModelCandidate::host(ModelBinding::new(
             "advisor-provider",
@@ -1471,6 +1472,7 @@ mod durable_cancel_tests {
             recovery_projection: None,
             session_resources: None,
             publication_source: None,
+            claimed_model_request_gate: None,
         };
         let mut child_snapshot = crate::config::server_config(
             "researcher",
