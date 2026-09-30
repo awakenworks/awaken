@@ -625,8 +625,12 @@ impl CancellableRunDelegationService for HostRunDelegationService {
         // parent's committed cancellation intent remains and reconciliation tries
         // again after that attempt reaches a boundary or loses its lease.
         let runtime = Arc::new(
-            crate::config::build_runtime(self.llm.clone(), self.sandbox.as_ref())
-                .with_run_delegation(Arc::new(self.clone())),
+            crate::config::build_runtime(
+                self.llm.clone(),
+                self.sandbox.as_ref(),
+                self.adapters.background_supervisor.clone(),
+            )
+            .with_run_delegation(Arc::new(self.clone())),
         );
         let worker = Arc::new(awaken_dispatch::DispatchWorker::from_parts(
             runtime,

@@ -1409,6 +1409,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-runtime-contract",
  "loom",
  "schemars 1.2.1",

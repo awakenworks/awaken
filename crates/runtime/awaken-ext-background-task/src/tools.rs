@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::state::{Scope, Store};
+use awaken_lease_contract::WallClockExt;
 use awaken_runtime_contract::plugin::DynamicTool;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{
@@ -289,7 +290,7 @@ impl RawTool for RunInBackground {
         let execution = current_tool_execution_facts(&task.invocation.call)?;
         task.start(
             self.supervisor.worker_id(),
-            BackgroundTaskSupervisor::now_ms(),
+            self.supervisor.clock().now_ms(),
             BackgroundTaskSupervisor::lease_ms(),
             crate::TaskExecutionPolicy {
                 recovery: execution.recovery,

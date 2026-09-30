@@ -111,6 +111,7 @@ async fn terminal_notification_reaches_inference_and_commits_without_result_look
     // run_phase_hooks and StepLedger rather than merely inspecting HookReaction.
     let supervisor = Arc::new(awaken_ext_background_task::BackgroundTaskSupervisor::new(
         "notification-worker",
+        awaken_lease_contract::system_clock(),
     ));
     let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
         BackgroundTaskConfig {
@@ -273,10 +274,16 @@ async fn runtime_commits_submission_through_the_ordinary_thread_state_boundary()
     // C3 Runtime completes its normal ToolBatch/ThreadCommit -> the task is
     // replayable from committed Thread state. There is no background service,
     // repository mock, database handle, or Runtime special operation in the graph.
-    let plugin = Arc::new(BackgroundTaskPlugin::new(BackgroundTaskConfig {
-        tools: BTreeSet::from(["bash".into()]),
-        ..Default::default()
-    }));
+    let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
+        BackgroundTaskConfig {
+            tools: BTreeSet::from(["bash".into()]),
+            ..Default::default()
+        },
+        Arc::new(awaken_ext_background_task::BackgroundTaskSupervisor::new(
+            "runtime-worker",
+            awaken_lease_contract::system_clock(),
+        )),
+    ));
     let runtime = Runtime::new()
         .with_llm(Arc::new(SubmitThenEnd {
             calls: AtomicUsize::new(0),
@@ -501,7 +508,14 @@ fn an_unconfigured_plugin_is_inert() {
     // may register the extension globally without advertising unavailable work.
     use awaken_runtime_contract::plugin::Plugin;
 
-    let contributions = BackgroundTaskPlugin::new(Default::default()).resolve();
+    let contributions = BackgroundTaskPlugin::with_supervisor(
+        Default::default(),
+        Arc::new(awaken_ext_background_task::BackgroundTaskSupervisor::new(
+            "runtime-worker",
+            awaken_lease_contract::system_clock(),
+        )),
+    )
+    .resolve();
     assert!(contributions.dynamic_tools.is_empty());
     assert!(contributions.state_keys.is_empty());
 }

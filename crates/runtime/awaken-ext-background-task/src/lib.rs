@@ -19,11 +19,11 @@ pub use notification::{
     TaskNotificationEvent, TaskNotificationFormat, TaskNotificationRule, TaskNotifications,
 };
 pub use plugin::{
-    BACKGROUND_TASK_PLUGIN_ID, BackgroundTaskConfig, BackgroundTaskPlugin, config_schema,
+    BACKGROUND_TASK_PLUGIN_ID, BackgroundTaskConfig, BackgroundTaskPlugin,
+    background_task_manifest, config_schema,
 };
 pub use supervisor::{
     BackgroundTaskCompletion, BackgroundTaskSupervisor, BackgroundTaskWaitCandidate,
-    process_supervisor,
 };
 
 pub const BACKGROUND_TASK_STATE_PREFIX: &str = "background_task/";
