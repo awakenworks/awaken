@@ -69,7 +69,8 @@ pub use lifecycle::{
 pub use observation::run_observation_facts;
 pub use order::{CanonicalOrder, Ordinal, historical_pending_projection_order};
 pub use outcome::{
-    AnchoredOutcome, OutcomeAnchor, anchor_outcome, outcome_owns_failure_run, validate_outcome,
+    AnchoredOutcome, OutcomeAnchor, anchor_outcome, outcome_owns_failure_run,
+    outcome_terminal_commit_cursor, validate_outcome,
 };
 pub use prefix::same_thread_projection_prefix;
 pub use role::{FactRole, TranscriptRole, phase};

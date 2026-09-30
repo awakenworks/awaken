@@ -263,6 +263,10 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
     // This covers control-flow cuts, not arbitrary topology/SQL refinement.
     // Usage and lifecycle reuse the already selected root/child snapshots.
     // Independent usage/lifecycle reads and the extra Session read are absent.
+    // The candidate root read now precedes its terminal Outcome query, so a
+    // failed query cannot pair an older terminal with a newer root. R0 below
+    // fixes every actual I/O cut in that order; R1 still injects each cut and
+    // preserves the entry frame, competitor publication and zero broadcast.
     // Final validation selects its fresh root before the
     // relation query: root-only projection reuses that exact fence, while a
     // child prefix retains the later root read after its child snapshot. Every
@@ -284,8 +288,8 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
         } else {
             vec![
                 "session",
-                "outcome",
                 "root_snapshot",
+                "outcome",
                 "coordination",
                 "root_snapshot",
                 "coordination",

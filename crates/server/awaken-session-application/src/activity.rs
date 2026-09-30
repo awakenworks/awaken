@@ -898,6 +898,14 @@ impl SessionApplication {
                         .iter()
                         .any(|existing| existing == &observation)
                 });
+                let before_admission =
+                    session.runtime_observation_precedes_interval_admission(&observation);
+                if before_admission && !exact_replay && event_run_id.is_some() {
+                    return Err(SessionActivityError::Unavailable(
+                        "User Event Runtime boundary precedes its Session activity admission"
+                            .into(),
+                    ));
+                }
                 // An externally realized Session may admit and activate a Run
                 // while its stronger Preparing/Activating phase is still
                 // authoritative. If cancellation commits before realization,
@@ -911,6 +919,7 @@ impl SessionApplication {
                     );
                 if !exact_replay
                     && !settles_before_runtime_interval
+                    && !before_admission
                     && !session.observe_runtime_interval(observation)
                 {
                     return Err(SessionActivityError::Unavailable(
