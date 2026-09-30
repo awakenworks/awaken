@@ -61,16 +61,20 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
     // horizon fits its remaining window; C4 the Registry is already expired.
     // R1/R2/R4 C1+C2+C3+!C4 => one root CAS, exact receipt horizon=expiry-C1;
     // R3 !C3 and R5 C4 => no assignment and the complete root is unchanged.
-    // R6 reopening both SQLite owners retains the same heartbeat/root/receipt
-    // coordinates. The Worker TTL calculator's four existing rows supply these
+    // R6 a live exact-incarnation Session with a 20s lease and a 15s cold
+    // proposal reuses its current lease immediately with zero root CAS; an
+    // exclusive cursor then skips it. R7 reopening both SQLite owners retains
+    // the same heartbeat/root/receipt coordinates. The Worker TTL calculator's
+    // existing rows supply these
     // contract examples; this case owns actual root admission, not another TTL
     // calculator or a fake Registry. No physical cleanup is claimed by this test.
-    for (rule, ttl, age, claim, admitted) in [
-        ("R1", 30_000, 10_001, 15_000, true),
-        ("R2", 6_000, 2_001, 3_000, true),
-        ("R3", 30_000, 20_000, 15_000, false),
-        ("R4", 60_000, 20_001, 20_000, true),
-        ("R5", 30_000, 30_000, 15_000, false),
+    for (rule, ttl, age, claim, current_lease_ms, admitted) in [
+        ("R1", 30_000, 10_001, 15_000, None, true),
+        ("R2", 6_000, 2_001, 3_000, None, true),
+        ("R3", 30_000, 20_000, 15_000, None, false),
+        ("R4", 60_000, 20_001, 20_000, None, true),
+        ("R5", 30_000, 30_000, 15_000, None, false),
+        ("R6", 30_000, 10_000, 15_000, Some(20_000), true),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let workers_path = directory.path().join("workers.sqlite");
@@ -130,6 +134,15 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
             .terminal_cleanup
             .freeze_targets(&id, [], 0, 0)
             .unwrap();
+        if let Some(current_lease_ms) = current_lease_ms {
+            requested.realization =
+                Some(awaken_session_resource_contract::SessionRealizationLease {
+                    owner: registered.snapshot.identity.worker_id.clone(),
+                    runtime_incarnation: registered.snapshot.identity.lease_owner(),
+                    epoch: 7,
+                    expires_at_unix_ms: now + current_lease_ms,
+                });
+        }
         create(repo.as_ref(), requested).await;
         let before = repo.get(&id).await.unwrap();
         let app = application_with_configuration(
@@ -149,12 +162,29 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
             reassign_existing_lease: false,
         };
         let assigned = app
-            .claim_next_terminal_cleanup(target.clone())
+            .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .unwrap();
         assert_eq!(assigned.is_some(), admitted, "{rule} actual root gate");
         let mut after = repo.get(&id).await.unwrap();
         if let Some(assigned) = assigned {
+            if let Some(current_lease_ms) = current_lease_ms {
+                assert_eq!(assigned.authority.lease.epoch, 7, "R6 current epoch");
+                assert_eq!(
+                    assigned.authority.lease.expires_at_unix_ms,
+                    now + current_lease_ms,
+                    "R6 short cold proposal does not replace the live lease"
+                );
+                assert_eq!(after.revision, before.revision, "R6 zero root CAS");
+                assert!(
+                    app.claim_next_terminal_cleanup(target, Some(&id))
+                        .await
+                        .unwrap()
+                        .is_none(),
+                    "R6 cursor prevents a second claim in the same sweep"
+                );
+                continue;
+            }
             assert_eq!(
                 assigned.authority.remaining_ms.get(),
                 claim,

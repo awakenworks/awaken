@@ -2423,10 +2423,8 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup_case() {
 
 #[tokio::test]
 async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_replay() {
-    // Constraint/Invariant: the authoritative Session inputs and repository CAS
-    // documented here remain the only decision source; no parallel ledger is admitted.
-    // Decision rule: execute every reachable cause partition documented here and
-    // require its stated effects, including each fail-closed outcome.
+    // Session root/CAS is the sole authority; the rules below include every
+    // reachable fail-closed cause partition.
     // Cause/effect graph: C1 a terminal Worker-placed Session retains one exact
     // realization lease and may receive a compatible shorter assertion; C2 the
     // frozen target set contains root and child; C3 the external Worker has not
@@ -3013,7 +3011,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         .expect("install publication Worker observations");
     assert!(
         application
-            .claim_next_terminal_cleanup(target.clone())
+            .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("P3a incompatible Worker is skipped")
             .is_none(),
@@ -3024,7 +3022,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         .insert(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
     workers.replace(vec![terminal_cleanup_worker(&target, manifest)]);
     let assignment = application
-        .claim_next_terminal_cleanup(target.clone())
+        .claim_next_terminal_cleanup(target.clone(), None)
         .await
         .expect("P3 claim")
         .expect("P3 publication-only assignment");
@@ -3181,7 +3179,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         "P5/E6"
     );
     let rejected_assignment = application
-        .claim_next_terminal_cleanup(target.clone())
+        .claim_next_terminal_cleanup(target.clone(), None)
         .await
         .expect("P6 claim")
         .expect("P6 rejected publication assignment");
@@ -3280,7 +3278,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     create(repo.as_ref(), invalid_source).await;
     assert!(
         matches!(
-            application.claim_next_terminal_cleanup(target).await,
+            application.claim_next_terminal_cleanup(target, None).await,
             Err(awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(_))
         ),
         "P3b/E4 an Unmaterialized Session cannot acquire a publication lease"
@@ -3313,7 +3311,7 @@ async fn cold_terminal_cleanup_claim_pages_past_a_saturated_invalid_batch() {
     // |---|---|---|---|---|
     // | H1 | fewer than 256 invalid | any | eligible | existing in-page scan |
     // | H2 | exactly 256 invalid | healthy + one lost CAS response | eligible | E1 + E2 + E3 + E4 + E5 |
-    // | H3 | exactly 256 invalid | absent | eligible | first Invalid after all pages |
+    // | H3 | exactly 256 invalid | prior live root | eligible | next sweep retries once; cursor advances |
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("paged cleanup Session repository"),
@@ -3359,7 +3357,7 @@ async fn cold_terminal_cleanup_claim_pages_past_a_saturated_invalid_batch() {
         .expect("install the one Worker observation authority");
 
     let assignment = application
-        .claim_next_terminal_cleanup(target)
+        .claim_next_terminal_cleanup(target, None)
         .await
         .expect("H2 typed pagination skips the saturated invalid page")
         .expect("H2 healthy row remains visible");
@@ -3380,14 +3378,20 @@ async fn cold_terminal_cleanup_claim_pages_past_a_saturated_invalid_batch() {
             .is_none(),
         "H2/E1 invalid rows remain mutation-free"
     );
+    let replay = application
+        .claim_next_terminal_cleanup(registry_race_target(), None)
+        .await
+        .expect("H3 a new sweep may retry the still-requested exact owner")
+        .expect("H3 same requested root");
+    assert_eq!(replay.session_id, "hol-z-healthy", "H3 exact retry");
+    assert_eq!(replay.authority.lease.epoch, 1, "H3 no second root CAS");
     assert!(
-        matches!(
-            application
-                .claim_next_terminal_cleanup(registry_race_target())
-                .await,
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(_))
-        ),
-        "H3 returns the first fail-closed projection error only after every page has no claimable row"
+        application
+            .claim_next_terminal_cleanup(registry_race_target(), Some(&replay.session_id))
+            .await
+            .expect("H3 cursor skips the already-returned root")
+            .is_none(),
+        "H3 one unavailable root cannot monopolize this sweep"
     );
 }
 
@@ -3399,29 +3403,26 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1 placement is Worker-owned; C2 cleanup has an
     // immutable Requested command; C3 the realization lease is absent, expired
-    // under the same logical Worker installation, exact-current with a strictly
-    // older or equal expiry, live under that owner's predecessor incarnation,
+    // under the same logical Worker installation, exact-current with equal or
+    // older expiry, live under that owner's predecessor incarnation,
     // or belongs to a foreign logical Worker; C4 the authenticated registry
     // snapshot is current and explicitly supports the closed cleanup protocol;
-    // C5 the root CAS response is lost after commit. Effects: E1 an unbound,
-    // expired same-owner, or exact-current strictly older lease allocates epoch
-    // N+1 and returns the frozen projection/lease; E2 foreign, predecessor,
-    // ineligible, Fenced, nonterminal, and local rows perform zero root CAS; E3
-    // exact-current equal expiry is skipped so one unavailable candidate cannot
-    // starve the scan; E4 this invocation replays its exact committed assignment
-    // after an ambiguous CAS response. Commands remain exclusively in
-    // terminal_cleanup, and Worker compatibility is an AND gate, never authority
-    // to cross the provider's stable installation namespace.
-    //
+    // C5 the root CAS response is lost. Effects: E1 unbound or
+    // expired same-owner claims allocate epoch N+1; E2 exact-current returns
+    // its existing lease without a root CAS; the shorter proof window is tested
+    // with a real Registry in cleanup_timing. E3 the cursor advances past each returned
+    // row so one pending candidate cannot starve the bounded sweep; E4 foreign,
+    // predecessor, ineligible, Fenced, nonterminal, and local rows perform zero
+    // root CAS; E5 ambiguous CAS response replays its exact committed assignment.
+    // Commands remain in terminal_cleanup; Worker compatibility cannot cross
+    // the provider's stable installation namespace.
     // | Rule | C1+C2 | lease | Effect |
-    // | C1 | yes | same owner, predecessor incarnation, live | E2 |
-    // | C2 | yes | absent | E1 |
-    // | C3 | yes | expired same logical owner | E1 after C2 is current/skipped |
-    // | C4 | yes | exact current, strictly older expiry | E1 once per heartbeat target |
-    // | C5 | yes | exact current, equal expiry | E3 |
-    // | C6 | yes | live or expired foreign owner | E2; immutable provider affinity |
-    // | C7 | no / Fenced / unauthenticated or legacy Worker | any | E2 |
-    // | C8 | yes + ambiguous committed CAS | exact attempted | E4 |
+    // | C1 | yes | same owner, predecessor incarnation, live | E4 |
+    // | C2/C3 | yes | absent / expired same owner | E1 |
+    // | C4 | yes | exact current, equal/newer target | E2+E3 |
+    // | C5 | yes | live or expired foreign owner | E4; immutable provider affinity |
+    // | C6 | no / Fenced / unauthenticated or legacy Worker | any | E4 |
+    // | C7 | yes + ambiguous committed CAS | exact attempted | E5 |
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("cold cleanup Session repository"),
@@ -3541,13 +3542,15 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     application
         .set_worker_observation_source(workers.clone())
         .expect("install the one Worker observation authority");
+    let mut after = None;
     for (rule, expected_id, expected_epoch) in [
-        ("C4", "claim-b0-current-renewable", 5),
+        ("C4-equal", "claim-a-current", 4),
+        ("C4-longer", "claim-b0-current-renewable", 4),
         ("C2", "claim-d-absent", 1),
         ("C3", "claim-e-expired", 10),
     ] {
         let assignment = application
-            .claim_next_terminal_cleanup(target.clone())
+            .claim_next_terminal_cleanup(target.clone(), after.as_ref())
             .await
             .expect(rule)
             .expect(rule);
@@ -3565,14 +3568,15 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
             assignment.projection.baseline.agent_id, "agent",
             "{rule}/E1"
         );
+        after = Some(assignment.session_id);
     }
     assert!(
         application
-            .claim_next_terminal_cleanup(target.clone())
+            .claim_next_terminal_cleanup(target.clone(), after.as_ref())
             .await
-            .expect("C1+C5-C7")
+            .expect("C1+C5-C6")
             .is_none(),
-        "C1+C5-C7/E2+E3"
+        "C1+C5-C6/E3+E4"
     );
     assert_eq!(
         repo.get(&SessionId::from("claim-a-current"))
@@ -3580,7 +3584,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
             .unwrap()
             .realization,
         Some(lease("worker-a", "worker-a:2:boot-new", 4, u64::MAX)),
-        "C5/E3 equal expiry performs zero root mutation"
+        "C4/E2 equal claim target preserves the current lease"
     );
     assert_eq!(
         repo.get(&SessionId::from("claim-c-predecessor"))
@@ -3605,6 +3609,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
                 reassign_existing_lease: true,
                 ..target.clone()
             },
+            None,
         )
         .await;
     assert!(
@@ -3639,7 +3644,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         .set_worker_observation_source(workers.clone())
         .expect("install the one Worker observation authority");
     let replayed = application
-        .claim_next_terminal_cleanup(target)
+        .claim_next_terminal_cleanup(target, None)
         .await
         .expect("C8 ambiguous CAS replay")
         .expect("C8 assignment");
@@ -4079,7 +4084,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         .expect("R1 Worker observation authority");
     assert!(
         r1_application
-            .claim_next_terminal_cleanup(target.clone())
+            .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("R1 revoked Worker is a closed scan result")
             .is_none(),
@@ -4126,7 +4131,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
     assert!(
         matches!(
             r2_application
-                .claim_next_terminal_cleanup(target.clone())
+                .claim_next_terminal_cleanup(target.clone(), None)
                 .await,
             Err(
                 awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
@@ -4179,7 +4184,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         .expect("R3 Worker observation authority");
     assert!(
         r3_application
-            .claim_next_terminal_cleanup(target.clone())
+            .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("R3 revoked readback is compensated")
             .is_none(),
@@ -4235,7 +4240,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         .expect("R3b Worker observation authority");
     assert!(
         r3b_application
-            .claim_next_terminal_cleanup(target.clone())
+            .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("R3b concurrent successor resolves the revoked claim")
             .is_none(),
@@ -4281,7 +4286,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         .expect("R3c Worker observation authority");
     assert!(
         r3c_application
-            .claim_next_terminal_cleanup(registry_race_target())
+            .claim_next_terminal_cleanup(registry_race_target(), None)
             .await
             .expect("R3c ambiguous win is compensated after retry revocation")
             .is_none(),
@@ -4307,7 +4312,8 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     // an installed Repository has a credential binding and the manifest
     // supplies the Repository-credential capability; C6 an unowned Environment
     // has never been materialized; C7 a retained checkpoint format is
-    // explicitly supported. E1 only the applicable C2-C7 facts admit
+    // explicitly supported; C8 each later scenario starts after the preceding
+    // claimed Session's exclusive cursor. E1 only the applicable C2-C7 facts admit
     // the root lease CAS; E2 every missing/stale/incompatible fact leaves the
     // Session root unchanged; E3 Draining/full-capacity Workers may release
     // existing resources because cleanup is not new Run capacity; E4 physical
@@ -4367,7 +4373,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     assert!(
         matches!(
             application
-                .claim_next_terminal_cleanup(target.clone())
+                .claim_next_terminal_cleanup(target.clone(), None)
                 .await,
             Err(
                 awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
@@ -4398,7 +4404,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     assert!(
         matches!(
             application
-                .claim_next_terminal_cleanup(target.clone())
+                .claim_next_terminal_cleanup(target.clone(), None)
                 .await,
             Err(
                 awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
@@ -4411,7 +4417,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     workers.fail.store(false, Ordering::SeqCst);
     assert!(
         application
-            .claim_next_terminal_cleanup(target.clone())
+            .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("W2 stale Worker is ineligible")
             .is_none(),
@@ -4423,7 +4429,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     workers.replace(vec![starting]);
     assert!(
         application
-            .claim_next_terminal_cleanup(target.clone())
+            .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("W3 unready Worker is ineligible")
             .is_none(),
@@ -4458,7 +4464,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
             .unwrap();
         assert!(
             application
-                .claim_next_terminal_cleanup(target.clone())
+                .claim_next_terminal_cleanup(target.clone(), None)
                 .await
                 .expect("W4 protocol-incompatible candidate")
                 .is_none(),
@@ -4479,7 +4485,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     )]);
     assert!(
         application
-            .claim_next_terminal_cleanup(target.clone())
+            .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("W5 missing Resource capability is ineligible")
             .is_none(),
@@ -4495,13 +4501,13 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     worker.snapshot.in_flight = worker.snapshot.manifest.capacity.max_concurrent;
     workers.replace(vec![worker]);
     let assignment = application
-        .claim_next_terminal_cleanup(target.clone())
+        .claim_next_terminal_cleanup(target.clone(), None)
         .await
         .expect("W6 compatible Worker admission")
         .expect("W6 assignment");
     assert_eq!(assignment.session_id, "claim-compatible", "W6/E1");
 
-    let credentialed_session_id = "claim-active-credential";
+    let credentialed_session_id = "claim-d-credential";
     let resources = credentialed_repository_resources("source", "repo-active");
     let mut credentialed = persisted(credentialed_session_id, true, "terminated");
     credentialed.resources =
@@ -4533,7 +4539,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     )]);
     assert!(
         application
-            .claim_next_terminal_cleanup(target.clone())
+            .claim_next_terminal_cleanup(target.clone(), Some(&assignment.session_id))
             .await
             .expect("W7 missing Repository credential capability is ineligible")
             .is_none(),
@@ -4547,7 +4553,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
         resource_only_manifest,
     )]);
     let credentialed_assignment = application
-        .claim_next_terminal_cleanup(target.clone())
+        .claim_next_terminal_cleanup(target.clone(), Some(&assignment.session_id))
         .await
         .expect("W7 credential-compatible Worker admission")
         .expect("W7 assignment");
@@ -4556,7 +4562,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
         "W7/E1"
     );
 
-    let checkpoint_session_id = "claim-checkpoint";
+    let checkpoint_session_id = "claim-e-checkpoint";
     let generation = awaken_session_state_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(checkpoint_session_id),
         1,
@@ -4609,7 +4615,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     )]);
     assert!(
         application
-            .claim_next_terminal_cleanup(target.clone())
+            .claim_next_terminal_cleanup(target.clone(), Some(&credentialed_assignment.session_id))
             .await
             .expect("W8 unsupported checkpoint format is ineligible")
             .is_none(),
@@ -4621,7 +4627,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
         .insert("portable-checkpoint-v1".into());
     workers.replace(vec![terminal_cleanup_worker(&target, checkpoint_manifest)]);
     let checkpoint_assignment = application
-        .claim_next_terminal_cleanup(target.clone())
+        .claim_next_terminal_cleanup(target.clone(), Some(&credentialed_assignment.session_id))
         .await
         .expect("W9 supported checkpoint admission")
         .expect("W9 assignment");
@@ -4630,18 +4636,18 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
         "W9/E1"
     );
 
-    let mut unowned = persisted("claim-unowned-resident", true, "terminated");
+    let mut unowned = persisted("claim-f-unowned-resident", true, "terminated");
     assert!(
         unowned
             .terminal_cleanup
             .request(&awaken_session_types::SessionId::from(
-                "claim-unowned-resident"
+                "claim-f-unowned-resident"
             ))
     );
     unowned
         .terminal_cleanup
         .freeze_targets(
-            &awaken_session_types::SessionId::from("claim-unowned-resident"),
+            &awaken_session_types::SessionId::from("claim-f-unowned-resident"),
             [],
             0,
             0,
@@ -4656,13 +4662,15 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     create(repo.as_ref(), unowned).await;
     assert!(
         matches!(
-            application.claim_next_terminal_cleanup(target).await,
+            application
+                .claim_next_terminal_cleanup(target, Some(&checkpoint_assignment.session_id))
+                .await,
             Err(awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(_))
         ),
         "W10/E2+E4"
     );
     assert!(
-        repo.get(&SessionId::from("claim-unowned-resident"))
+        repo.get(&SessionId::from("claim-f-unowned-resident"))
             .await
             .unwrap()
             .realization

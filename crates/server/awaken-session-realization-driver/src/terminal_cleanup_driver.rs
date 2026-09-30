@@ -458,6 +458,7 @@ mod tests {
         async fn claim_next_terminal_cleanup(
             &self,
             _target: awaken_session_realization_contract::SessionRealizationTarget,
+            _after_session_id: Option<&awaken_session_types::SessionId>,
         ) -> Result<
             Option<awaken_session_realization_contract::SessionTerminalCleanupAssignment>,
             SessionRealizationControlFailure,

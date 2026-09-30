@@ -359,7 +359,9 @@ fn enqueue_completed_terminal_assignments(
     count: usize,
 ) {
     for index in 0..count {
-        let session_id = format!("{prefix}-{index}");
+        // Recovery's exclusive Session cursor is lexical, so fixture IDs
+        // preserve their intended ascending order across 9 -> 10.
+        let session_id = format!("{prefix}-{index:03}");
         control.assignments.lock().unwrap().push_back(
             awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                 session_id: session_id.clone().into(),
@@ -417,8 +419,8 @@ async fn cold_terminal_cleanup_replenishes_a_slot_while_one_sibling_is_blocked()
     let lease = completed_terminal_test_lease();
     let target = terminal_target_for(&lease);
     enqueue_completed_terminal_assignments(&control, &lease, "bounded-terminal", 5);
-    *control.terminal_work_block_for.lock().unwrap() = Some("bounded-terminal-0".into());
-    *control.terminal_work_fail_for.lock().unwrap() = Some("bounded-terminal-2".into());
+    *control.terminal_work_block_for.lock().unwrap() = Some("bounded-terminal-000".into());
+    *control.terminal_work_fail_for.lock().unwrap() = Some("bounded-terminal-002".into());
     let recovery = tokio::spawn({
         let host = host.clone();
         let target = target.clone();
@@ -450,7 +452,7 @@ async fn cold_terminal_cleanup_replenishes_a_slot_while_one_sibling_is_blocked()
         .expect("R2/E4 recovery task joins")
         .expect_err("R2/E4 sibling failure remains visible");
     assert!(error.to_string().contains("injected terminal work failure"));
-    assert!(error.to_string().contains("bounded-terminal-2"), "R2/E5");
+    assert!(error.to_string().contains("bounded-terminal-002"), "R2/E5");
     assert_eq!(control.terminal_work_seen.lock().unwrap().len(), 5, "R2/E3");
     assert_eq!(control.claim_targets.lock().unwrap().len(), 6, "R2/E4");
     assert!(control.assignments.lock().unwrap().is_empty(), "R2/E4");
@@ -579,8 +581,9 @@ async fn cold_terminal_claim_failure_drains_claimed_work_and_retries_the_remaind
 async fn cold_terminal_recovery_preserves_the_sixty_four_assignment_sweep_cap() {
     // Causes: C1 sixty-five independently completed assignments are offered;
     // C2 one bounded sweep ends; C3 a later sweep runs. Effects: E1 C2 claims
-    // exactly sixty-four without dropping the final assignment; E2 C3 claims
-    // exactly one and reaches the empty queue. R1=C1+C2->E1, R2=R1+C3->E2.
+    // exactly sixty-four with a strictly advancing request-local cursor; E2 C3
+    // resets the cursor, claims the final assignment, and reaches the empty
+    // queue. R1=C1+C2->E1, R2=R1+C3->E2. The cursor grants no ownership.
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let host =
         SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone());
@@ -604,6 +607,50 @@ async fn cold_terminal_recovery_preserves_the_sixty_four_assignment_sweep_cap() 
     );
     assert_eq!(control.terminal_work_seen.lock().unwrap().len(), 65);
     assert!(control.assignments.lock().unwrap().is_empty(), "R2/E2");
+    let cursors = control.claim_after.lock().unwrap();
+    assert_eq!(
+        cursors.first(),
+        Some(&None),
+        "R1 first claim starts at the root"
+    );
+    assert_eq!(
+        cursors.get(1),
+        Some(&Some("sweep-cap-000".into())),
+        "R1 second claim advances past the prior assignment"
+    );
+    assert_eq!(cursors.get(64), Some(&None), "R2 starts a new sweep");
+    assert_eq!(
+        cursors.get(65),
+        Some(&Some("sweep-cap-064".into())),
+        "R2 empty scan advances past its one claimed Session"
+    );
+}
+
+#[tokio::test]
+async fn cold_terminal_recovery_rejects_a_nonadvancing_legacy_cursor_reply() {
+    // C1 a new Worker sends an exclusive cursor to an old Control that ignores
+    // it; C2 the same terminal assignment is returned again. R1 C1+C2 ->
+    // report protocol nonprogress, drain the first in-flight cleanup once,
+    // and never execute a second physical effect under the duplicate lease.
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let host =
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone());
+    let lease = completed_terminal_test_lease();
+    enqueue_completed_terminal_assignments(&control, &lease, "legacy-cursor", 1);
+    let duplicate = control.assignments.lock().unwrap().front().unwrap().clone();
+    control.assignments.lock().unwrap().push_back(duplicate);
+
+    let error = host
+        .recover_terminal_cleanup_assignments(terminal_target_for(&lease))
+        .await
+        .expect_err("R1 old Control must not cause duplicate cleanup");
+    assert!(error.to_string().contains("cursor did not advance"), "R1");
+    assert_eq!(control.terminal_work_seen.lock().unwrap().len(), 1, "R1");
+    assert_eq!(
+        control.claim_after.lock().unwrap().as_slice(),
+        &[None, Some("legacy-cursor-000".into())],
+        "R1 old Control ignored the second cursor"
+    );
 }
 
 #[tokio::test]

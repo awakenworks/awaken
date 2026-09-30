@@ -361,13 +361,14 @@ impl WorkerControlClient {
         Ok(directive)
     }
 
-    /// Claim one cold terminal projection through the same identity-bound
-    /// Control channel used by ordinary realization. Commands remain on the
-    /// aggregate-owned polling method below.
+    /// Claim one terminal projection after the prior Session in this bounded
+    /// sweep through the same identity-bound Control channel used by ordinary
+    /// realization. Commands remain on the aggregate-owned polling method below.
     pub async fn claim_next_terminal_cleanup(
         &self,
         identity: &WorkerIdentity,
         target: awaken_session_realization_contract::SessionRealizationTarget,
+        after_session_id: Option<&awaken_session_types::SessionId>,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionTerminalCleanupAssignment>,
         awaken_session_realization_contract::SessionRealizationControlFailure,
@@ -378,6 +379,8 @@ impl WorkerControlClient {
                 json!({
                     "identity": identity,
                     "target": target,
+                    "sweep_cursor_version": awaken_session_realization_contract::TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION,
+                    "after_session_id": after_session_id,
                 }),
             )
             .await?;
