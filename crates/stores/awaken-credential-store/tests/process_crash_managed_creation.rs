@@ -91,9 +91,11 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
         )
         .await
         .unwrap();
-        let pending = PendingManagedCredentialMutation::create(source(), child()).unwrap();
+        let pending = PendingManagedCredentialMutation::create(source(), child(), 1_000).unwrap();
         let material_ref = pending.after_source.material_ref.clone().unwrap();
-        repo.begin_managed_mutation(pending.clone()).await.unwrap();
+        repo.begin_managed_mutation(pending.clone(), 1_000)
+            .await
+            .unwrap();
         secrets
             .put(&material_ref, RedactedString::new("process-crash-secret"))
             .await
@@ -108,9 +110,13 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
             marker: &marker,
         };
         assert_eq!(
-            recover_managed_credential_mutations(&faults, &repo)
-                .await
-                .unwrap(),
+            recover_managed_credential_mutations(
+                &faults,
+                &repo,
+                awaken_lease_contract::system_clock().as_ref()
+            )
+            .await
+            .unwrap(),
             1
         );
         assert_eq!(phase, "retired");
@@ -161,9 +167,13 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
         if phase == "retired" {
             assert!(secrets.inventory().await.unwrap().is_empty());
             assert_eq!(
-                recover_managed_credential_mutations(&secrets, &repo)
-                    .await
-                    .unwrap(),
+                recover_managed_credential_mutations(
+                    &secrets,
+                    &repo,
+                    awaken_lease_contract::system_clock().as_ref()
+                )
+                .await
+                .unwrap(),
                 0
             );
             continue;
@@ -184,9 +194,13 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
             repo.abort_managed_mutation(&claimed).await.unwrap();
         }
         assert_eq!(
-            recover_managed_credential_mutations(&secrets, &repo)
-                .await
-                .unwrap(),
+            recover_managed_credential_mutations(
+                &secrets,
+                &repo,
+                awaken_lease_contract::system_clock().as_ref()
+            )
+            .await
+            .unwrap(),
             1
         );
         assert!(matches!(
@@ -199,14 +213,19 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
             None
         );
         assert!(repo.pending_managed_mutations().await.unwrap().is_empty());
+        // R2 is a fresh writer after recovery. Its begin and the following
+        // recovery tick must read the same live host-clock epoch.
+        let clock = awaken_lease_contract::system_clock();
+        let now = awaken_lease_contract::WallClockExt::now_ms(clock.as_ref());
         repo.begin_managed_mutation(
-            PendingManagedCredentialMutation::create(source(), child()).unwrap(),
+            PendingManagedCredentialMutation::create(source(), child(), now).unwrap(),
+            now,
         )
         .await
         .unwrap();
         assert_eq!(repo.pending_managed_mutations().await.unwrap().len(), 1);
         assert_eq!(
-            recover_managed_credential_mutations(&secrets, &repo)
+            recover_managed_credential_mutations(&secrets, &repo, clock.as_ref())
                 .await
                 .unwrap(),
             0,
@@ -236,10 +255,19 @@ async fn sqlite_writing_lease_fences_live_and_stale_owners() {
     )
     .await
     .unwrap();
-    let stale = PendingManagedCredentialMutation::create(source(), child()).unwrap();
+    let stale = PendingManagedCredentialMutation::create(source(), child(), 1_000).unwrap();
     let lease_expires_at = stale.material_fence.writer_lease_expires_at_unix_ms;
-    assert!(repo.begin_managed_mutation(stale.clone()).await.unwrap());
-    assert!(!repo.begin_managed_mutation(stale.clone()).await.unwrap());
+    assert!(
+        repo.begin_managed_mutation(stale.clone(), 1_000)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !repo
+            .begin_managed_mutation(stale.clone(), 1_000)
+            .await
+            .unwrap()
+    );
 
     assert!(
         repo.claim_expired_managed_mutation(&stale, lease_expires_at - 1, lease_expires_at + 100)

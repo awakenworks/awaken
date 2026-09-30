@@ -301,11 +301,14 @@ async fn prepare_control_process_with_model_supply_and_installations(
     let platform_workspace = installations.platform_workspace_before_write()?;
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let hosted_byok_enabled = managed_services.provider_credential_execution.is_some();
-    let _ = managed_services
-        .install_credential_envelope(deployment.worker.credential_envelope_keys_file.as_deref())?;
-    let background_services = std::mem::take(&mut managed_services.background_services);
-    // The Control process chooses its one wall clock here.
+    // The Control process chooses one wall clock for envelope admission and
+    // every store and component composed below.
     let clock = awaken_lease_contract::system_clock();
+    let _ = managed_services.install_credential_envelope(
+        deployment.worker.credential_envelope_keys_file.as_deref(),
+        clock.clone(),
+    )?;
+    let background_services = std::mem::take(&mut managed_services.background_services);
     let mut postgres_pools = crate::postgres_pools::ProcessPostgresPools::new(
         deployment.runtime.postgres_max_connections.get(),
     );

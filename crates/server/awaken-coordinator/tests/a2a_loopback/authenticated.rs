@@ -94,6 +94,7 @@ impl AuthenticatedPeer {
             },
             secrets.as_ref(),
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .expect("enter origin credential");
@@ -129,6 +130,7 @@ impl AuthenticatedPeer {
         awaken_credential_materializer::PinnedCredentialMaterializer::new(
             self.credentials.clone(),
             self.secrets.clone(),
+            awaken_lease_contract::system_clock(),
         )
     }
 
@@ -140,6 +142,7 @@ impl AuthenticatedPeer {
             CredentialRetirement::Disable,
             self.secrets.as_ref(),
             self.credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .expect("revoke exact admitted origin credential");

@@ -30,9 +30,13 @@ fn native_manifest_admission_uses_installed_materializer_evidence() {
                 PinnedCredentialMaterializer::new(
                     Arc::new(InMemoryCredentialRepo::new()),
                     Arc::new(InMemorySecretStore::new()),
+                    awaken_lease_contract::system_clock(),
                 )
             } else {
-                PinnedCredentialMaterializer::external_only(resolver.clone())
+                PinnedCredentialMaterializer::external_only(
+                    resolver.clone(),
+                    awaken_lease_contract::system_clock(),
+                )
             };
             pinned.external_material_resolver =
                 external.then(|| resolver.clone() as Arc<dyn CredentialMaterialResolver>);

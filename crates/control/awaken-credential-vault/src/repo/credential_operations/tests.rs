@@ -104,8 +104,9 @@ impl CredentialRepo for GatedCredentialRepo {
     async fn begin_mutation(
         &self,
         intent: CredentialMutationIntent,
+        now_unix_ms: u64,
     ) -> Result<bool, CredentialError> {
-        self.inner.begin_mutation(intent).await
+        self.inner.begin_mutation(intent, now_unix_ms).await
     }
 
     async fn mark_mutation_ready(
@@ -240,8 +241,9 @@ impl CredentialRepo for RejectingRepo {
     async fn begin_mutation(
         &self,
         intent: CredentialMutationIntent,
+        now_unix_ms: u64,
     ) -> Result<bool, CredentialError> {
-        self.inner.begin_mutation(intent).await
+        self.inner.begin_mutation(intent, now_unix_ms).await
     }
 
     async fn mark_mutation_ready(
@@ -322,6 +324,7 @@ async fn enter_stores_row_and_secret_separately() {
         },
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -352,6 +355,7 @@ async fn ambiguous_row_commit_is_reconciled_from_the_durable_intent() {
         },
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await;
 
@@ -364,7 +368,13 @@ async fn ambiguous_row_commit_is_reconciled_from_the_durable_intent() {
     // the exact pending fact, and preserves the referenced material.
     assert_eq!(store.map.lock().expect("secret store mutex").len(), 1);
     assert_eq!(
-        recover_credential_mutations(&store, &repo).await.unwrap(),
+        recover_credential_mutations(
+            &store,
+            &repo,
+            awaken_lease_contract::system_clock().as_ref()
+        )
+        .await
+        .unwrap(),
         1
     );
     assert_eq!(store.map.lock().expect("secret store mutex").len(), 1);
@@ -374,10 +384,13 @@ async fn ambiguous_row_commit_is_reconciled_from_the_durable_intent() {
 
 /// Fresh-command admission decision table. C1 a new material ref exists; C2
 /// phase is forged Ready, epoch is takeover-like, or token differs from the
-/// attempt id. Every C1+C2 rule has E1 reject before WAL/SecretStore effects.
+/// attempt id; C3 the begin reading is before or exactly at writer expiry.
+/// R1 C1+C2 -> E1 reject before WAL/SecretStore; R2 C1+exact expiry -> E1;
+/// R3 C1+live original writer -> E2 one durable pending claim.
 #[tokio::test]
 async fn source_begin_rejects_every_forged_fresh_material_owner_shape() {
     let repo = InMemoryCredentialRepo::new();
+    let clock = awaken_lease_testkit::ManualClock::new(1_000);
     let source = CredentialSource {
         id: CredentialSourceId("cred:ws:forged-source-begin".into()),
         replacement_of: None,
@@ -394,7 +407,12 @@ async fn source_begin_rejects_every_forged_fresh_material_owner_shape() {
         status: CredentialStatus::Active,
         version: 1,
     };
-    let canonical = CredentialMutationIntent::prepare(None, source).unwrap();
+    let canonical = CredentialMutationIntent::prepare(
+        None,
+        source,
+        credential_material_now_unix_ms(&clock).unwrap(),
+    )
+    .unwrap();
     let mut forged_ready = canonical.clone();
     forged_ready.material_fence.phase = CredentialMaterialMutationPhase::Ready;
     let mut forged_epoch = canonical.clone();
@@ -402,16 +420,38 @@ async fn source_begin_rejects_every_forged_fresh_material_owner_shape() {
         .material_fence
         .writer_epoch
         .and_then(awaken_lease_contract::fence::Epoch::next);
-    let mut forged_owner = canonical;
+    let mut forged_owner = canonical.clone();
     forged_owner.material_fence.writer_token = Some("foreign-owner".into()); // awaken-allow: secret -- writer identity, not material
 
     for forged in [forged_ready, forged_epoch, forged_owner] {
         assert!(matches!(
-            repo.begin_mutation(forged).await,
+            repo.begin_mutation(forged, credential_material_now_unix_ms(&clock).unwrap())
+                .await,
             Err(CredentialError::MutationConflict(_))
         ));
     }
     assert!(repo.pending_mutations().await.unwrap().is_empty(), "E1");
+    let expires_at = canonical.material_fence.writer_lease_expires_at_unix_ms;
+    clock.set(expires_at);
+    assert!(
+        matches!(
+            repo.begin_mutation(
+                canonical.clone(),
+                credential_material_now_unix_ms(&clock).unwrap()
+            )
+            .await,
+            Err(CredentialError::MutationConflict(_))
+        ),
+        "R2/E1 exact expiry"
+    );
+    assert!(repo.pending_mutations().await.unwrap().is_empty(), "R2/E1");
+    clock.set(expires_at - 1);
+    assert!(
+        repo.begin_mutation(canonical, credential_material_now_unix_ms(&clock).unwrap())
+            .await
+            .unwrap(),
+        "R3/E2"
+    );
 }
 
 /// Durable-row identity decision rule. C1 a self-consistent Ready envelope is
@@ -438,7 +478,7 @@ async fn source_recovery_rejects_a_mismatched_durable_key_before_secret_io() {
         status: CredentialStatus::Active,
         version: 1,
     };
-    let writing = CredentialMutationIntent::prepare(None, source).unwrap();
+    let writing = CredentialMutationIntent::prepare(None, source, 1_000).unwrap();
     let ready = writing.with_material_ready().unwrap();
     repo.state
         .lock()
@@ -447,7 +487,13 @@ async fn source_recovery_rejects_a_mismatched_durable_key_before_secret_io() {
         .insert("cred:ws:wrong-row-key".into(), ready.clone());
 
     assert!(
-        recover_credential_mutations(&store, &repo).await.is_err(),
+        recover_credential_mutations(
+            &store,
+            &repo,
+            awaken_lease_contract::system_clock().as_ref()
+        )
+        .await
+        .is_err(),
         "E1"
     );
     assert_eq!(store.gets.load(Ordering::SeqCst), 0, "E1");
@@ -482,9 +528,9 @@ async fn interrupted_creation(store: &dyn SecretStore, repo: &dyn CredentialRepo
         status: crate::CredentialStatus::Active,
         version: 1,
     };
-    let intent = CredentialMutationIntent::prepare(None, source).unwrap();
+    let intent = CredentialMutationIntent::prepare(None, source, 1_000).unwrap();
     let recovery_now = intent.material_fence.writer_lease_expires_at_unix_ms + 1;
-    repo.begin_mutation(intent.clone()).await.unwrap();
+    repo.begin_mutation(intent.clone(), 1_000).await.unwrap();
     store
         .put(
             intent.after.material_ref.as_ref().unwrap(),
@@ -493,6 +539,48 @@ async fn interrupted_creation(store: &dyn SecretStore, repo: &dyn CredentialRepo
         .await
         .unwrap();
     recovery_now
+}
+
+#[tokio::test]
+async fn injected_recovery_clock_keeps_live_source_writer_then_aborts_at_expiry() {
+    // Causes: C1 a durable Writing intent has an uncommitted material put;
+    // C2 the one injected clock is before or exactly at its exclusive expiry.
+    // Effects: E1 live Writing retains its WAL and performs zero SecretStore
+    // reads/deletes; E2 expired Writing is claimed only for abort, removes its
+    // material, and retires the pending fact without publishing the source.
+    // Decision rules: R1 C1+C2(before) -> E1; R2 C1+C2(exact) -> E2.
+    let store = ObservedSecretStore::default();
+    let repo = InMemoryCredentialRepo::new();
+    let expires_at = interrupted_creation(&store, &repo).await - 1;
+    let clock = awaken_lease_testkit::ManualClock::new(expires_at - 1);
+
+    assert_eq!(
+        recover_credential_mutations(&store, &repo, &clock)
+            .await
+            .unwrap(),
+        0,
+        "R1"
+    );
+    assert_eq!(store.gets.load(Ordering::SeqCst), 0, "R1/E1");
+    assert_eq!(store.deletes.load(Ordering::SeqCst), 0, "R1/E1");
+    assert_eq!(repo.pending_mutations().await.unwrap().len(), 1, "R1/E1");
+
+    clock.set(expires_at);
+    assert_eq!(
+        recover_credential_mutations(&store, &repo, &clock)
+            .await
+            .unwrap(),
+        1,
+        "R2"
+    );
+    assert!(repo.pending_mutations().await.unwrap().is_empty(), "R2/E2");
+    assert!(store.deletes.load(Ordering::SeqCst) > 0, "R2/E2");
+    assert!(
+        repo.get(&CredentialSourceId("cred:ws:interrupted".into()))
+            .await
+            .is_err(),
+        "R2/E2"
+    );
 }
 
 #[tokio::test]
@@ -564,6 +652,7 @@ async fn rotation_publishes_a_new_revision_and_reclaims_the_old_material() {
         },
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -579,6 +668,7 @@ async fn rotation_publishes_a_new_revision_and_reclaims_the_old_material() {
         },
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -623,6 +713,7 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
         },
         &store,
         &seed_repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -633,6 +724,7 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
         RedactedString::new("after-delivered"),
         &store,
         &seed_repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .expect("W1 delivered apply");
@@ -653,6 +745,7 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
         },
         &store,
         &seed_repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -666,6 +759,7 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
         RedactedString::new("after"),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await;
     assert!(
@@ -683,6 +777,7 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
         RedactedString::new("after"),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .expect("W2 exact response-loss replay");
@@ -696,6 +791,7 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
                 RedactedString::new("after"),
                 &store,
                 &repo,
+                awaken_lease_contract::system_clock().as_ref(),
             )
             .await,
             Err(CredentialError::MutationConflict(_))
@@ -711,6 +807,7 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
                 RedactedString::new("different"),
                 &store,
                 &repo,
+                awaken_lease_contract::system_clock().as_ref(),
             )
             .await,
             Err(CredentialError::MutationConflict(_))
@@ -720,7 +817,13 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
     assert_eq!(repo.get(&before.id).await.unwrap(), published, "W3/W4");
 
     assert_eq!(
-        recover_credential_mutations(&store, &repo).await.unwrap(),
+        recover_credential_mutations(
+            &store,
+            &repo,
+            awaken_lease_contract::system_clock().as_ref()
+        )
+        .await
+        .unwrap(),
         1
     );
     assert!(repo.pending_mutations().await.unwrap().is_empty());
@@ -761,6 +864,7 @@ async fn rotation_does_not_publish_material_without_exact_readback() {
             },
             &store,
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -776,6 +880,7 @@ async fn rotation_does_not_publish_material_without_exact_readback() {
             },
             &store,
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await;
 
@@ -792,9 +897,13 @@ async fn rotation_does_not_publish_material_without_exact_readback() {
         // the adapter recovers, exact absence permits idempotent retirement.
         assert_eq!(repo.pending_mutations().await.unwrap().len(), 1, "{rule}");
         assert_eq!(
-            recover_credential_mutations(&store.inner, &repo)
-                .await
-                .unwrap(),
+            recover_credential_mutations(
+                &store.inner,
+                &repo,
+                awaken_lease_contract::system_clock().as_ref()
+            )
+            .await
+            .unwrap(),
             1
         );
         assert!(repo.pending_mutations().await.unwrap().is_empty(), "{rule}");
@@ -823,6 +932,7 @@ async fn retirement_fails_closed_and_reclaims_material() {
         },
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -835,6 +945,7 @@ async fn retirement_fails_closed_and_reclaims_material() {
             CredentialRetirement::Archive,
             &store,
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await,
         Err(CredentialError::MutationConflict(_))
@@ -849,6 +960,7 @@ async fn retirement_fails_closed_and_reclaims_material() {
         CredentialRetirement::Archive,
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -881,12 +993,18 @@ async fn reversible_status_transition_retains_material_and_advances_revision() {
         },
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
-    let disabled = transition_credential_status(&before.id, CredentialStatus::Disabled, &repo)
-        .await
-        .unwrap();
+    let disabled = transition_credential_status(
+        &before.id,
+        CredentialStatus::Disabled,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap();
     assert_eq!(disabled.version, before.version + 1);
     assert_eq!(disabled.material_ref, before.material_ref);
     assert_eq!(
@@ -898,9 +1016,14 @@ async fn reversible_status_transition_retains_material_and_advances_revision() {
         "retained"
     );
     assert_eq!(
-        transition_credential_status(&disabled.id, CredentialStatus::Disabled, &repo,)
-            .await
-            .unwrap(),
+        transition_credential_status(
+            &disabled.id,
+            CredentialStatus::Disabled,
+            &repo,
+            awaken_lease_contract::system_clock().as_ref(),
+        )
+        .await
+        .unwrap(),
         disabled
     );
     assert!(repo.pending_mutations().await.unwrap().is_empty());
@@ -923,6 +1046,7 @@ async fn provider_scope_widening_is_exact_and_retains_material_authority() {
         Some("provider.chat".into()),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap()
@@ -935,6 +1059,7 @@ async fn provider_scope_widening_is_exact_and_retains_material_authority() {
             "other-provider",
             "provider.chat",
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -946,6 +1071,7 @@ async fn provider_scope_widening_is_exact_and_retains_material_authority() {
         "provider",
         "provider.chat",
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -963,6 +1089,7 @@ async fn provider_scope_widening_is_exact_and_retains_material_authority() {
             "provider",
             "provider.chat",
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -989,6 +1116,7 @@ async fn recovery_uses_the_durable_side_of_a_rotation_as_cleanup_authority() {
             },
             &store,
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -998,9 +1126,9 @@ async fn recovery_uses_the_durable_side_of_a_rotation_as_cleanup_authority() {
             "sec:{}:r{}",
             after.id.0, after.version
         )));
-        let intent = CredentialMutationIntent::prepare(Some(before.clone()), after).unwrap();
+        let intent = CredentialMutationIntent::prepare(Some(before.clone()), after, 1_000).unwrap();
         let recovery_now = intent.material_fence.writer_lease_expires_at_unix_ms + 1;
-        repo.begin_mutation(intent.clone()).await.unwrap();
+        repo.begin_mutation(intent.clone(), 1_000).await.unwrap();
         store
             .put(
                 intent.after.material_ref.as_ref().unwrap(),
@@ -1014,7 +1142,13 @@ async fn recovery_uses_the_durable_side_of_a_rotation_as_cleanup_authority() {
         }
 
         let recovered = if publish_after {
-            recover_credential_mutations(&store, &repo).await.unwrap()
+            recover_credential_mutations(
+                &store,
+                &repo,
+                awaken_lease_contract::system_clock().as_ref(),
+            )
+            .await
+            .unwrap()
         } else {
             recover_credential_mutations_at(&store, &repo, recovery_now)
                 .await
@@ -1079,8 +1213,8 @@ async fn mutation_rejects_a_competing_revision_and_retains_recovery_evidence() {
     repo.put(before.clone()).await.unwrap();
     let mut after = before.clone();
     after.version = 2;
-    let intent = CredentialMutationIntent::prepare(Some(before.clone()), after).unwrap();
-    repo.begin_mutation(intent.clone()).await.unwrap();
+    let intent = CredentialMutationIntent::prepare(Some(before.clone()), after, 1_000).unwrap();
+    repo.begin_mutation(intent.clone(), 1_000).await.unwrap();
     let mut competing = before;
     competing.version = 3;
     repo.put(competing).await.unwrap();
@@ -1107,6 +1241,7 @@ async fn inventory_reports_but_never_deletes_a_ref_a_new_pending_can_reuse() {
         },
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1151,8 +1286,8 @@ async fn inventory_reports_but_never_deletes_a_ref_a_new_pending_can_reuse() {
         status: CredentialStatus::Active,
         version: 1,
     };
-    let intent = CredentialMutationIntent::prepare(None, source).unwrap();
-    repo.begin_mutation(intent.clone()).await.unwrap();
+    let intent = CredentialMutationIntent::prepare(None, source, 1_000).unwrap();
+    repo.begin_mutation(intent.clone(), 1_000).await.unwrap();
     store
         .put(
             intent.after.material_ref.as_ref().unwrap(),
@@ -1249,9 +1384,9 @@ async fn inventory_protects_material_referenced_by_a_managed_pending_fact() {
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
-    let pending = PendingManagedCredentialMutation::create(source, child).unwrap();
+    let pending = PendingManagedCredentialMutation::create(source, child, 1_000).unwrap();
     let reference = pending.after_source.material_ref.clone().unwrap();
-    repo.begin_managed_mutation(pending).await.unwrap();
+    repo.begin_managed_mutation(pending, 1_000).await.unwrap();
     store.put(&reference, secret.unwrap()).await.unwrap();
 
     let report = inspect_credential_inventory(&store, &repo).await.unwrap();
@@ -1316,6 +1451,7 @@ async fn get_is_an_unscoped_by_id_primitive_fenced_at_resolution() {
         },
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1353,6 +1489,7 @@ async fn idempotent_entry_has_one_identity_and_rejects_conflicting_facts() {
         Some("anthropic.anthropic_messages".into()),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1362,6 +1499,7 @@ async fn idempotent_entry_has_one_identity_and_rejects_conflicting_facts() {
         Some("anthropic.anthropic_messages".into()),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1371,6 +1509,7 @@ async fn idempotent_entry_has_one_identity_and_rejects_conflicting_facts() {
         Some("openai.open_ai_chat".into()),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await;
     let endpoint_conflict = enter_credential_idempotent(
@@ -1379,6 +1518,7 @@ async fn idempotent_entry_has_one_identity_and_rejects_conflicting_facts() {
         Some("anthropic.anthropic_messages.backup".into()),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await;
 
@@ -1413,16 +1553,35 @@ async fn verified_idempotent_entry_rejects_different_material() {
         oauth_command: None,
     };
 
-    let first =
-        enter_credential_idempotent_verified(id.clone(), params("first"), None, &store, &repo)
-            .await
-            .unwrap();
-    let replay =
-        enter_credential_idempotent_verified(id.clone(), params("first"), None, &store, &repo)
-            .await
-            .unwrap();
-    let conflict =
-        enter_credential_idempotent_verified(id, params("second"), None, &store, &repo).await;
+    let first = enter_credential_idempotent_verified(
+        id.clone(),
+        params("first"),
+        None,
+        &store,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap();
+    let replay = enter_credential_idempotent_verified(
+        id.clone(),
+        params("first"),
+        None,
+        &store,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap();
+    let conflict = enter_credential_idempotent_verified(
+        id,
+        params("second"),
+        None,
+        &store,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await;
 
     assert!(first.created);
     assert!(!replay.created);
@@ -1445,6 +1604,7 @@ async fn verified_idempotent_entry_rejects_different_material() {
 async fn concurrent_verified_create_with_same_material_has_one_writer_and_replays() {
     let store = ObservedSecretStore::default();
     let repo = GatedCredentialRepo::new();
+    let clock = awaken_lease_contract::system_clock();
     let id = CredentialSourceId("cred:ws:verified-same-race".into());
     let params = || CredentialCreateParams {
         workspace_id: "ws".into(),
@@ -1456,8 +1616,22 @@ async fn concurrent_verified_create_with_same_material_has_one_writer_and_replay
     };
     repo.gate_next_read_pair();
 
-    let left = enter_credential_idempotent_verified(id.clone(), params(), None, &store, &repo);
-    let right = enter_credential_idempotent_verified(id.clone(), params(), None, &store, &repo);
+    let left = enter_credential_idempotent_verified(
+        id.clone(),
+        params(),
+        None,
+        &store,
+        &repo,
+        clock.as_ref(),
+    );
+    let right = enter_credential_idempotent_verified(
+        id.clone(),
+        params(),
+        None,
+        &store,
+        &repo,
+        clock.as_ref(),
+    );
     let (left, right) = tokio::join!(left, right);
 
     assert_eq!(
@@ -1474,9 +1648,16 @@ async fn concurrent_verified_create_with_same_material_has_one_writer_and_replay
         matches!(&right, Ok(_) | Err(CredentialError::MutationConflict(_))),
         "E1/E2 right"
     );
-    let replay = enter_credential_idempotent_verified(id.clone(), params(), None, &store, &repo)
-        .await
-        .unwrap();
+    let replay = enter_credential_idempotent_verified(
+        id.clone(),
+        params(),
+        None,
+        &store,
+        &repo,
+        clock.as_ref(),
+    )
+    .await
+    .unwrap();
     assert!(!replay.created, "E2 retry");
     assert_eq!(repo.list("ws").await.unwrap().len(), 1, "E1");
     assert_eq!(store.puts.load(Ordering::SeqCst), 1, "E1 only");
@@ -1502,6 +1683,7 @@ async fn concurrent_verified_create_with_same_material_has_one_writer_and_replay
 async fn concurrent_verified_create_with_different_material_retains_winner_bytes() {
     let store = ObservedSecretStore::default();
     let repo = GatedCredentialRepo::new();
+    let clock = awaken_lease_contract::system_clock();
     let id = CredentialSourceId("cred:ws:verified-different-race".into());
     let params = |material: &str| CredentialCreateParams {
         workspace_id: "ws".into(),
@@ -1519,6 +1701,7 @@ async fn concurrent_verified_create_with_different_material_retains_winner_bytes
         None,
         &store,
         &repo,
+        clock.as_ref(),
     );
     let right = enter_credential_idempotent_verified(
         id.clone(),
@@ -1526,6 +1709,7 @@ async fn concurrent_verified_create_with_different_material_retains_winner_bytes
         None,
         &store,
         &repo,
+        clock.as_ref(),
     );
     let (left, right) = tokio::join!(left, right);
 
@@ -1551,6 +1735,7 @@ async fn concurrent_verified_create_with_different_material_retains_winner_bytes
         None,
         &store,
         &repo,
+        clock.as_ref(),
     )
     .await;
     assert!(
@@ -1609,6 +1794,7 @@ async fn application_mcp_bearer_create_replay_rotate_and_conflict_are_one_aggreg
                 },
                 &store,
                 &repo,
+                awaken_lease_contract::system_clock().as_ref(),
             )
         };
     }
@@ -1739,9 +1925,14 @@ async fn application_mcp_legacy_material_identity_upgrades_once() {
         credential_generation: 1,
         bearer: RedactedString::new("legacy-token"),
     };
-    let upgraded = enter_or_rotate_application_mcp_bearer(command(), &store, &repo)
-        .await
-        .unwrap();
+    let upgraded = enter_or_rotate_application_mcp_bearer(
+        command(),
+        &store,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap();
     assert_eq!(upgraded.version, 2, "L1");
     assert!(
         upgraded
@@ -1759,9 +1950,14 @@ async fn application_mcp_legacy_material_identity_upgrades_once() {
         ),
         "L1 reclaims legacy material"
     );
-    let replay = enter_or_rotate_application_mcp_bearer(command(), &store, &repo)
-        .await
-        .unwrap();
+    let replay = enter_or_rotate_application_mcp_bearer(
+        command(),
+        &store,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap();
     assert_eq!(replay, upgraded, "L2");
     assert_eq!(store.inventory().await.unwrap().len(), 1, "L1/L2");
     assert!(repo.pending_mutations().await.unwrap().is_empty(), "L1/L2");
@@ -1777,6 +1973,7 @@ async fn application_mcp_legacy_material_identity_upgrades_once() {
 async fn application_mcp_bearer_concurrent_rotation_has_one_winner() {
     let store = InMemorySecretStore::new();
     let repo = GatedCredentialRepo::new();
+    let clock = awaken_lease_contract::system_clock();
     let source_id = CredentialSourceId("cred:app-mcp:race".into());
     enter_or_rotate_application_mcp_bearer(
         ApplicationMcpBearerCommand {
@@ -1790,6 +1987,7 @@ async fn application_mcp_bearer_concurrent_rotation_has_one_winner() {
         },
         &store,
         &repo,
+        clock.as_ref(),
     )
     .await
     .unwrap();
@@ -1807,6 +2005,7 @@ async fn application_mcp_bearer_concurrent_rotation_has_one_winner() {
         },
         &store,
         &repo,
+        clock.as_ref(),
     );
     let right = enter_or_rotate_application_mcp_bearer(
         ApplicationMcpBearerCommand {
@@ -1820,6 +2019,7 @@ async fn application_mcp_bearer_concurrent_rotation_has_one_winner() {
         },
         &store,
         &repo,
+        clock.as_ref(),
     );
     let (left, right) = tokio::join!(left, right);
     assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
@@ -1933,6 +2133,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         old_descriptor,
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .expect("DR1 predecessor")
@@ -1950,6 +2151,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .expect("DR1/E1");
@@ -1982,6 +2184,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .expect("DR2/E2");
@@ -2001,6 +2204,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await;
     assert!(
@@ -2021,6 +2225,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await;
     assert!(
@@ -2037,6 +2242,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap()
@@ -2049,6 +2255,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await;
     assert!(
@@ -2078,6 +2285,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap()
@@ -2095,6 +2303,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await;
     assert!(
@@ -2127,6 +2336,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor,
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .expect("DR6/E5");
@@ -2213,6 +2423,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
         descriptor.clone(),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .expect("D1/E1");
@@ -2235,6 +2446,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             descriptor.clone(),
             &store,
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -2270,6 +2482,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             unsupported_descriptor,
             &store,
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -2297,6 +2510,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             descriptor.clone(),
             &store,
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -2333,6 +2547,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             incompatible_descriptor.clone(),
             &store,
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -2357,6 +2572,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
         },
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .expect("D3/E3");
@@ -2376,6 +2592,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
         },
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .expect("D5/E5");
@@ -2409,6 +2626,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             },
             &store,
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -2428,6 +2646,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             },
             &store,
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -2458,6 +2677,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             },
             &store,
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -2481,6 +2701,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             },
             &store,
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .is_err(),

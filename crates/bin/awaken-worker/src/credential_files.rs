@@ -349,7 +349,7 @@ mod tests {
                         if envelope {
                             write(&directory, "payload_fingerprint", b"payload-a").await;
                         }
-                        let pinned = awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver.clone());
+                        let pinned = awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver.clone(), awaken_lease_contract::system_clock());
                         let (profile, kind) = if holder.boundary == PlaintextBoundary::Workload {
                             (
                                 pinned.process_secret_capabilities(),

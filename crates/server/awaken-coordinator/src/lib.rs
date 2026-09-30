@@ -508,7 +508,11 @@ fn local_managed_state_over(
         .with_resource_validator(catalog.clone())
         .with_repository_binding_verifier(repository_bindings)
         .with_credential_materializer(
-            awaken_credential_materializer::PinnedCredentialMaterializer::new(credentials, secrets),
+            awaken_credential_materializer::PinnedCredentialMaterializer::new(
+                credentials,
+                secrets,
+                clock.clone(),
+            ),
         );
     let runtime = runtime.install_dispatch_session_runtime();
     let runtime = Arc::new(runtime);

@@ -564,6 +564,7 @@ mod tests {
             },
             &InMemorySecretStore::new(),
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -627,6 +628,7 @@ mod tests {
             Some("ep2".into()),
             &InMemorySecretStore::new(),
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -699,6 +701,7 @@ mod tests {
             },
             &secrets,
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -713,6 +716,7 @@ mod tests {
             },
             &secrets,
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -817,6 +821,7 @@ mod tests {
             },
             &secrets,
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -831,6 +836,7 @@ mod tests {
             },
             &secrets,
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -981,6 +987,7 @@ mod tests {
             },
             &InMemorySecretStore::new(),
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -1487,6 +1494,7 @@ mod tests {
             },
             &secrets,
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -1501,6 +1509,7 @@ mod tests {
             },
             &secrets,
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();

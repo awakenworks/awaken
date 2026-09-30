@@ -110,8 +110,11 @@ pub async fn published_retirement(
             )
             .await
             .unwrap();
-            let create = PendingManagedCredentialMutation::create(source, child.clone()).unwrap();
-            repo.begin_managed_mutation(create.clone()).await.unwrap();
+            let create =
+                PendingManagedCredentialMutation::create(source, child.clone(), 1_000).unwrap();
+            repo.begin_managed_mutation(create.clone(), 1_000)
+                .await
+                .unwrap();
             for reference in create.after_source.material_refs() {
                 secrets
                     .put(reference, RedactedString::new("retirement-fixture"))
@@ -121,9 +124,13 @@ pub async fn published_retirement(
             let ready = repo.mark_managed_mutation_ready(&create).await.unwrap();
             repo.commit_managed_mutation(&ready).await.unwrap();
             assert_eq!(
-                recover_managed_credential_mutations(&secrets, &repo)
-                    .await
-                    .unwrap(),
+                recover_managed_credential_mutations(
+                    &secrets,
+                    &repo,
+                    awaken_lease_contract::system_clock().as_ref()
+                )
+                .await
+                .unwrap(),
                 1
             );
             source = create.after_source;
@@ -155,13 +162,16 @@ pub async fn published_retirement(
                 before_child,
                 after_child,
                 false,
+                1_000,
             )
             .unwrap();
-            repo.begin_managed_mutation(update.clone()).await.unwrap();
+            repo.begin_managed_mutation(update.clone(), 1_000)
+                .await
+                .unwrap();
             repo.commit_managed_mutation(&update).await.unwrap();
         } else {
-            let update = CredentialMutationIntent::prepare(Some(source), after).unwrap();
-            repo.begin_mutation(update.clone()).await.unwrap();
+            let update = CredentialMutationIntent::prepare(Some(source), after, 1_000).unwrap();
+            repo.begin_mutation(update.clone(), 1_000).await.unwrap();
             repo.apply_mutation(&update).await.unwrap();
         }
         let faults = CrashSecrets {
@@ -169,10 +179,20 @@ pub async fn published_retirement(
             phase: &phase,
             marker: marker.to_str().unwrap(),
         };
-        let completed = recover_credential_mutations(&faults, &repo).await.unwrap()
-            + recover_managed_credential_mutations(&faults, &repo)
-                .await
-                .unwrap();
+        let completed = recover_credential_mutations(
+            &faults,
+            &repo,
+            awaken_lease_contract::system_clock().as_ref(),
+        )
+        .await
+        .unwrap()
+            + recover_managed_credential_mutations(
+                &faults,
+                &repo,
+                awaken_lease_contract::system_clock().as_ref(),
+            )
+            .await
+            .unwrap();
         assert_eq!(completed, 1);
         assert_eq!(phase, "retired");
         checkpoint(marker.to_str().unwrap()).await;
@@ -202,10 +222,20 @@ pub async fn published_retirement(
             + repo.pending_managed_mutations().await.unwrap().len();
         assert_eq!(pending, usize::from(phase != "retired"), "C4 WAL prefix");
         for repeat in 0..2 {
-            let completed = recover_credential_mutations(&secrets, &repo).await.unwrap()
-                + recover_managed_credential_mutations(&secrets, &repo)
-                    .await
-                    .unwrap();
+            let completed = recover_credential_mutations(
+                &secrets,
+                &repo,
+                awaken_lease_contract::system_clock().as_ref(),
+            )
+            .await
+            .unwrap()
+                + recover_managed_credential_mutations(
+                    &secrets,
+                    &repo,
+                    awaken_lease_contract::system_clock().as_ref(),
+                )
+                .await
+                .unwrap();
             assert_eq!(completed, usize::from(repeat == 0 && phase != "retired"));
         }
         assert!(repo.pending_mutations().await.unwrap().is_empty());

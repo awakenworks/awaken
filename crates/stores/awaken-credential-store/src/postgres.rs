@@ -415,9 +415,10 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
     async fn begin_managed_mutation(
         &self,
         pending: PendingManagedCredentialMutation,
+        now_unix_ms: u64,
     ) -> Result<bool, CredentialError> {
         pending
-            .validate_for_begin()
+            .validate_for_begin(now_unix_ms)
             .map_err(invalid_managed_pending)?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let durable = sqlx::query(&format!(
@@ -1207,8 +1208,9 @@ impl CredentialRepo for PostgresCredentialRepo {
     async fn begin_mutation(
         &self,
         intent: CredentialMutationIntent,
+        now_unix_ms: u64,
     ) -> Result<bool, CredentialError> {
-        intent.validate_for_begin()?;
+        intent.validate_for_begin(now_unix_ms)?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let durable = sqlx::query(&format!(
             "SELECT data FROM {NS}_creation_intent WHERE source_id = $1 FOR UPDATE"

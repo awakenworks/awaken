@@ -688,10 +688,15 @@ mod tests {
             ),
             secrets.as_ref(),
             repo.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
-        let materializer = PinnedCredentialMaterializer::new(repo.clone(), secrets);
+        let materializer = PinnedCredentialMaterializer::new(
+            repo.clone(),
+            secrets,
+            awaken_lease_contract::system_clock(),
+        );
         let exact = CredentialRef {
             id: source.id.0.clone(),
             revision: 1,

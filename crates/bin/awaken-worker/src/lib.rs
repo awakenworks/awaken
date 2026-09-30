@@ -1061,11 +1061,13 @@ async fn build_secretless_worker(
     material_resolver: Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
     local_resolver: Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
-    let mut builder =
-        WorkerNodeBuilder::new(upstream, process.clock.clone()).with_process_config(process);
+    let clock = process.clock.clone();
+    let mut builder = WorkerNodeBuilder::new(upstream, clock.clone()).with_process_config(process);
     if let Some(resolver) = material_resolver {
         builder = builder.with_credential_materializer(
-            awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver),
+            awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
+                resolver, clock,
+            ),
         );
     }
     if let Some(resolver) = local_resolver {

@@ -25,14 +25,20 @@ use base64::Engine as _;
 pub struct VaultRefreshFactory {
     credentials: Arc<dyn CredentialRepo>,
     secrets: Arc<dyn SecretStore>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl VaultRefreshFactory {
     #[must_use]
-    pub fn new(credentials: Arc<dyn CredentialRepo>, secrets: Arc<dyn SecretStore>) -> Self {
+    pub fn new(
+        credentials: Arc<dyn CredentialRepo>,
+        secrets: Arc<dyn SecretStore>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Self {
         Self {
             credentials,
             secrets,
+            clock,
         }
     }
 }
@@ -48,6 +54,7 @@ impl CredentialRefreshFactory for VaultRefreshFactory {
             access,
             self.credentials.clone(),
             self.secrets.clone(),
+            self.clock.clone(),
         ))
     }
 
@@ -91,6 +98,7 @@ pub struct VaultRefresher {
     access: tokio::sync::Mutex<CredentialRefreshAccess>,
     credentials: Arc<dyn CredentialRepo>,
     secrets: Arc<dyn SecretStore>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
     http: reqwest::Client,
 }
 
@@ -101,6 +109,7 @@ impl VaultRefresher {
         access: CredentialRefreshAccess,
         credentials: Arc<dyn CredentialRepo>,
         secrets: Arc<dyn SecretStore>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         let http = http_client_for(&access.token_endpoint);
         Self {
@@ -108,6 +117,7 @@ impl VaultRefresher {
             access: tokio::sync::Mutex::new(access),
             credentials,
             secrets,
+            clock,
             http,
         }
     }
@@ -302,6 +312,7 @@ impl VaultRefresher {
             },
             self.secrets.as_ref(),
             self.credentials.as_ref(),
+            self.clock.as_ref(),
         )
         .await
         else {
@@ -356,6 +367,7 @@ impl CredentialRefreshExchange for VaultRefreshFactory {
             access,
             self.credentials.clone(),
             self.secrets.clone(),
+            self.clock.clone(),
         )
         .exchange()
         .await
@@ -389,6 +401,7 @@ mod tests {
             access,
             Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
             Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+            awaken_lease_contract::system_clock(),
         );
         assert_eq!(
             refresher
@@ -444,7 +457,11 @@ mod tests {
             version: 1,
         };
         credentials.put(source.clone()).await.unwrap();
-        let factory = VaultRefreshFactory::new(credentials.clone(), secrets.clone());
+        let factory = VaultRefreshFactory::new(
+            credentials.clone(),
+            secrets.clone(),
+            awaken_lease_contract::system_clock(),
+        );
         let challenge = AuthChallenge {
             status: 401,
             www_authenticate: None,
@@ -483,7 +500,11 @@ mod tests {
             let case_credentials: Arc<dyn CredentialRepo> =
                 Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
             case_credentials.put(replacement).await.unwrap();
-            let case_factory = VaultRefreshFactory::new(case_credentials, secrets.clone());
+            let case_factory = VaultRefreshFactory::new(
+                case_credentials,
+                secrets.clone(),
+                awaken_lease_contract::system_clock(),
+            );
             assert_eq!(
                 CredentialRefreshFactory::bearer_reloader(&case_factory, source.id.clone(), 1,)
                     .refresh(&challenge)
