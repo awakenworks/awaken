@@ -12,7 +12,9 @@
 //! sidecar inode and no-replace publication of one directory.
 
 use std::fs::File;
-use std::io::{Read as _, Write as _};
+use std::io::Read as _;
+#[cfg(not(windows))]
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -24,17 +26,20 @@ mod projection_root;
 pub use projection_root::ProjectionRoot;
 #[cfg(target_os = "linux")]
 mod unix_socket_path;
+#[cfg(windows)]
+mod windows;
 #[cfg(target_os = "linux")]
 pub use unix_socket_path::PinnedUnixSocketPath;
 mod tree_limits;
 use tree_limits::ReadBudget;
 pub use tree_limits::TreeReadLimits;
 
-/// Immutable identity of one opened directory inode.
+/// Immutable identity of one opened physical directory.
 ///
 /// This is policy-free physical evidence. Provider adapters decide whether an
 /// identity is authorized; this crate only compares it at no-follow filesystem
-/// edges.
+/// edges. Windows v1 uses local fixed NTFS volume/file IDs; other Windows
+/// filesystems are rejected before their identifiers can enter this shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DirectoryIdentity {
     pub device: u64,
@@ -90,10 +95,12 @@ pub struct ExclusiveFileLock {
     parent_path: PathBuf,
     parent_identity: DirectoryIdentity,
     parent: File,
+    #[cfg(windows)]
+    _ancestor_handles: Vec<File>,
     _file: File,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl Drop for ExclusiveFileLock {
     fn drop(&mut self) {
         // A concurrent fork inherits the locked open-file description before
@@ -667,6 +674,13 @@ mod locked_parent_fallback;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub use locked_parent_fallback::try_lock_exclusive;
 /// Inspect the final path component without following a symlink.
+#[cfg(windows)]
+pub fn classify_nofollow(path: &Path) -> std::io::Result<PathEntry> {
+    windows::classify_nofollow(path)
+}
+
+/// Inspect the final path component without following a symlink.
+#[cfg(not(windows))]
 pub fn classify_nofollow(path: &Path) -> std::io::Result<PathEntry> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -733,7 +747,10 @@ pub fn directory_identity_nofollow(path: &Path) -> std::io::Result<DirectoryIden
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+pub use windows::directory_identity_nofollow;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn directory_identity_nofollow(path: &Path) -> std::io::Result<DirectoryIdentity> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -824,7 +841,12 @@ pub fn remove_regular_file_nofollow(path: &Path) -> std::io::Result<()> {
         .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+pub fn remove_regular_file_nofollow(path: &Path) -> std::io::Result<()> {
+    windows::remove_regular_file_nofollow(path)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn remove_regular_file_nofollow(path: &Path) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -835,7 +857,12 @@ pub fn remove_regular_file_nofollow(path: &Path) -> std::io::Result<()> {
     ))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+pub fn read_regular_file_nofollow(path: &Path) -> std::io::Result<Vec<u8>> {
+    windows::read_regular_file_nofollow(path)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn read_regular_file_nofollow(path: &Path) -> std::io::Result<Vec<u8>> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -846,257 +873,11 @@ pub fn read_regular_file_nofollow(path: &Path) -> std::io::Result<Vec<u8>> {
     ))
 }
 
-/// Allocate one private empty directory beside `destination` and return its
-/// nofollow inode identity. The caller owns the returned stage and decides when
-/// to publish or remove it.
-pub fn create_private_directory_stage(
-    destination: &Path,
-) -> std::io::Result<(PathBuf, DirectoryIdentity)> {
-    let parent = destination.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("destination `{}` has no parent", destination.display()),
-        )
-    })?;
-    let name = destination.file_name().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("destination `{}` has no file name", destination.display()),
-        )
-    })?;
-    for _ in 0..32 {
-        let sequence = PRIVATE_STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let stage = parent.join(format!(
-            ".{}.awaken-directory-stage-{}-{sequence}",
-            name.to_string_lossy(),
-            std::process::id()
-        ));
-        let mut builder = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt as _;
-            builder.mode(0o700);
-        }
-        match builder.create(&stage) {
-            Ok(()) => return Ok((stage.clone(), directory_identity_nofollow(&stage)?)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AlreadyExists,
-        format!(
-            "could not allocate a private directory stage beside `{}`",
-            destination.display()
-        ),
-    ))
-}
-
-/// Create one absent directory final component with owner-only permissions and
-/// return the exact nofollow inode identity. No parent is created and an
-/// occupied name is never reused or removed.
-pub fn create_directory_noreplace(path: &Path) -> std::io::Result<DirectoryIdentity> {
-    let mut builder = std::fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt as _;
-        builder.mode(0o700);
-    }
-    builder.create(path)?;
-    directory_identity_nofollow(path)
-}
-
-/// Atomically rename `stage` to an absent sibling `destination` without ever
-/// replacing an existing name.
-///
-/// The caller must prove ownership of `stage`; this primitive validates only
-/// its structural preconditions and never deletes either path.
-pub fn publish_directory_noreplace(stage: &Path, destination: &Path) -> std::io::Result<()> {
-    let stage_metadata = std::fs::symlink_metadata(stage)?;
-    if stage_metadata.file_type().is_symlink() || !stage_metadata.is_dir() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("stage `{}` is not a directory", stage.display()),
-        ));
-    }
-    if !stage.is_absolute()
-        || !destination.is_absolute()
-        || stage.parent().is_none()
-        || stage.parent() != destination.parent()
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "stage and destination must be absolute siblings",
-        ));
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        rustix::fs::renameat_with(
-            rustix::fs::CWD,
-            stage,
-            rustix::fs::CWD,
-            destination,
-            rustix::fs::RenameFlags::NOREPLACE,
-        )
-        .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = (stage, destination);
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "atomic no-replace directory publication is unsupported on this platform",
-        ))
-    }
-}
-
-fn create_private_file_stage(destination: &Path) -> std::io::Result<(PathBuf, File)> {
-    let parent = destination
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("destination `{}` has no parent", destination.display()),
-            )
-        })?;
-    let file_name = destination.file_name().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("destination `{}` has no file name", destination.display()),
-        )
-    })?;
-
-    for _ in 0..32 {
-        let sequence = PRIVATE_STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let candidate = parent.join(format!(
-            ".{}.awaken-file-stage-{}-{sequence}",
-            file_name.to_string_lossy(),
-            std::process::id()
-        ));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        match options.open(&candidate) {
-            Ok(file) => return Ok((candidate, file)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AlreadyExists,
-        format!(
-            "could not allocate a private publication stage beside `{}`",
-            destination.display()
-        ),
-    ))
-}
-
-fn write_private_file_stage(destination: &Path, contents: &[u8]) -> std::io::Result<PathBuf> {
-    let (stage_path, mut stage_file) = create_private_file_stage(destination)?;
-    let result = (|| {
-        stage_file.write_all(contents)?;
-        stage_file.sync_all()?;
-        Ok(stage_path.clone())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&stage_path);
-    }
-    result
-}
-
-/// Atomically publish immutable file contents at an absent path.
-///
-/// The function owns one randomly named sibling stage created with `create_new`,
-/// flushes its bytes before a no-replace rename, and removes only that stage on
-/// failure. It never opens, truncates, removes, or replaces `destination`.
-pub fn publish_file_noreplace(destination: &Path, contents: &[u8]) -> std::io::Result<()> {
-    let parent = destination
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("destination `{}` has no parent", destination.display()),
-            )
-        })?;
-    let stage_path = write_private_file_stage(destination, contents)?;
-
-    let result = (|| {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            rustix::fs::renameat_with(
-                rustix::fs::CWD,
-                &stage_path,
-                rustix::fs::CWD,
-                destination,
-                rustix::fs::RenameFlags::NOREPLACE,
-            )
-            .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))?;
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "atomic no-replace file publication is unsupported on this platform",
-            ));
-        }
-
-        File::open(parent)?.sync_all()
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&stage_path);
-    }
-    result
-}
-
-/// Atomically replace one existing regular-file name with complete contents.
-///
-/// The caller owns replacement policy and serialization. This leaf never reads
-/// or interprets the destination bytes; it only rejects a missing, non-regular,
-/// symlinked, or hard-linked destination and performs one same-directory rename.
-pub fn replace_regular_file_atomic(destination: &Path, contents: &[u8]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt as _;
-        let metadata = std::fs::symlink_metadata(destination)?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.nlink() != 1 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "replacement destination `{}` is not one unaliased regular file",
-                    destination.display()
-                ),
-            ));
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (destination, contents);
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "atomic regular-file replacement is unsupported on this platform",
-        ));
-    }
-
-    let parent = destination.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("destination `{}` has no parent", destination.display()),
-        )
-    })?;
-    let stage = write_private_file_stage(destination, contents)?;
-    let result = std::fs::rename(&stage, destination).and_then(|()| File::open(parent)?.sync_all());
-    if result.is_err() {
-        let _ = std::fs::remove_file(stage);
-    }
-    result
-}
+mod publication;
+pub use publication::{
+    create_directory_noreplace, create_private_directory_stage, publish_directory_noreplace,
+    publish_file_noreplace, replace_regular_file_atomic,
+};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn io_error(error: rustix::io::Errno) -> std::io::Error {
@@ -1283,7 +1064,16 @@ pub fn zero_relative_regular_file_nofollow(
     Ok(())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+pub fn zero_relative_regular_file_nofollow(
+    root: &Path,
+    expected_root: DirectoryIdentity,
+    relative: &Path,
+) -> std::io::Result<()> {
+    windows::zero_relative_regular_file_nofollow(root, expected_root, relative)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn zero_relative_regular_file_nofollow(
     root: &Path,
     _expected_root: DirectoryIdentity,
@@ -1323,7 +1113,16 @@ pub fn create_relative_directory_all(
     Ok(())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+pub fn create_relative_directory_all(
+    root: &Path,
+    expected_root: DirectoryIdentity,
+    relative: &Path,
+) -> std::io::Result<()> {
+    windows::create_relative_directory_all(root, expected_root, relative)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn create_relative_directory_all(
     root: &Path,
     _expected_root: DirectoryIdentity,
@@ -1375,7 +1174,17 @@ pub fn set_relative_directory_mode(
     rustix::fs::fchmod(&directory, portable_mode(mode)?).map_err(io_error)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+pub fn set_relative_directory_mode(
+    root: &Path,
+    expected_root: DirectoryIdentity,
+    relative: &Path,
+    mode: u32,
+) -> std::io::Result<()> {
+    windows::set_relative_directory_mode(root, expected_root, relative, mode)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn set_relative_directory_mode(
     root: &Path,
     _expected_root: DirectoryIdentity,
@@ -1475,7 +1284,18 @@ fn portable_mode(mode: u32) -> std::io::Result<rustix::fs::Mode> {
     Ok(rustix::fs::Mode::from_raw_mode(mode as rustix::fs::RawMode))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+pub fn write_relative_file_atomic(
+    root: &Path,
+    expected_root: DirectoryIdentity,
+    relative: &Path,
+    contents: &[u8],
+    mode: u32,
+) -> std::io::Result<()> {
+    windows::write_relative_file_atomic(root, expected_root, relative, contents, mode)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn write_relative_file_atomic(
     root: &Path,
     _expected_root: DirectoryIdentity,
@@ -1733,9 +1553,9 @@ fn read_tree_nofollow_limited(
 
 /// Read a required plain tree with caller-owned per-file and total byte limits. Missing
 /// roots and incomplete reads fail; callers never receive a partial snapshot.
-/// Linux/macOS reuse the exact descriptor walker, capturing the root identity
-/// at entry. Other platforms use the quiescent-path adapter below, which rejects
-/// static links/reparse points but does not claim descriptor identity fencing.
+/// Linux/macOS and Windows reuse exact handle-bound walkers, capturing the root
+/// identity at entry. Other platforms use the quiescent-path adapter below,
+/// which rejects static links but does not claim handle identity fencing.
 /// This convenience API grants neither publication nor deletion authority.
 pub fn read_tree_nofollow_bounded(
     root: &Path,
@@ -1768,7 +1588,17 @@ pub fn read_tree_nofollow_with_limits(
             limits,
         )
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        windows::read_tree_nofollow_limited(
+            root,
+            directory_identity_nofollow(root)?,
+            Path::new(""),
+            &[],
+            limits,
+        )
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         directory_tree::read_plain_tree_bounded(root, limits)
     }
@@ -1811,7 +1641,16 @@ pub fn read_regular_tree_nofollow(
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+pub fn read_tree_nofollow(
+    root: &Path,
+    expected_root: DirectoryIdentity,
+    relative_tree: &Path,
+) -> std::io::Result<TreeSnapshot> {
+    read_tree_nofollow_excluding(root, expected_root, relative_tree, &[])
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn read_tree_nofollow(
     root: &Path,
     _expected_root: DirectoryIdentity,
@@ -1826,7 +1665,28 @@ pub fn read_tree_nofollow(
     ))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+pub fn read_tree_nofollow_excluding(
+    root: &Path,
+    expected_root: DirectoryIdentity,
+    relative_tree: &Path,
+    excluded: &[PathBuf],
+) -> std::io::Result<TreeSnapshot> {
+    windows::read_tree_nofollow_limited(
+        root,
+        expected_root,
+        relative_tree,
+        excluded,
+        TreeReadLimits {
+            file_bytes: u64::MAX,
+            total_bytes: u64::MAX,
+            entries: usize::MAX,
+            depth: usize::MAX,
+        },
+    )
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn read_tree_nofollow_excluding(
     root: &Path,
     _expected_root: DirectoryIdentity,
@@ -1842,7 +1702,20 @@ pub fn read_tree_nofollow_excluding(
     ))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+pub fn read_regular_tree_nofollow(
+    root: &Path,
+    expected_root: DirectoryIdentity,
+    relative_tree: &Path,
+) -> std::io::Result<Vec<TreeFile>> {
+    if classify_nofollow(root)? == PathEntry::Absent {
+        Ok(Vec::new())
+    } else {
+        read_tree_nofollow(root, expected_root, relative_tree).map(|snapshot| snapshot.files)
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn read_regular_tree_nofollow(
     root: &Path,
     _expected_root: DirectoryIdentity,
@@ -1892,7 +1765,15 @@ pub fn clear_directory_contents_exact(
     Ok(())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+pub fn clear_directory_contents_exact(
+    path: &Path,
+    expected: DirectoryIdentity,
+) -> std::io::Result<()> {
+    windows::clear_directory_contents_exact(path, expected)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn clear_directory_contents_exact(
     path: &Path,
     _expected: DirectoryIdentity,
@@ -1967,7 +1848,15 @@ pub fn remove_directory_tree_exact(
     rustix::fs::unlinkat(&parent, name, rustix::fs::AtFlags::REMOVEDIR).map_err(io_error)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+pub fn remove_directory_tree_exact(
+    path: &Path,
+    expected: DirectoryIdentity,
+) -> std::io::Result<()> {
+    windows::remove_directory_tree_exact(path, expected)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn remove_directory_tree_exact(
     path: &Path,
     _expected: DirectoryIdentity,

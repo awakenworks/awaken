@@ -10,6 +10,7 @@ use awaken_provisioning_contract::{Sandbox, SandboxProvider};
 mod common;
 use awaken_file_store::{FileStore, FsFileStore};
 use awaken_sandbox_local::NamespaceProvider;
+use common::sh_command as sh;
 use tokio::io::AsyncReadExt as _;
 
 fn spec(scope: &str) -> pc::SandboxSpec {
@@ -31,12 +32,6 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         command: Vec::new(),
         deny_tool_egress: false,
     }
-}
-
-fn sh(script: &str) -> pc::Command {
-    let mut c = pc::Command::new(["sh", "-c", script]);
-    c.stdio = pc::Stdio::Null;
-    c
 }
 
 /// True only when bwrap exists AND unprivileged user namespaces are enabled.
@@ -82,7 +77,9 @@ async fn capabilities_are_tool_transparent_namespace() {
     let caps = NamespaceProvider::new(tmp.path()).capabilities();
     assert_eq!(caps.isolation, pc::IsolationClass::Namespace);
     assert!(caps.tool_transparent, "bwrap tier may host opaque agents");
-    assert_eq!(caps.path_fidelity, !cfg!(target_os = "macos"));
+    // Linux mount namespaces preserve virtual paths; macOS Seatbelt and the
+    // unavailable Windows native mechanism do not claim that path fidelity.
+    assert_eq!(caps.path_fidelity, cfg!(target_os = "linux"));
     assert!(caps.enforced_readonly);
     assert!(caps.network_isolation);
     assert!(!caps.secret_egress_substitution);
@@ -183,7 +180,7 @@ async fn namespace_signals_reach_the_program_and_preserve_forced_cleanup() {
             } else {
                 "trap 'printf settled > \"$AWAKEN_OUTPUTS_DIR/settled.txt\"; exit 0' TERM INT"
             };
-            let command = sh(&format!(
+            let command = sh(format!(
                 "{handler}; printf ready > \"$AWAKEN_OUTPUTS_DIR/ready.txt\"; while :; do sleep 1; done"
             ));
             let (process, _channel) = if opaque {

@@ -14,6 +14,8 @@
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
 use std::sync::Arc;
+mod common;
+use common::sh_command as sh;
 
 struct FixedBroker;
 
@@ -109,12 +111,6 @@ fn out(tier: Tier, name: &str) -> String {
     }
 }
 
-fn sh(script: String) -> pc::Command {
-    let mut c = pc::Command::new(["sh", "-c", script.as_str()]);
-    c.stdio = pc::Stdio::Null;
-    c
-}
-
 async fn read_only_artifact(sandbox: &dyn pc::Sandbox, suffix: &str) -> Vec<u8> {
     let arts = sandbox.artifacts().await.unwrap();
     let a = arts
@@ -156,11 +152,29 @@ async fn run(tier: Tier, can_exec: bool) -> bool {
         .unwrap_or_else(|e| panic!("{tier:?}: create with env: {e:?}"));
 
     // Inline and brokered material are visible, while the opaque reference is not.
+    // Platform rule: C1 Unix Workdir/Namespace uses sh; C2 Windows Workdir
+    // uses its native PowerShell child. Both observe the same inline and
+    // brokered env values, write one artifact, and never see the reference.
     let script = format!(
         "printf '%s|%s' \"$GREETING\" \"$MYSECRET\" > {}",
         out(tier, "env.txt")
     );
-    let proc = sandbox.spawn(sh(script)).await.unwrap();
+    #[cfg(windows)]
+    let command = if matches!(tier, Tier::Workdir) {
+        let mut command = pc::Command::new([
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            "[System.IO.File]::WriteAllText((Join-Path $env:AWAKEN_OUTPUTS_DIR 'env.txt'), $env:GREETING + '|' + $env:MYSECRET)",
+        ]);
+        command.stdio = pc::Stdio::Null;
+        command
+    } else {
+        sh(script)
+    };
+    #[cfg(not(windows))]
+    let command = sh(script);
+    let proc = sandbox.spawn(command).await.unwrap();
     assert_eq!(
         proc.wait().await.unwrap().code,
         Some(0),
@@ -224,7 +238,7 @@ async fn missing_broker_fails_before_a_workdir_process_starts() {
     });
     let (fence, authority) = pc::test_support::fixture_effect("env-injection");
     let sandbox = p.claim_for_effect(&s, &fence, &authority).await.unwrap();
-    assert!(sandbox.spawn(sh("exit 0".into())).await.is_err());
+    assert!(sandbox.spawn(sh("exit 0")).await.is_err());
     assert!(sandbox.artifacts().await.unwrap().is_empty());
     pc::test_support::dispose_owned_fixture(sandbox.as_ref(), &fence, &authority)
         .await

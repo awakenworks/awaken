@@ -10,6 +10,7 @@ use awaken_runtime_contract::llm::ToolCall;
 mod common;
 use awaken_file_store::{FileStore, FsFileStore};
 use awaken_sandbox_local::LocalProvider;
+use common::sh_command as sh;
 
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
@@ -30,12 +31,6 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         command: Vec::new(),
         deny_tool_egress: false,
     }
-}
-
-fn sh(script: &str) -> pc::Command {
-    let mut c = pc::Command::new(["sh", "-c", script]);
-    c.stdio = pc::Stdio::Null;
-    c
 }
 
 #[cfg(target_os = "linux")]
@@ -176,10 +171,11 @@ async fn spawn_agent_yields_a_duplex_channel_to_the_process() {
 
     // `cat` stands in for an opaque agent: it echoes stdin back on stdout, proving
     // the pipe-backed AgentChannel round-trips in both directions.
-    let (proc, mut chan) = sandbox
-        .spawn_agent(pc::Command::new(["cat"]))
-        .await
-        .unwrap();
+    #[cfg(windows)]
+    let agent_command = sh("cat");
+    #[cfg(not(windows))]
+    let agent_command = pc::Command::new(["cat"]);
+    let (proc, mut chan) = sandbox.spawn_agent(agent_command).await.unwrap();
 
     chan.write_all(b"ping\n").await.unwrap();
     chan.flush().await.unwrap();
@@ -549,10 +545,25 @@ async fn poll_is_none_while_running_then_signal_terminates() {
         .create(&spec("t-poll"))
         .await
         .unwrap();
-    let proc = sandbox.spawn(sh("sleep 5")).await.unwrap();
+    #[cfg(windows)]
+    let long_running = pc::Command::new([
+        "powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "Start-Sleep -Seconds 5",
+    ]);
+    #[cfg(not(windows))]
+    let long_running = sh("sleep 5");
+    let proc = sandbox.spawn(long_running).await.unwrap();
     assert!(proc.poll().await.unwrap().is_none(), "still running");
     proc.signal(pc::Signal::Kill).await.unwrap();
     let status = proc.wait().await.unwrap();
+    // C1 Unix process-group signal versus Windows TerminateProcess; E1 both
+    // reach a non-success terminal state. Unix reports signal termination;
+    // Windows reports its native nonzero process exit code.
+    #[cfg(windows)]
+    assert!(status.code.is_some_and(|code| code != 0), "{status:?}");
+    #[cfg(not(windows))]
     assert!(status.signaled || status.code.is_none());
 }
 

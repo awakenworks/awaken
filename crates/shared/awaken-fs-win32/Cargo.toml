@@ -1,0 +1,20 @@
+[package]
+name = "awaken-fs-win32"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "worker"
+layer = "infrastructure"
+authority = "sandbox-filesystem-win32"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
+
+# The repository's ordinary crates inherit unsafe_code=forbid. This leaf is
+# the sole audited Win32 FFI boundary; its crate root denies unsafe everywhere
+# except the narrow `sys` module, and exports only checked safe functions.
+[lints.rust]
+unsafe_code = "allow"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

@@ -977,6 +977,7 @@ fn bubblewrap_binds_workspace_outputs_and_ends_with_argv() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn bubblewrap_projects_explicit_non_system_path_runtimes_read_only() {
     let ws = PathBuf::from("/host/ws");
@@ -1013,6 +1014,7 @@ fn bubblewrap_projects_explicit_non_system_path_runtimes_read_only() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn bubblewrap_projects_a_python_virtualenv_root_for_symlinked_clis() {
     let env = vec![(
@@ -1040,6 +1042,7 @@ fn bubblewrap_projects_a_python_virtualenv_root_for_symlinked_clis() {
 /// | relative | any | resolve only through the declared PATH projections |
 /// This covers both an operator-installed ACP executable and the Runtime's
 /// own Session Hand without adding a second Hand-specific mount mechanism.
+#[cfg(unix)]
 #[test]
 fn bubblewrap_projects_an_explicit_non_system_executable_read_only() {
     let ws = PathBuf::from("/host/ws");
@@ -1069,6 +1072,7 @@ fn bubblewrap_projects_an_explicit_non_system_executable_read_only() {
 /// system root; N5 relative or lookalike component -> no npm expansion. Both
 /// OS renderers consume the same selector. Neither may grant runtime writes or
 /// expose the installation parent (which can hold credentials/application data).
+#[cfg(unix)]
 #[test]
 fn npm_runtime_projection_retains_dependencies_without_exposing_the_install_parent() {
     for (entry, expected) in [
@@ -1372,6 +1376,7 @@ fn resolver_runtime_directories_follow_the_network_policy() {
 /// refused; R5 relative or non-normal (`..`, `.`) paths are refused.
 /// R6 whole first-level home trees are refused; R7 private state descendants
 /// are refused even when a directory is named bin or reached through an alias.
+#[cfg(unix)]
 #[test]
 fn runtime_roots_never_expose_host_state() {
     let home = std::path::Path::new("/home/op");
