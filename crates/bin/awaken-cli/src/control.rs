@@ -259,6 +259,7 @@ async fn prepare_control_process_with_model_supply(
         additional_lifecycle_delivery,
         managed_services,
         installations,
+        awaken_lease_contract::system_clock(),
     )
     .await
 }
@@ -267,6 +268,7 @@ pub(super) async fn prepare_control_process_with_installations(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
     installations: installation_binding::PreparedDeploymentInstallations,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<PreparedProcess, String> {
     prepare_control_process_with_model_supply_and_installations(
         deployment,
@@ -277,6 +279,7 @@ pub(super) async fn prepare_control_process_with_installations(
         None,
         ManagedServiceAdapters::default(),
         installations,
+        clock,
     )
     .await
 }
@@ -296,14 +299,14 @@ async fn prepare_control_process_with_model_supply_and_installations(
     >,
     mut managed_services: ManagedServiceAdapters,
     installations: installation_binding::PreparedDeploymentInstallations,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<PreparedProcess, String> {
     let publish_local_workspace = installations.publishes_local_workspace();
     let platform_workspace = installations.platform_workspace_before_write()?;
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let hosted_byok_enabled = managed_services.provider_credential_execution.is_some();
-    // The Control process chooses one wall clock for envelope admission and
-    // every store and component composed below.
-    let clock = awaken_lease_contract::system_clock();
+    // The Control composition receives the same process clock selected before
+    // any local Worker or Coordinator preparation.
     let _ = managed_services.install_credential_envelope(
         deployment.worker.credential_envelope_keys_file.as_deref(),
         clock.clone(),

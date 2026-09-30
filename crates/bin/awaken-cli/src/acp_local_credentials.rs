@@ -6,6 +6,7 @@
 //! It adapts the canonical ACP discovery observations to the existing credential
 //! liveness port. It never opens, returns, or materializes CLI credentials.
 
+use awaken_lease_contract::WallClock;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -40,19 +41,21 @@ pub struct PreparedLocalWorker {
 pub async fn prepare_local_worker(
     deployment: &mut crate::config::ResolvedDeployment,
     seal_key: &[u8; 32],
+    clock: Arc<dyn WallClock>,
 ) -> Result<PreparedLocalWorker, String> {
     let installations =
         crate::installation_binding::verify_deployment_installations(deployment).await?;
     let workspace = installations.platform_workspace_before_write()?;
-    prepare_local_worker_with_workspace(deployment, seal_key, workspace).await
+    prepare_local_worker_with_workspace(deployment, seal_key, workspace, clock).await
 }
 
 pub(crate) async fn prepare_local_worker_with_workspace(
     deployment: &mut crate::config::ResolvedDeployment,
     seal_key: &[u8; 32],
     workspace: Option<String>,
+    clock: Arc<dyn WallClock>,
 ) -> Result<PreparedLocalWorker, String> {
-    let prepared = prepare_local_acp_with_workspace(deployment, seal_key, workspace).await?;
+    let prepared = prepare_local_acp_with_workspace(deployment, seal_key, workspace, clock).await?;
     let worker = match prepared {
         Some(prepared) => PreparedLocalWorker {
             resolver: Some(prepared.resolver),
@@ -98,17 +101,19 @@ fn uses_host_acp_discovery(deployment: &crate::config::ResolvedDeployment) -> bo
 pub async fn prepare_local_acp(
     deployment: &mut crate::config::ResolvedDeployment,
     seal_key: &[u8; 32],
+    clock: Arc<dyn WallClock>,
 ) -> Result<Option<PreparedLocalAcp>, String> {
     let installations =
         crate::installation_binding::verify_deployment_installations(deployment).await?;
     let workspace = installations.platform_workspace_before_write()?;
-    prepare_local_acp_with_workspace(deployment, seal_key, workspace).await
+    prepare_local_acp_with_workspace(deployment, seal_key, workspace, clock).await
 }
 
 async fn prepare_local_acp_with_workspace(
     deployment: &mut crate::config::ResolvedDeployment,
     seal_key: &[u8; 32],
     workspace: Option<String>,
+    clock: Arc<dyn WallClock>,
 ) -> Result<Option<PreparedLocalAcp>, String> {
     if !uses_host_acp_discovery(deployment) {
         // Container-backed ACP executables belong to the configured image/Pod,
@@ -132,6 +137,7 @@ async fn prepare_local_acp_with_workspace(
         adapters.negotiator,
         stores,
         workspace,
+        clock,
     )
     .await
 }
@@ -203,6 +209,7 @@ async fn prepare_local_acp_with(
     negotiator: Arc<dyn AcpCapabilityNegotiator>,
     stores: awaken_control::InferenceMaterializationStores,
     workspace: String,
+    clock: Arc<dyn WallClock>,
 ) -> Result<Option<PreparedLocalAcp>, String> {
     let wrapper_root = deployment.data_dir.join("acp-wrappers");
     let selected_cli_ids = deployment
@@ -220,6 +227,7 @@ async fn prepare_local_acp_with(
             wrapper_root,
             selected_cli_ids,
             credentials: stores.credentials.clone(),
+            clock,
         },
         discovery,
         installer,
@@ -587,7 +595,13 @@ mod tests {
         let initial_disable_local_pool = deployment.runtime.disable_local_pool;
         let initial_run_local_pool = deployment.run_local_pool;
 
-        let error = match prepare_local_acp(&mut deployment, &[0x61; 32]).await {
+        let error = match prepare_local_acp(
+            &mut deployment,
+            &[0x61; 32],
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        {
             Ok(_) => panic!("A1 corrupt Session authority must stop public ACP preparation"),
             Err(error) => error,
         };
@@ -697,6 +711,7 @@ mod tests {
         let resolver = awaken_acp_application::resolver_from_sources(
             discovery.clone(),
             [codex, claude, gemini, opencode, disabled],
+            awaken_lease_contract::system_clock(),
         )
         .unwrap();
         let observations = resolver.credential_observations().await.unwrap();
@@ -747,8 +762,12 @@ mod tests {
             )]),
             calls: Mutex::new(Vec::new()),
         });
-        let resolver =
-            awaken_acp_application::resolver_from_sources(discovery.clone(), [codex]).unwrap();
+        let resolver = awaken_acp_application::resolver_from_sources(
+            discovery.clone(),
+            [codex],
+            awaken_lease_contract::system_clock(),
+        )
+        .unwrap();
 
         assert!(
             resolver
@@ -779,7 +798,12 @@ mod tests {
             calls: Mutex::new(Vec::new()),
         });
         assert!(
-            awaken_acp_application::resolver_from_sources(discovery.clone(), [missing]).is_err()
+            awaken_acp_application::resolver_from_sources(
+                discovery.clone(),
+                [missing],
+                awaken_lease_contract::system_clock(),
+            )
+            .is_err()
         );
 
         let unrelated = ensure_worker_local(
@@ -790,8 +814,12 @@ mod tests {
         )
         .await
         .unwrap();
-        let resolver =
-            awaken_acp_application::resolver_from_sources(discovery, [unrelated]).unwrap();
+        let resolver = awaken_acp_application::resolver_from_sources(
+            discovery,
+            [unrelated],
+            awaken_lease_contract::system_clock(),
+        )
+        .unwrap();
         assert!(resolver.credential_observations().await.unwrap().is_empty());
     }
 
@@ -816,8 +844,14 @@ mod tests {
             )]),
             calls: Mutex::new(Vec::new()),
         });
-        let resolver =
-            Arc::new(awaken_acp_application::resolver_from_sources(discovery, [source]).unwrap());
+        let resolver = Arc::new(
+            awaken_acp_application::resolver_from_sources(
+                discovery,
+                [source],
+                awaken_lease_contract::system_clock(),
+            )
+            .unwrap(),
+        );
         assert_eq!(
             resolver
                 .credential_observations()
@@ -978,6 +1012,7 @@ mod tests {
             fixed_negotiator(),
             stores.clone(),
             workspace.clone(),
+            awaken_lease_contract::system_clock(),
         )
         .await
         .unwrap()
@@ -1041,6 +1076,7 @@ mod tests {
             fixed_negotiator(),
             stores,
             workspace.clone(),
+            awaken_lease_contract::system_clock(),
         )
         .await
         .unwrap()
@@ -1184,6 +1220,7 @@ mod tests {
             fixed_negotiator(),
             stores,
             workspace.clone(),
+            awaken_lease_contract::system_clock(),
         )
         .await
         .expect("F2 startup remains diagnosable");

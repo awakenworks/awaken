@@ -5,6 +5,7 @@ use awaken_credential_vault::repo::{CredentialRepo, ensure_worker_local};
 use awaken_credential_vault::{
     CredentialKind, CredentialSource, CredentialStatus, WorkerLocalBinding,
 };
+use awaken_lease_contract::WallClock;
 use awaken_run_executor_acp::acp_cli;
 pub use awaken_run_executor_acp::host::*;
 use awaken_runtime_contract::CredentialRef;
@@ -20,6 +21,7 @@ pub struct LocalAcpPreparation {
     pub wrapper_root: PathBuf,
     pub selected_cli_ids: Option<BTreeSet<String>>,
     pub credentials: Arc<dyn CredentialRepo>,
+    pub clock: Arc<dyn WallClock>,
 }
 
 /// Registration facade over one Worker-owned preparation result, without copied state.
@@ -58,6 +60,7 @@ pub async fn prepare_host_acp_with(
             probe_cwd: input.probe_cwd,
             wrapper_root: input.wrapper_root,
             selected_cli_ids: input.selected_cli_ids,
+            clock: input.clock,
         },
         discovery,
         installer,
@@ -144,8 +147,13 @@ pub fn project_local_credential_sources(
 pub fn resolver_from_sources(
     discovery: Arc<dyn AcpDiscovery>,
     sources: impl IntoIterator<Item = CredentialSource>,
+    clock: Arc<dyn WallClock>,
 ) -> Result<AcpLocalCredentialResolver, String> {
-    AcpLocalCredentialResolver::from_bindings(discovery, project_local_credential_sources(sources)?)
+    AcpLocalCredentialResolver::from_bindings(
+        discovery,
+        project_local_credential_sources(sources)?,
+        clock,
+    )
 }
 pub fn add_sources(
     resolver: &AcpLocalCredentialResolver,
@@ -347,15 +355,19 @@ mod tests {
             success: true,
             calls: AtomicUsize::new(0),
         });
-        let resolver = resolver_from_sources(Arc::new(AvailableDiscovery), [])
-            .unwrap()
-            .with_capability_observations(
-                fixture.clone(),
-                [("unknown".into(), vec!["must-not-launch".into()])]
-                    .into_iter()
-                    .collect(),
-                PathBuf::from("."),
-            );
+        let resolver = resolver_from_sources(
+            Arc::new(AvailableDiscovery),
+            [],
+            awaken_lease_contract::system_clock(),
+        )
+        .unwrap()
+        .with_capability_observations(
+            fixture.clone(),
+            [("unknown".into(), vec!["must-not-launch".into()])]
+                .into_iter()
+                .collect(),
+            PathBuf::from("."),
+        );
         assert!(
             resolver
                 .capability_observations()
@@ -392,15 +404,19 @@ mod tests {
             success: true,
             calls: AtomicUsize::new(0),
         });
-        let resolver = resolver_from_sources(discovery.clone(), [source.clone()])
-            .unwrap()
-            .with_capability_observations(
-                fixture.clone(),
-                [("claude".into(), vec!["claude-acp".into()])]
-                    .into_iter()
-                    .collect(),
-                PathBuf::from("."),
-            );
+        let resolver = resolver_from_sources(
+            discovery.clone(),
+            [source.clone()],
+            awaken_lease_contract::system_clock(),
+        )
+        .unwrap()
+        .with_capability_observations(
+            fixture.clone(),
+            [("claude".into(), vec!["claude-acp".into()])]
+                .into_iter()
+                .collect(),
+            PathBuf::from("."),
+        );
         assert_eq!(
             observed_bindings(&resolver).await.values().next(),
             Some(&CredentialObservationState::Available)
@@ -453,6 +469,7 @@ mod tests {
                     initial_workspace: None,
                     selected_cli_ids: Some(cli_ids.iter().map(|id| (*id).to_string()).collect()),
                     credentials: Arc::new(InMemoryCredentialRepo::new()),
+                    clock: awaken_lease_contract::system_clock(),
                 },
                 Arc::new(AvailableDiscovery),
                 fixture.clone(),
@@ -563,18 +580,22 @@ mod tests {
                             })
                             .collect()
                     };
-                    let resolver = resolver_from_sources(discovery.clone(), selected.clone())
-                        .unwrap()
-                        .with_capability_observations(
-                            negotiator.clone(),
-                            [
-                                ("codex".into(), vec!["codex-acp".into()]),
-                                ("claude".into(), vec!["claude-acp".into()]),
-                            ]
-                            .into_iter()
-                            .collect(),
-                            PathBuf::from("."),
-                        );
+                    let resolver = resolver_from_sources(
+                        discovery.clone(),
+                        selected.clone(),
+                        awaken_lease_contract::system_clock(),
+                    )
+                    .unwrap()
+                    .with_capability_observations(
+                        negotiator.clone(),
+                        [
+                            ("codex".into(), vec!["codex-acp".into()]),
+                            ("claude".into(), vec!["claude-acp".into()]),
+                        ]
+                        .into_iter()
+                        .collect(),
+                        PathBuf::from("."),
+                    );
                     let mut expected_negotiations = 0;
                     for refresh in 1..=2 {
                         let wrong_backend = initially_wrong == (refresh == 1);
@@ -678,6 +699,7 @@ mod tests {
                         initial_workspace: Some("workspace".into()),
                         selected_cli_ids: Some(["claude".into()].into_iter().collect()),
                         credentials: Arc::new(InMemoryCredentialRepo::new()),
+                        clock: awaken_lease_contract::system_clock(),
                     },
                     discovery.clone(),
                     fixture.clone(),
@@ -788,8 +810,12 @@ mod tests {
         }
         for conflict_index in 0..sources.len() {
             for reverse in [false, true] {
-                let resolver =
-                    resolver_from_sources(Arc::new(AvailableDiscovery), sources.clone()).unwrap();
+                let resolver = resolver_from_sources(
+                    Arc::new(AvailableDiscovery),
+                    sources.clone(),
+                    awaken_lease_contract::system_clock(),
+                )
+                .unwrap();
                 let before = observed_bindings(&resolver).await;
                 let fresh = ensure_worker_local(
                     &repo,
@@ -833,8 +859,12 @@ mod tests {
             "cli",
             "duplicate",
         ] {
-            let resolver =
-                resolver_from_sources(Arc::new(AvailableDiscovery), [sources[2].clone()]).unwrap();
+            let resolver = resolver_from_sources(
+                Arc::new(AvailableDiscovery),
+                [sources[2].clone()],
+                awaken_lease_contract::system_clock(),
+            )
+            .unwrap();
             let before = observed_bindings(&resolver).await;
             let mut malformed = sources[1].clone();
             match fault {
@@ -874,6 +904,7 @@ mod tests {
                 initial_workspace: None,
                 selected_cli_ids: Some(["codex".into()].into_iter().collect()),
                 credentials: Arc::new(InMemoryCredentialRepo::new()),
+                clock: awaken_lease_contract::system_clock(),
             },
             Arc::new(AvailableDiscovery),
             fixture.clone(),
