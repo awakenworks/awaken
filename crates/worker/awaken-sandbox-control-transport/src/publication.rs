@@ -417,7 +417,7 @@ mod verification {
 
         slot.release(&first);
         let second = slot.reserve(4_u8).unwrap();
-        assert!(!Arc::ptr_eq(&first.0, &second.0), "S3 no identity reuse");
+        assert!(first != second, "S3 no identity reuse");
         slot.release(&first);
         assert!(slot.owns(&second), "S3 stale release stutters");
         assert!(slot.with_current_mut(&first, |_| ()).is_err(), "S3");
