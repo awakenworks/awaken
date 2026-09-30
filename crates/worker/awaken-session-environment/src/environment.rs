@@ -101,23 +101,20 @@ impl SandboxEnvironment {
                         )
                     },
                 );
-                let workspace = sandbox
+                let mut protocol_cwd = sandbox
                     .workspace_path()
                     .join(pc::WorkspaceLayout::ROOT.trim_start_matches('/'));
-                let protocol_cwd = working_directory
-                    .map_or_else(|| workspace.clone(), |relative| workspace.join(relative));
+                if let Some(relative) = working_directory {
+                    // ACP validates a portable `/`-delimited relative path at
+                    // admission. Push its components separately so the one
+                    // physical cwd uses native separators on Windows too.
+                    for component in relative.split('/') {
+                        protocol_cwd.push(component);
+                    }
+                }
                 super::AgentFilesystemView {
                     protocol_cwd: protocol_cwd.to_string_lossy().into_owned(),
-                    command_cwd: working_directory.map_or_else(
-                        || pc::WorkspaceLayout::ROOT.to_string(),
-                        |relative| {
-                            format!(
-                                "{}/{}",
-                                pc::WorkspaceLayout::ROOT.trim_end_matches('/'),
-                                relative
-                            )
-                        },
-                    ),
+                    command_cwd: logical_cwd.clone(),
                     prompt_paths:
                         awaken_session_environment_contract::AgentPathView::workdir_relative(
                             logical_cwd,

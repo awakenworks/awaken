@@ -30,6 +30,8 @@ fn host_projection_path(
 }
 
 fn set_projected_file_permissions(path: &std::path::Path) -> Result<(), RuntimeError> {
+    #[cfg(not(unix))]
+    let _ = path;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
