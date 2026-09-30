@@ -12,10 +12,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
 
+use awaken_agent_contract::fresh_process_id;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
@@ -235,7 +235,7 @@ impl A2aState {
     ) -> Result<(), StateError> {
         if let Some(config) = config.as_mut() {
             validate_config(config).map_err(StateError::Invalid)?;
-            config.id.get_or_insert_with(next_config_id);
+            config.id.get_or_insert_with(|| fresh_process_id("push"));
         }
         let task_id = task.id.clone();
         let response = if config.is_some() {
@@ -444,7 +444,7 @@ impl A2aState {
         protocol_version: PushProtocolVersion,
     ) -> Result<PushNotificationConfig, StateError> {
         validate_config(&config).map_err(StateError::Invalid)?;
-        config.id.get_or_insert_with(next_config_id);
+        config.id.get_or_insert_with(|| fresh_process_id("push"));
         self.commit(|persistent| {
             upsert_config_snapshot(
                 persistent,
@@ -594,7 +594,7 @@ fn stage_deliveries(
         };
         let Some(payload) = payload else { continue };
         let delivery = Delivery {
-            id: next_delivery_id(),
+            id: fresh_process_id("delivery"),
             task_id: task_id.to_string(),
             config: stored.config.clone(),
             payload,
@@ -606,32 +606,6 @@ fn stage_deliveries(
         deliveries.push(delivery);
     }
     deliveries
-}
-
-fn next_config_id() -> String {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before Unix epoch")
-        .as_nanos();
-    format!(
-        "push-{:x}-{nanos:x}-{:x}",
-        std::process::id(),
-        SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    )
-}
-
-fn next_delivery_id() -> String {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before Unix epoch")
-        .as_nanos();
-    format!(
-        "delivery-{:x}-{nanos:x}-{:x}",
-        std::process::id(),
-        SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    )
 }
 
 fn write_private_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
@@ -739,6 +713,7 @@ mod tests {
     use awaken_session_application_contract::{
         Pending, RunApplicationError, RunResume, StepOutcome,
     };
+    use std::sync::atomic::AtomicU64;
 
     struct Runtime;
 
@@ -791,9 +766,8 @@ mod tests {
 
     fn unique_state_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "awaken-a2a-{label}-{}-{}.json",
-            std::process::id(),
-            next_config_id()
+            "awaken-a2a-{label}-{}.json",
+            fresh_process_id("test")
         ))
     }
 
@@ -803,10 +777,12 @@ mod tests {
         // C1 an explicit persistence path is injected -> E1 task/config state
         // survives construction of a new adapter; C2 protocol version and owner
         // are persisted with the config -> E2 both remain available to the same
-        // tenant after restart.
+        // tenant after restart. C3 no config id is supplied -> E3 one generated
+        // process-scoped id is persisted and returned unchanged after restart.
         //
-        // Decision rule R1: C1 && C2 => E1 && E2. The complementary no-path
-        // rule is represented structurally by `router`, which injects `None`
+        // Decision rules R1=C1+C2=>E1+E2 and R2=C1+C2+C3=>E1+E2+E3.
+        // The complementary no-path rule is represented structurally by
+        // `router`, which injects `None`
         // and therefore creates no persistence side effect.
         let path = unique_state_path("restart");
         let state = A2aState::with_persistence_path(Arc::new(Runtime), Some(path.clone())).unwrap();
@@ -814,12 +790,12 @@ mod tests {
             .record_task(working_task("task-persisted"), Some("tenant-a".into()))
             .await
             .unwrap();
-        state
+        let configured = state
             .upsert_config(
                 "task-persisted",
                 Some("tenant-a"),
                 PushNotificationConfig {
-                    id: Some("push-persisted".into()),
+                    id: None,
                     url: "https://example.invalid/hook".into(),
                     token: None,
                     authentication: None,
@@ -828,6 +804,8 @@ mod tests {
             )
             .await
             .unwrap();
+        let generated_id = configured.id.expect("C3 generates an id");
+        assert!(generated_id.starts_with("push-"), "C3/E3");
         drop(state);
 
         let restored =
@@ -838,15 +816,61 @@ mod tests {
                 .await
                 .is_some()
         );
+        let configs = restored
+            .configs("task-persisted", Some("tenant-a"))
+            .await
+            .unwrap();
+        assert_eq!(configs.len(), 1);
         assert_eq!(
-            restored
-                .configs("task-persisted", Some("tenant-a"))
-                .await
-                .unwrap()
-                .len(),
-            1
+            configs[0].id.as_deref(),
+            Some(generated_id.as_str()),
+            "C3/E3"
         );
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn staged_deliveries_use_distinct_process_ids_and_retain_each_frozen_intent() {
+        // Causes: C1 one committed Task and push config; C2 two distinct Task
+        // publications select that config. Effects: R1 C1+C2 yields two
+        // different delivery ids under the canonical process namespace, and
+        // both exact payloads remain in the one durable snapshot for retry.
+        // A later retry consumes either retained id; it does not mint another
+        // one (covered by push_delivery_intent_is_staged_recovered...).
+        let task = working_task("task-auto-delivery");
+        let config = PushNotificationConfig {
+            id: Some("push-owner".into()),
+            url: "https://example.invalid/hook".into(),
+            token: None,
+            authentication: None,
+        };
+        let mut persistent = PersistentState {
+            tasks: HashMap::from([(
+                task.id.clone(),
+                StoredTask {
+                    task: task.clone(),
+                    agent_id: None,
+                },
+            )]),
+            configs: HashMap::from([(
+                task.id.clone(),
+                vec![StoredConfig {
+                    config,
+                    agent_id: None,
+                    protocol_version: PushProtocolVersion::V03,
+                }],
+            )]),
+            ..PersistentState::default()
+        };
+        let response = StreamResponse::Task(task.clone());
+        let first = stage_deliveries(&mut persistent, &task.id, None, &response);
+        let second = stage_deliveries(&mut persistent, &task.id, None, &response);
+        assert_eq!(first.len(), 1, "R1 first intent");
+        assert_eq!(second.len(), 1, "R1 second intent");
+        assert!(first[0].id.starts_with("delivery-"), "R1 canonical prefix");
+        assert_ne!(first[0].id, second[0].id, "R1 distinct events");
+        assert_eq!(persistent.deliveries.len(), 2, "R1 both intents retained");
+        assert_eq!(first[0].payload, second[0].payload, "R1 exact payload");
     }
 
     #[tokio::test]
