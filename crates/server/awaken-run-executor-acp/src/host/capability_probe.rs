@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_acp_contract::{
@@ -35,17 +35,12 @@ impl EffectiveAcpCapabilityProfile {
         cli_id: impl Into<String>,
         cli_version: impl Into<String>,
         negotiated: NegotiatedAcpCapabilities,
+        observed_at_unix_ms: u64,
     ) -> Self {
         let cli_id = cli_id.into();
         let cli_version = cli_version.into();
         let fingerprint =
             awaken_acp_contract::capability_fingerprint(&cli_id, &cli_version, &negotiated);
-        let observed_at_unix_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .try_into()
-            .unwrap_or(u64::MAX);
         Self {
             cli_id,
             cli_version,
@@ -216,6 +211,20 @@ mod tests {
                 ],
             }],
         }
+    }
+
+    #[test]
+    fn verified_capability_keeps_the_callers_observation_time_out_of_its_fingerprint() {
+        // Causes: C1 the same verified CLI/version/capability evidence; C2
+        // the Host observes it at two distinct instants. Effects: R1 C1+C2
+        // retains each exact supplied observation time, while the capability
+        // fingerprint stays equal. The profile cannot sample a second clock
+        // and thereby disagree with the Host's published observation batch.
+        let first = EffectiveAcpCapabilityProfile::verified("codex", "1.0", capabilities(), 1_000);
+        let later = EffectiveAcpCapabilityProfile::verified("codex", "1.0", capabilities(), 2_000);
+        assert_eq!(first.observed_at_unix_ms, 1_000, "R1 first");
+        assert_eq!(later.observed_at_unix_ms, 2_000, "R1 later");
+        assert_eq!(first.fingerprint, later.fingerprint, "R1 exact evidence");
     }
 
     #[test]

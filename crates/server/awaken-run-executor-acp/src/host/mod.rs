@@ -238,6 +238,7 @@ pub async fn prepare_host_acp_capabilities_with(
                     &observation.cli_id,
                     observation.version.as_deref().unwrap_or("unknown"),
                     negotiated,
+                    wall_clock_ms(),
                 );
                 observation.capability_state = Some(AcpCapabilityState::Verified);
                 observation.capability_fingerprint = Some(profile.fingerprint.clone());
@@ -644,6 +645,7 @@ impl AcpCapabilityObservationSource for AcpLocalCredentialResolver {
                         cli.id,
                         host.version.as_deref().unwrap_or("unknown"),
                         negotiated,
+                        observed_at_ms,
                     );
                     observations.push(
                         AcpCapabilityObservation::verified(
