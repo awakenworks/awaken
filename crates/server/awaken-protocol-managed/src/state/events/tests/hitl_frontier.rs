@@ -332,9 +332,60 @@ async fn late_hitl_activity_cannot_rewrite_issued_usage_or_old_cursors() {
     // same full history and every old-cursor suffix. Decision rows R2=H5+H6
     // =>E4+E5; R3=R2+H7=>E6. The committed ticket audit, not a live cache,
     // classifies the old ToolUse while Session CAS owns activity settlement.
+    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
+    assert_late_hitl_frontier(repository.clone(), repository, false).await;
+}
+
+#[tokio::test]
+async fn legacy_hitl_interval_then_new_activity_preserves_the_public_frontier() {
+    // Causes: L1 an old closed interval has no admitted-after cursor but its
+    // answerable Awaiting7 and ToolUse are committed before the first public
+    // read; L2 a new-version Session activity is admitted after cursor 7 and
+    // settles while observing that old boundary; L3 a cold reader rebuilds.
+    // Effects: E1 the legacy close and tool have one stable public history;
+    // E2 L2 cannot absorb the old boundary or replace that history; E3 L3
+    // returns every old ID/payload and after-cursor suffix unchanged. Decision
+    // rows L1=>E1, L1+L2=>E1+E2, L1+L2+L3=>E1+E2+E3. This is the reachable
+    // mixed-version case: old lineage exists before its first public read.
+    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
+    assert_late_hitl_frontier(repository.clone(), repository, true).await;
+}
+
+#[tokio::test]
+async fn postgres_two_connection_late_hitl_frontier_preserves_old_cursors() {
+    // Causes: P1 the same accepted ToolUse/Awaiting prefix is visible through
+    // one PostgreSQL connection; P2 a later Session activity is admitted and
+    // settled through that connection; P3 a second independently opened
+    // repository/Managed cache rebuilds from the committed database. Effects:
+    // E1 the later interval cannot claim the earlier boundary; E2 the first
+    // cache keeps every issued ID/payload/position; E3 the second returns the
+    // same complete page and every old-cursor suffix. Rule P1+P2+P3=>E1-E3.
+    // An absent URL is no PG claim; pg_tests.sh supplies a required live URL.
+    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        return;
+    };
+    let first: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        awaken_session_store::PostgresManagedSessionRepository::connect(&url)
+            .await
+            .expect("configured first PostgreSQL Session repository"),
+    );
+    let second: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        awaken_session_store::PostgresManagedSessionRepository::connect(&url)
+            .await
+            .expect("configured second PostgreSQL Session repository"),
+    );
+    assert_late_hitl_frontier(first, second, false).await;
+}
+
+async fn assert_late_hitl_frontier(
+    first: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    second: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    legacy_closed_interval: bool,
+) {
     let runtime = LifecycleRuntime::default();
-    let repository = Arc::new(ephemeral_session_repo());
-    let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+    let warm = ManagedState::new(runtime.clone()).with_session_repo(first);
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -406,6 +457,43 @@ async fn late_hitl_activity_cannot_rewrite_issued_usage_or_old_cursors() {
     awaiting.await_reason =
         Some(awaken_agent_contract::agent::awaiting::AwaitReason::ToolPermission);
     runtime.lifecycle.lock().unwrap().push(awaiting.clone());
+    if legacy_closed_interval {
+        let mut persisted = warm
+            .application
+            .session(&SessionId::from(id))
+            .await
+            .unwrap();
+        persisted.closed_runtime_intervals.push(
+            awaken_session_state_contract::SessionRuntimeInterval {
+                interval_id: format!("legacy-hitl-{id}"),
+                activity_epoch: 1,
+                started_at_unix_ms: 0,
+                ended_at_unix_ms: 7,
+                opened_revision: awaken_session_types::SessionRevision(1),
+                closed_revision: awaken_session_types::SessionRevision(2),
+                admitted_after_commit_cursor: None,
+                observations: vec![
+                    awaken_session_state_contract::SessionRuntimeIntervalObservation {
+                        activity_epoch: 1,
+                        thread_id: ThreadId(id.into()),
+                        run_id: run.clone(),
+                        lifecycle_cursor: awaiting.cursor,
+                        source_commit_cursor: 7,
+                    },
+                ],
+                usage: Default::default(),
+                max_list_cost_minor: None,
+            },
+        );
+        warm.commit_session_snapshot(
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+            persisted,
+            "legacy-hitl-interval-before-publication",
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    }
     warm.refresh_committed_events(id).await.unwrap();
     let prior = warm.list_events(id, None, None, false).unwrap().data;
     assert!(
@@ -451,10 +539,14 @@ async fn late_hitl_activity_cannot_rewrite_issued_usage_or_old_cursors() {
         )
         .await
         .unwrap();
-    assert_eq!(settled.closed_runtime_intervals.len(), 1);
-    assert!(
-        settled.closed_runtime_intervals[0].observations.is_empty(),
-        "R2/E5"
+    assert_eq!(
+        settled
+            .closed_runtime_intervals
+            .iter()
+            .flat_map(|interval| interval.observations.iter())
+            .count(),
+        usize::from(legacy_closed_interval),
+        "R2/E5 the late activity cannot record the earlier boundary"
     );
     warm.refresh_committed_events(id).await.unwrap();
     assert_eq!(
@@ -463,7 +555,7 @@ async fn late_hitl_activity_cannot_rewrite_issued_usage_or_old_cursors() {
         "R2/E4-E5 complete previously issued prefix"
     );
 
-    let cold = ManagedState::new(runtime).with_session_repo(repository);
+    let cold = ManagedState::new(runtime).with_session_repo(second);
     cold.refresh_committed_events(id).await.unwrap();
     assert_eq!(
         serde_json::to_value(cold.list_events(id, None, None, false).unwrap().data).unwrap(),
