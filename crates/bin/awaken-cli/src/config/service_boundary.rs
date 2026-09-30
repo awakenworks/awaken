@@ -312,7 +312,7 @@ fn resolve_private_boundary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ConfigOverrides, FileConfig, ResolvedDeployment};
+    use crate::config::{ConfigOverrides, FileConfig};
     use awaken_service_auth_contract::ServiceBearerTokenSource;
 
     #[test]
@@ -577,7 +577,7 @@ mod tests {
         assert!(error.contains("credential_db"));
         assert!(enforce_worker_database_isolation(Role::Control, &[("config_db", true)]).is_ok());
 
-        let key_error = ResolvedDeployment::resolve_file(
+        let key_error = crate::config::resolve_test_file(
             ConfigOverrides {
                 role: Some(Role::Worker),
                 worker_server: Some("http://coordinator".into()),
@@ -593,7 +593,7 @@ mod tests {
         .unwrap_err();
         assert!(key_error.contains("control_seal_key_file"));
 
-        let error = ResolvedDeployment::resolve_file(
+        let error = crate::config::resolve_test_file(
             ConfigOverrides {
                 role: Some(Role::Worker),
                 worker_server: Some("http://coordinator".into()),
@@ -653,7 +653,7 @@ mod tests {
         // R4 AllInOne + paired enrollment/signing views -> accept the composite
         // boundary. R5 either AllInOne half alone -> reject before startup.
         let resolve = |role, file| {
-            ResolvedDeployment::resolve_file(
+            crate::config::resolve_test_file(
                 ConfigOverrides {
                     role: Some(role),
                     worker_server: (role == Role::Worker).then(|| "http://coordinator".to_owned()),

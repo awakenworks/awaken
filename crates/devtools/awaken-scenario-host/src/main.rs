@@ -113,10 +113,12 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await;
     }
     if model_mode.as_deref() == Ok("distributed-control") {
-        return awaken_scenario_host::serve_distributed_control()
-            .await
-            .map_err(std::io::Error::other)
-            .map_err(Into::into);
+        return awaken_scenario_host::serve_distributed_control(
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .map_err(std::io::Error::other)
+        .map_err(Into::into);
     }
     // Scenario environment is test-harness input, translated here into the same
     // typed policy production receives from config.toml. The observability adapter

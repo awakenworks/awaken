@@ -13,8 +13,9 @@
 //! Awaken consumes both facts but cannot provision, move, or promote either.
 
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
 
+use awaken_lease_contract::{WallClock, WallClockExt};
 use awaken_resource_persistence::{ObjectBackingConfig, ObjectBackingProvider};
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
@@ -65,12 +66,28 @@ pub(super) struct Config {
 /// It rereads the deployment-owned lease for every admitted request, so a
 /// revoke, expiry, epoch rotation, or atomic file replacement takes effect
 /// without trusting a process-start snapshot.
-#[derive(Debug, Clone)]
-pub(crate) struct WorkspaceDataLeaseGuard(Config);
+#[derive(Clone)]
+pub(crate) struct WorkspaceDataLeaseGuard {
+    config: Config,
+    clock: Arc<dyn WallClock>,
+}
+
+impl std::fmt::Debug for WorkspaceDataLeaseGuard {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkspaceDataLeaseGuard")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
 
 impl WorkspaceDataLeaseGuard {
+    pub(crate) fn clock(&self) -> Arc<dyn WallClock> {
+        self.clock.clone()
+    }
+
     pub(crate) fn validate_now(&self) -> Result<(), String> {
-        load(&self.0).map(drop)
+        load_at(&self.config, self.clock.now_ms()).map(drop)
     }
 }
 
@@ -85,8 +102,13 @@ pub(crate) async fn enforce_workspace_data_lease(
     next.run(request).await
 }
 
-pub(super) fn lease_guard(config: Option<&Config>) -> Option<WorkspaceDataLeaseGuard> {
-    config.cloned().map(WorkspaceDataLeaseGuard)
+pub(super) fn lease_guard(
+    config: Option<&Config>,
+    clock: Arc<dyn WallClock>,
+) -> Option<WorkspaceDataLeaseGuard> {
+    config
+        .cloned()
+        .map(|config| WorkspaceDataLeaseGuard { config, clock })
 }
 
 impl Config {
@@ -329,22 +351,15 @@ fn load_at(expected: &Config, now_ms: u64) -> Result<ObjectBackingConfig, String
     Ok(config)
 }
 
-fn load(expected: &Config) -> Result<ObjectBackingConfig, String> {
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("system clock precedes Unix epoch: {error}"))?
-        .as_millis()
-        .try_into()
-        .map_err(|_| "system clock does not fit the Workspace lease clock".to_owned())?;
-    load_at(expected, now_ms)
-}
-
 pub(super) fn resolve(
     database_url: Option<String>,
     workspace_data: Option<&Config>,
     embedded_root: PathBuf,
+    clock: &dyn WallClock,
 ) -> Result<super::ResourceStoreBackend, String> {
-    let object = workspace_data.map(load).transpose()?;
+    let object = workspace_data
+        .map(|config| load_at(config, clock.now_ms()))
+        .transpose()?;
     match (database_url, object) {
         (Some(url), Some(object)) if super::file_support::is_postgres_url(&url) => {
             Ok(super::ResourceStoreBackend::PostgresObject { url, object })
@@ -363,6 +378,7 @@ pub(super) fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_lease_testkit::ManualClock;
     use axum::Router;
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
@@ -496,36 +512,47 @@ mod tests {
             runtime_cell_incarnation: "incarnation-a".to_owned().try_into().unwrap(),
             runtime_placement_epoch: 5,
         };
+        let clock = ManualClock::new(200);
         let backend = resolve(
             Some("postgres://resources/db".into()),
             Some(&data),
             "/data".into(),
+            &clock,
         )
         .unwrap();
         assert!(
             matches!(backend, super::super::ResourceStoreBackend::PostgresObject { ref url, .. } if url == "postgres://resources/db")
         );
-        assert!(resolve(None, Some(&data), "/data".into()).is_err(), "R2");
+        assert!(
+            resolve(None, Some(&data), "/data".into(), &clock).is_err(),
+            "R2"
+        );
     }
 
     #[tokio::test]
     async fn request_guard_observes_lease_replacement_without_process_restart() {
         // Cause/effect design: C1=the mounted lease is exact and current;
         // C2=the deployment atomically replaces it with Revoked while the
-        // process remains alive. R1(C1)->admit; R2(C2)->503 before invoking
-        // the business handler. A startup-only snapshot would incorrectly
-        // admit R2 after a Cell move.
+        // process remains alive; C3=a fresh Granted lease expires when the
+        // injected process clock reaches its exact deadline. R1(C1)->admit;
+        // R2(C2)->503; R3(C1+C3 before deadline)->admit; R4(C1+C3 at
+        // deadline)->503. Every refusal precedes the business handler. A
+        // startup-only snapshot or ambient clock would misclassify R2/R4.
         let manifest_file = write(manifest());
         let lease_file = write(lease());
-        let guard = WorkspaceDataLeaseGuard(Config {
-            manifest_file: manifest_file.path().into(),
-            access_lease_file: lease_file.path().into(),
-            workspace_id: "workspace-a".to_owned().try_into().unwrap(),
-            runtime_region_id: "region-a".to_owned().try_into().unwrap(),
-            runtime_cell_id: "cell-a".to_owned().try_into().unwrap(),
-            runtime_cell_incarnation: "incarnation-a".to_owned().try_into().unwrap(),
-            runtime_placement_epoch: 5,
-        });
+        let clock = Arc::new(ManualClock::new(200));
+        let guard = WorkspaceDataLeaseGuard {
+            config: Config {
+                manifest_file: manifest_file.path().into(),
+                access_lease_file: lease_file.path().into(),
+                workspace_id: "workspace-a".to_owned().try_into().unwrap(),
+                runtime_region_id: "region-a".to_owned().try_into().unwrap(),
+                runtime_cell_id: "cell-a".to_owned().try_into().unwrap(),
+                runtime_cell_incarnation: "incarnation-a".to_owned().try_into().unwrap(),
+                runtime_placement_epoch: 5,
+            },
+            clock: clock.clone(),
+        };
         let app = Router::new()
             .route("/effect", get(|| async { StatusCode::NO_CONTENT }))
             .layer(axum::middleware::from_fn_with_state(
@@ -548,9 +575,23 @@ mod tests {
         revoked["state"] = serde_json::json!("revoked");
         std::fs::write(lease_file.path(), serde_json::to_vec(&revoked).unwrap()).unwrap();
         assert_eq!(
-            app.oneshot(request()).await.unwrap().status(),
+            app.clone().oneshot(request()).await.unwrap().status(),
             StatusCode::SERVICE_UNAVAILABLE,
             "R2"
+        );
+        let mut expiring = lease();
+        expiring["expires_at_ms"] = serde_json::json!(201);
+        std::fs::write(lease_file.path(), serde_json::to_vec(&expiring).unwrap()).unwrap();
+        assert_eq!(
+            app.clone().oneshot(request()).await.unwrap().status(),
+            StatusCode::NO_CONTENT,
+            "R3"
+        );
+        clock.set(201);
+        assert_eq!(
+            app.oneshot(request()).await.unwrap().status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "R4"
         );
     }
 }

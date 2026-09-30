@@ -379,8 +379,11 @@ async fn build_all_in_one_router_with_model_supply(
     model_supply: PublicationModelSupply,
     managed_services: ManagedServiceAdapters,
 ) -> Router {
-    let deployment = config::ResolvedDeployment::load(config::ConfigOverrides::default())
-        .unwrap_or_else(|error| panic!("deployment configuration: {error}"));
+    let deployment = config::ResolvedDeployment::load(
+        config::ConfigOverrides::default(),
+        deployment_process::process_clock_for(None),
+    )
+    .unwrap_or_else(|error| panic!("deployment configuration: {error}"));
     let key = deployment
         .seal_key
         .load_or_create()

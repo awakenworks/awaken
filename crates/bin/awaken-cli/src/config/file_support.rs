@@ -14,7 +14,10 @@ use super::{ConfigOverrides, FileConfig, OperatingMode, ResolvedDeployment, Role
 // File selection and decoding stay with the existing file mechanics owner;
 // resolve_file remains the sole typed deployment composition path.
 impl ResolvedDeployment {
-    pub fn load(overrides: ConfigOverrides) -> Result<Self, String> {
+    pub fn load(
+        overrides: ConfigOverrides,
+        clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Result<Self, String> {
         let home = home_dir();
         let explicit_path = overrides.config_path.is_some();
         let config_path = overrides
@@ -35,7 +38,7 @@ impl ResolvedDeployment {
         } else {
             FileConfig::default()
         };
-        Self::resolve_file(overrides, home, config_path, file)
+        Self::resolve_file(overrides, home, config_path, file, clock)
     }
 }
 
