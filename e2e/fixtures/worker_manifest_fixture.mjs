@@ -5,6 +5,8 @@
 export const WORKER_PROVIDER_CREDENTIAL_CAPABILITY =
   'credential-realization.awaken.dev/v2:{"holders":[{"boundary":"worker","trust_domain":"awaken.worker"}],"material_sources":["control_plane_reference"],"realization_kinds":["worker_provider_adapter"],"recipient_bound_envelopes":false,"envelope_required":false}';
 
+export const WORKER_INHERITED_TOOLSETS_CAPABILITY = 'inherited-toolsets/v1';
+
 // One raw registration manifest for external E2E drivers that emulate a
 // database-less workdir Worker. Callers own the capability evidence and build
 // identity; this fixture owns only the repeated wire shape and applies no

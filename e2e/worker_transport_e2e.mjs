@@ -17,7 +17,6 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
-  WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
   pass,
   spawnServer,
   stopServer,
@@ -31,7 +30,11 @@ import {
   claimedCommitRequestFixture,
   terminalThreadCommitFixture,
 } from './fixtures/thread_commit_fixture.mjs';
-import { workdirWorkerManifestFixture } from './fixtures/worker_manifest_fixture.mjs';
+import {
+  workdirWorkerManifestFixture,
+  WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
+  WORKER_INHERITED_TOOLSETS_CAPABILITY,
+} from './fixtures/worker_manifest_fixture.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38812);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -142,7 +145,7 @@ async function registerReadyWorker() {
           // The fresh root activation freezes the child-toolset format. The
           // shipped Worker advertises this same capability; this transport
           // fixture claims and commits without executing the inherited tools.
-          'inherited-toolsets/v1',
+          WORKER_INHERITED_TOOLSETS_CAPABILITY,
           // This fixture claims a Session-owned root. The placement contract
           // therefore requires the Worker to realize its frozen Resources;
           // omitting this capability must yield no claim, not a local bypass.

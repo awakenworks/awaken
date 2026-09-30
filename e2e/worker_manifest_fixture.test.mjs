@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
-import { workdirWorkerManifestFixture, WORKER_PROVIDER_CREDENTIAL_CAPABILITY } from './fixtures/worker_manifest_fixture.mjs';
+import {
+  workdirWorkerManifestFixture,
+  WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
+  WORKER_INHERITED_TOOLSETS_CAPABILITY,
+} from './fixtures/worker_manifest_fixture.mjs';
 
 test('the external Worker fixture explicitly supports the current Rust execution protocol', () => {
   // Cause/effect table: C1 the Rust protocol floor; C2 this test peer's explicit
@@ -30,4 +34,15 @@ test('the Provider capability fixture follows the exact Rust credential codec', 
   const profile = JSON.parse(WORKER_PROVIDER_CREDENTIAL_CAPABILITY.slice(version[1].length));
   assert.equal(profile.envelope_required, false);
   assert.equal(profile.recipient_bound_envelopes, false);
+});
+
+test('the external Worker fixture names the frozen child-toolset format exactly', () => {
+  // Causes: C1 a fresh root carries inherited toolsets; C2 the simulated
+  // Workdir Worker opts into their format. Effect: E1 placement may reach the
+  // HTTP claim/commit tests only when C2 equals Rust's canonical capability.
+  // Rule C1+C2=>E1; a renamed format fails here before either transport E2E.
+  const source = fs.readFileSync(new URL('../crates/contract/awaken-runtime-contract/src/activation.rs', import.meta.url), 'utf8');
+  const capability = source.match(/pub const INHERITED_TOOLSETS_CAPABILITY: &str = "([^"]+)";/);
+  assert.ok(capability, 'the Rust inherited-toolset capability remains authoritative');
+  assert.equal(WORKER_INHERITED_TOOLSETS_CAPABILITY, capability[1]);
 });

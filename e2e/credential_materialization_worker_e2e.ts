@@ -4,19 +4,18 @@
 // authenticated Worker upstream and the result commits through the claim fence.
 //
 // Cause/effect decision table:
-// P0 ordinary dispatch + no Session pointer -> no realization-control lookup;
+// P0 an ordinary Run carrying a frozen Session projection -> the same real
+// Session and its Work fence remain required even without session_thread_id;
 // P1 exact recipient + live expiry + payload marker + target + claim -> one
-// provider call, one committed reply; P2 any changed envelope/target dimension
-// -> no provider call; P3 no authority DB/seal configuration -> Worker starts
-// and leaves no authority files; P4 structurally complete but stale or
-// unauthorized publication pin -> fail closed while the same Worker remains
-// available for P1; P5 the current seed owner commits its exact Run as Ended
+// provider call, one committed reply; P2 changed envelope/target dimensions
+// are owned by credential_files.rs's concrete resolver decision table; P3 no
+// authority DB/seal configuration -> Worker starts and leaves no authority
+// files; P5 the current seed owner commits its exact Run as Ended
 // and receives a durable receipt before terminal observation and Done removal;
 // P6 remote upstream + registered installed capabilities -> the per-Thread
 // Worker revalidates the SAME evidence before materialization; transport presence
-// must not erase it. P1 is the positive cross-layer oracle, P2/P4 retain rejection.
-// a non-null Session
-// pointer is constrained to a real Managed Session and fails closed otherwise.
+// must not erase it. P1 is this process E2E's positive cross-layer oracle;
+// P2's negative partitions are not duplicated in a synthetic Session Run.
 
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -38,7 +37,10 @@ import {
   claimedCommitRequestFixture,
   terminalThreadCommitFixture,
 } from './fixtures/thread_commit_fixture.mjs';
-import { workdirWorkerManifestFixture } from './fixtures/worker_manifest_fixture.mjs';
+import {
+  workdirWorkerManifestFixture,
+  WORKER_INHERITED_TOOLSETS_CAPABILITY,
+} from './fixtures/worker_manifest_fixture.mjs';
 import { createTlsIdentityFixture } from './fixtures/tls_identity_fixture.mjs';
 import { startTlsProxy, stopTlsProxy } from './fixtures/tls_proxy_fixture.mjs';
 import { stableFingerprintFixture } from './fixtures/stable_fingerprint_fixture.mjs';
@@ -98,7 +100,12 @@ async function seedIdentity() {
       incarnation_id: `${id}-${process.pid}`,
       manifest: workdirWorkerManifestFixture({
         buildDigest: id,
-        capabilities: ['host-executor/v1', 'native-runtime', 'session-resources/v1'],
+        // The server-created root freezes the child-toolset format. This seed
+        // only claims it, but must still present the exact placement evidence.
+        capabilities: [
+          'host-executor/v1', 'native-runtime', 'session-resources/v1',
+          WORKER_INHERITED_TOOLSETS_CAPABILITY,
+        ],
       }),
     },
   }, id);
@@ -168,8 +175,19 @@ async function main() {
       tlsIdentity.serverCertificate,
       tlsIdentity.serverKey,
     );
+    // Causes: C1 the management installation resolves one local Workspace;
+    // C2 credential authoring uses that exact context. Effect: E1 the vault
+    // credential enters the scope this Worker will later consume. A forged
+    // Workspace claim belongs to the config API's negative admission tests,
+    // not this materialization path. Rule C1+C2=>E1.
+    const workspaceContext = await request(
+      'GET', '/v1/config/workspace-context', undefined, undefined, CONFIG_BASE,
+    );
+    assert.equal(workspaceContext.status, 200, workspaceContext.text);
+    const workspace = workspaceContext.json?.workspace_id;
+    assert.ok(workspace, 'management resolves a trusted Workspace');
     const credential = await request('POST', '/v1/config/credentials', {
-      workspace_id: 'client-scope-is-overridden',
+      workspace_id: workspace,
       kind: 'vault',
       provider_id: 'anthropic',
       env_key: null,
@@ -179,7 +197,7 @@ async function main() {
 
     const seed = await seedIdentity();
     assert.equal((await request(
-      'POST', `/v1/durable/threads/${THREAD}-seed/submit_background`, { text: 'seed activation' },
+      'POST', `/v1/durable/threads/${THREAD}/submit_background`, { text: 'seed activation' },
     )).status, 200);
     const claim = await request(
       'POST', '/v1/worker/dispatch/claim', { identity: seed.identity }, seed.id,
@@ -265,108 +283,6 @@ async function main() {
     };
     dispatch.placement.required_capabilities = ['credential-source/v1', 'native-runtime'];
 
-    // The same production Worker must fail closed for structurally complete but
-    // stale or unauthorized pins and continue draining. Structurally incomplete
-    // candidates stop at typed HTTP ingress in worker_transport; retaining that
-    // row here would invent a second, unreachable Worker-level oracle. Dispatch
-    // retry policy retains these admitted failures; none may reach a provider or
-    // fall back to catalog resolution.
-    const invalidCandidates = [
-      {
-        ...structuredClone(publishedCandidate),
-        provisioning: {
-          ...structuredClone(publishedCandidate.provisioning),
-          credential: {
-            ...structuredClone(publishedCandidate.provisioning.credential),
-            envelope: {
-              ...structuredClone(publishedCandidate.provisioning.credential.envelope),
-              envelope_ref: {
-                ...structuredClone(
-                  publishedCandidate.provisioning.credential.envelope.envelope_ref,
-                ),
-                payload_fingerprint: 'sha256:substituted-payload',
-              },
-            },
-          },
-        },
-      },
-      {
-        ...structuredClone(publishedCandidate),
-        provisioning: {
-          ...structuredClone(publishedCandidate.provisioning),
-          credential: {
-            ...structuredClone(publishedCandidate.provisioning.credential),
-            envelope: {
-              ...structuredClone(publishedCandidate.provisioning.credential.envelope),
-              expires_at_unix_ms: 1,
-            },
-          },
-        },
-      },
-      {
-        ...structuredClone(publishedCandidate),
-        provisioning: {
-          ...structuredClone(publishedCandidate.provisioning),
-          credential: {
-            ...structuredClone(publishedCandidate.provisioning.credential),
-            envelope: {
-              ...structuredClone(publishedCandidate.provisioning.credential.envelope),
-              recipient: 'another.worker',
-            },
-          },
-        },
-      },
-      {
-        ...structuredClone(publishedCandidate),
-        provisioning: {
-          ...structuredClone(publishedCandidate.provisioning),
-          provider_ref: 'unversioned-provider',
-        },
-      },
-      {
-        ...structuredClone(publishedCandidate),
-        provisioning: {
-          ...structuredClone(publishedCandidate.provisioning),
-          credential: {
-            ...structuredClone(publishedCandidate.provisioning.credential),
-          credential: { id: 'different-credential', revision: credential.json.version },
-          },
-        },
-      },
-      {
-        ...structuredClone(publishedCandidate),
-        provisioning: {
-          ...structuredClone(publishedCandidate.provisioning),
-          scope_id: 'foreign-workspace',
-        },
-      },
-      {
-        ...structuredClone(publishedCandidate),
-        provisioning: {
-          ...structuredClone(publishedCandidate.provisioning),
-          credential: {
-            credential: structuredClone(
-              publishedCandidate.provisioning.credential.credential,
-            ),
-            injection: 'direct',
-            usage: structuredClone(publishedCandidate.provisioning.credential.usage),
-            policy: structuredClone(publishedCandidate.provisioning.credential.policy),
-          },
-        },
-      },
-    ];
-    for (const [index, candidate] of invalidCandidates.entries()) {
-      candidate.provisioning.endpoint.upstream_model = `invalid-${index}`;
-      const invalid = structuredClone(dispatch);
-      const thread = `${THREAD}-invalid-${index}`;
-      invalid.activation.run_id = `${claimed.request.activation.run_id}-invalid-${index}`;
-      invalid.activation.thread_id = thread;
-      invalid.activation.snapshot.resolved_spec.model_binding = candidate;
-      const invalidEnqueue = await request(
-        'POST', '/v1/worker/dispatch/enqueue', { request: invalid }, seed.id,
-      );
-      assert.equal(invalidEnqueue.status, 200, invalidEnqueue.text);
-    }
     assert.equal((await request('POST', '/v1/worker/dispatch/enqueue', { request: dispatch }, seed.id)).status, 200);
 
     // P5: enqueueing the cloned materialization Run does not commit the seed
