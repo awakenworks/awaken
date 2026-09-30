@@ -15,6 +15,11 @@ use std::sync::Arc;
 
 use awaken_credential_materializer::PinnedCredentialMaterializer;
 
+pub(crate) type ConfiguredWebTool = (
+    awaken_runtime_contract::resolved::ToolDescriptor,
+    Arc<dyn awaken_runtime_contract::tool::RawTool>,
+);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AcpWebToolDisposition {
     ExportHostTool,
@@ -24,7 +29,7 @@ enum AcpWebToolDisposition {
 /// One closed Session-level realization decision for an ACP-visible web tool.
 /// The variants make it impossible to both export the canonical capability
 /// through Awaken MCP and enable a provider-owned ACP builtin.
-pub(crate) enum AcpWebToolRealization {
+enum AcpWebToolRealization {
     NotConfigured,
     HostTool {
         descriptor: awaken_runtime_contract::resolved::ToolDescriptor,
@@ -104,17 +109,86 @@ impl crate::host::SharedHost {
         )
     }
 
+    /// Apply the one published Web selection to a Session runtime. Native
+    /// execution installs the configured plugin; ACP retains the same
+    /// configured tool for its later, single-owner realization decision.
+    pub(crate) fn configure_web_tools_for_session(
+        &self,
+        thread: &str,
+        spec: &awaken_runtime_contract::resolved::ResolvedSpec,
+        toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+        is_acp: bool,
+        mut runtime: awaken_runtime::Runtime,
+    ) -> Result<
+        (
+            awaken_runtime::Runtime,
+            Option<ConfiguredWebTool>,
+            Option<ConfiguredWebTool>,
+        ),
+        crate::HostError,
+    > {
+        let search = if spec
+            .plugin_ids
+            .iter()
+            .any(|id| id == awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID)
+        {
+            let execution_configuration =
+                awaken_ext_builtin_tools::web_search_execution_configuration(toolsets)
+                    .map_err(crate::HostError::bad_request)?;
+            let plugin = self.web_search_plugin(thread, execution_configuration);
+            if is_acp {
+                Some(
+                    plugin
+                        .configured_tool(
+                            spec.plugin_config
+                                .get(awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID),
+                        )
+                        .map_err(|error| crate::HostError::bad_request(error.to_string()))?,
+                )
+            } else {
+                runtime = runtime.with_plugin(plugin);
+                None
+            }
+        } else {
+            None
+        };
+        let fetch = if spec
+            .plugin_ids
+            .iter()
+            .any(|id| id == awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID)
+        {
+            let plugin = self.web_fetch_plugin(
+                thread,
+                awaken_ext_builtin_tools::web_fetch_execution_configuration(toolsets)
+                    .map_err(crate::HostError::bad_request)?,
+            );
+            if is_acp {
+                Some(
+                    plugin
+                        .configured_tool(
+                            spec.plugin_config
+                                .get(awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID),
+                        )
+                        .map_err(|error| crate::HostError::bad_request(error.to_string()))?,
+                )
+            } else {
+                runtime = runtime.with_plugin(plugin);
+                None
+            }
+        } else {
+            None
+        };
+        Ok((runtime, search, fetch))
+    }
+
     /// Select one realization for an already-configured ACP web tool. Host
     /// execution keeps its process-local export alive for the Session lifetime;
     /// provider execution returns only the closed launch projection.
-    pub(crate) fn realize_web_tool_for_acp(
+    fn realize_web_tool_for_acp(
         &self,
         acp_cli_id: &str,
         display_name: &str,
-        configured: Option<(
-            awaken_runtime_contract::resolved::ToolDescriptor,
-            Arc<dyn awaken_runtime_contract::tool::RawTool>,
-        )>,
+        configured: Option<ConfiguredWebTool>,
     ) -> Result<AcpWebToolRealization, crate::HostError> {
         let Some((descriptor, tool)) = configured else {
             return Ok(AcpWebToolRealization::NotConfigured);
@@ -145,6 +219,57 @@ impl crate::host::SharedHost {
             "selected one ACP web-tool execution owner"
         );
         Ok(AcpWebToolRealization::HostTool { descriptor, tool })
+    }
+
+    /// Resolve the configured Search/Fetch pair for the exact ACP adapter.
+    /// Provider-owned execution cannot satisfy a per-call Awaken approval;
+    /// each configured tool then uses the same single-owner disposition above.
+    pub(crate) fn realize_configured_web_tools_for_acp(
+        &self,
+        acp_cli_id: &str,
+        agent_bindings: &awaken_runtime_contract::agent_bindings::AgentBindings,
+        search: Option<ConfiguredWebTool>,
+        fetch: Option<ConfiguredWebTool>,
+    ) -> Result<
+        (
+            Vec<ConfiguredWebTool>,
+            Vec<awaken_runtime_contract::resolved::ProviderServerTool>,
+        ),
+        crate::HostError,
+    > {
+        let mut host_tools = Vec::new();
+        let mut provider_server_tools = Vec::new();
+        for (tool_id, label, configured) in [
+            ("web_search", "WebSearch", search),
+            ("web_fetch", "WebFetch", fetch),
+        ] {
+            if configured.as_ref().is_some_and(|(descriptor, _)| {
+                descriptor.provider_server_tool.is_some()
+                    && agent_bindings.tool_policy(tool_id).is_some_and(|policy| {
+                        policy.enabled
+                            && matches!(
+                                policy.permission,
+                                awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk
+                            )
+                    })
+            }) {
+                return Err(crate::HostError::bad_request(format!(
+                    "PROVIDER_SERVER_TOOL_APPROVAL_UNSUPPORTED: {label} is executed inside the model provider and cannot satisfy per-call Awaken approval; select an Awaken-hosted provider or change the permission to always_allow"
+                )));
+            }
+            match self.realize_web_tool_for_acp(acp_cli_id, label, configured)? {
+                AcpWebToolRealization::NotConfigured => {}
+                AcpWebToolRealization::HostTool { descriptor, tool } => {
+                    host_tools.push((descriptor, tool));
+                }
+                AcpWebToolRealization::ProviderServer(tool) => {
+                    if !provider_server_tools.contains(&tool) {
+                        provider_server_tools.push(tool);
+                    }
+                }
+            }
+        }
+        Ok((host_tools, provider_server_tools))
     }
 }
 
@@ -280,6 +405,140 @@ mod tests {
         assert!(
             error.to_string().contains("cannot realize"),
             "A2/E2: {error}"
+        );
+    }
+
+    struct ProbeTool(&'static str);
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::tool::RawTool for ProbeTool {
+        fn id(&self) -> &str {
+            self.0
+        }
+
+        async fn invoke(
+            &self,
+            call: ToolCall,
+        ) -> Result<awaken_runtime_contract::tool::ToolOutput, ToolError> {
+            Ok(awaken_runtime_contract::tool::ToolOutput::ok(
+                call.call_id,
+                "probe",
+            ))
+        }
+    }
+
+    #[test]
+    fn configured_acp_web_pair_keeps_one_owner_and_rejects_provider_approval() {
+        // Causes: C1 configured pair/owner, C2 exact tool permission, C3 ACP
+        // CLI projection support. Effects: Host exports, provider launch tools,
+        // or a closed configuration error. A failed pair returns no partial
+        // ServerTool result, so one capability never has two execution owners.
+        //
+        // | Rule | C1 pair/owner              | C2         | C3       | Effect |
+        // | R1   | absent                     | any        | any      | none   |
+        // | R2   | HostFetch+ProviderSearch   | Allow      | exact    | 1+1    |
+        // | R3   | HostFetch+ProviderSearch   | Search Ask | exact    | error  |
+        // | R4   | HostFetch                  | Fetch Ask  | n/a      | Host   |
+        // | R5   | ProviderSearch             | Allow      | mismatch | error  |
+        use awaken_runtime_contract::agent_bindings::{
+            AgentBindings, ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride,
+            ToolsetPolicy, ToolsetSource,
+        };
+        let host = crate::host::SharedHost::new(
+            Arc::new(crate::no_model::NoModelConfiguredExecutor),
+            "stub",
+        );
+        let host_fetch = (
+            awaken_ext_builtin_tools::web_fetch_descriptor(),
+            Arc::new(ProbeTool(awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID))
+                as Arc<dyn awaken_runtime_contract::tool::RawTool>,
+        );
+        let provider_search = (
+            awaken_ext_builtin_tools::web_search_descriptor().with_provider_server_tool(
+                awaken_runtime_contract::resolved::ProviderServerTool::OpenAiWebSearch,
+            ),
+            Arc::new(ProbeTool(awaken_ext_builtin_tools::WEB_SEARCH_TOOL_ID))
+                as Arc<dyn awaken_runtime_contract::tool::RawTool>,
+        );
+        let empty = host
+            .realize_configured_web_tools_for_acp("codex", &AgentBindings::default(), None, None)
+            .expect("R1 absent pair");
+        assert!(empty.0.is_empty() && empty.1.is_empty(), "R1");
+        let (host_tools, provider_tools) = host
+            .realize_configured_web_tools_for_acp(
+                "codex",
+                &AgentBindings::default(),
+                Some(provider_search.clone()),
+                Some(host_fetch.clone()),
+            )
+            .expect("R2 exact pair");
+        assert_eq!(host_tools.len(), 1, "R2 Host export");
+        assert_eq!(
+            host_tools[0].0.id,
+            awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID
+        );
+        assert_eq!(
+            host_tools[0].1.id(),
+            awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID,
+            "R2 exact host executor"
+        );
+        assert_eq!(
+            provider_tools,
+            [awaken_runtime_contract::resolved::ProviderServerTool::OpenAiWebSearch],
+            "R2 provider owns only WebSearch"
+        );
+        let ask = ToolExecutionPolicy {
+            permission: ToolPermissionRequirement::AlwaysAsk,
+            ..ToolExecutionPolicy::default()
+        };
+        let policy = |id| AgentBindings {
+            toolsets: vec![ToolsetPolicy {
+                source: ToolsetSource::Agent,
+                default: ToolExecutionPolicy::default(),
+                overrides: vec![ToolPolicyOverride::new(id, ask)],
+            }],
+            ..AgentBindings::default()
+        };
+        let provider_error = match host.realize_configured_web_tools_for_acp(
+            "codex",
+            &policy(awaken_ext_builtin_tools::WEB_SEARCH_TOOL_ID),
+            Some(provider_search.clone()),
+            Some(host_fetch.clone()),
+        ) {
+            Ok(_) => panic!("R3 provider-owned call cannot promise approval"),
+            Err(error) => error,
+        };
+        assert!(
+            provider_error
+                .to_string()
+                .contains("PROVIDER_SERVER_TOOL_APPROVAL_UNSUPPORTED"),
+            "R3"
+        );
+        let host_ask = host
+            .realize_configured_web_tools_for_acp(
+                "codex",
+                &policy(awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID),
+                None,
+                Some(host_fetch),
+            )
+            .expect("R4 Host approval remains possible");
+        assert_eq!(host_ask.0.len(), 1, "R4");
+        assert!(host_ask.1.is_empty(), "R4");
+        let unsupported = (
+            awaken_ext_builtin_tools::web_search_descriptor().with_provider_server_tool(
+                awaken_runtime_contract::resolved::ProviderServerTool::AnthropicWebSearch,
+            ),
+            provider_search.1,
+        );
+        assert!(
+            host.realize_configured_web_tools_for_acp(
+                "codex",
+                &AgentBindings::default(),
+                Some(unsupported),
+                None,
+            )
+            .is_err(),
+            "R5 incompatible CLI"
         );
     }
 
