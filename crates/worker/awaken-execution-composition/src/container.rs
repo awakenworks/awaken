@@ -73,31 +73,39 @@ async fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
             capacity: None,
         });
     }
-    let mut pool = awaken_sandbox_container::WarmContainerPool::with_limits(
-        Arc::new(provider),
-        size,
-        settings.warm_pool_total_size,
-        std::time::Duration::from_secs(settings.warm_pool_idle_ttl_secs),
-    );
-    // Warm capacity outlives this process only as far as its host lease
-    // records reach: this reclaims what a dead incarnation left once its lease
-    // expired, and keeps this pool's own records renewed. A runtime that names
-    // no lease domain (Kubernetes) keeps process-local warm capacity.
-    if leased {
-        // The host lease records are judged on the process clock the
-        // composition chose for the Host.
-        let leases = awaken_sandbox_container::pool::WarmCapacityLeases::host_default(clock)
-            .map_err(|error| format!("warm capacity leases: {error}"))?;
-        pool = pool
-            .with_capacity_leases(leases)
-            .await
-            .map_err(|error| format!("warm capacity leases: {error}"))?;
+    #[cfg(not(unix))]
+    {
+        let _ = (leased, clock);
+        Err("warm container capacity requires the Unix host lease protocol".into())
     }
-    let pool = Arc::new(pool);
-    Ok(BuiltContainerEnvironment {
-        provider: pool.clone(),
-        capacity: Some(pool),
-    })
+    #[cfg(unix)]
+    {
+        let mut pool = awaken_sandbox_container::WarmContainerPool::with_limits(
+            Arc::new(provider),
+            size,
+            settings.warm_pool_total_size,
+            std::time::Duration::from_secs(settings.warm_pool_idle_ttl_secs),
+        );
+        // Warm capacity outlives this process only as far as its host lease
+        // records reach: this reclaims what a dead incarnation left once its lease
+        // expired, and keeps this pool's own records renewed. A runtime that names
+        // no lease domain (Kubernetes) keeps process-local warm capacity.
+        if leased {
+            // The host lease records are judged on the process clock the
+            // composition chose for the Host.
+            let leases = awaken_sandbox_container::pool::WarmCapacityLeases::host_default(clock)
+                .map_err(|error| format!("warm capacity leases: {error}"))?;
+            pool = pool
+                .with_capacity_leases(leases)
+                .await
+                .map_err(|error| format!("warm capacity leases: {error}"))?;
+        }
+        let pool = Arc::new(pool);
+        Ok(BuiltContainerEnvironment {
+            provider: pool.clone(),
+            capacity: Some(pool),
+        })
+    }
 }
 
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
@@ -492,6 +500,11 @@ mod tests {
 
     #[tokio::test]
     async fn provider_selection_supports_direct_and_warm_pool_shapes() {
+        /* Capacity selection table: C1=size 0 or positive; C2=Unix lease
+         * substrate or Windows host. E1 size 0 returns the direct provider;
+         * E2 positive+Unix returns one warm-capacity owner; E3 positive+Windows
+         * fails explicitly before allocating capacity. R1=zero=>E1;
+         * R2=positive+Unix=>E2; R3=positive+Windows=>E3. */
         use awaken_sandbox_container::podman::PodmanRuntime;
 
         let settings = awaken_session_executor::SandboxSettings {
@@ -520,9 +533,14 @@ mod tests {
             &settings,
             awaken_lease_contract::system_clock(),
         )
-        .await
-        .unwrap();
-        assert!(pooled.capacity.is_some());
+        .await;
+        #[cfg(unix)]
+        assert!(pooled.unwrap().capacity.is_some(), "R2");
+        #[cfg(not(unix))]
+        assert!(
+            pooled.is_err_and(|error| error.contains("requires the Unix host lease protocol")),
+            "R3"
+        );
     }
 
     #[tokio::test]
@@ -560,6 +578,7 @@ mod tests {
     /// the production builder — not a test-only constructor — puts Podman warm
     /// capacity under host lease records, and capacity shutdown releases them.
     /// Real rootless Podman; self-skips when it is unavailable.
+    #[cfg(unix)]
     #[tokio::test]
     async fn l7_the_production_builder_puts_warm_capacity_under_host_leases() {
         const IMAGE: &str = "docker.io/library/busybox:latest";
@@ -687,5 +706,50 @@ mod tests {
         let relative = k8s_sandbox_control_forwarder(Some(pinned), &relative)
             .expect_err("E2 relative executable must fail closed");
         assert!(relative.contains("absolute executable"), "{relative}");
+    }
+}
+
+#[cfg(all(test, windows, feature = "docker"))]
+mod windows_capacity_tests {
+    use super::*;
+    use awaken_sandbox_container::docker::DockerRuntime;
+
+    #[tokio::test]
+    async fn docker_capacity_is_direct_or_explicitly_unsupported() {
+        /* Windows Docker capacity table: C1=size 0, C2=size positive;
+         * E1 C1 returns a direct ContainerProvider without daemon I/O;
+         * E2 C2 rejects before warm-capacity creation because the lease owner
+         * requires Unix. R1=C1=>E1; R2=C2=>E2. */
+        let runtime = Arc::new(DockerRuntime::connect_local(8080).unwrap());
+        let direct = ContainerProvider::new(runtime.clone(), "sandbox:latest");
+        let settings = awaken_session_executor::SandboxSettings::default();
+        let built = wrap(
+            direct,
+            true,
+            &settings,
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
+        assert!(built.capacity.is_none(), "R1");
+
+        let pooled = ContainerProvider::new(runtime, "sandbox:latest");
+        let settings = awaken_session_executor::SandboxSettings {
+            warm_pool_size: 1,
+            ..settings
+        };
+        let error = wrap(
+            pooled,
+            true,
+            &settings,
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .err()
+        .expect("R2 unsupported warm capacity");
+        assert!(
+            error.contains("requires the Unix host lease protocol"),
+            "R2"
+        );
     }
 }

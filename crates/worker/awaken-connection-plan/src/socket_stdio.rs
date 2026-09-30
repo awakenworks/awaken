@@ -145,6 +145,7 @@ where
     }
 }
 
+#[cfg(unix)]
 fn io_error(error: std::io::Error) -> crate::ConnectError {
     crate::ConnectError::Io(error.to_string())
 }

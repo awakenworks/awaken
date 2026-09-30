@@ -9,9 +9,9 @@
 //! macOS/Windows must use a different no-network control transport and this test
 //! explicitly skips instead of hanging or claiming that topology works.
 //!
-//! Gated on the `docker` feature AND a reachable daemon (self-skips otherwise).
+//! Gated on Linux, the `docker` feature, and a reachable daemon.
 //! Run: `cargo test -p awaken-sandbox-container --features docker --test hand_docker`
-#![cfg(feature = "docker")]
+#![cfg(all(target_os = "linux", feature = "docker"))]
 
 #[path = "common/residue.rs"]
 mod residue;
@@ -52,12 +52,6 @@ c,_=s.accept(); d=c.recv(64); c.sendall(b'hand:'+d)\n";
 
 #[tokio::test]
 async fn a_hand_in_a_network_denied_container_is_reached_over_a_unix_rendezvous() {
-    if !cfg!(target_os = "linux") {
-        eprintln!(
-            "skipping: bind-mounted AF_UNIX rendezvous is unsupported across Docker Desktop's VM boundary"
-        );
-        return;
-    }
     if !docker_available() {
         eprintln!("skipping: no reachable Docker daemon");
         return;
