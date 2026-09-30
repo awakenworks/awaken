@@ -53,6 +53,7 @@ use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadV
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
+use awaken_fs_durability::sync_directory;
 use awaken_sandbox_fs::{ExclusiveFileLock, PathEntry, try_lock_exclusive};
 use awaken_store_inmem::MemoryCommitCoordinator;
 
@@ -339,15 +340,23 @@ impl FsCommitCoordinator {
             }
         }
 
-        let log = OpenOptions::new()
+        let mut log = OpenOptions::new()
             .create(true)
             .read(true)
             .append(true)
             .open(&path)?;
         if log.metadata()?.len() != durable_len {
-            log.set_len(durable_len)?;
-            log.sync_all()?;
+            // Windows append handles cannot truncate a torn tail. The
+            // lifecycle lock keeps this repair exclusive; close the append
+            // handle, use a dedicated write handle for the exact truncation,
+            // then reopen append-only before accepting the next commit.
+            drop(log);
+            let repair = OpenOptions::new().write(true).open(&path)?;
+            repair.set_len(durable_len)?;
+            repair.sync_all()?;
+            drop(repair);
             sync_directory(dir)?;
+            log = OpenOptions::new().read(true).append(true).open(&path)?;
         } else if durable_len == 0 {
             // Persist creation of an empty log before it can acknowledge data.
             sync_directory(dir)?;
@@ -590,10 +599,6 @@ impl StreamCheckpointStore for FsStreamCheckpointStore {
             Err(error) => Err(StreamCheckpointError::Storage(error.to_string())),
         }
     }
-}
-
-fn sync_directory(dir: &Path) -> std::io::Result<()> {
-    File::open(dir)?.sync_all()
 }
 
 #[cfg(test)]

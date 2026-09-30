@@ -16,6 +16,7 @@ authority = "file"
 # Port-only contract: the FileStore trait + FileStoreError live here; this crate
 # implements them and re-exports for backward-compatible paths.
 awaken-resource-contract.workspace = true
+awaken-fs-durability.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
@@ -38,9 +39,6 @@ awaken-sqlite-pool = { workspace = true, optional = true }
 awaken-sql-storage = { workspace = true, optional = true }
 object_store = { version = "0.14", features = ["aws", "gcp"], optional = true }
 futures = { version = "0.3", optional = true }
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [features]
 # Process-local File authority used only by unit/integration/scenario fixtures.

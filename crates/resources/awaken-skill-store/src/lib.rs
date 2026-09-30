@@ -501,7 +501,7 @@ impl FsSkillStore {
             .truncate(false)
             .open(root.join(".awaken-skill.lock"))?
             .sync_all()?;
-        File::open(&root)?.sync_all()?;
+        awaken_fs_durability::sync_directory(&root)?;
         let store = Self { root };
         Ok(store)
     }
@@ -597,7 +597,7 @@ impl FsSkillStore {
             file.write_all(bytes.as_bytes())?;
             file.sync_all()?;
             std::fs::rename(&temp, &path)?;
-            File::open(&dir)?.sync_all()
+            awaken_fs_durability::sync_directory(&dir)
         })();
         if let Err(error) = publish {
             let _ = std::fs::remove_file(&temp);
@@ -836,9 +836,7 @@ impl SkillStore for FsSkillStore {
 }
 
 fn sync_skill_directory(path: &Path) -> Result<(), SkillStoreError> {
-    File::open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(SkillStoreError::from)
+    awaken_fs_durability::sync_directory(path).map_err(SkillStoreError::from)
 }
 
 #[cfg(test)]
@@ -1009,6 +1007,10 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_tombstone_and_purge_conformance() {
+        // C1 a new directory, committed Skill aggregate, tombstone, and purge;
+        // C2 Unix or Windows native directory flush. R1 every acknowledged
+        // mutation remains visible through the same durable store protocol;
+        // R2 no platform-specific directory-open denial masks that outcome.
         let root = scratch("purge");
         tombstone_and_purge_conformance(&FsSkillStore::open(&root).unwrap()).await;
         std::fs::remove_dir_all(root).ok();

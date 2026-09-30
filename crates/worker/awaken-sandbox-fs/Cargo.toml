@@ -10,6 +10,7 @@ layer = "infrastructure"
 authority = "sandbox-filesystem"
 
 [dependencies]
+awaken-fs-durability.workspace = true
 cap-std = "4"
 rustix = { version = "1", features = ["fs"] }
 
