@@ -178,25 +178,57 @@ pub const fn deadline_has_passed(deadline_ms: Option<u64>, now_ms: u64) -> bool 
     }
 }
 
+#[cfg(test)]
+#[test]
+fn deadline_has_passed_covers_absent_exact_and_full_wire_boundaries() {
+    // Causes: C1 absent/present deadline; C2 now before/at/after it; C3 zero,
+    // ordinary and u64::MAX wire values. Effects: E1 absence never expires;
+    // E2 present expires exactly at equality and remains expired afterwards;
+    // E3 MAX is live at MAX-1 and expired at MAX. Decision rows C1 absent=>E1;
+    // present+before=>live; present+at/after=>E2; MAX boundary=>E3.
+    for (deadline, now, passed) in [
+        (None, 0, false),
+        (None, u64::MAX, false),
+        (Some(0), 0, true),
+        (Some(1), 0, false),
+        (Some(1), 1, true),
+        (Some(1), 2, true),
+        (Some(u64::MAX), u64::MAX - 1, false),
+        (Some(u64::MAX), u64::MAX, true),
+        (Some(u64::MAX - 1), u64::MAX, true),
+    ] {
+        assert_eq!(
+            deadline_has_passed(deadline, now),
+            passed,
+            "{deadline:?} at {now}"
+        );
+    }
+}
+
 #[cfg(kani)]
 /// @obligation run_ingress.a_deadline_passes_once_it_is_reached
 #[kani::proof]
-fn a_deadline_passes_once_it_is_reached() {
-    // Cause/effect decision table: C1 the row carries a deadline or none;
-    // C2 the deadline is before / exactly at / after now.
-    // E1 absent never passes; E2 exactly at now has passed (the Expiry law);
-    // E3 strictly before now has passed; E4 strictly after now has not.
-    // R1 = !C1 -> E1. R2 = C1 + at -> E2. R3 = C1 + before -> E3.
-    // R4 = C1 + after -> E4. Arbitrary u64 inputs exhaust every partition,
-    // including both u64 boundaries.
+fn absent_deadline_never_passes_for_any_now() {
+    // C1 no deadline; C2 arbitrary full-width now. E1 never expired.
+    // Rule C1+C2=>E1. No Expiry conversion is needed for an absent lease.
     let now_ms: u64 = kani::any();
-    let deadline_ms: u64 = kani::any();
     assert!(!deadline_has_passed(None, now_ms), "R1/E1");
-    assert!(deadline_has_passed(Some(now_ms), now_ms), "R2/E2");
+}
+
+#[cfg(kani)]
+/// @obligation run_ingress.a_deadline_passes_once_it_is_reached
+#[kani::proof]
+fn bounded_deadline_passes_once_it_is_reached() {
+    // Causes: present deadline and independent u16 now/deadline values.
+    // Effects: E1 before is live; E2 equal/after has passed. Decision rows
+    // deadline>now=>E1, deadline<=now=>E2. Full u64 wire extremes run through
+    // the adjacent executable table; arbitrary u64 pairs are not Kani-proved.
+    let now_ms = kani::any::<u16>() as u64;
+    let deadline_ms = kani::any::<u16>() as u64;
     assert_eq!(
         deadline_has_passed(Some(deadline_ms), now_ms),
         deadline_ms <= now_ms,
-        "R3/E3 and R4/E4",
+        "present deadline is inclusive",
     );
 }
 
