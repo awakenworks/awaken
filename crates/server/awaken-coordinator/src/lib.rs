@@ -1489,7 +1489,11 @@ fn mount_with_managed_over_and_models(
     // applied before merging AG-UI, keeping every sibling protocol closed.
     let ai_sdk = ai_sdk_browser_cors.apply(ai_sdk);
     let application = ai_sdk.merge(ag_ui);
-    let a2a = awaken_protocol_a2a::router_with_storage_root(admitted_runs, host.storage_dir());
+    let a2a = awaken_protocol_a2a::router_with_storage_root(
+        admitted_runs,
+        host.storage_dir(),
+        host.clock(),
+    );
     // A coordinator-only Host owns both dispatch and committed Thread truth but
     // deliberately has no execution pool. Start its one environment-free repair
     // loop before exposing the Worker transport; local-pool embeddings already

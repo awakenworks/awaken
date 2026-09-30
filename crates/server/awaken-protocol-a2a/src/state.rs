@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use awaken_agent_contract::fresh_process_id;
+use awaken_lease_contract::WallClock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
@@ -56,6 +57,7 @@ pub(crate) enum PushProtocolVersion {
 #[derive(Clone)]
 pub(crate) struct A2aState {
     pub runtime: Arc<dyn RunApplication>,
+    clock: Arc<dyn WallClock>,
     inner: Arc<RwLock<Inner>>,
     push_sender: Arc<dyn HttpSender>,
     delivery_queues: Arc<StdMutex<HashMap<String, mpsc::UnboundedSender<Delivery>>>>,
@@ -107,13 +109,15 @@ impl A2aState {
     pub fn new(
         runtime: Arc<dyn RunApplication>,
         persistence_path: Option<PathBuf>,
+        clock: Arc<dyn WallClock>,
     ) -> Result<Self, StateError> {
-        Self::with_persistence_path(runtime, persistence_path)
+        Self::with_persistence_path(runtime, persistence_path, clock)
     }
 
     fn with_persistence_path(
         runtime: Arc<dyn RunApplication>,
         persistence_path: Option<PathBuf>,
+        clock: Arc<dyn WallClock>,
     ) -> Result<Self, StateError> {
         let persistent = match persistence_path.as_ref().map(std::fs::read) {
             None => PersistentState::default(),
@@ -126,6 +130,7 @@ impl A2aState {
         };
         let state = Self {
             runtime,
+            clock,
             inner: Arc::new(RwLock::new(Inner {
                 tasks: persistent.tasks,
                 configs: persistent.configs,
@@ -143,6 +148,11 @@ impl A2aState {
         };
         state.start_delivery_recovery();
         Ok(state)
+    }
+
+    /// Sample the one router clock at the event's publication boundary.
+    pub(crate) fn timestamp(&self) -> String {
+        self.clock.now().to_rfc3339_secs()
     }
 
     async fn write_snapshot(&self, snapshot: PersistentState) -> Result<(), StateError> {
@@ -771,6 +781,14 @@ mod tests {
         ))
     }
 
+    fn state_with_path(path: PathBuf) -> Result<A2aState, StateError> {
+        A2aState::with_persistence_path(
+            Arc::new(Runtime),
+            Some(path),
+            awaken_lease_contract::system_clock(),
+        )
+    }
+
     #[tokio::test]
     async fn tasks_configs_and_wire_versions_survive_restart() {
         // Cause/effect graph:
@@ -785,7 +803,7 @@ mod tests {
         // `router`, which injects `None`
         // and therefore creates no persistence side effect.
         let path = unique_state_path("restart");
-        let state = A2aState::with_persistence_path(Arc::new(Runtime), Some(path.clone())).unwrap();
+        let state = state_with_path(path.clone()).unwrap();
         state
             .record_task(working_task("task-persisted"), Some("tenant-a".into()))
             .await
@@ -808,8 +826,7 @@ mod tests {
         assert!(generated_id.starts_with("push-"), "C3/E3");
         drop(state);
 
-        let restored =
-            A2aState::with_persistence_path(Arc::new(Runtime), Some(path.clone())).unwrap();
+        let restored = state_with_path(path.clone()).unwrap();
         assert!(
             restored
                 .task("task-persisted", Some("tenant-a"))
@@ -887,15 +904,13 @@ mod tests {
         let corrupt_path = unique_state_path("corrupt");
         std::fs::write(&corrupt_path, b"not-json").unwrap();
         assert!(matches!(
-            A2aState::with_persistence_path(Arc::new(Runtime), Some(corrupt_path.clone())),
+            state_with_path(corrupt_path.clone()),
             Err(StateError::Storage(_))
         ));
         std::fs::remove_file(corrupt_path).unwrap();
 
         let unwritable_path = unique_state_path("unwritable");
-        let state =
-            A2aState::with_persistence_path(Arc::new(Runtime), Some(unwritable_path.clone()))
-                .unwrap();
+        let state = state_with_path(unwritable_path.clone()).unwrap();
         std::fs::create_dir(&unwritable_path).unwrap();
         assert!(matches!(
             state
@@ -933,7 +948,7 @@ mod tests {
         // state during failure; E3 retry eventually replaces it with terminal.
         // R1 C1&&C2&&!C3 => E1&&E2. R2 C1&&C2&&C3 => E1&&E2&&E3.
         let path = unique_state_path("async-retry");
-        let state = A2aState::with_persistence_path(Arc::new(Runtime), Some(path.clone())).unwrap();
+        let state = state_with_path(path.clone()).unwrap();
         std::fs::create_dir(&path).unwrap();
         let retry_state = state.clone();
         let retry = tokio::spawn(async move {
@@ -1013,8 +1028,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let restored =
-            A2aState::with_persistence_path(Arc::new(Runtime), Some(path.clone())).unwrap();
+        let restored = state_with_path(path.clone()).unwrap();
         tokio::time::timeout(Duration::from_secs(5), receiver)
             .await
             .expect("recovered delivery reached receiver")
@@ -1032,8 +1046,7 @@ mod tests {
         std::fs::remove_file(path).unwrap();
 
         let cancel_path = unique_state_path("delivery-cancel");
-        let state =
-            A2aState::with_persistence_path(Arc::new(Runtime), Some(cancel_path.clone())).unwrap();
+        let state = state_with_path(cancel_path.clone()).unwrap();
         state
             .record_task(working_task("task-cancel-delivery"), None)
             .await

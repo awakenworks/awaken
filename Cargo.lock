@@ -1862,6 +1862,7 @@ dependencies = [
  "awaken-credential",
  "awaken-credential-contract",
  "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-outbound-http",
  "awaken-runtime-contract",
  "awaken-session-application-contract",

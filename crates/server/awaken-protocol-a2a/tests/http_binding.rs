@@ -61,7 +61,7 @@ impl RunApplication for NoopRuntime {
 }
 
 async fn send(method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
-    let app = router(Arc::new(NoopRuntime));
+    let app = router(Arc::new(NoopRuntime), awaken_lease_contract::system_clock());
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
@@ -173,7 +173,10 @@ impl RunApplication for FailingRuntime {
 
 #[tokio::test]
 async fn an_internal_runtime_fault_maps_to_a_500_with_the_a2a_error_envelope() {
-    let app = router(Arc::new(FailingRuntime));
+    let app = router(
+        Arc::new(FailingRuntime),
+        awaken_lease_contract::system_clock(),
+    );
     let resp = app
         .oneshot(
             Request::builder()
