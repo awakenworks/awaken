@@ -1169,7 +1169,7 @@ impl SessionApplication {
                 .expect("a live realization lease was checked");
             let exact_incarnation = current.owner == target.owner
                 && current.runtime_incarnation == target.runtime_incarnation;
-            if exact_incarnation && (scope.is_exact_local() || replay_after_conflict.is_some()) {
+            if exact_incarnation {
                 let assignment = self
                     .terminal_cleanup_assignment_from_snapshot(owner_scope, &session)
                     .await;
@@ -1192,25 +1192,15 @@ impl SessionApplication {
                     Err(error) => TerminalCleanupRootClaim::Failed(error),
                 };
             }
-            // External recovery may advance an exact current incarnation only
-            // when the authenticated heartbeat carries a strictly newer
-            // expiry. The resulting root CAS increments the epoch exactly once;
-            // its equal-expiry replay is skipped unless this invocation is
-            // recovering an ambiguous committed CAS above. A live predecessor
-            // incarnation or foreign logical owner remains provider-affined and
-            // is never preempted by manifest compatibility.
-            let exact_external_renewal = scope.is_external()
-                && exact_incarnation
-                && current.expires_at_unix_ms < target.lease_expires_at_unix_ms;
-            if !exact_external_renewal {
-                return if scope.is_exact_local() {
-                    TerminalCleanupRootClaim::Failed(
-                        SessionRealizationControlFailure::StaleOwnership,
-                    )
-                } else {
-                    TerminalCleanupRootClaim::Skip
-                };
-            }
+            // A live predecessor incarnation or foreign logical owner remains
+            // provider-affined. The current incarnation uses its exact lease
+            // above; the request-local keyset cursor prevents it from being
+            // returned twice in one bounded Worker recovery sweep.
+            return if scope.is_exact_local() {
+                TerminalCleanupRootClaim::Failed(SessionRealizationControlFailure::StaleOwnership)
+            } else {
+                TerminalCleanupRootClaim::Skip
+            };
         }
 
         let epoch = match session.realization.as_ref() {
@@ -1297,6 +1287,7 @@ impl SessionApplication {
     async fn claim_terminal_cleanup_after_refresh(
         &self,
         target: awaken_session_realization_contract::SessionRealizationTarget,
+        after_session_id: Option<&awaken_session_types::SessionId>,
     ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure> {
         validate_realization_target(&target, self.clock.now_ms())?;
         if target.reassign_existing_lease {
@@ -1328,7 +1319,11 @@ impl SessionApplication {
             };
             let mut first_projection_failure = None;
             let mut retry_after_conflict = false;
-            let mut cursor = None;
+            let mut cursor = after_session_id.map(|session_id| {
+                awaken_session_state_contract::SessionScanCursor::after_session_id(
+                    session_id.as_str(),
+                )
+            });
             loop {
                 let scan = self
                     .session_repository()
@@ -1692,6 +1687,7 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Sessio
     async fn claim_next_terminal_cleanup(
         &self,
         target: awaken_session_realization_contract::SessionRealizationTarget,
+        after_session_id: Option<&awaken_session_types::SessionId>,
     ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure> {
         validate_realization_target(&target, self.clock.now_ms())?;
         if target.reassign_existing_lease {
@@ -1704,7 +1700,7 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Sessio
             .await
             .map_err(unavailable)?;
         admission
-            .enter(|| self.claim_terminal_cleanup_after_refresh(target))
+            .enter(|| self.claim_terminal_cleanup_after_refresh(target, after_session_id))
             .await
     }
 

@@ -302,11 +302,18 @@ impl<T> SessionResourceEffectControl for T where
 {
 }
 
+/// Required cursor protocol for bounded terminal cleanup claim sweeps. An older
+/// Worker that cannot advance a cursor is rejected before Control mutation.
+pub const TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION: u8 = 1;
+
 /// Discovery and immutable work projection for aggregate-owned terminal cleanup.
 #[async_trait]
 pub trait SessionTerminalCleanupQueue: Send + Sync {
-    /// Claim the next terminal Session whose physical realization was lost
-    /// with a prior Worker process. The returned assignment contains only the
+    /// Claim the next terminal Session after the exclusive, request-local
+    /// Session cursor. A current incarnation may continue its own terminal
+    /// cleanup; a replacement may recover an expired predecessor lease. The
+    /// cursor only schedules one bounded sweep and grants no authority. The
+    /// returned assignment contains only the
     /// facts needed to rebuild that process-local projection; callers must use
     /// [`Self::terminal_cleanup_work`] for the immutable cleanup commands and a
     /// current readback of the same frozen projection.
@@ -314,6 +321,7 @@ pub trait SessionTerminalCleanupQueue: Send + Sync {
     async fn claim_next_terminal_cleanup(
         &self,
         target: SessionRealizationTarget,
+        after_session_id: Option<&crate::SessionId>,
     ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure>;
 
     /// Project the exact terminal assignment and closed next action owned by this
@@ -899,6 +907,7 @@ mod tests {
         async fn claim_next_terminal_cleanup(
             &self,
             _target: super::SessionRealizationTarget,
+            _after_session_id: Option<&crate::SessionId>,
         ) -> Result<Option<super::SessionTerminalCleanupAssignment>, SessionRealizationControlFailure>
         {
             Ok(None)

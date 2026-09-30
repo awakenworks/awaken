@@ -3,7 +3,7 @@ use super::*;
 
 /// Cause/effect design: C1 the cleanup claim route has authenticated Worker-id
 /// evidence but no Coordinator Worker Directory; C2 the request supplies a
-/// syntactically complete identity and target. Effect E1: fail closed before
+/// syntactically complete identity, target, and cursor protocol. Effect E1: fail closed before
 /// Session Control, because C1 cannot prove the current registry incarnation.
 /// Decision rule D1: C1+C2 => HTTP 500 and zero claim calls. A local header is
 /// deliberately insufficient incarnation authority; no compatibility bypass is
@@ -37,6 +37,8 @@ async fn terminal_cleanup_claim_requires_current_registry_incarnation() {
                 lease_expires_at_unix_ms: u64::MAX,
                 reassign_existing_lease: false,
             },
+            "sweep_cursor_version": awaken_session_realization_contract::TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION,
+            "after_session_id": null,
         }))
         .send()
         .await

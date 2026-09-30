@@ -114,6 +114,15 @@ row remains unchanged; the first Worker tick resolves it before ordinary work.
 - after Session realization ownership loss: process-local projection is revoked,
   while durable Session truth remains unchanged.
 
+Terminal cleanup stays on the Session aggregate's requested operation. A
+registered Worker can continue cleanup under its exact live realization lease;
+an expired predecessor requires a new fenced claim. The claim-next request
+requires a cursor protocol version and carries an exclusive Session ID within
+one bounded sweep, so a pending operation is returned at most once per sweep.
+An older Worker is refused by Control; a newer Worker refuses a nonadvancing
+reply from an older Control. Neither cursor nor Worker manifest grants cleanup
+authority without the current Registry and Session lease checks.
+
 ### Logical outcome and physical completion
 
 The existing `PhysicalAttemptSlot` reducer owns physical settlement permission;

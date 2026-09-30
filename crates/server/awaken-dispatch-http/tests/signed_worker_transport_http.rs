@@ -9,6 +9,8 @@
 use awaken_session_types::SessionId;
 #[path = "signed_worker_transport_http/attempt_binding.rs"]
 mod attempt_binding;
+#[path = "signed_worker_transport_http/cursor_protocol.rs"]
+mod cursor_protocol;
 #[path = "signed_worker_transport_http/registry_incarnation.rs"]
 mod registry_incarnation;
 
@@ -58,6 +60,7 @@ struct RecordingSessionControl {
     agent_boundaries: Mutex<Vec<awaken_session_execution_contract::SessionAgentBoundaryCommand>>,
     terminal_control_calls: AtomicUsize,
     cleanup_claims: Mutex<Vec<awaken_session_realization_contract::SessionRealizationTarget>>,
+    cleanup_after: Mutex<Vec<Option<awaken_session_types::SessionId>>>,
     cleanup_action: Mutex<Option<awaken_session_state_contract::SessionTerminalCleanupAction>>,
     preparation_authorization: Mutex<
         Option<awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization>,
@@ -410,12 +413,17 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Record
     async fn claim_next_terminal_cleanup(
         &self,
         target: awaken_session_realization_contract::SessionRealizationTarget,
+        after_session_id: Option<&awaken_session_types::SessionId>,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionTerminalCleanupAssignment>,
         awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.cleanup_claims.lock().unwrap().push(target.clone());
+        self.cleanup_after
+            .lock()
+            .unwrap()
+            .push(after_session_id.cloned());
         let projection = self.projection.lock().unwrap().clone().ok_or(
             awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
         )?;
@@ -1573,6 +1581,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | K2 | stale/foreign | any | reject before Control |
     // | K3a | current + reassignment target | claim | reject before Control |
     // | K3b | current + excessive expiry | claim | cap to registry expiry |
+    // | K3c/K3d | cursor valid/malformed | claim | cursor_protocol rows R1/R2 |
     // | K4 | current + explicit v2 | prepare authorize/record | exact bytes |
     // | K5 | current + explicit v2 | dispose authorize/record | exact bytes |
     // | K6 | current | old complete route | 404 + zero Control calls |
@@ -1583,7 +1592,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         reassign_existing_lease: false,
     };
     let assignment = client
-        .claim_next_terminal_cleanup(&registered.snapshot.identity, cleanup_target.clone())
+        .claim_next_terminal_cleanup(&registered.snapshot.identity, cleanup_target.clone(), None)
         .await
         .expect("K1 cleanup recovery claim")
         .expect("K1 typed assignment");
@@ -1605,7 +1614,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     stale_target.runtime_incarnation = stale_identity.lease_owner();
     assert!(
         client
-            .claim_next_terminal_cleanup(&stale_identity, stale_target)
+            .claim_next_terminal_cleanup(&stale_identity, stale_target, None)
             .await
             .is_err(),
         "K2 stale identity"
@@ -1614,7 +1623,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     foreign_target.owner = "foreign-worker".into();
     assert!(
         client
-            .claim_next_terminal_cleanup(&registered.snapshot.identity, foreign_target)
+            .claim_next_terminal_cleanup(&registered.snapshot.identity, foreign_target, None)
             .await
             .is_err(),
         "K2 foreign owner"
@@ -1623,28 +1632,20 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     flagged_target.reassign_existing_lease = true;
     assert!(
         client
-            .claim_next_terminal_cleanup(&registered.snapshot.identity, flagged_target)
+            .claim_next_terminal_cleanup(&registered.snapshot.identity, flagged_target, None)
             .await
             .is_err(),
         "K3 reassignment flag"
     );
-    let mut over_expiry = cleanup_target;
-    over_expiry.lease_expires_at_unix_ms = 40_001;
-    client
-        .claim_next_terminal_cleanup(&registered.snapshot.identity, over_expiry)
-        .await
-        .expect("K3b exact proposal is narrowed")
-        .expect("K3b typed assignment");
-    assert_eq!(
-        session_control.cleanup_claims.lock().unwrap().len(),
-        2,
-        "K2 and K3a reject before Control; K3b reaches it"
-    );
-    assert_eq!(
-        session_control.cleanup_claims.lock().unwrap()[1].lease_expires_at_unix_ms,
-        40_000,
-        "K3b registry authority caps the Session claim",
-    );
+    cursor_protocol::verify_claim_cursor_protocol(
+        &upstream,
+        address,
+        &registered.snapshot.identity,
+        &cleanup_target,
+        &assignment.session_id,
+        &session_control,
+    )
+    .await;
 
     let mut cleanup_operation = awaken_session_state_contract::SessionCleanupOperation::default();
     assert!(
@@ -3099,7 +3100,9 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
         (
             "claim",
             "/v1/worker/session/cleanup/claim-next",
-            serde_json::json!({ "identity": &identity, "target": target }),
+            serde_json::json!({ "identity": &identity, "target": target,
+                "sweep_cursor_version": awaken_session_realization_contract::TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION,
+                "after_session_id": null }),
         ),
         (
             "poll",
