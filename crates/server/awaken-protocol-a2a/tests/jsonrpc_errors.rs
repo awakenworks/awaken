@@ -63,9 +63,12 @@ impl RunApplication for NoopRuntime {
 }
 
 async fn post(raw: String) -> (StatusCode, Value) {
-    let app = router(Arc::new(NoopRuntime {
-        pending_unavailable: false,
-    }));
+    let app = router(
+        Arc::new(NoopRuntime {
+            pending_unavailable: false,
+        }),
+        awaken_lease_contract::system_clock(),
+    );
     let resp = app
         .oneshot(
             Request::builder()
@@ -225,7 +228,7 @@ impl RunApplication for FaultingRuntime {
 }
 
 async fn rpc_on(rt: Arc<dyn RunApplication>, body: Value) -> Value {
-    let app = router(rt);
+    let app = router(rt, awaken_lease_contract::system_clock());
     let resp = app
         .oneshot(
             Request::builder()

@@ -14,7 +14,7 @@ use awaken_session_application_contract::{StepOutcome, blocks_text};
 
 use crate::types::{Message, MessageRole, Part, Task, TaskState, TaskStatus};
 
-pub(crate) fn working_task(task_id: &str, thread: &str) -> Task {
+pub(crate) fn working_task(task_id: &str, thread: &str, timestamp: String) -> Task {
     Task {
         kind: crate::types::TaskKind::Task,
         id: task_id.to_string(),
@@ -22,7 +22,7 @@ pub(crate) fn working_task(task_id: &str, thread: &str) -> Task {
         status: TaskStatus {
             state: TaskState::Working,
             message: None,
-            timestamp: Some(crate::time::now_rfc3339()),
+            timestamp: Some(timestamp),
         },
         history: Vec::new(),
         artifacts: Vec::new(),
@@ -50,7 +50,12 @@ pub(crate) fn task_state_for_run_state(state: &RunState) -> TaskState {
 
 /// Build the `Task` returned for a step on `thread`. `history` is the thread's full
 /// committed transcript (post-step); `outcome` classifies the terminal state.
-pub fn encode_task(thread: &str, history: &[AgentMessage], outcome: &StepOutcome) -> Task {
+pub fn encode_task(
+    thread: &str,
+    history: &[AgentMessage],
+    outcome: &StepOutcome,
+    timestamp: String,
+) -> Task {
     let messages: Vec<Message> = history
         .iter()
         .filter_map(|m| to_a2a_message(thread, m))
@@ -95,7 +100,7 @@ pub fn encode_task(thread: &str, history: &[AgentMessage], outcome: &StepOutcome
         status: TaskStatus {
             state,
             message: status_message,
-            timestamp: Some(crate::time::now_rfc3339()),
+            timestamp: Some(timestamp),
         },
         history: messages,
         artifacts: Vec::new(),
@@ -182,6 +187,8 @@ mod tests {
     use awaken_agent_contract::agent::run::{EndCause, Failure};
     use awaken_session_application_contract::Pending;
 
+    const TIMESTAMP: &str = "2026-07-19T00:00:00Z";
+
     fn msg(id: &str, role: Role, text: &str) -> AgentMessage {
         AgentMessage::text(MessageId(id.into()), role, text)
     }
@@ -205,7 +212,7 @@ mod tests {
                 message: "upstream is down".into(),
             }),
         );
-        let task = encode_task("th", &[], &outcome);
+        let task = encode_task("th", &[], &outcome, TIMESTAMP.into());
         assert_eq!(task.status.state, TaskState::Failed);
         let text = task
             .status
@@ -234,14 +241,18 @@ mod tests {
 
     #[test]
     fn completed_task_carries_history_and_last_agent_status() {
+        // Cause: the router supplied one exact observation timestamp with the
+        // committed outcome. Effect: the pure encoder preserves those bytes in
+        // the public Task, without sampling another clock (rule T1).
         let history = [
             msg("u1", Role::User, "hi"),
             msg("a1", Role::Assistant, "hello there"),
             msg("t1", Role::Tool, "tool noise"),
         ];
-        let task = encode_task("t", &history, &outcome(false, None));
+        let task = encode_task("t", &history, &outcome(false, None), TIMESTAMP.into());
         assert_eq!(task.status.state, TaskState::Completed);
         assert_eq!(task.context_id, "t");
+        assert_eq!(task.status.timestamp.as_deref(), Some(TIMESTAMP), "T1");
         // Tool/system messages are not part of the A2A history.
         assert_eq!(task.history.len(), 2);
         assert_eq!(task.status.message.unwrap().text(), "hello there");
@@ -256,7 +267,12 @@ mod tests {
             input: serde_json::Value::Null,
             client_executed: true,
         };
-        let task = encode_task("t", &history, &outcome(true, Some(pending)));
+        let task = encode_task(
+            "t",
+            &history,
+            &outcome(true, Some(pending)),
+            TIMESTAMP.into(),
+        );
         assert_eq!(task.status.state, TaskState::InputRequired);
         assert!(
             task.status
@@ -285,7 +301,7 @@ mod tests {
             msg("a1", Role::Assistant, "partial progress"),
         ];
         let exhausted = StepOutcome::ended(Vec::new(), EndCause::MaxSteps);
-        let task = encode_task("t", &history, &exhausted);
+        let task = encode_task("t", &history, &exhausted, TIMESTAMP.into());
         assert_eq!(task.status.state, TaskState::Failed);
         assert_eq!(task.status.message.unwrap().text(), "partial progress");
     }
@@ -295,7 +311,7 @@ mod tests {
         // History holding only a user turn (agent produced nothing textual) → a
         // completed task whose status message is absent, not a user message.
         let history = [msg("u1", Role::User, "hi")];
-        let task = encode_task("t", &history, &outcome(false, None));
+        let task = encode_task("t", &history, &outcome(false, None), TIMESTAMP.into());
         assert_eq!(task.status.state, TaskState::Completed);
         assert!(task.status.message.is_none());
     }
@@ -330,7 +346,7 @@ mod tests {
                 }],
             },
         ];
-        let task = encode_task("t", &history, &outcome(false, None));
+        let task = encode_task("t", &history, &outcome(false, None), TIMESTAMP.into());
         // Image and Thinking are dropped; only public text survives.
         assert_eq!(task.status.message.as_ref().unwrap().text(), "described");
         assert_eq!(task.history.len(), 1);
@@ -347,7 +363,7 @@ mod tests {
             msg("u1", Role::User, "question"),
             msg("a1", Role::Assistant, "still thinking"),
         ];
-        let task = encode_task("t", &history, &outcome(true, None));
+        let task = encode_task("t", &history, &outcome(true, None), TIMESTAMP.into());
         assert_eq!(task.status.state, TaskState::InputRequired);
         assert_eq!(task.status.message.unwrap().text(), "still thinking");
     }
@@ -358,7 +374,7 @@ mod tests {
             msg("u1", Role::User, "hi"),
             msg("a1", Role::Assistant, "hello"),
         ];
-        let task = encode_task("t", &history, &outcome(false, None));
+        let task = encode_task("t", &history, &outcome(false, None), TIMESTAMP.into());
         assert_eq!(task.history[0].role, MessageRole::User);
         assert_eq!(task.history[1].role, MessageRole::Agent);
     }

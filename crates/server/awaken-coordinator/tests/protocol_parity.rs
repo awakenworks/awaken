@@ -30,6 +30,8 @@ use awaken_protocol_ai_sdk::types::UIStreamEvent;
 use awaken_protocol_managed::project::{ManagedEncoder, ProjectedEvent};
 use awaken_protocol_managed::types::{OutboundKind, StopReason};
 
+const A2A_TIMESTAMP: &str = "2026-07-19T00:00:00Z";
+
 // --- shared drivers: one StepOutcome, four wires -------------------------
 
 /// The AI-SDK UI-message stream for a committed step.
@@ -62,7 +64,7 @@ fn managed_events(outcome: &StepOutcome) -> Vec<OutboundKind> {
 /// The A2A terminal `TaskState` for a committed step (history = the step's
 /// committed messages, as the real router passes the post-step transcript).
 fn a2a_state(outcome: &StepOutcome) -> TaskState {
-    a2a::encode_task("t1", &outcome.new_messages, outcome)
+    a2a::encode_task("t1", &outcome.new_messages, outcome, A2A_TIMESTAMP.into())
         .status
         .state
 }
@@ -309,7 +311,7 @@ fn assistant_text_is_visible_on_every_wire() {
     );
 
     // A2A folds the transcript into its Task history + status message.
-    let task = a2a::encode_task("t1", &outcome.new_messages, &outcome);
+    let task = a2a::encode_task("t1", &outcome.new_messages, &outcome, A2A_TIMESTAMP.into());
     assert_eq!(
         task.status.message.expect("status message").text(),
         "hello there"
@@ -352,7 +354,7 @@ fn committed_thinking_preserves_public_outcome_without_leaking_private_content()
     );
     assert!(!format!("{agui:?}").contains("private-chain-of-thought"));
 
-    let task = a2a::encode_task("t1", &outcome.new_messages, &outcome);
+    let task = a2a::encode_task("t1", &outcome.new_messages, &outcome, A2A_TIMESTAMP.into());
     assert_eq!(task.history.len(), 1);
     assert_eq!(task.history[0].text(), "public answer");
     assert!(!format!("{task:?}").contains("private-chain-of-thought"));
@@ -434,7 +436,7 @@ fn a2a_snapshot_drops_tool_and_system_messages_by_design() {
         assistant_tool("a1", "c1", "read", serde_json::json!({ "path": "x" })),
         tool_result("t1", "c1", "42"),
     ]);
-    let task = a2a::encode_task("t1", &outcome.new_messages, &outcome);
+    let task = a2a::encode_task("t1", &outcome.new_messages, &outcome, A2A_TIMESTAMP.into());
     assert!(
         task.history.is_empty(),
         "A2A history omits tool/system messages: {:?}",

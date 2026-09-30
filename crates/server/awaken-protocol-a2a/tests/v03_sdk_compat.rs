@@ -94,7 +94,7 @@ fn send_params(context: &str) -> Value {
 
 #[tokio::test]
 async fn jsonrpc_stream_is_the_exact_sdk_envelope() {
-    let app = router(Arc::new(Runtime));
+    let app = router(Arc::new(Runtime), awaken_lease_contract::system_clock());
     let (_, content_type, body) = request(app, "POST", "/v1/a2a", json!({
         "jsonrpc": "2.0", "id": 41, "method": "message/stream", "params": send_params("stream-context")
     })).await;
@@ -120,7 +120,7 @@ async fn jsonrpc_stream_is_the_exact_sdk_envelope() {
 
 #[tokio::test]
 async fn rest_stream_uses_the_stream_response_oneof_wrapper() {
-    let app = router(Arc::new(Runtime));
+    let app = router(Arc::new(Runtime), awaken_lease_contract::system_clock());
     let (_, _, body) = request(
         app,
         "POST",
@@ -139,7 +139,7 @@ async fn rest_stream_uses_the_stream_response_oneof_wrapper() {
 
 #[tokio::test]
 async fn sdk_push_config_set_get_list_delete_round_trip() {
-    let app = router(Arc::new(Runtime));
+    let app = router(Arc::new(Runtime), awaken_lease_contract::system_clock());
     let (_, _, sent) = request(app.clone(), "POST", "/v1/a2a", json!({
         "jsonrpc": "2.0", "id": 1, "method": "message/send", "params": send_params("push-context")
     })).await;
