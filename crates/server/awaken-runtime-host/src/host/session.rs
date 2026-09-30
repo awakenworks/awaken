@@ -1376,67 +1376,14 @@ impl SharedHost {
                     .any(|id| id == awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID),
                 "Session projections must not rewrite BackgroundTask activation",
             );
-            // WebSearch has one configuration/dispatch owner for both execution
-            // backends. Native installs the configured plugin. ACP resolves that
-            // same plugin once, then selects either Host MCP export or an exact
-            // provider-owned CLI projection. A Session never constructs both.
-            let web_search = if config
-                .resolved_spec
-                .plugin_ids
-                .iter()
-                .any(|id| id == awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID)
-            {
-                let execution_configuration =
-                    awaken_ext_builtin_tools::web_search_execution_configuration(&toolsets)
-                        .map_err(HostError::bad_request)?;
-                let plugin = self.web_search_plugin(thread, execution_configuration);
-                if is_acp {
-                    Some(
-                        plugin
-                            .configured_tool(
-                                config
-                                    .resolved_spec
-                                    .plugin_config
-                                    .get(awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID),
-                            )
-                            .map_err(|error| HostError::bad_request(error.to_string()))?,
-                    )
-                } else {
-                    runtime = runtime.with_plugin(plugin);
-                    None
-                }
-            } else {
-                None
-            };
-            let web_fetch = if config
-                .resolved_spec
-                .plugin_ids
-                .iter()
-                .any(|id| id == awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID)
-            {
-                let plugin = self.web_fetch_plugin(
-                    thread,
-                    awaken_ext_builtin_tools::web_fetch_execution_configuration(&toolsets)
-                        .map_err(HostError::bad_request)?,
-                );
-                if is_acp {
-                    Some(
-                        plugin
-                            .configured_tool(
-                                config
-                                    .resolved_spec
-                                    .plugin_config
-                                    .get(awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID),
-                            )
-                            .map_err(|error| HostError::bad_request(error.to_string()))?,
-                    )
-                } else {
-                    runtime = runtime.with_plugin(plugin);
-                    None
-                }
-            } else {
-                None
-            };
+            let (web_runtime, web_search, web_fetch) = self.configure_web_tools_for_session(
+                thread,
+                &config.resolved_spec,
+                &toolsets,
+                is_acp,
+                runtime,
+            )?;
+            runtime = web_runtime;
             // D6: for an ACP run, merge publication-pinned secret-free stdio routes with
             // the Session's staged URL routes, then hand the exact set to the CLI's own MCP
             // client. The immutable publication's `backend_ref` is the routing authority.
@@ -1488,7 +1435,6 @@ impl SharedHost {
             let mut acp_tool_exports = Vec::new();
             let mut acp_attached_tools = None;
             let mut acp_provider_server_tools = Vec::new();
-            let mut acp_host_web_tools = Vec::new();
             let mut acp_tool_grants = None;
             let mut acp_client_tool_ids = std::collections::HashSet::new();
             let mut acp_client_tool_requests = None;
@@ -1501,45 +1447,18 @@ impl SharedHost {
                     awaken_runtime_contract::resolved::Backend::Acp(backend) => backend.cli(),
                     _ => unreachable!("is_acp is derived from the execution backend"),
                 };
-                for (tool_id, label, configured) in [
-                    ("web_search", "WebSearch", web_search),
-                    ("web_fetch", "WebFetch", web_fetch),
-                ] {
-                    if configured.as_ref().is_some_and(|(descriptor, _)| {
-                        descriptor.provider_server_tool.is_some()
-                            && config
-                                .resolved_spec
-                                .plugin_config
-                                .agent
-                                .tool_policy(tool_id)
-                                .is_some_and(|policy| {
-                                    policy.enabled
-                                        && matches!(
-                                            policy.permission,
-                                            awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk
-                                        )
-                                })
-                    }) {
-                        return Err(HostError::bad_request(format!(
-                            "PROVIDER_SERVER_TOOL_APPROVAL_UNSUPPORTED: {label} is executed inside the model provider and cannot satisfy per-call Awaken approval; select an Awaken-hosted provider or change the permission to always_allow"
-                        )));
-                    }
-                    match self.realize_web_tool_for_acp(acp_cli_id, label, configured)? {
-                        crate::web_search::AcpWebToolRealization::NotConfigured => {}
-                        crate::web_search::AcpWebToolRealization::HostTool { descriptor, tool } => {
-                            acp_host_web_tools.push((descriptor, tool));
-                        }
-                        crate::web_search::AcpWebToolRealization::ProviderServer(tool) => {
-                            if !acp_provider_server_tools.contains(&tool) {
-                                acp_provider_server_tools.push(tool);
-                            }
-                        }
-                    }
-                }
+                let (host_web_tools, provider_server_tools) = self
+                    .realize_configured_web_tools_for_acp(
+                        acp_cli_id,
+                        &config.resolved_spec.plugin_config.agent,
+                        web_search,
+                        web_fetch,
+                    )?;
+                acp_provider_server_tools = provider_server_tools;
 
                 let mut descriptors = Vec::new();
                 let mut executors = Vec::new();
-                for (descriptor, tool) in acp_host_web_tools {
+                for (descriptor, tool) in host_web_tools {
                     descriptors.push(descriptor);
                     executors.push(tool);
                 }
