@@ -578,6 +578,10 @@ pg_test cargo test -p awaken-resource-store --all-features || record_failure "$?
 pg_test cargo test -p awaken-resource-persistence || record_failure "$?"
 pg_test cargo test -p awaken-session-application --lib postgres_ -- --test-threads=1 \
   || record_failure "$?"
+# Run the existing Managed HITL frontier decision table with two independent
+# PostgreSQL Session connections; a no-URL workspace test cannot claim this.
+pg_test cargo test -p awaken-protocol-managed --lib postgres_two_connection_late_hitl_frontier_preserves_old_cursors -- --test-threads=1 \
+  || record_failure "$?"
 pg_test cargo test -p awaken-store-schema --test apply || record_failure "$?"
 pg_test cargo test -p awaken-store-sqlite --features test-support --test failure_atomicity || record_failure "$?"
 pg_test cargo test -p awaken-sandbox-policy-store --features test-support || record_failure "$?"
