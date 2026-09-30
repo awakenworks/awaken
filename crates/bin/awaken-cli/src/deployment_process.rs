@@ -39,9 +39,20 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
         model_supply,
         (managed_services, coordinator_services),
         installations,
-        awaken_lease_contract::system_clock(),
+        process_clock_for(Some(deployment)),
     )
     .await
+}
+
+/// Direct embedding chooses a process clock here; an authored Workspace data
+/// guard already carries the clock selected when its lease was admitted.
+pub(super) fn process_clock_for(
+    deployment: Option<&config::ResolvedDeployment>,
+) -> std::sync::Arc<dyn awaken_lease_contract::WallClock> {
+    deployment
+        .and_then(|deployment| deployment.workspace_data_lease_guard.as_ref())
+        .map(config::WorkspaceDataLeaseGuard::clock)
+        .unwrap_or_else(awaken_lease_contract::system_clock)
 }
 
 pub(super) async fn prepare_runtime_process_with_coordinator_services_and_installations(

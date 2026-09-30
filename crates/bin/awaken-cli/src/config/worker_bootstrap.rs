@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn kubernetes_file_configuration_reaches_only_its_owning_process() {
-        use super::super::{ConfigOverrides, FileConfig, ResolvedDeployment};
+        use super::super::{ConfigOverrides, FileConfig};
         // F1 authored Coordinator policy -> retained unchanged at startup.
         // F2 missing adapter -> explicit rejection, not an unsigned fallback.
         // F3 projected identity on any non-Worker role or Local mode -> reject
@@ -142,7 +142,7 @@ mod tests {
             provider_id = "cluster-a"
         "#;
         let resolve = |file| {
-            ResolvedDeployment::resolve_file(
+            crate::config::resolve_test_file(
                 ConfigOverrides::default(),
                 Some("/home/dev".into()),
                 "/home/dev/config.toml".into(),

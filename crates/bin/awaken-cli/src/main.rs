@@ -43,18 +43,24 @@ async fn run(command: Command) -> Result<(), String> {
             Ok(())
         }
         Command::Config { json, config_path } => {
-            let deployment = ResolvedDeployment::load(ConfigOverrides {
-                config_path,
-                ..Default::default()
-            })?;
+            let deployment = ResolvedDeployment::load(
+                ConfigOverrides {
+                    config_path,
+                    ..Default::default()
+                },
+                awaken_lease_contract::system_clock(),
+            )?;
             println!("{}", deployment.report(json).trim_end());
             Ok(())
         }
         Command::Doctor { json, config_path } => {
-            let deployment = ResolvedDeployment::load(ConfigOverrides {
-                config_path,
-                ..Default::default()
-            })?;
+            let deployment = ResolvedDeployment::load(
+                ConfigOverrides {
+                    config_path,
+                    ..Default::default()
+                },
+                awaken_lease_contract::system_clock(),
+            )?;
             println!("{}", deployment.doctor_report(json).await.trim_end());
             Ok(())
         }

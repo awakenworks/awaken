@@ -237,7 +237,7 @@ mod tests {
                     projected.sandbox.trusted_host_scoped_execution,
                     enabled.unwrap_or(false)
                 );
-                let complete = super::super::ResolvedDeployment::resolve_file(
+                let complete = crate::config::resolve_test_file(
                     Default::default(),
                     Some(home.path().into()),
                     home.path().join("config.toml"),
