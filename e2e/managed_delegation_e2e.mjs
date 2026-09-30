@@ -908,7 +908,9 @@ async function main() {
     // reserved Advisor descriptor and exact candidate; C2 its child Run ends
     // naturally, fails at the Provider, or is cancelled while Running; C3 the
     // projector observes copied root context and possibly in-flight child text;
-    // C4 M14 retains the exact root User and targeted-interrupt receipts.
+    // C4 M14 retains the exact root User and targeted-interrupt receipts;
+    // C5 each Advisor child Worker binds model admission to its own dispatch
+    // claim, never the still-running parent's claim.
     // Effects: E1 one isolated `{type:advisor,model}` Thread owns the ordinary
     // Run and its exactly paired model start/end spans; E2 only natural
     // completion emits one advice receive and makes it available to the root

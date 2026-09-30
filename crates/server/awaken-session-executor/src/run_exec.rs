@@ -372,20 +372,6 @@ impl RunExecutor for BoundRunExecutor<'_> {
 }
 
 impl SessionAttemptExecutor {
-    pub(crate) fn new(
-        native: Arc<awaken_runtime::Runtime>,
-        acp: Option<Arc<awaken_run_executor_acp::AcpRunExecutor>>,
-        remote: Option<Arc<dyn RunAttemptExecutor>>,
-        worker: &awaken_runtime_contract::resolved::ResolvedSpec,
-        grader: Option<&awaken_runtime_contract::resolved::ResolvedSpec>,
-    ) -> Self {
-        let native: Arc<dyn RunAttemptExecutor> = native;
-        let acp = acp.map(|executor| executor as Arc<dyn RunAttemptExecutor>);
-        let mut snapshots = vec![worker];
-        snapshots.extend(grader);
-        Self::from_executors(native, acp, remote, &snapshots)
-    }
-
     pub(crate) fn from_executors(
         native: Arc<dyn RunAttemptExecutor>,
         acp: Option<Arc<dyn RunAttemptExecutor>>,
@@ -1383,6 +1369,8 @@ mod tests {
         // C2=backend is named only by the frozen Outcome Grader snapshot,
         // C3=matching topology adapter is installed. One exact registry consumes
         // both authorities; it never substitutes Native for a missing adapter.
+        // Root Session and delegated child both assemble this same constructor;
+        // neither has a second ACP-specific router path.
         //
         // | Rule | C1 | C2 | C3 | result |
         // | R1 | T | F | T | route Worker backend |
@@ -1451,9 +1439,12 @@ mod tests {
 
     #[tokio::test]
     async fn unavailable_snapshot_backend_fails_closed() {
+        // R3 from the table above: C1 or C2 names ACP/A2A while C3 has no
+        // matching adapter. Both attempts reject; Native receives zero calls.
         let native = Arc::new(RecordingExecutor::new("native"));
         let resolved = resolved_with(&["acp:claude", "a2a:https://agent.example"]);
-        let router = SessionAttemptExecutor::from_executors(native, None, None, &[&resolved]);
+        let router =
+            SessionAttemptExecutor::from_executors(native.clone(), None, None, &[&resolved]);
 
         let error = router
             .execute(activation("acp:claude"), RuntimeRunContext::new())
@@ -1469,5 +1460,8 @@ mod tests {
             .await
             .expect_err("unwired A2A backend must fail closed");
         assert!(error.to_string().contains("a2a:https://agent.example"));
+        assert_eq!(native.executes.load(Ordering::SeqCst), 0, "R3");
+        assert_eq!(native.resumes.load(Ordering::SeqCst), 0, "R3");
+        assert_eq!(native.cancels.load(Ordering::SeqCst), 0, "R3");
     }
 }

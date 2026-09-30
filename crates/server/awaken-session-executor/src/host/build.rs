@@ -545,6 +545,9 @@ impl SharedHost {
                 recovery_projection,
                 session_resources: self.thread_resource_manifest(thread),
                 publication_source: Some(publication_source.clone()),
+                claimed_model_request_gate: self.coordination_endpoint().map(|endpoint| {
+                    crate::coordination::claimed_model_request_gate_factory(endpoint, thread)
+                }),
             })
         } else {
             None
