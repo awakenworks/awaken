@@ -4,12 +4,6 @@
 
 use awaken_lease_contract::utc::{days_from_civil, days_in_month};
 
-pub(crate) fn now_rfc3339() -> String {
-    awaken_lease_contract::system_clock()
-        .now()
-        .to_rfc3339_secs()
-}
-
 pub(crate) fn parse_rfc3339(value: &str) -> Option<i64> {
     let (date, clock_and_zone) = value.split_once('T')?;
     let mut date_parts = date.split('-');
@@ -81,10 +75,10 @@ mod tests {
     fn rendered_timestamps_parse_back_to_the_same_second() {
         // The rendering is the codec's whole-second spelling, and this parser
         // reads it back to the same Unix second.
-        let now = now_rfc3339();
+        let now = awaken_lease_contract::UtcTime::from_epoch_ms(1_000).to_rfc3339_secs();
         assert_eq!(now.len(), 20, "{now}");
         let seconds = parse_rfc3339(&now).expect("rendered timestamp parses");
-        assert!(seconds > 0);
+        assert_eq!(seconds, 1);
         assert_eq!(parse_rfc3339("1970-01-01T00:00:00Z"), Some(0));
     }
 }

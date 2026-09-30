@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Message;
+use awaken_lease_testkit::ManualClock;
 use awaken_protocol_a2a::router;
 use awaken_session_application_contract::{
     Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
@@ -97,10 +98,13 @@ async fn call(app: Router, body: Value) -> Value {
 
 async fn rpc(denied: Arc<AtomicBool>, body: Value) -> Value {
     call(
-        router(Arc::new(AwaitingRuntime {
-            denied,
-            started: Arc::new(AtomicBool::new(true)),
-        })),
+        router(
+            Arc::new(AwaitingRuntime {
+                denied,
+                started: Arc::new(AtomicBool::new(true)),
+            }),
+            awaken_lease_contract::system_clock(),
+        ),
         body,
     )
     .await
@@ -119,17 +123,50 @@ async fn seed(app: Router) -> String {
 
 #[tokio::test]
 async fn tasks_get_on_an_awaiting_run_reads_input_required() {
-    let app = router(Arc::new(AwaitingRuntime {
-        denied: Arc::new(AtomicBool::new(false)),
-        started: Arc::new(AtomicBool::new(false)),
-    }));
+    // Causes: C1 the injected router clock reads t=1s when an awaiting Task
+    // is published; C2 it advances to t=2s before a read; C3 the client then
+    // cancels that Task. Effects: R1=C1 stamps input-required at t=1s;
+    // R2=C1+C2 retains the committed t=1s snapshot on GET; R3=C1+C2+C3
+    // publishes a new canceled status at t=2s. No read-time restamping.
+    let clock = Arc::new(ManualClock::new(1_000));
+    let app = router(
+        Arc::new(AwaitingRuntime {
+            denied: Arc::new(AtomicBool::new(false)),
+            started: Arc::new(AtomicBool::new(false)),
+        }),
+        clock.clone(),
+    );
     let task_id = seed(app.clone()).await;
     let r = call(
-        app,
+        app.clone(),
         json!({ "jsonrpc": "2.0", "id": 1, "method": "tasks/get", "params": { "id": task_id } }),
     )
     .await;
     assert_eq!(r["result"]["status"]["state"], "input-required", "{r}");
+    assert_eq!(
+        r["result"]["status"]["timestamp"], "1970-01-01T00:00:01Z",
+        "R1"
+    );
+    clock.set(2_000);
+    let retained = call(
+        app.clone(),
+        json!({ "jsonrpc": "2.0", "id": 2, "method": "tasks/get", "params": { "id": task_id } }),
+    )
+    .await;
+    assert_eq!(
+        retained["result"]["status"]["timestamp"], "1970-01-01T00:00:01Z",
+        "R2"
+    );
+    let canceled = call(
+        app,
+        json!({ "jsonrpc": "2.0", "id": 3, "method": "tasks/cancel", "params": { "id": task_id } }),
+    )
+    .await;
+    assert_eq!(canceled["result"]["status"]["state"], "canceled", "R3");
+    assert_eq!(
+        canceled["result"]["status"]["timestamp"], "1970-01-01T00:00:02Z",
+        "R3"
+    );
 }
 
 #[tokio::test]
@@ -183,10 +220,13 @@ async fn message_stream_can_explicitly_deny_an_awaiting_builtin_tool() {
     // is covered above; this is R2=C1+stream+C3 -> E1+E2+E3. Missing, duplicate,
     // malformed, or text-only decisions are the fail-closed request-table rules.
     let denied = Arc::new(AtomicBool::new(false));
-    let app = router(Arc::new(AwaitingRuntime {
-        denied: denied.clone(),
-        started: Arc::new(AtomicBool::new(true)),
-    }));
+    let app = router(
+        Arc::new(AwaitingRuntime {
+            denied: denied.clone(),
+            started: Arc::new(AtomicBool::new(true)),
+        }),
+        awaken_lease_contract::system_clock(),
+    );
     let response = app
         .oneshot(
             Request::builder()
@@ -291,9 +331,12 @@ async fn message_send_delivers_the_text_as_the_client_tool_result_on_resume() {
     // client-executed. Effects: E1 call resume, E2 never start a new run, E3 carry
     // the exact text as ClientResult. Decision rule R1=C1,C2,C4 -> E1,E2,E3.
     let delivered = Arc::new(Mutex::new(None));
-    let app = router(Arc::new(ClientToolRuntime {
-        delivered: delivered.clone(),
-    }));
+    let app = router(
+        Arc::new(ClientToolRuntime {
+            delivered: delivered.clone(),
+        }),
+        awaken_lease_contract::system_clock(),
+    );
     let resp = app
         .oneshot(
             Request::builder()
@@ -326,9 +369,12 @@ async fn message_stream_on_an_awaiting_context_uses_the_same_resume_driver() {
     // Together R1/R2 pin transport parity and prevent a second send path from
     // silently turning a resume message into a fresh Run.
     let delivered = Arc::new(Mutex::new(None));
-    let app = router(Arc::new(ClientToolRuntime {
-        delivered: delivered.clone(),
-    }));
+    let app = router(
+        Arc::new(ClientToolRuntime {
+            delivered: delivered.clone(),
+        }),
+        awaken_lease_contract::system_clock(),
+    );
     let response = app
         .oneshot(
             Request::builder()
@@ -366,10 +412,13 @@ async fn message_stream_on_an_awaiting_context_uses_the_same_resume_driver() {
 #[tokio::test]
 async fn tasks_cancel_denies_the_awaiting_tool_and_reports_canceled() {
     let denied = Arc::new(AtomicBool::new(false));
-    let app = router(Arc::new(AwaitingRuntime {
-        denied: denied.clone(),
-        started: Arc::new(AtomicBool::new(false)),
-    }));
+    let app = router(
+        Arc::new(AwaitingRuntime {
+            denied: denied.clone(),
+            started: Arc::new(AtomicBool::new(false)),
+        }),
+        awaken_lease_contract::system_clock(),
+    );
     let task_id = seed(app.clone()).await;
     let r = call(
         app,

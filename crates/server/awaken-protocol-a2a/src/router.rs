@@ -58,8 +58,11 @@ type Runtime = A2aState;
 
 /// Build the A2A router. Mount it alongside other protocol routers; the paths are
 /// the `/v1/a2a...` surface an A2A `HTTP+JSON` client posts to.
-pub fn router(runtime: Arc<dyn RunApplication>) -> Router {
-    router_with_storage_root(runtime, None)
+pub fn router(
+    runtime: Arc<dyn RunApplication>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
+) -> Router {
+    router_with_storage_root(runtime, None, clock)
 }
 
 /// Build the A2A router with adapter projections persisted below an explicitly
@@ -70,10 +73,12 @@ pub fn router(runtime: Arc<dyn RunApplication>) -> Router {
 pub fn router_with_storage_root(
     runtime: Arc<dyn RunApplication>,
     storage_root: Option<&std::path::Path>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Router {
     let state = A2aState::new(
         runtime,
         storage_root.map(|root| root.join("a2a-state.json")),
+        clock,
     )
     .unwrap_or_else(|error| panic!("load A2A wire projection: {error}"));
     Router::new()
@@ -302,7 +307,7 @@ async fn stream_send(
                 .await
             {
                 let _ = rt.runtime.interrupt(&thread).await;
-                let failure = state_failure_update(&task_id, &thread, error);
+                let failure = state_failure_update(&task_id, &thread, error, rt.timestamp());
                 let _ = out_tx.send(sse_event(&failure, rpc_id.as_ref(), version));
                 return;
             }
@@ -345,7 +350,7 @@ async fn stream_send(
                 ),
             ),
         };
-        let mut task = encode_task(&thread, &history, &outcome);
+        let mut task = encode_task(&thread, &history, &outcome, rt.timestamp());
         task.id = task_id.clone();
         truncate_history(&mut task, history_length);
         if let Err(error) = rt.record_task(task.clone(), agent_id.clone()).await {
@@ -413,7 +418,7 @@ async fn prepare_send(
         .and_then(|configuration| configuration.task_push_notification_config.clone());
     resolve_task_context(rt, &mut req, path_agent.as_deref()).await?;
     let processed = process(req, path_agent);
-    let working = working_task(&processed.task_id, &processed.thread_id);
+    let working = working_task(&processed.task_id, &processed.thread_id, rt.timestamp());
     rt.record_task_with_config(
         working.clone(),
         processed.agent_id.clone(),
@@ -870,7 +875,7 @@ async fn run_send(
                     ),
                 ),
             };
-            let mut task = encode_task(&thread, &history, &step);
+            let mut task = encode_task(&thread, &history, &step, rt.timestamp());
             task.id = task_id;
             truncate_history(&mut task, history_length);
             rt.record_task_reliably(task, agent_id).await;
@@ -881,7 +886,7 @@ async fn run_send(
     let step = drive_processed(rt, processed).await?;
 
     let history = rt.runtime.history(&thread).await?;
-    let mut task = encode_task(&thread, &history, &step);
+    let mut task = encode_task(&thread, &history, &step, rt.timestamp());
     task.id = task_id;
     truncate_history(&mut task, history_length);
     rt.record_task(task.clone(), agent_id)
@@ -1204,7 +1209,7 @@ async fn cancel_task(
         let _ = rt.runtime.interrupt(&task.context_id).await;
     }
     task.status.state = TaskState::Canceled;
-    task.status.timestamp = Some(crate::time::now_rfc3339());
+    task.status.timestamp = Some(rt.timestamp());
     rt.record_task(task.clone(), owner.map(ToOwned::to_owned))
         .await
         .map_err(state_cancel_error)?;

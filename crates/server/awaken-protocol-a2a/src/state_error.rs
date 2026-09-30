@@ -54,6 +54,7 @@ pub(crate) fn state_failure_update(
     task_id: &str,
     context_id: &str,
     error: StateError,
+    timestamp: String,
 ) -> StreamResponse {
     StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
         kind: crate::types::TaskStatusUpdateKind::StatusUpdate,
@@ -65,7 +66,7 @@ pub(crate) fn state_failure_update(
                 format!("a2a-state-{task_id}"),
                 error.to_string(),
             )),
-            timestamp: Some(crate::time::now_rfc3339()),
+            timestamp: Some(timestamp),
         },
         final_: true,
         metadata: None,
