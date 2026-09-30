@@ -146,6 +146,7 @@ pub(super) async fn prepare_runtime_routers(
         cloud_api_base_url.as_deref(),
         &platform_workspace,
         &local_client_instance_id(stores.workspace_root.as_deref()),
+        stores.clock.clone(),
     );
     // Cloud-catalog startup decision table:
     // | Cloud models | authenticated brokered client | effect |

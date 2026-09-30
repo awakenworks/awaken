@@ -865,6 +865,7 @@ dependencies = [
  "awaken-credential-vault",
  "awaken-ext-builtin-tools",
  "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-model-catalog",
  "awaken-outbound-http",
  "awaken-provider-genai",
