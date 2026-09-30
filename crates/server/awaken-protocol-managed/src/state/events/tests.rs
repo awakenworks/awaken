@@ -2260,14 +2260,16 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
     // realization failure has no Run source or names a root/child Run; C3 the
     // source terminal is absent, a root error, a child error, or a non-error;
     // C4 an unrelated historical root error exists; C5 the source terminal
-    // arrives after a read, or both warm and cold project the settled prefix.
+    // arrives after a read, or both warm and cold project the settled prefix;
+    // C6 later cleanup updates the Session after the observed failure time.
     // Effects: E1 an ownerless create/recovery failure projects the Session
     // realization error; E2 a sourced failure with no terminal publishes no
     // provisional error or parent terminal; E3 a root source error owns the
     // single public error; E4 a child or non-error source retains the Session
     // error alongside any distinct Run error; E5 the later settled candidate
-    // publishes once and warm/cold ids and payloads agree. Exact typed Run
-    // identity, never error text, is the ownership constraint.
+    // publishes once and warm/cold ids and payloads agree; E6 every ready
+    // failure retains its original observation time after cleanup. Exact typed
+    // Run identity, never error text, is the ownership constraint.
     //
     // | Rule | Source | Source terminal | Other error | Effect |
     // |---|---|---|---|---|
@@ -2278,6 +2280,7 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
     // | AF5 | child | pending then error | no | E2 then E4 |
     // | AF6 | not failed | n/a | any | no activation fact |
     // | AF7 | none, empty cause | n/a | no | corrupt, no invented error |
+    // | AF8 | any ready failure + C6 | settled/n/a | any | E6 |
     fn terminal_run(
         session_id: &str,
         run_id: &RunId,
