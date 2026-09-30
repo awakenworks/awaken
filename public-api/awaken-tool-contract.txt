@@ -309,6 +309,8 @@ pub fn awaken_tool_contract::tool_batch::ToolBatch::set_result_messages(&mut sel
 pub fn awaken_tool_contract::tool_batch::ToolBatch::set_result_state(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::validate(&self) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::validate_awaiting_ticket(&self, &awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::awaiting::ResumeTicket) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchWaitError>
+impl awaken_tool_contract::tool_batch::ToolBatch
+pub fn awaken_tool_contract::tool_batch::ToolBatch::result_message_id(&self, &str) -> core::result::Result<awaken_agent_contract::agent::message::Id, awaken_tool_contract::tool_batch::ToolBatchError>
 impl<'de> serde_core::de::Deserialize<'de> for awaken_tool_contract::tool_batch::ToolBatch
 pub fn awaken_tool_contract::tool_batch::ToolBatch::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct awaken_tool_contract::tool_batch::ToolBatchId(_)
@@ -459,6 +461,8 @@ pub fn awaken_tool_contract::tool_batch::ToolBatch::set_result_messages(&mut sel
 pub fn awaken_tool_contract::tool_batch::ToolBatch::set_result_state(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::validate(&self) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::validate_awaiting_ticket(&self, &awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::awaiting::ResumeTicket) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchWaitError>
+impl awaken_tool_contract::tool_batch::ToolBatch
+pub fn awaken_tool_contract::tool_batch::ToolBatch::result_message_id(&self, &str) -> core::result::Result<awaken_agent_contract::agent::message::Id, awaken_tool_contract::tool_batch::ToolBatchError>
 impl<'de> serde_core::de::Deserialize<'de> for awaken_tool_contract::tool_batch::ToolBatch
 pub fn awaken_tool_contract::tool_batch::ToolBatch::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct awaken_tool_contract::ToolBatchId(_)
