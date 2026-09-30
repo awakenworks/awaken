@@ -201,30 +201,11 @@ impl FileStore for FsFileStore {
     }
 }
 
-#[cfg(not(windows))]
 async fn sync_directory(path: &Path) -> Result<(), FileStoreError> {
-    tokio::fs::File::open(path)
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || awaken_fs_durability::sync_directory(&path))
         .await
-        .map_err(e)?
-        .sync_all()
-        .await
-        .map_err(e)
-}
-
-#[cfg(windows)]
-async fn sync_directory(path: &Path) -> Result<(), FileStoreError> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
-
-    let directory = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)
-        .map_err(e)?;
-    tokio::fs::File::from_std(directory)
-        .sync_all()
-        .await
+        .map_err(|error| e(std::io::Error::other(error)))?
         .map_err(e)
 }
 
@@ -964,8 +945,8 @@ mod tests {
         // Causes: C1 a new/existing store directory on Unix or Windows; C2
         // content put and process-local reopen. Effects: R1 the directory
         // durability step succeeds with native handle rights; R2 the exact
-        // content id and bytes remain readable after reopening. Windows uses
-        // a backup-semantics directory handle with write access for flush.
+        // content id and bytes remain readable after reopening. Both OS paths
+        // use the one shared native directory-flush implementation.
         let tmp = tempfile::tempdir().unwrap();
         let store = FsFileStore::open(tmp.path()).await.unwrap();
         round_trip(&store).await;

@@ -466,11 +466,11 @@ fn open_regular_for_delete(parent: &File, name: &OsStr) -> io::Result<File> {
     Ok(file)
 }
 
-fn remove_regular_file_in(parent: &File, name: &OsStr) -> io::Result<()> {
+fn remove_regular_file_in(parent_path: &Path, parent: &File, name: &OsStr) -> io::Result<()> {
     let file = open_regular_for_delete(parent, name)?;
     awaken_fs_win32::delete_open(&file)?;
     drop(file);
-    Ok(())
+    awaken_fs_durability::sync_directory(parent_path)
 }
 
 pub(super) fn remove_sibling_regular_file_nofollow(
@@ -479,7 +479,7 @@ pub(super) fn remove_sibling_regular_file_nofollow(
 ) -> io::Result<()> {
     let name = leaf(path)?;
     validate_parent_path(lock)?;
-    remove_regular_file_in(&lock.parent, name)?;
+    remove_regular_file_in(&lock.parent_path, &lock.parent, name)?;
     validate_parent_path(lock)
 }
 
@@ -493,7 +493,7 @@ pub(super) fn remove_regular_file_nofollow(path: &Path) -> io::Result<()> {
     ))?;
     let parent = open_directory_nofollow(parent_path)?;
     let expected = identity(&parent)?;
-    remove_regular_file_in(&parent, name)?;
+    remove_regular_file_in(parent_path, &parent, name)?;
     if directory_identity_nofollow(parent_path)? != expected {
         return Err(invalid("Windows removal parent changed identity"));
     }
@@ -543,7 +543,8 @@ fn publish_file_in(
             apply_windows_mode(&stage, mode)?;
         }
         stage.sync_all()?;
-        awaken_fs_win32::rename_open_noreplace(&stage, &parent_path.join(destination))
+        awaken_fs_win32::rename_open_noreplace(&stage, &parent_path.join(destination))?;
+        awaken_fs_durability::sync_directory(parent_path)
     })();
     if result.is_err() {
         drop(stage);
@@ -579,6 +580,7 @@ where
         drop(source);
         awaken_fs_win32::rename_open_replace(&stage, &parent_path.join(destination))?;
         drop(stage);
+        awaken_fs_durability::sync_directory(parent_path)?;
         if file_information(&open_regular(parent, destination)?)? != stage_identity {
             return Err(invalid("Windows replacement publication changed identity"));
         }
@@ -680,6 +682,7 @@ fn create_directory_in(
     if directory_identity_nofollow(&directory_path)? != created {
         return Err(invalid("created Windows directory changed identity"));
     }
+    awaken_fs_durability::sync_directory(parent_path)?;
     Ok(created)
 }
 
@@ -724,6 +727,7 @@ fn publish_directory_in(
     if directory_identity_nofollow(&parent_path.join(destination_name))? != source_identity {
         return Err(invalid("published Windows directory changed identity"));
     }
+    awaken_fs_durability::sync_directory(parent_path)?;
     Ok(())
 }
 
@@ -832,10 +836,11 @@ pub(super) fn clear_directory_contents_exact(
     if directory_identity_nofollow(path)? != expected {
         return Err(invalid("Windows directory changed identity during cleanup"));
     }
-    Ok(())
+    awaken_fs_durability::sync_directory(path)
 }
 
 fn remove_directory_tree_in(
+    parent_path: &Path,
     parent: &File,
     name: &OsStr,
     expected: DirectoryIdentity,
@@ -847,7 +852,7 @@ fn remove_directory_tree_in(
     remove_directory_contents(&directory)?;
     awaken_fs_win32::delete_open(&directory)?;
     drop(directory);
-    Ok(())
+    awaken_fs_durability::sync_directory(parent_path)
 }
 
 pub(super) fn remove_directory_tree_exact(
@@ -863,7 +868,7 @@ pub(super) fn remove_directory_tree_exact(
     ))?;
     let parent = open_directory_nofollow(parent_path)?;
     let parent_identity = identity(&parent)?;
-    remove_directory_tree_in(&parent, name, expected)?;
+    remove_directory_tree_in(parent_path, &parent, name, expected)?;
     if directory_identity_nofollow(parent_path)? != parent_identity {
         return Err(invalid("Windows cleanup parent changed identity"));
     }
@@ -887,6 +892,7 @@ pub(super) fn clear_sibling_directory_contents_exact(
             "Windows sibling directory changed identity during cleanup",
         ));
     }
+    awaken_fs_durability::sync_directory(&lock.parent_path.join(name))?;
     validate_parent_path(lock)
 }
 
@@ -897,7 +903,7 @@ pub(super) fn remove_sibling_directory_tree_exact(
 ) -> io::Result<()> {
     let name = leaf(path)?;
     validate_parent_path(lock)?;
-    remove_directory_tree_in(&lock.parent, name, expected)?;
+    remove_directory_tree_in(&lock.parent_path, &lock.parent, name, expected)?;
     validate_parent_path(lock)
 }
 
@@ -1094,7 +1100,8 @@ pub(super) fn remove_relative_entry_exact(
     expected_root: DirectoryIdentity,
     relative: &Path,
 ) -> io::Result<()> {
-    let Some((parent, _, name)) = open_relative_parent(root, expected_root, relative, false)?
+    let Some((parent, parent_path, name)) =
+        open_relative_parent(root, expected_root, relative, false)?
     else {
         return Ok(());
     };
@@ -1114,7 +1121,7 @@ pub(super) fn remove_relative_entry_exact(
     if directory_identity_nofollow(root)? != expected_root {
         return Err(invalid("Windows relative cleanup root changed identity"));
     }
-    Ok(())
+    awaken_fs_durability::sync_directory(&parent_path)
 }
 
 pub(super) fn validate_parent_path(lock: &ExclusiveFileLock) -> io::Result<()> {
