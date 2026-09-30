@@ -73,7 +73,6 @@ export async function scenarioMemoryStore(client, headers) {
   }
   return store;
 }
-export { WORKER_PROVIDER_CREDENTIAL_CAPABILITY } from './fixtures/worker_manifest_fixture.mjs';
 // Match scripts/ci/_cargo_target.sh: a caller-owned coverage/isolated target
 // wins; otherwise keep this worktree's Cargo artifacts out of any user-level
 // shared target that can contain same-name packages from another worktree.

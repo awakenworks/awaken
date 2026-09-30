@@ -17,7 +17,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   FILES_BETA,
-  WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
   managedFileUploadForm,
   spawnProduction,
   stopServer,
@@ -36,7 +35,10 @@ import {
   claimedCommitRequestFixture,
   terminalThreadCommitFixture,
 } from './fixtures/thread_commit_fixture.mjs';
-import { workdirWorkerManifestFixture } from './fixtures/worker_manifest_fixture.mjs';
+import {
+  workdirWorkerManifestFixture,
+  WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
+} from './fixtures/worker_manifest_fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38817);

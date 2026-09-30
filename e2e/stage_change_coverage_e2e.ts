@@ -272,8 +272,12 @@ const obligations: Obligation[] = [
   { id: 'G42-P07', stage: '9 guardrail promotion evidence', behavior: 'full replacement publishes only the exact realized MCP generation while replay, conflict, removal and failed stage preserve durable truth', scenario: 'managed_mcp_hot_swap' },
   { id: 'G42-P08', stage: '9 guardrail promotion evidence', behavior: 'process replacement recovers the exact active MCP generation and never resurrects a removed generation', scenario: 'managed_mcp_recovery' },
   { id: 'G43-P01', stage: '9 guardrail promotion evidence', behavior: 'credential materialization binds exact source, recipient, target, usage, payload and claim epoch', scenario: 'credential_materialization_worker' },
-  { id: 'G43-P02', stage: '9 guardrail promotion evidence', behavior: 'mismatched payload or target cannot replay an envelope', scenario: 'credential_materialization_worker' },
-  { id: 'G43-P03', stage: '9 guardrail promotion evidence', behavior: 'expired or wrong-recipient material fails before provider I/O', scenario: 'credential_materialization_worker' },
+  // The concrete credential_files.rs resolver matrix proves these negative
+  // partitions. The one-process materialization E2E proves only the positive
+  // exact pin; counting its formerly synthetic Run refusals here was false E2E
+  // coverage, so both rows remain visible as explicit cross-process gaps.
+  { id: 'G43-P02', stage: '9 guardrail promotion evidence', behavior: 'mismatched payload or target cannot replay an envelope' },
+  { id: 'G43-P03', stage: '9 guardrail promotion evidence', behavior: 'expired or wrong-recipient material fails before provider I/O' },
   { id: 'G43-P04', stage: '9 guardrail promotion evidence', behavior: 'ambient provider variables cannot replace the published credential reference', scenario: 'credential_reference_worker' },
   { id: 'G43-P05', stage: '9 guardrail promotion evidence', behavior: 'revoked worker-local material fails exact use-time validation before launch', scenario: 'credential_reference_worker' },
   { id: 'G43-P06', stage: '9 guardrail promotion evidence', behavior: 'ACP receives the publication-pinned endpoint, model, credential revision and isolated config home', scenario: 'acp_projected_local' },
@@ -318,6 +322,11 @@ function unavailableOptionalInfrastructure(scenario: Scenario): string | undefin
 }
 
 async function startPostgres(): Promise<{ container: string; url: string }> {
+  // Causes: P1 the official image's initialization postmaster accepts only
+  // Unix-socket checks; P2 it shuts down before the final TCP postmaster starts.
+  // Effect: a socket-only pg_isready can report healthy just before createdb
+  // hits shutdown. Rule P1+P2=>refuse readiness; final TCP-ready=>create DB.
+  // The one Docker health check owns this decision for every stage scenario.
   const container = `awaken-stage-e2e-pg-${process.pid}`;
   docker(
     'run',
@@ -330,7 +339,7 @@ async function startPostgres(): Promise<{ container: string; url: string }> {
     'POSTGRES_DB=awaken',
     '-p',
     '127.0.0.1::5432',
-    '--health-cmd=pg_isready -U postgres -d awaken',
+    '--health-cmd=pg_isready -h 127.0.0.1 -U postgres -d awaken',
     '--health-interval=1s',
     '--health-timeout=2s',
     '--health-retries=30',

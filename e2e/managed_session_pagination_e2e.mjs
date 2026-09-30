@@ -2,7 +2,7 @@
 // official SDK's BidirectionalPageCursor. Raw HTTP remains only as the
 // independent malformed-cursor oracle.
 //
-// Cause/effect graph: order + filters + lifecycle -> stable ordered candidate set;
+// Cause/effect graph: `(created_at, id)` order + filters + lifecycle -> stable ordered candidate set;
 // limit + opaque direction-bound cursor -> page and next/previous transitions;
 // malformed/order-mismatched cursor -> atomic 400.
 //
@@ -69,7 +69,15 @@ async function main() {
     for (const id of created) assert.ok(allIds.includes(id), `full page missing ${id}`);
     assert.equal(all.next_page, null, 'full page next_page=null');
     assert.equal(all.prev_page, null, 'first page prev_page=null');
-    assert.deepEqual(allIds, [...allIds].sort().reverse(), 'default order is newest-first (id tie-break)');
+    for (let index = 1; index < all.data.length; index++) {
+      const previous = all.data[index - 1];
+      const current = all.data[index];
+      assert.ok(
+        previous.created_at > current.created_at
+          || (previous.created_at === current.created_at && previous.id > current.id),
+        'L1 newest created_at first, with id only breaking timestamp ties',
+      );
+    }
     pass('L1 default list is newest-first and returns the bidirectional page shape');
 
     // L2: asc + limit=1 walks via opaque next cursors with no gaps/duplicates.
@@ -113,13 +121,23 @@ async function main() {
 
     // L6: filters intersect. The SDK owns the official `statuses` array's wire
     // serialization; this test observes only the public Page contract.
-    const createdAt = all.data[0].created_at;
+    const createdTimes = all.data.map((session) => session.created_at).sort();
+    const oldest = createdTimes[0];
+    const newest = createdTimes.at(-1);
     const filtered = await client.beta.sessions.list({
       agent_id: 'assistant', agent_version: 1, statuses: ['idle'],
-      'created_at[gte]': createdAt, 'created_at[lte]': createdAt,
+      'created_at[gte]': oldest, 'created_at[lte]': newest,
       betas: BETAS,
     });
     assert.equal(filtered.data.length, created.length, 'matching filters retain all three sessions');
+    const newestOnly = await client.beta.sessions.list({
+      'created_at[gte]': newest, 'created_at[lte]': newest, betas: BETAS,
+    });
+    assert.deepEqual(
+      newestOnly.data.map((session) => session.id),
+      all.data.filter((session) => session.created_at === newest).map((session) => session.id),
+      'L6 exact newest-time filter retains only matching public timestamps',
+    );
     const wrongStatus = await client.beta.sessions.list({ statuses: ['running'], betas: BETAS });
     assert.equal(wrongStatus.data.length, 0, 'nonmatching status removes every idle session');
     const changedFilterPage = await client.beta.sessions.list({

@@ -24,8 +24,8 @@
 //   • scoped store identity: Agent ids are portable while `(scope_id, id)` is the
 //     durable identity. A second tenant may author the same id, but reads, writes,
 //     revisions, and credential references remain independent in each scope.
-// The discriminator is `max_steps` (echoed in the GET projection; a draft's raw
-// `instructions` projects to `system` only once published).
+// The discriminator is `max_steps` (echoed in the GET projection). Drafts use
+// the canonical Managed wire fields; domain-only field names are refused.
 //
 // Run: (from e2e/) node cross_tenant_config_isolation_e2e.mjs
 
@@ -60,11 +60,11 @@ async function req(base, method, uri, token, body) {
 // `max_steps` is the per-scope discriminator: it survives into the GET projection.
 const draft = (maxSteps) => ({
   id: AGENT_ID,
-  instructions: 'a tenant-scoped agent',
+  system: 'a tenant-scoped agent',
   max_steps: maxSteps,
-  model_binding: { mode: 'auto' },
-  tool_ids: [],
-  plugin_ids: [],
+  model: { mode: 'auto' },
+  tools: [],
+  plugins: [],
   plugin_config: {},
 });
 
