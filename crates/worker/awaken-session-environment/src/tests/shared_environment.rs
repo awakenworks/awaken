@@ -507,12 +507,12 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
         std::time::Duration::ZERO,
     )
     .into_session_environment();
-    #[cfg(target_os = "macos")]
-    assert_eq!(environment.handle().provider_kind(), "seatbelt");
-    #[cfg(not(target_os = "macos"))]
+    // N3: either native platform must retain the mechanism selected by its
+    // sole Namespace provider in the Session lifecycle handle; a mismatched
+    // provider discriminator fails before Native or Hand claims path fidelity.
     assert_eq!(
         environment.lifecycle().handle().provider_kind(),
-        "bubblewrap"
+        NamespaceProvider::provider_kind().schema_provider()
     );
 
     let mut native_command = pc::Command::new([
