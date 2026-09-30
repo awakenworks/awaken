@@ -109,6 +109,13 @@ async function main() {
       secret: FAKE_KEY,
     });
     assert.equal(r.status, 201);
+    // Causes: P1 the connection is authored inside a Workspace; P2 the
+    // process restarts over the same durable root. Effect: E1 the exact
+    // Workspace-qualified endpoint returned by the authoring command is still
+    // in the catalog afterward. Rule P1+P2=>E1; a former global endpoint ID
+    // is not the identity whose persistence this case can prove.
+    const connectionEndpointId = r.json.endpoint.id;
+    assert.ok(connectionEndpointId, 'the connection exposes its persisted endpoint ID');
     pass('connected provider under the typed data_dir');
 
     // A vault `mcp_oauth` credential through the OFFICIAL SDK: the wire vault
@@ -312,8 +319,9 @@ async function main() {
     assert.equal(r.status, 200);
     assert.ok(
       'anthropic' in r.json.providers
-        && 'anthropic.anthropic_messages' in r.json.endpoints,
+        && connectionEndpointId in r.json.endpoints,
     );
+    assert.equal(r.json.endpoints[connectionEndpointId].workspace_id, workspace);
 
     r = await request('GET', `/v1/config/credentials?workspace_id=${workspace}`);
     assert.equal(r.status, 200);
