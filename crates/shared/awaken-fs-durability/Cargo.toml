@@ -1,0 +1,19 @@
+[package]
+name = "awaken-fs-durability"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+layer = "infrastructure"
+authority = "filesystem-directory-durability"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

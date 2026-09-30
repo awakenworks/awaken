@@ -11,6 +11,7 @@ resolver = "2"
 #                         domain-specific work-queue/session/env registries); a replaceable
 #                         port impl under its conformance suite (ADR-0059 criterion 3).
 #   crates/resources/*  → mountable agent-resource backends (memory/skill/file).
+#   crates/shared/*     → provider-neutral infrastructure used across bounded contexts.
 #   crates/server/*     → Coordinator application/host plus protocol and ingress adapters; package names declare owners.
 #   crates/worker/*     → stateless execution components: container/k8s sandbox + channel/relay (links no stores).
 #   crates/control/*    → self-hosted config/vault/iam authoring plane (ADR-0043).
@@ -23,6 +24,7 @@ members = [
     "crates/runtime/*",
     "crates/stores/*",
     "crates/resources/*",
+    "crates/shared/*",
     "crates/server/*",
     "crates/worker/*",
     "crates/control/*",
@@ -166,6 +168,7 @@ awaken-session-environment-contract = { path = "crates/contract/awaken-session-e
 awaken-session-environment = { path = "crates/worker/awaken-session-environment" }
 awaken-local-process = { path = "crates/worker/awaken-local-process" }
 awaken-sandbox-fs = { path = "crates/worker/awaken-sandbox-fs" }
+awaken-fs-durability = { path = "crates/shared/awaken-fs-durability" }
 awaken-installation-workspace = { path = "crates/worker/awaken-installation-workspace" }
 awaken-sandbox-policy-store = { path = "crates/server/awaken-sandbox-policy-store" }
 awaken-worker-contract = { path = "crates/contract/awaken-worker-contract" }

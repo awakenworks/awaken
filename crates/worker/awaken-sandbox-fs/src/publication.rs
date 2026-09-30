@@ -218,7 +218,7 @@ pub fn publish_file_noreplace(destination: &Path, contents: &[u8]) -> std::io::R
                 ));
             }
 
-            File::open(parent)?.sync_all()
+            awaken_fs_durability::sync_directory(parent)
         })();
         if result.is_err() {
             let _ = std::fs::remove_file(&stage_path);
@@ -267,8 +267,8 @@ pub fn replace_regular_file_atomic(destination: &Path, contents: &[u8]) -> std::
             )
         })?;
         let stage = write_private_file_stage(destination, contents)?;
-        let result =
-            std::fs::rename(&stage, destination).and_then(|()| File::open(parent)?.sync_all());
+        let result = std::fs::rename(&stage, destination)
+            .and_then(|()| awaken_fs_durability::sync_directory(parent));
         if result.is_err() {
             let _ = std::fs::remove_file(stage);
         }

@@ -1397,6 +1397,7 @@ name = "awaken-file-store"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-fs-durability",
  "awaken-reliability-testkit",
  "awaken-resource-contract",
  "awaken-scoped-migration",
@@ -1412,6 +1413,13 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "awaken-fs-durability"
+version = "1.0.0"
+dependencies = [
+ "tempfile",
  "windows-sys 0.61.2",
 ]
 
@@ -2540,6 +2548,7 @@ dependencies = [
 name = "awaken-sandbox-fs"
 version = "1.0.0"
 dependencies = [
+ "awaken-fs-durability",
  "awaken-sandbox-win32",
  "cap-primitives",
  "cap-std",
@@ -3134,6 +3143,7 @@ name = "awaken-skill-store"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-fs-durability",
  "awaken-reliability-testkit",
  "awaken-resource-contract",
  "awaken-scoped-migration",
@@ -3190,6 +3200,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-fs-durability",
  "awaken-lease-contract",
  "awaken-reliability-testkit",
  "awaken-sandbox-fs",

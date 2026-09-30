@@ -84,6 +84,8 @@ async fn reopen_replays_committed_facts() {
 async fn torn_final_line_is_discarded() {
     // Test design — crash matrix, crash point `write(JSON-prefix)` before newline:
     // Durable(A) + Volatile(torn B) --restart--> Durable(A), never partial B.
+    // Windows requires a separate write handle for truncation; the live log
+    // returns to append-only mode before another commit is acknowledged.
     let dir = std::env::temp_dir().join("awaken_store_fs_torn");
     let _ = std::fs::remove_dir_all(&dir);
     let thread = ThreadId("t1".to_string());
