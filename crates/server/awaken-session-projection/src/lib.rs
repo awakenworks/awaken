@@ -32,7 +32,7 @@ mod transcript_plan;
 mod usage;
 
 pub use acceptance::{AcceptanceFence, LifecycleAcceptance, accept_lifecycle};
-pub use activation::activation_failure_fact;
+pub use activation::{ActivationFailureProjection, activation_failure_projection};
 pub use aggregate::{
     AggregateFallbackClose, AggregateIntervalClose, AggregatePlan, AggregateStop, IntervalHold,
     IntervalUsage, interval_hold, plan_aggregate,
