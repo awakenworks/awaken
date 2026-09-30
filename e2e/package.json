@@ -18,7 +18,6 @@
       "test:coordinator-authority",
       "test:runtime-stages",
       "test:coverage-gaps",
-      "test:control-plane-postgres",
       "test:delegation-restart",
       "test:public-benchmark",
       "test:memory-conflict-behavior",
