@@ -160,11 +160,11 @@ async function main() {
 
     // R2 receipt/effect decision table: C1=the exact custom-result receipt is
     // processed and still names the awaited tool use; C2=its later delta carries
-    // the correlated typed ToolResult and Agent reply; C3=that same resumed Run
-    // reaches final end_turn idle. E1=C1+C2+C3 authorizes the rich history and
-    // provider-shape assertions below. Constraint K: the canonical observer
-    // excludes the receipt itself from delta, so C1 must use receiptEvent and
-    // only later committed effects may satisfy C2/C3.
+    // the Agent reply, while the neutral typed ToolResult reaches the provider;
+    // C3=that same resumed Run reaches final end_turn idle. E1=C1+C2+C3
+    // authorizes the rich history and provider-shape assertions below.
+    // Constraint K: the canonical observer excludes the receipt itself from
+    // delta, and the public history must not duplicate it as agent.tool_result.
     observation = await waitForSessionEventReceipt(
       client,
       session.id,
@@ -175,8 +175,6 @@ async function main() {
         delta: ListedEvents;
       }) => receiptEvent?.type === 'user.custom_tool_result'
         && receiptEvent.custom_tool_use_id === toolUse.id
-        && delta.some((event) =>
-          event.type === 'agent.tool_result' && event.tool_use_id === toolUse.id)
         && delta.some((event) => event.type === 'agent.message' && event.content.some((block) =>
           block.type === 'text' && block.text.includes('RICH_TOOL_RESULT')))
         && delta.some((event) => event.type === 'session.status_idle'
@@ -184,6 +182,10 @@ async function main() {
       'R2 waits for the exact custom result and terminal Agent Message',
     );
     history = observation.events;
+    assert.ok(
+      !history.some((event) => event.type === 'agent.tool_result' && event.tool_use_id === toolUse.id),
+      'R2/K the client-owned receipt is not republished as an Agent result',
+    );
     const retainedResult = history.find((event) => event.type === 'user.custom_tool_result');
     assert.deepEqual(
       retainedResult?.content?.map((block) => block.type),
