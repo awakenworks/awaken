@@ -260,7 +260,7 @@ mod tests {
             let cursor = outcome_terminal_commit_cursor("id", &source).unwrap();
             assert_eq!(cursor, expected_cursor, "{rule} exact source");
             assert_eq!(
-                !(cursor.is_some() && !terminal_query),
+                cursor.is_none() || terminal_query,
                 complete,
                 "{rule} lag coverage"
             );
