@@ -102,6 +102,7 @@ impl SharedHost {
             web_search: Some(self.web_search_plugin(thread, None)),
             web_fetch: Some(self.web_fetch_plugin(thread, None)),
             clock: Some(self.clock.clone()),
+            background_supervisor: Some(self.background_supervisor.clone()),
         }
     }
 

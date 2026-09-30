@@ -1,6 +1,7 @@
 // @formal entrypoint background_task.never_replay_and_attempt_exhaustion_fail_closed
 // @formal entrypoint background_task.process_completion_is_retryable_and_stale_completion_is_inert
 // @formal entrypoint background_task.stale_fence_never_finishes_or_heartbeats
+use awaken_lease_contract::WallClockExt;
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, HookReaction, IdBound, PhaseContext, PhaseHook, PhaseHookPoint,
     Plugin, PluginConfigError, PluginManifest,
@@ -37,17 +38,34 @@ pub fn config_schema() -> serde_json::Value {
         .expect("derived BackgroundTaskConfig schema serializes")
 }
 
+/// One static manifest for capability discovery and Runtime registration.
+/// Inspecting a plugin's bound does not construct a process supervisor.
+#[must_use]
+pub fn background_task_manifest() -> PluginManifest {
+    PluginManifest {
+        id: BACKGROUND_TASK_PLUGIN_ID.into(),
+        requires: Vec::new(),
+        config_sections: vec![BACKGROUND_TASK_PLUGIN_ID.into()],
+        bound: CapabilityBound {
+            tools: IdBound::Exact(
+                crate::management_tool_ids()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+            ),
+            state_keys: IdBound::Namespace("background_task".into()),
+            phase_hooks: vec![PhaseHookPoint::StepStart],
+            ..Default::default()
+        },
+    }
+}
+
 pub struct BackgroundTaskPlugin {
     defaults: BackgroundTaskConfig,
     supervisor: Arc<BackgroundTaskSupervisor>,
 }
 
 impl BackgroundTaskPlugin {
-    #[must_use]
-    pub fn new(defaults: BackgroundTaskConfig) -> Self {
-        Self::with_supervisor(defaults, crate::process_supervisor())
-    }
-
     #[must_use]
     pub fn with_supervisor(
         defaults: BackgroundTaskConfig,
@@ -83,22 +101,7 @@ impl BackgroundTaskPlugin {
 
 impl Plugin for BackgroundTaskPlugin {
     fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: BACKGROUND_TASK_PLUGIN_ID.into(),
-            requires: Vec::new(),
-            config_sections: vec![BACKGROUND_TASK_PLUGIN_ID.into()],
-            bound: CapabilityBound {
-                tools: IdBound::Exact(
-                    crate::management_tool_ids()
-                        .into_iter()
-                        .map(str::to_owned)
-                        .collect(),
-                ),
-                state_keys: IdBound::Namespace("background_task".into()),
-                phase_hooks: vec![PhaseHookPoint::StepStart],
-                ..Default::default()
-            },
-        }
+        background_task_manifest()
     }
 
     fn resolve(&self) -> Contributions {
@@ -183,7 +186,7 @@ impl PhaseHook for ReconcileBackgroundTasks {
                     if candidate.renew_lease {
                         task.heartbeat(
                             &candidate.fence,
-                            BackgroundTaskSupervisor::now_ms(),
+                            self.supervisor.clock().now_ms(),
                             BackgroundTaskSupervisor::lease_ms(),
                         )?;
                     }
@@ -221,7 +224,7 @@ impl PhaseHook for ReconcileBackgroundTasks {
             {
                 continue;
             }
-            let now = BackgroundTaskSupervisor::now_ms();
+            let now = self.supervisor.clock().now_ms();
             if attempt.lease_expires_at_ms > now {
                 continue;
             }

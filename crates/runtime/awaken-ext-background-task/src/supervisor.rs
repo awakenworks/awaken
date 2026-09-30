@@ -2,8 +2,10 @@
 // @formal entrypoint background_task.single_fenced_attempt
 // @formal evidence background_task.stale_fence_never_finishes_or_heartbeats
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::Duration;
+
+use awaken_lease_contract::WallClock;
 
 #[cfg(all(test, feature = "loom"))]
 use loom::sync::Mutex;
@@ -96,35 +98,19 @@ impl SupervisorEntry {
 /// losing this value on restart is handled by the aggregate lease/recovery law.
 pub struct BackgroundTaskSupervisor {
     worker_id: String,
+    clock: Arc<dyn WallClock>,
     /// One mutually-exclusive process projection per durable task. A single
     /// lock makes Active -> Completed atomic, so duplicate terminal delivery
     /// cannot register between two parallel maps.
     entries: Mutex<BTreeMap<BackgroundTaskId, SupervisorEntry>>,
 }
 
-/// One process identity shared by the Runtime plugin and product observer.
-#[must_use]
-pub fn process_supervisor() -> Arc<BackgroundTaskSupervisor> {
-    static SUPERVISOR: OnceLock<Arc<BackgroundTaskSupervisor>> = OnceLock::new();
-    SUPERVISOR
-        .get_or_init(|| {
-            Arc::new(BackgroundTaskSupervisor::new(
-                awaken_runtime_contract::content_fingerprint(&(
-                    "background-worker-v1",
-                    std::process::id(),
-                    BackgroundTaskSupervisor::now_ms(),
-                ))
-                .expect("background worker identity serializes"),
-            ))
-        })
-        .clone()
-}
-
 impl BackgroundTaskSupervisor {
     #[must_use]
-    pub fn new(worker_id: impl Into<String>) -> Self {
+    pub fn new(worker_id: impl Into<String>, clock: Arc<dyn WallClock>) -> Self {
         Self {
             worker_id: worker_id.into(),
+            clock,
             entries: Mutex::new(BTreeMap::new()),
         }
     }
@@ -135,12 +121,8 @@ impl BackgroundTaskSupervisor {
     }
 
     #[must_use]
-    pub fn now_ms() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
-            .unwrap_or(u64::MAX)
+    pub fn clock(&self) -> &dyn WallClock {
+        self.clock.as_ref()
     }
 
     #[must_use]
@@ -387,7 +369,10 @@ mod tests {
         for phase in 0..3 {
             for epoch in [1, 2, 3, u64::MAX] {
                 for owner in ["worker", "other"] {
-                    let supervisor = BackgroundTaskSupervisor::new("worker");
+                    let supervisor = BackgroundTaskSupervisor::new(
+                        "worker",
+                        awaken_lease_contract::system_clock(),
+                    );
                     let token = supervisor.register(&id(), &completion(2).fence).unwrap();
                     if phase == 1 {
                         supervisor.wait(id(), wait_candidate(2));
@@ -425,7 +410,8 @@ mod tests {
         // slot. Incomparable same-epoch owners fail closed, not by deleting one.
         for phase in 0..3 {
             for epoch in [1, 2, 3] {
-                let supervisor = BackgroundTaskSupervisor::new("worker");
+                let supervisor =
+                    BackgroundTaskSupervisor::new("worker", awaken_lease_contract::system_clock());
                 supervisor.register(&id(), &completion(2).fence).unwrap();
                 if phase == 1 {
                     supervisor.wait(id(), wait_candidate(2));
@@ -459,7 +445,10 @@ mod tests {
             for same_owner in [false, true] {
                 for same_epoch in [false, true] {
                     for command in 0..4 {
-                        let supervisor = BackgroundTaskSupervisor::new("worker");
+                        let supervisor = BackgroundTaskSupervisor::new(
+                            "worker",
+                            awaken_lease_contract::system_clock(),
+                        );
                         let id = id();
                         let current = completion(2).fence;
                         let token = supervisor.register(&id, &current).unwrap();
@@ -555,7 +544,8 @@ mod tests {
         // -> E2 Completed; C3 Completed+register/complete -> E3 both stutter;
         // C4 retire -> E4 vacant and registerable. Constraint: Active and
         // Completed can never coexist in parallel maps for one task id.
-        let supervisor = BackgroundTaskSupervisor::new("worker");
+        let supervisor =
+            BackgroundTaskSupervisor::new("worker", awaken_lease_contract::system_clock());
         let id = id();
         assert!(
             supervisor.register(&id, &completion(1).fence).is_some(),
@@ -591,7 +581,8 @@ mod tests {
         // Cause: completion arrives without a locally registered launch.
         // Effect: it is ignored and leaves the sole slot vacant. Constraint:
         // only the owner that won register may create completion evidence.
-        let supervisor = BackgroundTaskSupervisor::new("worker");
+        let supervisor =
+            BackgroundTaskSupervisor::new("worker", awaken_lease_contract::system_clock());
         let id = id();
         supervisor.complete(id.clone(), completion(1));
         assert!(supervisor.completion(&id).is_none());
@@ -617,7 +608,8 @@ mod tests {
             (Some(("worker", 1)), false, true),
             (None, false, true),
         ] {
-            let supervisor = BackgroundTaskSupervisor::new("worker");
+            let supervisor =
+                BackgroundTaskSupervisor::new("worker", awaken_lease_contract::system_clock());
             let id = id();
             supervisor.register(&id, &completion(2).fence).unwrap();
             supervisor.complete(id.clone(), completion(2));
@@ -638,7 +630,8 @@ mod tests {
         // becomes Active and returns one cancellation token; R5 duplicate ack or
         // register -> no second poll. Constraint: Active/Waiting/Completed never
         // coexist in parallel maps for one durable task id.
-        let supervisor = BackgroundTaskSupervisor::new("worker");
+        let supervisor =
+            BackgroundTaskSupervisor::new("worker", awaken_lease_contract::system_clock());
         let id = id();
         supervisor.wait(id.clone(), wait_candidate(1));
         assert!(supervisor.wait_candidate(&id).is_none(), "R1");
@@ -675,7 +668,8 @@ mod tests {
         // atomically replaces it; R3 delayed Wait/duplicate Terminal stutter.
         // The StepStart observer can therefore never fold Waiting after a known
         // terminal outcome for the same attempt.
-        let supervisor = BackgroundTaskSupervisor::new("worker");
+        let supervisor =
+            BackgroundTaskSupervisor::new("worker", awaken_lease_contract::system_clock());
         let id = id();
         assert!(supervisor.register(&id, &completion(1).fence).is_some());
         supervisor.wait(id.clone(), wait_candidate(1));
@@ -707,7 +701,10 @@ mod loom_tests {
         // Active slot and its uncancelled token survive. Each critical section
         // uses the production method, not a separate model of the map.
         loom::model(|| {
-            let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
+            let supervisor = Arc::new(BackgroundTaskSupervisor::new(
+                "worker",
+                awaken_lease_contract::system_clock(),
+            ));
             supervisor.register(&id(), &completion(1).fence).unwrap();
             supervisor.wait(id(), wait_candidate(1));
             let observed = supervisor.wait_candidate(&id()).unwrap();
@@ -738,7 +735,10 @@ mod loom_tests {
         // Bounds: one slot, two threads, fixed representative identities. This
         // does not prove Tokio token internals or the durable commit precondition.
         loom::model(|| {
-            let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
+            let supervisor = Arc::new(BackgroundTaskSupervisor::new(
+                "worker",
+                awaken_lease_contract::system_clock(),
+            ));
             supervisor.register(&id(), &completion(2).fence).unwrap();
             supervisor.wait(id(), wait_candidate(2));
             let resuming = supervisor.clone();
@@ -767,7 +767,10 @@ mod loom_tests {
         // R3 terminal after ack -> resumed Active becomes Completed.
         // Effect: one retained terminal candidate, never a reopened poll.
         loom::model(|| {
-            let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
+            let supervisor = Arc::new(BackgroundTaskSupervisor::new(
+                "worker",
+                awaken_lease_contract::system_clock(),
+            ));
             supervisor.register(&id(), &completion(1).fence).unwrap();
             let waiting = supervisor.clone();
             let wait_and_ack = thread::spawn(move || {
@@ -793,7 +796,10 @@ mod loom_tests {
         // first consumes Waiting; the second observes Active and stutters.
         // Effect: exactly one token is minted and its fence remains attached.
         loom::model(|| {
-            let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
+            let supervisor = Arc::new(BackgroundTaskSupervisor::new(
+                "worker",
+                awaken_lease_contract::system_clock(),
+            ));
             supervisor.register(&id(), &completion(1).fence).unwrap();
             supervisor.wait(id(), wait_candidate(1));
             let first = supervisor.clone();
@@ -817,7 +823,10 @@ mod loom_tests {
         // live token. Constraint: whether an already-staged epoch-1 command wins
         // a ThreadCommit race is the durable CAS/async TCB, not this process lock.
         loom::model(|| {
-            let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
+            let supervisor = Arc::new(BackgroundTaskSupervisor::new(
+                "worker",
+                awaken_lease_contract::system_clock(),
+            ));
             supervisor.register(&id(), &completion(1).fence).unwrap();
             supervisor.complete(id(), completion(1));
             let folding = supervisor.clone();

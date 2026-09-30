@@ -245,7 +245,9 @@ async fn run_configured_agent_inner(
         &[],
         &config.resolved_spec.plugin_config.agent.toolsets,
     );
-    let mut runtime = build_runtime_with_authorization(llm, env, &authorization);
+    // Auxiliary Runs do not install the Session-owned BackgroundTask plugin:
+    // they have no committed Session terminal observer to execute its effects.
+    let mut runtime = build_runtime_with_authorization(llm, env, &authorization, None);
     // Tools the caller provisions on top of the sandbox's own (e.g. a
     // persistent write_memory scoped outside the ephemeral sandbox).
     for tool in extra_tools {

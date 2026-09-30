@@ -11,7 +11,10 @@ use awaken_ext_background_task::{
     BackgroundInvocation, BackgroundTask, BackgroundTaskCompletion, BackgroundTaskConfig,
     BackgroundTaskEnd, BackgroundTaskId, BackgroundTaskLifecycle, BackgroundTaskOrigin,
     BackgroundTaskPlugin, BackgroundTaskSupervisor, TaskExecutionPolicy, task_state_cell,
+    tasks_from_state,
 };
+use awaken_lease_contract::WallClockExt;
+use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::plugin::{
     PhaseContext, PhaseHookPoint, PhaseKind, Plugin, ResolvedExecutionEnv,
 };
@@ -35,10 +38,16 @@ impl ToolExecutionFactsResolver for FixtureExecutionFacts {
 }
 
 fn environment() -> ResolvedExecutionEnv {
-    let plugin = BackgroundTaskPlugin::new(BackgroundTaskConfig {
-        tools: BTreeSet::from(["bash".into()]),
-        ..Default::default()
-    });
+    let plugin = BackgroundTaskPlugin::with_supervisor(
+        BackgroundTaskConfig {
+            tools: BTreeSet::from(["bash".into()]),
+            ..Default::default()
+        },
+        Arc::new(BackgroundTaskSupervisor::new(
+            "fixture-worker",
+            awaken_lease_contract::system_clock(),
+        )),
+    );
     ResolvedExecutionEnv::merge(vec![(plugin.manifest(), plugin.resolve())])
         .expect("fixture plugin resolves within its manifest")
 }
@@ -92,7 +101,10 @@ async fn expired_cancellation_reconciliation_never_fabricates_remote_termination
     // the existing Host observer can cancel/query it after commit. R2 !C1 =>
     // Indeterminate, never a fabricated Cancelled or replay of a cancelled task.
     // C2 cannot override either rule; a replay policy is not termination proof.
-    let supervisor = Arc::new(BackgroundTaskSupervisor::new("replacement"));
+    let supervisor = Arc::new(BackgroundTaskSupervisor::new(
+        "replacement",
+        awaken_lease_contract::system_clock(),
+    ));
     let plugin = BackgroundTaskPlugin::with_supervisor(
         BackgroundTaskConfig {
             tools: BTreeSet::from(["bash".into()]),
@@ -271,11 +283,59 @@ async fn tools_create_list_get_cancel_only_through_runtime_state_commands() {
 }
 
 #[tokio::test]
+async fn submission_uses_the_supervisors_injected_clock_and_replay_keeps_the_lease() {
+    // Cause/effect rules SC: C1 a configured launch at t=2,000 -> one Running
+    // attempt whose expiry is t+the single 300s lease; C2 the same operation
+    // replays after the clock advances -> exact receipt, no new State command
+    // and no restamp. The submitted task id remains deterministic from its
+    // Thread/Run/operation, while worker identity is supplied by the supervisor.
+    let clock = Arc::new(ManualClock::new(2_000));
+    let supervisor = Arc::new(BackgroundTaskSupervisor::new("clock-worker", clock.clone()));
+    let plugin = BackgroundTaskPlugin::with_supervisor(
+        BackgroundTaskConfig {
+            tools: BTreeSet::from(["bash".into()]),
+            ..Default::default()
+        },
+        supervisor,
+    );
+    let env = ResolvedExecutionEnv::merge(vec![(plugin.manifest(), plugin.resolve())]).unwrap();
+    let run = env.dynamic_tool("run_in_background").unwrap();
+    let call = ToolCall {
+        call_id: "clock-submit".into(),
+        tool_id: "run_in_background".into(),
+        arguments: serde_json::json!({"tool":"bash","arguments":{"command":"echo clock"}}),
+    };
+    let mut state = Store::new();
+    let first = invoke(run.as_ref(), call.clone(), state.clone(), "clock-operation").await;
+    assert_eq!(first.state.len(), 1, "SC1");
+    state.apply(&first.state[0]);
+    let task = tasks_from_state(&state).unwrap().pop().unwrap();
+    let attempt = task.attempt().unwrap();
+    assert_eq!(attempt.worker_id, "clock-worker", "SC1");
+    assert_eq!(
+        attempt.lease_expires_at_ms,
+        2_000 + BackgroundTaskSupervisor::lease_ms(),
+        "SC1"
+    );
+    clock.set(2_500);
+    let replay = invoke(run.as_ref(), call, state.clone(), "clock-operation").await;
+    assert!(replay.state.is_empty(), "SC2");
+    assert_eq!(replay.text(), first.text(), "SC2");
+    assert_eq!(tasks_from_state(&state).unwrap(), vec![task], "SC2");
+}
+
+#[tokio::test]
 async fn configuration_schema_and_persisted_state_fail_closed() {
     // Partitions: configured target is admitted; unknown target is rejected;
     // unknown config fields fail plugin resolution; malformed persisted JSON
     // fails list rather than disappearing as an empty task set.
-    let plugin = BackgroundTaskPlugin::new(Default::default());
+    let plugin = BackgroundTaskPlugin::with_supervisor(
+        Default::default(),
+        Arc::new(BackgroundTaskSupervisor::new(
+            "fixture-worker",
+            awaken_lease_contract::system_clock(),
+        )),
+    );
     assert!(
         plugin
             .resolve_configured(Some(&serde_json::json!({"tools":["bash"],"extra":true})))
@@ -382,7 +442,8 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     // for the current Run, never evict it using that older snapshot's fence.
     // This is the persisted recovery edge;
     // the product observer may execute only after E1/E3's enclosing Run commits.
-    let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker-new"));
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_000));
+    let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker-new", clock));
     let plugin = BackgroundTaskPlugin::with_supervisor(
         BackgroundTaskConfig {
             tools: BTreeSet::from(["bash".into()]),
@@ -407,7 +468,7 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     let completed_fence = completed
         .start(
             supervisor.worker_id(),
-            BackgroundTaskSupervisor::now_ms(),
+            supervisor.clock().now_ms(),
             BackgroundTaskSupervisor::lease_ms(),
             TaskExecutionPolicy {
                 recovery: ToolRecoveryPolicy::default(),
@@ -453,7 +514,7 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
         BackgroundTaskLifecycle::Ended { .. }
     ));
 
-    let now = BackgroundTaskSupervisor::now_ms();
+    let now = supervisor.clock().now_ms();
     let mut leased = background_task("leased");
     leased
         .start(
@@ -627,7 +688,10 @@ async fn cancelling_unknown_completion_survives_commit_loss_without_false_cancel
 }
 
 async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
-    let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
+    let supervisor = Arc::new(BackgroundTaskSupervisor::new(
+        "worker",
+        awaken_lease_contract::system_clock(),
+    ));
     let plugin = BackgroundTaskPlugin::with_supervisor(
         BackgroundTaskConfig {
             tools: BTreeSet::from(["bash".into()]),
@@ -652,7 +716,7 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
     let fence = task
         .start(
             supervisor.worker_id(),
-            BackgroundTaskSupervisor::now_ms(),
+            supervisor.clock().now_ms(),
             BackgroundTaskSupervisor::lease_ms(),
             TaskExecutionPolicy {
                 recovery: ToolRecoveryPolicy::replay_safe(),

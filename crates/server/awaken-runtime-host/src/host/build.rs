@@ -286,6 +286,16 @@ impl SharedHost {
         );
         let session_slots = crate::session_slot::SessionRuntimeSlots::default();
         let hub = Arc::new(ThreadEventHub::new());
+        let background_supervisor =
+            Arc::new(awaken_ext_background_task::BackgroundTaskSupervisor::new(
+                awaken_runtime_contract::content_fingerprint(&(
+                    "background-worker-v1",
+                    std::process::id(),
+                    uuid::Uuid::new_v4().simple().to_string(),
+                ))
+                .expect("background worker identity serializes"),
+                clock.clone(),
+            ));
         Self {
             agent: capability::AgentExecution::new(llm, model_ref, session_slots.clone()),
             exec: capability::AttemptBackends::new(&deployment),
@@ -317,6 +327,7 @@ impl SharedHost {
                 }
             },
             clock,
+            background_supervisor,
             completion: Arc::new(CompletionRegistry::new(hub)),
             environment_binding_sink: std::sync::RwLock::new(None),
         }

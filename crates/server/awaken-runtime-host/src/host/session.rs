@@ -832,11 +832,13 @@ impl SharedHost {
                     self.agent.llm.clone(),
                     env.as_ref(),
                     &authorization,
+                    Some(self.background_supervisor.clone()),
                 ),
                 None => build_runtime_with_authorization(
                     self.agent.llm.clone(),
                     &crate::config::DeferredHandToolSource,
                     &authorization,
+                    Some(self.background_supervisor.clone()),
                 ),
             };
             // Register the management tool executables globally (ADR-0052 D3): the
@@ -1787,7 +1789,7 @@ impl SharedHost {
                         run_context.clone(),
                         background_commit,
                         self.resources.memory.background(),
-                        awaken_ext_background_task::process_supervisor(),
+                        self.background_supervisor.clone(),
                         thread.to_string(),
                         environment_generation,
                         background_attention.clone(),

@@ -306,7 +306,12 @@ pub(crate) async fn run_configured_agent_until_boundary(
         &[],
         &config.resolved_spec.plugin_config.agent.toolsets,
     );
-    let runtime = build_runtime_with_authorization(llm, env, &authorization);
+    let runtime = build_runtime_with_authorization(
+        llm,
+        env,
+        &authorization,
+        adapters.background_supervisor.clone(),
+    );
     let mut runtime = configure_child_native_runtime(
         runtime,
         &config,

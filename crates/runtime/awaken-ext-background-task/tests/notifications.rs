@@ -54,7 +54,13 @@ async fn project(
     config: serde_json::Value,
     state: &Store,
 ) -> awaken_runtime_contract::plugin::HookReaction {
-    let plugin = BackgroundTaskPlugin::new(BackgroundTaskConfig::default());
+    let plugin = BackgroundTaskPlugin::with_supervisor(
+        BackgroundTaskConfig::default(),
+        Arc::new(BackgroundTaskSupervisor::new(
+            "fixture-worker",
+            awaken_lease_contract::system_clock(),
+        )),
+    );
     let contribution = plugin.resolve_configured(Some(&config)).unwrap();
     let env = ResolvedExecutionEnv::merge(vec![(plugin.manifest(), contribution)]).unwrap();
     env.hooks_for(PhaseHookPoint::StepStart)[0]
@@ -184,10 +190,16 @@ async fn configured_budget_keeps_unicode_and_reports_truncation() {
 fn invalid_notification_configuration_is_rejected_at_plugin_admission() {
     // N10 malformed budget/template/pointer or unknown field -> reject before
     // execution. Positive default uses the same derived config schema.
-    let plugin = Arc::new(BackgroundTaskPlugin::new(BackgroundTaskConfig {
-        tools: BTreeSet::from(["x".into()]),
-        ..Default::default()
-    }));
+    let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
+        BackgroundTaskConfig {
+            tools: BTreeSet::from(["x".into()]),
+            ..Default::default()
+        },
+        Arc::new(BackgroundTaskSupervisor::new(
+            "fixture-worker",
+            awaken_lease_contract::system_clock(),
+        )),
+    ));
     for rule in [
         json!({"max_body_chars":0}),
         json!({"max_body_chars":65537}),
