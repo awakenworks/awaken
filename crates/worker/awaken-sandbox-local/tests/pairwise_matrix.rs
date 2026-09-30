@@ -322,7 +322,9 @@ async fn build(
 
     // A volatile Memory repository seeded with one note, shared with the assertion side.
     let mem_fs = if matches!(case.res, Res::Memory) {
-        let fs = Arc::new(VolatileMemoryRepository::new());
+        let fs = Arc::new(VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ));
         fs.create("s", "/note.md", "v1").await.unwrap();
         Some(fs)
     } else {

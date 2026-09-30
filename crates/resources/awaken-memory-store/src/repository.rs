@@ -21,16 +21,19 @@
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::BTreeMap;
 #[cfg(any(test, feature = "test-support"))]
+use std::sync::Arc;
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::{AtomicU64, Ordering};
+
 #[cfg(any(
     test,
     feature = "test-support",
     feature = "sqlite",
     feature = "postgres"
 ))]
-use std::time::{SystemTime, UNIX_EPOCH};
+use awaken_lease_contract::WallClock;
 
 #[cfg(any(test, feature = "test-support"))]
 use async_trait::async_trait;
@@ -92,17 +95,10 @@ pub(crate) fn decode_copy_conflict(
     Ok(candidate)
 }
 
-#[cfg(any(
-    test,
-    feature = "test-support",
-    feature = "sqlite",
-    feature = "postgres"
-))]
-pub(crate) fn now_nanos() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn stored_now_nanos(clock: &dyn WallClock) -> Result<i64, MemErr> {
+    i64::try_from(clock.now().as_unix_nanos())
+        .map_err(|_| MemErr::Storage("Memory timestamp exceeds SQL nanosecond range".into()))
 }
 
 /// Validate a memory path: absolute, non-root, no `//`, no `.`/`..` segment, no
@@ -365,8 +361,8 @@ pub(crate) fn under_prefix(path: &str, prefix: &str) -> bool {
 /// In-memory [`MemoryRepository`] for tests and scenario fixtures. One lock guards
 /// the whole map, so every create/update/rename/delete is atomic and CAS is race-free.
 #[cfg(any(test, feature = "test-support"))]
-#[derive(Default)]
 pub struct VolatileMemoryRepository {
+    clock: Arc<dyn WallClock>,
     inner: Mutex<InMemoryState>,
     next: AtomicU64,
     version_next: AtomicU64,
@@ -385,13 +381,22 @@ struct InMemoryState {
 #[cfg(any(test, feature = "test-support"))]
 impl VolatileMemoryRepository {
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(clock: Arc<dyn WallClock>) -> Self {
+        Self {
+            clock,
+            inner: Mutex::default(),
+            next: AtomicU64::default(),
+            version_next: AtomicU64::default(),
+        }
     }
     fn mint_id(&self) -> String {
         format!("mem_{}", self.next.fetch_add(1, Ordering::SeqCst) + 1)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the repository owns one admitted mutation stamp and its version row; no second timestamp context exists"
+    )]
     fn append_version(
         &self,
         state: &mut InMemoryState,
@@ -400,6 +405,7 @@ impl VolatileMemoryRepository {
         operation: MemoryVersionOperation,
         content: Option<String>,
         actor: Option<&MemoryActor>,
+        created_unix_nanos: u128,
     ) {
         let ordinal = self.version_next.fetch_add(1, Ordering::SeqCst) + 1;
         state
@@ -412,7 +418,7 @@ impl VolatileMemoryRepository {
                 operation,
                 path: record.path.clone(),
                 content,
-                created_unix_nanos: record.updated,
+                created_unix_nanos,
                 created_by: actor.cloned(),
                 redacted_unix_nanos: None,
                 redacted_by: None,
@@ -520,7 +526,7 @@ impl MemoryRepository for VolatileMemoryRepository {
         if store_map.len() >= MAX_MEMORIES_PER_STORE {
             return Err(MemErr::AtCapacity);
         }
-        let now = now_nanos();
+        let now = self.clock.now().as_unix_nanos();
         let record = Record {
             id,
             path: path.to_string(),
@@ -539,6 +545,7 @@ impl MemoryRepository for VolatileMemoryRepository {
             MemoryVersionOperation::Created,
             Some(content.to_string()),
             actor,
+            now,
         );
         Ok(memory)
     }
@@ -599,7 +606,8 @@ impl MemoryRepository for VolatileMemoryRepository {
         record.id = rename_replace_identity(record.id, displaced.as_ref().map(|head| &head.id));
         record.path = to.to_string();
         record.version += 1;
-        record.updated = now_nanos();
+        let now = self.clock.now().as_unix_nanos();
+        record.updated = now;
         let memory = record.to_memory(true);
         store_map.insert(to.to_string(), record.clone());
         if let Some(displaced) = displaced {
@@ -610,6 +618,7 @@ impl MemoryRepository for VolatileMemoryRepository {
                 MemoryVersionOperation::Deleted,
                 None,
                 None,
+                now,
             );
         }
         self.append_version(
@@ -619,6 +628,7 @@ impl MemoryRepository for VolatileMemoryRepository {
             MemoryVersionOperation::Modified,
             Some(record.content.clone()),
             None,
+            now,
         );
         Ok(memory)
     }
@@ -639,6 +649,7 @@ impl MemoryRepository for VolatileMemoryRepository {
             .get_mut(store)
             .and_then(|records| records.remove(path));
         if let Some(record) = removed {
+            let now = self.clock.now().as_unix_nanos();
             self.append_version(
                 &mut guard,
                 store,
@@ -646,6 +657,7 @@ impl MemoryRepository for VolatileMemoryRepository {
                 MemoryVersionOperation::Deleted,
                 None,
                 actor,
+                now,
             );
         }
         Ok(())
@@ -698,6 +710,7 @@ impl MemoryRepository for VolatileMemoryRepository {
             .get_mut(store)
             .expect("the store was observed under the same lock")
             .remove(path);
+        let now = self.clock.now().as_unix_nanos();
         self.append_version(
             &mut guard,
             store,
@@ -705,6 +718,7 @@ impl MemoryRepository for VolatileMemoryRepository {
             MemoryVersionOperation::Deleted,
             None,
             actor,
+            now,
         );
         Ok(true)
     }
@@ -743,7 +757,7 @@ impl MemoryRepository for VolatileMemoryRepository {
             return Ok(None);
         };
         if version.redacted_unix_nanos.is_none() {
-            version.redacted_unix_nanos = Some(now_nanos());
+            version.redacted_unix_nanos = Some(self.clock.now().as_unix_nanos());
             version.redacted_by = actor.cloned();
             version.content = None;
         }
@@ -837,7 +851,8 @@ impl VolatileMemoryRepository {
         record.content = content.to_string();
         record.sha = new_sha;
         record.version += 1;
-        record.updated = now_nanos();
+        let now = self.clock.now().as_unix_nanos();
+        record.updated = now;
         let memory = record.to_memory(true);
         store_map.insert(record.path.clone(), record.clone());
         if let Some(displaced) = displaced {
@@ -848,6 +863,7 @@ impl VolatileMemoryRepository {
                 MemoryVersionOperation::Deleted,
                 None,
                 actor,
+                now,
             );
         }
         self.append_version(
@@ -857,6 +873,7 @@ impl VolatileMemoryRepository {
             MemoryVersionOperation::Modified,
             Some(content.to_string()),
             actor,
+            now,
         );
         Ok(memory)
     }
@@ -1075,37 +1092,58 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn in_memory_extended_conformance() {
-        extended_conformance(&VolatileMemoryRepository::new()).await;
+        extended_conformance(&VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ))
+        .await;
     }
 
     #[tokio::test]
     async fn in_memory_history_conformance() {
-        history_conformance(&VolatileMemoryRepository::new()).await;
+        history_conformance(&VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ))
+        .await;
     }
 
     #[tokio::test]
     async fn in_memory_purge_conformance() {
-        purge_conformance(&VolatileMemoryRepository::new()).await;
+        purge_conformance(&VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ))
+        .await;
     }
 
     #[tokio::test]
     async fn in_memory_atomic_head_update_conformance() {
-        atomic_head_update_conformance(&VolatileMemoryRepository::new()).await;
+        atomic_head_update_conformance(&VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ))
+        .await;
     }
 
     #[tokio::test]
     async fn in_memory_snapshot_heads_conformance() {
-        snapshot_heads_conformance(&VolatileMemoryRepository::new()).await;
+        snapshot_heads_conformance(&VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ))
+        .await;
     }
 
     #[tokio::test]
     async fn in_memory_not_found_paths() {
-        not_found_paths(&VolatileMemoryRepository::new()).await;
+        not_found_paths(&VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ))
+        .await;
     }
 
     #[tokio::test]
     async fn in_memory_backend_conforms() {
-        conformance(&VolatileMemoryRepository::new()).await;
+        conformance(&VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ))
+        .await;
     }
 
     /// Ids are monotonic across a delete: deleting the highest-ordinal memory and then
@@ -1115,7 +1153,10 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn in_memory_ids_stay_monotonic_across_delete() {
-        ids_stay_monotonic_across_delete(&VolatileMemoryRepository::new()).await;
+        ids_stay_monotonic_across_delete(&VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ))
+        .await;
     }
 
     /// A rename-replace masks the destination entirely: after moving `src` over `dst`,
@@ -1125,7 +1166,10 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn in_memory_rename_replace_orphans_destination_id() {
-        rename_replace_orphans_the_destination_id(&VolatileMemoryRepository::new()).await;
+        rename_replace_orphans_the_destination_id(&VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ))
+        .await;
     }
 
     // --- Concurrency (ADR-0053 P2.5): the store is the shared source of truth
@@ -1133,19 +1177,27 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn concurrent_create_of_the_same_path_has_exactly_one_winner() {
-        concurrent_create_one_winner(std::sync::Arc::new(VolatileMemoryRepository::new())).await;
+        concurrent_create_one_winner(std::sync::Arc::new(VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        )))
+        .await;
     }
 
     #[tokio::test]
     async fn concurrent_update_on_the_same_base_has_exactly_one_cas_winner() {
-        concurrent_cas_one_winner(std::sync::Arc::new(VolatileMemoryRepository::new())).await;
+        concurrent_cas_one_winner(std::sync::Arc::new(VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        )))
+        .await;
     }
 
     #[tokio::test]
     async fn a_write_through_one_handle_is_visible_through_another() {
         // Two handles to one store stand in for two mounts sharing the same source
         // of truth — the basis of ADR-0053's shared-mount read coherence.
-        let fs = std::sync::Arc::new(VolatileMemoryRepository::new());
+        let fs = std::sync::Arc::new(VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let (writer, reader) = (fs.clone(), fs.clone());
         let m = writer.create("s", "/shared.md", "hello").await.unwrap();
         assert_eq!(
@@ -1207,6 +1259,9 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn volatile_store_capacity_rejects_only_new_heads_and_reopens_after_delete() {
-        capacity_conformance(&VolatileMemoryRepository::new()).await;
+        capacity_conformance(&VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ))
+        .await;
     }
 }

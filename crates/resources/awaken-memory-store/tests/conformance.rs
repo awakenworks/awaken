@@ -9,19 +9,66 @@
 //! The cross-node CAS backend (`PostgresMemoryRepository`) keeps the same POSIX-replace and
 //! compare-and-swap semantics as the in-process backends.
 
+#[cfg(any(feature = "test-support", feature = "postgres"))]
+use awaken_lease_contract::UtcTime;
+#[cfg(any(feature = "test-support", feature = "postgres"))]
+use awaken_lease_testkit::{FixedClock, ManualClock};
 #[cfg(feature = "test-support")]
 use awaken_memory_store::VolatileMemoryRepository;
 use awaken_memory_store::{MemErr, MemoryRepository};
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
+#[cfg(any(feature = "test-support", feature = "postgres"))]
 use std::sync::Arc;
 
 #[path = "common/memory_repository.rs"]
 mod shared;
 
+#[cfg(any(feature = "test-support", feature = "postgres"))]
+const PRECISE_NANOS: u128 = 1_700_000_000_123_456_789;
+
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn volatile_memory_timestamps_use_the_injected_clock() {
+    // TV: the volatile backend has no SQL range restriction; every u128
+    // nanosecond survives, while shared mutation rules own its history stamp.
+    let clock = Arc::new(ManualClock::new(0));
+    let fs = VolatileMemoryRepository::new(clock.clone());
+    shared::timestamp_mutation_conformance(&fs, &clock).await;
+    let fixed = Arc::new(FixedClock::at(UtcTime::from_unix_nanos(PRECISE_NANOS)));
+    shared::nanosecond_timestamp_conformance(&VolatileMemoryRepository::new(fixed), PRECISE_NANOS)
+        .await;
+    let beyond_sql = i64::MAX as u128 + 1;
+    let fixed = Arc::new(FixedClock::at(UtcTime::from_unix_nanos(beyond_sql)));
+    shared::nanosecond_timestamp_conformance(&VolatileMemoryRepository::new(fixed), beyond_sql)
+        .await;
+}
+
+#[cfg(all(feature = "sqlite", feature = "test-support"))]
+#[tokio::test]
+async fn sqlite_memory_timestamps_use_the_injected_clock_and_checked_sql_range() {
+    use awaken_memory_store::SqliteMemoryRepository;
+    let clock = Arc::new(ManualClock::new(0));
+    let fs = SqliteMemoryRepository::open_in_memory(clock.clone()).unwrap();
+    shared::timestamp_mutation_conformance(&fs, &clock).await;
+    let fixed = Arc::new(FixedClock::at(UtcTime::from_unix_nanos(PRECISE_NANOS)));
+    let precise = SqliteMemoryRepository::open_in_memory(fixed).unwrap();
+    shared::nanosecond_timestamp_conformance(&precise, PRECISE_NANOS).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("timestamp-range.db");
+    let path = path.to_str().unwrap();
+    let max = Arc::new(FixedClock::at(UtcTime::from_unix_nanos(i64::MAX as u128)));
+    let overflow = Arc::new(FixedClock::at(UtcTime::from_unix_nanos(
+        i64::MAX as u128 + 1,
+    )));
+    let representable = SqliteMemoryRepository::open(path, max).unwrap();
+    let overflow = SqliteMemoryRepository::open(path, overflow).unwrap();
+    shared::sql_timestamp_range_conformance(&representable, &overflow).await;
+}
+
 #[cfg(feature = "test-support")]
 #[tokio::test]
 async fn volatile_materialized_path_cas() {
-    let fs = VolatileMemoryRepository::new();
+    let fs = VolatileMemoryRepository::new(awaken_lease_contract::system_clock());
     shared::materialized_path_cas(&fs).await;
     shared::complete_generation_rejects_same_content_aba(&fs).await;
     shared::materialized_update_races_rename(&fs).await;
@@ -30,7 +77,10 @@ async fn volatile_materialized_path_cas() {
 #[cfg(all(feature = "sqlite", feature = "test-support"))]
 #[tokio::test]
 async fn sqlite_materialized_path_cas() {
-    let fs = awaken_memory_store::SqliteMemoryRepository::open_in_memory().unwrap();
+    let fs = awaken_memory_store::SqliteMemoryRepository::open_in_memory(
+        awaken_lease_contract::system_clock(),
+    )
+    .unwrap();
     shared::materialized_path_cas(&fs).await;
     shared::complete_generation_rejects_same_content_aba(&fs).await;
     shared::materialized_update_races_rename(&fs).await;
@@ -121,8 +171,10 @@ async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn M
 #[cfg(feature = "test-support")]
 #[tokio::test]
 async fn in_memory_conditional_delete_is_atomic() {
-    conditional_delete_never_removes_a_changed_or_recreated_head(&VolatileMemoryRepository::new())
-        .await;
+    conditional_delete_never_removes_a_changed_or_recreated_head(&VolatileMemoryRepository::new(
+        awaken_lease_contract::system_clock(),
+    ))
+    .await;
 }
 
 #[cfg(all(feature = "sqlite", feature = "test-support"))]
@@ -130,7 +182,7 @@ async fn in_memory_conditional_delete_is_atomic() {
 async fn sqlite_conditional_delete_is_atomic() {
     use awaken_memory_store::SqliteMemoryRepository;
     conditional_delete_never_removes_a_changed_or_recreated_head(
-        &SqliteMemoryRepository::open_in_memory().unwrap(),
+        &SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
     )
     .await;
 }
@@ -139,7 +191,10 @@ async fn sqlite_conditional_delete_is_atomic() {
 #[tokio::test]
 async fn sqlite_concurrent_create_has_exactly_one_winner() {
     use awaken_memory_store::SqliteMemoryRepository;
-    concurrent_create_one_winner(Arc::new(SqliteMemoryRepository::open_in_memory().unwrap())).await;
+    concurrent_create_one_winner(Arc::new(
+        SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
+    ))
+    .await;
 }
 
 #[cfg(all(feature = "sqlite", feature = "test-support"))]
@@ -152,7 +207,9 @@ async fn sqlite_concurrent_cas_has_exactly_one_winner() {
     // Separate repositories isolate the two rules; R2 deliberately shares its
     // repository across create and CAS so an empty-store assumption is exposed.
     for with_history in [false, true] {
-        let fs = Arc::new(SqliteMemoryRepository::open_in_memory().unwrap());
+        let fs = Arc::new(
+            SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
+        );
         if with_history {
             concurrent_create_one_winner(fs.clone()).await;
         }
@@ -220,6 +277,29 @@ mod postgres {
             .expect("connect to the newly created Postgres test schema")
     }
 
+    #[tokio::test]
+    async fn postgres_memory_timestamps_use_the_injected_clock_and_checked_sql_range() {
+        let Some(pool) = schema_pool("t_memory_timestamp_clock").await else {
+            return;
+        };
+        let clock = Arc::new(ManualClock::new(0));
+        let fs = PostgresMemoryRepository::with_pool(pool.clone(), clock.clone());
+        fs.ensure_schema().await.unwrap();
+        shared::timestamp_mutation_conformance(&fs, &clock).await;
+
+        let precise = Arc::new(FixedClock::at(UtcTime::from_unix_nanos(PRECISE_NANOS)));
+        let precise = PostgresMemoryRepository::with_pool(pool.clone(), precise);
+        shared::nanosecond_timestamp_conformance(&precise, PRECISE_NANOS).await;
+
+        let max = Arc::new(FixedClock::at(UtcTime::from_unix_nanos(i64::MAX as u128)));
+        let overflow = Arc::new(FixedClock::at(UtcTime::from_unix_nanos(
+            i64::MAX as u128 + 1,
+        )));
+        let representable = PostgresMemoryRepository::with_pool(pool.clone(), max);
+        let overflow = PostgresMemoryRepository::with_pool(pool, overflow);
+        shared::sql_timestamp_range_conformance(&representable, &overflow).await;
+    }
+
     /// The FULL path-addressed `MemoryRepository` conformance + extended + not-found suites
     /// against `PostgresMemoryRepository` — the cross-node CAS backend whose `FOR UPDATE` row locks,
     /// transactional POSIX-replace, and `MemErr::Conflict`-on-stale-base are its whole
@@ -229,12 +309,13 @@ mod postgres {
         let Some(pool) = schema_pool("t_memoryfs").await else {
             return;
         };
+        let clock = awaken_lease_contract::system_clock();
 
         // Causal graph and decision table:
         // absent ledger + verify -> fail/no DDL; migrate -> current ledger;
         // current ledger + verify -> serve/no DDL.
         assert!(
-            PostgresMemoryRepository::with_existing_pool(pool.clone())
+            PostgresMemoryRepository::with_existing_pool(pool.clone(), clock.clone())
                 .await
                 .is_err()
         );
@@ -245,9 +326,9 @@ mod postgres {
                 .unwrap();
         assert_eq!(ledger_after_verify, None, "verify never creates its ledger");
 
-        let fs = PostgresMemoryRepository::with_pool(pool.clone());
+        let fs = PostgresMemoryRepository::with_pool(pool.clone(), clock.clone());
         fs.ensure_schema().await.unwrap();
-        PostgresMemoryRepository::with_existing_pool(pool)
+        PostgresMemoryRepository::with_existing_pool(pool, clock)
             .await
             .unwrap();
         memory_repository_conformance(&fs).await;
@@ -275,7 +356,10 @@ mod postgres {
         let Some(pool) = schema_pool("t_memory_repo_race").await else {
             return;
         };
-        let fs = Arc::new(PostgresMemoryRepository::with_pool(pool));
+        let fs = Arc::new(PostgresMemoryRepository::with_pool(
+            pool,
+            awaken_lease_contract::system_clock(),
+        ));
         fs.ensure_schema().await.unwrap();
         concurrent_create_one_winner(fs.clone()).await;
         concurrent_cas_one_winner(fs).await;
@@ -288,7 +372,7 @@ mod postgres {
         let Some(pool) = schema_pool("t_memory_repo_reuse").await else {
             return;
         };
-        let fs = PostgresMemoryRepository::with_pool(pool);
+        let fs = PostgresMemoryRepository::with_pool(pool, awaken_lease_contract::system_clock());
         fs.ensure_schema().await.unwrap();
         shared::ids_stay_monotonic_across_delete(&fs).await;
     }
@@ -306,7 +390,10 @@ mod postgres {
         let Some(pool) = schema_pool("t_memory_negative_version").await else {
             return;
         };
-        let fs = PostgresMemoryRepository::with_pool(pool.clone());
+        let fs = PostgresMemoryRepository::with_pool(
+            pool.clone(),
+            awaken_lease_contract::system_clock(),
+        );
         fs.ensure_schema().await.unwrap();
         fs.create("s", "/negative.md", "value")
             .await

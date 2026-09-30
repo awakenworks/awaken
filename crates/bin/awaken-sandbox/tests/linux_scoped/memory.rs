@@ -11,14 +11,20 @@ const STORE: &str = "owner-crash-memory";
 const BEFORE: &str = "committed before owner SIGKILL — 无换行";
 const AFTER: &str = "committed by the recovered execution — 无换行";
 
-fn repository(base: &Path) -> Arc<SqliteMemoryRepository> {
-    Arc::new(SqliteMemoryRepository::open(base.join("memory.db").to_str().unwrap()).unwrap())
+fn repository(
+    base: &Path,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
+) -> Arc<SqliteMemoryRepository> {
+    Arc::new(SqliteMemoryRepository::open(base.join("memory.db").to_str().unwrap(), clock).unwrap())
 }
 
 pub(super) fn provider(base: &Path) -> LocalProvider {
+    // One provider process reading stamps both the repository and the FUSE
+    // mounter; the durable-head assertions below reopen SQLite independently.
+    let clock = awaken_lease_contract::system_clock();
     LocalProvider::trusted_host(base).with_memory_mounter(Arc::new(MemoryStoreMounter::new(
-        repository(base),
-        awaken_lease_contract::system_clock(),
+        repository(base, clock.clone()),
+        clock,
     )))
 }
 
@@ -97,7 +103,7 @@ fn kernel_mount(path: &Path) -> Option<String> {
 
 async fn durable_head(base: &Path) -> awaken_memory_store::Memory {
     // Independent reopened SQLite connection, not the FUSE content cache.
-    repository(base)
+    repository(base, awaken_lease_contract::system_clock())
         .get_by_path(STORE, "/note.md")
         .await
         .unwrap()
@@ -126,11 +132,13 @@ async fn provider_owner_crash_reacquires_fuse_before_new_scoped_execution() {
     //    reacquired path works, and the new scoped child reads
     //    BEFORE then commits AFTER, same physical Session root and File bytes.
     // F4 F3+C7 => unmount before root removal; external DB/sentinel retained.
+    // The reopened durable head is an independent SQLite handle, so F3 proves
+    // persisted bytes even though each provider shares one injected clock.
     // Constraint: all three detached tree sockets AND every recorded execution
     // must close before F2/F3. This proves Provider process death, not a full
     // distributed Worker/Control restart, vendor login or partial-I/O durability.
     let base = tempfile::tempdir().unwrap();
-    repository(base.path())
+    repository(base.path(), awaken_lease_contract::system_clock())
         .create(STORE, "/note.md", "seed")
         .await
         .unwrap();

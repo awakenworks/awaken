@@ -60,7 +60,7 @@ pub fn open_embedded(
     let memory_path = memory_path
         .to_str()
         .ok_or_else(|| ResourcePersistenceError::NonUtf8Path(memory_path.clone()))?;
-    let memory = awaken_memory_store::SqliteMemoryRepository::open(memory_path)
+    let memory = awaken_memory_store::SqliteMemoryRepository::open(memory_path, clock.clone())
         .map_err(|error| ResourcePersistenceError::Memory(error.to_string()))?;
     let file_path = root.join("files.db");
     let file_path = file_path
@@ -150,18 +150,22 @@ pub async fn open_postgres_with_pool(
     let file_store = blob_store.unwrap_or_else(|| file_catalog.clone());
     let memory = match schema {
         SchemaMode::Migrate => {
-            let store = awaken_memory_store::PostgresMemoryRepository::with_pool(pool.clone());
+            let store = awaken_memory_store::PostgresMemoryRepository::with_pool(
+                pool.clone(),
+                clock.clone(),
+            );
             store
                 .ensure_schema()
                 .await
                 .map_err(|error| ResourcePersistenceError::Memory(error.to_string()))?;
             store
         }
-        SchemaMode::Verify => {
-            awaken_memory_store::PostgresMemoryRepository::with_existing_pool(pool.clone())
-                .await
-                .map_err(|error| ResourcePersistenceError::Memory(error.to_string()))?
-        }
+        SchemaMode::Verify => awaken_memory_store::PostgresMemoryRepository::with_existing_pool(
+            pool.clone(),
+            clock.clone(),
+        )
+        .await
+        .map_err(|error| ResourcePersistenceError::Memory(error.to_string()))?,
     };
     let skills = match schema {
         SchemaMode::Migrate => {
@@ -227,7 +231,9 @@ pub fn ephemeral(
         registry,
         files.clone(),
         files,
-        Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
+        Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+            clock.clone(),
+        )),
         Arc::new(awaken_skill_store::InMemorySkillStore::new()),
         resources,
         clock,
@@ -409,6 +415,34 @@ mod tests {
             open_embedded(invalid.path(), awaken_lease_contract::system_clock()),
             Err(ResourcePersistenceError::CreateDirectory { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn embedded_memory_content_uses_the_resource_authorities_clock() {
+        // Cause/effect rule RC: one injected sub-millisecond process reading
+        // must reach the Memory content head and version history unchanged,
+        // while the Resource authorities retain that same clock handle.
+        // A second ambient Memory clock would produce a different timestamp.
+        const NANOS: u128 = 1_700_000_000_123_456_789;
+        let clock: Arc<dyn WallClock> = Arc::new(awaken_lease_testkit::FixedClock::at(
+            awaken_lease_contract::UtcTime::from_unix_nanos(NANOS),
+        ));
+        let root = tempfile::tempdir().unwrap();
+        let app = open_embedded(root.path(), clock.clone()).unwrap();
+        let authorities = app.authorities();
+        assert!(Arc::ptr_eq(&authorities.clock(), &clock), "RC handle");
+        let memory = authorities.memory_repository();
+        let created = memory
+            .create("clock-source", "/precise.md", "one")
+            .await
+            .unwrap();
+        assert_eq!(created.created_unix_nanos, NANOS, "RC head");
+        assert_eq!(created.updated_unix_nanos, NANOS, "RC head");
+        assert_eq!(
+            memory.list_versions("clock-source").await.unwrap()[0].created_unix_nanos,
+            NANOS,
+            "RC history"
+        );
     }
 
     #[tokio::test]

@@ -143,16 +143,17 @@ pub fn with_durable_store_dir(host: SharedHost, dir: &Path) -> SharedHost {
 
 fn volatile_resource_ports() -> LocalResourcePorts {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+    let clock = awaken_lease_contract::system_clock();
     LocalResourcePorts {
         memory_repository: Arc::new(
-            awaken_memory_store::SqliteMemoryRepository::open_in_memory()
+            awaken_memory_store::SqliteMemoryRepository::open_in_memory(clock.clone())
                 .expect("open ephemeral memory-fs sqlite store"),
         ),
         file_store: files.clone(),
         file_catalog: files,
         skills: None,
         reclamation: None,
-        clock: awaken_lease_contract::system_clock(),
+        clock,
     }
 }
 

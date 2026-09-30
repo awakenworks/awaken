@@ -147,6 +147,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("resources.sqlite");
             let open = || {
+                let clock = awaken_lease_contract::system_clock();
                 let files = Arc::new(
                     awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap())
                         .unwrap(),
@@ -156,14 +157,16 @@ mod tests {
                 let resources = crate::ResourcesApplication::new(crate::ResourceAuthorities::new(
                     Arc::new(crate::RegistryApplication::new(
                         lifecycle.clone(),
-                        awaken_lease_contract::system_clock(),
+                        clock.clone(),
                     )),
                     files.clone(),
                     files.clone(),
-                    Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
+                    Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                        clock.clone(),
+                    )),
                     Arc::new(awaken_skill_store::InMemorySkillStore::new()),
                     lifecycle.clone(),
-                    awaken_lease_contract::system_clock(),
+                    clock,
                 ));
                 let reclaimer = awaken_resource_reclaimer::ResourceReclaimer::new(
                     "file-recovery",

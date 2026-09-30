@@ -137,7 +137,7 @@ impl ResourcePorts {
             // component; every other composition injects one.
             #[cfg(test)]
             {
-                crate::memory_stores::MemoryStores::open(store_dir)
+                crate::memory_stores::MemoryStores::open(store_dir, clock.clone())
             }
             #[cfg(not(test))]
             unreachable!("Host construction requires explicit Resource authorities")

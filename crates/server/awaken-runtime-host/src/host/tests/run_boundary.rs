@@ -333,8 +333,11 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
         "stub",
         Arc::new(ConstructorFileSource),
         Arc::new(
-            awaken_memory_store::SqliteMemoryRepository::open(":memory:")
-                .expect("open test Memory repository"),
+            awaken_memory_store::SqliteMemoryRepository::open(
+                ":memory:",
+                awaken_lease_contract::system_clock(),
+            )
+            .expect("open test Memory repository"),
         ),
         SharedHost::test_memory_extraction_repository(None),
         crate::HostProcess {

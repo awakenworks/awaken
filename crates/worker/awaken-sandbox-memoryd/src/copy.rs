@@ -736,7 +736,9 @@ mod tests {
     #[test]
     fn materialize_writes_files_including_nested_paths() {
         let rt = rt();
-        let fs = Arc::new(VolatileMemoryRepository::new());
+        let fs = Arc::new(VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ));
         rt.block_on(fs.create("s", "/root.md", "top")).unwrap();
         rt.block_on(fs.create("s", "/notes/deep/a.md", "nested"))
             .unwrap();
@@ -756,7 +758,9 @@ mod tests {
     #[test]
     fn harvest_creates_new_updates_changed_and_skips_unchanged() {
         let rt = rt();
-        let fs = Arc::new(VolatileMemoryRepository::new());
+        let fs = Arc::new(VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ));
         // Seed one memory; a round-trip will modify it and add another.
         let seed = rt.block_on(fs.create("s", "/keep.md", "v1")).unwrap();
         let dir = temp("harv");
@@ -810,7 +814,9 @@ mod tests {
         // snapshot, exact binary source retained. The integration matrix covers
         // edits, deletions, recovery, ordering, read-only and durable retry.
         let rt = rt();
-        let fs = Arc::new(VolatileMemoryRepository::new());
+        let fs = Arc::new(VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let dir = temp("harv-bin");
         let mut snapshot = CopySnapshot::default();
         std::fs::write(dir.join("ok.md"), "text").unwrap();
@@ -836,7 +842,9 @@ mod tests {
         // path (`unlink` → `delete_by_path`). So "rm note.md" sticks identically across
         // both realization tiers (FUSE and the no-FUSE bwrap / CI / macOS copy tier).
         let rt = rt();
-        let fs = Arc::new(VolatileMemoryRepository::new());
+        let fs = Arc::new(VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ));
         rt.block_on(fs.create("s", "/keep.md", "x")).unwrap();
         rt.block_on(fs.create("s", "/gone.md", "y")).unwrap();
         let dir = temp("del-parity");
@@ -874,7 +882,9 @@ mod tests {
         // M0: missing root + empty base => error, not successful empty harvest.
         // Nonempty bases and retry after restoration belong to copy_lifecycle.
         let rt = rt();
-        let fs = Arc::new(VolatileMemoryRepository::new());
+        let fs = Arc::new(VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let dir = temp("missing");
         let missing = dir.join("absent");
         let mut snapshot = CopySnapshot::default();
@@ -888,7 +898,9 @@ mod tests {
     #[test]
     fn concurrent_update_wins_over_a_stale_local_edit() {
         let rt = rt();
-        let fs = Arc::new(VolatileMemoryRepository::new());
+        let fs = Arc::new(VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let original = rt.block_on(fs.create("s", "/note.md", "v1")).unwrap();
         let dir = temp("concurrent-update");
         let mut snapshot = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
@@ -917,7 +929,9 @@ mod tests {
     #[test]
     fn concurrent_create_is_not_deleted_as_locally_absent() {
         let rt = rt();
-        let fs = Arc::new(VolatileMemoryRepository::new());
+        let fs = Arc::new(VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ));
         rt.block_on(fs.create("s", "/before.md", "before")).unwrap();
         let dir = temp("concurrent-create");
         let mut snapshot = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
@@ -940,7 +954,9 @@ mod tests {
     #[test]
     fn concurrent_update_blocks_a_stale_local_delete() {
         let rt = rt();
-        let fs = Arc::new(VolatileMemoryRepository::new());
+        let fs = Arc::new(VolatileMemoryRepository::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let original = rt.block_on(fs.create("s", "/note.md", "v1")).unwrap();
         let dir = temp("concurrent-delete");
         let mut snapshot = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();

@@ -504,7 +504,9 @@ async fn replay_reuses_fuse_but_keeps_copy_edits_until_existing_reconciliation()
     let mut fuse_req = requirement("fuse");
     let copy_path = root.path().join("copy");
     let fuse_path = root.path().join("fuse");
-    let store = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+    let store = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+        awaken_lease_contract::system_clock(),
+    ));
     store.create("copy", "/note.md", "original").await.unwrap();
     let copy = Arc::new(awaken_sandbox_memoryd::MemoryStoreMounter::copy_only(
         store.clone(),

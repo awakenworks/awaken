@@ -435,22 +435,22 @@ mod tests {
 
     fn application() -> ResourcesApplication {
         let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+        let clock = awaken_lease_contract::system_clock();
         let resources = Arc::new(
             awaken_resource_store::SqliteResourceStore::in_memory()
                 .expect("open resource authority"),
         );
-        let registry = Arc::new(RegistryApplication::new(
-            resources.clone(),
-            awaken_lease_contract::system_clock(),
-        ));
+        let registry = Arc::new(RegistryApplication::new(resources.clone(), clock.clone()));
         ResourcesApplication::new(ResourceAuthorities::new(
             registry,
             files.clone(),
             files,
-            Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
+            Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                clock.clone(),
+            )),
             Arc::new(awaken_skill_store::InMemorySkillStore::new()),
             resources,
-            awaken_lease_contract::system_clock(),
+            clock,
         ))
     }
 

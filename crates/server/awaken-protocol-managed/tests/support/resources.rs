@@ -27,7 +27,9 @@ pub fn resources_at(
         registry,
         files.clone(),
         files,
-        Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
+        Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+            clock.clone(),
+        )),
         skill_store,
         storage,
         clock,
