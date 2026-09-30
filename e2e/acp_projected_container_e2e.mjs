@@ -19,7 +19,7 @@ import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
 import { closeHttpServer } from './http_server.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
-import { cargoExecutable } from './cargo_binary.mjs';
+import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 import {
   FILES_BETA,
   initializeE2EInstallation,
@@ -73,6 +73,9 @@ function buildFixtureImage() {
     engine: 'docker',
     image: BASE_IMAGE,
     repoRoot: ROOT,
+    // The current-image check stages a release Hand through the host's shared
+    // Cargo admission queue before build.sh can apply its build deadline.
+    timeoutMs: 3_600_000,
   });
   const context = path.join(TMP, 'image');
   fs.mkdirSync(context, { recursive: true });
@@ -118,11 +121,15 @@ done
 }
 
 function awakenBin() {
+  // C1 an exact prebuilt artifact is supplied -> reuse its bytes; C2 absent
+  // -> build this scenario's container-docker target. Both rules run the same
+  // production container assertions, including credential refusal and MCP.
   return cargoExecutable({
     cwd: ROOT,
     packageName: 'awaken-cli',
     targetName: 'awaken',
     features: ['container-docker'],
+    prebuiltEnvironmentName: AWAKEN_BIN_ENV,
   });
 }
 
@@ -321,15 +328,17 @@ async function main() {
     });
     // Cause/effect graph / decision table for the built-in Docker provider:
     // C1=credential selected; C2=substitution; C3=no-bypass network enforcement;
-    // C4=a driving event wakes the registered Worker realization.
+    // C4=a driving event wakes the registered Worker realization;
+    // C5=the failed realization records its exact claimed source Run.
     // C1 + !(C2 && C3) + C4 -> D1 durably admit the exact command, then mark it
     //                              processed at the failed Run's durable terminal
     //                              anchor while permanent Worker custody failure
-    //                              settles/terminates before container launch.
+    //                              settles/terminates before container launch;
+    //                              C5 pins the sole public error to that Run.
     // !C1              -> D2 inject the anonymous MCP endpoint normally.
     //
     // | Rule | credential | substitution + no-bypass | driving event | result             |
-    // | D1   | yes        | no                       | yes           | exact receipt; terminal-processed; error + terminal; no launch |
+    // | D1   | yes        | no                       | yes           | claimed Run; exact receipt; terminal-processed; one error + terminal; no launch |
     // | D2   | no         | n/a                      | yes           | launch + MCP config |
     // FMECA: rolling D1 back into an HTTP error erases the committed Session
     // command. The accepted receipt plus permanent terminal projection proves
@@ -374,10 +383,11 @@ async function main() {
       'D1 durable history anchors the exact command to its failed Run terminal',
     );
     const secureErrors = secureEvents.filter((event) => event.type === 'session.error');
+    const rows = sqliteRows(path.join(STORAGE, 'sessions.db'),
+      'SELECT aggregate_json FROM managed_session WHERE session_id=?', secureSession.id);
+    assert.equal(rows.length, 1, 'D1 has one durable Session aggregate');
+    const aggregate = JSON.parse(rows[0].aggregate_json).aggregate;
     if (secureErrors.length !== 1) {
-      const rows = sqliteRows(path.join(STORAGE, 'sessions.db'),
-        'SELECT aggregate_json FROM managed_session WHERE session_id=?', secureSession.id);
-      const aggregate = JSON.parse(rows[0].aggregate_json).aggregate;
       console.error('D1 source audit', JSON.stringify({
         status: aggregate.status,
         realization_progress: {
@@ -386,6 +396,11 @@ async function main() {
         },
       }));
     }
+    assert.ok(
+      typeof aggregate.realization_progress?.failure_source_run_id === 'string'
+        && aggregate.realization_progress.failure_source_run_id.length > 0,
+      'D1 durable failure names the claimed source Run before projecting its error',
+    );
     assert.equal(secureErrors.length, 1, `D1 permanent custody failure projects exactly one error: ${JSON.stringify(secureErrors)}`);
     assert.ok(
       typeof secureErrors[0].error?.message === 'string' && secureErrors[0].error.message.length > 0,
