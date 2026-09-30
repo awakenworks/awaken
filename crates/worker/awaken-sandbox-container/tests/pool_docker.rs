@@ -5,7 +5,7 @@
 //!
 //! Gated on the `docker` feature AND a reachable daemon (self-skips otherwise).
 //! Run with: `cargo nextest run -p awaken-sandbox-container --features docker --test pool_docker`
-#![cfg(feature = "docker")]
+#![cfg(all(unix, feature = "docker"))]
 
 #[path = "common/residue.rs"]
 mod residue;

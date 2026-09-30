@@ -1223,7 +1223,7 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
 }
 
 impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
-    #[cfg(any(feature = "connection", test))]
+    #[cfg(all(unix, any(feature = "connection", test)))]
     fn bind_scope(mut self, scope: impl Into<String>) -> Self {
         self.id = scope.into();
         self
@@ -1883,10 +1883,11 @@ pub mod podman;
 
 /// Warm container pool (pre-provisioned reusable capacity): cold-start + reuse. Gated
 /// on `connection` (present under every real backend), which brings the tokio runtime
-/// the pool's off-path replenish spawns onto.
-#[cfg(any(feature = "connection", test))]
+/// the pool's off-path replenish spawns onto. The host lease protocol requires
+/// Unix uid/mode and link/rename semantics; Windows does not advertise it.
+#[cfg(all(unix, any(feature = "connection", test)))]
 pub mod pool;
-#[cfg(any(feature = "connection", test))]
+#[cfg(all(unix, any(feature = "connection", test)))]
 pub use pool::WarmContainerPool;
 
 #[cfg(test)]

@@ -28,14 +28,15 @@ use awaken_runtime_contract::tool::{
     ToolError, ToolExecutor, ToolOperationContext, with_tool_operation_context,
 };
 use awaken_sandbox_container::ContainerHandleCodec as _;
+#[cfg(unix)]
+use awaken_sandbox_container::WarmContainerPool;
 use awaken_sandbox_container::k8s::{
     DEFAULT_REPOSITORY_GIT_CONTROL_PORT, K8sRuntime, K8sSandboxControlForwarder,
 };
 use awaken_sandbox_container::{
     ContainerEnvironment, ContainerEnvironmentAdoption, ContainerEnvironmentProvider,
     ContainerProvider, ContainerRuntime, ContainerSandbox, ContainerState, ResidentHandConfig,
-    SandboxControlService, SandboxControlServiceKind, SandboxControlServicePublisher,
-    WarmContainerPool, command_of,
+    SandboxControlService, SandboxControlServiceKind, SandboxControlServicePublisher, command_of,
 };
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 use common::memory_mount;
@@ -554,6 +555,7 @@ async fn gated_k8s_marker_readiness_and_first_real_helper_roundtrip() {
 /// Gone. The Retained row is owned by the poolable-shape unit table and must
 /// yield zero rather than bypassing its receipt-fenced identity rule.
 /// Decision rule: (C1,C2,C3,C4,C5)->(E1,E2,E3,E4).
+#[cfg(unix)]
 #[tokio::test]
 async fn k8s_warm_capacity_reaches_ready_hands_out_and_drains_without_killing_session() {
     if !require_live_cluster() {
