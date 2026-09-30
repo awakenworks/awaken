@@ -316,7 +316,7 @@ impl BackgroundTaskSupervisor {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, kani))]
 mod fixtures {
     use super::*;
 
@@ -851,8 +851,9 @@ mod loom_tests {
 #[kani::proof]
 fn process_completion_fold_retries_exact_candidate_and_stale_is_inert() {
     // Cause/effect decision table over the production completion_fold_plan:
-    // C1 committed attempt absent/present; C2 owner equal/different; C3 all u64
-    // candidate and committed epochs. R1 present+exact owner+equal epoch yields
+    // C1 committed attempt absent/present; C2 owner equal/different; C3 all
+    // nonzero u64 candidate and committed epochs (Epoch excludes zero).
+    // R1 present+exact owner+equal epoch yields
     // StageRetainingCandidate on every observation; R2 any candidate epoch below
     // committed yields RetireStale; R3 absent, same/newer mismatches yield Preserve.
     // Effects: only R1 can reach BackgroundTask::finish and it does not consume
@@ -862,6 +863,7 @@ fn process_completion_fold_retries_exact_candidate_and_stale_is_inert() {
     // this scalar proof and remain covered by native/Loom evidence or the TCB.
     let candidate_epoch: u64 = kani::any();
     let committed_epoch: u64 = kani::any();
+    kani::assume(candidate_epoch != 0 && committed_epoch != 0);
     let has_committed_attempt: bool = kani::any();
     let same_owner: bool = kani::any();
     let candidate = fixtures::tenure("candidate-worker", candidate_epoch);
