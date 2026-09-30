@@ -995,7 +995,7 @@ mod drain_admission_proofs {
 
 #[cfg(kani)]
 mod drain_error_proofs {
-    use super::{DrainErrorState, drain_error_backoff, retry_deadline_is_due};
+    use super::{DrainErrorState, SlotToken, drain_error_backoff, retry_deadline_is_due};
     use std::time::Duration;
 
     /// @obligation run_ingress.request_local_resolution_retry_honors_persisted_deadline
@@ -1046,7 +1046,7 @@ mod drain_error_proofs {
         let errors = state.consecutive_errors;
         assert!(state.admit_cycle(true));
         let old = state.probe_in_flight.clone().unwrap();
-        let foreign = std::sync::Arc::new(());
+        let foreign = SlotToken::mint();
         let exact: bool = kani::any();
         assert_eq!(
             state.release_probe(if exact { &old } else { &foreign }),
