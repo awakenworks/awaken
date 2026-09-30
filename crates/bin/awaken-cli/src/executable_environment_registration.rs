@@ -67,6 +67,7 @@ impl ExecutableEnvironmentWiring {
         work: Arc<dyn WorkQueue>,
         service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
         postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<Self, String> {
         let authenticator = deployment
             .executable_agent_registration
@@ -96,7 +97,7 @@ impl ExecutableEnvironmentWiring {
             .map_err(|error| error.to_string())?,
         );
         let image_builds =
-            open_image_builds(deployment, schema, service_lifecycle, postgres_pools).await?;
+            open_image_builds(deployment, schema, service_lifecycle, postgres_pools, clock).await?;
         let registrar = coordinator_registrar(durable.clone(), work, image_builds.as_ref());
         let private_router = executable_environment_registration_router_with_authenticator(
             registrar.clone(),
@@ -119,11 +120,13 @@ pub(crate) async fn for_runtime_role(
     work: Arc<dyn WorkQueue>,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<ExecutableEnvironmentWiring, String> {
     match role {
         Role::AllInOne => {
             let image_builds =
-                open_image_builds(deployment, schema, service_lifecycle, postgres_pools).await?;
+                open_image_builds(deployment, schema, service_lifecycle, postgres_pools, clock)
+                    .await?;
             ExecutableEnvironmentWiring::local_with_image_builds(work, image_builds)
         }
         Role::Coordinator => {
@@ -133,6 +136,7 @@ pub(crate) async fn for_runtime_role(
                 work,
                 service_lifecycle,
                 postgres_pools,
+                clock,
             )
             .await
         }
@@ -168,6 +172,7 @@ async fn open_image_builds(
     schema: PostgresSchemaMode,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<Option<Arc<awaken_environment_image_build::EnvironmentImageBuildCoordinator>>, String> {
     let Some(provisioner) =
         awaken_execution_composition::package_image_provisioner(&deployment.runtime).await?
@@ -210,6 +215,7 @@ async fn open_image_builds(
             builder,
             base_image,
             awaken_environment_image_build::EnvironmentImageBuildPolicy::default(),
+            clock,
         )
         .map_err(|error| error.to_string())?,
     );
@@ -374,6 +380,7 @@ mod startup_tests {
                 Arc::new(NeverRunBuilder),
                 "registry/awaken@sha256:base",
                 awaken_environment_image_build::EnvironmentImageBuildPolicy::default(),
+                awaken_lease_contract::system_clock(),
             )
             .unwrap(),
         );

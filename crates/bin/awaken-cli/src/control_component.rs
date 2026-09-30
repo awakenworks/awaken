@@ -204,6 +204,7 @@ pub(super) async fn prepare_control_routers(
         process.cloud_api_base_url.as_deref(),
         &execution_workspace,
         &local_client_instance_id(stores.workspace_root.as_deref()),
+        stores.clock.clone(),
     );
     let model_services = resolve_model_services(
         model_supply,

@@ -14,6 +14,7 @@ use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrationError, ExecutableEnvironmentRegistrationOutcome,
     ExecutableEnvironmentWithdrawal, ExecutableEnvironmentWithdrawalOutcome,
 };
+use awaken_lease_contract::{WallClock, WallClockExt};
 
 #[derive(Clone, Debug)]
 pub struct EnvironmentImageBuildPolicy {
@@ -39,6 +40,7 @@ impl Default for EnvironmentImageBuildPolicy {
 pub struct EnvironmentImageBuildCoordinator {
     store: Arc<dyn EnvironmentImageBuildStore>,
     builder: Arc<dyn EnvironmentImageBuilder>,
+    clock: Arc<dyn WallClock>,
     base_image: String,
     policy: EnvironmentImageBuildPolicy,
     transition_hint: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>,
@@ -68,6 +70,7 @@ impl EnvironmentImageBuildCoordinator {
         builder: Arc<dyn EnvironmentImageBuilder>,
         base_image: impl Into<String>,
         policy: EnvironmentImageBuildPolicy,
+        clock: Arc<dyn WallClock>,
     ) -> Result<Self, EnvironmentImageBuildError> {
         let base_image = base_image.into();
         if base_image.trim().is_empty() {
@@ -78,6 +81,7 @@ impl EnvironmentImageBuildCoordinator {
         Ok(Self {
             store,
             builder,
+            clock,
             base_image,
             policy,
             transition_hint: std::sync::OnceLock::new(),
@@ -104,13 +108,13 @@ impl EnvironmentImageBuildCoordinator {
         registration: &ExecutableEnvironmentRegistration,
     ) -> Result<(), EnvironmentImageBuildError> {
         if let Some(demand) = self.demand(registration, None).await? {
-            self.store.ensure(demand, crate::now_unix_ms()).await?;
+            self.store.ensure(demand, self.clock.now_ms()).await?;
         }
         Ok(())
     }
 
     pub async fn run_once(&self, owner: &str) -> Result<bool, EnvironmentImageBuildError> {
-        let now = crate::now_unix_ms();
+        let now = self.clock.now_ms();
         let Some(claim) = self
             .store
             .claim_next(owner, now, millis(self.policy.lease))
@@ -129,7 +133,7 @@ impl EnvironmentImageBuildCoordinator {
         let transitioned = match result {
             Ok(image) => {
                 self.store
-                    .complete(&claim, &image, crate::now_unix_ms())
+                    .complete(&claim, &image, self.clock.now_ms())
                     .await?
             }
             Err(message) => {
@@ -137,7 +141,7 @@ impl EnvironmentImageBuildCoordinator {
                     .fail(
                         &claim,
                         &message,
-                        crate::now_unix_ms(),
+                        self.clock.now_ms(),
                         retry_delay_ms(&self.policy, claim.lease_epoch),
                     )
                     .await?
@@ -182,7 +186,7 @@ impl EnvironmentImageReadiness for EnvironmentImageBuildCoordinator {
             return Ok(None);
         };
         self.store
-            .ensure(demand.clone(), crate::now_unix_ms())
+            .ensure(demand.clone(), self.clock.now_ms())
             .await?;
         let deadline = awaken_lease_contract::mono::MonoDeadline::after(self.policy.wait_timeout);
         loop {
@@ -193,7 +197,7 @@ impl EnvironmentImageReadiness for EnvironmentImageBuildCoordinator {
                     return Ok(Some(image));
                 }
                 self.store
-                    .invalidate_ready(&demand.build_key, crate::now_unix_ms())
+                    .invalidate_ready(&demand.build_key, self.clock.now_ms())
                     .await?;
             }
             if deadline.has_passed() {
@@ -215,7 +219,7 @@ impl EnvironmentImageReadiness for EnvironmentImageBuildCoordinator {
             return Ok(None);
         };
         self.store
-            .ensure(demand.clone(), crate::now_unix_ms())
+            .ensure(demand.clone(), self.clock.now_ms())
             .await?;
         let Some(record) = self.store.get(&demand.build_key).await? else {
             return Ok(None);
@@ -227,7 +231,7 @@ impl EnvironmentImageReadiness for EnvironmentImageBuildCoordinator {
             Ok(Some(image))
         } else {
             self.store
-                .invalidate_ready(&demand.build_key, crate::now_unix_ms())
+                .invalidate_ready(&demand.build_key, self.clock.now_ms())
                 .await?;
             Ok(None)
         }
@@ -302,6 +306,7 @@ mod tests {
         ExecutableEnvironmentCatalog, LocalExecutableEnvironmentRegistrar,
     };
     use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationSource;
+    use awaken_lease_testkit::ManualClock;
 
     use super::*;
     use crate::InMemoryEnvironmentImageBuildStore;
@@ -443,7 +448,9 @@ mod tests {
         // Failed transition (E1), preserve attempt=1 (E2), and schedule the
         // first retry at the policy base delay (E3). Decision-table rules
         // R1=C1, R2=C2, and R3=C3 cover every failure edge. C4 the durable
-        // Failed CAS succeeds; C5 no build can be claimed. E4 emit one
+        // Failed CAS succeeds; C5 no build can be claimed; C6 the injected
+        // clock advances from registration at 1,000,000 to claim/failure at
+        // 1,005,000. E4 emit one
         // dependency hint for C4 and none for C5. R4=C1|C2|C3+C4=>E4;
         // R5=C5=>no E4. Successful Ready hints are covered by
         // registration_worker_and_readiness_follow_one_demand_path.
@@ -458,11 +465,13 @@ mod tests {
         ] {
             let store = Arc::new(InMemoryEnvironmentImageBuildStore::new());
             let builder = Arc::new(FailingBuilder(mode));
+            let clock = Arc::new(ManualClock::new(1_000_000));
             let coordinator = EnvironmentImageBuildCoordinator::new(
                 store.clone(),
                 builder,
                 "registry/awaken:base",
                 EnvironmentImageBuildPolicy::default(),
+                clock.clone(),
             )
             .unwrap();
             let hints = Arc::new(AtomicUsize::new(0));
@@ -484,7 +493,7 @@ mod tests {
             );
             coordinator.ensure_registration(&packaged).await.unwrap();
             let demand = coordinator.demand(&packaged, None).await.unwrap().unwrap();
-            let before = crate::now_unix_ms();
+            clock.set(1_005_000);
             assert!(coordinator.run_once("builder-a").await.unwrap(), "{rule}");
             assert_eq!(hints.load(Ordering::SeqCst), 1, "{rule}: R4/E4");
             assert!(
@@ -496,7 +505,6 @@ mod tests {
                 1,
                 "{rule}: R5 no duplicate hint"
             );
-            let after = crate::now_unix_ms();
             let record = store.get(&demand.build_key).await.unwrap().unwrap();
             let EnvironmentImageBuildState::Failed {
                 message,
@@ -508,8 +516,7 @@ mod tests {
             };
             assert!(message.contains(expected_message), "{rule}: E1");
             assert_eq!(attempt, 1, "{rule}: E2");
-            assert!(retry_at_ms >= before + 15_000, "{rule}: E3 lower bound");
-            assert!(retry_at_ms <= after + 15_000, "{rule}: E3 upper bound");
+            assert_eq!(retry_at_ms, 1_020_000, "{rule}: C6/E3 exact retry");
         }
     }
 
@@ -545,6 +552,7 @@ mod tests {
             available: AtomicBool::new(true),
             availability_checks: Mutex::new(Vec::new()),
         });
+        let clock = awaken_lease_contract::system_clock();
         let coordinator = Arc::new(
             EnvironmentImageBuildCoordinator::new(
                 store.clone(),
@@ -555,6 +563,7 @@ mod tests {
                     poll_interval: Duration::from_millis(1),
                     ..EnvironmentImageBuildPolicy::default()
                 },
+                clock.clone(),
             )
             .unwrap(),
         );
@@ -638,7 +647,7 @@ mod tests {
         )
         .unwrap();
         store
-            .ensure(policy_demand.clone(), crate::now_unix_ms())
+            .ensure(policy_demand.clone(), clock.now_ms())
             .await
             .unwrap();
         assert!(coordinator.run_once("builder-a").await.unwrap(), "R6");
@@ -749,6 +758,7 @@ mod tests {
                     poll_interval: Duration::from_millis(1),
                     ..EnvironmentImageBuildPolicy::default()
                 },
+                awaken_lease_contract::system_clock(),
             )
             .unwrap(),
         );
