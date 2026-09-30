@@ -325,6 +325,8 @@ fn strip_ansi(input: &str) -> String {
 struct InvocationProcessGuard {
     #[cfg(unix)]
     group: Option<nix::unistd::Pid>,
+    #[cfg(windows)]
+    armed: bool,
     invalidated: Arc<AtomicBool>,
 }
 
@@ -342,10 +344,15 @@ impl InvocationProcessGuard {
 #[cfg(windows)]
 impl InvocationProcessGuard {
     fn new(_group: Option<()>, invalidated: Arc<AtomicBool>) -> Self {
-        Self { invalidated }
+        Self {
+            armed: true,
+            invalidated,
+        }
     }
 
-    fn disarm(&mut self) {}
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
 }
 
 #[cfg(unix)]
@@ -361,7 +368,9 @@ impl Drop for InvocationProcessGuard {
 #[cfg(windows)]
 impl Drop for InvocationProcessGuard {
     fn drop(&mut self) {
-        self.invalidated.store(true, Ordering::SeqCst);
+        if self.armed {
+            self.invalidated.store(true, Ordering::SeqCst);
+        }
     }
 }
 
@@ -725,6 +734,8 @@ fn persistent_bash_command() -> tokio::process::Command {
 }
 
 fn configure_process_group(command: &mut tokio::process::Command) {
+    #[cfg(not(unix))]
+    let _ = command;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -742,6 +753,8 @@ struct ProcessGroupGuard {
 
 impl ProcessGroupGuard {
     fn new(pid: Option<u32>) -> Self {
+        #[cfg(not(unix))]
+        let _ = pid;
         Self {
             #[cfg(unix)]
             group: pid.map(|value| nix::unistd::Pid::from_raw(value as i32)),

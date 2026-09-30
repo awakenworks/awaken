@@ -24,6 +24,8 @@ use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
 use awaken_sandbox_memoryd::MemoryStoreMounter;
+mod common;
+use common::sh_command as sh;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tier {
@@ -228,12 +230,6 @@ fn out_path(tier: Tier, name: &str) -> String {
         Tier::Workdir => format!("$AWAKEN_OUTPUTS_DIR/{name}"),
         Tier::Namespace => format!("/mnt/session/outputs/{name}"),
     }
-}
-
-fn sh(script: String) -> pc::Command {
-    let mut c = pc::Command::new(["sh", "-c", script.as_str()]);
-    c.stdio = pc::Stdio::Null;
-    c
 }
 
 /// Build the spec + provider for a case, injecting whatever blob/memory backing the

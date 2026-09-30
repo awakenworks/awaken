@@ -811,6 +811,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     struct AmbientProxyProbe {
         url: String,
         saw_connection: Arc<AtomicBool>,
@@ -818,6 +819,7 @@ mod tests {
         thread: Option<std::thread::JoinHandle<()>>,
     }
 
+    #[cfg(unix)]
     impl AmbientProxyProbe {
         fn serve() -> Self {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -855,6 +857,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for AmbientProxyProbe {
         fn drop(&mut self) {
             self.shutdown.store(true, Ordering::SeqCst);
@@ -983,6 +986,26 @@ mod tests {
             validate_credentialed_git_transport("file:///repo", None).is_ok(),
             "R2"
         );
+        #[cfg(windows)]
+        {
+            // C10 drive-absolute test fixture versus drive-relative path;
+            // R10 only the local absolute fixture is admitted without a
+            // credential, never a credentialed or drive-relative transport.
+            let local = tempfile::tempdir().unwrap();
+            let path = local.path().to_str().unwrap();
+            assert!(
+                validate_credentialed_git_transport(path, None).is_ok(),
+                "R10"
+            );
+            assert!(
+                validate_credentialed_git_transport(path, Some(&credential)).is_err(),
+                "R10 credential"
+            );
+            assert!(
+                validate_credentialed_git_transport("C:relative", None).is_err(),
+                "R10 relative"
+            );
+        }
         assert!(
             validate_credentialed_git_transport("http://example.test/repo.git", None).is_err(),
             "R3/http"

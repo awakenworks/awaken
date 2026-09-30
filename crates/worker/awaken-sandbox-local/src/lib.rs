@@ -1638,7 +1638,14 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert!(glob.text().contains("/workspace/note.txt"));
+        // C1 the same logical `/workspace` path is rendered on Unix/Windows;
+        // C2 the physical host path has platform separators. R1 tool output
+        // keeps the stable sandbox `/` form; R2 the host root never appears.
+        assert!(
+            glob.text().contains("/workspace/note.txt"),
+            "{}",
+            glob.text()
+        );
         assert!(
             !glob
                 .text()

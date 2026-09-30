@@ -62,22 +62,38 @@ const WORKDIR_BASH_PASSTHROUGH: &[&str] = &[
     "XDG_RUNTIME_DIR",
 ];
 
+/// Windows process startup locators. They contain installation paths, not
+/// credentials, and both opaque Workdir children and its Bash session need
+/// them after their inherited environment is cleared.
+#[cfg(windows)]
+pub(crate) const WINDOWS_OS_LOCATORS: &[&str] = &["SystemRoot", "WINDIR"];
+
 pub(crate) fn workdir_bash_passthrough(
     worker_env: impl IntoIterator<Item = (String, String)>,
 ) -> std::collections::BTreeMap<String, String> {
     worker_env
         .into_iter()
         .filter(|(name, value)| {
-            WORKDIR_BASH_PASSTHROUGH.contains(&name.as_str())
-                && (!matches!(
-                    name.as_str(),
-                    "http_proxy" | "https_proxy" | "HTTP_PROXY" | "HTTPS_PROXY"
-                ) || url::Url::parse(value).is_ok_and(|proxy| {
-                    matches!(proxy.scheme(), "http" | "https")
-                        && proxy.host_str().is_some()
-                        && proxy.username().is_empty()
-                        && proxy.password().is_none()
-                }))
+            (WORKDIR_BASH_PASSTHROUGH.contains(&name.as_str()) || {
+                #[cfg(windows)]
+                {
+                    WINDOWS_OS_LOCATORS
+                        .iter()
+                        .any(|key| key.eq_ignore_ascii_case(name))
+                }
+                #[cfg(not(windows))]
+                {
+                    false
+                }
+            }) && (!matches!(
+                name.as_str(),
+                "http_proxy" | "https_proxy" | "HTTP_PROXY" | "HTTPS_PROXY"
+            ) || url::Url::parse(value).is_ok_and(|proxy| {
+                matches!(proxy.scheme(), "http" | "https")
+                    && proxy.host_str().is_some()
+                    && proxy.username().is_empty()
+                    && proxy.password().is_none()
+            }))
         })
         .collect()
 }
@@ -198,6 +214,22 @@ mod tests {
             ]
         );
         assert_eq!(inherited["PATH"], "/usr/bin");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_workdir_shell_inherits_os_startup_locators_only() {
+        // C1 Windows OS startup locator or arbitrary Worker secret; E1 the
+        // former reaches a cleared child env unchanged; E2 the latter never
+        // enters the model-authored persistent shell.
+        let inherited = workdir_bash_passthrough([
+            ("SystemRoot".into(), r"C:\Windows".into()),
+            ("WINDIR".into(), r"C:\Windows".into()),
+            ("AWAKEN_SECRET".into(), "hidden".into()),
+        ]);
+        assert_eq!(inherited.len(), 2, "E1/E2");
+        assert_eq!(inherited["SystemRoot"], r"C:\Windows", "E1");
+        assert_eq!(inherited["WINDIR"], r"C:\Windows", "E1");
     }
 
     /// Networkless shell launch profile: the process boundary, the syscall

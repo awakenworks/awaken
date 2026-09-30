@@ -14,6 +14,8 @@
 
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
+mod common;
+use common::sh_command as sh;
 
 #[derive(Clone, Copy, Debug)]
 enum Tier {
@@ -68,12 +70,6 @@ fn out(tier: Tier, name: &str) -> String {
         Tier::Workdir => format!("$AWAKEN_OUTPUTS_DIR/{name}"),
         Tier::Namespace => format!("/mnt/session/outputs/{name}"),
     }
-}
-
-fn sh(script: String) -> pc::Command {
-    let mut c = pc::Command::new(["sh", "-c", script.as_str()]);
-    c.stdio = pc::Stdio::Null;
-    c
 }
 
 fn fence(operation_id: &str) -> pc::SandboxEffectFence {

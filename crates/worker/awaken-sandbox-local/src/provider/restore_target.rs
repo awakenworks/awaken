@@ -8,7 +8,6 @@
 #[cfg(test)]
 mod tests;
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -47,7 +46,7 @@ fn sidecar(root: &Path, suffix: &str) -> Result<PathBuf, pc::SandboxError> {
 }
 
 fn read_binding(root: &Path) -> Result<Option<RestoreTargetBinding>, pc::SandboxError> {
-    match std::fs::read(sidecar(root, "target.json")?) {
+    match awaken_sandbox_fs::read_regular_file_nofollow(&sidecar(root, "target.json")?) {
         Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
             pc::SandboxError::invalid(format!("decode local restoration target evidence: {error}"))
         }),
@@ -62,9 +61,9 @@ fn read_binding(root: &Path) -> Result<Option<RestoreTargetBinding>, pc::Sandbox
 fn write_binding(
     root: &Path,
     evidence: &pc::SandboxRestorationEvidence,
+    lock: &awaken_sandbox_fs::ExclusiveFileLock,
 ) -> Result<(), pc::SandboxError> {
     let destination = sidecar(root, "target.json")?;
-    let temporary = sidecar(root, &format!("target.{}.tmp", std::process::id()))?;
     let bytes = serde_json::to_vec(&RestoreTargetBinding {
         evidence: evidence.clone(),
     })
@@ -74,50 +73,28 @@ fn write_binding(
             format!("encode local restoration target evidence: {error}"),
         )
     })?;
-    match std::fs::remove_file(&temporary) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(pc::SandboxError::backend("write_binding", error)),
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&temporary)
-        .map_err(|error| pc::SandboxError::backend("write_binding", error))?;
-    file.write_all(&bytes)
-        .map_err(|error| pc::SandboxError::backend("write_binding", error))?;
-    file.sync_all()
-        .map_err(|error| pc::SandboxError::backend("write_binding", error))?;
-    std::fs::rename(&temporary, &destination)
-        .map_err(|error| pc::SandboxError::backend("write_binding", error))?;
-    std::fs::File::open(
-        destination
-            .parent()
-            .ok_or_else(|| pc::SandboxError::invalid("local restoration evidence has no parent"))?,
-    )
-    .and_then(|directory| directory.sync_all())
-    .map_err(|error| pc::SandboxError::backend("write_binding", error))
+    let leaf = destination
+        .file_name()
+        .ok_or_else(|| pc::SandboxError::invalid("local restoration evidence has no leaf"))?;
+    lock.publish_sibling_file_noreplace(Path::new(leaf), &bytes)
+        .map_err(|error| pc::SandboxError::backend("write_binding", error))
 }
 
-async fn lock_target(root: &Path) -> Result<std::fs::File, pc::SandboxError> {
+async fn lock_target(
+    root: &Path,
+) -> Result<awaken_sandbox_fs::ExclusiveFileLock, pc::SandboxError> {
     std::fs::create_dir_all(root.parent().ok_or_else(|| {
         pc::SandboxError::invalid("local restoration root has no provider parent")
     })?)
     .map_err(|error| pc::SandboxError::backend("lock_target", error))?;
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(sidecar(root, "lock")?)
-        .map_err(|error| pc::SandboxError::backend("lock_target", error))?;
+    let path = sidecar(root, "lock")?;
     loop {
-        match lock.try_lock() {
-            Ok(()) => return Ok(lock),
-            Err(std::fs::TryLockError::WouldBlock) => {
+        match awaken_sandbox_fs::try_lock_exclusive(&path) {
+            Ok(lock) => return Ok(lock),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
-            Err(std::fs::TryLockError::Error(error)) => {
+            Err(error) => {
                 return Err(pc::SandboxError::backend("lock_target", error));
             }
         }
@@ -130,14 +107,14 @@ async fn lock_target(root: &Path) -> Result<std::fs::File, pc::SandboxError> {
 pub(super) async fn lock_bound_target(
     root: &Path,
     expected: &pc::SandboxRestorationEvidence,
-) -> Result<std::fs::File, pc::SandboxError> {
+) -> Result<awaken_sandbox_fs::ExclusiveFileLock, pc::SandboxError> {
     let lock = lock_target(root).await?;
     verify_binding(root, expected)?;
     Ok(lock)
 }
 
 fn remove_target_binding(root: &Path) -> Result<(), pc::SandboxError> {
-    match std::fs::remove_file(sidecar(root, "target.json")?) {
+    match awaken_sandbox_fs::remove_regular_file_nofollow(&sidecar(root, "target.json")?) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(pc::SandboxError::backend("remove_target_binding", error)),
@@ -193,7 +170,7 @@ impl LocalProvider {
         // The process-shared lock precedes the read-first observation. It closes
         // both first-acquisition and exact-disposal races without consulting any
         // checkpoint bytes or process-local slot.
-        let _lock = lock_target(&root).await?;
+        let lock = lock_target(&root).await?;
         let disposition = match read_binding(&root)? {
             Some(binding) if binding.evidence == evidence => {
                 if !physical_directory_exists(&root)? {
@@ -216,7 +193,7 @@ impl LocalProvider {
             None => {
                 // Evidence is durable before the directory becomes observable;
                 // a crash in this gap is repaired by the exact request only.
-                write_binding(&root, &evidence)?;
+                write_binding(&root, &evidence, &lock)?;
                 std::fs::create_dir(&root)
                     .map_err(|error| pc::SandboxError::backend("acquire_restore_sandbox", error))?;
                 pc::SandboxRestoreTargetDisposition::Created

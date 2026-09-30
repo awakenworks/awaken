@@ -1,7 +1,235 @@
 use super::*;
 
+#[cfg(windows)]
 #[test]
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn windows_ntfs_identity_and_lock_refuse_contention_and_aliases() {
+    // Windows cause/effect table: C1 plain local NTFS parent; C2 lock absent or
+    // already held; C3 sidecar plain or hard-linked; C4 directory plain or a
+    // junction. R1 C1+C2 absent+C3 plain -> stable identity and one lock;
+    // R2 held -> WouldBlock, then dropping the owner admits a retry; R3 hard
+    // link or junction -> refuse before touching the outside target. R4 UNC
+    // paths reject before network filesystem access. A parent rename either
+    // fails while pinned or invalidates the guard's exact path.
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path().join("parent");
+    std::fs::create_dir(&parent).unwrap();
+    let first_identity = directory_identity_nofollow(&parent).expect("R1 identity");
+    let lock_path = parent.join("realization.lock");
+    let first = try_lock_exclusive(&lock_path).expect("R1 lock");
+    let occupied = try_lock_exclusive(&lock_path).expect_err("R2 contention");
+    assert_eq!(occupied.kind(), std::io::ErrorKind::WouldBlock, "R2");
+    drop(first);
+    let second = try_lock_exclusive(&lock_path).expect("R2 retry");
+    assert_eq!(
+        directory_identity_nofollow(&parent).unwrap(),
+        first_identity
+    );
+    drop(second);
+
+    std::fs::remove_file(&lock_path).unwrap();
+    let outside = temp.path().join("outside");
+    std::fs::write(&outside, b"preserve").unwrap();
+    std::fs::hard_link(&outside, &lock_path).unwrap();
+    assert!(try_lock_exclusive(&lock_path).is_err(), "R3 hard link");
+    assert_eq!(std::fs::read(&outside).unwrap(), b"preserve");
+    std::fs::remove_file(&lock_path).unwrap();
+
+    let alias = temp.path().join("junction");
+    let status = std::process::Command::new("cmd.exe")
+        .args(["/C", "mklink", "/J"])
+        .arg(&alias)
+        .arg(&parent)
+        .status()
+        .unwrap();
+    assert!(status.success(), "R3 native NTFS junction fixture");
+    assert!(directory_identity_nofollow(&alias).is_err(), "R3 junction");
+    assert_eq!(
+        directory_identity_nofollow(&parent).unwrap(),
+        first_identity
+    );
+    assert!(
+        directory_identity_nofollow(Path::new(r"\\server\share\sandbox")).is_err(),
+        "R4 UNC"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_lock_pins_every_ancestor_until_the_guard_is_dropped() {
+    // C1 a lock is held/released; C2 an ancestor rename is attempted. R1
+    // while held, Windows denies the rename and the configured parent keeps
+    // its exact identity; R2 after release, the rename can complete. This
+    // protects absolute-name publication from ancestor path redirection.
+    let temp = tempfile::tempdir().unwrap();
+    let ancestor = temp.path().join("ancestor");
+    let parent = ancestor.join("parent");
+    std::fs::create_dir(&ancestor).unwrap();
+    std::fs::create_dir(&parent).unwrap();
+    let expected = directory_identity_nofollow(&parent).unwrap();
+    let lock = try_lock_exclusive(&parent.join(".lock")).unwrap();
+    let moved = temp.path().join("moved");
+    assert!(std::fs::rename(&ancestor, &moved).is_err(), "R1");
+    assert_eq!(
+        directory_identity_nofollow(&parent).unwrap(),
+        expected,
+        "R1"
+    );
+    drop(lock);
+    std::fs::rename(&ancestor, &moved).expect("R2");
+    assert_eq!(
+        directory_identity_nofollow(&moved.join("parent")).unwrap(),
+        expected,
+        "R2"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_locked_parent_observes_only_plain_siblings() {
+    // Causes: C1 a held, exact NTFS parent; C2 sibling absent/plain file/
+    // hard-linked file/junction; C3 leaf canonical/Windows alias. Effects:
+    // R1 absent and plain entries classify and plain bytes read; R2 hard-link
+    // read and junction traversal fail without touching their targets; R3
+    // aliases fail before a host path is joined. Enumeration is sorted.
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path().join("parent");
+    std::fs::create_dir(&parent).unwrap();
+    let lock = try_lock_exclusive(&parent.join(".lock")).unwrap();
+    assert_eq!(
+        lock.classify_sibling_nofollow(Path::new("missing"))
+            .unwrap(),
+        PathEntry::Absent,
+        "R1"
+    );
+    std::fs::write(parent.join("plain"), b"owned").unwrap();
+    assert_eq!(
+        lock.classify_sibling_nofollow(Path::new("plain")).unwrap(),
+        PathEntry::RegularFile,
+        "R1"
+    );
+    assert_eq!(
+        lock.read_sibling_regular_file_nofollow(Path::new("plain"))
+            .unwrap(),
+        b"owned",
+        "R1"
+    );
+    let outside = temp.path().join("outside");
+    std::fs::write(&outside, b"preserve").unwrap();
+    std::fs::hard_link(&outside, parent.join("hardlink")).unwrap();
+    assert!(
+        lock.read_sibling_regular_file_nofollow(Path::new("hardlink"))
+            .is_err(),
+        "R2"
+    );
+    let junction = parent.join("junction");
+    let status = std::process::Command::new("cmd.exe")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(temp.path())
+        .status()
+        .unwrap();
+    assert!(status.success(), "R2 fixture");
+    assert_eq!(
+        lock.classify_sibling_nofollow(Path::new("junction"))
+            .unwrap(),
+        PathEntry::Symlink,
+        "R2"
+    );
+    assert!(
+        lock.read_sibling_regular_file_nofollow(Path::new("junction"))
+            .is_err(),
+        "R2"
+    );
+    assert_eq!(std::fs::read(&outside).unwrap(), b"preserve", "R2");
+    for alias in ["plain.", "NUL", "..\\outside", "C:outside"] {
+        assert!(
+            lock.classify_sibling_nofollow(Path::new(alias)).is_err(),
+            "R3 {alias}"
+        );
+    }
+    let names = lock.sibling_names().unwrap();
+    assert!(names.windows(2).all(|pair| pair[0] <= pair[1]), "R1");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_locked_parent_publication_never_replaces_an_occupied_name() {
+    // Causes: C1 exact locked NTFS parent; C2 destination absent/plain file/
+    // directory/junction; C3 source complete private stage. Effects: R1 absent
+    // file or directory publishes the complete source; R2 every occupied name
+    // fails atomically with both old destination and directory stage intact;
+    // R3 a nonportable final component is rejected before stage allocation.
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path().join("parent");
+    std::fs::create_dir(&parent).unwrap();
+    let lock = try_lock_exclusive(&parent.join(".lock")).unwrap();
+    lock.publish_sibling_file_noreplace(Path::new("file"), b"first")
+        .expect("R1 file");
+    assert_eq!(std::fs::read(parent.join("file")).unwrap(), b"first");
+    assert!(
+        lock.publish_sibling_file_noreplace(Path::new("file"), b"second")
+            .is_err(),
+        "R2 file"
+    );
+    assert_eq!(std::fs::read(parent.join("file")).unwrap(), b"first");
+
+    let created = lock
+        .create_sibling_directory_noreplace(Path::new("created"))
+        .expect("R1 create");
+    assert_eq!(
+        directory_identity_nofollow(&parent.join("created")).unwrap(),
+        created
+    );
+    assert!(
+        lock.create_sibling_directory_noreplace(Path::new("created"))
+            .is_err(),
+        "R2 directory"
+    );
+    std::fs::create_dir(parent.join("stage")).unwrap();
+    std::fs::write(parent.join("stage").join("PAYLOAD"), b"stage").unwrap();
+    assert!(
+        lock.publish_sibling_directory_noreplace(Path::new("stage"), Path::new("created"))
+            .is_err(),
+        "R2 occupied"
+    );
+    assert_eq!(
+        std::fs::read(parent.join("stage").join("PAYLOAD")).unwrap(),
+        b"stage"
+    );
+    lock.publish_sibling_directory_noreplace(Path::new("stage"), Path::new("published"))
+        .expect("R1 directory");
+    assert!(!parent.join("stage").exists());
+    assert_eq!(
+        std::fs::read(parent.join("published").join("PAYLOAD")).unwrap(),
+        b"stage"
+    );
+
+    let outside = temp.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("PRESERVE"), b"outside").unwrap();
+    let status = std::process::Command::new("cmd.exe")
+        .args(["/C", "mklink", "/J"])
+        .arg(parent.join("junction"))
+        .arg(&outside)
+        .status()
+        .unwrap();
+    assert!(status.success(), "R2 junction fixture");
+    assert!(
+        lock.publish_sibling_file_noreplace(Path::new("junction"), b"blocked")
+            .is_err(),
+        "R2 junction"
+    );
+    assert_eq!(std::fs::read(outside.join("PRESERVE")).unwrap(), b"outside");
+    assert!(
+        lock.publish_sibling_file_noreplace(Path::new("file."), b"blocked")
+            .is_err(),
+        "R3"
+    );
+    assert_eq!(std::fs::read(parent.join("file")).unwrap(), b"first");
+}
+
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn atomic_directory_publication_decision_table_is_total() {
     // Cause/effect table: C1 stage is an absolute directory, C2 destination
     // is an absolute sibling, C3 destination is absent/occupied. R1
@@ -43,6 +271,478 @@ fn atomic_directory_publication_decision_table_is_total() {
     );
     assert!(
         publish_directory_noreplace(Path::new("relative"), Path::new("other")).is_err(),
+        "R3"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_public_file_publication_reuses_locked_parent_no_replace_boundary() {
+    // C1 parent is a plain NTFS directory; C2 destination absent/occupied;
+    // C3 final leaf portable/aliased. R1 C1+absent+portable publishes complete
+    // bytes; R2 occupied rejects and keeps the first bytes; R3 an alias fails
+    // before creating any publication stage.
+    let temp = tempfile::tempdir().unwrap();
+    let first = temp.path().join("first");
+    publish_file_noreplace(&first, b"first").expect("R1");
+    assert_eq!(std::fs::read(&first).unwrap(), b"first");
+    assert!(publish_file_noreplace(&first, b"second").is_err(), "R2");
+    assert_eq!(std::fs::read(&first).unwrap(), b"first");
+    assert!(
+        publish_file_noreplace(&temp.path().join("first."), b"alias").is_err(),
+        "R3"
+    );
+    assert_eq!(std::fs::read(&first).unwrap(), b"first");
+    assert!(
+        std::fs::read_dir(temp.path()).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("awaken-file-stage")),
+        "R3 no stage"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_regular_file_replace_requires_one_plain_target_and_complete_stage() {
+    // Causes: C1 destination plain/missing/hard-linked/junction; C2 transform
+    // succeeds/fails after partial output; C3 parent exact. Effects: R1 plain
+    // and complete => new bytes under the same name; R2 failed transform =>
+    // old bytes and no stage; R3 other destination kinds => no replacement,
+    // while an outside hard-link target and junction target stay unchanged.
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path().join("parent");
+    std::fs::create_dir(&parent).unwrap();
+    let lock = try_lock_exclusive(&parent.join(".lock")).unwrap();
+    let file = parent.join("data");
+    std::fs::write(&file, b"old").unwrap();
+    let failure = lock.transform_sibling_regular_file_atomic(Path::new("data"), |_, stage| {
+        use std::io::Write as _;
+        stage.write_all(b"partial")?;
+        Err(std::io::Error::other("injected transform failure"))
+    });
+    assert!(failure.is_err(), "R2");
+    assert_eq!(std::fs::read(&file).unwrap(), b"old", "R2");
+    lock.replace_sibling_regular_file_atomic(Path::new("data"), b"new")
+        .expect("R1 locked sibling");
+    assert_eq!(std::fs::read(&file).unwrap(), b"new", "R1");
+    replace_regular_file_atomic(&file, b"public").expect("R1 public API");
+    assert_eq!(std::fs::read(&file).unwrap(), b"public", "R1");
+    assert!(
+        replace_regular_file_atomic(&parent.join("missing"), b"bad").is_err(),
+        "R3 missing"
+    );
+
+    let outside = temp.path().join("outside");
+    std::fs::write(&outside, b"preserve").unwrap();
+    std::fs::hard_link(&outside, parent.join("hardlink")).unwrap();
+    assert!(
+        replace_regular_file_atomic(&parent.join("hardlink"), b"bad").is_err(),
+        "R3 hard link"
+    );
+    assert_eq!(std::fs::read(&outside).unwrap(), b"preserve");
+    let outside_dir = temp.path().join("outside-dir");
+    std::fs::create_dir(&outside_dir).unwrap();
+    std::fs::write(outside_dir.join("PRESERVE"), b"outside").unwrap();
+    let status = std::process::Command::new("cmd.exe")
+        .args(["/C", "mklink", "/J"])
+        .arg(parent.join("junction"))
+        .arg(&outside_dir)
+        .status()
+        .unwrap();
+    assert!(status.success(), "R3 fixture");
+    assert!(
+        replace_regular_file_atomic(&parent.join("junction"), b"bad").is_err(),
+        "R3 junction"
+    );
+    assert_eq!(
+        std::fs::read(outside_dir.join("PRESERVE")).unwrap(),
+        b"outside"
+    );
+    assert!(
+        lock.sibling_names()
+            .unwrap()
+            .iter()
+            .all(|name| !name.to_string_lossy().contains("awaken-file-stage")),
+        "R2/R3 stage cleanup"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_file_read_and_delete_are_bound_to_one_unaliased_name() {
+    // Causes: C1 plain/hard-linked/junction final component; C2 public or
+    // held-parent entrypoint. R1 plain reads exact bytes and deletion removes
+    // only that name; R2 aliases and reparse points reject before any delete;
+    // R3 outside target bytes survive both entrypoints.
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path().join("parent");
+    std::fs::create_dir(&parent).unwrap();
+    let lock = try_lock_exclusive(&parent.join(".lock")).unwrap();
+    let first = parent.join("first");
+    std::fs::write(&first, b"plain").unwrap();
+    assert_eq!(read_regular_file_nofollow(&first).unwrap(), b"plain", "R1");
+    lock.remove_sibling_regular_file_nofollow(Path::new("first"))
+        .expect("R1 locked delete");
+    assert!(!first.exists(), "R1");
+    std::fs::write(&first, b"again").unwrap();
+    remove_regular_file_nofollow(&first).expect("R1 public delete");
+    assert!(!first.exists(), "R1");
+
+    let outside = temp.path().join("outside");
+    std::fs::write(&outside, b"preserve").unwrap();
+    let alias = parent.join("hardlink");
+    std::fs::hard_link(&outside, &alias).unwrap();
+    assert!(
+        read_regular_file_nofollow(&alias).is_err(),
+        "R2 hard-link read"
+    );
+    assert!(
+        remove_regular_file_nofollow(&alias).is_err(),
+        "R2 public delete"
+    );
+    assert!(
+        lock.remove_sibling_regular_file_nofollow(Path::new("hardlink"))
+            .is_err(),
+        "R2 locked delete"
+    );
+    let outside_dir = temp.path().join("outside-dir");
+    std::fs::create_dir(&outside_dir).unwrap();
+    let status = std::process::Command::new("cmd.exe")
+        .args(["/C", "mklink", "/J"])
+        .arg(parent.join("junction"))
+        .arg(&outside_dir)
+        .status()
+        .unwrap();
+    assert!(status.success(), "R2 fixture");
+    assert!(
+        remove_regular_file_nofollow(&parent.join("junction")).is_err(),
+        "R2 junction"
+    );
+    assert_eq!(std::fs::read(&outside).unwrap(), b"preserve", "R3");
+    assert!(parent.join("junction").exists(), "R3");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_exact_tree_cleanup_preserves_outside_targets_and_rejects_foreign_identity() {
+    // Causes: C1 expected NTFS identity matches/does not match; C2 owned tree
+    // contains plain nested files, a hard link, and a junction; C3 operation
+    // clears contents or removes the exact root. R1 matching identity clears
+    // or removes all owned names; R2 outside hard-link and junction targets
+    // survive; R3 foreign identity rejects before deleting any owned child.
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path().join("parent");
+    std::fs::create_dir(&parent).unwrap();
+    let lock = try_lock_exclusive(&parent.join(".lock")).unwrap();
+    let root = parent.join("root");
+    std::fs::create_dir(&root).unwrap();
+    let expected = directory_identity_nofollow(&root).unwrap();
+    std::fs::create_dir(root.join("nested")).unwrap();
+    std::fs::write(root.join("nested").join("data"), b"owned").unwrap();
+    let outside_file = temp.path().join("outside-file");
+    std::fs::write(&outside_file, b"preserve-file").unwrap();
+    std::fs::hard_link(&outside_file, root.join("hardlink")).unwrap();
+    let outside_dir = temp.path().join("outside-dir");
+    std::fs::create_dir(&outside_dir).unwrap();
+    std::fs::write(outside_dir.join("PRESERVE"), b"preserve-dir").unwrap();
+    let status = std::process::Command::new("cmd.exe")
+        .args(["/C", "mklink", "/J"])
+        .arg(root.join("junction"))
+        .arg(&outside_dir)
+        .status()
+        .unwrap();
+    assert!(status.success(), "R2 fixture");
+    let foreign = DirectoryIdentity {
+        device: expected.device,
+        inode: expected.inode ^ 1,
+    };
+    assert!(
+        clear_directory_contents_exact(&root, foreign).is_err(),
+        "R3"
+    );
+    assert!(root.join("nested").join("data").exists(), "R3");
+    lock.clear_sibling_directory_contents_exact(Path::new("root"), expected)
+        .expect("R1 clear");
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0, "R1");
+    assert_eq!(
+        std::fs::read(&outside_file).unwrap(),
+        b"preserve-file",
+        "R2"
+    );
+    assert_eq!(
+        std::fs::read(outside_dir.join("PRESERVE")).unwrap(),
+        b"preserve-dir",
+        "R2"
+    );
+    std::fs::write(root.join("new"), b"owned").unwrap();
+    lock.remove_sibling_directory_tree_exact(Path::new("root"), expected)
+        .expect("R1 remove sibling");
+    assert!(!root.exists(), "R1");
+    let second = parent.join("second");
+    std::fs::create_dir(&second).unwrap();
+    let second_identity = directory_identity_nofollow(&second).unwrap();
+    remove_directory_tree_exact(&second, second_identity).expect("R1 remove public");
+    assert!(!second.exists(), "R1");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_exact_cleanup_unlinks_a_shredded_file_with_a_retained_reader() {
+    use std::io::Read as _;
+
+    // C1 exact owned root with one secret; C2 a second reader retains that
+    // file handle while shred and tree deletion run. R1 the name and root are
+    // removed before the reader closes; R2 the retained handle observes only
+    // zeroed bytes. No hard-link alias is created by the observer.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let identity = directory_identity_nofollow(&root).unwrap();
+    let secret = root.join("secret");
+    std::fs::write(&secret, b"sensitive").unwrap();
+    let mut observer = std::fs::File::open(&secret).unwrap();
+    zero_relative_regular_file_nofollow(&root, identity, Path::new("secret")).expect("R2 shred");
+    remove_directory_tree_exact(&root, identity).expect("R1 exact removal");
+    assert!(!root.exists(), "R1");
+    let mut bytes = Vec::new();
+    observer.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, vec![0; 9], "R2");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_exact_tree_reader_rejects_reparse_and_foreign_roots() {
+    // C1 exact/foreign root identity; C2 plain subtree/missing subtree/
+    // junction; C3 exclusion present/absent; C4 byte budget sufficient/tight;
+    // C5 Windows readonly attribute unset/set.
+    // R1 exact plain yields sorted complete files; R2 missing subtree is empty;
+    // R3 exclusion omits that subtree; R4 junction, foreign root, and budget
+    // overflow fail without returning a partial snapshot or outside bytes.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(root.join("nested")).unwrap();
+    std::fs::write(root.join("b"), b"two").unwrap();
+    std::fs::write(root.join("nested").join("a"), b"one").unwrap();
+    let expected = directory_identity_nofollow(&root).unwrap();
+    let snapshot = read_tree_nofollow(&root, expected, Path::new("")).expect("R1");
+    assert_eq!(snapshot.files.len(), 2, "R1");
+    assert_eq!(snapshot.directories.len(), 1, "R1");
+    assert_eq!(snapshot.files[0].relative_path, Path::new("b"), "R1 sorted");
+    assert_eq!(
+        snapshot.files[1].relative_path,
+        Path::new("nested/a"),
+        "R1 sorted"
+    );
+    assert!(
+        snapshot.files.iter().all(|file| file.mode == 0o600),
+        "R1 writable file mode"
+    );
+    assert_eq!(
+        snapshot.directories[0].mode, 0o700,
+        "R1 writable directory mode"
+    );
+    assert!(
+        read_tree_nofollow(&root, expected, Path::new("missing"))
+            .unwrap()
+            .files
+            .is_empty(),
+        "R2"
+    );
+    let excluded =
+        read_tree_nofollow_excluding(&root, expected, Path::new(""), &[PathBuf::from("nested")])
+            .unwrap();
+    assert_eq!(excluded.files.len(), 1, "R3");
+    assert_eq!(excluded.files[0].relative_path, Path::new("b"), "R3");
+    let foreign = DirectoryIdentity {
+        device: expected.device,
+        inode: expected.inode ^ 1,
+    };
+    assert!(
+        read_tree_nofollow(&root, foreign, Path::new("")).is_err(),
+        "R4 foreign"
+    );
+    assert!(
+        read_tree_nofollow_bounded(&root, 2, 2).is_err(),
+        "R4 budget"
+    );
+    let outside = temp.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("SECRET"), b"preserve").unwrap();
+    let status = std::process::Command::new("cmd.exe")
+        .args(["/C", "mklink", "/J"])
+        .arg(root.join("junction"))
+        .arg(&outside)
+        .status()
+        .unwrap();
+    assert!(status.success(), "R4 fixture");
+    assert!(
+        read_tree_nofollow(&root, expected, Path::new("")).is_err(),
+        "R4 junction"
+    );
+    assert_eq!(std::fs::read(outside.join("SECRET")).unwrap(), b"preserve");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_relative_create_shred_and_remove_stay_under_the_exact_root() {
+    // C1 root identity exact/foreign; C2 path canonical/traversal; C3 parent
+    // absent/plain/junction; C4 final file absent/plain/hard-linked; C5 mode
+    // valid/invalid. R1 exact
+    // plain path creates parents and zeroes a regular file; R2 absent shred and
+    // removal are idempotent; R3 foreign, traversal, junction, and hard link
+    // reject before changing an outside target; R4 exact recursive removal
+    // deletes only the selected in-root subtree.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let expected = directory_identity_nofollow(&root).unwrap();
+    create_relative_directory_all(&root, expected, Path::new("a/b")).expect("R1 create");
+    let secret = root.join("a").join("b").join("secret");
+    std::fs::write(&secret, b"private").unwrap();
+    zero_relative_regular_file_nofollow(&root, expected, Path::new("a/b/secret"))
+        .expect("R1 shred");
+    assert_eq!(std::fs::read(&secret).unwrap(), vec![0; 7], "R1");
+    set_relative_directory_mode(&root, expected, Path::new("a/b"), 0o500)
+        .expect("R1 directory mode");
+    assert!(
+        std::fs::metadata(root.join("a/b"))
+            .unwrap()
+            .permissions()
+            .readonly(),
+        "R1 mode"
+    );
+    assert!(
+        set_relative_directory_mode(&root, expected, Path::new("a/b"), 0o10000).is_err(),
+        "R3 invalid mode"
+    );
+    zero_relative_regular_file_nofollow(&root, expected, Path::new("a/b/missing"))
+        .expect("R2 missing shred");
+    remove_relative_entry_exact(&root, expected, Path::new("a/b/missing"))
+        .expect("R2 missing remove");
+    let foreign = DirectoryIdentity {
+        device: expected.device,
+        inode: expected.inode ^ 1,
+    };
+    assert!(
+        create_relative_directory_all(&root, foreign, Path::new("foreign")).is_err(),
+        "R3 foreign"
+    );
+    assert!(
+        create_relative_directory_all(&root, expected, Path::new("../outside")).is_err(),
+        "R3 traversal"
+    );
+    let outside = temp.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("PRESERVE"), b"outside").unwrap();
+    let status = std::process::Command::new("cmd.exe")
+        .args(["/C", "mklink", "/J"])
+        .arg(root.join("junction"))
+        .arg(&outside)
+        .status()
+        .unwrap();
+    assert!(status.success(), "R3 fixture");
+    assert!(
+        create_relative_directory_all(&root, expected, Path::new("junction/foreign")).is_err(),
+        "R3 junction"
+    );
+    let outside_file = temp.path().join("outside-file");
+    std::fs::write(&outside_file, b"preserve-file").unwrap();
+    std::fs::hard_link(&outside_file, root.join("hardlink")).unwrap();
+    assert!(
+        zero_relative_regular_file_nofollow(&root, expected, Path::new("hardlink")).is_err(),
+        "R3 hard link"
+    );
+    assert_eq!(
+        std::fs::read(&outside_file).unwrap(),
+        b"preserve-file",
+        "R3"
+    );
+    remove_relative_entry_exact(&root, expected, Path::new("junction"))
+        .expect("R4 remove link only");
+    assert_eq!(
+        std::fs::read(outside.join("PRESERVE")).unwrap(),
+        b"outside",
+        "R3/R4"
+    );
+    remove_relative_entry_exact(&root, expected, Path::new("a")).expect("R4 remove subtree");
+    assert!(!root.join("a").exists(), "R4");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_relative_file_materialization_is_complete_and_rejects_aliases() {
+    // C1 exact/foreign root; C2 absent/plain/hard-linked destination; C3
+    // canonical/junction parent; C4 owner-writable/owner-read-only/invalid
+    // mode. R1 absent and plain publish complete bytes with Windows readonly
+    // attribute; R2 foreign, aliases, and invalid mode fail before touching
+    // outside bytes; R3 a failed path leaves no private stage.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let expected = directory_identity_nofollow(&root).unwrap();
+    let relative = Path::new("nested/config");
+    write_relative_file_atomic(&root, expected, relative, b"first", 0o600).expect("R1 absent");
+    let file = root.join(relative);
+    assert_eq!(std::fs::read(&file).unwrap(), b"first", "R1");
+    assert!(
+        !std::fs::metadata(&file).unwrap().permissions().readonly(),
+        "R1 mode 600"
+    );
+    write_relative_file_atomic(&root, expected, relative, b"second", 0o400).expect("R1 replace");
+    assert_eq!(std::fs::read(&file).unwrap(), b"second", "R1");
+    assert!(
+        std::fs::metadata(&file).unwrap().permissions().readonly(),
+        "R1 mode 400"
+    );
+    write_relative_file_atomic(&root, expected, relative, b"third", 0o600)
+        .expect("R1 replace readonly");
+    assert_eq!(std::fs::read(&file).unwrap(), b"third", "R1");
+    let foreign = DirectoryIdentity {
+        device: expected.device,
+        inode: expected.inode ^ 1,
+    };
+    assert!(
+        write_relative_file_atomic(&root, foreign, relative, b"bad", 0o600).is_err(),
+        "R2 foreign"
+    );
+    assert!(
+        write_relative_file_atomic(&root, expected, relative, b"bad", 0o10000).is_err(),
+        "R2 mode"
+    );
+    let outside_file = temp.path().join("outside-file");
+    std::fs::write(&outside_file, b"preserve").unwrap();
+    std::fs::hard_link(&outside_file, root.join("hardlink")).unwrap();
+    assert!(
+        write_relative_file_atomic(&root, expected, Path::new("hardlink"), b"bad", 0o600).is_err(),
+        "R2 hard link"
+    );
+    let outside_dir = temp.path().join("outside-dir");
+    std::fs::create_dir(&outside_dir).unwrap();
+    let status = std::process::Command::new("cmd.exe")
+        .args(["/C", "mklink", "/J"])
+        .arg(root.join("junction"))
+        .arg(&outside_dir)
+        .status()
+        .unwrap();
+    assert!(status.success(), "R2 fixture");
+    assert!(
+        write_relative_file_atomic(&root, expected, Path::new("junction/evil"), b"bad", 0o600)
+            .is_err(),
+        "R2 junction"
+    );
+    assert_eq!(std::fs::read(&outside_file).unwrap(), b"preserve", "R2");
+    assert!(!outside_dir.join("evil").exists(), "R2");
+    assert!(
+        std::fs::read_dir(root.join("nested"))
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("awaken-file-stage")),
         "R3"
     );
 }

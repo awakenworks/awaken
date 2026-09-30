@@ -1412,6 +1412,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2539,10 +2540,13 @@ dependencies = [
 name = "awaken-sandbox-fs"
 version = "1.0.0"
 dependencies = [
+ "awaken-sandbox-win32",
+ "cap-primitives",
  "cap-std",
  "rustix 1.1.4",
  "same-file",
  "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2616,6 +2620,13 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "awaken-sandbox-win32"
+version = "1.0.0"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

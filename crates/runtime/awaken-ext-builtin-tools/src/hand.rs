@@ -337,6 +337,18 @@ impl ConfinedPath {
         lexical_normalize(&self.logical_absolute.join(search_relative))
     }
 
+    fn logical_path_text(&self, search_relative: &Path) -> String {
+        let path = self.logical_path(search_relative);
+        #[cfg(windows)]
+        {
+            path.to_string_lossy().replace('\\', "/")
+        }
+        #[cfg(not(windows))]
+        {
+            path.display().to_string()
+        }
+    }
+
     fn metadata(&self) -> std::io::Result<cap_std::fs::Metadata> {
         self.directory.metadata(&self.relative)
     }
@@ -658,9 +670,7 @@ impl Tool for GlobTool {
             .map(|entry| {
                 (
                     entry.modified,
-                    root.logical_path(&entry.search_relative)
-                        .display()
-                        .to_string(),
+                    root.logical_path_text(&entry.search_relative),
                 )
             })
             .collect::<Vec<_>>();
@@ -773,7 +783,7 @@ fn collect_confined_directory(
             ignore_stack.truncate(inherited_ignore_count);
             return Err(file_error(
                 "walk",
-                &root.logical_path(search_directory).display().to_string(),
+                &root.logical_path_text(search_directory),
                 &error,
             ));
         }
@@ -1095,13 +1105,13 @@ impl Tool for GrepTool {
             {
                 continue;
             }
-            let logical_path = root.logical_path(&file.search_relative);
+            let logical_path = root.logical_path_text(&file.search_relative);
             for (index, line) in content.split('\n').enumerate() {
                 if re.is_match(line) {
                     let hit = if root_is_file {
                         format!("{}:{}", index + 1, line)
                     } else {
-                        format!("{}:{}:{}", logical_path.display(), index + 1, line)
+                        format!("{}:{}:{}", logical_path, index + 1, line)
                     };
                     if output_bytes + hit.len() + 1 > GREP_OUTPUT_LIMIT {
                         hits.push(GREP_TRUNCATION_NOTICE.to_owned());

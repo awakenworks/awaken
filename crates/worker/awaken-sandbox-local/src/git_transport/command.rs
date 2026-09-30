@@ -40,18 +40,14 @@ pub(super) fn validate_credentialed_git_transport(
     url: &str,
     credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
 ) -> Result<AdmittedGitTransport, SandboxError> {
+    if credential.is_none() && cfg!(any(test, feature = "test-support")) && test_local_path(url) {
+        return Ok(AdmittedGitTransport {
+            protocol: "file".into(),
+            credential_endpoint: None,
+        });
+    }
     let parsed = match url::Url::parse(url) {
         Ok(parsed) => parsed,
-        Err(_)
-            if credential.is_none()
-                && cfg!(any(test, feature = "test-support"))
-                && Path::new(url).is_absolute() =>
-        {
-            return Ok(AdmittedGitTransport {
-                protocol: "file".into(),
-                credential_endpoint: None,
-            });
-        }
         Err(_) => {
             return Err(SandboxError::invalid(
                 "repository transport must be an absolute HTTPS endpoint",
@@ -131,6 +127,25 @@ pub(super) fn validate_credentialed_git_transport(
             authority,
         }),
     })
+}
+
+fn test_local_path(url: &str) -> bool {
+    let path = Path::new(url);
+    if !path.is_absolute() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        matches!(
+            path.components().next(),
+            Some(std::path::Component::Prefix(prefix))
+                if matches!(prefix.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_))
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
 }
 
 pub(crate) const GIT_CREDENTIAL_USERNAME_ENV: &str = "AWAKEN_GIT_CREDENTIAL_USERNAME";

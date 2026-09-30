@@ -3,7 +3,7 @@ use super::*;
 /// Platform adapter for callers that own a quiescent plain projection, not an
 /// exact inode identity. The exact-dirfd APIs stay unsupported on these targets;
 /// this must never silently substitute for their stronger ownership contract.
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(super) fn read_plain_tree_bounded(
     root: &Path,
     limits: TreeReadLimits,
@@ -215,7 +215,16 @@ pub fn remove_relative_entry_exact(
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+pub fn remove_relative_entry_exact(
+    root: &Path,
+    expected_root: DirectoryIdentity,
+    relative: &Path,
+) -> std::io::Result<()> {
+    super::windows::remove_relative_entry_exact(root, expected_root, relative)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn remove_relative_entry_exact(
     root: &Path,
     _expected_root: DirectoryIdentity,

@@ -51,10 +51,14 @@ mod tests {
 
     #[test]
     fn a_missing_outputs_dir_scans_to_empty() {
-        let missing = std::path::Path::new("/no/such/awaken/outputs/dir");
+        // C1 the configured root itself is absent under a valid host parent;
+        // E1 no outputs are published and no platform-specific absolute path
+        // assumption is needed to exercise the missing-root branch.
+        let parent = tempfile::tempdir().unwrap();
+        let missing = parent.path().join("absent");
         assert!(
             scan_outputs(
-                &IsolatedRoot::new(missing),
+                &IsolatedRoot::new(&missing),
                 awaken_sandbox_fs::DirectoryIdentity {
                     device: 0,
                     inode: 0

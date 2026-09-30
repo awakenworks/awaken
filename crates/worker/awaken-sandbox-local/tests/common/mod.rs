@@ -8,6 +8,29 @@ use async_trait::async_trait;
 use awaken_file_store::FileStore;
 use awaken_provisioning_contract::BlobSource;
 
+/// The one native POSIX-shell fixture for provider integration tests. Git for
+/// Windows supplies a real sh.exe on the Windows matrix, but it is not on a
+/// PowerShell runner's PATH; Unix resolves the ordinary system sh.
+#[allow(dead_code)]
+pub fn sh_command(script: impl Into<String>) -> awaken_provisioning_contract::Command {
+    #[cfg(windows)]
+    let shell = {
+        let path = std::path::PathBuf::from(
+            std::env::var_os("ProgramFiles").expect("Windows ProgramFiles test fixture"),
+        )
+        .join("Git/bin/sh.exe");
+        assert!(path.is_file(), "Windows Git Bash fixture is required");
+        path.to_string_lossy().into_owned()
+    };
+    #[cfg(not(windows))]
+    let shell = "sh".to_owned();
+    let mut command =
+        awaken_provisioning_contract::Command::new([shell, "-c".to_owned(), script.into()]);
+    command.stdio = awaken_provisioning_contract::Stdio::Null;
+    command
+}
+
+#[allow(dead_code)]
 struct FileStoreBlobs(Arc<dyn FileStore>);
 
 #[async_trait]
@@ -18,6 +41,7 @@ impl BlobSource for FileStoreBlobs {
 }
 
 /// Expose a `FileStore` as a `BlobSource` for injection into a provider.
+#[allow(dead_code)]
 pub fn blob_source(store: Arc<dyn FileStore>) -> Arc<dyn BlobSource> {
     Arc::new(FileStoreBlobs(store))
 }

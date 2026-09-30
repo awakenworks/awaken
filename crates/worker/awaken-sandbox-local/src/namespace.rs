@@ -41,7 +41,7 @@ use control::{
 pub(crate) use process::attach_syscall_profile as attach_workload_syscall_profile;
 use seatbelt::projected_runtime_roots_for_command;
 pub use seatbelt::sandbox_exec_argv;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use seatbelt::{is_projectable_runtime_root, projected_runtime_roots};
 
 /// Probe the actual launch profile, not only the presence of a user namespace.
