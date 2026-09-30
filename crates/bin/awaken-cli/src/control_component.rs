@@ -119,6 +119,7 @@ pub(super) async fn control_component_for_process(
             awaken_credential_materializer::VaultRefreshFactory::new(
                 control.credentials.clone(),
                 control.secrets.clone(),
+                stores.clock.clone(),
             ),
         )),
         assistant_model_selection,

@@ -307,18 +307,9 @@ impl ExecutableAgentProfileSource for SkillGraphAgent {
     }
 }
 
-fn skill_bindings(prefix: &str, count: usize) -> Vec<awaken_agent_contract::AgentSkillBinding> {
-    (0..count)
-        .map(|index| awaken_agent_contract::AgentSkillBinding::custom(format!("{prefix}-{index}")))
-        .collect()
-}
-
-fn skill_graph_source(root_count: usize, child_count: usize) -> SkillGraphAgent {
-    SkillGraphAgent {
-        root_count,
-        child_count,
-    }
-}
+#[path = "session_resources/skill_fixtures.rs"]
+mod skill_fixtures;
+use skill_fixtures::{skill_bindings, skill_graph_source};
 
 impl ExecutableAgentProfileSource for AgentWithIntegrations {
     fn session_profile_in(
@@ -3031,6 +3022,7 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         ),
         secrets.as_ref(),
         credentials.as_ref(),
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .expect("publish canonical MCP credential authority")
@@ -3900,6 +3892,7 @@ async fn repository_access_compiler_follows_the_decision_table() {
                 .with_expiry(if rule.not_expired { u64::MAX } else { 1 }),
                 secrets.as_ref(),
                 credentials.as_ref(),
+                awaken_lease_contract::system_clock().as_ref(),
             )
             .await
             .expect("author decision-table source");

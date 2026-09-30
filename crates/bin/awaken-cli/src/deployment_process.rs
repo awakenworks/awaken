@@ -70,8 +70,10 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
     let publish_local_workspace = installations.publishes_local_workspace();
     let platform_workspace = installations.platform_workspace_before_write()?;
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
-    let credential_material_resolver = managed_services
-        .install_credential_envelope(deployment.worker.credential_envelope_keys_file.as_deref())?;
+    let credential_material_resolver = managed_services.install_credential_envelope(
+        deployment.worker.credential_envelope_keys_file.as_deref(),
+        clock.clone(),
+    )?;
     let background_services = std::mem::take(&mut managed_services.background_services);
     let postgres_schema = match deployment.mode {
         config::OperatingMode::Local => PostgresSchemaMode::Migrate,

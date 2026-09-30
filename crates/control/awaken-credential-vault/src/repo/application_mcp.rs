@@ -11,6 +11,7 @@ use awaken_credential_contract::{
     CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialSourceId,
     CredentialTarget, CredentialTargetContract, CredentialUsage, OPAQUE_SECRET_MATERIAL_TYPE,
 };
+use awaken_lease_contract::WallClock;
 
 use super::{
     CredentialMaterialPatch, CredentialRepo, LegacyProviderDescriptorMigration,
@@ -207,6 +208,7 @@ pub async fn enter_or_rotate_application_mcp_bearer(
     command: ApplicationMcpBearerCommand,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
+    clock: &dyn WallClock,
 ) -> Result<CredentialSource, CredentialError> {
     validate_command(&command)?;
     let material_ref = application_mcp_material_ref(
@@ -229,9 +231,14 @@ pub async fn enter_or_rotate_application_mcp_bearer(
         Err(error) => return Err(error),
     };
     let Some(current) = current else {
-        let entered =
-            enter_prepared_credential_idempotent(expected, Some(bearer.clone()), store, repo)
-                .await?;
+        let entered = enter_prepared_credential_idempotent(
+            expected,
+            Some(bearer.clone()),
+            store,
+            repo,
+            clock,
+        )
+        .await?;
         verify_material(
             &entered.source,
             &command_key_fingerprint,
@@ -266,6 +273,7 @@ pub async fn enter_or_rotate_application_mcp_bearer(
             ),
             store,
             repo,
+            clock,
         )
         .await;
     }
@@ -293,6 +301,7 @@ pub async fn enter_or_rotate_application_mcp_bearer(
         Some(material_ref),
         store,
         repo,
+        clock,
     )
     .await
 }

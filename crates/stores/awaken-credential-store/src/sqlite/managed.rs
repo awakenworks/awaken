@@ -38,8 +38,11 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
     async fn begin_managed_mutation(
         &self,
         pending: PendingManagedCredentialMutation,
+        now_unix_ms: u64,
     ) -> Result<bool, CredentialError> {
-        pending.validate_for_begin().map_err(invalid_pending)?;
+        pending
+            .validate_for_begin(now_unix_ms)
+            .map_err(invalid_pending)?;
         with_conn(&self.conn, move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)

@@ -181,6 +181,7 @@ mod tests {
                 },
                 secrets.as_ref(),
                 creds.as_ref(),
+                awaken_lease_contract::system_clock().as_ref(),
             )
             .await
             .unwrap();
@@ -192,7 +193,11 @@ mod tests {
         }
         TestServices {
             resolver: direct_resolver(catalog.clone(), creds.clone()),
-            materializer: CredentialInferenceMaterializer::new(creds.clone(), secrets.clone()),
+            materializer: CredentialInferenceMaterializer::new(
+                creds.clone(),
+                secrets.clone(),
+                awaken_lease_contract::system_clock(),
+            ),
             catalog,
             credentials: creds,
             secrets,
@@ -291,6 +296,7 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -324,7 +330,11 @@ mod tests {
         )
         .expect("coherent inference publication candidate");
         (
-            CredentialInferenceMaterializer::new(credentials, secrets.clone()),
+            CredentialInferenceMaterializer::new(
+                credentials,
+                secrets.clone(),
+                awaken_lease_contract::system_clock(),
+            ),
             candidate,
             secrets,
         )
@@ -636,6 +646,7 @@ mod tests {
             },
             p.secrets.as_ref(),
             p.credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -678,6 +689,7 @@ mod tests {
             },
             p.secrets.as_ref(),
             p.credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -869,6 +881,7 @@ mod tests {
             },
             p.secrets.as_ref(),
             p.credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();

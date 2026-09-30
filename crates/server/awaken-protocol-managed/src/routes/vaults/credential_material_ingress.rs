@@ -68,6 +68,7 @@ impl CredentialMaterialIngress for VaultState {
             descriptor,
             self.secrets.as_ref(),
             self.repository.as_ref(),
+            self.clock.as_ref(),
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -145,6 +146,7 @@ impl CredentialMaterialIngress for VaultState {
             },
             self.secrets.as_ref(),
             self.repository.as_ref(),
+            self.clock.as_ref(),
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -187,6 +189,7 @@ impl CredentialMaterialIngress for VaultState {
             CredentialRetirement::Archive,
             self.secrets.as_ref(),
             self.repository.as_ref(),
+            self.clock.as_ref(),
         )
         .await
         .map(|_| ())
@@ -536,6 +539,7 @@ mod tests {
             },
             secrets.as_ref(),
             repository.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .expect("V4 legacy fixture");

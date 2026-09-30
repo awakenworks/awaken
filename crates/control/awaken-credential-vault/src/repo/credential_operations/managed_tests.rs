@@ -196,10 +196,14 @@ async fn managed_creation_publishes_source_and_child_in_one_repository_step() {
     let secrets = InMemorySecretStore::new();
     repo.insert_vault("ws", managed_vault()).await.unwrap();
 
-    let (source, child) =
-        create_managed_credential(managed_command("https://mcp.example.com"), &secrets, &repo)
-            .await
-            .unwrap();
+    let (source, child) = create_managed_credential(
+        managed_command("https://mcp.example.com"),
+        &secrets,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(repo.get(&source.id).await.unwrap(), source);
     assert_eq!(
@@ -216,14 +220,22 @@ async fn stable_managed_creation_replays_the_published_pair_and_rejects_changed_
     let secrets = InMemorySecretStore::new();
     repo.insert_vault("ws", managed_vault()).await.unwrap();
 
-    let first =
-        create_managed_credential(managed_command("https://mcp.example.com"), &secrets, &repo)
-            .await
-            .unwrap();
-    let replay =
-        create_managed_credential(managed_command("https://mcp.example.com"), &secrets, &repo)
-            .await
-            .unwrap();
+    let first = create_managed_credential(
+        managed_command("https://mcp.example.com"),
+        &secrets,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap();
+    let replay = create_managed_credential(
+        managed_command("https://mcp.example.com"),
+        &secrets,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap();
     assert_eq!(replay, first);
     assert_eq!(secrets.inventory().await.unwrap().len(), 1);
     assert_eq!(
@@ -236,9 +248,14 @@ async fn stable_managed_creation_replays_the_published_pair_and_rejects_changed_
 
     let mut changed = managed_command("https://mcp.example.com");
     changed.source.secret = Some(RedactedString::new("different-token"));
-    let error = create_managed_credential(changed, &secrets, &repo)
-        .await
-        .unwrap_err();
+    let error = create_managed_credential(
+        changed,
+        &secrets,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap_err();
     assert!(matches!(
         error,
         ManagedCredentialCreationError::Credential(CredentialError::MutationConflict(_))
@@ -281,11 +298,20 @@ async fn managed_logical_pending_follower_performs_zero_material_writes() {
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
-    let owner = PendingManagedCredentialMutation::create(source, child).unwrap();
-    assert!(repo.begin_managed_mutation(owner.clone()).await.unwrap());
+    let owner = PendingManagedCredentialMutation::create(source, child, 1_000).unwrap();
+    assert!(
+        repo.begin_managed_mutation(owner.clone(), 1_000)
+            .await
+            .unwrap()
+    );
 
-    let follower =
-        create_managed_credential(managed_command("https://mcp.example.com"), &store, &repo).await;
+    let follower = create_managed_credential(
+        managed_command("https://mcp.example.com"),
+        &store,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await;
 
     assert!(matches!(
         follower,
@@ -313,8 +339,13 @@ async fn managed_creation_does_not_publish_unopenable_material() {
     let store = UnopenableManagedWriteStore::default();
     repo.insert_vault("ws", managed_vault()).await.unwrap();
 
-    let result =
-        create_managed_credential(managed_command("https://mcp.example.com"), &store, &repo).await;
+    let result = create_managed_credential(
+        managed_command("https://mcp.example.com"),
+        &store,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await;
 
     assert!(
         matches!(
@@ -348,9 +379,13 @@ async fn managed_creation_does_not_publish_unopenable_material() {
         "M2"
     );
     assert_eq!(
-        recover_managed_credential_mutations(&store.inner, &repo)
-            .await
-            .unwrap(),
+        recover_managed_credential_mutations(
+            &store.inner,
+            &repo,
+            awaken_lease_contract::system_clock().as_ref()
+        )
+        .await
+        .unwrap(),
         1
     );
     assert!(
@@ -364,10 +399,14 @@ async fn managed_vault_delete_fences_children_waits_for_rollout_and_tombstones_r
     let repo = InMemoryCredentialRepo::new();
     let secrets = InMemorySecretStore::new();
     repo.insert_vault("ws", managed_vault()).await.unwrap();
-    let (source, child) =
-        create_managed_credential(managed_command("https://mcp.example.com"), &secrets, &repo)
-            .await
-            .unwrap();
+    let (source, child) = create_managed_credential(
+        managed_command("https://mcp.example.com"),
+        &secrets,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap();
     let current = repo.get_vault("ws", "vault-1").await.unwrap().unwrap();
     let (requested, changed) =
         crate::catalog::request_managed_vault_deletion(&current, "2026-08-16T00:00:00Z".into())
@@ -386,6 +425,7 @@ async fn managed_vault_delete_fences_children_waits_for_rollout_and_tombstones_r
             "2026-08-16T00:00:01Z".into(),
             &secrets,
             &repo,
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await,
         Err(ManagedCredentialMutationError::InvalidLifecycle)
@@ -401,9 +441,14 @@ async fn managed_vault_delete_fences_children_waits_for_rollout_and_tombstones_r
     );
 
     assert!(
-        !reconcile_managed_vault_deletion(&requested, &secrets, &repo)
-            .await
-            .unwrap(),
+        !reconcile_managed_vault_deletion(
+            &requested,
+            &secrets,
+            &repo,
+            awaken_lease_contract::system_clock().as_ref(),
+        )
+        .await
+        .unwrap(),
         "R2 committed child rollout keeps root pending"
     );
     let retired = repo
@@ -421,9 +466,14 @@ async fn managed_vault_delete_fences_children_waits_for_rollout_and_tombstones_r
     repo.complete_managed_rollout(&rollout).await.unwrap();
     let pending = repo.get_vault("ws", "vault-1").await.unwrap().unwrap();
     assert!(
-        reconcile_managed_vault_deletion(&pending, &secrets, &repo)
-            .await
-            .unwrap(),
+        reconcile_managed_vault_deletion(
+            &pending,
+            &secrets,
+            &repo,
+            awaken_lease_contract::system_clock().as_ref(),
+        )
+        .await
+        .unwrap(),
         "R3 exact rollout acknowledgement permits completion"
     );
     assert!(
@@ -438,7 +488,13 @@ async fn managed_vault_delete_fences_children_waits_for_rollout_and_tombstones_r
     new_child.source_id = Some(CredentialSourceId("source-2".into()));
     new_child.credential_id = "credential-2".into();
     assert!(matches!(
-        create_managed_credential(new_child, &secrets, &repo).await,
+        create_managed_credential(
+            new_child,
+            &secrets,
+            &repo,
+            awaken_lease_contract::system_clock().as_ref()
+        )
+        .await,
         Err(ManagedCredentialCreationError::Admission(
             ManagedCredentialAdmissionError::VaultUnavailable
         ))
@@ -459,10 +515,14 @@ async fn managed_update_atomically_publishes_exact_rollout_until_service_acknowl
     let repo = InMemoryCredentialRepo::new();
     let secrets = InMemorySecretStore::new();
     repo.insert_vault("ws", managed_vault()).await.unwrap();
-    let (_, before) =
-        create_managed_credential(managed_command("https://mcp.example.com"), &secrets, &repo)
-            .await
-            .unwrap();
+    let (_, before) = create_managed_credential(
+        managed_command("https://mcp.example.com"),
+        &secrets,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap();
 
     let after = update_managed_credential(
         before.clone(),
@@ -476,6 +536,7 @@ async fn managed_update_atomically_publishes_exact_rollout_until_service_acknowl
         "2026-09-17T00:00:01Z".into(),
         &secrets,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -566,10 +627,14 @@ async fn managed_update_rejects_a_conflicting_rollout_id_before_publishing_the_p
     let repo = InMemoryCredentialRepo::new();
     let secrets = InMemorySecretStore::new();
     repo.insert_vault("ws", managed_vault()).await.unwrap();
-    let (source, before) =
-        create_managed_credential(managed_command("https://mcp.example.com"), &secrets, &repo)
-            .await
-            .unwrap();
+    let (source, before) = create_managed_credential(
+        managed_command("https://mcp.example.com"),
+        &secrets,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap();
     let conflicting = ManagedCredentialRollout {
         id: format!(
             "managed-update:{}:{}:{}",
@@ -597,6 +662,7 @@ async fn managed_update_rejects_a_conflicting_rollout_id_before_publishing_the_p
         "2026-09-17T00:00:01Z".into(),
         &secrets,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await;
 
@@ -621,10 +687,14 @@ async fn managed_material_refs_are_unique_to_the_writer_attempt() {
     let secrets = InMemorySecretStore::new();
     repo.insert_vault("ws", managed_vault()).await.unwrap();
 
-    let (source, _) =
-        create_managed_credential(managed_command("https://mcp.example.com"), &secrets, &repo)
-            .await
-            .unwrap();
+    let (source, _) = create_managed_credential(
+        managed_command("https://mcp.example.com"),
+        &secrets,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap();
     let reference = source.material_ref.expect("Managed primary material");
     assert!(reference.0.contains(":attempt:"));
     assert_eq!(
@@ -652,19 +722,22 @@ async fn legacy_durable_rows_may_recover_but_cannot_enter_as_new_commands() {
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
-    let mut legacy = PendingManagedCredentialMutation::create(source, child).unwrap();
+    let mut legacy = PendingManagedCredentialMutation::create(source, child, 1_000).unwrap();
     legacy.material_fence.format_version = 0;
 
     assert!(legacy.validate().is_ok());
-    assert!(repo.begin_managed_mutation(legacy).await.is_err());
+    assert!(repo.begin_managed_mutation(legacy, 1_000).await.is_err());
 }
 
 /// Managed fresh-command admission uses the same decision rules as source-only
-/// publication: new material plus forged Ready/takeover epoch/foreign owner
-/// yields rejection before a durable pair or external effect.
+/// publication. Causes: a new material ref, forged Ready/takeover/foreign
+/// writer, and begin reading before or exactly at expiry. R1 forged -> reject
+/// before WAL/SecretStore; R2 exact expiry -> reject; R3 live original writer
+/// -> one pending pair, never a second material owner.
 #[tokio::test]
 async fn managed_begin_rejects_every_forged_fresh_material_owner_shape() {
     let repo = InMemoryCredentialRepo::new();
+    let clock = awaken_lease_testkit::ManualClock::new(1_000);
     let command = managed_command("https://mcp.example.com");
     let (source, _) = prepare_source_with_id(command.source_id.clone().unwrap(), command.source);
     let child = ManagedVaultCredential {
@@ -680,7 +753,12 @@ async fn managed_begin_rejects_every_forged_fresh_material_owner_shape() {
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
-    let canonical = PendingManagedCredentialMutation::create(source, child).unwrap();
+    let canonical = PendingManagedCredentialMutation::create(
+        source,
+        child,
+        credential_material_now_unix_ms(&clock).unwrap(),
+    )
+    .unwrap();
     let mut forged_ready = canonical.clone();
     forged_ready.material_fence.phase = CredentialMaterialMutationPhase::Ready;
     let mut forged_epoch = canonical.clone();
@@ -688,16 +766,90 @@ async fn managed_begin_rejects_every_forged_fresh_material_owner_shape() {
         .material_fence
         .writer_epoch
         .and_then(awaken_lease_contract::fence::Epoch::next);
-    let mut forged_owner = canonical;
+    let mut forged_owner = canonical.clone();
     forged_owner.material_fence.writer_token = Some("foreign-owner".into()); // awaken-allow: secret -- writer identity, not material
 
     for forged in [forged_ready, forged_epoch, forged_owner] {
         assert!(matches!(
-            repo.begin_managed_mutation(forged).await,
+            repo.begin_managed_mutation(forged, credential_material_now_unix_ms(&clock).unwrap())
+                .await,
             Err(CredentialError::MutationConflict(_))
         ));
     }
     assert!(repo.pending_managed_mutations().await.unwrap().is_empty());
+    let expires_at = canonical.material_fence.writer_lease_expires_at_unix_ms;
+    clock.set(expires_at);
+    assert!(
+        matches!(
+            repo.begin_managed_mutation(
+                canonical.clone(),
+                credential_material_now_unix_ms(&clock).unwrap(),
+            )
+            .await,
+            Err(CredentialError::MutationConflict(_))
+        ),
+        "R2 exact expiry"
+    );
+    assert!(
+        repo.pending_managed_mutations().await.unwrap().is_empty(),
+        "R2"
+    );
+    clock.set(expires_at - 1);
+    assert!(
+        repo.begin_managed_mutation(canonical, credential_material_now_unix_ms(&clock).unwrap())
+            .await
+            .unwrap(),
+        "R3"
+    );
+}
+
+#[tokio::test]
+async fn injected_recovery_clock_keeps_live_managed_writer_then_aborts_at_expiry() {
+    // Causes: C1 one unpublished Managed Source/child Writing intent is durable;
+    // C2 the injected clock is before or exactly at the writer deadline.
+    // Effects: E1 live owner retains the pending pair and publishes nothing;
+    // E2 the expired owner is fenced for abort and the pair remains invisible.
+    // Decision rules: R1 C1+C2(before) -> E1; R2 C1+C2(exact) -> E2.
+    let repo = InMemoryCredentialRepo::new();
+    let secrets = InMemorySecretStore::new();
+    let (pending, _) =
+        prepare_managed_credential_create(managed_command("https://mcp.example.com"), 1_000)
+            .unwrap();
+    assert!(
+        repo.begin_managed_mutation(pending.clone(), 1_000)
+            .await
+            .unwrap()
+    );
+    let expires_at = pending.material_fence.writer_lease_expires_at_unix_ms;
+    let clock = awaken_lease_testkit::ManualClock::new(expires_at - 1);
+
+    assert_eq!(
+        recover_managed_credential_mutations(&secrets, &repo, &clock)
+            .await
+            .unwrap(),
+        0,
+        "R1"
+    );
+    assert_eq!(
+        repo.pending_managed_mutations().await.unwrap().len(),
+        1,
+        "R1/E1"
+    );
+    assert!(repo.get(&pending.after_source.id).await.is_err(), "R1/E1");
+
+    clock.set(expires_at);
+    assert_eq!(
+        recover_managed_credential_mutations(&secrets, &repo, &clock)
+            .await
+            .unwrap(),
+        1,
+        "R2"
+    );
+    assert!(
+        repo.pending_managed_mutations().await.unwrap().is_empty(),
+        "R2/E2"
+    );
+    assert!(repo.get(&pending.after_source.id).await.is_err(), "R2/E2");
 }
 
 /// Recovery admission rule: C1 a durable row claims `Ready`; C2 its complete
@@ -729,7 +881,7 @@ async fn malformed_ready_managed_recovery_performs_zero_secret_store_io() {
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
-    let writing = PendingManagedCredentialMutation::create(source, child).unwrap();
+    let writing = PendingManagedCredentialMutation::create(source, child, 1_000).unwrap();
     let mut malformed = writing.with_material_ready().unwrap();
     malformed.after_credential.workspace_id = "forged-workspace".into();
     repo.state
@@ -779,7 +931,7 @@ async fn managed_recovery_rejects_a_mismatched_durable_key_before_secret_io() {
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
-    let ready = PendingManagedCredentialMutation::create(source, child)
+    let ready = PendingManagedCredentialMutation::create(source, child, 1_000)
         .unwrap()
         .with_material_ready()
         .unwrap();
@@ -831,7 +983,8 @@ async fn legacy_writing_json_without_attempt_or_writer_fields_is_claimed_and_abo
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
-    let mut current = PendingManagedCredentialMutation::create(source, child.clone()).unwrap();
+    let mut current =
+        PendingManagedCredentialMutation::create(source, child.clone(), 1_000).unwrap();
     let legacy_reference = crate::SecretRef(
         current
             .after_source
@@ -918,17 +1071,19 @@ async fn expired_writing_owner_is_aborted_and_cannot_publish() {
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
-    let pending = PendingManagedCredentialMutation::create(source, child).unwrap();
+    let pending = PendingManagedCredentialMutation::create(source, child, 1_000).unwrap();
     let recovery_now = pending.material_fence.writer_lease_expires_at_unix_ms + 1;
 
     let writer_repo = Arc::clone(&repo);
     let writer_secrets = Arc::clone(&secrets);
+    let writer_clock = awaken_lease_testkit::ManualClock::new(1_000);
     let writer = tokio::spawn(async move {
         execute_managed_mutation(
             pending,
             vec![(original_reference, secret.unwrap())],
             writer_secrets.as_ref(),
             writer_repo.as_ref(),
+            &writer_clock,
         )
         .await
     });
@@ -965,9 +1120,14 @@ async fn rejected_managed_creation_reclaims_material_and_pending_fact() {
     let secrets = InMemorySecretStore::new();
     repo.insert_vault("ws", managed_vault()).await.unwrap();
 
-    let error = create_managed_credential(managed_command("file:///secret"), &secrets, &repo)
-        .await
-        .unwrap_err();
+    let error = create_managed_credential(
+        managed_command("file:///secret"),
+        &secrets,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(
         error,
@@ -986,17 +1146,27 @@ async fn published_managed_identity_rejects_a_new_pending_fact_before_material_w
     let repo = InMemoryCredentialRepo::new();
     let secrets = InMemorySecretStore::new();
     repo.insert_vault("ws", managed_vault()).await.unwrap();
-    create_managed_credential(managed_command("https://mcp.example.com"), &secrets, &repo)
-        .await
-        .unwrap();
+    create_managed_credential(
+        managed_command("https://mcp.example.com"),
+        &secrets,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap();
     let original_inventory = secrets.inventory().await.unwrap();
     let mut replay = managed_command("https://mcp.example.com");
     replay.primary_material_ref = Some(crate::SecretRef("sec:losing-command".into()));
     replay.source.secret = Some(RedactedString::new("replacement"));
 
-    let error = create_managed_credential(replay, &secrets, &repo)
-        .await
-        .unwrap_err();
+    let error = create_managed_credential(
+        replay,
+        &secrets,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(
         error,
@@ -1037,10 +1207,13 @@ async fn managed_creation_recovery_publishes_ready_and_aborts_expired_writing() 
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
-    let complete = PendingManagedCredentialMutation::create(source.clone(), child.clone()).unwrap();
+    let complete =
+        PendingManagedCredentialMutation::create(source.clone(), child.clone(), 1_000).unwrap();
     source = complete.after_source.clone();
     let complete_lease = complete.material_fence.writer_lease_expires_at_unix_ms;
-    repo.begin_managed_mutation(complete.clone()).await.unwrap();
+    repo.begin_managed_mutation(complete.clone(), 1_000)
+        .await
+        .unwrap();
     secrets
         .put(source.material_ref.as_ref().unwrap(), secret.unwrap())
         .await
@@ -1082,10 +1255,11 @@ async fn managed_creation_recovery_publishes_ready_and_aborts_expired_writing() 
             .unwrap()
     };
     let partial =
-        PendingManagedCredentialMutation::create(source.clone(), partial_child.clone()).unwrap();
+        PendingManagedCredentialMutation::create(source.clone(), partial_child.clone(), 1_000)
+            .unwrap();
     source = partial.after_source.clone();
     let partial_lease = partial.material_fence.writer_lease_expires_at_unix_ms;
-    repo.begin_managed_mutation(partial).await.unwrap();
+    repo.begin_managed_mutation(partial, 1_000).await.unwrap();
     secrets
         .put(
             source.material_ref.as_ref().unwrap(),
@@ -1161,9 +1335,12 @@ async fn managed_mutation_batch_continues_after_its_first_item_fails() {
             revision: 1,
             lifecycle: ManagedCredentialLifecycle::Active,
         };
-        let pending = PendingManagedCredentialMutation::create(source.clone(), child).unwrap();
+        let pending =
+            PendingManagedCredentialMutation::create(source.clone(), child, 1_000).unwrap();
         let reference = pending.after_source.material_ref.clone().unwrap();
-        repo.begin_managed_mutation(pending.clone()).await.unwrap();
+        repo.begin_managed_mutation(pending.clone(), 1_000)
+            .await
+            .unwrap();
         store
             .put(&reference, RedactedString::new(format!("token-{suffix}")))
             .await
@@ -1209,7 +1386,7 @@ fn legacy_writing_json_defaults_to_an_expired_unowned_lease() {
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
-    let pending = PendingManagedCredentialMutation::create(source, child).unwrap();
+    let pending = PendingManagedCredentialMutation::create(source, child, 1_000).unwrap();
     let wire = serde_json::to_value(pending).unwrap();
     for epoch in [None, Some(0)] {
         let mut legacy = wire.clone();
@@ -1264,9 +1441,11 @@ async fn aborted_managed_cleanup_survives_the_crash_prefix_before_delete() {
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
-    let pending = PendingManagedCredentialMutation::create(source, child).unwrap();
+    let pending = PendingManagedCredentialMutation::create(source, child, 1_000).unwrap();
     let reference = pending.after_source.material_ref.clone().unwrap();
-    repo.begin_managed_mutation(pending.clone()).await.unwrap();
+    repo.begin_managed_mutation(pending.clone(), 1_000)
+        .await
+        .unwrap();
     store.put(&reference, secret.unwrap()).await.unwrap();
 
     // This is the crash prefix: the database CAS landed, but no external
@@ -1285,10 +1464,11 @@ async fn aborted_managed_cleanup_survives_the_crash_prefix_before_delete() {
     let competing = PendingManagedCredentialMutation::create(
         pending.after_source.clone(),
         pending.after_credential.clone(),
+        1_000,
     )
     .unwrap();
     assert!(
-        !repo.begin_managed_mutation(competing).await.unwrap(),
+        !repo.begin_managed_mutation(competing, 1_000).await.unwrap(),
         "the durable cleanup attempt remains the sole non-owner attachment"
     );
 
@@ -1328,9 +1508,11 @@ async fn ambiguous_aborted_delete_keeps_exact_cleanup_fact_for_retry() {
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
-    let pending = PendingManagedCredentialMutation::create(source, child).unwrap();
+    let pending = PendingManagedCredentialMutation::create(source, child, 1_000).unwrap();
     let reference = pending.after_source.material_ref.clone().unwrap();
-    repo.begin_managed_mutation(pending.clone()).await.unwrap();
+    repo.begin_managed_mutation(pending.clone(), 1_000)
+        .await
+        .unwrap();
     store.put(&reference, secret.unwrap()).await.unwrap();
 
     assert!(
@@ -1388,7 +1570,7 @@ async fn failed_material_write_and_failed_compensation_preserve_both_failures() 
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
-    let pending = PendingManagedCredentialMutation::create(source, child).unwrap();
+    let pending = PendingManagedCredentialMutation::create(source, child, 1_000).unwrap();
     let reference = pending.after_source.material_ref.clone().unwrap();
 
     let error = execute_managed_mutation(
@@ -1396,6 +1578,7 @@ async fn failed_material_write_and_failed_compensation_preserve_both_failures() 
         vec![(reference.clone(), secret.unwrap())],
         &store,
         &repo,
+        &awaken_lease_testkit::ManualClock::new(1_000),
     )
     .await
     .unwrap_err();
@@ -1427,10 +1610,14 @@ async fn committed_managed_pair_returns_success_and_retries_failed_cleanup() {
     };
     let repo = InMemoryCredentialRepo::new();
     repo.insert_vault("ws", managed_vault()).await.unwrap();
-    let (before_source, before_child) =
-        create_managed_credential(managed_command("https://mcp.example.com"), &store, &repo)
-            .await
-            .unwrap();
+    let (before_source, before_child) = create_managed_credential(
+        managed_command("https://mcp.example.com"),
+        &store,
+        &repo,
+        awaken_lease_contract::system_clock().as_ref(),
+    )
+    .await
+    .unwrap();
 
     store.fail_before_delete.store(true, Ordering::SeqCst);
     let updated = update_managed_credential(
@@ -1445,6 +1632,7 @@ async fn committed_managed_pair_returns_success_and_retries_failed_cleanup() {
         "2026-09-17T00:00:01Z".into(),
         &store,
         &repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .expect("after-commit cleanup failure must not fail the logical command");

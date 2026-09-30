@@ -201,7 +201,6 @@ fn create_injection_location(
 /// The vault surface's state: the neutral credential domain stores plus the
 /// durable, secret-free Managed projection.
 mod mcp_inspection;
-use awaken_lease_contract::WallClockExt;
 pub use mcp_inspection::{McpCredentialChoice, McpInspectionView};
 use mcp_inspection::{oauth_refresh_access, validate_credential};
 
@@ -249,12 +248,7 @@ impl VaultState {
     /// failure value, so it fails closed instead of backdating expiry checks
     /// or stamping a fabricated instant on a durable object.
     fn clock_reading_ms(&self) -> Result<u64, awaken_credential_vault::CredentialError> {
-        match self.clock.now_ms() {
-            0 => Err(awaken_credential_vault::CredentialError::Storage(
-                "credential clock is unavailable".into(),
-            )),
-            now_unix_ms => Ok(now_unix_ms),
-        }
+        awaken_credential_vault::repo::credential_material_now_unix_ms(self.clock.as_ref())
     }
 
     /// The owner clock as the RFC 3339 wire/persistence instant.
@@ -426,6 +420,7 @@ impl VaultState {
                     },
                     self.secrets.as_ref(),
                     self.repository.as_ref(),
+                    self.clock.as_ref(),
                 )
                 .await
                 {
@@ -507,6 +502,7 @@ impl VaultState {
                         now.clone(),
                         self.secrets.as_ref(),
                         self.repository.as_ref(),
+                        self.clock.as_ref(),
                     )
                     .await
                     .map_err(|error| {
@@ -1178,6 +1174,7 @@ async fn delete_vault(
         &requested,
         state.secrets.as_ref(),
         state.repository.as_ref(),
+        state.clock.as_ref(),
     )
     .await
     .map_err(managed_mutation_error)?;
@@ -1489,10 +1486,14 @@ async fn create_credential(
         display_name,
         created_at: state.clock_reading_rfc3339().map_err(storage_error)?,
     };
-    let (_, record) =
-        create_managed_credential(command, state.secrets.as_ref(), state.repository.as_ref())
-            .await
-            .map_err(managed_creation_error)?;
+    let (_, record) = create_managed_credential(
+        command,
+        state.secrets.as_ref(),
+        state.repository.as_ref(),
+        state.clock.as_ref(),
+    )
+    .await
+    .map_err(managed_creation_error)?;
     let credential = VaultState::project_credential(&record);
     Ok((StatusCode::OK, Json(credential)))
 }
@@ -1574,6 +1575,7 @@ async fn delete_credential(
         state.clock_reading_rfc3339().map_err(storage_error)?,
         state.secrets.as_ref(),
         state.repository.as_ref(),
+        state.clock.as_ref(),
     )
     .await
     .map_err(managed_mutation_error)?;
@@ -1599,6 +1601,7 @@ async fn archive_credential(
         state.clock_reading_rfc3339().map_err(storage_error)?,
         state.secrets.as_ref(),
         state.repository.as_ref(),
+        state.clock.as_ref(),
     )
     .await
     .map_err(managed_mutation_error)?;
@@ -1839,6 +1842,7 @@ async fn update_credential(
         state.clock_reading_rfc3339().map_err(storage_error)?,
         state.secrets.as_ref(),
         state.repository.as_ref(),
+        state.clock.as_ref(),
     )
     .await
     .map_err(managed_mutation_error)?;

@@ -92,8 +92,9 @@ impl CredentialRepo for InMemoryCredentialRepo {
     async fn begin_mutation(
         &self,
         intent: CredentialMutationIntent,
+        now_unix_ms: u64,
     ) -> Result<bool, CredentialError> {
-        intent.validate_for_begin()?;
+        intent.validate_for_begin(now_unix_ms)?;
         let mut state = self.state.lock().expect("credential repo");
         if let Some(durable) = state.intents.get(&intent.after.id.0) {
             return if durable.matches_logical_command(&intent) {
@@ -286,9 +287,10 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
     async fn begin_managed_mutation(
         &self,
         pending: PendingManagedCredentialMutation,
+        now_unix_ms: u64,
     ) -> Result<bool, CredentialError> {
         pending
-            .validate_for_begin()
+            .validate_for_begin(now_unix_ms)
             .map_err(invalid_pending_mutation)?;
         let mut state = self.state.lock().expect("credential repo");
         if let Some(durable) = state.managed_mutations.get(&pending.after_source.id.0) {

@@ -173,6 +173,7 @@ pub(super) async fn prepare_runtime_routers(
                 awaken_credential_materializer::PinnedCredentialMaterializer::new(
                     control.credentials.clone(),
                     control.secrets.clone(),
+                    stores.clock.clone(),
                 )
             })
         })
@@ -191,6 +192,7 @@ pub(super) async fn prepare_runtime_routers(
                 Arc::new(awaken_credential_materializer::VaultRefreshFactory::new(
                     control.credentials.clone(),
                     control.secrets.clone(),
+                    stores.clock.clone(),
                 ))
                     as Arc<dyn awaken_credential_materializer::CredentialRefreshFactory>
             })

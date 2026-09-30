@@ -259,6 +259,7 @@ impl PreparedLocalAcp {
         let credentials = awaken_credential_materializer::PinnedCredentialMaterializer::new(
             self.stores.credentials,
             self.stores.secrets,
+            clock.clone(),
         );
         configured_worker_builder(upstream, deployment, credentials, clock)?
             .with_worker_local_credential_resolver(resolver.clone())
@@ -291,6 +292,7 @@ impl PreparedLocalWorker {
         let credentials = awaken_credential_materializer::PinnedCredentialMaterializer::new(
             self.stores.credentials.clone(),
             self.stores.secrets.clone(),
+            clock.clone(),
         );
         let mut builder = configured_worker_builder(upstream, deployment, credentials, clock)?
             .with_admin_tools(self.admin_tools.clone())
@@ -835,6 +837,7 @@ mod tests {
             awaken_credential_materializer::PinnedCredentialMaterializer::new(
                 credentials,
                 Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+                awaken_lease_contract::system_clock(),
             ),
         )
         .with_worker_local_credential_resolver(resolver.clone())

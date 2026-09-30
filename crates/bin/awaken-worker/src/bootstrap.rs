@@ -417,6 +417,7 @@ impl WorkerDaemonConfig {
             Some(path) => Arc::new(
                 awaken_credential_materializer::recipient_envelope::RecipientKeyEnvelope::open(
                     path,
+                    clock.clone(),
                 )
                 .map_err(|error| format!("Worker credential envelope configuration: {error}"))?,
             ),
@@ -427,7 +428,10 @@ impl WorkerDaemonConfig {
             )),
         };
         let credentials =
-            awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver);
+            awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
+                resolver,
+                clock.clone(),
+            );
         let certificate = self
             .server_ca_certificate_file
             .as_ref()

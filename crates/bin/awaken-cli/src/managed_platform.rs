@@ -63,6 +63,7 @@ impl ManagedServiceAdapters {
     pub(crate) fn install_credential_envelope(
         &mut self,
         path: Option<&std::path::Path>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>, String> {
         let Some(path) = path else {
             return Ok(None);
@@ -71,8 +72,10 @@ impl ManagedServiceAdapters {
             return Err("credential envelope transport is configured twice".into());
         }
         let adapter =
-            awaken_credential_materializer::recipient_envelope::RecipientKeyEnvelope::open(path)
-                .map_err(|error| format!("credential envelope configuration: {error}"))?;
+            awaken_credential_materializer::recipient_envelope::RecipientKeyEnvelope::open(
+                path, clock,
+            )
+            .map_err(|error| format!("credential envelope configuration: {error}"))?;
         let adapter = Arc::new(adapter);
         self.credential_material_delivery = Some(
             awaken_credential_contract::CredentialMaterialDelivery::RecipientEnvelope(
@@ -312,11 +315,15 @@ mod tests {
         let mut adapters = ManagedServiceAdapters::default();
         assert!(
             adapters
-                .install_credential_envelope(None)
+                .install_credential_envelope(None, awaken_lease_contract::system_clock())
                 .unwrap()
                 .is_none()
         );
-        assert!(adapters.install_credential_envelope(Some(&path)).is_err());
+        assert!(
+            adapters
+                .install_credential_envelope(Some(&path), awaken_lease_contract::system_clock())
+                .is_err()
+        );
         std::fs::write(&path, serde_json::to_vec(&serde_json::json!({
             "ttl_seconds":3600,"keys":[{"id":"worker", "holder":{"boundary":"worker","trust_domain":"awaken.worker"},
             "key_base64":"MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE="}]
@@ -328,20 +335,20 @@ mod tests {
         }
         assert!(
             adapters
-                .install_credential_envelope(Some(&path))
+                .install_credential_envelope(Some(&path), awaken_lease_contract::system_clock())
                 .unwrap()
                 .is_some()
         );
         std::fs::remove_file(&path).unwrap();
         assert!(
             adapters
-                .install_credential_envelope(None)
+                .install_credential_envelope(None, awaken_lease_contract::system_clock())
                 .unwrap()
                 .is_none()
         );
         assert!(
             adapters
-                .install_credential_envelope(Some(&path))
+                .install_credential_envelope(Some(&path), awaken_lease_contract::system_clock())
                 .err()
                 .unwrap()
                 .contains("configured twice")

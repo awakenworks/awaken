@@ -18,6 +18,7 @@
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::{
@@ -28,6 +29,7 @@ use awaken_credential_contract::{
     PlaintextHolder, ResolvedCredentialMaterial, SealedCredentialEnvelopeRef,
     credential_envelope_payload_fingerprint,
 };
+use awaken_lease_contract::WallClockExt as _;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
@@ -75,10 +77,14 @@ struct SealedPayload {
 pub struct RecipientKeyEnvelope {
     path: PathBuf,
     capabilities: BTreeSet<CredentialMaterialCapability>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl RecipientKeyEnvelope {
-    pub fn open(path: impl Into<PathBuf>) -> Result<Self, CredentialMaterialError> {
+    pub fn open(
+        path: impl Into<PathBuf>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Result<Self, CredentialMaterialError> {
         let path = path.into();
         let document = Self::read_document(&path)?;
         let capabilities = document
@@ -90,7 +96,11 @@ impl RecipientKeyEnvelope {
                 envelope: true,
             })
             .collect();
-        Ok(Self { path, capabilities })
+        Ok(Self {
+            path,
+            capabilities,
+            clock,
+        })
     }
 
     fn read_document(path: &Path) -> Result<KeyDocument, CredentialMaterialError> {
@@ -150,6 +160,7 @@ impl RecipientKeyEnvelope {
     }
 
     fn validate_access(
+        &self,
         access: &CredentialAccess,
         holder: &PlaintextHolder,
         binding: &CredentialMaterialBinding,
@@ -205,12 +216,7 @@ impl RecipientKeyEnvelope {
         // Reuse the contract's complete admission chain, including durable
         // legacy-Direct rejection; the adapter must not recreate a weaker one.
         access
-            .admit(
-                holder,
-                realization,
-                &capabilities,
-                super::admission::unix_time_ms(),
-            )
+            .admit(holder, realization, &capabilities, self.clock.now_ms())
             .map(|_| ())
             .map_err(|_| CredentialMaterialError::Invalid)
     }
@@ -244,7 +250,7 @@ impl RecipientKeyEnvelope {
         &self,
         request: CredentialEnvelopeIssuance,
     ) -> Result<CredentialEnvelope, CredentialMaterialError> {
-        Self::validate_access(&request.access, &request.selected_holder, &request.binding)?;
+        self.validate_access(&request.access, &request.selected_holder, &request.binding)?;
         if request.access.envelope.is_some() || request.material.expose_secret().len() > MAX_BYTES {
             return Err(CredentialMaterialError::Invalid);
         }
@@ -254,7 +260,9 @@ impl RecipientKeyEnvelope {
             .iter()
             .find(|key| key.holder == request.selected_holder)
             .ok_or(CredentialMaterialError::RecipientMismatch)?;
-        let expires = super::admission::unix_time_ms()
+        let expires = self
+            .clock
+            .now_ms()
             .checked_add(document.ttl_seconds * 1000)
             .ok_or(CredentialMaterialError::Invalid)?;
         let aad = Self::aad(
@@ -327,7 +335,7 @@ impl CredentialMaterialResolver for RecipientKeyEnvelope {
         &self,
         request: CredentialMaterialRequest<'_>,
     ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
-        Self::validate_access(request.access, request.selected_holder, request.binding)?;
+        self.validate_access(request.access, request.selected_holder, request.binding)?;
         if !self.capabilities.contains(&CredentialMaterialCapability {
             holder: request.selected_holder.clone(),
             source: request.access.material_source,
@@ -340,7 +348,7 @@ impl CredentialMaterialResolver for RecipientKeyEnvelope {
             .envelope
             .as_ref()
             .ok_or(CredentialMaterialError::Unavailable)?;
-        envelope.validate_for_holder(request.selected_holder, super::admission::unix_time_ms())?;
+        envelope.validate_for_holder(request.selected_holder, self.clock.now_ms())?;
         envelope.validate_issuance(request.access, request.selected_holder, request.binding)?;
         let (envelope_ref, expires) = match envelope {
             CredentialEnvelope::SealedForWorker {

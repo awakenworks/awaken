@@ -111,6 +111,7 @@ async fn run_full_chain(
         },
         &store,
         &cred_repo,
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();

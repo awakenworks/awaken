@@ -232,6 +232,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let credentials =
                 awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
                     materializer.clone(),
+                    clock.clone(),
                 );
             let mut builder = awaken_worker::WorkerNodeBuilder::new(
                 awaken_worker_transport_security::WorkerUpstream::new(upstream),
@@ -263,6 +264,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let credentials =
                 awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
                     materializer.clone(),
+                    clock.clone(),
                 );
             // Worker identity decision table: an explicit E2E identity owns its
             // own registry slot; an absent identity retains the production

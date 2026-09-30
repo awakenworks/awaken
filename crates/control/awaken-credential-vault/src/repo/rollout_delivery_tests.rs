@@ -69,6 +69,7 @@ impl CredentialRepo for RejectRepository {
     fn begin_mutation<'call0, 'async_trait>(
         &'call0 self,
         intent: CredentialMutationIntent,
+        _now_unix_ms: u64,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<bool, CredentialError>> + Send + 'async_trait>>
     where
         'call0: 'async_trait,
@@ -362,6 +363,7 @@ impl ManagedCredentialRepository for RejectRepository {
     fn begin_managed_mutation<'call0, 'async_trait>(
         &'call0 self,
         pending: PendingManagedCredentialMutation,
+        _now_unix_ms: u64,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<bool, CredentialError>> + Send + 'async_trait>>
     where
         'call0: 'async_trait,

@@ -237,6 +237,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         credentials.clone(),
         managed_credentials.clone(),
         vault_state.clone(),
+        clock.clone(),
         &service_lifecycle,
     )
     .await;
@@ -429,11 +430,13 @@ async fn recover_and_supervise_credentials(
     credentials: Arc<dyn CredentialRepo>,
     managed: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>,
     vault_state: Arc<VaultState>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
 ) {
     if let Err(error) = awaken_credential_vault::repo::recover_credential_mutations(
         secrets.as_ref(),
         credentials.as_ref(),
+        clock.as_ref(),
     )
     .await
     {
@@ -442,6 +445,7 @@ async fn recover_and_supervise_credentials(
     if let Err(error) = awaken_credential_vault::repo::recover_managed_credential_mutations(
         secrets.as_ref(),
         managed.as_ref(),
+        clock.as_ref(),
     )
     .await
     {
@@ -450,6 +454,7 @@ async fn recover_and_supervise_credentials(
     if let Err(error) = awaken_credential_vault::repo::reconcile_managed_vault_deletions(
         secrets.as_ref(),
         managed.as_ref(),
+        clock.as_ref(),
     )
     .await
     {
@@ -487,6 +492,7 @@ async fn recover_and_supervise_credentials(
                 if let Err(error) = awaken_credential_vault::repo::recover_credential_mutations(
                     secrets.as_ref(),
                     credentials.as_ref(),
+                    clock.as_ref(),
                 )
                 .await
                 {
@@ -496,6 +502,7 @@ async fn recover_and_supervise_credentials(
                     awaken_credential_vault::repo::reconcile_ready_managed_credential_mutations(
                         secrets.as_ref(),
                         managed.as_ref(),
+                        clock.as_ref(),
                     )
                     .await
                 {
@@ -505,6 +512,7 @@ async fn recover_and_supervise_credentials(
                     awaken_credential_vault::repo::reconcile_managed_vault_deletions(
                         secrets.as_ref(),
                         managed.as_ref(),
+                        clock.as_ref(),
                     )
                     .await
                 {

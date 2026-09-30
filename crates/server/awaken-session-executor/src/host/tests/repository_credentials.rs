@@ -109,11 +109,15 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
             repository_credential_descriptor("https://github.com/awaken/example.git"),
             secrets.as_ref(),
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .expect("author dispatch Repository credential");
-        let materializer =
-            awaken_credential_materializer::PinnedCredentialMaterializer::new(credentials, secrets);
+        let materializer = awaken_credential_materializer::PinnedCredentialMaterializer::new(
+            credentials,
+            secrets,
+            awaken_lease_contract::system_clock(),
+        );
         let host = Arc::new(if install_credentials {
             host.with_credential_materializer(materializer.clone())
         } else {
@@ -530,6 +534,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
             repository_credential_descriptor("https://github.com/awaken/example.git"),
             secrets.as_ref(),
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .expect("author exact Repository credential");
@@ -558,6 +563,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
         let materializer = awaken_credential_materializer::PinnedCredentialMaterializer::new(
             credentials.clone(),
             secrets,
+            awaken_lease_contract::system_clock(),
         );
         let host = Arc::new(host.with_credential_materializer(materializer.clone()));
         let managed =
@@ -724,6 +730,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         },
         secrets.as_ref(),
         credentials.as_ref(),
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -799,6 +806,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         },
         secrets.as_ref(),
         credentials.as_ref(),
+        awaken_lease_contract::system_clock().as_ref(),
     )
     .await
     .unwrap();

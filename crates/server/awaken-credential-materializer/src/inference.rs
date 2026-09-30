@@ -135,8 +135,16 @@ pub struct CredentialInferenceMaterializer {
 impl CredentialInferenceMaterializer {
     #[cfg(feature = "authority")]
     #[must_use]
-    pub fn new(credentials: Arc<dyn CredentialRepo>, secrets: Arc<dyn SecretStore>) -> Self {
-        Self::from_pinned(PinnedCredentialMaterializer::new(credentials, secrets))
+    pub fn new(
+        credentials: Arc<dyn CredentialRepo>,
+        secrets: Arc<dyn SecretStore>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Self {
+        Self::from_pinned(PinnedCredentialMaterializer::new(
+            credentials,
+            secrets,
+            clock,
+        ))
     }
 
     #[must_use]
@@ -809,6 +817,7 @@ mod tests {
         }
         CredentialInferenceMaterializer::from_pinned(PinnedCredentialMaterializer::external_only(
             Arc::new(NoCredentialAccess),
+            awaken_lease_contract::system_clock(),
         ))
     }
 

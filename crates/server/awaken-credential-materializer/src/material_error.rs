@@ -98,6 +98,7 @@ mod tests {
             },
             &InMemorySecretStore::new(),
             credentials.as_ref(),
+            awaken_lease_contract::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -120,16 +121,20 @@ mod tests {
         )
         .with_target(target);
 
-        let error = PinnedCredentialMaterializer::new(credentials, Arc::new(SealErrorSecretStore))
-            .resolve_for_workspace(
-                &access,
-                &holder,
-                CredentialRealizationKind::PlatformRelay,
-                "workspace-a",
-                &("route-1", "POST", "/issues"),
-            )
-            .await
-            .unwrap_err();
+        let error = PinnedCredentialMaterializer::new(
+            credentials,
+            Arc::new(SealErrorSecretStore),
+            awaken_lease_contract::system_clock(),
+        )
+        .resolve_for_workspace(
+            &access,
+            &holder,
+            CredentialRealizationKind::PlatformRelay,
+            "workspace-a",
+            &("route-1", "POST", "/issues"),
+        )
+        .await
+        .unwrap_err();
 
         assert_eq!(error, CredentialMaterialError::Invalid, "E2");
     }
