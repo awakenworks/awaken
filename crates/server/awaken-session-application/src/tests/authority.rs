@@ -16,6 +16,7 @@ use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_state_contract::ManagedLifecycleFact;
 use awaken_session_types::SessionId;
 mod coordinated_resources;
+mod interval_admission;
 mod lost_root_cas_replay;
 
 fn coordinated_session(id: &str) -> PersistedSession {
@@ -6269,74 +6270,6 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
         .filter(|fact| fact.event_type == "session.budget_reached")
         .count();
     assert_eq!(reached, 1, "C1/E3");
-}
-
-#[tokio::test]
-async fn transferred_activity_fences_a_late_distinct_boundary_before_conflict_validation() {
-    // Cause/effect graph: C1 epoch A closes with observation X; C2 a reply
-    // opens successor epoch B; C3 A's still-leased Worker reports later
-    // observation Y. Effects: E1 C3 is a stale no-op, not epoch-reuse
-    // corruption; E2 B remains the sole active epoch and its interval stays
-    // open. Decision table: A1=C1=>closed(X); A2=C1+C2=>active(B);
-    // A3=C1+C2+C3=>E1+E2. The active-epoch set is the fencing authority.
-    let session_id = "stale-transferred-boundary";
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .expect("activity fence repository"),
-    );
-    create(repo.as_ref(), persisted(session_id, false, "idle")).await;
-    let app = application(
-        repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-
-    let first = app
-        .begin_activity(&SessionId::from(session_id))
-        .await
-        .expect("A1 activity");
-    let first_epoch = first.activity_epoch;
-    let observation =
-        |source_commit_cursor| awaken_session_state_contract::SessionRuntimeIntervalObservation {
-            activity_epoch: first_epoch,
-            thread_id: ThreadId(session_id.into()),
-            run_id: RunId("shared-run".into()),
-            lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor(source_commit_cursor),
-            source_commit_cursor,
-        };
-    app.settle_activity_observed(
-        &SessionId::from(session_id),
-        first_epoch,
-        Some(observation(10)),
-    )
-    .await
-    .expect("A1 closes with X");
-    let successor = app
-        .begin_activity(&SessionId::from(session_id))
-        .await
-        .expect("A2 successor");
-    let successor_epoch = successor.activity_epoch;
-    assert_ne!(successor_epoch, first_epoch, "A2 owns a new fence");
-
-    let after_stale = app
-        .settle_activity_observed(
-            &SessionId::from(session_id),
-            first_epoch,
-            Some(observation(20)),
-        )
-        .await
-        .expect("A3/E1 stale distinct boundary is fenced");
-    assert_eq!(
-        after_stale.active_activity_epochs,
-        BTreeSet::from([successor_epoch]),
-        "A3/E2"
-    );
-    assert_eq!(
-        after_stale.execution,
-        SessionExecutionState::Running,
-        "A3/E2"
-    );
-    assert!(after_stale.running_interval.is_some(), "A3/E2");
-    assert_eq!(after_stale.closed_runtime_intervals.len(), 1, "A3/E1");
 }
 
 #[tokio::test]

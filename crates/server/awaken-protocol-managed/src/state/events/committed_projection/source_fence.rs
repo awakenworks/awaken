@@ -28,6 +28,14 @@ impl ManagedState {
         persisted: &awaken_session_state_contract::PersistedSession,
         evidence: &CandidateEvidence,
     ) -> Result<bool, StateError> {
+        if evidence.outcome_query_incomplete {
+            tracing::debug!(
+                session_id,
+                reason = "outcome_terminal_query_root_mismatch",
+                "Managed projection retry"
+            );
+            return Ok(true);
+        }
         // Validation owns no published payload. Release these second full
         // snapshots before constructing the candidate's wire events. Select
         // the fresh validation root once and lend that exact prefix to

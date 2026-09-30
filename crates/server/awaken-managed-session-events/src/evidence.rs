@@ -24,9 +24,12 @@ pub struct SessionProjectionReadTimings {
 /// protocol projector, which validates the same prefixes again after building.
 pub struct SessionProjectionEvidence {
     /// Terminal Outcomes named by the root's retained `DefineOutcome`
-    /// provenance, read before the root fence: pairing an older state prefix
-    /// with a newer terminal would manufacture an unanchored public event.
+    /// provenance, read after the root snapshot and checked against its exact
+    /// terminal state/action cursor before any candidate may publish.
     pub outcome_terminals: Vec<(String, CommittedOutcomeProjection)>,
+    /// A query lagged or ran ahead of the borrowed root's terminal state.
+    /// The caller retries this source selection before any projection CAS.
+    pub outcome_query_incomplete: bool,
     pub root: Option<RunRecoverySnapshot>,
     pub links: Vec<CoordinatedThreadLink>,
     pub children: ProjectionThreadSnapshots,

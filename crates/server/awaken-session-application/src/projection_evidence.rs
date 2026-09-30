@@ -1,7 +1,7 @@
 // @formal surface obligation=session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
 // @formal reason: Read-only evidence gathering moved from the Managed committed projector behind the
-// @formal reason: SessionProjectionSource port: retained terminal Outcomes before the root fence, the
-// @formal reason: root prefix lent to coordinated-link projection, child prefixes, then the ordered
+// @formal reason: SessionProjectionSource port: a root prefix before retained terminal Outcome queries,
+// @formal reason: that root lent to coordinated-link projection, child prefixes, then the ordered
 // @formal reason: merge of their lifecycle (the merge itself lives in awaken-managed-session-events). It
 // @formal reason: publishes nothing; the Managed projector still re-reads and compares the same
 // @formal reason: prefixes before its CAS publication. Warm/cold, read-order and prefix-race projection
@@ -94,24 +94,43 @@ impl SessionApplication {
         started: awaken_lease_contract::mono::Stopwatch,
     ) -> Result<SessionProjectionEvidence, RunError> {
         let session_id = &persisted.session_id;
+        // Read the root Thread first. A terminal Outcome query from before a
+        // concurrent commit must never be paired with a newer root prefix that
+        // already makes later facts listable.
+        let root = self
+            .projection_thread_snapshot(session_id, session_id.as_str())
+            .await?;
         let mut outcome_terminals = Vec::new();
+        let mut outcome_query_incomplete = false;
         for outcome_id in retained_outcome_ids(&persisted.event_batches) {
-            if let Some(terminal) = self
+            let terminal = self
                 .projection_source()
                 .projection_outcome(session_id.as_str(), &outcome_id)
-                .await?
-            {
+                .await?;
+            let root_terminal = root
+                .as_ref()
+                .map(|snapshot| {
+                    awaken_managed_session_events::outcome_terminal_commit_cursor(&outcome_id, snapshot)
+                        .map_err(|error| RunError::internal(error.to_string()))
+                })
+                .transpose()?
+                .flatten()
+                .is_some();
+            // A lagging terminal query must not let newer root facts pass it.
+            // An ahead query has no anchor in this root and stays withheld;
+            // the trailing root fence retries if it moved during the read.
+            if root_terminal && terminal.is_none() {
+                outcome_query_incomplete = true;
+            }
+            if let Some(terminal) = terminal {
                 outcome_terminals.push((outcome_id, terminal));
             }
         }
         let outcomes = started.elapsed();
-        // Read the root fence once and lend that atomic prefix to the
+        // Lend that atomic root prefix to the
         // relationship projection: it includes every link committed at or
         // before this fence, so an unknown lifecycle event is classifiable
         // without guessing from its Thread id.
-        let root = self
-            .projection_thread_snapshot(session_id, session_id.as_str())
-            .await?;
         let (links, children) = self
             .projection_coordinated_prefix(session_id, root.as_ref())
             .await?;
@@ -122,6 +141,7 @@ impl SessionApplication {
             .map_err(|error| RunError::internal(error.to_string()))?;
         Ok(SessionProjectionEvidence {
             outcome_terminals,
+            outcome_query_incomplete,
             root,
             links,
             children,
