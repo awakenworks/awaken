@@ -851,7 +851,7 @@ impl awaken_run_ingress_contract::ClaimedSessionRealizationControl
 {
     async fn resume_frozen(
         &self,
-        _claim: &awaken_run_ingress::RunClaim,
+        _claim: &awaken_run_ingress_contract::RunClaim,
         _session_id: &str,
         _session_work_authority: Option<&awaken_session_work_contract::SessionWorkAuthorityReceipt>,
         _continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,

@@ -1801,9 +1801,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .artifact_harvester()
         .harvest_with_fence(
             "artifact-response-loss",
-            Some(awaken_run_ingress::ArtifactPublicationFence::Terminal(
-                effect.clone(),
-            )),
+            Some(awaken_run_ingress_contract::ArtifactPublicationFence::Terminal(effect.clone())),
         )
         .await
         .expect("H1 terminal");
@@ -1819,9 +1817,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .artifact_harvester()
         .harvest_with_fence(
             "artifact-response-loss",
-            Some(awaken_run_ingress::ArtifactPublicationFence::Terminal(
-                effect.clone(),
-            )),
+            Some(awaken_run_ingress_contract::ArtifactPublicationFence::Terminal(effect.clone())),
         )
         .await
         .expect("H2 readback");
@@ -1840,9 +1836,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .artifact_harvester()
         .harvest_with_fence(
             "artifact-response-loss",
-            Some(awaken_run_ingress::ArtifactPublicationFence::Terminal(
-                effect,
-            )),
+            Some(awaken_run_ingress_contract::ArtifactPublicationFence::Terminal(effect)),
         )
         .await
         .expect("H3 tombstone readback");
@@ -1865,13 +1859,15 @@ struct RecordingArtifactRecovery {
 }
 
 #[async_trait::async_trait]
-impl awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::ArtifactPublicationFence>
-    for RecordingArtifactRecovery
+impl
+    awaken_resource_contract::ArtifactPublisher<
+        awaken_run_ingress_contract::ArtifactPublicationFence,
+    > for RecordingArtifactRecovery
 {
     async fn publish(
         &self,
         _publication: awaken_resource_contract::ArtifactPublication<
-            awaken_run_ingress::ArtifactPublicationFence,
+            awaken_run_ingress_contract::ArtifactPublicationFence,
         >,
     ) -> Result<
         awaken_resource_contract::ArtifactPublicationReceipt,
@@ -1887,7 +1883,7 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::ArtifactPub
     async fn recover(
         &self,
         _recovery: awaken_resource_contract::ArtifactRecovery<
-            awaken_run_ingress::ArtifactPublicationFence,
+            awaken_run_ingress_contract::ArtifactPublicationFence,
         >,
     ) -> Result<
         Vec<awaken_resource_contract::ArtifactPublicationReceipt>,
@@ -1902,7 +1898,7 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::ArtifactPub
         &self,
         _workspace_id: &str,
         _session_id: &str,
-        _fence: Option<&awaken_run_ingress::ArtifactPublicationFence>,
+        _fence: Option<&awaken_run_ingress_contract::ArtifactPublicationFence>,
     ) -> Result<
         Option<awaken_resource_contract::ArtifactCapture>,
         awaken_resource_contract::ArtifactPublicationError,
@@ -1915,7 +1911,7 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::ArtifactPub
     async fn replace_capture(
         &self,
         _request: awaken_resource_contract::ReplaceArtifactCapture,
-        _fence: Option<&awaken_run_ingress::ArtifactPublicationFence>,
+        _fence: Option<&awaken_run_ingress_contract::ArtifactPublicationFence>,
     ) -> Result<
         awaken_resource_contract::ReplaceArtifactCaptureOutcome,
         awaken_resource_contract::ArtifactPublicationError,
@@ -1973,9 +1969,7 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
         .artifact_harvester()
         .harvest_with_fence_mode(
             thread,
-            Some(awaken_run_ingress::ArtifactPublicationFence::Terminal(
-                effect,
-            )),
+            Some(awaken_run_ingress_contract::ArtifactPublicationFence::Terminal(effect)),
             ArtifactCaptureMode::ReceiptOnly,
         )
         .await
@@ -2073,9 +2067,7 @@ async fn terminal_artifact_recovery_requires_the_root_workspace_before_catalog_i
     let error = harvester
         .harvest_with_fence(
             "missing-child",
-            Some(awaken_run_ingress::ArtifactPublicationFence::Terminal(
-                effect,
-            )),
+            Some(awaken_run_ingress_contract::ArtifactPublicationFence::Terminal(effect)),
         )
         .await
         .expect_err("H5/E5");
@@ -2492,7 +2484,7 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
 struct CaptureFaultPublisher {
     inner: Arc<
         dyn awaken_resource_contract::ArtifactPublisher<
-                awaken_run_ingress::ArtifactPublicationFence,
+                awaken_run_ingress_contract::ArtifactPublicationFence,
             >,
     >,
     mode: &'static str,
@@ -2501,14 +2493,16 @@ struct CaptureFaultPublisher {
 }
 
 #[async_trait::async_trait]
-impl awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::ArtifactPublicationFence>
-    for CaptureFaultPublisher
+impl
+    awaken_resource_contract::ArtifactPublisher<
+        awaken_run_ingress_contract::ArtifactPublicationFence,
+    > for CaptureFaultPublisher
 {
     async fn capture(
         &self,
         workspace: &str,
         session: &str,
-        fence: Option<&awaken_run_ingress::ArtifactPublicationFence>,
+        fence: Option<&awaken_run_ingress_contract::ArtifactPublicationFence>,
     ) -> Result<
         Option<awaken_resource_contract::ArtifactCapture>,
         awaken_resource_contract::ArtifactPublicationError,
@@ -2547,7 +2541,7 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::ArtifactPub
     async fn publish(
         &self,
         request: awaken_resource_contract::ArtifactPublication<
-            awaken_run_ingress::ArtifactPublicationFence,
+            awaken_run_ingress_contract::ArtifactPublicationFence,
         >,
     ) -> Result<
         awaken_resource_contract::ArtifactPublicationReceipt,
@@ -2575,7 +2569,7 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::ArtifactPub
     async fn replace_capture(
         &self,
         request: awaken_resource_contract::ReplaceArtifactCapture,
-        fence: Option<&awaken_run_ingress::ArtifactPublicationFence>,
+        fence: Option<&awaken_run_ingress_contract::ArtifactPublicationFence>,
     ) -> Result<
         awaken_resource_contract::ReplaceArtifactCaptureOutcome,
         awaken_resource_contract::ArtifactPublicationError,
@@ -2612,7 +2606,7 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::ArtifactPub
     async fn recover(
         &self,
         _recovery: awaken_resource_contract::ArtifactRecovery<
-            awaken_run_ingress::ArtifactPublicationFence,
+            awaken_run_ingress_contract::ArtifactPublicationFence,
         >,
     ) -> Result<
         Vec<awaken_resource_contract::ArtifactPublicationReceipt>,

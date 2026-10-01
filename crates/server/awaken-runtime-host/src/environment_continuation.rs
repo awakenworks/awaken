@@ -419,7 +419,7 @@ impl ManagedHost {
                 .harvest_with_environment_and_fence(
                     thread,
                     Some(
-                        awaken_run_ingress::ArtifactPublicationFence::CheckpointRelease(
+                        awaken_run_ingress_contract::ArtifactPublicationFence::CheckpointRelease(
                             preparation.operation().clone(),
                         ),
                     ),

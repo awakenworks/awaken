@@ -978,7 +978,9 @@ mod tests {
         );
         assert!(
             store
-                .lock_commit_epoch(&awaken_run_ingress::RunClaim::from(&replacement.lease))
+                .lock_commit_epoch(&awaken_run_ingress_contract::RunClaim::from(
+                    &replacement.lease
+                ))
                 .await
                 .expect("current replacement fence read")
                 .is_some(),

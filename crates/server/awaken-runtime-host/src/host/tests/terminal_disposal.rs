@@ -944,9 +944,10 @@ async fn terminal_physical_claim_fixture(
     Arc<awaken_lease_testkit::ManualClock>,
     ThreadId,
     RunId,
-    awaken_run_ingress::RunClaim,
+    awaken_run_ingress_contract::RunClaim,
 ) {
-    use awaken_run_ingress::{DispatchQueue, RunClaim, RunDispatch};
+    use awaken_run_ingress::{DispatchQueue, RunDispatch};
+    use awaken_run_ingress_contract::RunClaim;
 
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(

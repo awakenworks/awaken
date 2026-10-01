@@ -9,9 +9,8 @@ use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
 use awaken_run_ingress::CompletionSink;
-use awaken_run_ingress::{
-    DispatchSettlementError, DispatchSettlementObserver, RunClaim, RunDispatch,
-};
+use awaken_run_ingress::{DispatchSettlementError, DispatchSettlementObserver, RunDispatch};
+use awaken_run_ingress_contract::RunClaim;
 
 use crate::{FileContentSource, SharedHost};
 
@@ -68,7 +67,7 @@ impl SharedHost {
 
     pub fn worker_file_content_source(
         &self,
-    ) -> Arc<dyn FileContentSource<awaken_run_ingress::ResourceOperationFence>> {
+    ) -> Arc<dyn FileContentSource<awaken_run_ingress_contract::ResourceOperationFence>> {
         self.resources.file_content_source.clone()
     }
 
@@ -76,7 +75,7 @@ impl SharedHost {
         &self,
     ) -> Arc<
         dyn awaken_resource_contract::ArtifactPublisher<
-                awaken_run_ingress::ArtifactPublicationFence,
+                awaken_run_ingress_contract::ArtifactPublicationFence,
             >,
     > {
         self.resources.artifact_publisher.clone()
@@ -148,13 +147,15 @@ mod tests {
     struct RemotePublisher;
 
     #[async_trait::async_trait]
-    impl awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::ArtifactPublicationFence>
-        for RemotePublisher
+    impl
+        awaken_resource_contract::ArtifactPublisher<
+            awaken_run_ingress_contract::ArtifactPublicationFence,
+        > for RemotePublisher
     {
         async fn publish(
             &self,
             _publication: awaken_resource_contract::ArtifactPublication<
-                awaken_run_ingress::ArtifactPublicationFence,
+                awaken_run_ingress_contract::ArtifactPublicationFence,
             >,
         ) -> Result<
             awaken_resource_contract::ArtifactPublicationReceipt,
@@ -169,7 +170,7 @@ mod tests {
             &self,
             _workspace_id: &str,
             _session_id: &str,
-            _fence: Option<&awaken_run_ingress::ArtifactPublicationFence>,
+            _fence: Option<&awaken_run_ingress_contract::ArtifactPublicationFence>,
         ) -> Result<
             Option<awaken_resource_contract::ArtifactCapture>,
             awaken_resource_contract::ArtifactPublicationError,
@@ -182,7 +183,7 @@ mod tests {
         async fn replace_capture(
             &self,
             _request: awaken_resource_contract::ReplaceArtifactCapture,
-            _fence: Option<&awaken_run_ingress::ArtifactPublicationFence>,
+            _fence: Option<&awaken_run_ingress_contract::ArtifactPublicationFence>,
         ) -> Result<
             awaken_resource_contract::ReplaceArtifactCaptureOutcome,
             awaken_resource_contract::ArtifactPublicationError,
@@ -195,7 +196,7 @@ mod tests {
         async fn recover(
             &self,
             _recovery: awaken_resource_contract::ArtifactRecovery<
-                awaken_run_ingress::ArtifactPublicationFence,
+                awaken_run_ingress_contract::ArtifactPublicationFence,
             >,
         ) -> Result<
             Vec<awaken_resource_contract::ArtifactPublicationReceipt>,

@@ -102,9 +102,10 @@ mod tests {
     use awaken_ext_memory::MemoryExtractionStatus;
     use awaken_run_ingress::{
         AnyDispatchStore, ApplicationErrorKind, ClaimedCommitRequest, MemoryDispatchStore,
-        RunClaim, WorkerIdentity, WorkerResolver as _,
+        WorkerIdentity, WorkerResolver as _,
     };
     use awaken_run_ingress_contract::DispatchQueue;
+    use awaken_run_ingress_contract::RunClaim;
     use awaken_runtime_contract::RunActivation;
     use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ResolvedModelCandidate};
 

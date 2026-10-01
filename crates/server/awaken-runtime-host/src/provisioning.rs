@@ -450,7 +450,7 @@ pub(crate) enum ResourceBindingCheck {
         config_version: awaken_resource_contract::ConfigVersion,
         remote_url: String,
         credential_binding: Option<String>,
-        authority: Option<Box<awaken_run_ingress::ResourceOperationFence>>,
+        authority: Option<Box<awaken_run_ingress_contract::ResourceOperationFence>>,
     },
 }
 
@@ -899,7 +899,7 @@ impl SharedHost {
             ));
         }
         let publication_authority = publication_fence.map(|(command, lease)| {
-            awaken_run_ingress::ResourceOperationFence::RepositoryPublication {
+            awaken_run_ingress_contract::ResourceOperationFence::RepositoryPublication {
                 command: Box::new(command.clone()),
                 lease: lease.clone(),
             }
@@ -1146,7 +1146,7 @@ pub(crate) struct ArtifactHarvester {
     local_workspace: String,
     publisher: std::sync::Arc<
         dyn awaken_resource_contract::ArtifactPublisher<
-                awaken_run_ingress::ArtifactPublicationFence,
+                awaken_run_ingress_contract::ArtifactPublicationFence,
             >,
     >,
 }
@@ -1166,7 +1166,10 @@ pub struct HarvestedArtifacts {
 }
 
 impl ArtifactHarvester {
-    pub(crate) fn current_claim(&self, thread: &str) -> Option<awaken_run_ingress::RunClaim> {
+    pub(crate) fn current_claim(
+        &self,
+        thread: &str,
+    ) -> Option<awaken_run_ingress_contract::RunClaim> {
         self.session_slots
             .read(thread, |slot| slot.dispatch_claim.clone())
             .flatten()
@@ -1178,18 +1181,18 @@ impl ArtifactHarvester {
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         let fence = self
             .current_claim(thread)
-            .map(awaken_run_ingress::ArtifactPublicationFence::Run);
+            .map(awaken_run_ingress_contract::ArtifactPublicationFence::Run);
         self.harvest_with_fence(thread, fence).await
     }
 
     pub(crate) async fn harvest_with_claim(
         &self,
         thread: &str,
-        claim: Option<awaken_run_ingress::RunClaim>,
+        claim: Option<awaken_run_ingress_contract::RunClaim>,
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         self.harvest_with_fence(
             thread,
-            claim.map(awaken_run_ingress::ArtifactPublicationFence::Run),
+            claim.map(awaken_run_ingress_contract::ArtifactPublicationFence::Run),
         )
         .await
     }
@@ -1197,7 +1200,7 @@ impl ArtifactHarvester {
     pub(crate) async fn harvest_with_fence(
         &self,
         thread: &str,
-        fence: Option<awaken_run_ingress::ArtifactPublicationFence>,
+        fence: Option<awaken_run_ingress_contract::ArtifactPublicationFence>,
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         self.harvest_with_fence_mode(thread, fence, ArtifactCaptureMode::Live)
             .await
@@ -1209,7 +1212,7 @@ impl ArtifactHarvester {
     pub(crate) async fn harvest_with_fence_mode(
         &self,
         thread: &str,
-        fence: Option<awaken_run_ingress::ArtifactPublicationFence>,
+        fence: Option<awaken_run_ingress_contract::ArtifactPublicationFence>,
         capture_mode: ArtifactCaptureMode,
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         self.harvest_with_fence_mode_from_environment(thread, fence, capture_mode, None)
@@ -1221,7 +1224,7 @@ impl ArtifactHarvester {
     pub(crate) async fn harvest_with_environment_and_fence(
         &self,
         thread: &str,
-        fence: Option<awaken_run_ingress::ArtifactPublicationFence>,
+        fence: Option<awaken_run_ingress_contract::ArtifactPublicationFence>,
         environment: &Arc<crate::session_environment::SessionEnvironment>,
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         self.harvest_with_fence_mode_from_environment(
@@ -1236,16 +1239,18 @@ impl ArtifactHarvester {
     async fn harvest_with_fence_mode_from_environment(
         &self,
         thread: &str,
-        fence: Option<awaken_run_ingress::ArtifactPublicationFence>,
+        fence: Option<awaken_run_ingress_contract::ArtifactPublicationFence>,
         capture_mode: ArtifactCaptureMode,
         exact_environment: Option<&Arc<crate::session_environment::SessionEnvironment>>,
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         let terminal_effect = fence.as_ref().and_then(|fence| match fence {
-            awaken_run_ingress::ArtifactPublicationFence::Terminal(effect) => Some(effect),
-            awaken_run_ingress::ArtifactPublicationFence::Run(_)
-            | awaken_run_ingress::ArtifactPublicationFence::SessionMaterialization(_)
-            | awaken_run_ingress::ArtifactPublicationFence::RepositoryPublication { .. }
-            | awaken_run_ingress::ArtifactPublicationFence::CheckpointRelease(_) => None,
+            awaken_run_ingress_contract::ArtifactPublicationFence::Terminal(effect) => Some(effect),
+            awaken_run_ingress_contract::ArtifactPublicationFence::Run(_)
+            | awaken_run_ingress_contract::ArtifactPublicationFence::SessionMaterialization(_)
+            | awaken_run_ingress_contract::ArtifactPublicationFence::RepositoryPublication {
+                ..
+            }
+            | awaken_run_ingress_contract::ArtifactPublicationFence::CheckpointRelease(_) => None,
         });
         if capture_mode == ArtifactCaptureMode::ReceiptOnly && terminal_effect.is_none() {
             return Err(ArtifactPublicationError::InvalidRequest {
@@ -1381,7 +1386,7 @@ impl ArtifactHarvester {
             workspace_id: workspace,
             session_id: thread.to_string(),
             idempotency_scope: effect.operation_id().to_string(),
-            fence: awaken_run_ingress::ArtifactPublicationFence::Terminal(effect.clone()),
+            fence: awaken_run_ingress_contract::ArtifactPublicationFence::Terminal(effect.clone()),
         };
         let receipts = self.publisher.recover(recovery).await?;
         Ok(HarvestedArtifacts { receipts })
