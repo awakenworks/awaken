@@ -1219,6 +1219,27 @@ mod generation_authority_law_tests {
                 }
             }
         }
+        // Wire-boundary rows extend the same oracle: C1 expiry zero/ordinary/
+        // MAX; C2 asserted equal/shorter; C3 now before/at deadline. E1 only
+        // nonregressed and still-live leases authorize; E2 equality at expiry,
+        // a shortened renewal and MAX with no future instant all reject.
+        for (asserted_expiry, current_expiry, now, expected) in [
+            (0, 0, 0, false),
+            (0, 1, 0, true),
+            (u64::MAX - 1, u64::MAX - 1, u64::MAX - 2, true),
+            (u64::MAX - 1, u64::MAX, u64::MAX - 1, true),
+            (u64::MAX, u64::MAX, u64::MAX - 1, true),
+            (u64::MAX, u64::MAX, u64::MAX, false),
+            (u64::MAX, u64::MAX - 1, u64::MAX - 2, false),
+        ] {
+            let asserted = lease("o", "i", 5, asserted_expiry);
+            let current = lease("o", "i", 5, current_expiry);
+            assert_eq!(
+                realization_lease_authorizes(&current, &asserted, now),
+                expected,
+                "asserted={asserted_expiry} current={current_expiry} now={now}",
+            );
+        }
     }
 }
 

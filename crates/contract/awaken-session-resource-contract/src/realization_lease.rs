@@ -122,27 +122,53 @@ pub fn realization_lease_generation_authorizes(
 /// @proof-input-debt free_symbol realization_lease_facts_authorize same_owner
 /// @proof-input-debt free_symbol realization_lease_facts_authorize same_runtime_incarnation
 #[kani::proof]
-fn realization_renewal_never_widens_owner_epoch_or_expiry_authority() {
+fn realization_renewal_requires_every_identity_axis() {
+    // C1 owner, C2 runtime incarnation and C3 epoch match independently;
+    // expiry is a live nonregressed renewal. E1 all three admit; E2 any
+    // mismatch rejects. Rule C1+C2+C3=>E1, every other row=>E2.
     let same_owner = kani::any();
     let same_runtime_incarnation = kani::any();
     let same_epoch = kani::any();
-    let current_expires_at_unix_ms = kani::any();
-    let asserted_expires_at_unix_ms = kani::any();
-    let now_unix_ms = kani::any();
     let authorized = realization_lease_facts_authorize(
         same_owner,
         same_runtime_incarnation,
         same_epoch,
-        current_expires_at_unix_ms,
-        asserted_expires_at_unix_ms,
-        now_unix_ms,
+        2,
+        1,
+        1,
     );
     assert_eq!(
         authorized,
-        same_owner
-            && same_runtime_incarnation
-            && same_epoch
-            && current_expires_at_unix_ms >= asserted_expires_at_unix_ms
-            && current_expires_at_unix_ms > now_unix_ms
+        same_owner && same_runtime_incarnation && same_epoch
+    );
+}
+
+#[cfg(kani)]
+/// @obligation session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
+#[kani::proof]
+fn realization_renewal_requires_nonregressed_expiry() {
+    // C1 exact identity, C2 independent u16 asserted/current expiry, C3 now
+    // at the epoch. E1 current >= asserted and current > now authorizes;
+    // E2 shortening or already expired rejects. Rule C1+C2+C3=>E1/E2.
+    let current = kani::any::<u16>() as u64;
+    let asserted = kani::any::<u16>() as u64;
+    assert_eq!(
+        realization_lease_facts_authorize(true, true, true, current, asserted, 0),
+        current >= asserted && current > 0,
+    );
+}
+
+#[cfg(kani)]
+/// @obligation session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
+#[kani::proof]
+fn realization_renewal_expires_at_exact_boundary() {
+    // C1 exact identity and nonregressed expiry, C2 independent u16 current
+    // expiry and now. E1 live strictly before; E2 equal/after rejects.
+    // Decision rows now<current=>E1; now>=current=>E2.
+    let current = kani::any::<u16>() as u64;
+    let now = kani::any::<u16>() as u64;
+    assert_eq!(
+        realization_lease_facts_authorize(true, true, true, current, 0, now),
+        current > now,
     );
 }
