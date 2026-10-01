@@ -247,6 +247,13 @@ impl FsOperationLedger {
             .join(format!("{}.result", Self::stem(operation_id)))
     }
 
+    async fn sync_root(&self) -> std::io::Result<()> {
+        let root = self.root.clone();
+        tokio::task::spawn_blocking(move || awaken_fs_durability::sync_directory(&root))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
     async fn read_claim_identity(path: &Path) -> Result<Option<Vec<u8>>, String> {
         match tokio::fs::read(path).await {
             Ok(bytes) => Ok(Some(bytes)),
@@ -341,7 +348,8 @@ impl HandOperationLedger for FsOperationLedger {
                 use tokio::io::AsyncWriteExt as _;
                 file.write_all(operation_id.as_bytes()).await?;
             }
-            file.sync_all().await
+            file.sync_all().await?;
+            self.sync_root().await
         }
         .await;
         match persisted {
@@ -448,13 +456,7 @@ impl FsOperationLedger {
         tokio::fs::rename(&temporary, &path)
             .await
             .map_err(|error| error.to_string())?;
-        let directory = tokio::fs::File::open(&self.root)
-            .await
-            .map_err(|error| error.to_string())?;
-        directory
-            .sync_all()
-            .await
-            .map_err(|error| error.to_string())?;
+        self.sync_root().await.map_err(|error| error.to_string())?;
         Ok(())
     }
 

@@ -62,6 +62,7 @@ fn an_unknown_role_fails_and_names_the_valid_roles() {
 fn socket_roles_reject_unavailable_or_invalid_configuration() {
     // R4 no hand feature -> fail closed with feature diagnostic; R5 hand build
     // plus missing/wrong/relative arguments -> parser rejection before binding.
+    // R6 hand build without Unix -> explicit unavailable, never a host socket.
     for role in ["channel-listen", "channel-connect"] {
         for args in [
             vec![role],
@@ -74,6 +75,8 @@ fn socket_roles_reject_unavailable_or_invalid_configuration() {
             assert!(text.contains("--features hand"));
             #[cfg(all(unix, feature = "hand"))]
             assert!(text.contains("--unix"), "{text}");
+            #[cfg(all(not(unix), feature = "hand"))]
+            assert!(text.contains("require Unix"), "{text}");
         }
     }
 }
