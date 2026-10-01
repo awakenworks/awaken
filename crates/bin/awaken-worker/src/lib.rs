@@ -138,6 +138,7 @@ impl std::error::Error for WorkerNodeBuildError {}
 pub struct WorkerNodeBuilder {
     upstream: WorkerUpstream,
     clock: Arc<dyn awaken_time::WallClock>,
+    preselected_incarnation_id: Option<String>,
     manifest: ManifestSelection,
     deployment: awaken_session_executor::DeploymentConfig,
     standard_manifest_config: StandardManifestConfig,
@@ -263,6 +264,7 @@ impl WorkerNodeBuilder {
         Self {
             upstream,
             clock,
+            preselected_incarnation_id: None,
             manifest: ManifestSelection::Unset,
             deployment: awaken_session_executor::DeploymentConfig::ephemeral(),
             standard_manifest_config: StandardManifestConfig::default(),
@@ -286,6 +288,23 @@ impl WorkerNodeBuilder {
             credential_probe_interval: std::time::Duration::from_secs(10),
             credential_observation_ttl: std::time::Duration::from_secs(30),
         }
+    }
+
+    /// Bind the Worker boot to the exact identity already selected by a trusted
+    /// independent process launcher. Ordinary Workers still generate their own
+    /// fresh identity when this coordinate is absent.
+    pub fn with_preselected_incarnation_id(
+        mut self,
+        incarnation_id: impl Into<String>,
+    ) -> Result<Self, WorkerNodeBuildError> {
+        let incarnation_id = incarnation_id.into();
+        if !awaken_worker_contract::is_local_process_incarnation(&incarnation_id) {
+            return Err(WorkerNodeBuildError(
+                "preselected Worker incarnation must be exactly 32 lowercase hex digits".into(),
+            ));
+        }
+        self.preselected_incarnation_id = Some(incarnation_id);
+        Ok(self)
     }
 
     fn with_process_config(mut self, config: WorkerProcessConfig) -> Self {
@@ -897,6 +916,7 @@ impl WorkerNodeBuilder {
         Ok(WorkerNode {
             upstream: self.upstream,
             clock: self.clock,
+            preselected_incarnation_id: self.preselected_incarnation_id,
             manifest,
             deployment: self.deployment,
             application: self.application,
@@ -991,6 +1011,7 @@ pub struct WorkerNode {
     upstream: WorkerUpstream,
     /// The Worker process's one wall clock, from its builder.
     clock: Arc<dyn awaken_time::WallClock>,
+    preselected_incarnation_id: Option<String>,
     manifest: WorkerManifest,
     deployment: awaken_session_executor::DeploymentConfig,
     application: WorkerApplicationSource,
@@ -1266,9 +1287,12 @@ impl WorkerNode {
         let upstream_url = self.upstream.base_url().to_string();
         let upstream = self.upstream;
         let bootstrap_control = WorkerControlClient::new(upstream.clone());
-        let incarnation_id = new_incarnation_id().map_err(|error| {
-            std::io::Error::other(format!("generate Worker incarnation: {error}"))
-        })?;
+        let incarnation_id = match self.preselected_incarnation_id {
+            Some(incarnation_id) => incarnation_id,
+            None => new_incarnation_id().map_err(|error| {
+                std::io::Error::other(format!("generate Worker incarnation: {error}"))
+            })?,
+        };
         let mut shutdown = std::pin::pin!(shutdown);
         let mut registration_wait_attempts = 0_u64;
         let registration_receipt = loop {

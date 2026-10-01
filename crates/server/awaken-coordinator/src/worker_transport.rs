@@ -24,6 +24,8 @@ pub trait WorkerRelayTargetObserver: Send + Sync {
 
 #[cfg(feature = "container-k8s")]
 mod kubernetes;
+#[cfg(target_os = "linux")]
+mod systemd;
 
 /// Private fields keep authentication and physical binding selected together.
 /// An injected authenticator alone is deliberately an unbound transport.
@@ -64,6 +66,60 @@ impl WorkerTransport {
 
     pub fn relay_target_source(&self) -> Option<Arc<dyn WorkerRelayTargetObserver>> {
         self.relay_targets.clone()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl WorkerTransport {
+    /// Probe a user manager and the same trusted executables used by the
+    /// binding/stop adapter before selecting invisible local placement.
+    pub async fn systemd_user_available() -> bool {
+        systemd::available().await
+    }
+
+    pub fn systemd_user_run_executable() -> Option<std::path::PathBuf> {
+        systemd::run_executable()
+    }
+
+    pub fn systemd_user_env_executable() -> Option<std::path::PathBuf> {
+        systemd::env_executable()
+    }
+
+    pub fn systemd_user_launch_environment() -> Result<Vec<std::ffi::OsString>, String> {
+        systemd::launch_environment()
+    }
+
+    pub async fn systemd_user_unit_running(incarnation_id: &str) -> Result<bool, String> {
+        systemd::unit_running(incarnation_id).await
+    }
+
+    pub async fn systemd_user_request_drain(incarnation_id: &str) -> Result<(), String> {
+        systemd::request_drain(incarnation_id).await
+    }
+
+    /// The single exact unit-name projection shared by a product launcher and
+    /// this transport's physical binding/stop evidence.
+    pub fn systemd_user_unit_name(incarnation_id: &str) -> Result<String, String> {
+        systemd::unit_name_for_incarnation(incarnation_id)
+    }
+
+    /// Bind one local independent Worker to its retained systemd user service.
+    /// Authentication and physical evidence are selected together, while the
+    /// existing Dispatch and Registry remain the only attempt authorities.
+    pub fn systemd_user(
+        authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
+        provider_id: &str,
+        evidence_dir: &std::path::Path,
+    ) -> Result<Self, String> {
+        let adapter = Arc::new(systemd::SystemdWorkerEvidence::new(
+            provider_id,
+            evidence_dir,
+        )?);
+        Ok(Self {
+            authenticator,
+            bindings: Some(adapter.clone()),
+            stops: Some(adapter),
+        })
     }
 }
 

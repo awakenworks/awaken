@@ -30,6 +30,8 @@ awaken-ext-skills.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
 awaken-sandbox-local.workspace = true
+awaken-local-process.workspace = true
+awaken-fs-durability.workspace = true
 awaken-worker-transport-security.workspace = true
 awaken-sandbox-container.workspace = true
 kube = { version = "1", default-features = false, features = ["client", "rustls-tls", "http-proxy"], optional = true }
@@ -124,7 +126,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 base64 = "0.22"
 uuid = { version = "1", features = ["v7"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "process", "time"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }
 axum = { version = "0.8", features = ["multipart"] }
 # oneshot-forwarding for the /projects/{id} prefix-stripping ingress proxy

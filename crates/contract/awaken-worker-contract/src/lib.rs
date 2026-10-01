@@ -52,9 +52,10 @@ pub use registry::{
     WorkerObservationPublicationCompletion, WorkerObservationPublicationFence,
     WorkerObservationSource, WorkerProcessExit, WorkerRegistration,
     WorkerRegistrationHistoryAdmission, WorkerSnapshot, WorkerState, assignment_recovery_rejection,
-    can_assign, process_ready_after_startup, worker_expiry_admission, worker_heartbeat_admission,
-    worker_observation_sequence_after_heartbeat, worker_process_exit_admission,
-    worker_registration_history_admission, worker_slot_is_replaceable,
+    can_assign, is_local_process_incarnation, process_ready_after_startup, worker_expiry_admission,
+    worker_heartbeat_admission, worker_observation_sequence_after_heartbeat,
+    worker_process_exit_admission, worker_registration_history_admission,
+    worker_slot_is_replaceable,
 };
 pub use relay_route::{WORKER_RELAY_DESTINATION_PATH, WorkerRelayDestination};
 #[cfg(any(test, kani))]

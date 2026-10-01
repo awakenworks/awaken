@@ -91,13 +91,20 @@ pub fn classify_native_attempt_termination(
 /// Consumers validate once, observe its exact process bindings, then classify
 /// that same frozen view. Local Worker exit is an independent prerequisite.
 pub struct NativeAttemptFootprint {
-    covered: bool,
+    profile: NativeAttemptCoverage,
     all_models_stopped: bool,
     all_model_effects_closed: bool,
     domains: Vec<awaken_tool_contract::tool_batch::ToolExecutionDomain>,
 }
 
 impl NativeAttemptFootprint {
+    /// A local process supervisor may only close the model-only profile.
+    /// Journalled tools can ask a host service to create work outside the
+    /// Worker's cgroup, so their complete scope needs separate provider proof.
+    pub fn model_only_coverage(&self) -> bool {
+        self.profile == NativeAttemptCoverage::ModelOnlyV1
+    }
+
     pub fn process_domains(&self) -> &[awaken_tool_contract::tool_batch::ToolExecutionDomain] {
         &self.domains
     }
@@ -112,12 +119,13 @@ impl NativeAttemptFootprint {
             ToolExecutionDomain::ControlledProcess { .. } => closed.contains(domain),
             ToolExecutionDomain::Opaque {} => false,
         });
-        if termination_from_facts(self.covered, false, self.all_models_stopped, tools_closed)
+        let covered = self.profile != NativeAttemptCoverage::Unspecified;
+        if termination_from_facts(covered, false, self.all_models_stopped, tools_closed)
             == NativeAttemptTermination::AllExecutionStopped
         {
             NativeAttemptTermination::AllExecutionStopped
         } else if termination_from_facts(
-            self.covered,
+            covered,
             false,
             self.all_model_effects_closed,
             tools_closed,
@@ -131,7 +139,7 @@ impl NativeAttemptFootprint {
 
     pub fn decode(snapshot: &RunRecoverySnapshot) -> Result<Self, NativeAttemptTerminationError> {
         let unsupported = || Self {
-            covered: false,
+            profile: NativeAttemptCoverage::Unspecified,
             all_models_stopped: false,
             all_model_effects_closed: false,
             domains: Vec::new(),
@@ -213,7 +221,7 @@ impl NativeAttemptFootprint {
                     NativeAttemptTerminationError::InvalidToolHistory(error.to_string())
                 })?;
         Ok(Self {
-            covered: true,
+            profile,
             all_models_stopped: models.iter().all(|model| model.execution.permits_reentry()),
             all_model_effects_closed: models.iter().all(|model| {
                 model.execution.permits_reentry()
@@ -319,6 +327,10 @@ mod tests {
                     );
                 }
                 let view = NativeAttemptFootprint::decode(&snapshot(commands)).unwrap();
+                assert!(
+                    !view.model_only_coverage(),
+                    "J1 journalled coverage is not a local process-only proof"
+                );
                 let wrong = ToolExecutionDomain::ControlledProcess {
                     provider_ref: "test-process".into(),
                     execution_ref: "replacement-incarnation".into(),
@@ -391,10 +403,18 @@ mod tests {
         // T8 legacy missing coordinates => unknown; T9 duplicate marker,
         // T10 missing exact Run and T11 unaligned coordinates => error;
         // T12 a crashed tool-bearing Run whose last model entry remains
-        // Entered/Unknown stays unknown even after a local Worker exit.
+        // Entered/Unknown stays unknown even after a local Worker exit. T14
+        // only the model-only marker may be consumed by a local cgroup stop;
+        // journalled tools require their own complete provider evidence.
         let coverage = bind(ActiveNativeAttemptCoverage::write(
             &NativeAttemptCoverage::ModelOnlyV1,
         ));
+        assert!(
+            NativeAttemptFootprint::decode(&snapshot(vec![coverage.clone()]))
+                .unwrap()
+                .model_only_coverage(),
+            "T14"
+        );
         assert_eq!(
             classify_native_attempt_termination(&snapshot(vec![coverage.clone()])).unwrap(),
             NativeAttemptTermination::AllExecutionStopped,
