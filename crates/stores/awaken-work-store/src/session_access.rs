@@ -678,7 +678,11 @@ impl PostgresWorkQueue {
     }
 }
 
-#[cfg(test)]
+// Build-selection decision table: C1 ordinary test build, C2 Loom mutex
+// substitution. E1 C1+!C2 runs the real SQLite epoch boundary cases below;
+// E2 C2 reserves the dedicated `loom_tests` entrypoint for concurrency proof.
+// This matches the crate's other ordinary fixtures in lib.rs and inmem.rs.
+#[cfg(all(test, not(feature = "loom")))]
 mod epoch_tests {
     use super::*;
 
