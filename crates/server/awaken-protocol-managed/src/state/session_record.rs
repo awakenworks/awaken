@@ -200,6 +200,17 @@ pub(super) struct ProjectionDeliveryMemo {
 pub(crate) struct RootTimeEvidence {
     pub(crate) created_at_unix_ms: Option<u64>,
     pub(crate) updated_at_unix_ms: Option<u64>,
+    pub(crate) archived_at_unix_ms: Option<u64>,
+}
+
+impl From<&PersistedSession> for RootTimeEvidence {
+    fn from(root: &PersistedSession) -> Self {
+        Self {
+            created_at_unix_ms: root.created_at_unix_ms,
+            updated_at_unix_ms: root.updated_at_unix_ms,
+            archived_at_unix_ms: root.archived_at_unix_ms(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

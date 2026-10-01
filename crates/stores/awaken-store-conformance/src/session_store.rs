@@ -1036,7 +1036,9 @@ pub async fn credential_source_dependency_decision_table<
     );
 
     let mut archived = updated;
-    archived.archive(at(1_787_788_800)).unwrap();
+    archived
+        .archive(at(1_787_788_800), 1_787_788_800_000)
+        .unwrap();
     replace_session(r, "ws_a", archived, "test:source:archive", Vec::new()).await;
     assert!(
         r.scan(
@@ -1099,9 +1101,11 @@ pub async fn lifecycle_outbox_tracks_every_committed_transition<
     r: &R,
 ) {
     // Cause/effect rule: C1=root mutation and typed interval fact share one
-    // transaction; C2=process/adapter reload. E1=the aggregate and exact
+    // transaction; C2=process/adapter reload; C3=first archive carries typed
+    // Application time. E1=the aggregate and exact
     // millisecond interval appear together; E2=the typed payload round-trips
-    // without the store maintaining a parallel event schema.
+    // without the store maintaining a parallel event schema; E3=the exact
+    // archive time survives both SQLite and PostgreSQL root round trips.
     fn assert_exact_outbox_delta(
         before: &[ManagedLifecycleFact],
         after: &[ManagedLifecycleFact],
@@ -1167,7 +1171,9 @@ pub async fn lifecycle_outbox_tracks_every_committed_transition<
 
     let archived = fact("evt:archive", "sesn_lifecycle", "session.archived");
     let mut archive = r.get(&SessionId::from("sesn_lifecycle")).await.unwrap();
-    archive.archive(at(1_784_419_200)).unwrap();
+    archive
+        .archive(at(1_784_419_200), 1_784_419_200_000)
+        .unwrap();
     replace_session(r, "ws_a", archive, "test:archive", vec![archived.clone()]).await;
     let durable = r
         .get(&SessionId::from("sesn_lifecycle"))
@@ -1175,6 +1181,11 @@ pub async fn lifecycle_outbox_tracks_every_committed_transition<
         .expect("archived session");
     assert_eq!(durable.execution, SessionExecutionState::Terminated);
     assert_eq!(durable.archived_at(), Some(at(1_784_419_200).as_str()));
+    assert_eq!(
+        durable.archived_at_unix_ms(),
+        Some(1_784_419_200_000),
+        "C3/E3"
+    );
     assert_exact_outbox_delta(
         &outbox_before,
         &r.pending_lifecycle().await.unwrap(),

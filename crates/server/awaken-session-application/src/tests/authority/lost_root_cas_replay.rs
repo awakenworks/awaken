@@ -10,6 +10,7 @@ async fn publication_race_fixture(
     Arc<FaultingSessionRepository>,
     Arc<RecordingCleanupRuntime>,
     Arc<SessionApplication>,
+    Arc<SessionApplication>,
 ) {
     let durable = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -28,12 +29,19 @@ async fn publication_race_fixture(
     );
     create(repo.as_ref(), session).await;
     let runtime = Arc::new(RecordingCleanupRuntime::default());
-    let app = Arc::new(application_with_runtime(
-        runtime.clone(),
-        repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    ));
-    (durable, repo, runtime, app)
+    let application_at = |time| {
+        Arc::new(
+            application_with_runtime(
+                runtime.clone(),
+                repo.clone(),
+                Arc::new(RecordingEnvironmentSource::default()),
+            )
+            .with_clock(Arc::new(awaken_lease_testkit::ManualClock::new(time))),
+        )
+    };
+    let delayed = application_at(100);
+    let winner = application_at(200);
+    (durable, repo, runtime, delayed, winner)
 }
 
 fn publication_command(session_id: &str) -> SessionArchiveWithRepositoryPublicationCommand {
@@ -63,21 +71,25 @@ fn publication_command(session_id: &str) -> SessionArchiveWithRepositoryPublicat
 #[tokio::test]
 async fn concurrent_repository_publication_archive_cannot_report_the_losing_cas_as_applied() {
     // The twin of the Delete fence. Causes: C1 two profiled release commands
-    // are compiled from one root revision; C2 the delayed candidate actually
+    // are compiled from one root revision with distinct Application clock
+    // samples 100/200; C2 the delayed candidate actually
     // reaches the root CAS and the store answers Replayed (not Conflict, which
     // would be absorbed by the pre-CAS Archived check instead and so would not
     // observe this rule at all). Effects: E1 exactly one call reports the
-    // transition; E2 the losing call returns the winner's complete aggregate
-    // and its own exact publication receipt; E3 the terminal lifecycle fact and
-    // the physical publication effect each happen once.
+    // transition; E2 the losing call returns the winner's complete aggregate,
+    // original archived time and exact publication receipt despite a different
+    // sampled clock; E3 the terminal lifecycle fact and physical publication
+    // effect each happen once. The adjacent authority table retains rejection
+    // of a genuinely different command.
     // R1 = C1 & C2 => E1 & E2 & E3.
     let session_id = "publication-cas-race";
-    let (durable, repo, runtime, app) = publication_race_fixture(session_id).await;
+    let (durable, repo, runtime, delayed_app, winner_app) =
+        publication_race_fixture(session_id).await;
     let command = publication_command(session_id);
     let origin = durable.get(&SessionId::from(session_id)).await.unwrap();
 
     let pause = repo.pause_next_mutation("session:archive-with-repository-publication:");
-    let delayed = Arc::clone(&app);
+    let delayed = Arc::clone(&delayed_app);
     let delayed_command = command.clone();
     let loser = tokio::spawn(async move {
         delayed
@@ -92,13 +104,38 @@ async fn concurrent_repository_publication_archive_cannot_report_the_losing_cas_
         candidate.expected_revision, origin.revision,
         "C1 both requests really start from the one origin revision"
     );
+    let awaken_session_state_contract::SessionMutationPayload::Replace(delayed_root) =
+        &candidate.payload
+    else {
+        panic!("C1 archive replaces one root")
+    };
+    assert_eq!(
+        delayed_root.archived_at_unix_ms(),
+        Some(100),
+        "C1 delayed sample"
+    );
 
-    let winner = app
+    let winner = winner_app
         .archive_with_repository_publication(command)
         .await
         .expect("E1 winner releases");
     assert!(winner.mutation.transitioned(), "R1/E1 winner applied");
     let winner_root = durable.get(&SessionId::from(session_id)).await.unwrap();
+    assert_eq!(
+        winner_root.archived_at_unix_ms(),
+        Some(200),
+        "R1/E2 winner sample"
+    );
+    assert_eq!(
+        durable
+            .idempotency_receipt(&SessionId::from(session_id), &candidate.idempotency.key)
+            .await
+            .unwrap()
+            .unwrap()
+            .payload_hash,
+        candidate.idempotency.payload_hash,
+        "C1 same exact command key despite distinct samples"
+    );
     let facts_after_winner = durable.pending_lifecycle().await.unwrap();
     let effects_after_winner = runtime.terminal_effect_order.lock().unwrap().clone();
 

@@ -58,7 +58,9 @@ pub async fn tombstone_requires_hidden_completed_cleanup<
     let active = create_session(repo, "ws_a", active, Vec::new()).await;
 
     let mut archived = session("sesn_delete_archived", "archived");
-    archived.archive(at(1_786_752_000)).unwrap();
+    archived
+        .archive(at(1_786_752_000), 1_786_752_000_000)
+        .unwrap();
     complete_terminal_cleanup(&mut archived);
     let archived = create_session(repo, "ws_a", archived, Vec::new()).await;
 

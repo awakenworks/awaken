@@ -21,6 +21,10 @@ the default response. One exact request header,
 timestamp fields: a time from the committed Session root or canonical Event
 order is rendered, and missing typed evidence becomes JSON `null`. The archived
 Session timestamp is nullable when its historical string has no typed source.
+New archives carry a Session Application clock sample taken while constructing
+the one disposition transition that later commits; it is not the exact commit
+clock. Session and primary Thread v2 reads share that value.
+An exact archive replay preserves the first sample across process recovery.
 An actual persisted `2026-01-01T00:00:00Z` remains a date in v2; response text
 never decides provenance.
 

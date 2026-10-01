@@ -5697,6 +5697,7 @@ async fn repository_rotation_slot_case(slot: &str) {
             "archived" => {
                 durable.disposition = SessionDisposition::Archived {
                     archived_at: session["updated_at"].as_str().unwrap().to_owned(),
+                    archived_at_unix_ms: None,
                 }
             }
             "deleting" => durable.disposition = SessionDisposition::Deleting,
@@ -5812,6 +5813,7 @@ async fn repository_rotation_slot_case(slot: &str) {
                 1,
                 SessionDisposition::Archived {
                     archived_at: session["updated_at"].as_str().unwrap().to_owned(),
+                    archived_at_unix_ms: None,
                 },
             );
         }

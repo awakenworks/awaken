@@ -119,7 +119,7 @@ fn session_time_v2(
         &[
             ("created_at", time.created_at_unix_ms),
             ("updated_at", time.updated_at_unix_ms),
-            ("archived_at", None),
+            ("archived_at", time.archived_at_unix_ms),
         ],
     )
 }

@@ -18,6 +18,11 @@ pub enum SessionDisposition {
     Active,
     Archived {
         archived_at: String,
+        /// The Application clock sampled while constructing the first archive
+        /// transition that commits, before its durable CAS. Legacy archived
+        /// rows have no trustworthy observation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        archived_at_unix_ms: Option<u64>,
     },
     Deleting,
     Deleted,
@@ -37,7 +42,18 @@ impl SessionDisposition {
     #[must_use]
     pub fn archived_at(&self) -> Option<&str> {
         match self {
-            Self::Archived { archived_at } => Some(archived_at),
+            Self::Archived { archived_at, .. } => Some(archived_at),
+            Self::Active | Self::Deleting | Self::Deleted => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn archived_at_unix_ms(&self) -> Option<u64> {
+        match self {
+            Self::Archived {
+                archived_at_unix_ms,
+                ..
+            } => *archived_at_unix_ms,
             Self::Active | Self::Deleting | Self::Deleted => None,
         }
     }
@@ -165,4 +181,36 @@ pub(super) fn session_delete_request_plan<'a>(
 pub enum SessionDispositionTransitionError {
     #[error("cannot archive a Session while deletion is in progress or complete")]
     ArchiveAfterDelete,
+    #[error("new Session archive requires an Application time observation")]
+    ArchiveTimeRequired,
+}
+
+#[cfg(test)]
+mod time_tests {
+    use super::SessionDisposition;
+
+    #[test]
+    fn archived_time_provenance_round_trips_without_backfilling_legacy_rows() {
+        // Causes: D1 historical archived JSON has only its v1 display string;
+        // D2 a new archive persists typed time 0, a valid boundary. Effects:
+        // D1 deserializes unknown and reserializes byte-equivalent fields;
+        // D2 retains Some(0), never conflating it with historical missing.
+        let historical = serde_json::json!({
+            "state": "archived", "archived_at": "2026-01-01T00:00:00Z"
+        });
+        let old: SessionDisposition = serde_json::from_value(historical.clone()).unwrap();
+        assert_eq!(old.archived_at_unix_ms(), None, "D1");
+        assert_eq!(serde_json::to_value(old).unwrap(), historical, "D1");
+        let new = SessionDisposition::Archived {
+            archived_at: "2026-01-01T00:00:00Z".into(),
+            archived_at_unix_ms: Some(0),
+        };
+        let new_wire = serde_json::to_value(&new).unwrap();
+        assert_eq!(new_wire["archived_at_unix_ms"], 0, "D2");
+        assert_eq!(
+            serde_json::from_value::<SessionDisposition>(new_wire).unwrap(),
+            new,
+            "D2"
+        );
+    }
 }

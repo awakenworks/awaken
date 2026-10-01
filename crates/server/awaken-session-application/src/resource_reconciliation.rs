@@ -129,6 +129,7 @@ fn repository_rotation_requires_original_live_resource_generation() {
         0 => awaken_session_state_contract::SessionDisposition::Active,
         1 => awaken_session_state_contract::SessionDisposition::Archived {
             archived_at: String::new(),
+            archived_at_unix_ms: None,
         },
         2 => awaken_session_state_contract::SessionDisposition::Deleting,
         _ => awaken_session_state_contract::SessionDisposition::Deleted,

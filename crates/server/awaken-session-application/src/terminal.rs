@@ -296,12 +296,42 @@ impl SessionApplication {
             }
             let intent =
                 Self::resolve_repository_publication_intent(&session, &command.repository)?;
+            // This command's identity is fixed by caller intent, not by the
+            // Application clock sampled below. Two exact contenders from one
+            // root revision must reach the same Repository receipt even when
+            // their local time samples differ.
+            let command_hash = awaken_agent_contract::stable_fingerprint(&(
+                "session-archive-with-repository-publication-v1",
+                &owner_scope,
+                &command.session_id,
+                &command.archived_at,
+                &command.lifecycle_fact,
+                &intent,
+            ));
+            let idempotency = awaken_session_state_contract::IdempotencyRecord {
+                key: format!(
+                    "session:archive-with-repository-publication:{}:{}:{command_hash}",
+                    command.session_id, session.revision.0,
+                ),
+                payload_hash: command_hash,
+            };
+            // An Archived replay must retain its first time without asking the
+            // clock again. Only an Active transition receives a new sample.
+            let archive_time = matches!(&session.disposition, SessionDisposition::Active)
+                .then(|| self.clock.now_ms());
             let changed = session
-                .archive_with_repository_publication(&command.archived_at, intent)
+                .archive_with_repository_publication(&command.archived_at, archive_time, intent)
                 .map_err(|error| match error {
-                    awaken_session_state_contract::SessionArchiveWithRepositoryPublicationError::Disposition(_) => {
+                    awaken_session_state_contract::SessionArchiveWithRepositoryPublicationError::Disposition(
+                        awaken_session_state_contract::SessionDispositionTransitionError::ArchiveAfterDelete,
+                    ) => {
                         SessionArchiveWithRepositoryPublicationError::NotFound
                     }
+                    awaken_session_state_contract::SessionArchiveWithRepositoryPublicationError::Disposition(
+                        awaken_session_state_contract::SessionDispositionTransitionError::ArchiveTimeRequired,
+                    ) => SessionArchiveWithRepositoryPublicationError::Unavailable(
+                        "Session archive has no Application time observation".into(),
+                    ),
                     awaken_session_state_contract::SessionArchiveWithRepositoryPublicationError::Cleanup(_) => {
                         SessionArchiveWithRepositoryPublicationError::Conflict
                     }
@@ -310,8 +340,13 @@ impl SessionApplication {
                 transition = Some(SessionDispositionMutation::unchanged(owner_scope, session));
                 break;
             }
+            let archive_time = archive_time.ok_or_else(|| {
+                SessionArchiveWithRepositoryPublicationError::Unavailable(
+                    "committed archive has no Application time observation".into(),
+                )
+            })?;
             let mut facts = session
-                .close_runtime_interval(self.clock.now_ms())
+                .close_runtime_interval(archive_time)
                 .map(|interval| {
                     runtime_interval_fact(&owner_scope, command.session_id.as_str(), interval)
                 })
@@ -319,12 +354,7 @@ impl SessionApplication {
                 .collect::<Vec<_>>();
             facts.push(command.lifecycle_fact.clone());
             match self
-                .commit_session_snapshot_with_outcome(
-                    &owner_scope,
-                    session,
-                    "archive-with-repository-publication",
-                    facts,
-                )
+                .commit_session_snapshot_with_record(&owner_scope, session, idempotency, facts)
                 .await
             {
                 Ok(commit) => {
@@ -660,11 +690,12 @@ impl SessionApplication {
                     "terminal Session release requires already-terminal execution",
                 )));
             }
+            let archive_time = self.clock.now_ms();
             session
-                .archive(archived_at)
+                .archive(archived_at, archive_time)
                 .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?;
             let mut facts = session
-                .close_runtime_interval(self.clock.now_ms())
+                .close_runtime_interval(archive_time)
                 .map(|interval| runtime_interval_fact(&owner_scope, session_id.as_str(), interval))
                 .into_iter()
                 .collect::<Vec<_>>();

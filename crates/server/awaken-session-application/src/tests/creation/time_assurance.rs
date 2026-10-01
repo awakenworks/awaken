@@ -244,3 +244,112 @@ async fn concurrent_root_cas_time_belongs_only_to_the_winner() {
     assert_eq!(winner.created_at_unix_ms, initial.created_at_unix_ms);
     assert_eq!(repo.get(&initial.session_id).await.unwrap(), winner);
 }
+
+#[tokio::test]
+async fn first_archive_time_is_durable_and_legacy_archive_stays_unknown() {
+    // Causes: A1 new Idle root + Application clock 100; A2 exact archive replay
+    // after reopen with clock 900 and different v1 display time; A3 historical
+    // Archived JSON without typed observation. Effects: A1 one committed typed
+    // time; A2 original time/string survive restart and replay; A3 remains
+    // unknown after file-SQLite readback. No read or retry supplies a new time.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("archive-time.sqlite");
+    let repo = Arc::new(SqliteManagedSessionRepository::open(path.to_str().unwrap()).unwrap());
+    let id = "archive-time-new";
+    create(repo.as_ref(), persisted(id, false, "idle")).await;
+    let fact = awaken_session_state_contract::ManagedLifecycleFact {
+        id: format!("{id}:terminated"),
+        object_id: id.into(),
+        workspace_id: Some("workspace".into()),
+        event_type: "session.terminated".into(),
+        timestamp: 1,
+        runtime_interval: None,
+    };
+    timed_application(repo.clone(), 100)
+        .terminate_session(id, "2026-09-07T00:00:00Z", fact.clone())
+        .await
+        .unwrap();
+    let first = repo.get(&SessionId::from(id)).await.unwrap();
+    assert_eq!(first.archived_at_unix_ms(), Some(100), "A1");
+    assert_eq!(first.archived_at(), Some("2026-09-07T00:00:00Z"), "A1 v1");
+
+    let old_id = "archive-time-legacy";
+    let mut old = persisted(old_id, false, "terminated");
+    old.disposition = awaken_session_state_contract::SessionDisposition::Archived {
+        archived_at: "2026-01-01T00:00:00Z".into(),
+        archived_at_unix_ms: None,
+    };
+    create(repo.as_ref(), old).await;
+    drop(repo);
+    let cold_repo = Arc::new(SqliteManagedSessionRepository::open(path.to_str().unwrap()).unwrap());
+    let cold = cold_repo.get(&SessionId::from(id)).await.unwrap();
+    assert_eq!(cold.archived_at_unix_ms(), Some(100), "A1 cold");
+    timed_application(cold_repo.clone(), 900)
+        .terminate_session(id, "later-display", fact)
+        .await
+        .unwrap();
+    assert_eq!(
+        cold_repo.get(&SessionId::from(id)).await.unwrap(),
+        cold,
+        "A2"
+    );
+    let legacy = cold_repo.get(&SessionId::from(old_id)).await.unwrap();
+    assert_eq!(legacy.archived_at_unix_ms(), None, "A3");
+    assert_eq!(legacy.archived_at(), Some("2026-01-01T00:00:00Z"), "A3 v1");
+    let old_fact = awaken_session_state_contract::ManagedLifecycleFact {
+        id: format!("{old_id}:terminated"),
+        object_id: old_id.into(),
+        workspace_id: Some("workspace".into()),
+        event_type: "session.terminated".into(),
+        timestamp: 2,
+        runtime_interval: None,
+    };
+    timed_application(cold_repo.clone(), 900)
+        .terminate_session(old_id, "later-display", old_fact)
+        .await
+        .unwrap();
+    let old_replay = cold_repo.get(&SessionId::from(old_id)).await.unwrap();
+    assert_eq!(
+        old_replay.archived_at_unix_ms(),
+        None,
+        "A3 replay cannot backfill"
+    );
+    assert_eq!(
+        old_replay.archived_at(),
+        legacy.archived_at(),
+        "A3 v1 replay"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_archives_keep_only_the_winning_clock_sample() {
+    // Causes: C1 two Application instances submit the same command from one
+    // Idle root and race root CAS with clocks 100/200; C2 loser replays the
+    // same command receipt after the winner archived.
+    // Effects: exactly one transition commits; the durable typed time and v1
+    // display belong to that winner, never the later replaying observation.
+    let repo = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let id = "archive-time-race";
+    create(repo.as_ref(), persisted(id, false, "idle")).await;
+    let fact = awaken_session_state_contract::ManagedLifecycleFact {
+        id: format!("{id}:terminated"),
+        object_id: id.into(),
+        workspace_id: Some("workspace".into()),
+        event_type: "session.terminated".into(),
+        timestamp: 1,
+        runtime_interval: None,
+    };
+    let left_app = timed_application(repo.clone(), 100);
+    let right_app = timed_application(repo.clone(), 200);
+    let (left, right) = tokio::join!(
+        left_app.terminate_session(id, "2026-09-07T00:00:00Z", fact.clone()),
+        right_app.terminate_session(id, "2026-09-07T00:00:00Z", fact),
+    );
+    let left = left.unwrap();
+    let right = right.unwrap();
+    assert_ne!(left.transitioned(), right.transitioned(), "C1 one winner");
+    let time = if left.transitioned() { 100 } else { 200 };
+    let durable = repo.get(&SessionId::from(id)).await.unwrap();
+    assert_eq!(durable.archived_at_unix_ms(), Some(time), "C1-C2");
+    assert_eq!(durable.archived_at(), Some("2026-09-07T00:00:00Z"), "C1-C2");
+}

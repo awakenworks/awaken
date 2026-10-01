@@ -172,10 +172,7 @@ impl ManagedState {
         record.session.status = Self::wire_session_status(persisted);
         record.session.created_at = super::constants::persisted_time(persisted.created_at_unix_ms);
         record.session.updated_at = super::constants::persisted_time(persisted.updated_at_unix_ms);
-        record.root_time = RootTimeEvidence {
-            created_at_unix_ms: persisted.created_at_unix_ms,
-            updated_at_unix_ms: persisted.updated_at_unix_ms,
-        };
+        record.root_time = RootTimeEvidence::from(persisted);
         record.session.title = persisted.title.clone();
         record.session.metadata = persisted.metadata.clone();
         record.session.deployment_id = persisted.metadata.get("awaken.deployment_id").cloned();
@@ -559,15 +556,13 @@ impl ManagedState {
             .lock()
             .unwrap()
             .insert(id.clone(), owner_scope.to_owned());
+        let root_time = RootTimeEvidence::from(&persisted);
         let record = SessionRecord::new(
             agent_id,
             session,
             persisted.revision,
             persisted.resources,
-            RootTimeEvidence {
-                created_at_unix_ms: persisted.created_at_unix_ms,
-                updated_at_unix_ms: persisted.updated_at_unix_ms,
-            },
+            root_time,
             Vec::new(),
         );
         let session = record.session_projection();
@@ -924,10 +919,7 @@ impl ManagedState {
             if let Some(record) = cached.get(session_id.as_str()) {
                 out.push((record.session_projection(), record.root_time));
             } else {
-                let evidence = RootTimeEvidence {
-                    created_at_unix_ms: session.created_at_unix_ms,
-                    updated_at_unix_ms: session.updated_at_unix_ms,
-                };
+                let evidence = RootTimeEvidence::from(&session);
                 out.push((
                     self.rehydrated_session_for(
                         session_id.as_str(),
