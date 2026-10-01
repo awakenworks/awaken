@@ -250,8 +250,14 @@ def projection_input_boundary_violations(
         errors.append("Managed candidate reads durable projection fields from its warm record")
     if re.search(r"\bself\.owner_scope\s*\(", entrypoint):
         errors.append("Managed candidate reads owner scope from its warm map, not the durable root")
+    if "awaken_managed_session_events::project(" not in entrypoint:
+        errors.append("Managed candidate lost its single committed-prefix domain plan")
     for relative, source in (adjacent_modules or {}).items():
         production = _crate_boundary_workspace.production_rust(source)
+        if re.search(r"\b(?:issued_tool_events|coordination_orders|cross_posts)\s*\(", production):
+            errors.append(
+                f"{relative}: coordination fact selection must consume the committed-prefix plan"
+            )
         # Child status lives in a sibling of committed_projection.rs. Discover
         # that sibling from the owning events directory below, rather than
         # keeping an allow/deny list of files that would miss a module split.
@@ -431,6 +437,7 @@ fn build_committed_projection_candidate() {
     read_persisted_session_projection(session_id); record.into_delivery_memo();
 }
 fn build_committed_projection_candidate_over(base: CommittedPrefixBase) {}
+fn plan() { awaken_managed_session_events::project(); }
 """
     record = """
 struct ProjectionDeliveryMemo {
@@ -471,6 +478,20 @@ fn into_delivery_memo(self) {
     assert projection_input_boundary_violations(
         entry, record, {}, child_wire_write
     ) == [], "P7/E1 output write"
+    # Causes: P8 a sibling renderer feeds its emitted tool events back into
+    # domain selection; P9 the candidate bypasses the single domain plan.
+    # Effects: E2 each case is rejected. Decision rows R8=P8=>E2,
+    # R9=P9=>E2; ordinary wire writes still satisfy P7/E1.
+    rendered_feedback = {
+        "timeline_encoding.rs": "fn issued_tool_events(record: &SessionRecord) { record.events.iter(); }"
+    }
+    assert projection_input_boundary_violations(
+        entry, record, {}, rendered_feedback
+    ), "P8/E2 rendered feedback"
+    assert projection_input_boundary_violations(
+        entry.replace("awaken_managed_session_events::project()", "reuse_rendered_events()"),
+        record, {},
+    ), "P9/E2 missing domain plan"
     assert projection_input_boundary_violations(
         entry + " fn late(&self) { self.owner_scope(session_id); }", record, {}
     ), "P6/E2 warm owner"

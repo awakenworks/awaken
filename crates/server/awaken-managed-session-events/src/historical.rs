@@ -121,6 +121,32 @@ pub fn historical_message_boundaries<'a>(
         .collect()
 }
 
+/// An Awaiting audit needs its Run-qualified synthetic ToolUse only when no
+/// exact matching Assistant ToolUse had committed as of that audit. The
+/// protocol renderer and committed coordination plan share this predicate so
+/// a later Message cannot rekey an already-issued call on either path.
+#[must_use]
+pub fn needs_synthetic_awaiting_tool(
+    snapshot: &RunRecoverySnapshot,
+    lifecycle: &RunLifecycleEvent,
+    pending: &Pending,
+) -> bool {
+    !snapshot
+        .messages
+        .iter()
+        .zip(&snapshot.message_commit_cursors)
+        .any(|(message, source)| {
+            *source <= lifecycle.source_commit_cursor
+                && historical_message_await_name(
+                    message,
+                    pending,
+                    &lifecycle.run_id,
+                    message.id.assistant_coordinates().map(|(run, _, _)| run),
+                )
+                .is_some()
+        })
+}
+
 /// The one source-scoped occurrence rule for a committed ToolUse Message and
 /// its Awaiting audit. A legacy Message with no proven Run coordinate needs an
 /// exact name as well as call id and input; a signed Run coordinate can retain

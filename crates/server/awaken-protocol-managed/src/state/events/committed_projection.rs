@@ -35,7 +35,6 @@ use awaken_managed_session_events::{
 };
 use candidate_evidence::CandidateEvidence;
 use canonical_order::CanonicalizationEvidence;
-pub(super) use canonical_order::committed_tool_orders;
 pub(super) use root_projection::transcript_fact_key;
 
 /// One clean reduction base. Only `memo` came from a prior warm publication;
@@ -202,6 +201,19 @@ impl ManagedState {
             &evidence.links,
         )
         .map_err(projection_error)?;
+        let coordination = awaken_managed_session_events::project(
+            &awaken_managed_session_events::CommittedPrefix {
+                session_id,
+                root: evidence.root.as_ref(),
+                root_blocked: evidence.root_blocked(session_id),
+                root_response_coordinates: &evidence.root_response_coordinates,
+                links: &evidence.links,
+                lifecycle: &evidence.acceptance.accepted,
+                historical_pending: &evidence.historical_pending,
+                order_index: &order_index,
+            },
+            managed_tool_event_id,
+        );
 
         // Build the complete disposable projection on a private result snapshot. A
         // transcript can be observed between its ToolUse and ToolResult commits,
@@ -211,10 +223,11 @@ impl ManagedState {
         // authority; only a fully valid projection replaces the warm cache.
         Self::apply_persisted_session(&mut staged_record, &persisted);
         let record = &mut staged_record;
-        let root = self.project_root_prefix(record, session_id, &persisted, &evidence)?;
+        let root =
+            self.project_root_prefix(record, session_id, &persisted, &evidence, &order_index)?;
         let delegation = evidence.delegation();
         let mut child_threads =
-            self.append_delegation_projections(record, delegation, &order_index)?;
+            self.append_delegation_projections(record, delegation, &coordination)?;
         self.close_aggregate(
             record,
             session_id,
@@ -251,8 +264,8 @@ impl ManagedState {
             record,
             CanonicalizationEvidence {
                 outcome_projections: &evidence.outcomes,
-                links: &evidence.links,
                 index: &order_index,
+                coordination: &coordination,
             },
         )?;
         if persisted.is_hidden() && persisted.is_terminal() {

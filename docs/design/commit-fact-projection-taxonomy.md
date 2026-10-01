@@ -263,16 +263,17 @@ separate domain outputs. A 10,000-unrelated-Run integration case covers the
 indexed membership boundary; it is algorithmic test evidence, not a latency or
 allocator proof.
 
-Managed coordination ordering also consumes the canonicalizer's existing
-`MessageEventIndex`. The index decodes the sole candidate Event vector once and
-joins a tool occurrence by its encoded public Thread and committed Message id.
-The removed path rescanned every Event for every root/child snapshot and matched
-only the Message id, discarding the Thread owner already present in the public
-identity. Snapshot work is now proportional to its messages, content blocks and
-exact matching tool occurrences after the one Event-index build. A qualified
-Event from another Thread cannot acquire a coordination operation merely by
-reusing a source id. This is disposable request-local join state; the Event
-vector and committed Thread snapshots remain the only payload and source truth.
+Managed coordination selection and ordering now consume one borrowed committed
+prefix domain plan. Its source is the root Thread's committed Messages, exact
+tool disposition and Awaiting evidence, links, and the shared `OrderIndex`;
+the Managed adapter supplies only the existing public tool identity codec. The
+same plan feeds child activity and final canonical sorting, so neither stage
+reconstructs `send_message` receipts from the candidate Event vector. A call
+without a visible first accepted result creates no cross-post; a late accepted
+result anchors it at that result's commit. The adapter still encodes the facts,
+reattaches transient previews, validates the immutable published prefix, and
+CAS-publishes only a complete candidate. An Event from another Thread cannot
+acquire a root coordination operation by reusing a Message or call id.
 
 For tool waits and external results:
 
