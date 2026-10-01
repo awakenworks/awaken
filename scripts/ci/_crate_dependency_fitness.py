@@ -90,10 +90,9 @@ KNOWN_INVERSIONS: dict[tuple[str, str], str] = {
         for target in ("awaken-dispatch",)
     },
     **{
-        ("awaken-credential-materializer", target): "credential materializer reaches control/worker implementations; depend on their contracts"
+        ("awaken-credential-materializer", target): "credential materializer reaches Control Vault implementation; inject the authority through its contract"
         for target in (
             "awaken-credential-vault",
-            "awaken-run-executor-acp",
         )
     },
     **{

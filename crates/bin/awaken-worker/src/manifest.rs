@@ -191,7 +191,8 @@ impl From<&awaken_credential_materializer::PinnedCredentialMaterializer>
                 .map(|cli| {
                     (
                         cli.id.to_string(),
-                        materializer.acp_model_capabilities(*cli),
+                        materializer
+                            .acp_model_capabilities(cli.id, cli.managed_credential_delivery),
                     )
                 })
                 .collect(),

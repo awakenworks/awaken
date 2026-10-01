@@ -11,6 +11,8 @@ use awaken_agent_channel::AgentChannel;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub mod managed_credential;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NegotiatedAcpCapabilities {
     pub protocol_version: String,
