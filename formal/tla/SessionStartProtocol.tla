@@ -301,14 +301,12 @@ TerminateSession ==
     /\ UNCHANGED <<eventVars, workRowPresent, workVars,
                    realizationWorkEpoch>>
 
-OtherNext ==
+\* Partition the one composed transition relation by primary state effect.
+\* RootOtherNext includes the coordinated Event close; Work/Event-only groups
+\* stutter Root. Every existing branch occurs once; actions above own behavior.
+RootOtherNext ==
     \/ ProjectWork
     \/ LoseQueuedWorkProjection
-    \/ \E worker \in Workers: ClaimWork(worker)
-    \/ \E worker \in Workers: ReclaimWork(worker)
-    \/ \E worker \in Workers, expected \in 0..MaxHeartbeat:
-         HeartbeatWork(worker, expected)
-    \/ AdvanceStoreTime
     \/ \E worker \in Workers: BeginRealization(worker)
     \/ \E worker \in Workers, epoch \in 0..MaxEpoch:
          StageRealization(worker, epoch)
@@ -319,6 +317,19 @@ OtherNext ==
     \/ \E worker \in Workers, epoch \in 0..MaxEpoch:
          FailRealization(worker, epoch)
     \/ FenceStaleRealization
+    \/ SettleEventAndClose
+    \/ TerminateSession
+
+WorkOtherNext ==
+    \/ \E worker \in Workers: ClaimWork(worker)
+    \/ \E worker \in Workers: ReclaimWork(worker)
+    \/ \E worker \in Workers, expected \in 0..MaxHeartbeat:
+         HeartbeatWork(worker, expected)
+    \/ AdvanceStoreTime
+    \/ \E worker \in Workers, epoch \in 0..MaxEpoch:
+         ReleaseWork(worker, epoch)
+
+EventOtherNext ==
     \/ \E worker \in Workers: ReserveRun(worker)
     \/ \E worker \in Workers: RegisterRunActivity(worker)
     \/ \E worker \in Workers: ActivateRun(worker)
@@ -333,10 +344,8 @@ OtherNext ==
     \/ \E worker \in Workers, epoch \in 0..MaxEpoch:
          SettleDispatch(worker, epoch)
     \/ MarkEventProcessed
-    \/ SettleEventAndClose
-    \/ \E worker \in Workers, epoch \in 0..MaxEpoch:
-         ReleaseWork(worker, epoch)
-    \/ TerminateSession
+
+OtherNext == RootOtherNext \/ WorkOtherNext \/ EventOtherNext
 
 Next ==
     \/ CreateWithInitialEvent
