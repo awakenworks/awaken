@@ -552,6 +552,11 @@ fn explicit_and_standard_manifest_sources_are_mutually_exclusive() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_runs_register_ready_drain_quiesce_and_deregister() {
+    // Launcher identity decision L1: a valid preselected incarnation is the
+    // exact identity registered and passed to the application factory. The
+    // absence/default and malformed rows are owned by the adjacent builder
+    // decision table; lifecycle/claim authority remains unchanged here.
+    let preselected = "0123456789abcdef0123456789abcdef";
     let upstream = FakeWorkerUpstream::start();
     let request_authorizer = Arc::new(SignedWorkerRequestAuthorizer::new(
         WorkerSigningCredential::new(
@@ -571,6 +576,8 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
             .with_request_authorizer(request_authorizer)
             .with_worker_id("worker-node-test"),
     )
+    .with_preselected_incarnation_id(preselected)
+    .expect("trusted launcher supplied a valid incarnation")
     .with_deployment_config(coordinator_defaults)
     .with_manifest(manifest())
     .with_attempt_decorator_factory(Arc::new(move |context| {
@@ -609,6 +616,7 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
         .clone()
         .expect("factory receives registered identity");
     assert_eq!(identity.worker_id, "worker-node-test");
+    assert_eq!(identity.incarnation_id, preselected);
     assert_eq!(identity.generation, 1);
 
     let requests = upstream.requests();

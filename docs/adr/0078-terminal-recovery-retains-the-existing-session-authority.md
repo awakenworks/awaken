@@ -316,6 +316,72 @@ replay. Its original source-closure and divergent-remote cases remain exercised.
 This source proof does not certify the pending original UI delivery or missing
 historical physical-attempt termination evidence.
 
+## Amendment 2026-10-02: local Worker exit evidence stays below the same ports
+
+A Linux user-service adapter now pairs the existing `WorkerExecutionBindingSource`
+and `WorkerExecutionStopSource` through one `WorkerTransport`. It binds an exact
+Worker incarnation to a unique systemd transient unit, its `InvocationID`,
+cgroup and kernel boot identity before Dispatch admits physical execution.
+The unit must retain exit state, have no automatic restart and use
+`KillMode=control-group`. Neither the Worker request nor a process-group PID is
+accepted as an exit receipt.
+
+After a closed Worker is authorized for stop, the adapter rechecks the original
+unit, kills its cgroup and waits for the exact invocation to have no remaining
+process group. It durably writes a provider-owned physical exit receipt before
+retiring the transient unit; response loss can reopen that receipt and finish
+the same unit retirement. A changed kernel boot proves the old local process
+cannot survive only when the unique unit name is not reused. Missing or
+conflicting evidence stays Unknown. The Registry still records the Worker exit,
+and Dispatch alone retires its physical attempt; this filesystem receipt is
+neither a Run result nor a Session cleanup manifest.
+
+The local adapter currently admits complete stop classification only for the
+Native model-only coverage profile. Journalled tools, opaque ACP execution and
+response-only remote requests remain Unknown until their independent effects
+have pre-entry enrollment and physical closure evidence. The platform launcher
+can now preselect the Worker's 128-bit incarnation through the canonical
+`WorkerNodeBuilder`, and shares the exact unit-name projection with the stop
+adapter. It has not yet selected this adapter or started the matching unit
+automatically, so the local product does not yet claim user-invisible hard-crash
+recovery. Flow's existing `supervise_agent_worker` loop, not systemd
+`Restart=`, will own placement of each new Worker incarnation; the unit owns
+only physical process supervision and never becomes a second claim scheduler.
+Kubernetes cross-process Sandbox creation and original UI-root
+acceptance remain separate outstanding gates.
+
+## Amendment 2026-10-02: Kubernetes Namespace deletion is not a request join
+
+The K8s adapter currently records an exact create attempt in process memory.
+`prepare` can create a retained PVC before its Pod, and `converge` can create
+ConfigMaps and Secrets after the Pod. The handle-free proof is deliberately
+restricted to a zero-participant plan and an attempt gate observed by the same
+process. A replacement Worker has no such gate and returns Unknown. This is the
+correct safety outcome, not completed cross-process recovery.
+
+A live isolated k3d v1.31.5 experiment rejected a tempting shortcut. A
+Pod Create passed `NamespaceLifecycle` and paused in a validating webhook. The
+Namespace then fully deleted. After the webhook released the already-admitted
+request, the API returned Pod creation success and an all-namespaces list showed
+the Pod under the deleted Namespace name. The isolated Pod and webhook were
+subsequently deleted. A namespace deletion timestamp, finalizer completion,
+namespace 404, Pod 404, and a finite retry count therefore cannot establish
+that every earlier admitted request has finished. A namespace may help isolate
+new requests, but is not a request-completion witness by itself.
+
+The physical effect owner must join every admitted Create request through an
+independent request lifetime and retain an exact, durable result before a
+replacement process may claim closure. That witness must cover PVC, Pod,
+ConfigMap, Secret and other participants admitted by the frozen plan; an
+unknown broker lifetime or result remains Unknown. The existing provider
+`preflight_create_for_effect`, `prepare_for_effect`, `activate_for_effect`,
+`prove_unmaterialized_absence`, exact UID deletion and Session cleanup receipt
+remain the only execution and cleanup path. The implementation must extend
+those ports rather than introduce a Flow cleanup queue or infer closure from
+Worker expiry. Until a provider-backed request join is implemented and tested
+across Worker and control-plane restarts, Flow cannot advance a successor on
+handle-free Kubernetes cleanup.
+
 ## Amendment 2026-10-05: unfinished terminal cleanup remains Worker demand
 
 A Hosted Run can settle its Dispatch lease after the Session root has recorded
