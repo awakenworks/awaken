@@ -576,8 +576,8 @@ receipt fails closed and never falls back to Worker or workload plaintext.
 
 A hosted Connector uses `PlatformRelay` as the neutral realization fact for one
 trusted platform egress process. That process composes the existing
-`PinnedCredentialMaterializer` over the canonical `CredentialRepo` and
-`SecretStore`, selects an exact opaque Platform trust-domain holder, and
+`PinnedCredentialMaterializer` with a Control-owned `VaultLocalMaterialAuthority`
+over the canonical `CredentialRepo`/`SecretStore`, selects an exact opaque Platform trust-domain holder, and
 resolves an immutable `CredentialAccess` only with the exact Workspace and
 target/use fingerprint. `CredentialUsage::HttpEffect` binds each declared field
 to exact header, query, or RFC 6901 JSON-pointer destinations. The Gateway must
@@ -1139,7 +1139,7 @@ envelope for a Control reference. The configured opaque Worker trust domain is
 part of every tuple; a Worker-only adapter never advertises ACP Workload access.
 
 `PinnedCredentialMaterializer` remains the one projection owner. It combines
-installed resolver tuples with its local Vault composition and adds the actual
+installed resolver tuples with its injected Control Vault authority and adds the actual
 Native, ACP, MCP or platform realization mechanism in separate existing profiles.
 The credential admission kernel checks one complete profile; composing profiles
 must never synthesize an unimplemented Cartesian product. The same exact tuple

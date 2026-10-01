@@ -194,8 +194,11 @@ mod tests {
         TestServices {
             resolver: direct_resolver(catalog.clone(), creds.clone()),
             materializer: CredentialInferenceMaterializer::new(
-                creds.clone(),
-                secrets.clone(),
+                Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+                    creds.clone(),
+                    secrets.clone(),
+                    awaken_lease_contract::system_clock(),
+                )),
                 awaken_lease_contract::system_clock(),
             ),
             catalog,
@@ -331,8 +334,11 @@ mod tests {
         .expect("coherent inference publication candidate");
         (
             CredentialInferenceMaterializer::new(
-                credentials,
-                secrets.clone(),
+                Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+                    credentials,
+                    secrets.clone(),
+                    awaken_lease_contract::system_clock(),
+                )),
                 awaken_lease_contract::system_clock(),
             ),
             candidate,

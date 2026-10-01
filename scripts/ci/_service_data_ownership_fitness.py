@@ -96,11 +96,7 @@ CREDENTIAL_INFERENCE_SOURCE = (
     "crates/server/awaken-credential-materializer/src/inference.rs"
 )
 CONTROL_MODEL_PUBLICATION = "crates/control/awaken-control/src/model_publication.rs"
-CREDENTIAL_REFRESH_SOURCES = (
-    "crates/server/awaken-credential-materializer/src/lib.rs",
-    "crates/server/awaken-credential-materializer/src/refresh.rs",
-    "crates/server/awaken-credential-materializer/src/oauth_refresh.rs",
-)
+CONTROL_CREDENTIAL_REFRESH_SOURCE = "crates/control/awaken-control/src/credential_refresh.rs"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -1180,18 +1176,20 @@ def coordinator_control_authority_dependency_violations(manifest: dict) -> list[
 
 
 def credential_refresh_authority_violations(
-    materializer_source: str, coordinator_source: str
+    materializer_source: str, control_source: str, coordinator_source: str
 ) -> list[str]:
-    """Exact Vault refresh belongs to the existing credential adapter."""
+    """One neutral factory port, one Control-owned Vault implementation."""
 
     errors: list[str] = []
-    for required in (
-        "trait CredentialRefreshFactory",
-        "struct VaultRefreshFactory",
-        "struct VaultRefresher",
-    ):
-        if materializer_source.count(required) != 1:
-            errors.append(f"Credential materializer must own one `{required}`")
+    if materializer_source.count("trait CredentialRefreshFactory") != 1:
+        errors.append("Credential materializer must own one neutral `trait CredentialRefreshFactory`")
+    if "trait CredentialRefreshFactory" in control_source:
+        errors.append("Control duplicates the neutral credential refresh factory port")
+    for required in ("struct VaultRefreshFactory", "struct VaultRefresher"):
+        if control_source.count(required) != 1:
+            errors.append(f"Control Vault composition must own one `{required}`")
+        if required in materializer_source:
+            errors.append(f"Credential materializer retains Control implementation `{required}`")
     for forbidden in (
         "trait CredentialRefreshFactory",
         "struct VaultRefreshFactory",
@@ -1693,13 +1691,23 @@ def selftest() -> None:
         "struct CatalogModelPublicationResolver; CredentialRepo",
     )  # O46
     assert credential_refresh_authority_violations(
-        "trait CredentialRefreshFactory; struct VaultRefreshFactory; struct VaultRefresher;",
+        "trait CredentialRefreshFactory;",
+        "struct VaultRefreshFactory; struct VaultRefresher;",
         "pub mod coordinator_component;",
     ) == []  # O47
     assert credential_refresh_authority_violations(
         "trait CredentialRefreshFactory;",
+        "struct VaultRefreshFactory;",
         "struct VaultRefresher;",
     )  # O48
+    # Cause C3 a second Vault factory survives beside Control's; effect E3
+    # refuses that duplicate even when the required owner also exists.
+    # Rule O48b=C3=>E3; O47 has one neutral port and one concrete owner.
+    assert credential_refresh_authority_violations(
+        "trait CredentialRefreshFactory; struct VaultRefreshFactory;",
+        "struct VaultRefreshFactory; struct VaultRefresher;",
+        "pub mod coordinator_component;",
+    )  # O48b
     assert coordinator_control_authority_dependency_violations(
         {"dependencies": {"awaken-config-service": {"workspace": True}}}
     ) == []  # O49
@@ -1923,9 +1931,14 @@ def check_all(repo_root: Path) -> list[str]:
         errors.append(f"Control model publication: {error}")
     for error in credential_refresh_authority_violations(
         "\n".join(
-            (repo_root / source).read_text(encoding="utf-8")
-            for source in CREDENTIAL_REFRESH_SOURCES
+            _crate_boundary_workspace.production_rust(path.read_text(encoding="utf-8"))
+            for path in sorted((repo_root / CREDENTIAL_INFERENCE_SOURCE).parent.rglob("*.rs"))
+            # This directory is reached only through `#[cfg(test)] mod tests`
+            # from lib.rs; production modules are discovered by the tree walk.
+            if "tests" not in path.relative_to((repo_root / CREDENTIAL_INFERENCE_SOURCE).parent).parts
+            and not path.stem.endswith("_tests")
         ),
+        (repo_root / CONTROL_CREDENTIAL_REFRESH_SOURCE).read_text(encoding="utf-8"),
         coordinator_production,
     ):
         errors.append(f"Credential refresh: {error}")

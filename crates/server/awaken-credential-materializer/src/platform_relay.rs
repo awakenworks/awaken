@@ -124,7 +124,7 @@ mod tests {
         ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
 
-    use crate::PinnedCredentialMaterializer;
+    use crate::pinned_vault;
 
     /// Platform-relay cause/effect graph: C1 canonical local authority stores
     /// are installed; C2 publication allows the exact Platform trust domain;
@@ -175,11 +175,8 @@ mod tests {
             [CredentialTargetContract::new(target.clone(), usage.clone())],
         ));
         credentials.put(source.clone()).await.unwrap();
-        let materializer = PinnedCredentialMaterializer::new(
-            credentials,
-            secrets,
-            awaken_lease_contract::system_clock(),
-        );
+        let materializer =
+            pinned_vault(credentials, secrets, awaken_lease_contract::system_clock());
         let holder = PlaintextHolder::new(PlaintextBoundary::Platform, "gateway.beta");
         let access = CredentialAccess::new(
             CredentialRef {

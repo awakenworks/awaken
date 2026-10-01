@@ -46,6 +46,8 @@ awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] 
 awaken-model-catalog.workspace = true
 awaken-model-catalog-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-credential-vault = { workspace = true, features = ["oauth-command"] }
+awaken-credential-materializer.workspace = true
+awaken-credential.workspace = true
 awaken-credential-store = { workspace = true, features = ["sqlite", "sealed-aead", "postgres"] }
 awaken-credential-contract.workspace = true
 awaken-data-subject-application.workspace = true
@@ -74,7 +76,9 @@ sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+form_urlencoded = "1"
 tracing = "0.1"
 url.workspace = true
 schemars = { version = "1", optional = true }

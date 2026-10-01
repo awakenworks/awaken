@@ -507,8 +507,11 @@ fn local_managed_state_over(
         .with_repository_binding_verifier(repository_bindings)
         .with_credential_materializer(
             awaken_credential_materializer::PinnedCredentialMaterializer::new(
-                credentials,
-                secrets,
+                Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+                    credentials,
+                    secrets,
+                    clock.clone(),
+                )),
                 clock.clone(),
             ),
         );

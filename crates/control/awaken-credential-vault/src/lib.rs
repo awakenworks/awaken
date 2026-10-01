@@ -24,9 +24,11 @@
 pub mod availability;
 pub mod catalog;
 mod credential_access;
+mod local_material;
 #[cfg(feature = "oauth-command")]
 pub mod oauth;
 pub mod repo;
+pub use local_material::{VaultAttemptCredentialDeliverySource, VaultLocalMaterialAuthority};
 
 pub use availability::{AvailabilityLedger, AvailabilityState};
 pub use credential_access::{

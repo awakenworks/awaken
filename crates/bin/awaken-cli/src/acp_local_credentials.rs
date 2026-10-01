@@ -265,8 +265,11 @@ impl PreparedLocalAcp {
     ) -> Result<awaken_worker::WorkerNode, String> {
         let resolver = self.resolver;
         let credentials = awaken_credential_materializer::PinnedCredentialMaterializer::new(
-            self.stores.credentials,
-            self.stores.secrets,
+            Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+                self.stores.credentials,
+                self.stores.secrets,
+                clock.clone(),
+            )),
             clock.clone(),
         );
         configured_worker_builder(upstream, deployment, credentials, clock)?
@@ -298,8 +301,11 @@ impl PreparedLocalWorker {
         clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<awaken_worker::WorkerNode, String> {
         let credentials = awaken_credential_materializer::PinnedCredentialMaterializer::new(
-            self.stores.credentials.clone(),
-            self.stores.secrets.clone(),
+            Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+                self.stores.credentials.clone(),
+                self.stores.secrets.clone(),
+                clock.clone(),
+            )),
             clock.clone(),
         );
         let mut builder = configured_worker_builder(upstream, deployment, credentials, clock)?
@@ -869,8 +875,11 @@ mod tests {
         )
         .with_credential_materializer(
             awaken_credential_materializer::PinnedCredentialMaterializer::new(
-                credentials,
-                Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+                Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+                    credentials,
+                    Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+                    awaken_lease_contract::system_clock(),
+                )),
                 awaken_lease_contract::system_clock(),
             ),
         )

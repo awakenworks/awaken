@@ -13,12 +13,7 @@ use awaken_runtime_contract::{
     CredentialRealizationKind, PlaintextHolder,
 };
 
-#[derive(Clone, Copy)]
-#[cfg_attr(not(feature = "authority"), allow(dead_code))]
-pub(super) struct ExpectedProviderTarget<'a> {
-    pub(super) provider_id: &'a str,
-    pub(super) protocol_endpoint_id: Option<&'a str>,
-}
+pub(super) use awaken_runtime_contract::CredentialProviderExpectation as ExpectedProviderTarget;
 
 /// Validate one explicit adapter mechanism without introducing a capability
 /// search. The caller is the installed adapter; this function only prevents its

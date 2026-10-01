@@ -724,7 +724,12 @@ pub async fn build_resolved_real_router() -> Router {
     .await
     .expect("publish model candidate");
     let materializer = awaken_credential_materializer::CredentialInferenceMaterializer::new(
-        cred_repo, secrets, clock,
+        Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+            cred_repo,
+            secrets,
+            clock.clone(),
+        )),
+        clock,
     );
     let context = attempt_credential::context(&published.primary);
     let executor = materializer
@@ -860,7 +865,12 @@ pub async fn build_oauth_resolved_router() -> Router {
     .await
     .expect("publish OAuth model candidate");
     let materializer = awaken_credential_materializer::CredentialInferenceMaterializer::new(
-        cred_repo, secrets, clock,
+        Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+            cred_repo,
+            secrets,
+            clock.clone(),
+        )),
+        clock,
     );
     let context = attempt_credential::context(&published.primary);
     let executor = materializer

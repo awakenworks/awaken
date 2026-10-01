@@ -18,7 +18,10 @@
     },
     "awaken-credential-contract": {
       "depth": 1,
-      "production_lines": 2404
+      "production_lines": 2425,
+      "growth_reasons": {
+        "production_lines": "Exact provider and endpoint identity must cross the existing borrowed material resolver and serialized attempt delivery; the one-way binding fingerprint cannot authorize a live Vault read."
+      }
     },
     "awaken-deployment-contract": {
       "depth": 1,
@@ -69,10 +72,10 @@
     },
     "awaken-runtime-contract": {
       "depth": 2,
-      "production_lines": 8084,
+      "production_lines": 8105,
       "catch_all_errors": 7,
       "growth_reasons": {
-        "production_lines": "RetryPolicy regains a count bound for rate limits (throttled_max_retries, default 12) alongside the logical deadline, so an instant zero-pause 429 stops at its count while a long pause stops at the deadline; a field, a default constant and doc lines. AttemptQuiescence is the existing backend-neutral live handle in RuntimeRunContext, shared by Native, ACP and A2A. Its 49-line closure extension reuses pinned Tokio TaskTracker and CancellationToken instead of a custom counter; putting the concrete handle in Runtime would create a contract-to-implementation cycle. No contract graph, backend vocabulary, persisted state or wire surface is added. This slice adds the sealed RunActivation source/format wire, live context projection, and a single checked parse used by constructors and serde; it closes a producer bypass found by rust-quick without IO or a second execution owner."
+        "production_lines": "RetryPolicy regains a count bound for rate limits (throttled_max_retries, default 12) alongside the logical deadline, so an instant zero-pause 429 stops at its count while a long pause stops at the deadline; a field, a default constant and doc lines. AttemptQuiescence is the existing backend-neutral live handle in RuntimeRunContext, shared by Native, ACP and A2A. Its 49-line closure extension reuses pinned Tokio TaskTracker and CancellationToken instead of a custom counter; putting the concrete handle in Runtime would create a contract-to-implementation cycle. No contract graph, backend vocabulary, persisted state or wire surface is added. This slice adds the sealed RunActivation source/format wire, live context projection, and a single checked parse used by constructors and serde; it closes a producer bypass found by rust-quick without IO or a second execution owner. Exact provider and endpoint identity must cross the existing borrowed material resolver and serialized attempt delivery; the one-way binding fingerprint cannot authorize a live Vault read."
       }
     },
     "awaken-sandbox-control": {

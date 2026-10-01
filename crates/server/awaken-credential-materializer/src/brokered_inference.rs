@@ -668,6 +668,11 @@ impl BrokeredCandidateExecutor {
         local_run_correlation: Option<String>,
         ownership: Option<Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>>,
     ) -> Result<Self, String> {
+        // Brokered supply asks its Cloud client for a provider routing label,
+        // not a Vault source authorization coordinate. The catalog may give
+        // either a versioned or bare label; direct credential materialization
+        // instead uses candidate_provider_expectation and requires both exact
+        // versioned Provider and endpoint pins before any Vault material read.
         let provider = provider_ref
             .split_once('@')
             .map_or(provider_ref, |(provider, _)| provider)
@@ -1233,6 +1238,28 @@ mod tests {
             base_url: "https://gateway.invalid".into(),
             upstream_model: "gpt-5".into(),
             processing_placement: None,
+        }
+    }
+
+    #[test]
+    fn brokered_provider_label_accepts_bare_or_versioned_catalog_names() {
+        // Causes: B1 Cloud catalog sends a versioned provider label; B2 it
+        // sends a bare label. Effect E1 both select the same brokered client
+        // provider without opening local credential material. Rules
+        // R1=B1=>E1; R2=B2=>E1. The direct Vault path's required endpoint
+        // coordinate is deliberately a different, stricter authority check.
+        for label in ["openai@3", "openai"] {
+            let executor = BrokeredCandidateExecutor::new(
+                Arc::new(RecordingClient::default()),
+                label,
+                "gpt-5",
+                &wire_endpoint("open_ai_responses", "openai"),
+                UnspecifiedReasoning::ProviderDefault,
+                None,
+                None,
+            )
+            .expect("R1-R2 brokered label");
+            assert_eq!(executor.provider, "openai", "R1-R2/E1 {label}");
         }
     }
 

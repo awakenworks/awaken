@@ -5,18 +5,17 @@
 //! Exact credential realization for publication-pinned runtime access.
 //!
 //! This host adapter owns no selection policy and cannot enumerate credentials. It
-//! accepts one immutable [`ResolvedModelCandidate`], verifies its
-//! Workspace/revision/usage pins against the persisted row, then materializes
-//! that exact secret. Native provider execution, optional brokered inference,
-//! and ACP provisioning share this adapter so candidate routing cannot drift.
+//! accepts one immutable [`ResolvedModelCandidate`], validates its exact
+//! holder, target and claim, then calls the installed material authority once.
+//! The Control Vault adapter alone rechecks the persisted source row and opens
+//! sealed bytes. Native provider execution, optional brokered inference, and
+//! ACP provisioning share this adapter so candidate routing cannot drift.
 
 #[cfg(feature = "brokered")]
 pub mod brokered_inference;
 mod credential_artifact;
 mod http_credential;
 mod inference;
-#[cfg(feature = "authority")]
-mod oauth_refresh;
 mod platform_egress;
 mod platform_relay;
 pub mod recipient_envelope;
@@ -37,8 +36,6 @@ pub use inference::{
     CredentialInferenceMaterializer, ResolvedExecutorError, executor_from_materialized_endpoint,
     executor_from_materialized_endpoint_for_provider,
 };
-#[cfg(feature = "authority")]
-pub use oauth_refresh::{VaultRefreshFactory, VaultRefresher};
 pub use platform_egress::{
     MediatedMcpRoute, PlatformMcpEgressProvisioner, PlatformMcpEgressRequest,
 };
@@ -50,28 +47,16 @@ use std::sync::Mutex;
 
 mod admission;
 mod ambient_environment;
-#[cfg(feature = "authority")]
-mod attempt_delivery;
+#[cfg(all(test, feature = "authority"))]
+mod attempt_delivery_tests;
 mod claimed_materialization;
 mod material_capabilities;
 use admission::{ExpectedProviderTarget, admit_exact_adapter};
 pub use ambient_environment::{AmbientApiKeyEnvironmentError, reject_ambient_api_key_environment};
-#[cfg(feature = "authority")]
-pub use attempt_delivery::VaultAttemptCredentialDeliverySource;
 use awaken_lease_contract::WallClockExt as _;
-#[cfg(feature = "authority")]
-mod material_error;
-#[cfg(feature = "authority")]
-use material_error::classify_secret_store_error;
 
-#[cfg(feature = "authority")]
+#[cfg(all(test, feature = "authority"))]
 use awaken_agent_contract::RedactedString;
-#[cfg(feature = "authority")]
-use awaken_credential_contract::CredentialSourceId;
-#[cfg(feature = "authority")]
-use awaken_credential_vault::repo::CredentialRepo;
-#[cfg(feature = "authority")]
-use awaken_credential_vault::{CredentialSource, CredentialStatus, SecretRef, SecretStore};
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
 use awaken_runtime_contract::{
     CredentialAccess, CredentialMaterialBinding, CredentialMaterialError,
@@ -91,9 +76,9 @@ struct RegisteredExtensionConsumer {
 pub struct PinnedCredentialMaterializer {
     clock: Arc<dyn awaken_lease_contract::WallClock>,
     #[cfg(feature = "authority")]
-    credentials: Option<Arc<dyn CredentialRepo>>,
+    local_material_resolver: Option<Arc<dyn CredentialMaterialResolver>>,
     #[cfg(feature = "authority")]
-    secrets: Option<Arc<dyn SecretStore>>,
+    local_secret_broker: Option<Arc<dyn awaken_provisioning_contract::SecretBroker>>,
     external_material_resolver: Option<Arc<dyn CredentialMaterialResolver>>,
     extension_consumers: Arc<BTreeMap<String, RegisteredExtensionConsumer>>,
     pending_process_secrets: Arc<Mutex<HashMap<String, secret_broker::PendingProcessSecret>>>,
@@ -101,50 +86,22 @@ pub struct PinnedCredentialMaterializer {
         Arc<Mutex<HashMap<String, secret_broker::PendingCredentialArtifact>>>,
 }
 
-/// Last-mile lifecycle gate shared by every local Vault material read.
-/// Publication-time checks cannot substitute for this recheck because a
-/// credential may be disabled or archived after its access reference is frozen.
-#[cfg(feature = "authority")]
-#[must_use]
-const fn credential_status_allows_materialization(status: CredentialStatus) -> bool {
-    matches!(status, CredentialStatus::Active)
-}
-
-#[cfg(all(kani, feature = "authority"))]
-/// @obligation credential_effect.boundary_preserves_exact_materialization_authority
-/// @obligation worker.revoked_credential_blocks_new_materialization
-/// @proof-input-debt tautology credential_status_allows_materialization
-#[kani::proof]
-fn new_materialization_admits_only_active_credential_status() {
-    // Test design — Causes: the current persisted lifecycle is Active,
-    // Disabled, or Archived. Effects: only Active admits a new material read;
-    // both revoked forms fail closed. Constraint: this exact predicate is
-    // called after the current source row is loaded and before SecretStore I/O.
-    // Decision rules: M1=Active -> admit; M2=Disabled -> reject;
-    // M3=Archived -> reject.
-    let status = match kani::any::<u8>() % 3 {
-        0 => CredentialStatus::Active,
-        1 => CredentialStatus::Disabled,
-        _ => CredentialStatus::Archived,
-    };
-    assert_eq!(
-        credential_status_allows_materialization(status),
-        matches!(status, CredentialStatus::Active)
-    );
-}
-
 impl PinnedCredentialMaterializer {
     #[cfg(feature = "authority")]
     #[must_use]
-    pub fn new(
-        credentials: Arc<dyn CredentialRepo>,
-        secrets: Arc<dyn SecretStore>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
-    ) -> Self {
+    pub fn new<A>(local_authority: Arc<A>, clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self
+    where
+        A: CredentialMaterialResolver + awaken_provisioning_contract::SecretBroker + 'static,
+    {
+        // One installed authority instance implements both existing ports.
+        // The resolver and broker cannot silently point at different Vaults.
+        let local_material_resolver: Arc<dyn CredentialMaterialResolver> = local_authority.clone();
+        let local_secret_broker: Arc<dyn awaken_provisioning_contract::SecretBroker> =
+            local_authority;
         Self {
             clock,
-            credentials: Some(credentials),
-            secrets: Some(secrets),
+            local_material_resolver: Some(local_material_resolver),
+            local_secret_broker: Some(local_secret_broker),
             external_material_resolver: None,
             extension_consumers: Arc::new(BTreeMap::new()),
             pending_process_secrets: Arc::new(Mutex::new(HashMap::new())),
@@ -166,9 +123,9 @@ impl PinnedCredentialMaterializer {
         Self {
             clock,
             #[cfg(feature = "authority")]
-            credentials: None,
+            local_material_resolver: None,
             #[cfg(feature = "authority")]
-            secrets: None,
+            local_secret_broker: None,
             external_material_resolver: Some(resolver),
             extension_consumers: Arc::new(BTreeMap::new()),
             pending_process_secrets: Arc::new(Mutex::new(HashMap::new())),
@@ -233,10 +190,10 @@ impl PinnedCredentialMaterializer {
             .collect()
     }
 
-    fn has_local_stores(&self) -> bool {
+    fn has_local_authority(&self) -> bool {
         #[cfg(feature = "authority")]
         {
-            self.credentials.is_some() && self.secrets.is_some()
+            self.local_material_resolver.is_some() && self.local_secret_broker.is_some()
         }
         #[cfg(not(feature = "authority"))]
         {
@@ -334,22 +291,12 @@ impl PinnedCredentialMaterializer {
         selected_holder: &PlaintextHolder,
         realization: CredentialRealizationKind,
     ) -> Result<awaken_runtime_contract::CredentialMaterial, String> {
-        let ModelProvisioning::Provider {
-            provider_ref,
-            route_ref,
-            ..
-        } = candidate.provisioning()
-        else {
+        let ModelProvisioning::Provider { .. } = candidate.provisioning() else {
             return Err("model candidate does not require a provider credential".into());
         };
-        let provider = provider_ref
-            .split_once('@')
-            .map(|(provider, _)| provider)
-            .ok_or_else(|| "published model candidate has no versioned provider pin".to_string())?;
-        let protocol_endpoint = route_ref
-            .split_once('@')
-            .map(|(endpoint, _)| endpoint)
-            .ok_or_else(|| "published model candidate has no versioned route pin".to_string())?;
+        let expectation = awaken_runtime_contract::candidate_provider_expectation(candidate)
+            .map_err(str::to_string)?
+            .ok_or_else(|| "provider candidate has no exact source coordinate".to_string())?;
         let (published, material_binding) = candidate_credential_material_binding(candidate)
             .ok_or_else(|| "published model candidate has no credential pin".to_string())?;
         let credential = delivered_access.unwrap_or(published);
@@ -372,10 +319,7 @@ impl PinnedCredentialMaterializer {
                 credential,
                 selected_holder,
                 material_binding,
-                Some(ExpectedProviderTarget {
-                    provider_id: provider,
-                    protocol_endpoint_id: Some(protocol_endpoint),
-                }),
+                Some(expectation.as_borrowed()),
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -423,8 +367,6 @@ impl PinnedCredentialMaterializer {
         binding: CredentialMaterialBinding,
         expected_provider: Option<ExpectedProviderTarget<'_>>,
     ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
-        #[cfg(not(feature = "authority"))]
-        let _ = expected_provider;
         binding.validate()?;
         if !access
             .policy
@@ -446,118 +388,44 @@ impl PinnedCredentialMaterializer {
             source: access.material_source,
             envelope: access.envelope.is_some(),
         };
-        if access.envelope.is_some()
+        let external = access.envelope.is_some()
             || access.material_source == CredentialMaterialSource::WorkerReference
-            || !self.has_local_stores()
-        {
-            let resolver = self
-                .external_material_resolver
+            || !self.has_local_authority();
+        let resolver = if external {
+            self.external_material_resolver
                 .as_ref()
-                .ok_or(CredentialMaterialError::Unavailable)?;
-            if !resolver.material_capabilities().contains(&external_request) {
+                .ok_or(CredentialMaterialError::Unavailable)?
+        } else {
+            if access.material_source != CredentialMaterialSource::ControlPlaneReference {
                 return Err(CredentialMaterialError::Unavailable);
             }
-            let resolved = resolver
-                .resolve_exact(CredentialMaterialRequest {
-                    access,
-                    selected_holder,
-                    binding: &binding,
-                })
-                .await?;
-            if resolved.credential != access.credential || resolved.holder != *selected_holder {
-                return Err(CredentialMaterialError::ResolverMismatch);
-            }
-            resolved.material.validate_usage(&access.usage)?;
-            return Ok(resolved);
-        }
-        if access.material_source != CredentialMaterialSource::ControlPlaneReference {
-            return Err(CredentialMaterialError::Unavailable);
-        }
-        if !self.has_local_stores() {
-            return Err(CredentialMaterialError::Unavailable);
-        }
-        #[cfg(not(feature = "authority"))]
-        return Err(CredentialMaterialError::Unavailable);
-        #[cfg(feature = "authority")]
-        {
-            let source = self.load_active_source(&access.credential.id).await?;
-            let revision = u64::try_from(source.version)
-                .map_err(|_| CredentialMaterialError::RevisionMismatch)?;
-            if revision != access.credential.revision {
-                return Err(CredentialMaterialError::RevisionMismatch);
-            }
-            if source.workspace_id != binding.workspace_id {
-                return Err(CredentialMaterialError::RecipientMismatch);
-            }
-            if expected_provider.is_some_and(|expected| {
-                !source
-                    .authorization_scope()
-                    .authorizes(expected.provider_id, expected.protocol_endpoint_id)
-            }) {
-                return Err(CredentialMaterialError::RecipientMismatch);
-            }
-            source
-                .validate_access_target(access.target.as_ref(), &access.usage)
-                .map_err(|_| CredentialMaterialError::BindingMismatch)?;
-            if let Some(descriptor) = &source.descriptor {
-                descriptor
-                    .validate_expiry(self.clock.now_ms())
-                    .map_err(|error| match error {
-                        awaken_credential_contract::CredentialDescriptorError::Expired => {
-                            CredentialMaterialError::Expired
-                        }
-                        _ => CredentialMaterialError::Invalid,
-                    })?;
-            }
-            let access_token = self.materialize_source(&source).await?;
-            let material = if access.usage == CredentialUsage::ProviderAdapter
-                && let Some(refresh) = &access.refresh
+            #[cfg(feature = "authority")]
             {
-                let source_ref = source
-                    .material_ref
-                    .as_ref()
-                    .ok_or(CredentialMaterialError::Unavailable)?;
-                if source_ref.0 != refresh.access_token_ref {
-                    return Err(CredentialMaterialError::BindingMismatch);
-                }
-                let refresh_token = self
-                    .secrets
+                self.local_material_resolver
                     .as_ref()
                     .ok_or(CredentialMaterialError::Unavailable)?
-                    .get(&SecretRef(refresh.refresh_token_ref.clone()))
-                    .await
-                    .map_err(classify_secret_store_error)?;
-                awaken_runtime_contract::CredentialMaterial::OAuth(
-                    awaken_runtime_contract::OAuthCredentialMaterial {
-                        access_token,
-                        refresh_token,
-                        expires_at_unix_ms: refresh.expires_at_unix_ms,
-                        account_id: refresh.account_id.clone(),
-                        account_plan: refresh.account_plan.clone(),
-                    },
-                )
-            } else {
-                match awaken_credential_vault::decode_structured_material(access_token)
-                    .map_err(|_| CredentialMaterialError::Invalid)?
-                {
-                    Ok(material) => {
-                        awaken_runtime_contract::CredentialMaterial::Structured(material)
-                    }
-                    Err(secret) => awaken_runtime_contract::CredentialMaterial::secret(secret),
-                }
-            };
-            material.validate_usage(&access.usage)?;
-            if let Some(descriptor) = &source.descriptor {
-                descriptor
-                    .validate_material(&material)
-                    .map_err(|_| CredentialMaterialError::MaterialKindMismatch)?;
             }
-            Ok(ResolvedCredentialMaterial {
-                credential: access.credential.clone(),
-                holder: selected_holder.clone(),
-                material,
-            })
+            #[cfg(not(feature = "authority"))]
+            {
+                return Err(CredentialMaterialError::Unavailable);
+            }
+        };
+        if external && !resolver.material_capabilities().contains(&external_request) {
+            return Err(CredentialMaterialError::Unavailable);
         }
+        let resolved = resolver
+            .resolve_exact(CredentialMaterialRequest {
+                access,
+                selected_holder,
+                binding: &binding,
+                expected_provider,
+            })
+            .await?;
+        if resolved.credential != access.credential || resolved.holder != *selected_holder {
+            return Err(CredentialMaterialError::ResolverMismatch);
+        }
+        resolved.material.validate_usage(&access.usage)?;
+        Ok(resolved)
     }
 
     /// Resolve one exact credential within the selected Workspace boundary.
@@ -617,46 +485,6 @@ impl PinnedCredentialMaterializer {
         )
         .await
     }
-
-    #[cfg(feature = "authority")]
-    async fn load_active_source(
-        &self,
-        reference: &str,
-    ) -> Result<CredentialSource, CredentialMaterialError> {
-        let source = self
-            .credentials
-            .as_ref()
-            .ok_or(CredentialMaterialError::Unavailable)?
-            .get(&CredentialSourceId(reference.to_string()))
-            .await
-            .map_err(|_| CredentialMaterialError::Unavailable)?;
-        source
-            .validate_authority()
-            .map_err(|_| CredentialMaterialError::Invalid)?;
-        if !credential_status_allows_materialization(source.status) {
-            return Err(CredentialMaterialError::Unavailable);
-        }
-        Ok(source)
-    }
-
-    #[cfg(feature = "authority")]
-    async fn materialize_source(
-        &self,
-        source: &CredentialSource,
-    ) -> Result<RedactedString, CredentialMaterialError> {
-        let secrets = self
-            .secrets
-            .as_ref()
-            .ok_or(CredentialMaterialError::Unavailable)?;
-        awaken_credential_vault::materialize(source, secrets.as_ref())
-            .await
-            .map_err(classify_secret_store_error)
-    }
-
-    #[cfg(feature = "authority")]
-    pub fn local_stores(&self) -> Option<(Arc<dyn CredentialRepo>, Arc<dyn SecretStore>)> {
-        Some((self.credentials.clone()?, self.secrets.clone()?))
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -683,10 +511,26 @@ impl CredentialMaterialResolver for PinnedCredentialMaterializer {
             request.access,
             request.selected_holder,
             request.binding.clone(),
-            None,
+            request.expected_provider,
         )
         .await
     }
+}
+
+#[cfg(all(test, feature = "authority"))]
+pub(crate) fn pinned_vault(
+    credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
+) -> PinnedCredentialMaterializer {
+    PinnedCredentialMaterializer::new(
+        Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+            credentials,
+            secrets,
+            clock.clone(),
+        )),
+        clock,
+    )
 }
 
 // These fixtures exercise the local Vault authority constructor. The
@@ -703,8 +547,8 @@ mod tests {
     use super::*;
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{
-        CredentialCreateParams, CredentialError, CredentialKind, InMemorySecretStore, SecretRef,
-        SecretStore,
+        CredentialCreateParams, CredentialError, CredentialKind, CredentialStatus,
+        InMemorySecretStore, SecretRef, SecretStore,
     };
     use awaken_runtime_contract::CredentialRealizationCapabilities;
     use awaken_runtime_contract::{
@@ -973,11 +817,8 @@ mod tests {
                     expires_at_unix_ms: u64::MAX,
                 });
             }
-            let resolver = PinnedCredentialMaterializer::new(
-                credentials,
-                secrets,
-                awaken_lease_contract::system_clock(),
-            );
+            let resolver =
+                pinned_vault(credentials, secrets, awaken_lease_contract::system_clock());
             let result = resolver
                 .resolve_validated(
                     &access,
@@ -1081,22 +922,18 @@ mod tests {
             ),
         );
 
-        let resolved = PinnedCredentialMaterializer::new(
-            credentials,
-            secrets,
-            awaken_lease_contract::system_clock(),
-        )
-        .resolve_validated(
-            &access,
-            &holder,
-            CredentialMaterialBinding::for_target("workspace-a", &"openai", &access.usage),
-            Some(ExpectedProviderTarget {
-                provider_id: "openai",
-                protocol_endpoint_id: None,
-            }),
-        )
-        .await
-        .expect("exact OAuth bundle");
+        let resolved = pinned_vault(credentials, secrets, awaken_lease_contract::system_clock())
+            .resolve_validated(
+                &access,
+                &holder,
+                CredentialMaterialBinding::for_target("workspace-a", &"openai", &access.usage),
+                Some(ExpectedProviderTarget {
+                    provider_id: "openai",
+                    protocol_endpoint_id: None,
+                }),
+            )
+            .await
+            .expect("exact OAuth bundle");
 
         let CredentialMaterial::OAuth(bundle) = resolved.material else {
             panic!("OAuth access must not degrade to a bearer-only material")
@@ -1112,13 +949,18 @@ mod tests {
     /// provider A at endpoint 1; C2 the published access targets A; C3 the
     /// realized route is endpoint 1. Effects: E1 all exact causes open the
     /// pinned material; E2 !C2 rejects even without a separate route hint; E3
-    /// !C3 rejects an endpoint-confused candidate before material use.
+    /// !C3 rejects an endpoint-confused candidate before material use. C4 the
+    /// caller enters through the neutral `CredentialMaterialResolver` trait;
+    /// the same exact expectation must survive that adapter boundary.
     ///
     /// | Rule | Source scope | Access target | Route | Effect |
     /// |---|---|---|---|---|
     /// | T1 | A/1 | A | A/1 | E1 material |
     /// | T2 | A/1 | B | none | E2 binding mismatch |
     /// | T3 | A/1 | A | A/2 | E3 recipient mismatch |
+    /// | T4 | A/1 | A | A/1 via trait | E1 material |
+    /// | T5 | A/1 | A | absent via trait | E2 binding mismatch |
+    /// | T6 | A/1 | A | A/2 via trait | E3 recipient mismatch |
     #[tokio::test]
     async fn materialization_revalidates_the_source_owned_exact_target() {
         let credentials = Arc::new(InMemoryCredentialRepo::new());
@@ -1156,11 +998,8 @@ mod tests {
                 audience,
             ))
         };
-        let materializer = PinnedCredentialMaterializer::new(
-            credentials,
-            secrets,
-            awaken_lease_contract::system_clock(),
-        );
+        let materializer =
+            pinned_vault(credentials, secrets, awaken_lease_contract::system_clock());
         let binding = CredentialMaterialBinding::for_target(
             "workspace-a",
             &"provider-a",
@@ -1209,6 +1048,58 @@ mod tests {
                 .unwrap_err(),
             CredentialMaterialError::RecipientMismatch,
             "T3/E3"
+        );
+        let access = access_for("provider-a");
+        let binding = CredentialMaterialBinding::for_target(
+            "workspace-a",
+            &"provider-a",
+            &CredentialUsage::ProviderAdapter,
+        );
+        let resolver: &dyn CredentialMaterialResolver = &materializer;
+        let exact = ExpectedProviderTarget {
+            provider_id: "provider-a",
+            protocol_endpoint_id: Some("endpoint-1"),
+        };
+        assert!(
+            resolver
+                .resolve_exact(CredentialMaterialRequest {
+                    access: &access,
+                    selected_holder: &holder,
+                    binding: &binding,
+                    expected_provider: Some(exact),
+                })
+                .await
+                .is_ok(),
+            "T4/E1"
+        );
+        assert_eq!(
+            resolver
+                .resolve_exact(CredentialMaterialRequest {
+                    access: &access,
+                    selected_holder: &holder,
+                    binding: &binding,
+                    expected_provider: None,
+                })
+                .await
+                .unwrap_err(),
+            CredentialMaterialError::BindingMismatch,
+            "T5/E2"
+        );
+        assert_eq!(
+            resolver
+                .resolve_exact(CredentialMaterialRequest {
+                    access: &access,
+                    selected_holder: &holder,
+                    binding: &binding,
+                    expected_provider: Some(ExpectedProviderTarget {
+                        provider_id: "provider-a",
+                        protocol_endpoint_id: Some("endpoint-2"),
+                    }),
+                })
+                .await
+                .unwrap_err(),
+            CredentialMaterialError::RecipientMismatch,
+            "T6/E3"
         );
     }
 
@@ -1295,11 +1186,7 @@ mod tests {
                 returned_holder,
             }) as Arc<dyn CredentialMaterialResolver>
         };
-        let base = PinnedCredentialMaterializer::new(
-            credentials,
-            secrets,
-            awaken_lease_contract::system_clock(),
-        );
+        let base = pinned_vault(credentials, secrets, awaken_lease_contract::system_clock());
 
         let exact_access = access(&holder.trust_domain.0, u64::MAX, "sha256:sealed-payload");
         let exact = base.clone().with_external_material_resolver(resolver(
@@ -1403,7 +1290,7 @@ mod tests {
             ),
             awaken_lease_contract::system_clock(),
         );
-        assert!(external_only.local_stores().is_none(), "S10");
+        assert!(!external_only.has_local_authority(), "S10");
         assert_eq!(
             external_only
                 .resolve_validated(&worker_access, &holder, binding, None)
@@ -1527,7 +1414,7 @@ mod tests {
                 },
             )
             .expect("coherent unavailable-material provider candidate");
-            let materializer = PinnedCredentialMaterializer::new(
+            let materializer = pinned_vault(
                 Arc::new(InMemoryCredentialRepo::new()),
                 Arc::new(InMemorySecretStore::new()),
                 awaken_lease_contract::system_clock(),
@@ -1724,7 +1611,7 @@ mod tests {
             ("M3", Some(lost), "attempt ownership was lost"),
             ("M4", Some(unavailable), "authority down"),
         ];
-        let materializer = PinnedCredentialMaterializer::new(
+        let materializer = pinned_vault(
             credentials,
             secrets.clone(),
             awaken_lease_contract::system_clock(),
@@ -1920,13 +1807,10 @@ mod tests {
             CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
         )
         .with_target(target);
-        let materializer = PinnedCredentialMaterializer::new(
-            credentials,
-            secrets,
-            awaken_lease_contract::system_clock(),
-        )
-        .with_extension_consumer(Arc::new(SshExtensionConsumer { corrupt_receipt }))
-        .unwrap();
+        let materializer =
+            pinned_vault(credentials, secrets, awaken_lease_contract::system_clock())
+                .with_extension_consumer(Arc::new(SshExtensionConsumer { corrupt_receipt }))
+                .unwrap();
         (materializer, access, holder)
     }
 
@@ -1966,7 +1850,7 @@ mod tests {
         // Decision rules X2/X3: duplicate consumer ids are composition conflicts;
         // a consumer receipt for a different target is a resolver mismatch. In
         // both cases no second dispatch authority is synthesized.
-        let duplicate = PinnedCredentialMaterializer::new(
+        let duplicate = pinned_vault(
             Arc::new(InMemoryCredentialRepo::new()),
             Arc::new(InMemorySecretStore::new()),
             awaken_lease_contract::system_clock(),

@@ -89,12 +89,6 @@ KNOWN_INVERSIONS: dict[tuple[str, str], str] = {
         ("awaken-session-executor", target): "runtime-host reaches another context's application/store; depend on its contract and let the bin inject the implementation"
         for target in ("awaken-dispatch",)
     },
-    **{
-        ("awaken-credential-materializer", target): "credential materializer reaches Control Vault implementation; inject the authority through its contract"
-        for target in (
-            "awaken-credential-vault",
-        )
-    },
 }
 
 
