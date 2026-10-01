@@ -619,9 +619,11 @@ pub(super) async fn prepare_runtime_routers(
                 .await?
             }
         };
-        host_builder
-            .with_acp_from_deployment(credential_materializer.clone(), None)
-            .await
+        awaken_execution_composition::with_acp_from_deployment(
+            host_builder,
+            credential_materializer.clone(),
+            None,
+        )
     } else {
         host_builder
     };

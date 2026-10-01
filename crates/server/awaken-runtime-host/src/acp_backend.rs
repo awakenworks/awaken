@@ -221,73 +221,6 @@ impl crate::host::SharedHost {
         self
     }
 
-    /// Wire the ACP backend from deployment capability discovery plus persisted,
-    /// publication-pinned provider access. This is the ONE place both the server and
-    /// worker roots configure ACP, so they never drift.
-    ///
-    /// The typed deployment profile advertises every CLI installed on this worker;
-    /// the run's published `acp:<cli>` binding remains authoritative and must match. Provider
-    /// endpoint/model/credential data come only from `credentials` and the snapshot.
-    /// Neither capability set → no ACP backend served. A Worker without a
-    /// credential materializer serves only backend-owned candidates; provider
-    /// candidates fail before launch instead of inventing a credential source.
-    pub async fn with_acp_from_deployment(
-        self,
-        credentials: Option<crate::PinnedCredentialMaterializer>,
-        brokered: Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
-    ) -> Self {
-        let deployment = self.deployment.clone();
-        let Some(profile) = deployment.acp.as_ref() else {
-            return match credentials {
-                Some(credentials) => self.with_session_secret_broker(Arc::new(credentials)),
-                None => self,
-            };
-        };
-        let base = session_sandbox_base(&deployment);
-        let routes = profile
-            .cli_ids()
-            .map(|id| {
-                let cli = *awaken_run_executor_acp::acp_cli(id)
-                    .expect("AcpWorkerProfile validates every CLI");
-                let resolver = Arc::new(match (&credentials, &brokered) {
-                    (Some(_), Some(_)) => {
-                        panic!("ACP credential materializers are mutually exclusive")
-                    }
-                    (Some(credentials), None) => crate::PublishedAcpLaunchResolver::new(
-                        cli,
-                        Some(base.clone()),
-                        credentials.clone(),
-                    ),
-                    (None, Some(materializer)) => crate::PublishedAcpLaunchResolver::brokered(
-                        cli,
-                        Some(base.clone()),
-                        materializer.clone(),
-                    ),
-                    (None, None) => {
-                        crate::PublishedAcpLaunchResolver::backend_owned(cli, Some(base.clone()))
-                    }
-                });
-                (
-                    cli,
-                    resolver as Arc<dyn awaken_run_executor_acp::LaunchResolver>,
-                    profile.launch_argv(id).map(<[String]>::to_vec),
-                )
-            })
-            .collect();
-        let source = crate::LaunchSource::Projected(
-            crate::AcpLaunchRegistry::with_resolved_argv(routes)
-                .unwrap_or_else(|error| panic!("configure ACP launch routes: {error}")),
-        );
-        // The same exact, claim-fenced materializer owns both sides of the
-        // last-mile seam: the resolver issues an opaque one-shot reference and
-        // the selected sandbox asks it for bytes immediately before spawn.
-        let host = self.with_bound_acp(source, None);
-        match credentials {
-            Some(credentials) => host.with_session_secret_broker(Arc::new(credentials)),
-            None => host,
-        }
-    }
-
     /// Serve `acp:*` sessions from an explicitly supplied launch source in the
     /// Session environment the process composition already selected. Product
     /// code supplies a projected source backed by published access;
@@ -308,7 +241,7 @@ impl crate::host::SharedHost {
 
     /// Serve `acp:*` sessions on an explicitly supplied projecting resolver. This is
     /// the test/dev startup seam; production uses
-    /// [`with_acp_from_deployment`](Self::with_acp_from_deployment).
+    /// `awaken-execution-composition::with_acp_from_deployment`.
     #[must_use]
     pub fn with_projected_acp(
         self,
@@ -321,7 +254,7 @@ impl crate::host::SharedHost {
 
     /// Test/dev startup seam that also consumes startup acquisition evidence.
     /// Product composition installs the same evidence through
-    /// [`Self::with_acp_from_deployment`].
+    /// `awaken-execution-composition::with_acp_from_deployment`.
     #[must_use]
     pub fn with_projected_acp_argv(
         self,

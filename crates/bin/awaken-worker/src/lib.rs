@@ -1452,9 +1452,12 @@ impl WorkerNode {
             &awaken_execution_composition::ContainerTierPolicy::default(),
         )
         .await
-        .map_err(std::io::Error::other)?
-        .with_acp_from_deployment(self.credential_materializer, self.brokered_acp_model_access)
-            .await;
+        .map_err(std::io::Error::other)?;
+        host = awaken_execution_composition::with_acp_from_deployment(
+            host,
+            self.credential_materializer,
+            self.brokered_acp_model_access,
+        );
         if let Some((_, backend)) = &self.prepared_local_sandbox {
             let installed = host.installed_session_environment_provider().realizer().capabilities();
             if installed != self.manifest.sandbox {

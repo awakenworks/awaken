@@ -38,7 +38,11 @@ impl AcpLaunchRegistry {
         )
     }
 
-    pub(crate) fn with_resolved_argv(routes: Vec<ResolvedRoute>) -> Result<Self, String> {
+    /// Install only exact catalog routes. A provided acquisition-pinned argv
+    /// must be nonempty; `None` keeps the catalog's default launch argv.
+    /// Process composition supplies the source; this constructor still owns the
+    /// one duplicate/id/argv validation before any Session is served.
+    pub fn with_resolved_argv(routes: Vec<ResolvedRoute>) -> Result<Self, String> {
         let mut indexed = BTreeMap::new();
         for (cli, resolver, launch_argv) in routes {
             if cli.id.trim().is_empty() {

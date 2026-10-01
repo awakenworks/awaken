@@ -5,6 +5,7 @@
 //! backend-owned candidates project only their model policy and leave account,
 //! endpoint, refresh, and login material to the local CLI.
 
+use awaken_credential_materializer::PinnedCredentialMaterializer;
 use awaken_run_executor_acp::{
     AcpCli, ConfigHome, LaunchResolver, OpenError, ProcessSecretRequirement, ResolvedModel,
 };
@@ -18,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 enum AcpCredentialAuthority {
-    Local(crate::PinnedCredentialMaterializer),
+    Local(PinnedCredentialMaterializer),
     Brokered(Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>),
     BackendOwned,
 }
@@ -36,7 +37,7 @@ impl PublishedAcpLaunchResolver {
     pub fn new(
         cli: AcpCli,
         store_dir: Option<PathBuf>,
-        credentials: crate::PinnedCredentialMaterializer,
+        credentials: PinnedCredentialMaterializer,
     ) -> Self {
         Self {
             cli,
@@ -323,8 +324,8 @@ mod tests {
         credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
         secrets: Arc<dyn SecretStore>,
         clock: Arc<dyn awaken_lease_contract::WallClock>,
-    ) -> crate::PinnedCredentialMaterializer {
-        crate::PinnedCredentialMaterializer::new(
+    ) -> PinnedCredentialMaterializer {
+        PinnedCredentialMaterializer::new(
             Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
                 credentials,
                 secrets,
