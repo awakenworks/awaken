@@ -80,7 +80,13 @@ pub(crate) use helpers::{
     session_thread_usage_value, session_usage_value,
 };
 pub(crate) use resource::{resolved_resource_dto, resource_binding_id};
-use session_record::{ProjectionPublishDecision, SessionRecord, decide_projection_publish};
+use session_record::{
+    ProjectionPublishDecision, RootTimeEvidence, SessionRecord, ThreadTimeEvidence,
+    decide_projection_publish,
+};
+pub(crate) use session_record::{
+    RootTimeEvidence as SessionRootTimeEvidence, ThreadTimeEvidence as SessionThreadTimeEvidence,
+};
 #[cfg(test)]
 pub(crate) use types::DelegatedRun;
 #[cfg(test)]

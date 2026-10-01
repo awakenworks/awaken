@@ -1055,6 +1055,27 @@ pub struct Event {
     pub processed_at: Option<String>,
 }
 
+/// Only the explicit history-time v2 response replaces legacy timestamp
+/// placeholders. The official v1 DTO remains the sole wire owner and retains
+/// its existing serializer and field order byte-for-byte.
+pub(crate) fn history_time_v2<T: Serialize>(
+    dto: &T,
+    fields: &[(&str, Option<u64>)],
+) -> serde_json::Value {
+    let mut value = serde_json::to_value(dto).expect("Managed DTO serializes");
+    let object = value.as_object_mut().expect("Managed DTO is an object");
+    for &(field, time) in fields {
+        object.insert(
+            field.to_owned(),
+            serde_json::to_value(
+                time.map(awaken_session_application_contract::epoch_millis_to_rfc3339),
+            )
+            .expect("optional timestamp serializes"),
+        );
+    }
+    value
+}
+
 #[cfg(test)]
 impl PartialEq for Event {
     fn eq(&self, other: &Self) -> bool {

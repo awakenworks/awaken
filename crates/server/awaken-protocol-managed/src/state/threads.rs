@@ -272,27 +272,74 @@ impl ManagedState {
     /// `GET /v1/sessions/{id}/threads` — the primary thread plus any subagent
     /// child threads spawned by delegation.
     pub fn list_threads(&self, id: &str) -> Result<Vec<SessionThread>, StateError> {
+        self.list_threads_with_time(id)
+            .map(|rows| rows.into_iter().map(|(thread, _)| thread).collect())
+    }
+
+    pub(crate) fn list_threads_with_time(
+        &self,
+        id: &str,
+    ) -> Result<Vec<(SessionThread, ThreadTimeEvidence)>, StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(id).ok_or(StateError::NotFound)?;
-        let mut threads = vec![Self::primary_thread(record)];
-        threads.extend(record.child_threads.iter().cloned());
+        let mut threads = vec![(
+            Self::primary_thread(record),
+            ThreadTimeEvidence {
+                created_at_unix_ms: record.root_time.created_at_unix_ms,
+                updated_at_unix_ms: record.root_time.updated_at_unix_ms,
+                archived_at_unix_ms: None,
+            },
+        )];
+        threads.extend(record.child_threads.iter().cloned().map(|thread| {
+            let time = record
+                .child_times
+                .get(&thread.id)
+                .copied()
+                .unwrap_or_default();
+            (thread, time)
+        }));
         Ok(threads)
     }
 
     /// `GET /v1/sessions/{id}/threads/{thread_id}` — the primary or a child thread.
     pub fn get_thread(&self, id: &str, thread_id: &str) -> Result<SessionThread, StateError> {
+        self.get_thread_with_time(id, thread_id)
+            .map(|(thread, _)| thread)
+    }
+
+    pub(crate) fn get_thread_with_time(
+        &self,
+        id: &str,
+        thread_id: &str,
+    ) -> Result<(SessionThread, ThreadTimeEvidence), StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(id).ok_or(StateError::NotFound)?;
         let internal_thread_id = internal_thread_id(id, thread_id);
         let primary = Self::primary_thread(record);
         if internal_thread_id == id {
-            return Ok(primary);
+            return Ok((
+                primary,
+                ThreadTimeEvidence {
+                    created_at_unix_ms: record.root_time.created_at_unix_ms,
+                    updated_at_unix_ms: record.root_time.updated_at_unix_ms,
+                    archived_at_unix_ms: None,
+                },
+            ));
         }
         record
             .child_threads
             .iter()
             .find(|thread| thread.id == internal_thread_id)
-            .cloned()
+            .map(|thread| {
+                (
+                    thread.clone(),
+                    record
+                        .child_times
+                        .get(&thread.id)
+                        .copied()
+                        .unwrap_or_default(),
+                )
+            })
             .ok_or(StateError::NotFound)
     }
 
@@ -305,6 +352,41 @@ impl ManagedState {
         cursor: Option<&str>,
         limit: Option<usize>,
     ) -> Result<ListEventsResponse, StateError> {
+        self.list_thread_events_with_time(id, thread_id, cursor, limit, false)
+    }
+
+    pub(crate) fn list_thread_events_with_time(
+        &self,
+        id: &str,
+        thread_id: &str,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+        time_v2: bool,
+    ) -> Result<ListEventsResponse, StateError> {
+        self.list_thread_events_filtered_with_time(
+            id,
+            thread_id,
+            cursor,
+            limit,
+            time_v2,
+            false,
+            |_| true,
+            |_| true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn list_thread_events_filtered_with_time(
+        &self,
+        id: &str,
+        thread_id: &str,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+        time_v2: bool,
+        requires_time: bool,
+        include: impl Fn(&Event) -> bool,
+        could_match_without_time: impl Fn(&Event) -> bool,
+    ) -> Result<ListEventsResponse, StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(id).ok_or(StateError::NotFound)?;
         let internal_thread_id = internal_thread_id(id, thread_id);
@@ -316,14 +398,17 @@ impl ManagedState {
         {
             return Err(StateError::NotFound);
         }
-        Self::project_event_page(
+        Self::project_event_page_with_time(
             record,
             id,
             &internal_thread_id,
             cursor,
             limit,
             false,
-            |_| true,
+            time_v2,
+            requires_time,
+            include,
+            could_match_without_time,
         )
     }
 
@@ -333,6 +418,7 @@ impl ManagedState {
     /// Only one page plus a matching lookahead is projected from its suffix.
     /// `include` must be a stable per-event predicate, as the wire filters are.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(super) fn project_event_page(
         record: &SessionRecord,
         session_id: &str,
@@ -341,6 +427,33 @@ impl ManagedState {
         limit: Option<usize>,
         descending: bool,
         include: impl Fn(&Event) -> bool,
+    ) -> Result<ListEventsResponse, StateError> {
+        Self::project_event_page_with_time(
+            record,
+            session_id,
+            thread_id,
+            cursor,
+            limit,
+            descending,
+            false,
+            false,
+            include,
+            |_| true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn project_event_page_with_time(
+        record: &SessionRecord,
+        session_id: &str,
+        thread_id: &str,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+        descending: bool,
+        time_v2: bool,
+        requires_time: bool,
+        include: impl Fn(&Event) -> bool,
+        could_match_without_time: impl Fn(&Event) -> bool,
     ) -> Result<ListEventsResponse, StateError> {
         let (cursor, limit) =
             awaken_agent_contract::page::normalize_history_page_request(cursor, limit);
@@ -357,8 +470,31 @@ impl ManagedState {
                         .map(String::as_str),
                     answerable.contains(event.id.as_str()),
                 )
+                .map(|event| {
+                    if time_v2 {
+                        let mut event = event.into_owned();
+                        event.processed_at = record.event_times.get(&event.id).map(|time| {
+                            awaken_session_application_contract::epoch_millis_to_rfc3339(*time)
+                        });
+                        std::borrow::Cow::Owned(event)
+                    } else {
+                        event
+                    }
+                })
             })
         };
+        if time_v2
+            && requires_time
+            && (0..record.events.len()).any(|position| {
+                project_at(position).is_some_and(|event| {
+                    could_match_without_time(&event) && event.processed_at.is_none()
+                })
+            })
+        {
+            return Err(StateError::Run(RunError::unavailable(
+                "historical event time is unknown; time-filtered results cannot be completed",
+            )));
+        }
         let cursor_position = cursor
             .map(|cursor| {
                 let positions = record

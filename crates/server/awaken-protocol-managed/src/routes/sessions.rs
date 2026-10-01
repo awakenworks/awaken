@@ -14,8 +14,8 @@ use std::collections::HashSet;
 use awaken_tenancy::WorkspaceScope;
 use axum::extract::{Path, RawQuery, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::IntoResponse;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use tokio::sync::broadcast;
@@ -49,7 +49,80 @@ use stream::{LiveSseSource, SseTerminalScope, live_sse_stream};
 
 pub use event_admission::close_event_admission;
 pub use execution_evidence::get_session_execution_evidence;
-use pagination::{SessionListPage, parse_session_list, session_list_page};
+use pagination::{parse_session_list, session_list_page};
+
+const SESSION_TIME_VERSION: &str = "x-awaken-session-time-version";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryTimeVersion {
+    V1,
+    V2,
+}
+
+fn history_time_version(headers: &HeaderMap) -> Result<HistoryTimeVersion, WireErr> {
+    let mut values = headers.get_all(SESSION_TIME_VERSION).iter();
+    match (values.next(), values.next()) {
+        (None, None) => Ok(HistoryTimeVersion::V1),
+        (Some(value), None) if value.as_bytes() == b"2" => Ok(HistoryTimeVersion::V2),
+        _ => Err(error_response(StateError::Run(RunError::bad_request(
+            "x-awaken-session-time-version requires exactly one value: 2",
+        )))),
+    }
+}
+
+fn require_v1_stream_time(headers: &HeaderMap) -> Result<(), WireErr> {
+    if history_time_version(headers)? == HistoryTimeVersion::V2 {
+        return Err(error_response(StateError::Run(RunError::bad_request(
+            "history-time version 2 is unavailable for SSE streams",
+        ))));
+    }
+    Ok(())
+}
+
+fn reject_unsupported_thread_time_filter(raw: Option<&str>) -> Result<(), WireErr> {
+    if raw
+        .into_iter()
+        .flat_map(|query| form_urlencoded::parse(query.as_bytes()))
+        .any(|(key, _)| {
+            ["created_at", "updated_at", "archived_at"]
+                .iter()
+                .any(|field| key.starts_with(field))
+        })
+    {
+        return Err(error_response(StateError::Run(RunError::bad_request(
+            "Thread list does not support time predicates",
+        ))));
+    }
+    Ok(())
+}
+
+fn thread_time_v2(
+    thread: &SessionThread,
+    time: crate::state::SessionThreadTimeEvidence,
+) -> serde_json::Value {
+    crate::types::session::history_time_v2(
+        thread,
+        &[
+            ("created_at", time.created_at_unix_ms),
+            ("updated_at", time.updated_at_unix_ms),
+            ("archived_at", time.archived_at_unix_ms),
+        ],
+    )
+}
+
+fn session_time_v2(
+    session: &Session,
+    time: crate::state::SessionRootTimeEvidence,
+) -> serde_json::Value {
+    crate::types::session::history_time_v2(
+        session,
+        &[
+            ("created_at", time.created_at_unix_ms),
+            ("updated_at", time.updated_at_unix_ms),
+            ("archived_at", None),
+        ],
+    )
+}
 pub use profiled_run::submit_profiled_session_run;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -460,7 +533,9 @@ fn parse_if_match(headers: &HeaderMap, representation: &str) -> Result<Option<u6
 async fn retrieve_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<(HeaderMap, Json<Session>), (StatusCode, Json<ErrorResponse>)> {
+    headers: HeaderMap,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let version = history_time_version(&headers)?;
     if let Err(error) = state
         .refresh_committed_events_for_observation(&id, None)
         .await
@@ -473,7 +548,19 @@ async fn retrieve_session(
     // root-owned aggregate status readable: Events GET remains unhealthy, while
     // a terminal root still disables and a known nonterminal root can authorize
     // only the protocol's existing pure-Interrupt recovery path.
-    versioned_session_response(&state, &id)
+    match version {
+        HistoryTimeVersion::V1 => {
+            versioned_session_response(&state, &id).map(IntoResponse::into_response)
+        }
+        HistoryTimeVersion::V2 => {
+            let (session, revision, time) = state
+                .get_session_with_revision_and_time(&id)
+                .map_err(error_response)?;
+            let (headers, _) = versioned_session_response_at_revision(session.clone(), revision);
+            let value = session_time_v2(&session, time);
+            Ok((headers, Json(value)).into_response())
+        }
+    }
 }
 
 fn versioned_session_response(
@@ -521,13 +608,33 @@ async fn list_sessions(
     State(state): State<Arc<ManagedState>>,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
     RawQuery(raw): RawQuery,
-) -> Result<Json<SessionListPage>, WireErr> {
-    let data = state
-        .list_sessions_scoped_durable(&scope)
-        .await
-        .map_err(error_response)?;
+    headers: HeaderMap,
+) -> Result<Response, WireErr> {
+    let version = history_time_version(&headers)?;
     let params = parse_session_list(raw.as_deref())?;
-    session_list_page(data, &params).map(Json)
+    match version {
+        HistoryTimeVersion::V1 => {
+            let data = state
+                .list_sessions_scoped_durable(&scope)
+                .await
+                .map_err(error_response)?;
+            Ok(Json(session_list_page(data, &params)?).into_response())
+        }
+        HistoryTimeVersion::V2 => {
+            let rows = state
+                .list_sessions_scoped_durable_with_time(&scope)
+                .await
+                .map_err(error_response)?;
+            pagination::ensure_v2_time_filter_answerable(&rows, &params)?;
+            let times = rows
+                .iter()
+                .map(|(session, time)| (session.id.clone(), *time))
+                .collect();
+            let data = rows.into_iter().map(|(session, _)| session).collect();
+            let page = session_list_page(data, &params)?;
+            Ok(Json(page.history_time_v2(&times)).into_response())
+        }
+    }
 }
 
 /// `POST /v1/sessions/:id` — update `title` (null clears) + patch `metadata`.
@@ -649,7 +756,13 @@ async fn archive_session(
 async fn list_threads(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<PageCursor<SessionThread>>, WireErr> {
+    RawQuery(raw): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, WireErr> {
+    let version = history_time_version(&headers)?;
+    if version == HistoryTimeVersion::V2 {
+        reject_unsupported_thread_time_filter(raw.as_deref())?;
+    }
     // Thread DTOs are a disposable view over the same committed transcript and
     // lifecycle feed as Thread Events. Refresh through that one projector so a
     // direct list cannot retain idle while the Runtime has already committed
@@ -658,25 +771,47 @@ async fn list_threads(
         .refresh_committed_events_for_observation(&id, None)
         .await
         .map_err(error_response)?;
-    state
-        .list_threads(&id)
-        .map(PageCursor::single)
-        .map(Json)
-        .map_err(error_response)
+    match version {
+        HistoryTimeVersion::V1 => state
+            .list_threads(&id)
+            .map(PageCursor::single)
+            .map(Json)
+            .map(IntoResponse::into_response)
+            .map_err(error_response),
+        HistoryTimeVersion::V2 => {
+            let rows = state.list_threads_with_time(&id).map_err(error_response)?;
+            let data = rows
+                .iter()
+                .map(|(thread, time)| thread_time_v2(thread, *time))
+                .collect();
+            Ok(Json(PageCursor::single(data)).into_response())
+        }
+    }
 }
 
 async fn get_thread(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
-) -> Result<Json<SessionThread>, WireErr> {
+    headers: HeaderMap,
+) -> Result<Response, WireErr> {
+    let version = history_time_version(&headers)?;
     state
         .refresh_committed_events_for_observation(&id, None)
         .await
         .map_err(error_response)?;
-    state
-        .get_thread(&id, &tid)
-        .map(Json)
-        .map_err(error_response)
+    match version {
+        HistoryTimeVersion::V1 => state
+            .get_thread(&id, &tid)
+            .map(Json)
+            .map(IntoResponse::into_response)
+            .map_err(error_response),
+        HistoryTimeVersion::V2 => {
+            let (thread, time) = state
+                .get_thread_with_time(&id, &tid)
+                .map_err(error_response)?;
+            Ok(Json(thread_time_v2(&thread, time)).into_response())
+        }
+    }
 }
 
 async fn archive_thread(
@@ -695,16 +830,33 @@ async fn archive_thread(
 async fn list_thread_events(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
+    RawQuery(raw): RawQuery,
     ManagedQuery(query): ManagedQuery<PageQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<ListEventsResponse>, WireErr> {
+    let version = history_time_version(&headers)?;
+    let filter = (version == HistoryTimeVersion::V2)
+        .then(|| parse_event_list_filter(raw.as_deref()))
+        .transpose()?;
     state
         .refresh_committed_events_for_observation(&id, query.page.as_deref())
         .await
         .map_err(error_response)?;
-    state
-        .list_thread_events(&id, &tid, query.page.as_deref(), query.limit)
-        .map(Json)
-        .map_err(error_response)
+    match filter {
+        None => state.list_thread_events(&id, &tid, query.page.as_deref(), query.limit),
+        Some(filter) => state.list_thread_events_filtered_with_time(
+            &id,
+            &tid,
+            query.page.as_deref(),
+            query.limit,
+            true,
+            filter.has_time_predicate(),
+            |event| filter.includes(event),
+            |event| filter.includes_without_time(event),
+        ),
+    }
+    .map(Json)
+    .map_err(error_response)
 }
 
 /// Parse the SDK's `event_deltas[]` live-preview opt-in. Repeated `event_deltas[]`
@@ -791,15 +943,22 @@ pub(crate) struct EventListFilter {
 }
 
 impl EventListFilter {
+    fn has_time_predicate(&self) -> bool {
+        self.created_at_gt.is_some()
+            || self.created_at_gte.is_some()
+            || self.created_at_lt.is_some()
+            || self.created_at_lte.is_some()
+    }
+
+    fn includes_without_time(&self, event: &Event) -> bool {
+        self.types.is_empty() || self.types.contains(event.type_str())
+    }
+
     fn includes(&self, event: &Event) -> bool {
-        if !self.types.is_empty() && !self.types.contains(event.type_str()) {
+        if !self.includes_without_time(event) {
             return false;
         }
-        if self.created_at_gt.is_none()
-            && self.created_at_gte.is_none()
-            && self.created_at_lt.is_none()
-            && self.created_at_lte.is_none()
-        {
+        if !self.has_time_predicate() {
             return true;
         }
         let Some(processed_at) = event
@@ -880,7 +1039,9 @@ async fn stream_thread_events(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
     RawQuery(raw): RawQuery,
+    headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, StateError>>>, WireErr> {
+    require_v1_stream_time(&headers)?;
     // The official Thread EventStreamParams carries the same preview selector as
     // the Session stream. Primary and ordinary child Threads consume the same
     // Runtime-owned live observer; Advisor consultations intentionally expose
@@ -1323,7 +1484,9 @@ async fn list_events(
     Path(id): Path<String>,
     RawQuery(raw): RawQuery,
     ManagedQuery(query): ManagedQuery<PageQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<ListEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let version = history_time_version(&headers)?;
     let order = parse_event_list_order(raw.as_deref())?;
     let filter = parse_event_list_filter(raw.as_deref())?;
     state
@@ -1331,12 +1494,15 @@ async fn list_events(
         .await
         .map_err(error_response)?;
     state
-        .list_events_filtered(
+        .list_events_filtered_with_time(
             &id,
             query.page.as_deref(),
             query.limit,
             order == SessionListOrder::Desc,
+            version == HistoryTimeVersion::V2,
+            filter.has_time_predicate(),
             |event| filter.includes(event),
+            |event| filter.includes_without_time(event),
         )
         .map(Json)
         .map_err(error_response)
@@ -1346,7 +1512,9 @@ async fn stream_events(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
     RawQuery(raw): RawQuery,
+    headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, StateError>>>, WireErr> {
+    require_v1_stream_time(&headers)?;
     // Opt in to live previews (`event_start`/`event_delta`) via `event_deltas[]`.
     let previews = parse_event_deltas(raw.as_deref())?;
     let observation = state
@@ -1412,11 +1580,65 @@ mod managed_json_tests {
     use tower::ServiceExt as _;
 
     use super::{
-        SseTerminalScope, enforce_managed_beta, error_response, parse_event_deltas,
-        replay_is_terminal_after,
+        HistoryTimeVersion, SseTerminalScope, enforce_managed_beta, error_response,
+        history_time_version, parse_event_deltas, reject_unsupported_thread_time_filter,
+        replay_is_terminal_after, require_v1_stream_time,
     };
     use crate::routes::extractors::managed_json_message;
     use crate::state::{RunError, StateError};
+
+    #[test]
+    fn history_time_header_selects_only_one_exact_version_and_rejects_sse_v2() {
+        // Causes: H1 absent, H2 one exact `2`, H3 another value, H4 duplicate
+        // fields, H5 comma-coalesced duplicates. Effects: H1 selects v1; H2
+        // selects v2 for history but returns 400 on SSE; H3-H5 return 400 on
+        // both surfaces. No malformed selector may silently become v1.
+        let mut headers = axum::http::HeaderMap::new();
+        assert_eq!(
+            history_time_version(&headers).unwrap(),
+            HistoryTimeVersion::V1
+        );
+        assert!(require_v1_stream_time(&headers).is_ok());
+        headers.append(super::SESSION_TIME_VERSION, "2".parse().unwrap());
+        assert_eq!(
+            history_time_version(&headers).unwrap(),
+            HistoryTimeVersion::V2
+        );
+        assert_eq!(
+            require_v1_stream_time(&headers).unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
+        for malformed in ["1", "2, 2", " 2", "3"] {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.append(super::SESSION_TIME_VERSION, malformed.parse().unwrap());
+            assert_eq!(
+                history_time_version(&headers).unwrap_err().0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+        headers.append(super::SESSION_TIME_VERSION, "2".parse().unwrap());
+        assert_eq!(
+            history_time_version(&headers).unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
+        // T1 v2 Thread list with no time predicate is allowed; T2 any time
+        // predicate has no Thread-list contract and returns 400. Session and
+        // Event lists instead own supported time predicates and 503 unknowns.
+        assert!(reject_unsupported_thread_time_filter(None).is_ok(), "T1");
+        for query in [
+            "created_at%5Bgt%5D=2026-01-01T00%3A00%3A00Z",
+            "updated_at%5Blte%5D=2026-01-01T00%3A00%3A00Z",
+            "archived_at%5Bgte%5D=2026-01-01T00%3A00%3A00Z",
+        ] {
+            assert_eq!(
+                reject_unsupported_thread_time_filter(Some(query))
+                    .unwrap_err()
+                    .0,
+                StatusCode::BAD_REQUEST,
+                "T2"
+            );
+        }
+    }
 
     #[test]
     fn resource_decode_errors_have_a_stable_category_and_keep_the_path() {

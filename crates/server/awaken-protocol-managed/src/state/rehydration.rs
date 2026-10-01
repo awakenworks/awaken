@@ -102,6 +102,10 @@ impl ManagedState {
             ))
         })?;
         let session_revision = persisted.revision;
+        let root_time = RootTimeEvidence {
+            created_at_unix_ms: persisted.created_at_unix_ms,
+            updated_at_unix_ms: persisted.updated_at_unix_ms,
+        };
         let resource_state = persisted.resources.clone();
         let session = match purpose {
             RehydrationPurpose::Interactive => {
@@ -127,6 +131,7 @@ impl ManagedState {
             session,
             session_revision,
             resource_state,
+            root_time,
             Vec::new(),
         );
         self.sessions

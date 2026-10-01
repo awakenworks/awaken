@@ -16,6 +16,9 @@ pub(super) fn assert_record_frame_eq(actual: &SessionRecord, expected: &SessionR
         committed_projection_ready,
         agent_id,
         session,
+        root_time,
+        event_times,
+        child_times,
         resource_state,
         events,
         event_page_index,
@@ -42,6 +45,15 @@ pub(super) fn assert_record_frame_eq(actual: &SessionRecord, expected: &SessionR
         "frame: complete committed-prefix availability"
     );
     assert_eq!(agent_id, &expected.agent_id, "frame: agent identity");
+    assert_eq!(root_time, &expected.root_time, "frame: root time evidence");
+    assert_eq!(
+        event_times, &expected.event_times,
+        "frame: event time evidence"
+    );
+    assert_eq!(
+        child_times, &expected.child_times,
+        "frame: child time evidence"
+    );
     assert!(
         resource_state == &expected.resource_state,
         "frame: resources"
