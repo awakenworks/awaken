@@ -1581,7 +1581,8 @@ impl SharedHost {
                         acp_mcp_servers,
                         acp_attached_tools,
                         acp_tool_grants.clone().map(|observer| {
-                            observer as Arc<dyn awaken_run_executor_acp::PermissionGrantObserver>
+                            observer
+                                as Arc<dyn awaken_runtime_contract::permission::PermissionGrantObserver>
                         }),
                     )
                     .map(|executor| {

@@ -64,13 +64,13 @@ pub(in crate::host) fn project_managed_coordination_surface(
 
 pub(super) fn merge_acp_mcp_servers(
     publication: Vec<awaken_runtime_contract::resolved::AcpMcpServer>,
-    staged: impl IntoIterator<Item = awaken_run_executor_acp::SessionMcpServer>,
-) -> Result<Vec<awaken_run_executor_acp::SessionMcpServer>, HostError> {
+    staged: impl IntoIterator<Item = awaken_acp_contract::SessionMcpServer>,
+) -> Result<Vec<awaken_acp_contract::SessionMcpServer>, HostError> {
     let publication = publication
         .into_iter()
         .map(|server| match server.transport {
             awaken_runtime_contract::resolved::AcpMcpTransport::Stdio { command, args } => {
-                awaken_run_executor_acp::SessionMcpServer {
+                awaken_acp_contract::SessionMcpServer {
                     name: server.name,
                     command: Some(command),
                     args,
@@ -79,7 +79,7 @@ pub(super) fn merge_acp_mcp_servers(
                 }
             }
             awaken_runtime_contract::resolved::AcpMcpTransport::Http { url } => {
-                awaken_run_executor_acp::SessionMcpServer {
+                awaken_acp_contract::SessionMcpServer {
                     name: server.name,
                     command: None,
                     args: Vec::new(),
@@ -92,9 +92,9 @@ pub(super) fn merge_acp_mcp_servers(
 }
 
 pub(super) fn merge_process_local_mcp_servers(
-    existing: Vec<awaken_run_executor_acp::SessionMcpServer>,
-    staged: impl IntoIterator<Item = awaken_run_executor_acp::SessionMcpServer>,
-) -> Result<Vec<awaken_run_executor_acp::SessionMcpServer>, HostError> {
+    existing: Vec<awaken_acp_contract::SessionMcpServer>,
+    staged: impl IntoIterator<Item = awaken_acp_contract::SessionMcpServer>,
+) -> Result<Vec<awaken_acp_contract::SessionMcpServer>, HostError> {
     let mut names = std::collections::BTreeSet::new();
     let mut merged = Vec::new();
     for server in existing.into_iter().chain(staged) {
@@ -124,8 +124,8 @@ mod tests {
         }
     }
 
-    fn staged_stdio(name: &str) -> awaken_run_executor_acp::SessionMcpServer {
-        awaken_run_executor_acp::SessionMcpServer {
+    fn staged_stdio(name: &str) -> awaken_acp_contract::SessionMcpServer {
+        awaken_acp_contract::SessionMcpServer {
             name: name.into(),
             command: Some("playwright-mcp".into()),
             args: vec!["--headless".into()],

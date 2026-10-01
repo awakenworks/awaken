@@ -6,7 +6,8 @@
 
 use std::sync::Arc;
 
-use awaken_run_executor_acp::{AcpRunExecutor, LaunchObserver, SessionHomeProvider};
+use awaken_acp_contract::LaunchObserver;
+use awaken_run_executor_acp::{AcpRunExecutor, SessionHomeProvider};
 
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) fn deployment_test_binary(key: &str) -> std::path::PathBuf {
@@ -92,9 +93,11 @@ impl AcpBackend {
         sandbox: Arc<dyn awaken_session_environment_contract::AgentProcessEnvironment>,
         permission: Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>,
         backend: awaken_runtime_contract::resolved::Backend,
-        mcp_servers: Vec<awaken_run_executor_acp::SessionMcpServer>,
+        mcp_servers: Vec<awaken_acp_contract::SessionMcpServer>,
         attached_tools: Option<Arc<crate::acp_tool_export::AttachedToolSet>>,
-        grant_observer: Option<Arc<dyn awaken_run_executor_acp::PermissionGrantObserver>>,
+        grant_observer: Option<
+            Arc<dyn awaken_runtime_contract::permission::PermissionGrantObserver>,
+        >,
     ) -> Result<AcpRunExecutor, String> {
         match &self.source {
             AcpExecutorSource::Static(executor) => {
@@ -153,9 +156,9 @@ impl HubLaunchObserver {
     }
 }
 
-impl awaken_run_executor_acp::LaunchObserver for HubLaunchObserver {
-    fn on_launch(&self, scope: &str, event: &awaken_run_executor_acp::AcpLaunchEvent) {
-        use awaken_run_executor_acp::AcpLaunchStage::*;
+impl LaunchObserver for HubLaunchObserver {
+    fn on_launch(&self, scope: &str, event: &awaken_acp_contract::AcpLaunchEvent) {
+        use awaken_acp_contract::AcpLaunchStage::*;
         let stage = match event.stage {
             Launching => "launching",
             Initializing => "initializing",
@@ -299,7 +302,7 @@ impl crate::host::SharedHost {
     /// hub, so a process startup wires it onto the [`AcpRunExecutor`] it builds and
     /// any protocol adapter observing the thread can render progress.
     #[must_use]
-    pub fn acp_launch_observer(&self) -> Arc<dyn awaken_run_executor_acp::LaunchObserver> {
+    pub fn acp_launch_observer(&self) -> Arc<dyn LaunchObserver> {
         Arc::new(HubLaunchObserver::new(self.hub.clone()))
     }
 

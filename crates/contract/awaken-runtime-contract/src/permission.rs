@@ -282,6 +282,12 @@ pub trait ToolPermissionPolicy: Send + Sync {
     async fn evaluate(&self, call: &ToolCall) -> ToolPermissionRuling;
 }
 
+/// A notification-only port for the final allow verdict. It cannot grant
+/// authority; the permission resolver has already decided before calling it.
+pub trait PermissionGrantObserver: Send + Sync {
+    fn on_allow(&self, call: &ToolCall);
+}
+
 /// Serializable, per-Run restriction on the tool authority configured by the
 /// selected executor. `Configured` preserves that authority; `DenyAll` removes
 /// it. Neither variant can add authority, so executors may safely intersect this

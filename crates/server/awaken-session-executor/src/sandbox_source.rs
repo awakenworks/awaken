@@ -25,7 +25,7 @@ pub(crate) struct BoundLocalChannelSource {
     launch: LaunchSource,
     codec: awaken_run_executor_acp::Codec,
     backend: awaken_runtime_contract::resolved::Backend,
-    mcp_servers: Vec<awaken_run_executor_acp::SessionMcpServer>,
+    mcp_servers: Vec<awaken_acp_contract::SessionMcpServer>,
     attached_tools: Option<Arc<crate::acp_tool_export::AttachedToolSet>>,
 }
 
@@ -85,7 +85,7 @@ impl BoundLocalChannelSource {
         sandbox: Arc<dyn awaken_session_environment_contract::AgentProcessEnvironment>,
         launch: LaunchSource,
         backend: awaken_runtime_contract::resolved::Backend,
-        mcp_servers: Vec<awaken_run_executor_acp::SessionMcpServer>,
+        mcp_servers: Vec<awaken_acp_contract::SessionMcpServer>,
     ) -> Self {
         let codec = match &launch {
             LaunchSource::Fixed(_) => awaken_run_executor_acp::Codec::Newline,
