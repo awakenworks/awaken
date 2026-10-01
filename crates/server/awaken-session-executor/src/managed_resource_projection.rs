@@ -41,7 +41,7 @@ fn validate_preparation_publication(
 
 fn resource_requirement_effect_key(
     transition: &awaken_session_resource_contract::SessionResourceTransition,
-    claim: Option<&awaken_dispatch::RunClaim>,
+    claim: Option<&awaken_dispatch_contract::RunClaim>,
     realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
 ) -> String {
     let authority = if let Some(claim) = claim {
@@ -76,7 +76,9 @@ impl crate::ManagedHost {
     #[must_use]
     pub fn with_repository_binding_verifier(
         mut self,
-        verifier: Arc<dyn RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>>,
+        verifier: Arc<
+            dyn RepositoryBindingVerifier<awaken_dispatch_contract::ResourceOperationFence>,
+        >,
     ) -> Self {
         self.repository_binding_verifier = Some(verifier);
         self
@@ -92,7 +94,7 @@ impl crate::ManagedHost {
         thread: &str,
         workspace: &str,
         inputs: &awaken_session_resource_contract::ResolvedSessionResources,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization: Option<(
             &str,
             u64,
@@ -226,7 +228,7 @@ impl crate::ManagedHost {
         workspace: &str,
         resource_revision: u64,
         resources: &awaken_session_resource_contract::ResolvedSessionResources,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
     ) -> Result<(), RunError> {
         // Full-manifest preflight must precede even process-local Workspace or
         // Skill projection writes. Per-item validation below remains the final
@@ -248,7 +250,7 @@ impl crate::ManagedHost {
         workspace: &str,
         resource_revision: u64,
         resources: &awaken_session_resource_contract::ResolvedSessionResources,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
     ) -> Result<(), RunError> {
         let desired = awaken_session_resource_contract::SessionResourceManifest::at_revision(
             workspace,
@@ -281,7 +283,7 @@ impl crate::ManagedHost {
         &self,
         thread: &str,
         transition: &awaken_session_resource_contract::SessionResourceTransition,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
@@ -343,7 +345,7 @@ impl crate::ManagedHost {
         &self,
         thread: &str,
         desired: &awaken_session_resource_contract::SessionResourceManifest,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization: Option<(
             &str,
             u64,
@@ -401,7 +403,7 @@ impl crate::ManagedHost {
     async fn load_pinned_skill_requirements(
         &self,
         desired: &awaken_session_resource_contract::SessionResourceManifest,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization: Option<(
             &str,
             u64,
@@ -560,7 +562,7 @@ impl crate::ManagedHost {
         &self,
         thread: &str,
         transition: &awaken_session_resource_contract::SessionResourceTransition,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         let lifecycle = self
@@ -581,7 +583,7 @@ impl crate::ManagedHost {
         &self,
         thread: &str,
         transition: &awaken_session_resource_contract::SessionResourceTransition,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         let resource_projection = self
@@ -601,7 +603,7 @@ impl crate::ManagedHost {
         &self,
         thread: &str,
         transition: &awaken_session_resource_contract::SessionResourceTransition,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         let previous_manifest = transition.previous();
@@ -1566,7 +1568,7 @@ impl crate::ManagedHost {
         &self,
         workspace: &str,
         input: &awaken_session_resource_contract::ResolvedInput,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization: Option<(
             &str,
             u64,
@@ -1578,7 +1580,7 @@ impl crate::ManagedHost {
             (realization, self.host.is_database_less_worker())
         {
             Some(
-                awaken_dispatch::ResourceOperationFence::SessionMaterialization(
+                awaken_dispatch_contract::ResourceOperationFence::SessionMaterialization(
                     awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
                         session_id,
                         resource_revision,
@@ -1589,7 +1591,9 @@ impl crate::ManagedHost {
                 ),
             )
         } else {
-            claim.map(|claim| awaken_dispatch::ResourceOperationFence::Run(claim.clone()))
+            claim.map(|claim| {
+                awaken_dispatch_contract::ResourceOperationFence::Run(claim.clone())
+            })
         };
         self.stage_resolved_input_with_resource_authority(
             workspace,
@@ -1624,7 +1628,7 @@ impl crate::ManagedHost {
                 "terminal Repository publication input is not a Repository",
             ));
         }
-        let fence = awaken_dispatch::ResourceOperationFence::RepositoryPublication {
+        let fence = awaken_dispatch_contract::ResourceOperationFence::RepositoryPublication {
             command: Box::new(command.clone()),
             lease: lease.clone(),
         };
@@ -1642,7 +1646,7 @@ impl crate::ManagedHost {
         &self,
         workspace: &str,
         input: &awaken_session_resource_contract::ResolvedInput,
-        resource_authority: Option<&awaken_dispatch::ResourceOperationFence>,
+        resource_authority: Option<&awaken_dispatch_contract::ResourceOperationFence>,
         realization: Option<(
             &str,
             u64,
@@ -1654,7 +1658,7 @@ impl crate::ManagedHost {
         use awaken_session_resource_contract::ResolvedInputSource;
 
         let claim = resource_authority.and_then(|authority| match authority {
-            awaken_dispatch::ResourceOperationFence::Run(claim) => Some(claim),
+            awaken_dispatch_contract::ResourceOperationFence::Run(claim) => Some(claim),
             _ => None,
         });
         let mut staged = crate::provisioning::StagedResources::default();
@@ -1715,7 +1719,7 @@ impl crate::ManagedHost {
                 ) {
                     (true, _, Some(_)) => {
                         let Some(
-                            awaken_dispatch::ResourceOperationFence::SessionMaterialization(
+                            awaken_dispatch_contract::ResourceOperationFence::SessionMaterialization(
                                 intent,
                             ),
                         ) = resource_authority
@@ -1748,7 +1752,7 @@ impl crate::ManagedHost {
                     }
                     (true, Some(claim), None) => Some(
                         awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
-                            awaken_dispatch::RunClaim,
+                            awaken_dispatch_contract::RunClaim,
                         >::encode(
                             self.host
                                 .worker
@@ -1829,7 +1833,7 @@ impl crate::ManagedHost {
                     })?;
                 let transport = match (resource_authority, self.host.is_database_less_worker()) {
                     (
-                        Some(awaken_dispatch::ResourceOperationFence::RepositoryPublication {
+                        Some(awaken_dispatch_contract::ResourceOperationFence::RepositoryPublication {
                             ..
                         }),
                         false,

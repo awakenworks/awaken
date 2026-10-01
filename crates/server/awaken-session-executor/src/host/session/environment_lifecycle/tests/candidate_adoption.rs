@@ -381,7 +381,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         };
         host.session_slots.update(thread, |slot| {
             slot.session_dispatch = true;
-            slot.dispatch_claim = Some(awaken_dispatch::RunClaim::from(&old.lease));
+            slot.dispatch_claim = Some(awaken_dispatch_contract::RunClaim::from(&old.lease));
         });
         let effect = host
             .authorize_environment_effect_before_io(
@@ -422,7 +422,8 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                 assert!(host.session_environment(thread).await.is_none());
             }
             host.session_slots.update(thread, |slot| {
-                slot.dispatch_claim = Some(awaken_dispatch::RunClaim::from(&current.lease));
+                slot.dispatch_claim =
+                    Some(awaken_dispatch_contract::RunClaim::from(&current.lease));
             });
             let published = host
                 .retry_session_environment_candidate_under_lifecycle(thread)

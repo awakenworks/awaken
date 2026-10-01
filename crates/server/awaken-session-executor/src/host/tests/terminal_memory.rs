@@ -71,8 +71,10 @@ struct RecordingTerminalMemoryReferenceEncoder {
     realization_attempts: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl awaken_resource_contract::MemoryMaterializationReferenceEncoder<awaken_dispatch::RunClaim>
-    for RecordingTerminalMemoryReferenceEncoder
+impl
+    awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+        awaken_dispatch_contract::RunClaim,
+    > for RecordingTerminalMemoryReferenceEncoder
 {
     fn encode(
         &self,
@@ -80,7 +82,7 @@ impl awaken_resource_contract::MemoryMaterializationReferenceEncoder<awaken_disp
         _memory_store_id: &str,
         _config_version: awaken_resource_contract::ConfigVersion,
         _access: awaken_resource_contract::ResourceAccess,
-        _fence: &awaken_dispatch::RunClaim,
+        _fence: &awaken_dispatch_contract::RunClaim,
     ) -> Result<String, awaken_resource_contract::MemoryMaterializationReferenceError> {
         self.events.lock().unwrap().push("encode-run-v1");
         Ok("run-v1-reference".into())
@@ -634,13 +636,15 @@ struct RecordingTerminalArtifactRecovery {
 }
 
 #[async_trait::async_trait]
-impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublicationFence>
-    for RecordingTerminalArtifactRecovery
+impl
+    awaken_resource_contract::ArtifactPublisher<
+        awaken_dispatch_contract::ArtifactPublicationFence,
+    > for RecordingTerminalArtifactRecovery
 {
     async fn publish(
         &self,
         _publication: awaken_resource_contract::ArtifactPublication<
-            awaken_dispatch::ArtifactPublicationFence,
+            awaken_dispatch_contract::ArtifactPublicationFence,
         >,
     ) -> Result<
         awaken_resource_contract::ArtifactPublicationReceipt,
@@ -654,7 +658,7 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublic
     async fn recover(
         &self,
         _recovery: awaken_resource_contract::ArtifactRecovery<
-            awaken_dispatch::ArtifactPublicationFence,
+            awaken_dispatch_contract::ArtifactPublicationFence,
         >,
     ) -> Result<
         Vec<awaken_resource_contract::ArtifactPublicationReceipt>,
@@ -668,7 +672,7 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublic
         &self,
         _workspace_id: &str,
         _session_id: &str,
-        _fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+        _fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
     ) -> Result<
         Option<awaken_resource_contract::ArtifactCapture>,
         awaken_resource_contract::ArtifactPublicationError,
@@ -681,7 +685,7 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublic
     async fn replace_capture(
         &self,
         _request: awaken_resource_contract::ReplaceArtifactCapture,
-        _fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+        _fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
     ) -> Result<
         awaken_resource_contract::ReplaceArtifactCaptureOutcome,
         awaken_resource_contract::ArtifactPublicationError,
@@ -698,13 +702,15 @@ struct RecordingScopedArtifactAuthority {
 }
 
 #[async_trait::async_trait]
-impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublicationFence>
-    for RecordingScopedArtifactAuthority
+impl
+    awaken_resource_contract::ArtifactPublisher<
+        awaken_dispatch_contract::ArtifactPublicationFence,
+    > for RecordingScopedArtifactAuthority
 {
     async fn publish(
         &self,
         _publication: awaken_resource_contract::ArtifactPublication<
-            awaken_dispatch::ArtifactPublicationFence,
+            awaken_dispatch_contract::ArtifactPublicationFence,
         >,
     ) -> Result<
         awaken_resource_contract::ArtifactPublicationReceipt,
@@ -718,7 +724,7 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublic
     async fn recover(
         &self,
         recovery: awaken_resource_contract::ArtifactRecovery<
-            awaken_dispatch::ArtifactPublicationFence,
+            awaken_dispatch_contract::ArtifactPublicationFence,
         >,
     ) -> Result<
         Vec<awaken_resource_contract::ArtifactPublicationReceipt>,
@@ -732,7 +738,7 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublic
         &self,
         _workspace_id: &str,
         _session_id: &str,
-        _fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+        _fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
     ) -> Result<
         Option<awaken_resource_contract::ArtifactCapture>,
         awaken_resource_contract::ArtifactPublicationError,
@@ -745,7 +751,7 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublic
     async fn replace_capture(
         &self,
         _request: awaken_resource_contract::ReplaceArtifactCapture,
-        _fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+        _fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
     ) -> Result<
         awaken_resource_contract::ReplaceArtifactCaptureOutcome,
         awaken_resource_contract::ArtifactPublicationError,
@@ -993,7 +999,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         checkpoint_format: "awaken-fs-tar-v1".into(),
     };
     let mut projection = terminal_memory_projection_with_idle_retention(idle_retention);
-    let run_claim = awaken_dispatch::RunClaim {
+    let run_claim = awaken_dispatch_contract::RunClaim {
         run_id: awaken_agent_contract::agent::run::Id("terminal-refresh-run".into()),
         owner: "terminal-refresh-run-worker".into(),
         epoch: 1,
@@ -1905,7 +1911,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
 
         let mut projection = terminal_memory_projection();
         let resources = projection.resources.clone();
-        let run_claim = awaken_dispatch::RunClaim {
+        let run_claim = awaken_dispatch_contract::RunClaim {
             run_id: awaken_agent_contract::agent::run::Id(format!(
                 "terminal-memory-{}-run",
                 rule.name

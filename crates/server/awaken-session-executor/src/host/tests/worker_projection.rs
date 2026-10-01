@@ -139,7 +139,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
             rule.desired_revision,
             desired,
         );
-        let claim = rule.claimed.then(|| awaken_dispatch::RunClaim {
+        let claim = rule.claimed.then(|| awaken_dispatch_contract::RunClaim {
             run_id: awaken_agent_contract::agent::run::Id(format!("run-{}", rule.id)),
             owner: "claimed-worker".into(),
             epoch: 1,
@@ -279,12 +279,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     struct PromptRecorder(Arc<Mutex<Vec<ChatRequest>>>);
 
     #[derive(Default)]
-    struct RepositoryClaimRecorder(Mutex<Vec<Option<awaken_dispatch::RunClaim>>>);
+    struct RepositoryClaimRecorder(Mutex<Vec<Option<awaken_dispatch_contract::RunClaim>>>);
 
     struct FailingRepositoryVerifier;
 
     #[async_trait::async_trait]
-    impl crate::RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>
+    impl crate::RepositoryBindingVerifier<awaken_dispatch_contract::ResourceOperationFence>
         for RepositoryClaimRecorder
     {
         async fn verify(
@@ -292,7 +292,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             _workspace_id: &str,
             _repository_id: &str,
             _config_version: awaken_resource_contract::ConfigVersion,
-            authority: Option<&awaken_dispatch::ResourceOperationFence>,
+            authority: Option<&awaken_dispatch_contract::ResourceOperationFence>,
         ) -> Result<
             awaken_resource_contract::RepositoryTransport,
             awaken_resource_contract::RepositoryBindingVerifierError,
@@ -301,7 +301,9 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .lock()
                 .unwrap()
                 .push(authority.and_then(|authority| match authority {
-                    awaken_dispatch::ResourceOperationFence::Run(claim) => Some(claim.clone()),
+                    awaken_dispatch_contract::ResourceOperationFence::Run(claim) => {
+                        Some(claim.clone())
+                    }
                     _ => None,
                 }));
             Ok(awaken_resource_contract::RepositoryTransport::Direct)
@@ -309,7 +311,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     }
 
     #[async_trait::async_trait]
-    impl crate::RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>
+    impl crate::RepositoryBindingVerifier<awaken_dispatch_contract::ResourceOperationFence>
         for FailingRepositoryVerifier
     {
         async fn verify(
@@ -317,7 +319,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             _workspace_id: &str,
             _repository_id: &str,
             _config_version: awaken_resource_contract::ConfigVersion,
-            _authority: Option<&awaken_dispatch::ResourceOperationFence>,
+            _authority: Option<&awaken_dispatch_contract::ResourceOperationFence>,
         ) -> Result<
             awaken_resource_contract::RepositoryTransport,
             awaken_resource_contract::RepositoryBindingVerifierError,
@@ -628,7 +630,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "/workspace/authority-amendment",
             None,
         );
-        let amendment_claim = awaken_dispatch::RunClaim {
+        let amendment_claim = awaken_dispatch_contract::RunClaim {
             run_id: RunId("authority-amendment-run".into()),
             owner: "claimed-worker".into(),
             epoch: 1,
@@ -1056,7 +1058,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "/workspace/repository",
             None,
         );
-        let claim = |epoch| awaken_dispatch::RunClaim {
+        let claim = |epoch| awaken_dispatch_contract::RunClaim {
             run_id: RunId("repository-claim-run".into()),
             owner: "repository-worker".into(),
             epoch,
@@ -1335,7 +1337,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert_eq!(
         dispatch
             .resolve_claimed_session_run_reservation(
-                &awaken_dispatch::RunClaim::from(&recovery_claim.lease),
+                &awaken_dispatch_contract::RunClaim::from(&recovery_claim.lease),
                 awaken_dispatch::SessionRunReservationResolution::Rejected,
             )
             .await

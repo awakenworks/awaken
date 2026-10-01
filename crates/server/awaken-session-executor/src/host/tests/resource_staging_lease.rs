@@ -38,7 +38,7 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
             let held = lock.lock().await;
             let selection = host.begin_session_realization_revocation();
             host.session_slots.remove(SESSION);
-            let claim = awaken_dispatch::RunClaim {
+            let claim = awaken_dispatch_contract::RunClaim {
                 run_id: RunId("replacement".into()),
                 owner: "worker".into(),
                 epoch: 2,
@@ -380,7 +380,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 extended.epoch += 1;
                 host.install_session_realization_lease(SESSION, extended.clone())
                     .unwrap();
-                let claim = awaken_dispatch::RunClaim {
+                let claim = awaken_dispatch_contract::RunClaim {
                     run_id: RunId("replacement".into()),
                     owner: "worker".into(),
                     epoch: 2,
@@ -419,13 +419,15 @@ struct GatedFileSource {
 }
 
 #[async_trait::async_trait]
-impl crate::FileContentSource<awaken_dispatch::ResourceOperationFence> for GatedFileSource {
+impl crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>
+    for GatedFileSource
+{
     async fn read(
         &self,
         _workspace: &str,
         file_id: &str,
         _purpose: &awaken_resource_contract::FileReadPurpose,
-        _authority: Option<&awaken_dispatch::ResourceOperationFence>,
+        _authority: Option<&awaken_dispatch_contract::ResourceOperationFence>,
     ) -> Result<
         Option<awaken_resource_contract::ResolvedFileContent>,
         awaken_resource_contract::FileContentSourceError,

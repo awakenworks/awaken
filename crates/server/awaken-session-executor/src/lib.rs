@@ -170,8 +170,9 @@ pub struct ManagedHost {
     platform_mcp_egress:
         Option<Arc<dyn awaken_credential_materializer::PlatformMcpEgressProvisioner>>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
-    repository_binding_verifier:
-        Option<Arc<dyn RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>>>,
+    repository_binding_verifier: Option<
+        Arc<dyn RepositoryBindingVerifier<awaken_dispatch_contract::ResourceOperationFence>>,
+    >,
     mcp_realizer: Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
 }
 

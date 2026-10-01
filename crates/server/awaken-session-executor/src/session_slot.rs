@@ -452,7 +452,7 @@ pub(crate) struct SessionRuntimeSlot {
     /// Current durable dispatch claim used by claim-fenced Resource effects.
     /// This process-local projection is replaced at every claimed resolve; the
     /// dispatch store remains the lease/epoch authority.
-    pub dispatch_claim: Option<awaken_dispatch::RunClaim>,
+    pub dispatch_claim: Option<awaken_dispatch_contract::RunClaim>,
     pub workspace: Option<String>,
     /// Exact Agent identity copied from the frozen Session baseline. Internal
     /// history/recovery calls do not carry a wire Agent parameter, so they must

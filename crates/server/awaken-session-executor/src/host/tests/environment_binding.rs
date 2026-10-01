@@ -141,7 +141,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
         .install_environment_binding_sink(sink.clone());
     let thread = "claimed-ordinary-environment-authority";
     host.session_slots.update(thread, |slot| {
-        slot.dispatch_claim = Some(awaken_dispatch::RunClaim {
+        slot.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
             run_id: RunId("claimed-ordinary-run".into()),
             owner: "worker-a".into(),
             epoch: 1,

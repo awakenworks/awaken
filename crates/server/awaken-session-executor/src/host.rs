@@ -168,8 +168,9 @@ pub(crate) use worker_resolver::test_support::{
 /// authoritative; this private intersection trait only permits one trait
 /// object to carry both implementations through Runtime composition.
 pub(crate) trait RuntimeMemoryReferenceEncoder:
-    awaken_resource_contract::MemoryMaterializationReferenceEncoder<awaken_dispatch::RunClaim>
-    + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+    awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+        awaken_dispatch_contract::RunClaim,
+    > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
         awaken_session_realization_contract::SessionResourceMaterializationIntent,
     > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
         awaken_session_state_contract::SessionTerminalMemoryIntent,
@@ -179,7 +180,7 @@ pub(crate) trait RuntimeMemoryReferenceEncoder:
 
 impl<T> RuntimeMemoryReferenceEncoder for T where
     T: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-            awaken_dispatch::RunClaim,
+            awaken_dispatch_contract::RunClaim,
         > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
             awaken_session_realization_contract::SessionResourceMaterializationIntent,
         > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<

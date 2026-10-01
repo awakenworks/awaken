@@ -236,7 +236,7 @@ impl SharedHost {
         mut self,
         source: Arc<
             dyn awaken_session_configuration_contract::SkillBundleSource<
-                    awaken_dispatch::ResourceOperationFence,
+                    awaken_dispatch_contract::ResourceOperationFence,
                 >,
         >,
     ) -> Self {

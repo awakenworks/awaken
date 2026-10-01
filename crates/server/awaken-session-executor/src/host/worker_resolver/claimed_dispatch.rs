@@ -128,7 +128,7 @@ impl HostWorkerResolver {
                     host.resources.file_content_source.clone(),
                     workspace_id,
                     claimed.request.thread_id().0.clone(),
-                    Some(awaken_dispatch::RunClaim::from(&claimed.lease)),
+                    Some(awaken_dispatch_contract::RunClaim::from(&claimed.lease)),
                 ),
             ));
         let has_model_request_gate = child_context.model_request_gate.is_some();
@@ -346,7 +346,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 )
             })
             .unwrap_or(false);
-        let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
+        let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
         // A failed/NotReady resolve must not publish an attempt claim into the
         // shared Session projection: lifecycle recovery is independently owned
         // by its realization lease. Once the complete projection is installed,

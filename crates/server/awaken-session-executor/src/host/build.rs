@@ -187,7 +187,7 @@ impl SharedHost {
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
         file_content_source: Arc<
-            dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>,
+            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
         >,
         memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
         process: HostProcess,
@@ -217,7 +217,7 @@ impl SharedHost {
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
         file_content_source: Arc<
-            dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>,
+            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
         >,
         memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
@@ -632,8 +632,9 @@ mod startup_tests {
         // R2 Coordinator => store-owning role and no remote commit request.
         // A content port or an injected commit port alone cannot choose C1;
         // commit_ingest W1-W3 covers the independent port combinations.
-        let file: Arc<dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>> =
-            Arc::new(awaken_resource_contract::UnavailableFileContentSource);
+        let file: Arc<
+            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
+        > = Arc::new(awaken_resource_contract::UnavailableFileContentSource);
         let memory: Arc<dyn awaken_resource_contract::MemoryRepository> =
             Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
                 awaken_lease_contract::system_clock(),
