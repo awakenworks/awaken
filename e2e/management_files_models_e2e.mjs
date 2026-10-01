@@ -6,9 +6,11 @@
 // Run: (from e2e/)  node management_files_models_e2e.mjs
 //
 // Causal graph: C1=Beta or GA SDK root; C2=durable File identity exists/missing;
-// C3=published executable Model exists/missing. Effects: E1=each root decodes its
+// C3=published executable Model exists/missing; C4=first durable publication
+// and its exact replay. Effects: E1=each root decodes its
 // exact metadata/list/retrieve response; E2=input download is denied by the shared
-// file policy; E3=delete makes later metadata fail; E4=missing Model returns 404.
+// file policy; E3=delete makes later metadata fail; E4=missing Model returns 404;
+// E5=Models.created_at is the first local durable row time and survives replay.
 // Downloadable artifact success reuses the ordinary ProbeModel/Runtime fixture. Constraints:
 // both roots share one FileCatalog/model inventory and never copy state.
 // Decision table:
@@ -17,6 +19,7 @@
 // | R2 | GA | existing input File | upload/list/retrieve/download/delete | E1+E2+E3 |
 // | R3 | Beta/GA | published Model | list/retrieve | E1 |
 // | R4 | Beta/GA | missing Model | retrieve | E4 |
+// | R5 | Beta/GA | first publication + replay | list/retrieve | E1+E5 |
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
@@ -88,6 +91,7 @@ async function main() {
       // M2 requires the trusted edge Workspace, not a invented default. Reuse
       // the canonical provisioning/publication helpers; M3 below observes the
       // resulting executable inventory through both official SDK roots.
+      assert.deepEqual(await drain(client.models.list()), [], 'M1 no fixture model publication');
       const context = await fetch(`${baseUrl}/v1/config/workspace-context`);
       assert.equal(context.status, 200, 'trusted Workspace context');
       const { workspace_id: workspace } = await context.json();
@@ -97,11 +101,13 @@ async function main() {
         model_id: 'claude-opus-4-8', dialect: 'anthropic_messages',
         base_url: `${upstream.url}/v1/`, timeout_secs: 30, secret: FAKE_KEY,
       }, 'files-models-profile');
+      const firstPublicationStartedAt = Date.now();
       await publishManagementAgent(baseUrl, 'files-models-agent', {
         id: 'files-models-agent', name: 'Files Models E2E',
         system: 'Exercise the executable model directory.',
         model: selected.model, tools: [],
       });
+      const firstPublicationCompletedAt = Date.now();
       const models = await drain(client.beta.models.list({ betas: BETAS }));
       assert.ok(models.length >= 1, 'models list is non-empty');
       assert.ok(
@@ -109,6 +115,14 @@ async function main() {
         'every entry decodes as BetaModelInfo',
       );
       assert.ok(models.some((m) => m.id === 'claude-opus-4-8'), 'the configured model is listed');
+      const publishedModel = models.find((model) => model.id === 'claude-opus-4-8');
+      const firstPublishedAt = Date.parse(publishedModel.created_at);
+      assert.ok(
+        Number.isFinite(firstPublishedAt)
+          && firstPublishedAt >= firstPublicationStartedAt - 60_000
+          && firstPublishedAt <= firstPublicationCompletedAt + 60_000,
+        'R5/E5 model time comes from this local publication, not a fixed release date',
+      );
       pass(`beta.models.list -> Page<BetaModelInfo> (${models.length} models)`);
 
       // PageParams causal graph: C1 one stable executable inventory; C2
@@ -135,6 +149,7 @@ async function main() {
       const one = await client.beta.models.retrieve('claude-opus-4-8', { betas: BETAS });
       assert.equal(one.id, 'claude-opus-4-8');
       assert.equal(one.type, 'model');
+      assert.equal(one.created_at, publishedModel.created_at, 'R5/E5 list/retrieve time');
       pass('beta.models.retrieve -> BetaModelInfo');
 
       const gaModels = await drain(client.models.list());
@@ -150,6 +165,11 @@ async function main() {
       const gaModel = await client.models.retrieve('claude-opus-4-8');
       assert.equal(gaModel.id, 'claude-opus-4-8', 'R3 GA retrieve');
       assert.equal(gaModel.type, 'model');
+      assert.equal(gaModel.created_at, publishedModel.created_at, 'R5/E5 GA/Beta time');
+      const replay = await fetch(`${baseUrl}/v1/config/agents/files-models-agent/publish`, { method: 'POST' });
+      assert.equal(replay.status, 200, 'R5 exact publication replay');
+      const afterReplay = await client.models.retrieve('claude-opus-4-8');
+      assert.equal(afterReplay.created_at, publishedModel.created_at, 'R5/E5 replay preserves first time');
       assert.equal(Object.hasOwn(gaModel, 'allowed_fallback_models'), false, 'R3 GA projection');
       const gaBeforeFirst = await client.models.list({ before_id: gaModels[0].id, limit: 1 });
       assert.deepEqual(gaBeforeFirst.data, [], 'R3 GA shares the PageParams kernel');

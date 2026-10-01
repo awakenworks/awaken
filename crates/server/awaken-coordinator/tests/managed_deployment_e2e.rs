@@ -146,6 +146,9 @@ async fn publish_assistant(
             workspace_id: workspace_id.into(),
             agent_id: "assistant".into(),
             source_revision: 1,
+            published_at_unix_ms: None,
+            publication_sequence: None,
+            publication_order_verified: false,
             snapshot,
             session_profile: ExecutableAgentSessionProfile {
                 source_revision: 1,

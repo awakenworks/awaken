@@ -202,6 +202,44 @@ as executable. Existing Sessions keep their frozen snapshot. A newer
 registration affects only future resolution unless an explicit Session command
 changes a frozen baseline.
 
+The publication table's `created_at` is the Control-owned time recorded on a
+successful durable publication row; it is not PostgreSQL's exact COMMIT clock.
+New PostgreSQL rows sample the existing database clock with `clock_timestamp()`
+at INSERT after the Workspace lock and source admission, rather than reusing
+`now()` from before a potentially long lock wait. Historical rows retain their
+original database timestamp.
+The same row has an insertion coordinate:
+SQLite `rowid`, PostgreSQL `seq`. Both stores read the pair beside the
+immutable publication; an exact retry replaces neither field. Registration
+carries that coordinate and observed time into Coordinator's existing command log. For a
+historical command that lacked it, Control reconciliation appends an exact
+publication-time amendment to the same log, leaving the original command and
+log sequence intact. SQLite serializes writers. PostgreSQL's sole production
+publication transaction takes the existing Config-store advisory-lock primitive
+with an execution-Workspace key **before** Agent row locks and holds it through
+commit; only rows inserted under that lock carry `order_verified=true` in the
+same publication table. Migration V12 defaults existing PostgreSQL rows to
+false and existing SQLite rows to true. The marker is row metadata and does
+not change the content-addressed publication JSON or Control GET wire.
+Coordinator selects the smallest Control insertion coordinate when all rows
+are verified, or the sole pre-lock row when that history is unambiguous, and
+emits that row's time as each current model's first local publication time,
+including withdrawn Agents. `/v1/models.created_at` reads that fact; missing
+historical evidence makes the model directory unavailable until reconciliation
+restores it. Database clock rollback cannot change which row was first.
+One pre-lock PostgreSQL publication row of a model is unambiguous; two or more
+pre-lock rows have no recoverable commit order. For that model `/v1/models`
+and exact retrieve return 503, because the v1 wire requires a timestamp string;
+the service does not invent one or claim that minimum `seq` proves legacy
+commit order. One old row followed by any number of locked new rows retains
+the old row's time; two old rows remain unknown even after new publications.
+A list page containing such a model also returns 503; pages containing only
+models with proven times remain readable.
+Undated `preview-*` registrations have no publication row and do
+not enter the model directory; a dated real publication with the same prefix
+does. A Coordinator without an executable inventory has an empty model
+directory instead of pretending fixed fixtures were locally published.
+
 ## Verification
 
 Publication retains one injected `ModelPublicationResolver` and its sole Control
@@ -246,6 +284,9 @@ The cause/effect design for implementation tests is:
 | R6 | reconciliation after R5 | the same registrar is reused, no parallel path is created, and the R1 outcome is reached |
 | R7 | one malformed historical row plus valid rows | valid rows register; invalid history is retained and reported degraded; serving readiness remains true |
 | R8 | policy preview changes fingerprint at revision N | CAS creates revision N+1 before persistence and registration; an exact replay creates no revision |
+| R9 | publication retry, withdrawal, newer registration, restart, or clock rollback under the Workspace commit lock | first model publication time follows the smallest verified durable insertion coordinate in its Workspace |
+| R10 | historical registration lacks time; Control recovers its publication row | append one exact time amendment; replay restores the time without rewriting the old command |
+| R11 | legacy PostgreSQL model has two or more pre-lock rows, time remains unknown, or a conflicting amendment arrives | never invent a GET-time/default time; reject the unavailable directory or conflicting command |
 
 Test comments must cite the applicable rule and preserve its causes and effects.
 

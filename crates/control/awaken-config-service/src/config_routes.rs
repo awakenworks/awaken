@@ -45,13 +45,14 @@ pub fn config_router(plane: ConfigPlane) -> Router {
 }
 
 fn valid_preview_id(id: &str) -> bool {
-    id.strip_prefix("preview-").is_some_and(|suffix| {
-        !suffix.is_empty()
-            && suffix.len() <= 96
-            && suffix
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    })
+    id.strip_prefix(awaken_executable_agent_contract::PREVIEW_AGENT_PREFIX)
+        .is_some_and(|suffix| {
+            !suffix.is_empty()
+                && suffix.len() <= 96
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
 }
 
 fn problem_details(code: &str, title: &str, detail: impl Into<String>) -> Json<Value> {

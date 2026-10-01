@@ -22,15 +22,17 @@ use awaken_executable_agent_contract::{
 use sqlx::postgres::PgPool;
 
 use crate::schema::{NS, executable_agent_catalog_bundle};
-use crate::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
+use crate::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar, PublicationTimeEvidence};
 
 const REGISTRATION_KIND: &str = "registration";
 const WITHDRAWAL_KIND: &str = "withdrawal";
+const PUBLICATION_TIME_KIND: &str = "publication_time";
 
 #[derive(Clone, Debug, PartialEq)]
 enum CatalogCommand {
     Registration(Box<ExecutableAgentRegistration>),
     Withdrawal(ExecutableAgentWithdrawal),
+    PublicationTime(PublicationTimeEvidence),
 }
 
 impl CatalogCommand {
@@ -48,6 +50,12 @@ impl CatalogCommand {
                 command.lifecycle_revision,
                 WITHDRAWAL_KIND,
             ),
+            Self::PublicationTime(command) => (
+                &command.workspace_id,
+                &command.agent_id,
+                command.source_revision,
+                PUBLICATION_TIME_KIND,
+            ),
         }
     }
 
@@ -55,6 +63,7 @@ impl CatalogCommand {
         match self {
             Self::Registration(command) => serde_json::to_string(command),
             Self::Withdrawal(command) => serde_json::to_string(command),
+            Self::PublicationTime(command) => serde_json::to_string(command),
         }
         .map_err(storage)
     }
@@ -73,6 +82,9 @@ impl CatalogCommand {
                 serde_json::from_str(encoded).map_err(|error| corrupt(kind, error))?,
             )),
             WITHDRAWAL_KIND => Self::Withdrawal(
+                serde_json::from_str(encoded).map_err(|error| corrupt(kind, error))?,
+            ),
+            PUBLICATION_TIME_KIND => Self::PublicationTime(
                 serde_json::from_str(encoded).map_err(|error| corrupt(kind, error))?,
             ),
             other => return Err(storage(format!("unknown catalog command kind `{other}`"))),
@@ -243,12 +255,46 @@ impl DurableRegistrar {
     ) -> Result<ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationError> {
         let _guard = self.refresh.lock().await;
         let expected = self.catalog.preview_registration(registration.clone())?;
-        let _sequence = self
-            .log
-            .append(&CatalogCommand::Registration(Box::new(
-                registration.clone(),
-            )))
-            .await?;
+        let prior = self.catalog.at_revision(
+            &registration.workspace_id,
+            &registration.agent_id,
+            registration.source_revision,
+        );
+        let evidence = match (
+            registration.publication_sequence,
+            registration.published_at_unix_ms,
+        ) {
+            (Some(publication_sequence), Some(published_at_unix_ms)) => {
+                Some(PublicationTimeEvidence {
+                    workspace_id: registration.workspace_id.clone(),
+                    agent_id: registration.agent_id.clone(),
+                    source_revision: registration.source_revision,
+                    fingerprint: registration.snapshot.fingerprint.0.clone(),
+                    publication_sequence,
+                    published_at_unix_ms,
+                    publication_order_verified: registration.publication_order_verified,
+                })
+            }
+            _ => None,
+        };
+        let needs_amendment = prior.as_ref().is_some_and(|prior| {
+            let mut enriched = prior.clone();
+            enriched.published_at_unix_ms = registration.published_at_unix_ms;
+            enriched.publication_sequence = registration.publication_sequence;
+            enriched.publication_order_verified = registration.publication_order_verified;
+            (prior.published_at_unix_ms.is_none() && enriched == registration)
+                || (prior == &registration
+                    && self.catalog.has_time_amendment(
+                        &registration.workspace_id,
+                        &registration.agent_id,
+                        registration.source_revision,
+                    ))
+        });
+        let command = match (needs_amendment, evidence) {
+            (true, Some(evidence)) => CatalogCommand::PublicationTime(evidence),
+            _ => CatalogCommand::Registration(Box::new(registration.clone())),
+        };
+        let _sequence = self.log.append(&command).await?;
         let actual = self.local.register(registration).await?;
         if actual != expected {
             return Err(storage("catalog changed while persisting registration"));
@@ -323,6 +369,12 @@ async fn replay_commands(
                     .withdraw(command)
                     .await
                     .map_err(|error| storage(format!("replay persisted withdrawal: {error}")))?;
+            }
+            CatalogCommand::PublicationTime(evidence) => {
+                local
+                    .catalog
+                    .record_publication_time(evidence)
+                    .map_err(|error| storage(format!("replay publication time: {error}")))?;
             }
         }
     }
@@ -464,6 +516,7 @@ impl ExecutableAgentRegistrar for PostgresExecutableAgentRegistrar {
 
 #[cfg(test)]
 mod tests {
+    use awaken_executable_agent_contract::ExecutableAgentInventorySource;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Duration;
@@ -745,6 +798,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_registration_time_is_appended_without_rewriting_its_command() {
+        // Causes: L1 historical registration lacks time; L2 Control later
+        // supplies the exact durable publication-row time; L3 replay and
+        // restart; L4 a conflicting time is supplied. Effects: E1 preserve
+        // the original command and append one evidence command; E2 restore
+        // the first model time after restart; E3 reject conflict with no
+        // further append. Rules L1+L2=>E1, L1+L2+L3=>E2, L4=>E3.
+        let log = Arc::new(MemoryCommandLog::default());
+        let catalog = Arc::new(ExecutableAgentCatalog::new());
+        let first_registrar = registrar(log.clone(), catalog.clone()).await;
+        let legacy = registration();
+        first_registrar.register(legacy.clone()).await.unwrap();
+        let original = log.commands.lock().unwrap()[0].command.clone();
+        let mut enriched = legacy;
+        enriched.publication_sequence = Some(1);
+        enriched.published_at_unix_ms = Some(1_704_067_200_000);
+        enriched.publication_order_verified = true;
+        assert_eq!(
+            first_registrar.register(enriched.clone()).await.unwrap(),
+            ExecutableAgentRegistrationOutcome::AlreadyRegistered,
+            "E1"
+        );
+        let commands = log.commands.lock().unwrap().clone();
+        assert_eq!(commands.len(), 2, "E1");
+        assert_eq!(commands[0].command, original, "E1");
+        assert!(
+            matches!(commands[1].command, CatalogCommand::PublicationTime(_)),
+            "E1"
+        );
+        drop(commands);
+
+        let rebuilt = Arc::new(ExecutableAgentCatalog::new());
+        let restarted = registrar(log.clone(), rebuilt.clone()).await;
+        assert_eq!(
+            rebuilt
+                .current_model_publications("workspace-a")
+                .await
+                .unwrap()[0]
+                .first_published_at_unix_ms,
+            enriched.published_at_unix_ms,
+            "E2"
+        );
+        assert!(
+            rebuilt
+                .current("workspace-a", "agent-a")
+                .unwrap()
+                .publication_order_verified,
+            "E2 replay preserves order proof"
+        );
+        assert_eq!(
+            restarted.register(enriched.clone()).await.unwrap(),
+            ExecutableAgentRegistrationOutcome::AlreadyRegistered,
+            "E2"
+        );
+        assert_eq!(log.commands.lock().unwrap().len(), 2, "E2");
+        enriched.published_at_unix_ms = Some(1_704_067_201_000);
+        assert!(
+            matches!(
+                restarted.register(enriched).await,
+                Err(ExecutableAgentRegistrationError::Conflict(_))
+            ),
+            "E3"
+        );
+        assert_eq!(log.commands.lock().unwrap().len(), 2, "E3");
+    }
+
+    #[tokio::test]
     async fn concurrent_agent_refreshes_are_serialized_by_the_domain_registrar() {
         // Causes: C1 one registrar has cursor 0 and authority sequence 2; C2 two
         // refresh tasks have both crossed their start barrier; C3 the first
@@ -969,11 +1089,13 @@ mod tests {
     #[tokio::test]
     async fn postgres_adapter_migrates_persists_verifies_and_rehydrates() {
         // Cause/effect integration rule: a reachable PostgreSQL authority starts
-        // with no catalog schema; migration + registration persists one command;
+        // with no catalog schema; migration + legacy registration persists its
+        // original command, then exact time evidence appends a second command;
         // connect_existing performs no alternate migration path and a fresh
-        // process projection rehydrates the exact current publication.
+        // process projection rehydrates the exact current publication and time.
         const SCHEMA: &str = "t_executable_agent_catalog";
-        let database_url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
+        let configured_url = std::env::var("AWAKEN_TEST_DATABASE_URL").ok();
+        let database_url = configured_url.clone().unwrap_or_else(|| {
             "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".into()
         });
         let Ok(admin) = PgPoolOptions::new()
@@ -981,6 +1103,10 @@ mod tests {
             .connect(&database_url)
             .await
         else {
+            assert!(
+                configured_url.is_none(),
+                "explicit executable Agent PostgreSQL fixture must be reachable"
+            );
             eprintln!("[skip] no PostgreSQL reachable for executable Agent catalog test");
             return;
         };
@@ -1009,12 +1135,26 @@ mod tests {
             .await
             .unwrap();
         first.register(registration()).await.unwrap();
+        let mut enriched = registration();
+        enriched.publication_sequence = Some(1);
+        enriched.published_at_unix_ms = Some(1_704_067_200_000);
+        enriched.publication_order_verified = true;
+        assert_eq!(
+            first.register(enriched.clone()).await.unwrap(),
+            ExecutableAgentRegistrationOutcome::AlreadyRegistered
+        );
+        let command_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM executable_agent_command")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(command_count, 2, "old command and amendment");
         drop(first);
 
         let separator = if database_url.contains('?') { '&' } else { '?' };
         let scoped_url = format!("{database_url}{separator}options=-c%20search_path%3D{SCHEMA}");
         let rebuilt = Arc::new(ExecutableAgentCatalog::new());
-        let _restarted =
+        let restarted =
             PostgresExecutableAgentRegistrar::connect_existing(&scoped_url, rebuilt.clone())
                 .await
                 .unwrap();
@@ -1027,6 +1167,25 @@ mod tests {
                 .0,
             "fp-a"
         );
+        assert_eq!(
+            rebuilt
+                .current_model_publications("workspace-a")
+                .await
+                .unwrap()[0]
+                .first_published_at_unix_ms,
+            enriched.published_at_unix_ms,
+            "durable first time after restart"
+        );
+        assert_eq!(
+            restarted.register(enriched).await.unwrap(),
+            ExecutableAgentRegistrationOutcome::AlreadyRegistered,
+            "replayed amendment stays idempotent"
+        );
+        let replay_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM executable_agent_command")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(replay_count, 2, "no parallel command after restart");
 
         pool.close().await;
         admin

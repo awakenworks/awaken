@@ -400,6 +400,22 @@ pub struct StoredPublication {
     ///
     pub execution_workspace: ScopeId,
     pub state: PublicationState,
+    /// The durable publication row's insertion time, supplied by the store on
+    /// read. It is row metadata rather than part of the content-addressed
+    /// snapshot, and an absent value means historical evidence is unavailable.
+    #[serde(skip)]
+    pub published_at_unix_ms: Option<u64>,
+    /// Monotonic publication-row insertion coordinate from the same durable
+    /// store read. Ordering, rather than wall-clock magnitude, decides which
+    /// model publication happened first.
+    #[serde(skip)]
+    pub publication_sequence: Option<u64>,
+    /// True only when the store serialized this publication's insertion and
+    /// commit with every other publication for its execution Workspace.
+    /// Historical PostgreSQL rows predate that fence; SQLite's serialized
+    /// writer provides it for both old and new rows.
+    #[serde(skip)]
+    pub publication_order_verified: bool,
     pub snapshot: ExecutableAgentSnapshot,
     /// Exact Agent input defaults used to compile this publication. Keeping the
     /// value beside the executable snapshot makes a publication self-contained:
@@ -435,6 +451,9 @@ impl StoredPublication {
             source_revision,
             execution_workspace: execution_workspace.into(),
             state: PublicationState::Published,
+            published_at_unix_ms: None,
+            publication_sequence: None,
+            publication_order_verified: false,
             snapshot: config,
             agent_inputs: None,
         }

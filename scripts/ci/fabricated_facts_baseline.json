@@ -4,9 +4,8 @@
     "fabricated_observation_literal": {
       "owner": "chaizhenhua",
       "expires": "2026-12-31",
-      "reason": "Three colonies survive the Work/Environment eradication. state/constants.rs declares LEGACY_UNRECORDED_AT, the sentinel ~20 Session-event projections substitute when an event carries no epoch; retiring it means making those wire times Option, which is a Managed-projection change rather than a store fix. control/models.rs stamps a catalog entry with a frozen created_at because a model has no registration event here and the upstream wire forbids null; it needs a Control-owned publication instant. official_request_witnesses.rs builds a synthetic pagination cursor whose created_at is a cursor position, not a record's observation.",
+      "reason": "Two cases remain. state/constants.rs declares LEGACY_UNRECORDED_AT, the v1 wire compatibility sentinel for historical Session events without a durable time; a versioned read must preserve the underlying unknown observation. official_request_witnesses.rs builds a synthetic pagination cursor whose created_at is a cursor position, not a record's observation. The Models API now reads Control's durable local publication time through the existing Coordinator registration history.",
       "files": {
-        "crates/server/awaken-protocol-managed/src/control/models.rs": 1,
         "crates/server/awaken-protocol-managed/src/official_request_witnesses.rs": 1,
         "crates/server/awaken-protocol-managed/src/state/constants.rs": 1
       }

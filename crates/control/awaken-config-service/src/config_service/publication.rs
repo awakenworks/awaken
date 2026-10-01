@@ -117,11 +117,31 @@ impl ConfigService {
         {
             return Err(PublishError::StaleRevision(current_revision));
         }
+        // A replayed fingerprint may have been committed long before this
+        // request. The store's immutable row, including its insertion time,
+        // is the authority; the freshly compiled candidate has no time fact.
+        let durable = registry
+            .get_publication(&prepared.publication.fingerprint)
+            .await
+            .map_err(|error| PublishError::Store(error.to_string()))?
+            .ok_or_else(|| PublishError::Store("committed publication is unreadable".into()))?;
+        if durable.agent_id != prepared.publication.agent_id
+            || durable.source_revision != prepared.publication.source_revision
+            || durable.execution_workspace != prepared.publication.execution_workspace
+        {
+            return Err(PublishError::Store(
+                "committed publication identity changed after write".into(),
+            ));
+        }
+        let mut registration = prepared.registration;
+        registration.published_at_unix_ms = durable.published_at_unix_ms;
+        registration.publication_sequence = durable.publication_sequence;
+        registration.publication_order_verified = durable.publication_order_verified;
         self.registrar
-            .register(prepared.registration)
+            .register(registration)
             .await
             .map_err(PublishError::Registration)?;
-        Ok(prepared.publication)
+        Ok(durable)
     }
 
     /// Re-resolve and re-publish a policy-bound agent (ADR-0052 D5), reading and

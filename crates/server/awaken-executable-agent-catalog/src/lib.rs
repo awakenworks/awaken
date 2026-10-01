@@ -7,7 +7,7 @@
 //! `StoredPublication` remains authoritative and exact historical registrations
 //! remain addressable after current availability changes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
@@ -16,6 +16,7 @@ use awaken_executable_agent_contract::{
     ExecutableAgentRegistration, ExecutableAgentRegistrationError,
     ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationSource,
     ExecutableAgentSessionProfile, ExecutableAgentWithdrawal, ExecutableAgentWithdrawalOutcome,
+    PublishedModelReference, project_current_model_publications,
 };
 use awaken_resource_contract::{
     InputResourceId, ResourceKind, ResourcePurgeError, ResourceReference, ResourceReferenceIndex,
@@ -54,6 +55,22 @@ struct CatalogState {
     current: BTreeMap<AgentKey, CurrentEntry>,
     revisions: BTreeMap<RevisionKey, ExecutableAgentRegistration>,
     fingerprints: BTreeMap<FingerprintKey, ExecutableAgentSnapshot>,
+    /// Replay provenance for legacy registrations amended by a later command.
+    time_amendments: BTreeSet<RevisionKey>,
+}
+
+/// An upgrade of one historical registration whose original command lacked
+/// the publication row's timestamp. It is appended to the same command log;
+/// the original immutable command and its sequence remain unchanged.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct PublicationTimeEvidence {
+    workspace_id: String,
+    agent_id: String,
+    source_revision: u64,
+    fingerprint: String,
+    publication_sequence: u64,
+    published_at_unix_ms: u64,
+    publication_order_verified: bool,
 }
 
 /// One owner for deciding whether a registration or withdrawal may replace the
@@ -217,17 +234,42 @@ impl ExecutableAgentCatalog {
             registration.source_revision,
         );
         if let Some(existing) = state.revisions.get(&revision_key) {
-            return if existing == &registration {
-                Ok(ExecutableAgentRegistrationOutcome::AlreadyRegistered)
-            } else {
-                Err(ExecutableAgentRegistrationError::Conflict(format!(
-                    "Workspace `{}` Agent `{}` revision {} already has fingerprint `{}`",
-                    registration.workspace_id,
-                    registration.agent_id,
-                    registration.source_revision,
-                    existing.snapshot.fingerprint.0
-                )))
-            };
+            if existing == &registration {
+                return Ok(ExecutableAgentRegistrationOutcome::AlreadyRegistered);
+            }
+            let mut enriched = existing.clone();
+            enriched.published_at_unix_ms = registration.published_at_unix_ms;
+            enriched.publication_sequence = registration.publication_sequence;
+            enriched.publication_order_verified = registration.publication_order_verified;
+            if existing.published_at_unix_ms.is_none()
+                && existing.publication_sequence.is_none()
+                && enriched == registration
+                && let (Some(sequence), Some(time)) = (
+                    registration.publication_sequence,
+                    registration.published_at_unix_ms,
+                )
+            {
+                Self::record_publication_time_locked(
+                    state,
+                    PublicationTimeEvidence {
+                        workspace_id: registration.workspace_id,
+                        agent_id: registration.agent_id,
+                        source_revision: registration.source_revision,
+                        fingerprint: registration.snapshot.fingerprint.0,
+                        publication_sequence: sequence,
+                        published_at_unix_ms: time,
+                        publication_order_verified: registration.publication_order_verified,
+                    },
+                )?;
+                return Ok(ExecutableAgentRegistrationOutcome::AlreadyRegistered);
+            }
+            return Err(ExecutableAgentRegistrationError::Conflict(format!(
+                "Workspace `{}` Agent `{}` revision {} already has fingerprint `{}`",
+                registration.workspace_id,
+                registration.agent_id,
+                registration.source_revision,
+                existing.snapshot.fingerprint.0
+            )));
         }
         let fingerprint_key = (
             registration.workspace_id.clone(),
@@ -272,6 +314,67 @@ impl ExecutableAgentCatalog {
                 unreachable!("an available registration cannot be already unavailable")
             }
         }
+    }
+
+    fn record_publication_time_locked(
+        state: &mut CatalogState,
+        evidence: PublicationTimeEvidence,
+    ) -> Result<(), ExecutableAgentRegistrationError> {
+        let key = (
+            evidence.workspace_id.clone(),
+            evidence.agent_id.clone(),
+            evidence.source_revision,
+        );
+        let registration = state.revisions.get_mut(&key).ok_or_else(|| {
+            ExecutableAgentRegistrationError::Conflict(
+                "publication time names an absent registration".into(),
+            )
+        })?;
+        if evidence.publication_sequence == 0
+            || registration.snapshot.fingerprint.0 != evidence.fingerprint
+            || registration
+                .published_at_unix_ms
+                .is_some_and(|known| known != evidence.published_at_unix_ms)
+            || registration
+                .publication_sequence
+                .is_some_and(|known| known != evidence.publication_sequence)
+            || (registration.publication_order_verified && !evidence.publication_order_verified)
+        {
+            return Err(ExecutableAgentRegistrationError::Conflict(
+                "publication time conflicts with the exact registration".into(),
+            ));
+        }
+        registration.published_at_unix_ms = Some(evidence.published_at_unix_ms);
+        registration.publication_sequence = Some(evidence.publication_sequence);
+        registration.publication_order_verified = evidence.publication_order_verified;
+        state.time_amendments.insert(key);
+        if let Some(current) = state
+            .current
+            .get_mut(&(evidence.workspace_id, evidence.agent_id))
+            && let Some(registered) = current.registration.as_mut()
+            && registered.source_revision == evidence.source_revision
+        {
+            registered.published_at_unix_ms = Some(evidence.published_at_unix_ms);
+            registered.publication_sequence = Some(evidence.publication_sequence);
+            registered.publication_order_verified = evidence.publication_order_verified;
+        }
+        Ok(())
+    }
+
+    fn record_publication_time(
+        &self,
+        evidence: PublicationTimeEvidence,
+    ) -> Result<(), ExecutableAgentRegistrationError> {
+        let mut state = self.state.write().expect("executable Agent catalog");
+        Self::record_publication_time_locked(&mut state, evidence)
+    }
+
+    fn has_time_amendment(&self, workspace: &str, agent: &str, revision: u64) -> bool {
+        self.state
+            .read()
+            .expect("executable Agent catalog")
+            .time_amendments
+            .contains(&(workspace.to_owned(), agent.to_owned(), revision))
     }
 
     fn preview_registration(
@@ -359,6 +462,26 @@ impl ExecutableAgentInventorySource for ExecutableAgentCatalog {
             .collect::<Vec<_>>();
         registrations.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
         Ok(registrations)
+    }
+
+    async fn current_model_publications(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<PublishedModelReference>, ExecutableAgentRegistrationError> {
+        let state = self.state.read().expect("executable Agent catalog");
+        Ok(project_current_model_publications(
+            state.current.iter().filter_map(|((workspace, _), entry)| {
+                (workspace == workspace_id)
+                    .then_some(entry.registration.as_ref())
+                    .flatten()
+            }),
+            state
+                .revisions
+                .iter()
+                .filter_map(|((workspace, _, _), registration)| {
+                    (workspace == workspace_id).then_some(registration)
+                }),
+        ))
     }
 }
 
@@ -673,6 +796,9 @@ mod test_support {
             workspace_id: "workspace-a".into(),
             agent_id: "agent-a".into(),
             source_revision: revision,
+            published_at_unix_ms: None,
+            publication_sequence: None,
+            publication_order_verified: false,
             snapshot,
             session_profile: ExecutableAgentSessionProfile::default(),
         }
@@ -683,6 +809,158 @@ mod test_support {
 mod tests {
     use super::*;
     use crate::test_support::registration;
+
+    #[tokio::test]
+    async fn model_first_publication_survives_withdrawal_and_legacy_enrichment() {
+        // Causes: C1 a dated first registration, C2 withdrawal then a later
+        // publication of the same model whose clock moved backwards, C3 an old command without a time,
+        // C4 exact durable-time enrichment, C5 another Workspace, C6 recovery
+        // registers revision 2 before historical revision 1. Effects:
+        // E1 retain the earliest time after withdrawal/reintroduction;
+        // E2 unknown history makes first time unknown until exact evidence;
+        // E3 enrichment restores E1; E4 Workspaces remain separate; E5
+        // recovery arrival order cannot change the first commit.
+        // Rules C1+C2=>E1, C1+C2+C3=>E2, C1+C2+C3+C4=>E3, C5=>E4, C1+C2+C6=>E5.
+        let catalog = Arc::new(ExecutableAgentCatalog::new());
+        let registrar = LocalExecutableAgentRegistrar::new(catalog.clone());
+        let mut first = registration(1, "fp-1");
+        first.publication_sequence = Some(1);
+        first.published_at_unix_ms = Some(2_000);
+        first.publication_order_verified = true;
+        registrar.register(first).await.unwrap();
+        registrar
+            .withdraw(ExecutableAgentWithdrawal {
+                workspace_id: "workspace-a".into(),
+                agent_id: "agent-a".into(),
+                lifecycle_revision: 1,
+            })
+            .await
+            .unwrap();
+        let mut later = registration(2, "fp-2");
+        later.publication_sequence = Some(2);
+        later.published_at_unix_ms = Some(1_000);
+        later.publication_order_verified = true;
+        registrar.register(later).await.unwrap();
+        assert_eq!(
+            catalog
+                .current_model_publications("workspace-a")
+                .await
+                .unwrap()[0]
+                .first_published_at_unix_ms,
+            Some(2_000),
+            "E1"
+        );
+        let legacy = registration(3, "fp-3");
+        registrar.register(legacy.clone()).await.unwrap();
+        assert_eq!(
+            catalog
+                .current_model_publications("workspace-a")
+                .await
+                .unwrap()[0]
+                .first_published_at_unix_ms,
+            None,
+            "E2"
+        );
+        let mut enriched = legacy;
+        enriched.publication_sequence = Some(3);
+        enriched.published_at_unix_ms = Some(3_000);
+        enriched.publication_order_verified = true;
+        assert_eq!(
+            registrar.register(enriched).await.unwrap(),
+            ExecutableAgentRegistrationOutcome::AlreadyRegistered,
+            "E3"
+        );
+        assert_eq!(
+            catalog
+                .current_model_publications("workspace-a")
+                .await
+                .unwrap()[0]
+                .first_published_at_unix_ms,
+            Some(2_000),
+            "E3"
+        );
+        let mut other = registration(1, "fp-other");
+        other.workspace_id = "workspace-b".into();
+        other.publication_sequence = Some(4);
+        other.published_at_unix_ms = Some(4_000);
+        other.publication_order_verified = true;
+        registrar.register(other).await.unwrap();
+        assert_eq!(
+            catalog
+                .current_model_publications("workspace-b")
+                .await
+                .unwrap()[0]
+                .first_published_at_unix_ms,
+            Some(4_000),
+            "E4"
+        );
+        let recovered = Arc::new(ExecutableAgentCatalog::new());
+        let recovery = LocalExecutableAgentRegistrar::new(recovered.clone());
+        let mut newer = registration(2, "fp-2");
+        newer.publication_sequence = Some(2);
+        newer.published_at_unix_ms = Some(1_000);
+        newer.publication_order_verified = true;
+        recovery.register(newer).await.unwrap();
+        let mut older = registration(1, "fp-1");
+        older.publication_sequence = Some(1);
+        older.published_at_unix_ms = Some(2_000);
+        older.publication_order_verified = true;
+        recovery.register(older).await.unwrap();
+        assert_eq!(
+            recovered
+                .current("workspace-a", "agent-a")
+                .unwrap()
+                .source_revision,
+            2,
+            "E5 current stays newest"
+        );
+        assert_eq!(
+            recovered
+                .current_model_publications("workspace-a")
+                .await
+                .unwrap()[0]
+                .first_published_at_unix_ms,
+            Some(2_000),
+            "E5 first time follows oldest sequence"
+        );
+    }
+
+    #[tokio::test]
+    async fn historical_postgres_order_is_unknown_after_two_unfenced_rows() {
+        // Causes: H1 one old registration has a row time but predates the
+        // Workspace commit-order lock; H2 a second old row of the same model
+        // has a backwards clock. Effects: E1 one row is unambiguous; E2 two
+        // rows make first-commit time unknown, even though seq is ordered.
+        // Rules H1=>E1, H1+H2=>E2.
+        let catalog = Arc::new(ExecutableAgentCatalog::new());
+        let registrar = LocalExecutableAgentRegistrar::new(catalog.clone());
+        let mut first = registration(1, "fp-old-1");
+        first.publication_sequence = Some(1);
+        first.published_at_unix_ms = Some(2_000);
+        registrar.register(first).await.unwrap();
+        assert_eq!(
+            catalog
+                .current_model_publications("workspace-a")
+                .await
+                .unwrap()[0]
+                .first_published_at_unix_ms,
+            Some(2_000),
+            "E1"
+        );
+        let mut second = registration(2, "fp-old-2");
+        second.publication_sequence = Some(2);
+        second.published_at_unix_ms = Some(1_000);
+        registrar.register(second).await.unwrap();
+        assert_eq!(
+            catalog
+                .current_model_publications("workspace-a")
+                .await
+                .unwrap()[0]
+                .first_published_at_unix_ms,
+            None,
+            "E2"
+        );
+    }
 
     #[test]
     fn current_lifecycle_disposition_decision_table() {

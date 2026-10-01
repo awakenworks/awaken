@@ -486,6 +486,8 @@ impl ConfigRegistry for StalePublishRegistry {
 #[derive(Default)]
 struct AdvancingPublishRegistry {
     reads: std::sync::atomic::AtomicUsize,
+    committed: std::sync::Mutex<Option<StoredPublication>>,
+    read_behavior: std::sync::atomic::AtomicU8,
 }
 
 #[async_trait::async_trait]
@@ -529,15 +531,33 @@ impl ConfigRegistry for AdvancingPublishRegistry {
             })
         } else {
             assert_eq!(publication.source_revision, 8);
+            *self.committed.lock().unwrap() = Some(publication.clone());
             Ok(PublicationWrite::Committed { source_revision: 8 })
         }
     }
 
     async fn get_publication(
         &self,
-        _fp: &str,
+        fp: &str,
     ) -> Result<Option<StoredPublication>, ConfigStoreError> {
-        Ok(None)
+        let mut publication = self
+            .committed
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|publication| publication.fingerprint == fp)
+            .cloned();
+        match self.read_behavior.load(std::sync::atomic::Ordering::SeqCst) {
+            1 => publication = None,
+            2 => {
+                if let Some(publication) = publication.as_mut() {
+                    publication.execution_workspace = ScopeId::from("foreign");
+                }
+            }
+            3 => return Err(ConfigStoreError("publication read unavailable".into())),
+            _ => {}
+        }
+        Ok(publication)
     }
 }
 

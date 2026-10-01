@@ -18,7 +18,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_tenancy::ScopeId;
 
-use crate::codec::decode_publication;
+use crate::codec::{attach_publication_row, decode_publication};
 use crate::management_effect_retirement_is_admitted;
 use crate::schema::{BUNDLE_ID, converged_config_bundle, selected_config_bundle};
 use awaken_agent_config::{
@@ -826,20 +826,23 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         let fingerprint = fingerprint.to_string();
         let scope = scope.0.clone();
         self.with_conn(move |conn, p| {
-            let record: Option<String> = conn
+            let row: Option<(String, i64, i64)> = conn
                 .query_row(
                     &format!(
-                        "SELECT record FROM {p}_publication WHERE fingerprint = ?1 AND scope_id = ?2"
+                        "SELECT record, rowid, CAST(strftime('%s', created_at) AS INTEGER) * 1000 \
+                         FROM {p}_publication WHERE fingerprint = ?1 AND scope_id = ?2"
                     ),
                     params![fingerprint, scope],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()
                 .map_err(reject)?;
-            record
-                .map(|record| decode_publication(&record, &ScopeId::from(scope.as_str())))
-                .transpose()
-                .map_err(reject)
+            row.map(|(record, sequence, published_at)| {
+                let publication =
+                    decode_publication(&record, &ScopeId::from(scope.as_str())).map_err(reject)?;
+                attach_publication_row(publication, sequence, published_at, true)
+            })
+            .transpose()
         })
         .await
     }
@@ -852,19 +855,31 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         self.with_conn(move |conn, p| {
             let mut stmt = conn
                 .prepare(&format!(
-                    "SELECT record FROM {p}_publication \
+                    "SELECT record, rowid, CAST(strftime('%s', created_at) AS INTEGER) * 1000 \
+                     FROM {p}_publication \
                      WHERE scope_id = ?1 AND state = 'published' ORDER BY rowid ASC"
                 ))
                 .map_err(reject)?;
             let rows = stmt
-                .query_map(params![scope], |r| r.get::<_, String>(0))
+                .query_map(params![scope], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                })
                 .map_err(reject)?;
             let mut out = Vec::new();
             for row in rows {
-                out.push(
-                    decode_publication(&row.map_err(reject)?, &ScopeId::from(scope.as_str()))
-                        .map_err(reject)?,
-                );
+                let (record, sequence, published_at) = row.map_err(reject)?;
+                let publication =
+                    decode_publication(&record, &ScopeId::from(scope.as_str())).map_err(reject)?;
+                out.push(attach_publication_row(
+                    publication,
+                    sequence,
+                    published_at,
+                    true,
+                )?);
             }
             Ok(out)
         })

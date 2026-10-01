@@ -1,4 +1,4 @@
-use awaken_agent_config::StoredPublication;
+use awaken_agent_config::{ConfigStoreError, StoredPublication};
 use awaken_tenancy::ScopeId;
 
 fn bind_legacy_execution_workspace(
@@ -30,6 +30,26 @@ pub(crate) fn decode_publication(
     configuration_scope: &ScopeId,
 ) -> Result<StoredPublication, serde_json::Error> {
     decode_publication_value(serde_json::from_str(record)?, configuration_scope)
+}
+
+/// Attach the existing publication row's one commit coordinate and its clock
+/// reading. Neither field lives inside content-addressed publication JSON.
+pub(crate) fn attach_publication_row(
+    mut publication: StoredPublication,
+    sequence: i64,
+    published_at_unix_ms: i64,
+    serialized_writer: bool,
+) -> Result<StoredPublication, ConfigStoreError> {
+    let sequence = u64::try_from(sequence)
+        .ok()
+        .filter(|sequence| *sequence != 0)
+        .ok_or_else(|| ConfigStoreError("invalid durable publication sequence".into()))?;
+    let published_at_unix_ms = u64::try_from(published_at_unix_ms)
+        .map_err(|_| ConfigStoreError("invalid durable publication time".into()))?;
+    publication.publication_sequence = Some(sequence);
+    publication.published_at_unix_ms = Some(published_at_unix_ms);
+    publication.publication_order_verified = serialized_writer;
+    Ok(publication)
 }
 
 #[cfg(test)]
