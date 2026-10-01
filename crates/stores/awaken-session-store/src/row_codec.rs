@@ -160,6 +160,7 @@ fn decode_aggregate(data: &str) -> Result<PersistedSession, serde_json::Error> {
             "terminated" if archived_at.is_some() => {
                 awaken_session_state_contract::SessionDisposition::Archived {
                     archived_at: archived_at.expect("checked above"),
+                    archived_at_unix_ms: None,
                 }
             }
             _ => awaken_session_state_contract::SessionDisposition::Active,
@@ -656,7 +657,7 @@ mod tests {
         };
         session.realization = Some(lease.clone());
         session
-            .archive_with_repository_publication("2026-09-01T00:00:00Z", intent)
+            .archive_with_repository_publication("2026-09-01T00:00:00Z", Some(0), intent)
             .unwrap();
         session.freeze_terminal_cleanup_targets([], 3, 5).unwrap();
         let command = session

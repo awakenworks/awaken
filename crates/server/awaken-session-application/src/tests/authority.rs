@@ -2715,7 +2715,7 @@ async fn deletion_fixture(
     ));
     let mut root = persisted(session_id, false, "idle");
     if initial != "active" {
-        root.archive("original-archive").unwrap();
+        root.archive("original-archive", 0).unwrap();
     }
     if initial == "archived-requested" {
         root.freeze_terminal_cleanup_targets(Vec::<String>::new(), 17, 19)

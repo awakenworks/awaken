@@ -8,6 +8,23 @@ use awaken_lease_contract::WallClockExt as _;
 
 use super::session_mcp_projection::typed_mcp_servers;
 
+fn managed_archive_command(
+    id: &str,
+    owner: Option<String>,
+    observed_at: u64,
+) -> (String, ManagedLifecycleFact) {
+    (
+        awaken_session_application_contract::epoch_millis_to_rfc3339(observed_at),
+        lifecycle_fact(
+            format!("session:{id}:terminated"),
+            id,
+            owner,
+            lifecycle_event::SESSION_TERMINATED,
+            observed_at,
+        ),
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum RehydrationPurpose {
     Interactive,
@@ -172,10 +189,7 @@ impl ManagedState {
         record.session.status = Self::wire_session_status(persisted);
         record.session.created_at = super::constants::persisted_time(persisted.created_at_unix_ms);
         record.session.updated_at = super::constants::persisted_time(persisted.updated_at_unix_ms);
-        record.root_time = RootTimeEvidence {
-            created_at_unix_ms: persisted.created_at_unix_ms,
-            updated_at_unix_ms: persisted.updated_at_unix_ms,
-        };
+        record.root_time = RootTimeEvidence::from(persisted);
         record.session.title = persisted.title.clone();
         record.session.metadata = persisted.metadata.clone();
         record.session.deployment_id = persisted.metadata.get("awaken.deployment_id").cloned();
@@ -559,15 +573,13 @@ impl ManagedState {
             .lock()
             .unwrap()
             .insert(id.clone(), owner_scope.to_owned());
+        let root_time = RootTimeEvidence::from(&persisted);
         let record = SessionRecord::new(
             agent_id,
             session,
             persisted.revision,
             persisted.resources,
-            RootTimeEvidence {
-                created_at_unix_ms: persisted.created_at_unix_ms,
-                updated_at_unix_ms: persisted.updated_at_unix_ms,
-            },
+            root_time,
             Vec::new(),
         );
         let session = record.session_projection();
@@ -924,10 +936,7 @@ impl ManagedState {
             if let Some(record) = cached.get(session_id.as_str()) {
                 out.push((record.session_projection(), record.root_time));
             } else {
-                let evidence = RootTimeEvidence {
-                    created_at_unix_ms: session.created_at_unix_ms,
-                    updated_at_unix_ms: session.updated_at_unix_ms,
-                };
+                let evidence = RootTimeEvidence::from(&session);
                 out.push((
                     self.rehydrated_session_for(
                         session_id.as_str(),
@@ -1002,15 +1011,8 @@ impl ManagedState {
     ) -> Result<Session, StateError> {
         self.ensure_session_for_frozen_control(id).await?;
         let owner = self.resolve_owner(id).await?;
-        let observed_at = self.roles.clock.now_ms();
-        let terminated_fact = lifecycle_fact(
-            format!("session:{id}:terminated"),
-            id,
-            owner.clone(),
-            lifecycle_event::SESSION_TERMINATED,
-            observed_at,
-        );
-        let archived_at = awaken_session_application_contract::epoch_millis_to_rfc3339(observed_at);
+        let (archived_at, terminated_fact) =
+            managed_archive_command(id, owner, self.roles.clock.now_ms());
         if verified_cleanup {
             // This read selects a safe command, not a second status authority.
             // Both application commands reload and recheck the durable root.
@@ -1159,6 +1161,25 @@ impl awaken_session_application::SessionCreateProtocol for ManagedCreateProtocol
 #[cfg(test)]
 mod rehydration_publication_policy_tests {
     use super::*;
+
+    #[test]
+    fn independent_managed_archives_share_intent_across_route_clock_samples() {
+        // Causes: M1 two independent Managed archive requests sample 1s/2s
+        // for the same owned Session. Effects: M1 display and fact timestamp
+        // differ, while Session/Workspace/fact id/type and interval semantics
+        // remain identical. The Application lost-CAS table tests one receipt.
+        let (first_time, first) =
+            managed_archive_command("session", Some("workspace".into()), 1_000);
+        let (second_time, second) =
+            managed_archive_command("session", Some("workspace".into()), 2_000);
+        assert_ne!(first_time, second_time, "M1");
+        assert_ne!(first.timestamp, second.timestamp, "M1");
+        assert_eq!(first.id, second.id, "M1");
+        assert_eq!(first.object_id, second.object_id, "M1");
+        assert_eq!(first.workspace_id, second.workspace_id, "M1");
+        assert_eq!(first.event_type, second.event_type, "M1");
+        assert_eq!(first.runtime_interval, second.runtime_interval, "M1");
+    }
 
     #[test]
     fn missing_exact_publication_is_readable_but_not_interactively_recoverable() {

@@ -134,6 +134,111 @@ enum ArchiveAdmission {
     ForceTerminal,
 }
 
+impl ArchiveAdmission {
+    const fn as_identity_str(self) -> &'static str {
+        match self {
+            Self::IdleOnly => "idle_only",
+            Self::TerminalOnly => "terminal_only",
+            Self::ForceTerminal => "force_terminal",
+        }
+    }
+}
+
+/// One Session Application command-identity law for both archive entrances.
+/// Route observation time belongs only to the candidate that wins the root
+/// CAS. It cannot distinguish two requests for the same business intent.
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ArchiveBusinessIntent<'a> {
+    Ordinary {
+        admission: &'static str,
+    },
+    RepositoryPublication {
+        source_revision: awaken_session_types::SessionRevision,
+        binding_id: &'a BindingId,
+        expectation: &'a RepositoryPublicationExpectation,
+        resolved: &'a SessionRepositoryPublicationIntent,
+    },
+}
+
+fn archive_idempotency_record(
+    owner_scope: &str,
+    session_id: &awaken_session_types::SessionId,
+    fact: &ManagedLifecycleFact,
+    business: ArchiveBusinessIntent<'_>,
+) -> awaken_session_state_contract::IdempotencyRecord {
+    let key = match &business {
+        ArchiveBusinessIntent::Ordinary { .. } => {
+            format!("session:archive:{session_id}:{}", fact.id)
+        }
+        ArchiveBusinessIntent::RepositoryPublication {
+            source_revision, ..
+        } => format!(
+            "session:archive-with-repository-publication:{session_id}:{}:{}",
+            source_revision.0, fact.id
+        ),
+    };
+    let payload_hash = awaken_agent_contract::stable_fingerprint(&(
+        "session-archive-intent-v2",
+        owner_scope,
+        session_id,
+        &fact.id,
+        &fact.object_id,
+        &fact.workspace_id,
+        &fact.event_type,
+        &fact.runtime_interval,
+        &business,
+    ));
+    awaken_session_state_contract::IdempotencyRecord { key, payload_hash }
+}
+
+#[cfg(test)]
+mod archive_identity_tests {
+    use super::*;
+
+    #[test]
+    fn sampled_time_is_not_identity_but_interval_and_admission_are() {
+        // Causes: I1 same Session/owner/fact id/type/admission, different
+        // Route timestamps; I2 same id/type but a different Runtime interval;
+        // I3 same fact but a different admission business rule. Effects: I1
+        // exact key+hash replay; I2/I3 same key but different payload hashes,
+        // so the Repository refuses an accidental different-intent replay.
+        let id = awaken_session_types::SessionId::from("session");
+        let mut fact = ManagedLifecycleFact {
+            id: "session:session:terminated".into(),
+            object_id: id.to_string(),
+            workspace_id: Some("workspace".into()),
+            event_type: "session.terminated".into(),
+            timestamp: 1,
+            runtime_interval: None,
+        };
+        let record = |fact: &ManagedLifecycleFact, admission| {
+            archive_idempotency_record(
+                "workspace",
+                &id,
+                fact,
+                ArchiveBusinessIntent::Ordinary { admission },
+            )
+        };
+        let original = record(&fact, "idle_only");
+        fact.timestamp = 2;
+        assert_eq!(record(&fact, "idle_only"), original, "I1");
+        fact.runtime_interval = Some(
+            serde_json::from_value(serde_json::json!({
+                "interval_id": "interval", "activity_epoch": 1,
+                "started_at_unix_ms": 1, "ended_at_unix_ms": 2
+            }))
+            .unwrap(),
+        );
+        let interval = record(&fact, "idle_only");
+        assert_eq!(interval.key, original.key, "I2 same public fact id");
+        assert_ne!(interval.payload_hash, original.payload_hash, "I2 conflict");
+        let force = record(&fact, "force_terminal");
+        assert_eq!(force.key, original.key, "I3 same public fact id");
+        assert_ne!(force.payload_hash, interval.payload_hash, "I3 conflict");
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ArchiveCleanupCompletion {
     Recoverable,
@@ -296,12 +401,34 @@ impl SessionApplication {
             }
             let intent =
                 Self::resolve_repository_publication_intent(&session, &command.repository)?;
+            let idempotency = archive_idempotency_record(
+                &owner_scope,
+                &command.session_id,
+                &command.lifecycle_fact,
+                ArchiveBusinessIntent::RepositoryPublication {
+                    source_revision: session.revision,
+                    binding_id: &command.repository.binding_id,
+                    expectation: &command.repository.expectation,
+                    resolved: &intent,
+                },
+            );
+            // An Archived replay must retain its first time without asking the
+            // clock again. Only an Active transition receives a new sample.
+            let archive_time = matches!(&session.disposition, SessionDisposition::Active)
+                .then(|| self.clock.now_ms());
             let changed = session
-                .archive_with_repository_publication(&command.archived_at, intent)
+                .archive_with_repository_publication(&command.archived_at, archive_time, intent)
                 .map_err(|error| match error {
-                    awaken_session_state_contract::SessionArchiveWithRepositoryPublicationError::Disposition(_) => {
+                    awaken_session_state_contract::SessionArchiveWithRepositoryPublicationError::Disposition(
+                        awaken_session_state_contract::SessionDispositionTransitionError::ArchiveAfterDelete,
+                    ) => {
                         SessionArchiveWithRepositoryPublicationError::NotFound
                     }
+                    awaken_session_state_contract::SessionArchiveWithRepositoryPublicationError::Disposition(
+                        awaken_session_state_contract::SessionDispositionTransitionError::ArchiveTimeRequired,
+                    ) => SessionArchiveWithRepositoryPublicationError::Unavailable(
+                        "Session archive has no Application time observation".into(),
+                    ),
                     awaken_session_state_contract::SessionArchiveWithRepositoryPublicationError::Cleanup(_) => {
                         SessionArchiveWithRepositoryPublicationError::Conflict
                     }
@@ -310,8 +437,13 @@ impl SessionApplication {
                 transition = Some(SessionDispositionMutation::unchanged(owner_scope, session));
                 break;
             }
+            let archive_time = archive_time.ok_or_else(|| {
+                SessionArchiveWithRepositoryPublicationError::Unavailable(
+                    "committed archive has no Application time observation".into(),
+                )
+            })?;
             let mut facts = session
-                .close_runtime_interval(self.clock.now_ms())
+                .close_runtime_interval(archive_time)
                 .map(|interval| {
                     runtime_interval_fact(&owner_scope, command.session_id.as_str(), interval)
                 })
@@ -319,12 +451,7 @@ impl SessionApplication {
                 .collect::<Vec<_>>();
             facts.push(command.lifecycle_fact.clone());
             match self
-                .commit_session_snapshot_with_outcome(
-                    &owner_scope,
-                    session,
-                    "archive-with-repository-publication",
-                    facts,
-                )
+                .commit_session_snapshot_with_record(&owner_scope, session, idempotency, facts)
                 .await
             {
                 Ok(commit) => {
@@ -592,22 +719,6 @@ impl SessionApplication {
         fact: ManagedLifecycleFact,
         admission: ArchiveAdmission,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
-        let admission_name = match admission {
-            ArchiveAdmission::IdleOnly => "idle_only",
-            ArchiveAdmission::TerminalOnly => "terminal_only",
-            ArchiveAdmission::ForceTerminal => "force_terminal",
-        };
-        let command_hash = awaken_agent_contract::stable_fingerprint(&(
-            "session-archive-v1",
-            session_id,
-            archived_at,
-            &fact,
-            admission_name,
-        ));
-        let command_record = awaken_session_state_contract::IdempotencyRecord {
-            key: format!("session:archive:{session_id}:{}", fact.id),
-            payload_hash: command_hash,
-        };
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self.owner(session_id).await.map_err(mutation_failure)?;
             let mut session = self
@@ -622,6 +733,14 @@ impl SessionApplication {
             if matches!(session.disposition, SessionDisposition::Archived { .. }) {
                 return Ok(SessionDispositionMutation::unchanged(owner_scope, session));
             }
+            let command_record = archive_idempotency_record(
+                &owner_scope,
+                session_id,
+                &fact,
+                ArchiveBusinessIntent::Ordinary {
+                    admission: admission.as_identity_str(),
+                },
+            );
             if let Some(receipt) = self
                 .session_repository()
                 .idempotency_receipt(session_id, &command_record.key)
@@ -660,11 +779,12 @@ impl SessionApplication {
                     "terminal Session release requires already-terminal execution",
                 )));
             }
+            let archive_time = self.clock.now_ms();
             session
-                .archive(archived_at)
+                .archive(archived_at, archive_time)
                 .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?;
             let mut facts = session
-                .close_runtime_interval(self.clock.now_ms())
+                .close_runtime_interval(archive_time)
                 .map(|interval| runtime_interval_fact(&owner_scope, session_id.as_str(), interval))
                 .into_iter()
                 .collect::<Vec<_>>();

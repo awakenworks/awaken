@@ -42,7 +42,7 @@ pub use mutation::{
     session_tombstone_is_admitted,
 };
 pub use persisted_session::{
-    PersistedSession, SessionEventDispatchSettlementEffect, session_is_terminal,
+    PersistedSession, SessionEventDispatchSettlementEffect, VisibleMcpServer, session_is_terminal,
 };
 pub use placement::{SessionPlacementClass, SessionPublicStatus};
 pub use recovery::{
@@ -58,15 +58,6 @@ mod execution_state;
 pub use execution_state::{
     SessionExecutionState, SessionExecutionStateError, SessionExecutionTransitionError,
 };
-
-/// Secret-free active MCP projection consumed by protocol adapters. It is
-/// derived from the typed attachment aggregate without a JSON serialization hop.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VisibleMcpServer {
-    pub name: String,
-    pub target: crate::McpTarget,
-    pub prompts_as_skills: bool,
-}
 
 #[cfg(test)]
 mod mutation_tests {
@@ -303,7 +294,7 @@ mod mutation_tests {
         );
 
         let mut fenced = frozen_session("late-environment-fenced");
-        fenced.archive("2026-09-05T00:00:00Z").unwrap();
+        fenced.archive("2026-09-05T00:00:00Z", 0).unwrap();
         assert!(fenced.terminal_cleanup.is_fenced(), "C2");
         assert!(
             fenced
@@ -313,7 +304,7 @@ mod mutation_tests {
         );
 
         let mut requested = frozen_session("late-environment-requested");
-        requested.archive("2026-09-05T00:00:00Z").unwrap();
+        requested.archive("2026-09-05T00:00:00Z", 0).unwrap();
         requested.freeze_terminal_cleanup_targets([], 0, 0).unwrap();
         assert!(requested.terminal_cleanup.is_requested(), "C3");
         assert_eq!(
@@ -1396,10 +1387,16 @@ mod mutation_tests {
         // is Replay and leaves the complete aggregate unchanged. Rules below
         // cover Archived+terminal, its replay, and Active+ActivationFailed; the
         // 4x2 Kani table exhausts the disposition/execution classification.
+        // D3 first archive at valid boundary 0 then replay at 999; E3 the
+        // original typed time and v1 string are absorbing before deletion.
         let mut archived = session("archived", SessionRevision(1));
-        assert_eq!(archived.archive("2026-08-08T00:00:00Z"), Ok(true));
+        assert_eq!(archived.archive("2026-08-08T00:00:00Z", 0), Ok(true));
         assert_eq!(archived.execution, SessionExecutionState::Terminated);
         assert_eq!(archived.archived_at(), Some("2026-08-08T00:00:00Z"));
+        assert_eq!(archived.archived_at_unix_ms(), Some(0), "D3/E3");
+        let first_archive = archived.clone();
+        assert_eq!(archived.archive("later", 999), Ok(false), "D3/E3");
+        assert_eq!(archived, first_archive, "D3/E3");
         let fact = archived
             .request_delete("workspace", 7)
             .unwrap()
@@ -1504,6 +1501,7 @@ mod mutation_tests {
                 "terminated",
                 SessionDisposition::Archived {
                     archived_at: "at".into(),
+                    archived_at_unix_ms: None,
                 },
                 false,
                 true,
@@ -1515,6 +1513,7 @@ mod mutation_tests {
                 "terminated",
                 SessionDisposition::Archived {
                     archived_at: "at".into(),
+                    archived_at_unix_ms: None,
                 },
                 false,
                 false,

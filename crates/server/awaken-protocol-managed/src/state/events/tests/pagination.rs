@@ -81,6 +81,7 @@ async fn history_time_v2_uses_typed_root_and_event_evidence_without_changing_v1(
                 RootTimeEvidence {
                     created_at_unix_ms: Some(real_placeholder),
                     updated_at_unix_ms: None,
+                    archived_at_unix_ms: None,
                 }
             )],
             &params,
@@ -264,6 +265,45 @@ async fn history_time_v2_uses_typed_root_and_event_evidence_without_changing_v1(
         .unwrap();
     assert_eq!(known.data.len(), 1, "R7");
     assert_eq!(known.data[0].id, "known", "R7");
+}
+
+#[tokio::test]
+async fn new_archive_projects_one_typed_time_to_session_and_primary_thread() {
+    // Causes: P1 live Idle Session archives through the real Managed command
+    // and Session Application root CAS; P2 the same command is replayed.
+    // Effects: P1 v1 archive string remains present and v2 Session/primary
+    // Thread share the committed typed time; P2 changes neither observation.
+    // Historical missing provenance is covered by the codec/SQLite tables.
+    let (state, id) = page_state().await;
+    let first = state.archive_session(&id).await.unwrap();
+    let (root, _, time) = state.get_session_with_revision_and_time(&id).unwrap();
+    let archived_at = time.archived_at_unix_ms.expect("P1 committed archive time");
+    assert_eq!(root.archived_at, first.archived_at, "P1 v1");
+    let v2 =
+        crate::types::session::history_time_v2(&root, &[("archived_at", time.archived_at_unix_ms)]);
+    assert_eq!(
+        v2["archived_at"],
+        awaken_session_application_contract::epoch_millis_to_rfc3339(archived_at),
+        "P1 v2"
+    );
+    let primary_id = crate::state::public_thread_id(&id, &id);
+    let (_, primary_time) = state.get_thread_with_time(&id, &primary_id).unwrap();
+    assert_eq!(
+        primary_time.archived_at_unix_ms,
+        Some(archived_at),
+        "P1 primary"
+    );
+    let replay = state.archive_session(&id).await.unwrap();
+    assert_eq!(replay.archived_at, first.archived_at, "P2 v1");
+    assert_eq!(
+        state
+            .get_session_with_revision_and_time(&id)
+            .unwrap()
+            .2
+            .archived_at_unix_ms,
+        Some(archived_at),
+        "P2 v2"
+    );
 }
 
 fn message(id: &str) -> Event {
