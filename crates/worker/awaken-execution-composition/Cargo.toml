@@ -17,6 +17,8 @@ awaken-session-executor.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-acp-contract.workspace = true
 awaken-credential-contract.workspace = true
+# The exact claim-fenced materializer consumed by the sole ACP launch resolver.
+awaken-credential-materializer.workspace = true
 # The one authoritative ACP adapter catalog queried by that policy.
 awaken-run-executor-acp.workspace = true
 # The backend-erased container ports the Session owner holds.
@@ -47,6 +49,9 @@ k8s = ["awaken-sandbox-container/k8s"]
 awaken-session-environment = { workspace = true, features = ["test-support"] }
 # Hosts over a chosen Deployment for the startup rows.
 awaken-runtime-host-testkit.workspace = true
+awaken-agent-contract.workspace = true
+awaken-credential-vault = { workspace = true, features = ["test-support"] }
+awaken-credential-materializer = { workspace = true, features = ["authority"] }
 tempfile = "3"
 
 [lints]

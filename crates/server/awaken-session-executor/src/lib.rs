@@ -16,7 +16,6 @@
 
 mod acp_backend;
 mod acp_capability_probe;
-mod acp_provision;
 mod acp_tool_export;
 mod agent_catalog;
 mod agent_runner;
@@ -132,14 +131,6 @@ pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::sandbox_source::{AcpLaunchRegistry, LaunchSource};
 // The root every composition selects its Session environment providers under.
 pub use crate::acp_backend::session_sandbox_base;
-pub use crate::skills::SkillForkPlacement;
-use managed_adapter_error::{to_live_inbox_error, to_run_error};
-pub(crate) use managed_input_projection::{
-    exact_credential_realization_target, session_system_message, user_message,
-};
-// The config data plane (ADR-0036/slice A): the service + its router + the
-// advertised-tools helper the process startup builds a config host from.
-pub use crate::acp_provision::PublishedAcpLaunchResolver;
 pub use crate::commit_ingest::claimed_commit_service;
 pub use crate::config::{
     advertised_tools, authorable_tools, block_text, platform_plugin_capabilities,
@@ -149,6 +140,11 @@ pub use crate::deployment_config::{
     AcpWorkerProfile, ContainerMcpRelayExposure, ContentCaptureSettings, ContentRedaction,
     DeploymentConfig, DispatchBackend, PackageImageBuilder, SandboxPackageSettingsInput,
     SandboxSettings, SandboxTier, StoreKind, Wake, default_postgres_max_connections,
+};
+pub use crate::skills::SkillForkPlacement;
+use managed_adapter_error::{to_live_inbox_error, to_run_error};
+pub(crate) use managed_input_projection::{
+    exact_credential_realization_target, session_system_message, user_message,
 };
 // The model-route seam (R1/R2/R5): a process startup supplies its own
 // `InferenceExecutorMaterializer` to map a session's model ref to a labeled executor.

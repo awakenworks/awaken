@@ -467,9 +467,8 @@ mod startup_tests {
             deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER"),
         )
         .await
-        .unwrap()
-        .with_acp_from_deployment(None, None)
-        .await;
+        .unwrap();
+        let host = crate::with_acp_from_deployment(host, None, None);
 
         assert!(host.session_environment_provider_installed());
         assert_eq!(

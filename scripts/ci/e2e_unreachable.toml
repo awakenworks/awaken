@@ -50,10 +50,10 @@ reason = "The subprocess empty-argv check is dominated by AcpCli projection, and
 evidence = "e2e/acp_local_discovery_e2e.mjs; e2e/acp_managed_mcp_e2e.mjs; cargo test -p awaken-run-executor-acp subprocess"
 
 [[waiver]]
-path = "crates/server/awaken-session-executor/src/acp_provision.rs"
+path = "crates/worker/awaken-execution-composition/src/acp_provision.rs"
 ranges = ["40-53", "69-89", "153-160"]
 reason = "These guards require a forged immutable activation: a model outside its candidate set, incoherent BackendOwned coordinates, or HostExecutor provisioning routed into ACP. The publication resolver and route selection reject those combinations before installation, and no served API mutates a frozen activation."
-evidence = "e2e/acp_projected_local_e2e.mjs; e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-session-executor acp_provision"
+evidence = "e2e/acp_projected_local_e2e.mjs; e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-execution-composition acp_provision"
 
 [[waiver]]
 path = "crates/server/awaken-session-executor/src/host/session.rs"

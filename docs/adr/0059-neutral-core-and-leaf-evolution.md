@@ -173,10 +173,12 @@ Verified state after the 2026-08-04 cut:
   `provisioning` reads the run's resolved spec
   (host-plane knowledge). Requires a narrow `SandboxSource` port; provisioning stays.
 - **ACP (`acp_backend`, `acp_serve`)** — add `impl SharedHost` methods and are held as the
-  `acp` field. `acp_provision` (`PublishedAcpLaunchResolver`) is correctly host-placed:
-  it realizes snapshot-pinned access through the shared credential materializer;
-  moving it into `run-executor-acp` would violate that crate's documented
-  *config-free* invariant.
+  `acp` field. The host-side `acp_provision` adapter (`PublishedAcpLaunchResolver`)
+  and deployment route assembly live in `awaken-execution-composition`: they
+  consume the Host's one typed deployment and realize snapshot-pinned access
+  through the shared credential materializer. Moving this config-aware adapter
+  into `run-executor-acp` would violate that crate's *config-free* invariant.
+  `SharedHost` retains the Session environment and Run execution boundary.
 - **Managed public routers** — already resolved. `files_router`, `models_router`,
   `memory_stores_router`, and `skills_router` are modules of the single
   `awaken-protocol-managed` anti-corruption boundary and consume injected application
