@@ -213,7 +213,8 @@ impl ManagedState {
         let record = &mut staged_record;
         let root = self.project_root_prefix(record, session_id, &persisted, &evidence)?;
         let delegation = evidence.delegation();
-        self.append_delegation_projections(record, delegation, &order_index)?;
+        let mut child_threads =
+            self.append_delegation_projections(record, delegation, &order_index)?;
         self.close_aggregate(
             record,
             session_id,
@@ -232,7 +233,7 @@ impl ManagedState {
             awaken_managed_session_events::ActivationFailureProjection::Ready { .. }
         ) || persisted.terminal_cleanup.runtime_commit_cursor().is_some()
         {
-            self.append_parent_terminal_projection(record)?;
+            self.append_parent_terminal_projection(record, &mut child_threads)?;
         }
         Self::append_interval_aggregate_projections(
             record,

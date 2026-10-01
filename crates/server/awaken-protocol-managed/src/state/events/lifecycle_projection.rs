@@ -5,24 +5,6 @@ use super::*;
 use awaken_managed_session_events::{CoordinatedThread, ThreadStatus};
 
 impl ManagedState {
-    /// The coordinated children as the timeline domain sees them.
-    pub(super) fn coordinated_threads(record: &SessionRecord) -> Vec<CoordinatedThread> {
-        record
-            .child_threads
-            .iter()
-            .map(|child| CoordinatedThread {
-                thread: child.id.clone(),
-                advisor: child.agent.is_advisor(),
-                status: match child.status {
-                    SessionThreadStatus::Running => ThreadStatus::Running,
-                    SessionThreadStatus::Rescheduling => ThreadStatus::Rescheduling,
-                    SessionThreadStatus::Idle => ThreadStatus::Idle,
-                    SessionThreadStatus::Terminated => ThreadStatus::Terminated,
-                },
-            })
-            .collect()
-    }
-
     /// Select child Running, cross-post, and lifecycle facts in one committed
     /// source-order fold. A prior warm child status is never consulted.
     pub(super) fn plan_child_activity_projection(
@@ -52,7 +34,7 @@ impl ManagedState {
         let orders =
             awaken_managed_session_events::coordination_orders(index, &issued, links, &order_refs);
         let cross_posts = awaken_managed_session_events::cross_posts(&issued, links);
-        let mut threads = Self::coordinated_threads(record);
+        let mut threads = awaken_managed_session_events::initial_coordinated_threads(links);
         let projection = awaken_managed_session_events::project_child_activity(
             &mut threads,
             &cross_posts,
@@ -68,10 +50,10 @@ impl ManagedState {
     pub(super) fn append_child_disposition_projection(
         &self,
         record: &mut SessionRecord,
+        threads: &mut [CoordinatedThread],
         dispositions: &std::collections::HashMap<String, awaken_agent_contract::ThreadDisposition>,
     ) -> Result<(), StateError> {
-        let mut threads = Self::coordinated_threads(record);
-        for fact in awaken_managed_session_events::archive_children(&mut threads, dispositions) {
+        for fact in awaken_managed_session_events::archive_children(threads, dispositions) {
             record.publish_fact(&fact, None)?;
         }
         Ok(())
@@ -86,6 +68,7 @@ impl ManagedState {
     pub(super) fn append_parent_terminal_projection(
         &self,
         record: &mut SessionRecord,
+        threads: &mut [CoordinatedThread],
     ) -> Result<(), StateError> {
         if record.session.status != SessionStatus::Terminated {
             return Ok(());
@@ -103,10 +86,9 @@ impl ManagedState {
             .events
             .iter()
             .any(|event| matches!(event.kind, OutboundKind::SessionStatusTerminated { .. }));
-        let mut threads = Self::coordinated_threads(record);
         for fact in awaken_managed_session_events::terminate_session(
             &session_id,
-            &mut threads,
+            threads,
             primary_published,
             session_terminated_published,
         ) {
@@ -125,7 +107,7 @@ impl ManagedState {
         record: &mut SessionRecord,
         evidence: DelegationProjectionEvidence<'_>,
         index: &awaken_managed_session_events::OrderIndex<'_>,
-    ) -> Result<(), StateError> {
+    ) -> Result<Vec<CoordinatedThread>, StateError> {
         let DelegationProjectionEvidence {
             links,
             snapshots,
@@ -172,7 +154,7 @@ impl ManagedState {
             }
             debug_assert_eq!(record.child_threads[index].id, thread_id);
         }
-        let (activity, final_threads) = self.plan_child_activity_projection(
+        let (activity, mut final_threads) = self.plan_child_activity_projection(
             record,
             links,
             lifecycle_events,
@@ -254,7 +236,7 @@ impl ManagedState {
             .progress
             .terminal_cursors
             .extend(activity.terminal_cursors);
-        for projected in final_threads {
+        for projected in &final_threads {
             if let Some(child) = record
                 .child_threads
                 .iter_mut()
@@ -272,7 +254,7 @@ impl ManagedState {
         // historical Run lifecycle. On warm refresh it prevents later lifecycle
         // pages from reviving the child; on cold rebuild it closes the same
         // created/running/message/idle history with one terminal event.
-        self.append_child_disposition_projection(record, dispositions)?;
-        Ok(())
+        self.append_child_disposition_projection(record, &mut final_threads, dispositions)?;
+        Ok(final_threads)
     }
 }

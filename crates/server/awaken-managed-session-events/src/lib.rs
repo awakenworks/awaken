@@ -63,8 +63,8 @@ pub use interval::{
 };
 pub use key::{FactKey, FactProvenance};
 pub use lifecycle::{
-    ChildLifecycle, CoordinatedThread, ThreadStatus, archive_children, project_child_lifecycle,
-    root_lifecycle_opening_facts, terminate_session,
+    ChildLifecycle, CoordinatedThread, ThreadStatus, archive_children, initial_coordinated_threads,
+    project_child_lifecycle, root_lifecycle_opening_facts, terminate_session,
 };
 pub use observation::run_observation_facts;
 pub use order::{CanonicalOrder, Ordinal, historical_pending_projection_order};
