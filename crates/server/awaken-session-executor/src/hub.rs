@@ -43,7 +43,7 @@ pub enum ThreadEvent {
     /// An external ACP agent's bring-up progressed (launching the process,
     /// initializing the handshake, ready, or failed). A UI renders this as a
     /// "starting agent…" affordance.
-    /// `stage` is the snake_case [`awaken_run_executor_acp::AcpLaunchStage`]; `detail`
+    /// `stage` is the snake_case [`awaken_acp_contract::AcpLaunchStage`]; `detail`
     /// is optional human-facing context.
     AgentLaunch {
         stage: String,

@@ -318,13 +318,13 @@ async fn spawn(
 /// before this protocol adapter receives the route.
 pub(crate) fn to_session_mcp_server(
     cfg: &crate::McpServerConfig,
-) -> awaken_protocol_acp::SessionMcpServer {
+) -> awaken_acp_contract::SessionMcpServer {
     use crate::McpTransport;
     let (command, args, url) = match &cfg.transport {
         McpTransport::Stdio { command, args } => (Some(command.clone()), args.clone(), None),
         McpTransport::Http { url } => (None, Vec::new(), Some(url.clone())),
     };
-    awaken_protocol_acp::SessionMcpServer {
+    awaken_acp_contract::SessionMcpServer {
         name: cfg.name.clone(),
         command,
         args,
@@ -501,7 +501,7 @@ pub async fn project_launch(
 #[must_use]
 fn mcp_session_servers_from_plugin_config(
     plugin_config: &BTreeMap<String, serde_json::Value>,
-) -> Vec<awaken_protocol_acp::SessionMcpServer> {
+) -> Vec<awaken_acp_contract::SessionMcpServer> {
     let servers =
         awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(plugin_config).mcp_servers;
     mcp_session_servers_from_routes(&servers)
@@ -513,7 +513,7 @@ fn mcp_session_servers_from_plugin_config(
 #[must_use]
 pub fn mcp_session_servers_from_routes(
     servers: &[crate::McpServerConfig],
-) -> Vec<awaken_protocol_acp::SessionMcpServer> {
+) -> Vec<awaken_acp_contract::SessionMcpServer> {
     servers.iter().map(to_session_mcp_server).collect()
 }
 
@@ -522,8 +522,8 @@ pub fn mcp_session_servers_from_routes(
 /// form whose capability is declared by the selected catalog row.
 pub fn admit_mcp_session_servers(
     cli: &AcpCli,
-    servers: &[awaken_protocol_acp::SessionMcpServer],
-) -> std::result::Result<Vec<awaken_protocol_acp::SessionMcpServer>, OpenError> {
+    servers: &[awaken_acp_contract::SessionMcpServer],
+) -> std::result::Result<Vec<awaken_acp_contract::SessionMcpServer>, OpenError> {
     for server in servers.iter().filter(|server| server.auth.is_some()) {
         let admitted = cli.admits_mcp_client_credential(
             Some(awaken_credential_contract::McpCredentialDelivery::ClientInjection),
@@ -622,7 +622,7 @@ mod mcp_wiring_tests {
         // spawn. Constraint: no config-file or implicit adapter-id fallback.
         // Decision rules: R1=C1+C2+C3=>E1; R2=C1+!C2+C3=>E2;
         // R3=C1+C2+!C3 (stdio or HTTP-with-args)=>E2.
-        let authenticated = awaken_protocol_acp::SessionMcpServer {
+        let authenticated = awaken_acp_contract::SessionMcpServer {
             name: "github".into(),
             command: None,
             args: Vec::new(),

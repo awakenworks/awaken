@@ -52,12 +52,11 @@ use awaken_protocol_acp::{
     RunFactAppender, Stage, SupervisePolicy, TerminationReason, TurnConfig, classify_error,
     combine_permission_consensus, permission_consensus_class,
 };
-// Re-exported (not just `use`d) so a host composition root selects the wire and
-// observes agent bring-up without a direct dependency on the protocol crate. The
-// executor also uses these names internally to emit lifecycle events.
-pub use awaken_protocol_acp::{
-    AcpLaunchEvent, AcpLaunchStage, Codec, LaunchObserver, SessionMcpServer, Supervisor,
-};
+// Transitional executor facade for existing composition callers. The neutral
+// declarations live only in awaken-acp-contract; new consumers use that owner.
+pub use awaken_acp_contract::{AcpLaunchEvent, AcpLaunchStage, LaunchObserver, SessionMcpServer};
+// The concrete codec and process supervisor remain protocol-owned.
+pub use awaken_protocol_acp::{Codec, Supervisor};
 use awaken_provisioning_contract::ProcessHandle;
 pub use awaken_provisioning_contract::{SandboxError, SecretBroker, SecretWritebackTarget};
 use awaken_runtime_contract::activation::RunActivation;
@@ -94,7 +93,7 @@ pub struct AgentSession {
     pub workspace_cwd: Option<String>,
     /// MCP servers to hand any catalog ACP CLI at `session/new`. Populated by
     /// [`ProjectingChannelSource::open`]; fixtures may leave the collection empty.
-    pub mcp_session_servers: Vec<awaken_protocol_acp::SessionMcpServer>,
+    pub mcp_session_servers: Vec<SessionMcpServer>,
     /// Exact managed model selected through ACP after opening the Session.
     pub session_model: Option<String>,
     /// Backend-owned native ACP configuration to apply after opening the
@@ -219,7 +218,7 @@ pub struct AcpRunExecutor {
     /// standalone/source-owned compatibility behavior intact; `Some`, including an
     /// empty set, replaces it so a retained Agent plugin snapshot cannot become a
     /// second MCP authority.
-    session_mcp_servers: Option<Vec<awaken_protocol_acp::SessionMcpServer>>,
+    session_mcp_servers: Option<Vec<SessionMcpServer>>,
 }
 
 impl AcpRunExecutor {
@@ -326,7 +325,7 @@ impl AcpRunExecutor {
     pub fn for_session_servers(
         &self,
         policy: Arc<dyn ToolPermissionPolicy>,
-        mcp_servers: &[awaken_protocol_acp::SessionMcpServer],
+        mcp_servers: &[SessionMcpServer],
     ) -> Self {
         self.for_session_servers_with_grant_observer(policy, mcp_servers, None)
     }
@@ -335,7 +334,7 @@ impl AcpRunExecutor {
     pub fn for_session_servers_with_grant_observer(
         &self,
         policy: Arc<dyn ToolPermissionPolicy>,
-        mcp_servers: &[awaken_protocol_acp::SessionMcpServer],
+        mcp_servers: &[SessionMcpServer],
         grant_observer: Option<Arc<dyn PermissionGrantObserver>>,
     ) -> Self {
         let grant_observer = grant_observer.or_else(|| self.permission_grant_observer.clone());

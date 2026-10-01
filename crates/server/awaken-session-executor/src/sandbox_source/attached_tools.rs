@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt as _;
 
 pub(super) struct AttachedTools {
-    pub(super) server: awaken_run_executor_acp::SessionMcpServer,
+    pub(super) server: awaken_acp_contract::SessionMcpServer,
     process: Arc<dyn pc::ProcessHandle>,
     state: Arc<tokio::sync::Mutex<State>>,
 }
@@ -90,7 +90,7 @@ impl AttachedTools {
             })
             .await
             .map_err(|error| OpenError(format!("attached MCP channel launch: {error}")))?;
-        let server = awaken_run_executor_acp::SessionMcpServer {
+        let server = awaken_acp_contract::SessionMcpServer {
             name: "awaken_session".into(),
             command: Some(helper.clone()),
             args: vec!["channel-connect".into(), "--unix".into(), socket],
