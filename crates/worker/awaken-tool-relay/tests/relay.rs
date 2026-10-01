@@ -483,8 +483,9 @@ async fn different_transport_ids_with_one_operation_id_run_the_effect_once() {
 #[tokio::test]
 async fn filesystem_ledger_fences_replay_but_never_persists_tool_output() {
     // Cause/effect/FMECA graph for ADR-0073 rules H4 and H9: C1 a Hand claims
-    // and completes operation O with secret-bearing output; C2 the same live
-    // Hand receives O again; C3 that Hand dies and a replacement opens the
+    // and completes operation O with secret-bearing output after both native
+    // directory flushes; C2 the same live Hand receives O again; C3 that Hand
+    // dies and a replacement opens the
     // Environment-owned ledger. Effects: E1 C2 returns the process-local cached
     // result without replay; E2 durable files contain neither result nor secret;
     // E3 C3 is Indeterminate and never executes O. Decision rules:

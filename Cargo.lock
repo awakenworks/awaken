@@ -3352,6 +3352,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-channel",
+ "awaken-fs-durability",
  "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-runtime-contract",

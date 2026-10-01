@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    awaken_service_lifecycle::block_on_service(async {
+    awaken_service_lifecycle::block_on_service(|| async {
         match run().await {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
