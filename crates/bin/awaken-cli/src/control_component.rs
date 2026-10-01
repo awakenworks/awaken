@@ -342,8 +342,12 @@ pub(super) async fn prepare_control_routers(
             .as_ref()
             .expect("Control process requires Control stores");
         let webhook = awaken_webhook_managed::config_plane_lifecycle_delivery(
-            control.webhooks.clone(),
-            control.secrets.clone(),
+            Arc::new(
+                awaken_control::webhook_authoring::ConfigPlaneSubscriptionSource::new(
+                    control.webhooks.clone(),
+                    control.secrets.clone(),
+                ),
+            ),
             process.org_id.clone(),
         );
         match process.additional_lifecycle_delivery {

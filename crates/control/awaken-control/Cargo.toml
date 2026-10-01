@@ -59,7 +59,7 @@ awaken-iam-preset = { workspace = true }
 awaken-iam-host = { workspace = true }
 # Webhook plane (ADR-0048 / S10): the CRUD router + lifecycle sink over the neutral
 # dispatcher/store; the sink is handed back to the composition root for the data plane.
-awaken-webhook-managed = { workspace = true }
+awaken-webhook.workspace = true
 awaken-agent-contract = { workspace = true }
 awaken-runtime-contract = { workspace = true }
 awaken-worker-contract.workspace = true
@@ -103,6 +103,7 @@ workspace = true
 
 [features]
 schema = ["dep:schemars", "awaken-agent-config/schema", "awaken-protocol-managed/schema"]
+test-support = ["awaken-webhook/test-support"]
 
 [[example]]
 name = "export_mcp_schemas"

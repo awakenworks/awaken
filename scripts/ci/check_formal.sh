@@ -738,6 +738,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/webhook-outbox" \
     -config formal/tla/WebhookOutbox.cfg formal/tla/WebhookOutbox.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/webhook-subscription" \
+    -config formal/tla/WebhookSubscription.cfg formal/tla/WebhookSubscription.tla
+  python3 scripts/ci/check_formal_mutations.py --webhook-subscription-model-mutants "$tla_jar"
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/registration-intent" \
     -config formal/tla/RegistrationIntent.cfg formal/tla/RegistrationIntent.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \

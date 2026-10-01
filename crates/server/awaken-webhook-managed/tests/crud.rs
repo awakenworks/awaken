@@ -2,6 +2,7 @@
 // @formal evidence webhook.failed_delivery_remains_pending
 // @formal evidence webhook.outbox_fact_identity_is_stable
 // @formal evidence webhook.periodic_retry_never_retires_a_failed_fact
+// @formal evidence webhook_authoring.material_mutation_is_row_authoritative
 //! Webhook-subscription CRUD over the config-plane router. This crate shipped with
 //! zero tests; these pin the security-relevant arms: the tenant self-fence (404,
 //! never an ownership disclosure), secret sealing (minted once, never echoed), and
@@ -17,6 +18,10 @@ use awaken_config_resolver::{
     InMemoryWebhookStore, WebhookAuthoringPatch, WebhookAuthoringState, WebhookDeliveryOutcome,
     WebhookDeliveryState, WebhookEndpointDef, WebhookMutationIntent, WebhookStore,
 };
+use awaken_control::webhook_authoring::{
+    ConfigPlaneSubscriptionSource, reconcile_webhook_inventory, recover_webhook_mutations,
+    webhook_config_router, webhook_config_router_loopback,
+};
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
 use awaken_session_application_contract::{LifecycleFactDelivery, LifecycleFactNotifier};
 use awaken_session_repository_contract::LifecycleOutbox;
@@ -26,11 +31,8 @@ use awaken_webhook::{
     ResolvedSubscription, SubscriptionFailureState, SubscriptionSource, WebhookDispatcher,
     WebhookSender,
 };
-use awaken_webhook_managed::WebhookOutboxNotifier;
 use awaken_webhook_managed::{
-    ConfigPlaneLifecycleDelivery, ConfigPlaneSubscriptionSource, config_plane_lifecycle_delivery,
-    reconcile_webhook_inventory, recover_webhook_mutations, webhook_config_router,
-    webhook_config_router_loopback,
+    ConfigPlaneLifecycleDelivery, WebhookOutboxNotifier, config_plane_lifecycle_delivery,
 };
 use axum::Router;
 use axum::body::Body;
@@ -283,6 +285,9 @@ async fn call(
 
 #[tokio::test]
 async fn create_mints_a_secret_seals_it_and_stores_the_row() {
+    // Causes: owning WorkspaceScope, valid endpoint, no row, available SecretStore.
+    // Rule A1: create -> committed secret-free row + one returned secret whose
+    // exact reference resolves to sealed material; GET/LIST must not echo it.
     let store = Arc::new(MemStore::default());
     let secrets = Arc::new(MemSecrets::ok());
     let (status, body) = call(
@@ -510,11 +515,14 @@ async fn failed_seal_and_failed_compensation_remain_recoverable() {
 
 #[tokio::test]
 async fn cross_tenant_put_is_404_and_does_not_hijack_the_row() {
+    // Causes: an existing row belongs to ws_b while edge scope is ws_a.
+    // Rule A2: mismatched scope -> 404, unchanged row and no material rotation.
     let store = Arc::new(MemStore::default());
     seed(&store, "wh1", "ws_b");
+    let secrets = Arc::new(MemSecrets::ok());
     let (status, _) = call(
         store.clone(),
-        Arc::new(MemSecrets::ok()),
+        secrets.clone(),
         "PUT",
         "/v1/config/webhook-subscriptions/wh1",
         Some("ws_a"),
@@ -522,6 +530,8 @@ async fn cross_tenant_put_is_404_and_does_not_hijack_the_row() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(store.get("wh1").unwrap().workspace_id, "ws_b", "A2");
+    assert!(secrets.inventory().await.unwrap().is_empty(), "A2");
     let row = store.get("wh1").unwrap();
     assert_eq!(row.workspace_id, "ws_b", "owner unchanged");
     assert_eq!(row.url, "https://old.example/hook", "url unchanged");
@@ -807,8 +817,10 @@ async fn matching_fails_closed_when_a_subscription_secret_is_unresolvable() {
     let store = Arc::new(MemStore::default());
     seed(&store, "wh1", "ws_a");
     let delivery = config_plane_lifecycle_delivery(
-        store as Arc<dyn WebhookStore>,
-        Arc::new(MemSecrets::ok()) as Arc<dyn SecretStore>,
+        Arc::new(ConfigPlaneSubscriptionSource::new(
+            store as Arc<dyn WebhookStore>,
+            Arc::new(MemSecrets::ok()) as Arc<dyn SecretStore>,
+        )),
         None,
     );
     let error = delivery

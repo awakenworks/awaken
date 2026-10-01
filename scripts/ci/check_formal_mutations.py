@@ -50,6 +50,7 @@ from formal_credential_mutations import (
 from formal_dispatch_mutations import (check_resolution_failure_model_mutant, check_terminal_scan_model_mutants,
     check_maintenance_observation_mutants, check_managed_projection_model_mutants)
 from formal_background_mutations import check_background_completion_model_mutant
+from formal_webhook_mutations import check_webhook_subscription_model_mutants
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -75,6 +76,7 @@ class MutationOracleTests(unittest.TestCase):
             "acp-binding-model-mutants",
             "acp-observation-model-mutants",
             "eval-evidence-model-mutants",
+            "webhook-subscription-model-mutants",
         )
         for flag in flags:
             handler = "check_" + flag.replace("-", "_")
@@ -347,6 +349,7 @@ def main() -> None:
         "acp-projection-model-mutants": check_acp_projection_model_mutants,
         "managed-projection-model-mutants": check_managed_projection_model_mutants,
         "eval-evidence-model-mutants": check_eval_evidence_model_mutants,
+        "webhook-subscription-model-mutants": check_webhook_subscription_model_mutants,
         "delegation-model-mutants": check_delegation_model_mutants,
     }
     model_selection = parser.add_mutually_exclusive_group()
