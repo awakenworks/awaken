@@ -41,6 +41,38 @@ async fn preparation_drain_requires_an_actual_return_before_shutdown() {
 }
 
 #[test]
+fn trusted_launcher_incarnation_selection_is_explicit_and_validated() {
+    // Causes: C1 a launcher supplies an id; C2 it has the canonical local
+    // process format. Effects: E1 absent keeps the existing random-on-run
+    // behavior; E2 valid input freezes that exact id; E3 malformed input fails
+    // before Worker registration or Sandbox effects.
+    // | Rule | C1 | C2 | Effect |
+    // | B1   | N  | -  | E1     |
+    // | B2   | Y  | Y  | E2     |
+    // | B3   | Y  | N  | E3     |
+    let builder = || {
+        WorkerNodeBuilder::new(
+            awaken_worker_transport_security::WorkerUpstream::new("http://127.0.0.1:1"),
+            awaken_lease_contract::system_clock(),
+        )
+    };
+    assert!(builder().preselected_incarnation_id.is_none(), "B1/E1");
+    let selected = "0123456789abcdef0123456789abcdef";
+    assert_eq!(
+        builder()
+            .with_preselected_incarnation_id(selected)
+            .expect("B2/E2")
+            .preselected_incarnation_id
+            .as_deref(),
+        Some(selected)
+    );
+    assert!(
+        builder().with_preselected_incarnation_id(" ").is_err(),
+        "B3/E3"
+    );
+}
+
+#[test]
 fn container_realization_namespace_is_installation_wide() {
     // The same public projection now supplies downstream decorated providers;
     // no new decision is introduced. The external consumer's compile check

@@ -340,8 +340,10 @@ The local adapter currently admits complete stop classification only for the
 Native model-only coverage profile. Journalled tools, opaque ACP execution and
 response-only remote requests remain Unknown until their independent effects
 have pre-entry enrollment and physical closure evidence. The platform launcher
-has not yet selected this adapter or started the matching unit automatically;
-the local product therefore does not yet claim user-invisible hard-crash
+can now preselect the Worker's 128-bit incarnation through the canonical
+`WorkerNodeBuilder`, and shares the exact unit-name projection with the stop
+adapter. It has not yet selected this adapter or started the matching unit
+automatically, so the local product does not yet claim user-invisible hard-crash
 recovery. Flow's existing `supervise_agent_worker` loop, not systemd
 `Restart=`, will own placement of each new Worker incarnation; the unit owns
 only physical process supervision and never becomes a second claim scheduler.

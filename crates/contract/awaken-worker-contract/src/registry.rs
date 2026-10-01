@@ -30,6 +30,17 @@ pub struct WorkerIdentity {
     pub generation: u64,
 }
 
+/// The 128-bit lowercase hexadecimal boot coordinate shared by a trusted
+/// local process launcher and the Worker it starts. Other Worker transports
+/// retain their own incarnation format and never call this predicate.
+#[must_use]
+pub fn is_local_process_incarnation(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 impl WorkerIdentity {
     #[must_use]
     pub fn new(
@@ -703,6 +714,33 @@ impl WorkerSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_process_incarnation_format_is_one_shared_launch_contract() {
+        // Causes: C1 exactly 32 bytes; C2 every byte is lowercase hexadecimal.
+        // Effect E1 admits only C1+C2, so a launcher and the physical evidence
+        // source derive the same unit coordinate; E2 rejects every other row.
+        // | Rule | C1 | C2 | Effect |
+        // | L1   | Y  | Y  | E1     |
+        // | L2   | N  | *  | E2     |
+        // | L3   | Y  | N  | E2     |
+        assert!(is_local_process_incarnation(
+            "0123456789abcdef0123456789abcdef"
+        ));
+        assert!(!is_local_process_incarnation(""));
+        assert!(!is_local_process_incarnation(
+            "0123456789abcdef0123456789abcde"
+        ));
+        assert!(!is_local_process_incarnation(
+            "0123456789abcdef0123456789abcdef0"
+        ));
+        assert!(!is_local_process_incarnation(
+            "0123456789abcdef0123456789abcdeF"
+        ));
+        assert!(!is_local_process_incarnation(
+            "0123456789abcdef0123456789abcde/"
+        ));
+    }
 
     #[test]
     fn process_exit_receipt_admission_is_closed_exact_and_immutable() {

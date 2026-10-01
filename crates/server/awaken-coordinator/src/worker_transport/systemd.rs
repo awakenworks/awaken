@@ -19,6 +19,7 @@ use awaken_run_ingress::{
     WorkerExecutionBindingSource, WorkerExecutionStopSource, WorkerIdentity,
     WorkerProcessStopStatus,
 };
+use awaken_worker_contract::is_local_process_incarnation as incarnation;
 use serde::{Deserialize, Serialize};
 
 const UNIT_PREFIX: &str = "awaken-agent-worker-";
@@ -112,23 +113,15 @@ impl UnitObservation {
     }
 }
 
-fn incarnation(value: &str) -> bool {
-    value.len() == 32
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+fn unit_name(worker: &WorkerIdentity) -> Result<String, ApplicationError> {
+    unit_name_for_incarnation(&worker.incarnation_id).map_err(ApplicationError::invalid)
 }
 
-fn unit_name(worker: &WorkerIdentity) -> Result<String, ApplicationError> {
-    if !incarnation(&worker.incarnation_id) {
-        return Err(ApplicationError::invalid(
-            "systemd Worker incarnation must be exactly 32 lowercase hex digits",
-        ));
+pub(super) fn unit_name_for_incarnation(incarnation_id: &str) -> Result<String, String> {
+    if !incarnation(incarnation_id) {
+        return Err("systemd Worker incarnation must be exactly 32 lowercase hex digits".into());
     }
-    Ok(format!(
-        "{UNIT_PREFIX}{}{UNIT_SUFFIX}",
-        worker.incarnation_id
-    ))
+    Ok(format!("{UNIT_PREFIX}{incarnation_id}{UNIT_SUFFIX}"))
 }
 
 fn boot_replacement_is_closed(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::worker_transport::WorkerTransport;
 
 fn running(unit: &str, invocation_id: &str) -> String {
     format!(
@@ -8,12 +9,23 @@ fn running(unit: &str, invocation_id: &str) -> String {
 
 #[test]
 fn systemd_binding_and_exit_decision_table_rejects_replacements_and_incomplete_policy() {
-    // C1 exact unit/invocation; C2 running MainPID and matching cgroup; C3
+    // C0 exact local-process incarnation derives one unit name for launcher
+    // and evidence; malformed input is refused before a launch or bind. C1
+    // exact unit/invocation; C2 running MainPID and matching cgroup; C3
     // control-group kill, no restart and retained status. R1=C1+C2+C3 binds.
     // R2 any missing/wrong cause refuses binding. C4 exact failed/exited state
     // with no PID/cgroup -> E1 exit; R3 C1+C3+C4=>E1. A later invocation or
     // merely inactive unit never borrows the old binding's stop receipt.
     let unit = "awaken-agent-worker-0123456789abcdef0123456789abcdef.service";
+    assert_eq!(
+        WorkerTransport::systemd_user_unit_name("0123456789abcdef0123456789abcdef").unwrap(),
+        unit,
+        "C0 exact shared unit coordinate"
+    );
+    assert!(
+        WorkerTransport::systemd_user_unit_name("foreign/worker").is_err(),
+        "C0 malformed identity is rejected"
+    );
     let invocation = "fedcba9876543210fedcba9876543210";
     let boot_id = uuid::Uuid::nil().to_string();
     let source = running(unit, invocation);

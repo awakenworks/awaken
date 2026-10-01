@@ -71,6 +71,12 @@ impl WorkerTransport {
 
 #[cfg(target_os = "linux")]
 impl WorkerTransport {
+    /// The single exact unit-name projection shared by a product launcher and
+    /// this transport's physical binding/stop evidence.
+    pub fn systemd_user_unit_name(incarnation_id: &str) -> Result<String, String> {
+        systemd::unit_name_for_incarnation(incarnation_id)
+    }
+
     /// Bind one local independent Worker to its retained systemd user service.
     /// Authentication and physical evidence are selected together, while the
     /// existing Dispatch and Registry remain the only attempt authorities.
