@@ -124,14 +124,15 @@ impl PinnedCredentialMaterializer {
     #[must_use]
     pub fn acp_model_capabilities(
         &self,
-        cli: awaken_run_executor_acp::AcpCli,
+        cli_id: &str,
+        delivery: awaken_acp_contract::managed_credential::ManagedCredentialDelivery,
     ) -> CredentialRealizationCapabilities {
-        let (kind, material_type) = match cli.managed_credential_delivery {
-            awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret => (
+        let (kind, material_type) = match delivery {
+            awaken_acp_contract::managed_credential::ManagedCredentialDelivery::ProcessSecret => (
                 CredentialRealizationKind::ProcessSecretEnvironment,
                 awaken_runtime_contract::credential::PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE,
             ),
-            awaken_run_executor_acp::ManagedCredentialDelivery::Artifact(_) => (
+            awaken_acp_contract::managed_credential::ManagedCredentialDelivery::Artifact(_) => (
                 CredentialRealizationKind::PrivateSecretFile,
                 awaken_runtime_contract::credential::PRIVATE_SECRET_FILE_MATERIAL_TYPE,
             ),
@@ -142,7 +143,7 @@ impl PinnedCredentialMaterializer {
                 format!(
                     "{}acp:{}",
                     awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX,
-                    cli.id
+                    cli_id
                 ),
                 [material_type.to_string()].into_iter().collect(),
             );

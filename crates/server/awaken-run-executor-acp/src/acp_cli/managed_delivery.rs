@@ -2,6 +2,10 @@
 // @formal surface obligation=credential.http_effect_usage_binds_exact_fields_and_placements
 // @formal reason: Managed ACP credential delivery boundary.
 use super::*;
+pub use awaken_acp_contract::managed_credential::{
+    CredentialArtifactCodec, CredentialArtifactRequirement, CredentialArtifactSpec,
+    ManagedCredentialDelivery,
+};
 
 /// How Awaken-managed model coordinates reach a CLI through its provider
 /// environment. Backend-owned selection uses [`super::BackendModelInterface`]
@@ -53,47 +57,6 @@ impl ModelDelivery {
     }
 }
 
-/// Provider-owned credential artifact codecs supported by the managed launch
-/// boundary. The codec is catalog data; generic Host code never branches on a
-/// CLI id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CredentialArtifactCodec {
-    CodexAuthJson,
-}
-
-/// One managed artifact selected from a CLI profile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CredentialArtifactSpec {
-    pub codec: CredentialArtifactCodec,
-    pub relative_path: &'static str,
-}
-
-/// How an isolated, Awaken-managed launch receives provider credentials. This
-/// does not describe backend-owned local login; that mutually exclusive mode
-/// never materializes provider material.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ManagedCredentialDelivery {
-    ProcessSecret,
-    Artifact(CredentialArtifactSpec),
-}
-
-impl ManagedCredentialDelivery {
-    /// Select an artifact only when this profile and the pinned credential shape
-    /// require one.
-    #[must_use]
-    pub fn credential_artifact(self, _has_refresh: bool) -> Option<CredentialArtifactSpec> {
-        match self {
-            Self::Artifact(spec) => Some(spec),
-            Self::ProcessSecret => None,
-        }
-    }
-
-    #[must_use]
-    pub fn allows_process_secret(self) -> bool {
-        matches!(self, Self::ProcessSecret)
-    }
-}
-
 pub(super) fn project_acp_session(
     cli_id: &str,
     acp: Option<&awaken_runtime_contract::resolved::AcpExecutionProfile>,
@@ -140,41 +103,6 @@ impl super::AcpCli {
 pub struct ProcessSecretRequirement {
     reference: String,
     environment_variable: Option<String>,
-}
-
-/// One claim-fenced provider credential artifact. The executor carries only the
-/// broker reference and provider-owned relative path; bytes are materialized by
-/// the sandbox immediately before the ACP process starts.
-#[derive(Clone, PartialEq, Eq)]
-pub struct CredentialArtifactRequirement {
-    reference: String,
-    relative_path: String,
-}
-
-impl CredentialArtifactRequirement {
-    #[must_use]
-    pub fn new(reference: impl Into<String>, relative_path: impl Into<String>) -> Self {
-        Self {
-            reference: reference.into(),
-            relative_path: relative_path.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn reference(&self) -> &str {
-        &self.reference
-    }
-
-    #[must_use]
-    pub fn relative_path(&self) -> &str {
-        &self.relative_path
-    }
-}
-
-impl std::fmt::Debug for CredentialArtifactRequirement {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("CredentialArtifactRequirement(***)")
-    }
 }
 
 impl ProcessSecretRequirement {

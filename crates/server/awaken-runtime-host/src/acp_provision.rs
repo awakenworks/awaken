@@ -291,7 +291,7 @@ impl LaunchResolver for PublishedAcpLaunchResolver {
             }
             AcpCredentialAuthority::BackendOwned => return Default::default(),
         };
-        credentials.acp_model_capabilities(self.cli)
+        credentials.acp_model_capabilities(self.cli.id, self.cli.managed_credential_delivery)
     }
 }
 
