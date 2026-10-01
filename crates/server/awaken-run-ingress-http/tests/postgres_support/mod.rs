@@ -2,6 +2,9 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+const CONNECT_DEADLINE: Duration = Duration::from_secs(30);
+const CONFIG_CHILD_EXIT_SLACK: Duration = Duration::from_secs(10);
+
 pub fn database_url() -> Option<String> {
     match std::env::var("AWAKEN_TEST_DATABASE_URL") {
         Ok(url) => Some(url),
@@ -16,7 +19,7 @@ pub fn database_url() -> Option<String> {
 pub async fn connect<T, E: std::fmt::Debug>(
     connection: impl std::future::Future<Output = Result<T, E>>,
 ) -> T {
-    let connected = tokio::time::timeout(Duration::from_secs(5), connection)
+    let connected = tokio::time::timeout(CONNECT_DEADLINE, connection)
         .await
         .expect("configured PostgreSQL connection exceeded its test deadline")
         .expect("configured PostgreSQL must connect and initialize successfully");
@@ -33,6 +36,9 @@ pub fn assert_configuration_contract(tests: &[&str]) {
     // a caller back to an alternate environment name also breaks this test.
     for test in tests {
         // R3 valid URL + unreachable server => bounded failure, never skip.
+        // The child gets the same connection budget plus exit slack; a loaded
+        // healthy database may take longer than five seconds to initialize,
+        // while a silent listener must still fail visibly.
         // Hold a private listener: the address is owned by this
         // parent and cannot accidentally select a service on a well-known port.
         let unavailable = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -58,7 +64,7 @@ pub fn assert_configuration_contract(tests: &[&str]) {
                 command.env("AWAKEN_TEST_DATABASE_URL", url);
             }
             let mut child = command.spawn().unwrap();
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = Instant::now() + CONNECT_DEADLINE + CONFIG_CHILD_EXIT_SLACK;
             while child.try_wait().unwrap().is_none() {
                 if Instant::now() >= deadline {
                     child.kill().unwrap();

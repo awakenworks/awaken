@@ -1390,6 +1390,9 @@ async fn reported_local_entry_closure_recovers_without_stopping_a_healthy_worker
 
 #[test]
 fn postgres_configuration_contract() {
+    // C1 each adapter receives a silent PostgreSQL listener; C2 the child
+    // deadline exceeds the shared connection deadline. R3=C1+C2 => E1 both
+    // adapters report a bounded configured-PG failure before child termination.
     postgres_support::assert_configuration_contract(&[
         "blocked_http_closes_exact_expired_worker_but_local_exit_never_clears_remote_obligations",
         "complete_stop_uses_exact_retirement_and_requires_fresh_successor_admission",
