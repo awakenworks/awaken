@@ -18,26 +18,6 @@ use std::time::Duration;
 
 use awaken_session_application_contract::{LifecycleFactDelivery, LifecycleFactNotifier};
 use awaken_session_repository_contract::LifecycleOutbox;
-use awaken_tenancy::WorkspaceScope;
-
-/// Map guard-resolved tenancy onto the protocol-neutral Workspace scope used by
-/// Coordinator handlers. Apply this layer inside the guard.
-pub async fn stamp_workspace_scope(
-    mut request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    if let Some(tenancy) = request
-        .extensions()
-        .get::<awaken_authz_enforce::RequestTenancy>()
-        .cloned()
-    {
-        request
-            .extensions_mut()
-            .insert(WorkspaceScope(tenancy.workspace_id));
-    }
-    next.run(request).await
-}
-
 /// Notification adapter over Coordinator's transactional Session outbox.
 pub struct WebhookOutboxNotifier {
     delivery: Arc<dyn LifecycleFactDelivery>,

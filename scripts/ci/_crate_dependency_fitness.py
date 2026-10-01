@@ -101,7 +101,6 @@ KNOWN_INVERSIONS: dict[tuple[str, str], str] = {
     **{
         ("awaken-webhook-managed", target): "managed webhook projection reaches control/coordinator implementations; depend on their contracts"
         for target in (
-            "awaken-authz-enforce",
             "awaken-config-resolver",
             "awaken-credential-vault",
             "awaken-webhook",
