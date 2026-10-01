@@ -37,7 +37,7 @@ fn storage(error: impl std::fmt::Display) -> WorkQueueError {
 use awaken_sqlite_pool::SharedSqliteConnection;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sqlx::Row;
-use sqlx::postgres::{PgPool, PgRow};
+use sqlx::postgres::PgPool;
 
 // Exact-owner observation is a read of durable claims, with no clock or state
 // filter and no reclamation side effect.
@@ -50,6 +50,7 @@ const HAS_OWNER_CLAIMS: &str =
 mod lease_book;
 pub use lease_book::{LEASE_TTL_MS, LeaseBook, POLLER_WINDOW_MS};
 mod backends;
+use backends::pg_row_to_item;
 mod mutation;
 use awaken_lease_contract::Expiry;
 use mutation::{
@@ -86,19 +87,6 @@ pub struct SqliteWorkQueue {
     book: LeaseBook,
     /// The one source of every observation timestamp this backend writes.
     clock: Arc<dyn WallClock>,
-}
-
-impl SqliteWorkQueue {
-    /// A private in-memory database for tests and scenario fixtures.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory(clock: Arc<dyn WallClock>) -> Result<Self, String> {
-        Self::from_connection(
-            awaken_sqlite_pool::SqliteConnectionFactory::memory()
-                .open()
-                .map_err(|error| error.to_string())?,
-            clock,
-        )
-    }
 }
 
 #[async_trait]
@@ -684,25 +672,6 @@ impl WorkQueue for SqliteWorkQueue {
         self.book.forget_env(env_id, &ids);
         Ok(())
     }
-}
-
-fn pg_row_to_item(row: &PgRow) -> Result<WorkItem, WorkQueueError> {
-    let metadata_json: String = row.get("metadata_json");
-    build_item(
-        row.get("work_id"),
-        row.get("environment_id"),
-        &row.get::<String, _>("data_type"),
-        row.get("data_id"),
-        &metadata_json,
-        &row.get::<String, _>("state"),
-        row.get("acknowledged_at"),
-        row.get("latest_heartbeat_at"),
-        row.get("started_at"),
-        row.get("stop_requested_at"),
-        row.get("stopped_at"),
-        row.get("created_at"),
-    )
-    .map_err(storage)
 }
 
 /// A Postgres-backed [`WorkQueue`] — the network-DB sibling over the same
