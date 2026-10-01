@@ -30,7 +30,6 @@ pub(super) struct CandidateEvidence {
         HashMap<String, awaken_agent_contract::agent::run::RunState>,
     pub(super) child_pending: HashMap<String, Pending>,
     pub(super) child_dispositions: HashMap<String, awaken_agent_contract::ThreadDisposition>,
-    pub(super) root_pending: Option<Pending>,
     pub(super) root_response_coordinates: HashMap<String, (String, usize, usize)>,
     pub(super) durable_inbound: Vec<DurableInboundProjection>,
     pub(super) usage: SessionUsage,
@@ -268,7 +267,6 @@ impl CandidateEvidence {
                 .and_then(|event| historical_pending.get(&event.cursor))
                 .cloned()
         };
-        let root_pending = current_pending(session_id);
         let child_pending = children
             .keys()
             .filter_map(|thread_id| {
@@ -288,7 +286,6 @@ impl CandidateEvidence {
             child_latest_run_states,
             child_pending,
             child_dispositions,
-            root_pending,
             root_response_coordinates,
             durable_inbound,
             usage,

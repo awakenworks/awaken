@@ -46,21 +46,9 @@ impl ManagedState {
                     "committed ToolUse Message cursors are not aligned",
                 )));
             }
-            let has_as_of_message = snapshot
-                .messages
-                .iter()
-                .zip(&snapshot.message_commit_cursors)
-                .any(|(message, source)| {
-                    *source <= lifecycle.source_commit_cursor
-                        && awaken_session_projection::historical_message_await_name(
-                            message,
-                            pending,
-                            &lifecycle.run_id,
-                            message.id.assistant_coordinates().map(|(run, _, _)| run),
-                        )
-                        .is_some()
-                });
-            if has_as_of_message {
+            if !awaken_session_projection::needs_synthetic_awaiting_tool(
+                snapshot, lifecycle, pending,
+            ) {
                 continue;
             }
             let qualified_id = project::managed_tool_event_id(

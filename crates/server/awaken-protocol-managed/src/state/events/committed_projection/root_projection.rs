@@ -121,6 +121,7 @@ impl ManagedState {
         session_id: &str,
         persisted: &awaken_session_state_contract::PersistedSession,
         evidence: &CandidateEvidence,
+        index: &OrderIndex<'_>,
     ) -> Result<RootProjection, StateError> {
         let all_accepted_lifecycle = &evidence.acceptance.accepted;
         let messages = evidence.root_messages();
@@ -159,8 +160,7 @@ impl ManagedState {
         if evidence.acceptance.cursor > record.checkpoint.source.lifecycle_cursor {
             record.checkpoint.source.lifecycle_cursor = evidence.acceptance.cursor;
         }
-        let root_pending = evidence.root_pending.as_ref();
-        let transcript_evidence = project::committed_transcript_evidence(messages, root_pending);
+        let transcript_evidence = index.transcript_evidence(session_id);
         let new_messages = if evidence.root_blocked(session_id) {
             Vec::new()
         } else {
@@ -203,6 +203,8 @@ impl ManagedState {
             root_pending_source_run_id,
         );
         for fold in folds {
+            let transcript_evidence = transcript_evidence
+                .expect("a committed root Message belongs to the same ordering index");
             let message = fold.message;
             let coordinates = evidence.root_response_coordinates.get(&message.id.0);
             let message_source_run_id = fold.source_run_id;

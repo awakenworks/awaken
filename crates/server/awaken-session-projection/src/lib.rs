@@ -11,6 +11,7 @@
 mod acceptance;
 mod activation;
 mod aggregate;
+mod committed_project;
 mod coordination;
 mod error;
 mod evidence;
@@ -37,6 +38,7 @@ pub use aggregate::{
     AggregateFallbackClose, AggregateIntervalClose, AggregatePlan, AggregateStop, IntervalHold,
     IntervalUsage, interval_hold, plan_aggregate,
 };
+pub use committed_project::{CommittedPrefix, CommittedProjection, project};
 pub use coordination::{
     CoordinationReceipts, IssuedToolEvent, SEND_MESSAGE_TOOL_ID, coordination_orders, cross_posts,
     is_coordination_send, link_facts, project_child_activity,
@@ -50,7 +52,7 @@ pub use fact::{FactKind, TimelineFact};
 pub use fault::{RunFault, run_fault, run_state_fault};
 pub use historical::{
     audited_await_targets, historical_message_await_name, historical_message_boundaries,
-    historical_pending_by_lifecycle,
+    historical_pending_by_lifecycle, needs_synthetic_awaiting_tool,
 };
 pub use index::{
     BudgetReachAnchor, OrderEvidence, OrderIndex, ParentTerminalEvidence,
