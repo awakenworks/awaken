@@ -12,8 +12,41 @@
 
 use super::*;
 use awaken_lease_contract::WallClockExt;
+use sqlx::postgres::PgRow;
+
+/// Decode the selected PostgreSQL Work row through the same item constructor
+/// used by the durable backend's other reads.
+pub(super) fn pg_row_to_item(row: &PgRow) -> Result<WorkItem, WorkQueueError> {
+    let metadata_json: String = row.get("metadata_json");
+    build_item(
+        row.get("work_id"),
+        row.get("environment_id"),
+        &row.get::<String, _>("data_type"),
+        row.get("data_id"),
+        &metadata_json,
+        &row.get::<String, _>("state"),
+        row.get("acknowledged_at"),
+        row.get("latest_heartbeat_at"),
+        row.get("started_at"),
+        row.get("stop_requested_at"),
+        row.get("stopped_at"),
+        row.get("created_at"),
+    )
+    .map_err(storage)
+}
 
 impl SqliteWorkQueue {
+    /// A private in-memory database for tests and scenario fixtures.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn open_in_memory(clock: Arc<dyn WallClock>) -> Result<Self, String> {
+        Self::from_connection(
+            awaken_sqlite_pool::SqliteConnectionFactory::memory()
+                .open()
+                .map_err(|error| error.to_string())?,
+            clock,
+        )
+    }
+
     /// Open (or create) the work-queue database at `path` and apply migrations.
     ///
     /// The wall clock is a constructor argument, not something the queue reaches
