@@ -889,15 +889,12 @@ name = "awaken-credential-materializer"
 version = "1.0.0"
 dependencies = [
  "async-trait",
- "awaken-admin-config-api",
  "awaken-agent-contract",
  "awaken-credential",
  "awaken-credential-contract",
  "awaken-credential-vault",
  "awaken-ext-builtin-tools",
  "awaken-lease-contract",
- "awaken-lease-testkit",
- "awaken-model-catalog",
  "awaken-outbound-http",
  "awaken-provider-genai",
  "awaken-provisioning-contract",
