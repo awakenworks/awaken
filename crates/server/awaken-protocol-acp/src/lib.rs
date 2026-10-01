@@ -647,6 +647,35 @@ async fn drain_during_cleanup<T>(
 /// mid-turn interrupts, and reaps the agent `SIGTERM`→(grace)→`SIGKILL` on exit.
 pub struct Supervisor;
 
+const PROCESS_REAP_DEADLINE: &str = "process cleanup exceeded its total deadline";
+const PROCESS_EXIT_UNOBSERVED: &str = "process did not report exit after SIGKILL";
+
+/// The one cleanup ladder's typed failure, projected into the ACP or Sandbox
+/// caller without reverse-engineering a string or weakening a provider error.
+enum ReapFailure {
+    Provider(pc::SandboxError),
+    Deadline,
+    ExitUnobserved,
+}
+
+impl ReapFailure {
+    fn into_acp(self) -> AcpError {
+        AcpError::Io(match self {
+            Self::Provider(error) => error.to_string(),
+            Self::Deadline => PROCESS_REAP_DEADLINE.into(),
+            Self::ExitUnobserved => PROCESS_EXIT_UNOBSERVED.into(),
+        })
+    }
+
+    fn into_sandbox(self) -> pc::SandboxError {
+        match self {
+            Self::Provider(error) => error,
+            Self::Deadline => pc::SandboxError::timeout(PROCESS_REAP_DEADLINE),
+            Self::ExitUnobserved => pc::SandboxError::timeout(PROCESS_EXIT_UNOBSERVED),
+        }
+    }
+}
+
 impl Supervisor {
     /// Settle a process after the protocol has already produced a terminal fact.
     ///
@@ -684,7 +713,9 @@ impl Supervisor {
             }
             tokio::time::sleep(step).await;
         }
-        Self::reap_inner(process, grace).await
+        Self::reap_inner(process, grace)
+            .await
+            .map_err(ReapFailure::into_acp)
     }
 
     /// Reap the agent: `SIGTERM`, wait up to `grace` for it to exit, else escalate
@@ -694,20 +725,45 @@ impl Supervisor {
         process: &dyn pc::ProcessHandle,
         grace: std::time::Duration,
     ) -> Result<bool, AcpError> {
+        Self::reap_kernel(process, grace)
+            .await
+            .map_err(ReapFailure::into_acp)
+    }
+
+    /// The same bounded process cleanup for an owner that must retain the
+    /// provider's typed [`pc::SandboxError`] classification. Both this method
+    /// and [`Self::reap`] enter one signal/observation kernel.
+    pub async fn reap_process(
+        process: &dyn pc::ProcessHandle,
+        grace: std::time::Duration,
+    ) -> Result<bool, pc::SandboxError> {
+        Self::reap_kernel(process, grace)
+            .await
+            .map_err(ReapFailure::into_sandbox)
+    }
+
+    async fn reap_kernel(
+        process: &dyn pc::ProcessHandle,
+        grace: std::time::Duration,
+    ) -> Result<bool, ReapFailure> {
         let budget = grace
             .saturating_mul(4)
             .max(std::time::Duration::from_millis(1));
         tokio::time::timeout(budget, Self::reap_inner(process, grace))
             .await
-            .map_err(|_| AcpError::Io("process cleanup exceeded its total deadline".into()))?
+            .map_err(|_| ReapFailure::Deadline)?
     }
 
     async fn reap_inner(
         process: &dyn pc::ProcessHandle,
         grace: std::time::Duration,
-    ) -> Result<bool, AcpError> {
-        let io = |e: pc::SandboxError| AcpError::Io(e.to_string());
-        if process.poll().await.map_err(io)?.is_some() {
+    ) -> Result<bool, ReapFailure> {
+        if process
+            .poll()
+            .await
+            .map_err(ReapFailure::Provider)?
+            .is_some()
+        {
             return Ok(false);
         }
         // A provider may lose the signal-vs-exit race before its outer handle
@@ -717,7 +773,12 @@ impl Supervisor {
         const STEPS: u32 = 5;
         let step = grace / STEPS;
         for _ in 0..STEPS {
-            if process.poll().await.map_err(io)?.is_some() {
+            if process
+                .poll()
+                .await
+                .map_err(ReapFailure::Provider)?
+                .is_some()
+            {
                 return Ok(false);
             }
             tokio::time::sleep(step).await;
@@ -737,10 +798,10 @@ impl Supervisor {
         .map_err(|_| {
             kill_error
                 .or(term_error)
-                .map(io)
-                .unwrap_or_else(|| AcpError::Io("process did not report exit after SIGKILL".into()))
+                .map(ReapFailure::Provider)
+                .unwrap_or(ReapFailure::ExitUnobserved)
         })?
-        .map_err(io)?;
+        .map_err(ReapFailure::Provider)?;
         Ok(true)
     }
 
@@ -1305,6 +1366,8 @@ mod tests {
     /// Reap liveness cause/effect rule R3: C1=TERM ignored, C2=KILL delivered,
     /// C3=provider wait never resolves; E1=the canonical signal ladder returns a
     /// bounded error after TERM+KILL instead of retaining an execution lock.
+    /// The typed caller receives Timeout; the ACP caller retains its existing
+    /// IO error. Both projections run the same kernel over one owned handle.
     /// K1: virtual time advances the ladder independently of host scheduling;
     /// the total deadline must not win solely because this test was preempted.
     #[tokio::test(start_paused = true)]
@@ -1347,10 +1410,32 @@ mod tests {
             signalled.lock().unwrap().as_slice(),
             &[pc::Signal::Term, pc::Signal::Kill]
         );
+        let typed_signalled = Arc::new(Mutex::new(Vec::new()));
+        let typed_error = Supervisor::reap_process(
+            &NeverExits {
+                signalled: typed_signalled.clone(),
+            },
+            std::time::Duration::from_millis(5),
+        )
+        .await
+        .expect_err("the typed caller cannot claim an unobserved exit");
+        assert!(
+            matches!(typed_error, pc::SandboxError::Timeout(ref detail) if detail == PROCESS_EXIT_UNOBSERVED)
+        );
+        assert_eq!(
+            typed_signalled.lock().unwrap().as_slice(),
+            &[pc::Signal::Term, pc::Signal::Kill]
+        );
     }
 
     #[tokio::test]
     async fn reap_total_deadline_also_bounds_a_stuck_provider_poll() {
+        // Causes: C1 provider poll never returns; C2 caller needs ACP or typed
+        // Sandbox classification; C3 provider poll returns Transport. Effects:
+        // E1 both bound the same operation; E2 ACP keeps its IO wording; E3
+        // Sandbox returns Timeout for C1; E4 C3 keeps the original Transport.
+        // R1 C1+C2 enters one deadline and never reports physical exit;
+        // R2 C3 returns the provider class before signalling.
         struct StuckPoll;
 
         #[async_trait]
@@ -1376,6 +1461,42 @@ mod tests {
             .await
             .expect_err("the total cleanup deadline must cover provider polling");
         assert!(error.to_string().contains("total deadline"));
+        let typed = Supervisor::reap_process(&StuckPoll, std::time::Duration::from_millis(5))
+            .await
+            .expect_err("the typed caller also has a bounded poll");
+        assert!(
+            matches!(typed, pc::SandboxError::Timeout(ref detail) if detail == PROCESS_REAP_DEADLINE)
+        );
+
+        struct ClassifiedPollFailure;
+
+        #[async_trait]
+        impl pc::ProcessHandle for ClassifiedPollFailure {
+            fn id(&self) -> &str {
+                "classified-poll-failure"
+            }
+
+            async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+                unreachable!("the first poll fails before waiting")
+            }
+
+            async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+                Err(pc::SandboxError::transport("provider channel lost"))
+            }
+
+            async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
+                unreachable!("the first poll fails before signalling")
+            }
+        }
+
+        let provider =
+            Supervisor::reap_process(&ClassifiedPollFailure, std::time::Duration::from_millis(5))
+                .await
+                .expect_err("a provider class must not be flattened");
+        assert_eq!(
+            provider,
+            pc::SandboxError::transport("provider channel lost")
+        );
     }
 
     #[tokio::test]
