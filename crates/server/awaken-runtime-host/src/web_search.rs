@@ -693,8 +693,11 @@ mod tests {
         .await
         .unwrap();
         let materializer = PinnedCredentialMaterializer::new(
-            repo.clone(),
-            secrets,
+            Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+                repo.clone(),
+                secrets,
+                awaken_lease_contract::system_clock(),
+            )),
             awaken_lease_contract::system_clock(),
         );
         let exact = CredentialRef {

@@ -207,7 +207,40 @@ pub struct AttemptCredentialDeliveryRequest {
     pub published_access: CredentialAccess,
     pub selected_plaintext_holder: PlaintextHolder,
     pub binding: CredentialMaterialBinding,
+    /// Exact source authorization coordinate of the selected Provider route.
+    /// The binding fingerprint is one-way; Vault must not guess this at read time.
+    #[serde(default)]
+    pub expected_provider: Option<CredentialProviderExpectationOwned>,
     pub claim_epoch: u64,
+}
+
+/// Derive the exact Provider/endpoint authorization coordinate from the same
+/// selected candidate that owns the material binding and attempt fingerprint.
+pub fn candidate_provider_expectation(
+    candidate: &ResolvedModelCandidate,
+) -> Result<Option<CredentialProviderExpectationOwned>, &'static str> {
+    let ModelProvisioning::Provider {
+        provider_ref,
+        route_ref,
+        ..
+    } = candidate.provisioning()
+    else {
+        return Ok(None);
+    };
+    let provider_id = provider_ref
+        .split_once('@')
+        .map(|(id, _)| id)
+        .filter(|id| !id.is_empty())
+        .ok_or("published model candidate has no versioned provider pin")?;
+    let protocol_endpoint_id = route_ref
+        .split_once('@')
+        .map(|(id, _)| id)
+        .filter(|id| !id.is_empty())
+        .ok_or("published model candidate has no versioned route pin")?;
+    Ok(Some(CredentialProviderExpectationOwned {
+        provider_id: provider_id.to_string(),
+        protocol_endpoint_id: Some(protocol_endpoint_id.to_string()),
+    }))
 }
 
 #[async_trait]
@@ -708,6 +741,8 @@ impl AttemptCredentialRealization {
                     published_access: published_access.clone(),
                     selected_plaintext_holder: binding.selected_plaintext_holder.clone(),
                     binding: material_binding,
+                    expected_provider: candidate_provider_expectation(candidate)
+                        .map_err(|_| AttemptCredentialDeliveryError::BindingMismatch)?,
                     claim_epoch: binding.claim_epoch,
                 })
                 .await
@@ -836,9 +871,12 @@ mod tests {
         // Delivery decision table: C1 candidate/binding/epoch exact; C2 access
         // changes only envelope; C3 duplicate, foreign epoch or changed policy.
         // C4 a claim-bound refresh returns another exact carrier; C5 it fails or
-        // changes the epoch. R1 C1+C2 => select fresh access. R2 C3(any) =>
+        // changes the epoch; C6 the selected Provider has one versioned route.
+        // R1 C1+C2 => select fresh access. R2 C3(any) =>
         // reject construction or lookup. R3 C1+C4 => use the refreshed carrier;
-        // R4 C5 => fail before materialization. This keeps ephemeral transport
+        // R4 C5 => fail before materialization; R5 C6 => send exact Provider and
+        // endpoint coordinates alongside the one-way material fingerprint.
+        // This keeps ephemeral transport
         // outside publication identity without allowing it to widen authority.
         struct Recorder;
         #[async_trait]
@@ -855,8 +893,16 @@ mod tests {
         impl AttemptCredentialDeliverySource for Refresh {
             async fn deliver(
                 &self,
-                _: AttemptCredentialDeliveryRequest,
+                request: AttemptCredentialDeliveryRequest,
             ) -> Result<AttemptCredentialDelivery, String> {
+                assert_eq!(
+                    request.expected_provider.as_ref().map(|value| (
+                        value.provider_id.as_str(),
+                        value.protocol_endpoint_id.as_deref(),
+                    )),
+                    Some(("deepseek", Some("deepseek.open_ai_chat"))),
+                    "R5/E5"
+                );
                 self.0.clone()
             }
         }

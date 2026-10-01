@@ -319,6 +319,21 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    fn pinned(
+        credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+        secrets: Arc<dyn SecretStore>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> crate::PinnedCredentialMaterializer {
+        crate::PinnedCredentialMaterializer::new(
+            Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+                credentials,
+                secrets,
+                clock.clone(),
+            )),
+            clock,
+        )
+    }
+
     struct CurrentOwnership;
 
     #[async_trait::async_trait]
@@ -686,7 +701,7 @@ mod tests {
             let resolver = PublishedAcpLaunchResolver::new(
                 cli,
                 None,
-                crate::PinnedCredentialMaterializer::new(
+                pinned(
                     Arc::new(InMemoryCredentialRepo::new()),
                     Arc::new(InMemorySecretStore::new()),
                     awaken_lease_contract::system_clock(),
@@ -849,11 +864,7 @@ mod tests {
         let resolver = PublishedAcpLaunchResolver::new(
             claude(),
             None,
-            crate::PinnedCredentialMaterializer::new(
-                repo,
-                secrets,
-                awaken_lease_contract::system_clock(),
-            ),
+            pinned(repo, secrets, awaken_lease_contract::system_clock()),
         );
         let context = attempt_context(&model);
         let resolved = resolver
@@ -1053,11 +1064,7 @@ mod tests {
             let resolver = PublishedAcpLaunchResolver::new(
                 claude(),
                 None,
-                crate::PinnedCredentialMaterializer::new(
-                    repo,
-                    secrets.clone(),
-                    awaken_lease_contract::system_clock(),
-                ),
+                pinned(repo, secrets.clone(), awaken_lease_contract::system_clock()),
             );
 
             let plan = resolver.model(&activation(Some(candidate)), &context).await;
@@ -1168,7 +1175,7 @@ mod tests {
         let resolver = PublishedAcpLaunchResolver::new(
             claude(),
             None,
-            crate::PinnedCredentialMaterializer::new(
+            pinned(
                 Arc::new(InMemoryCredentialRepo::new()),
                 Arc::new(InMemorySecretStore::new()),
                 awaken_lease_contract::system_clock(),
@@ -1256,7 +1263,7 @@ mod tests {
         let r = PublishedAcpLaunchResolver::new(
             claude(),
             Some(base.clone()),
-            crate::PinnedCredentialMaterializer::new(
+            pinned(
                 Arc::new(InMemoryCredentialRepo::new()),
                 Arc::new(InMemorySecretStore::new()),
                 awaken_lease_contract::system_clock(),
@@ -1279,7 +1286,7 @@ mod tests {
         let resolver = PublishedAcpLaunchResolver::new(
             claude(),
             Some(base.clone()),
-            crate::PinnedCredentialMaterializer::new(
+            pinned(
                 Arc::new(InMemoryCredentialRepo::new()),
                 Arc::new(InMemorySecretStore::new()),
                 awaken_lease_contract::system_clock(),

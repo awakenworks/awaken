@@ -1,7 +1,7 @@
 {
   "baseline": {
     "scanners_without_input_globs": 18,
-    "scope_lists": 33
+    "scope_lists": 32
   },
   "comment": [
     "Every hand-written scope inside scripts/ci, with the reason it is not derived.",
@@ -126,9 +126,6 @@
     },
     "_resource_plane_fitness.py:RESOURCE_HTTP_SOURCES": {
       "reason": "the HTTP handlers that must extract the workspace stamp; membership is an architectural role, not a directory, and the surrounding crate holds both kinds"
-    },
-    "_service_data_ownership_fitness.py:CREDENTIAL_REFRESH_SOURCES": {
-      "reason": "the three modules permitted to refresh a credential; the rule exists precisely so a fourth cannot be added by writing one"
     },
     "_session_state_ownership_fitness.py:SESSION_MUTATION_ROOTS": {
       "reason": "the three crate roots allowed to mutate session state; which trees may is an ownership decision no file in them declares about itself"

@@ -726,9 +726,10 @@ fallback. Exact
 current-Vault rediscovery. Target binding, streaming lifecycle, and
 sandbox-facing MCP route projection remain Runtime Host adapter
 responsibilities. Failure never authorizes plaintext in another trust domain.
-`awaken-credential-materializer` contains the sole `CredentialRefreshFactory`
-and Vault-backed refresher. Runtime Host consumes that factory port; Coordinator
-does not own or duplicate refresh policy, token exchange, or Vault write-back.
+`awaken-credential-materializer` contains the sole neutral
+`CredentialRefreshFactory` port. Control owns its one Vault-backed refresher,
+including token exchange and exact revision write-back. Runtime Host consumes
+the factory port; Coordinator does not own or duplicate refresh policy.
 
 In a split deployment, the implemented self-hosted path is the external
 Secret/CSI projection described below; brokered inference remains secretless to
@@ -858,8 +859,12 @@ adapter never enumerates the root or falls back to another revision/binding. The
 files are plaintext only inside the selected Worker trust domain and must be
 supplied and protected by the deployment's Secret/CSI volume policy.
 
-AllInOne continues to use the local `PinnedCredentialMaterializer` over the
-Control-owned stores. Both compositions consume the same exact resolver port and
+AllInOne installs one Control-owned `VaultLocalMaterialAuthority` over the
+canonical `CredentialRepo` and `SecretStore` into the neutral
+`PinnedCredentialMaterializer`. That single adapter implements the existing
+material resolver and Sandbox broker ports; Pinned only routes exact requests
+and claim capabilities, never opens a Vault row or sealed bytes. Both
+compositions consume the same exact resolver port and
 the same Model/MCP/Repository validation. The published material source remains
 authoritative; deployment composition installs the matching adapter without a
 compatibility conversion or database fallback.

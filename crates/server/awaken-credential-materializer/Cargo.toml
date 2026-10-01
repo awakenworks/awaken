@@ -13,12 +13,10 @@ authority = "credential-materializer"
 awaken-agent-contract.workspace = true
 awaken-acp-contract.workspace = true
 awaken-credential.workspace = true
-awaken-credential-vault = { workspace = true, optional = true }
 awaken-credential-contract.workspace = true
 awaken-lease-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-session-configuration-contract = { workspace = true, optional = true }
 awaken-provider-genai.workspace = true
 awaken-ext-builtin-tools = { workspace = true, optional = true }
 awaken-worker-contract.workspace = true
@@ -30,20 +28,12 @@ serde_json.workspace = true
 thiserror.workspace = true
 awaken-outbound-http = { workspace = true, optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
-form_urlencoded = { version = "1", optional = true }
 tokio = { workspace = true, features = ["time"], optional = true }
 uuid = { version = "1", features = ["v4"] }
 
 [features]
 default = ["authority"]
-authority = [
-    "dep:awaken-credential-vault",
-    "dep:awaken-session-configuration-contract",
-    "dep:form_urlencoded",
-    "dep:awaken-outbound-http",
-    "dep:reqwest",
-    "dep:tokio",
-]
+authority = []
 brokered = [
     "dep:awaken-ext-builtin-tools",
     "dep:awaken-outbound-http",

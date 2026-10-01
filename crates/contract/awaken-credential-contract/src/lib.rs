@@ -57,7 +57,8 @@ pub use material_resolution::{
     CredentialExtensionConsumer, CredentialExtensionDescriptor, CredentialExtensionReceipt,
     CredentialExtensionRequest, CredentialMaterial, CredentialMaterialCapability,
     CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
-    OAuthCredentialMaterial, ResolvedCredentialMaterial,
+    CredentialProviderExpectation, CredentialProviderExpectationOwned, OAuthCredentialMaterial,
+    ResolvedCredentialMaterial,
 };
 mod realization_capabilities;
 pub use realization_capabilities::{

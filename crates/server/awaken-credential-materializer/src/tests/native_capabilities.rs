@@ -27,7 +27,7 @@ fn native_manifest_admission_uses_installed_materializer_evidence() {
     for local in [false, true] {
         for external in [false, true] {
             let mut pinned = if local {
-                PinnedCredentialMaterializer::new(
+                pinned_vault(
                     Arc::new(InMemoryCredentialRepo::new()),
                     Arc::new(InMemorySecretStore::new()),
                     awaken_lease_contract::system_clock(),

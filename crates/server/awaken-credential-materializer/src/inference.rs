@@ -12,8 +12,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-#[cfg(feature = "authority")]
-use awaken_credential_vault::{SecretStore, repo::CredentialRepo};
 use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
 use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
@@ -135,16 +133,13 @@ pub struct CredentialInferenceMaterializer {
 impl CredentialInferenceMaterializer {
     #[cfg(feature = "authority")]
     #[must_use]
-    pub fn new(
-        credentials: Arc<dyn CredentialRepo>,
-        secrets: Arc<dyn SecretStore>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
-    ) -> Self {
-        Self::from_pinned(PinnedCredentialMaterializer::new(
-            credentials,
-            secrets,
-            clock,
-        ))
+    pub fn new<A>(local_authority: Arc<A>, clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self
+    where
+        A: awaken_runtime_contract::CredentialMaterialResolver
+            + awaken_provisioning_contract::SecretBroker
+            + 'static,
+    {
+        Self::from_pinned(PinnedCredentialMaterializer::new(local_authority, clock))
     }
 
     #[must_use]

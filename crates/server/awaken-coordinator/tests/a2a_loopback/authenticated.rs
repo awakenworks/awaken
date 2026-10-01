@@ -128,8 +128,11 @@ impl AuthenticatedPeer {
 
     pub fn materializer(&self) -> awaken_credential_materializer::PinnedCredentialMaterializer {
         awaken_credential_materializer::PinnedCredentialMaterializer::new(
-            self.credentials.clone(),
-            self.secrets.clone(),
+            Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+                self.credentials.clone(),
+                self.secrets.clone(),
+                awaken_lease_contract::system_clock(),
+            )),
             awaken_lease_contract::system_clock(),
         )
     }

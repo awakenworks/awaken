@@ -171,17 +171,23 @@ pub(super) async fn prepare_runtime_routers(
                 format!("initial Cloud model catalog reconciliation failed: {error}")
             })?;
     }
-    let mut credential_materializer = (role == config::Role::AllInOne)
+    let local_credential_authority = (role == config::Role::AllInOne)
         .then(|| {
             stores.control.as_ref().map(|control| {
-                awaken_credential_materializer::PinnedCredentialMaterializer::new(
+                Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
                     control.credentials.clone(),
                     control.secrets.clone(),
                     stores.clock.clone(),
-                )
+                ))
             })
         })
         .flatten();
+    let mut credential_materializer = local_credential_authority.as_ref().map(|authority| {
+        awaken_credential_materializer::PinnedCredentialMaterializer::new(
+            authority.clone(),
+            stores.clock.clone(),
+        )
+    });
     if let (Some(materializer), Some(resolver)) = (
         credential_materializer.as_mut(),
         process.credential_material_resolver,
@@ -193,7 +199,7 @@ pub(super) async fn prepare_runtime_routers(
     let credential_refresh_factory = (role == config::Role::AllInOne)
         .then(|| {
             stores.control.as_ref().map(|control| {
-                Arc::new(awaken_credential_materializer::VaultRefreshFactory::new(
+                Arc::new(awaken_control::VaultRefreshFactory::new(
                     control.credentials.clone(),
                     control.secrets.clone(),
                     stores.clock.clone(),
@@ -203,20 +209,17 @@ pub(super) async fn prepare_runtime_routers(
         })
         .flatten();
     let attempt_credential_deliveries = match (
-        credential_materializer.clone(),
+        local_credential_authority,
         process
             .managed_services
             .credential_material_delivery
             .clone(),
     ) {
         (
-            Some(materializer),
+            Some(authority),
             Some(awaken_credential_contract::CredentialMaterialDelivery::RecipientEnvelope(issuer)),
         ) => Some(Arc::new(
-            awaken_credential_materializer::VaultAttemptCredentialDeliverySource::new(
-                materializer,
-                issuer,
-            ),
+            awaken_credential_vault::VaultAttemptCredentialDeliverySource::new(authority, issuer),
         )
             as Arc<
                 dyn awaken_runtime_contract::AttemptCredentialDeliverySource,

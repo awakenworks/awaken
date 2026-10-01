@@ -503,8 +503,11 @@ impl crate::ManagedHost {
         secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     ) -> Self {
         self.with_credential_materializer(PinnedCredentialMaterializer::new(
-            credentials,
-            secrets,
+            Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+                credentials,
+                secrets,
+                awaken_lease_contract::system_clock(),
+            )),
             awaken_lease_contract::system_clock(),
         ))
     }

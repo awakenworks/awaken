@@ -343,6 +343,7 @@ mod tests {
                             access: &access,
                             selected_holder: &holder,
                             binding: &binding,
+                            expected_provider: None,
                         };
                         let directory = resolver.material_directory(request);
                         write(&directory, "secret", b"fixture-material").await;
@@ -410,6 +411,7 @@ mod tests {
             access: &access,
             selected_holder: &holder,
             binding: &binding,
+            expected_provider: None,
         };
         write(
             &resolver.material_directory(request),
@@ -444,6 +446,7 @@ mod tests {
                     access: &access,
                     selected_holder: &holder,
                     binding: &changed,
+                    expected_provider: None,
                 })
                 .await
                 .expect_err("R2 must not search another binding"),
@@ -465,6 +468,7 @@ mod tests {
             access: &access,
             selected_holder: &holder,
             binding: &binding,
+            expected_provider: None,
         };
         let directory = resolver.material_directory(request);
         write(&directory, "username", b"git-user").await;
@@ -515,6 +519,7 @@ mod tests {
             access: &access,
             selected_holder: &holder,
             binding: &binding,
+            expected_provider: None,
         };
         let directory = resolver.material_directory(request);
         write(&directory, "payload_fingerprint", b"sha256:payload-a\n").await;
@@ -556,6 +561,7 @@ mod tests {
                     access: &expired,
                     selected_holder: &holder,
                     binding: &binding,
+                    expected_provider: None,
                 })
                 .await
                 .expect_err("R7 expired"),
@@ -579,6 +585,7 @@ mod tests {
                     access: &wrong_recipient,
                     selected_holder: &holder,
                     binding: &binding,
+                    expected_provider: None,
                 })
                 .await
                 .expect_err("R7 recipient"),
@@ -602,6 +609,7 @@ mod tests {
                     access: &another_envelope,
                     selected_holder: &holder,
                     binding: &binding,
+                    expected_provider: None,
                 })
                 .await
                 .expect_err("R8 exact envelope directory"),
@@ -627,6 +635,7 @@ mod tests {
                     access: &access,
                     selected_holder: &holder,
                     binding: &binding,
+                    expected_provider: None,
                 })
                 .await
                 .expect_err("R9 source"),
@@ -651,6 +660,7 @@ mod tests {
                     access: &enveloped,
                     selected_holder: &holder,
                     binding: &binding,
+                    expected_provider: None,
                 })
                 .await
                 .expect_err("R9 envelope"),
@@ -665,6 +675,7 @@ mod tests {
                     access: &access,
                     selected_holder: &wrong_holder,
                     binding: &binding,
+                    expected_provider: None,
                 })
                 .await
                 .expect_err("R9 holder"),
@@ -676,6 +687,7 @@ mod tests {
             access: &access,
             selected_holder: &holder,
             binding: &binding,
+            expected_provider: None,
         };
         write(
             &resolver.material_directory(request),
