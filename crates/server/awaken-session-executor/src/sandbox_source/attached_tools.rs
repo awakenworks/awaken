@@ -32,20 +32,10 @@ async fn close(
     // Revoke MCP admission first, then let the helper unlink its rendezvous.
     // This does not infer that an already dispatched tool had no side effect.
     state.export.take();
-    process.signal(pc::Signal::Term).await?;
-    match tokio::time::timeout(Duration::from_secs(5), process.wait()).await {
-        Ok(status) => {
-            status?;
-        }
-        Err(_) => {
-            process.signal(pc::Signal::Kill).await?;
-            tokio::time::timeout(Duration::from_secs(5), process.wait())
-                .await
-                .map_err(|_| {
-                    pc::SandboxError::timeout("attached MCP process cleanup timed out")
-                })??;
-        }
-    }
+    // One canonical signal/observation ladder owns both ACP and attached MCP
+    // process cleanup. Its typed entrypoint retains the provider's failure
+    // class for the Session Environment; no parallel TERM/KILL loop lives here.
+    awaken_run_executor_acp::Supervisor::reap_process(process, Duration::from_secs(5)).await?;
     state.stopped = true;
     Ok(())
 }
@@ -183,5 +173,96 @@ impl pc::ProcessHandle for ProcessWithTools {
             self.attached.close().await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Default)]
+    struct RecoverableHelper {
+        may_exit: AtomicBool,
+        signals: Mutex<Vec<pc::Signal>>,
+    }
+
+    #[async_trait::async_trait]
+    impl pc::ProcessHandle for RecoverableHelper {
+        fn id(&self) -> &str {
+            "attached-helper"
+        }
+
+        async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+            if self.may_exit.load(Ordering::SeqCst) {
+                Ok(pc::ExitStatus {
+                    code: Some(0),
+                    signaled: false,
+                })
+            } else {
+                std::future::pending().await
+            }
+        }
+
+        async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+            Ok(self
+                .may_exit
+                .load(Ordering::SeqCst)
+                .then_some(pc::ExitStatus {
+                    code: Some(0),
+                    signaled: false,
+                }))
+        }
+
+        async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
+            self.signals.lock().unwrap().push(signal);
+            Ok(())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unobserved_helper_exit_retains_owner_for_the_same_handle_retry() {
+        // Causes: C1 export is already revoked; C2 TERM and KILL receive no
+        // exit receipt; C3 a later observation proves that exact handle exited.
+        // Effects: E1 C2 returns typed Timeout while `stopped` stays false and
+        // the same process Arc remains owned; E2 C3 marks stopped without a new
+        // signal, process, export, or Session authority. Decision table:
+        // R1 C1+C2 -> indeterminate cleanup, retain; R2 C1+C3 -> exact retry
+        // succeeds; R3 already stopped -> idempotent no-op.
+        let process = Arc::new(RecoverableHelper::default());
+        let state = Arc::new(tokio::sync::Mutex::new(State::default()));
+        let attached = AttachedTools {
+            server: awaken_acp_contract::SessionMcpServer {
+                name: "awaken_session".into(),
+                command: Some("helper".into()),
+                args: Vec::new(),
+                url: None,
+                auth: None,
+            },
+            process: process.clone(),
+            state: state.clone(),
+        };
+
+        let error = attached.close().await.expect_err("exit was not observed");
+        assert!(matches!(error, pc::SandboxError::Timeout(_)));
+        assert!(!state.lock().await.stopped);
+        assert!(
+            Arc::strong_count(&process) >= 2,
+            "the same handle is retained"
+        );
+        assert_eq!(
+            process.signals.lock().unwrap().as_slice(),
+            &[pc::Signal::Term, pc::Signal::Kill],
+        );
+
+        process.may_exit.store(true, Ordering::SeqCst);
+        attached.close().await.expect("same-handle exit receipt");
+        attached
+            .close()
+            .await
+            .expect("terminal cleanup is idempotent");
+        assert!(state.lock().await.stopped);
+        assert_eq!(process.signals.lock().unwrap().len(), 2);
     }
 }
