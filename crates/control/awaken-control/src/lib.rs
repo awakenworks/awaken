@@ -38,6 +38,7 @@ mod managed_agents;
 pub mod model_discovery;
 pub mod model_publication;
 mod registration_supervisor;
+pub mod webhook_authoring;
 pub mod worker_stores;
 
 #[cfg(test)]
@@ -501,8 +502,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // the front door into the admin router BEFORE the ownership fence so
     // `/v1/config/webhook-subscriptions/{id}` is tenant-fenced like profiles/MCP; the
     // sink (fed the same store + secrets) fans committed session facts out-of-band.
-    let webhook_crud =
-        awaken_webhook_managed::webhook_config_router(webhook_store, secrets.clone());
+    let webhook_crud = webhook_authoring::webhook_config_router(webhook_store, secrets.clone());
     let admin = admin.merge(webhook_crud);
     let application_mcp_credentials = application_mcp_credentials_router(vault_state.clone());
     let mcp = mcp_catalog::router(mcp_catalog);

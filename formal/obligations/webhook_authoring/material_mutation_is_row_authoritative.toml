@@ -1,0 +1,17 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/WebhookSubscription.cfg",
+  "formal/tla/WebhookSubscription.tla",
+]
+production_entrypoints = []
+
+[[bounds]]
+text = '''TLC exhausts create, rotate and delete for one subscription id, owner or foreign caller, crash/restart and before/after recovery. A visible row always has its signing material; an unpublished material ref remains under a durable mutation intent; a foreign Workspace cannot begin this row's mutation. The model uses the existing WebhookStore intent and SecretStore material roles, not a second runtime store.'''
+
+[[bounds]]
+text = '''The model does not prove Rust-to-TLA refinement, concurrent third-row conflicts, SQL transaction durability, SecretStore atomicity, endpoint URL admission, cryptography, HTTP delivery or external effects. Production conflict rejection and adapter behavior remain executable tests and external-effect assumptions; this is an abstract checked model, not a direct production-kernel proof.'''

@@ -146,7 +146,15 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     deployments.bind_launcher(Arc::new(SuccessfulDeploymentLauncher));
     // Only the endpoint transport/admission policy differs in this loopback E2E;
     // lifecycle ownership remains the one Coordinator installation path.
-    let delivery = webhooks::loopback_lifecycle_delivery(store.clone(), secrets.clone(), None);
+    let delivery = webhooks::loopback_lifecycle_delivery(
+        Arc::new(
+            awaken_control::webhook_authoring::ConfigPlaneSubscriptionSource::new(
+                store.clone(),
+                secrets.clone(),
+            ),
+        ),
+        None,
+    );
     awaken_coordinator::install_managed_lifecycle_delivery_with_deployments(
         &state,
         &state.session_application(),
@@ -155,7 +163,7 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
         &service_lifecycle,
     )
     .expect("W1 bind the sole lifecycle notifier before traffic");
-    let crud = webhooks::webhook_config_router_loopback(store, secrets);
+    let crud = awaken_control::webhook_authoring::webhook_config_router_loopback(store, secrets);
     let crud = crud.layer(axum::middleware::from_fn(stamp_local));
 
     // 3. Register a subscription through the REAL CRUD route; the secret comes back once.
@@ -376,7 +384,7 @@ async fn cross_tenant_access_to_a_webhook_id_is_fenced() {
     // is a no-op; C3 the owner reads again -> E3 its authoritative row survives.
     let store = Arc::new(InMemoryWebhookStore::new());
     let secrets = Arc::new(InMemorySecretStore::new());
-    let crud = webhooks::webhook_config_router(store, secrets);
+    let crud = awaken_control::webhook_authoring::webhook_config_router(store, secrets);
     let owner = crud.clone().layer(axum::middleware::from_fn(stamp_local));
     let intruder = crud.layer(axum::middleware::from_fn(stamp_intruder));
 

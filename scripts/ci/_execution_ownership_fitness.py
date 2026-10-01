@@ -68,6 +68,7 @@ ROUTE_OWNER_FILES = (
     "crates/control/awaken-control/src/mcp_catalog.rs",
     "crates/control/awaken-control/src/data_subject.rs",
     "crates/control/awaken-control/src/lib.rs",
+    "crates/control/awaken-control/src/webhook_authoring.rs",
     "crates/server/awaken-protocol-managed/src/resources/files.rs",
     "crates/server/awaken-protocol-managed/src/resources/memory_stores.rs",
     "crates/server/awaken-protocol-managed/src/control/models.rs",

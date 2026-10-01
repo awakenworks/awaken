@@ -184,7 +184,7 @@ k8s-openapi = { version = "0.25", features = ["v1_30"] }
 awaken-runtime.workspace = true
 awaken-dispatch-testkit.workspace = true
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
-awaken-control.workspace = true
+awaken-control = { workspace = true, features = ["test-support"] }
 awaken-executable-agent-catalog.workspace = true
 awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }
 awaken-deployment-application = { workspace = true, features = ["test-support"] }

@@ -226,9 +226,12 @@ bundle), reached through the sync `WebhookStore` read-port in
 `awaken-config-resolver`. Its signing key is **sealed in the vault**
 (`SecretStore`, the same seam MCP/model credentials use); the row carries only a
 `secret_ref`, resolved to a `RedactedString` at dispatch. The `awaken-webhook`
-crate is now storage-neutral — signing, the event shape, and delivery only —
-driving a `SubscriptionSource` port whose config-plane adapter lives in
-`awaken-webhook-managed`.
+crate is storage-neutral — signing, the event shape, and delivery only —
+driving a `SubscriptionSource` port. `awaken-control` owns the config-plane
+adapter, subscription authoring, and interrupted material-mutation recovery.
+`awaken-webhook-managed` owns only the managed lifecycle-to-delivery adapter;
+the process assembly injects Control's subscription source into it. The
+Coordinator remains the sole durable lifecycle outbox owner.
 
 **Consequences.**
 - The CRUD surface moves to `/v1/config/webhook-subscriptions/{id}` (PUT/GET/
@@ -245,9 +248,9 @@ driving a `SubscriptionSource` port whose config-plane adapter lives in
   silently substitutes a volatile webhook authority. `AWAKEN_WEBHOOK_DIR` is
   retired.
 - Vocabulary boundary held: the config crate stays webhook-agnostic (it stores a
-  generic secret-free row); minting + sealing live in the webhook front door,
-  mirroring how the vault front door — not `admin-config-api` — seals MCP/model
-  secrets.
+  generic secret-free row); minting + sealing live in Control's webhook
+  authoring front door, mirroring how the vault front door — not
+  `admin-config-api` — seals MCP/model secrets.
 
 ## References
 

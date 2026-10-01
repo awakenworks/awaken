@@ -497,8 +497,12 @@ pub(super) async fn prepare_runtime_routers(
         match local_webhook_stores {
             Some((webhook_store, secrets)) => {
                 awaken_webhook_managed::config_plane_lifecycle_delivery(
-                    webhook_store,
-                    secrets,
+                    Arc::new(
+                        awaken_control::webhook_authoring::ConfigPlaneSubscriptionSource::new(
+                            webhook_store,
+                            secrets,
+                        ),
+                    ),
                     Some(org_id.clone()),
                 )
             }

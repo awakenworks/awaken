@@ -554,7 +554,8 @@ async fn recover_and_supervise_webhooks(
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
 ) {
     if let Err(error) =
-        awaken_webhook_managed::recover_webhook_mutations(webhooks.as_ref(), secrets.as_ref()).await
+        crate::webhook_authoring::recover_webhook_mutations(webhooks.as_ref(), secrets.as_ref())
+            .await
     {
         eprintln!("webhook material mutation recovery failed: {error}");
     }
@@ -569,7 +570,7 @@ async fn recover_and_supervise_webhooks(
                 () = cancel.cancelled() => break,
                 _ = interval.tick() => {}
             }
-            if let Err(error) = awaken_webhook_managed::recover_webhook_mutations(
+            if let Err(error) = crate::webhook_authoring::recover_webhook_mutations(
                 webhooks.as_ref(),
                 secrets.as_ref(),
             )
@@ -584,7 +585,7 @@ async fn recover_and_supervise_webhooks(
 }
 
 async fn report_webhook_inventory(webhooks: &dyn WebhookStore, secrets: &dyn SecretStore) {
-    match awaken_webhook_managed::reconcile_webhook_inventory(webhooks, secrets).await {
+    match crate::webhook_authoring::reconcile_webhook_inventory(webhooks, secrets).await {
         Ok(report) if !report.missing_material.is_empty() => eprintln!(
             "webhook inventory is missing referenced material: {:?}",
             report.missing_material
