@@ -25,6 +25,10 @@ New archives carry a Session Application clock sample taken while constructing
 the one disposition transition that later commits; it is not the exact commit
 clock. Session and primary Thread v2 reads share that value.
 An exact archive replay preserves the first sample across process recovery.
+Ordinary and Repository-publication archives use one Session Application
+idempotency law over stable owner, Session, lifecycle fact semantics and exact
+business intent; route-sampled display and fact timestamps never distinguish
+two requests for that same intent.
 An actual persisted `2026-01-01T00:00:00Z` remains a date in v2; response text
 never decides provenance.
 
