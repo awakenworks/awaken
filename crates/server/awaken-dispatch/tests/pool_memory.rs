@@ -1605,7 +1605,8 @@ async fn unavailable_settlement_observer_does_not_starve_an_independent_thread()
 /// claim, C2 is resolver completion, C3 is the exact Worker drive, C4 is
 /// cancellation, C5 is resolver failure, C6 is expiry/replacement, and C7 is an
 /// already-entered attempt. E1 is one
-/// renewal write per interval, E2 is guard transfer without a second Tokio task,
+/// renewal write per interval, E2 is Pool guard retention through Worker await
+/// with only its cancellation signal passed to the drive (no second Tokio task),
 /// E3 is guard shutdown, E4 is immediate relinquish, and E5 is fail-closed stale
 /// execution. E6 is cooperative cancellation of the in-flight attempt.
 ///
@@ -1622,12 +1623,13 @@ async fn unavailable_settlement_observer_does_not_starve_an_independent_thread()
 ///
 /// The count is the observable task cardinality: the pre-fix Pool and Worker
 /// tasks both woke on the same interval, producing two renewal writes for RG1
-/// and RG2. One transferred guard produces exactly one.
-/// Constraint/Invariant: exactly one renewal guard follows the exact claim from
-/// Pool through Worker and stops at every terminal/failure exit. Decision rule:
+/// and RG2. One Pool-retained guard produces exactly one.
+/// Constraint/Invariant: exactly one renewal guard remains with the Pool across
+/// slow resolution and Worker await, then stops at every terminal/failure exit.
+/// The Worker receives only its existing cancellation signal. Decision rule:
 /// this test owns RG1; the adjacent tests own RG2-RG8.
 #[tokio::test(start_paused = true)]
-async fn pool_transfers_one_renewal_guard_into_a_normal_drive() {
+async fn pool_retains_one_renewal_guard_through_a_normal_drive() {
     use std::sync::atomic::Ordering;
 
     let release = Arc::new(tokio::sync::Semaphore::new(0));
@@ -1690,7 +1692,7 @@ async fn pool_transfers_one_renewal_guard_into_a_normal_drive() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn pool_transfers_one_renewal_guard_into_cancellation() {
+async fn pool_retains_one_renewal_guard_through_cancellation() {
     // Cause/effect: C1 is an accepted durable cancellation and C2 is a Worker
     // whose terminal effect is blocked. E1 is that admission returns before C2;
     // E2 is one pool-owned renewal guard while the ordinary drainer owns the
@@ -1738,7 +1740,7 @@ async fn pool_transfers_one_renewal_guard_into_cancellation() {
     assert!(pool.cancel(&run_id).await.expect("RG2 admission"), "RG2/E1");
     entered.notified().await;
     // The cancellation executor can be reached in the same scheduler pass as
-    // guard creation; give the transferred renewal task one poll to arm its
+    // guard creation; give the Pool-owned renewal task one poll to arm its
     // first interval before advancing virtual time.
     for _ in 0..10 {
         tokio::task::yield_now().await;

@@ -835,23 +835,32 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let claim = RunClaim::from(&claimed.lease);
         let lease_renewal = self.renew_claim_while_driving(&claim);
-        self.drive_claimed_with_renewal(claimed, clock, lease_renewal, None)
-            .await
+        let result = self
+            .drive_claimed_with_cancellation(
+                claimed,
+                clock,
+                lease_renewal.attempt_cancellation(),
+                None,
+            )
+            .await;
+        drop(lease_renewal);
+        result
     }
 
-    /// Continue one exact drive with the renewal guard that already covered
-    /// pre-drive resolution. The process pool transfers its guard here instead
-    /// of starting an overlapping Tokio task at the Worker boundary.
-    pub(crate) async fn drive_claimed_with_renewal(
+    /// Continue one exact drive with the cancellation signal from the renewal
+    /// guard that already covered pre-drive resolution. Its Pool owner retains
+    /// that one guard until this awaited drive returns; no second renewal task
+    /// starts at the Worker boundary.
+    pub(crate) async fn drive_claimed_with_cancellation(
         &self,
         claimed: Claimed,
         clock: Arc<dyn WallClock>,
-        lease_renewal: ClaimLeaseRenewal,
+        claim_cancellation: CancellationToken,
         execution_capacity: Option<ExecutionCapacity>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         if claimed.session_activity_admission_required {
             return self
-                .drive_claimed_inner(claimed, clock, lease_renewal, execution_capacity)
+                .drive_claimed_inner(claimed, clock, claim_cancellation, execution_capacity)
                 .await;
         }
 
@@ -860,7 +869,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         // inside the same `wake.dispatch` span; fragmenting the span around only
         // the executor future disconnects post-commit background effects.
         let dispatch = Self::claimed_dispatch_span(&claimed);
-        self.drive_claimed_inner(claimed, clock, lease_renewal, execution_capacity)
+        self.drive_claimed_inner(claimed, clock, claim_cancellation, execution_capacity)
             .instrument(dispatch)
             .await
     }
@@ -869,13 +878,11 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         &self,
         claimed: Claimed,
         clock: Arc<dyn WallClock>,
-        lease_renewal: ClaimLeaseRenewal,
+        claim_cancellation: CancellationToken,
         execution_capacity: Option<ExecutionCapacity>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
-        let (attempt_cancellation, _cancellation_relay) = combine_attempt_cancellation(
-            lease_renewal.attempt_cancellation(),
-            self.cancellation.as_ref(),
-        );
+        let (attempt_cancellation, _cancellation_relay) =
+            combine_attempt_cancellation(claim_cancellation, self.cancellation.as_ref());
         // One drive receives one edge-owned clock. Claim eligibility, lease
         // renewal, pre-effect ownership checks and settlement fencing no longer
         // read it: the store that owns the row judges those against its own
