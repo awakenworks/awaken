@@ -208,6 +208,11 @@ impl ManagedState {
             }
         }
 
+        record.event_times = orders
+            .iter()
+            .filter_map(|(id, order)| order.processed_at_unix_ms.map(|at| (id.clone(), at)))
+            .collect();
+
         let visible_durable_ids = record
             .events
             .iter()
@@ -282,7 +287,7 @@ impl ManagedState {
             "every transient overlay has a durable anchor"
         );
         for child in &mut record.child_threads {
-            let times = canonical
+            let visible = canonical
                 .iter()
                 .filter(|event| {
                     Self::project_event_for_thread(
@@ -297,8 +302,44 @@ impl ManagedState {
                     )
                     .is_some()
                 })
+                .collect::<Vec<_>>();
+            let times = visible
+                .iter()
                 .filter_map(|event| event.processed_at.as_ref())
                 .collect::<Vec<_>>();
+            let lifecycle_time = |created: bool| {
+                canonical.iter().find_map(|event| {
+                    let matches = match &event.kind {
+                        OutboundKind::SessionThreadCreated {
+                            session_thread_id, ..
+                        } => created && session_thread_id == &child.id,
+                        OutboundKind::SessionThreadStatusTerminated {
+                            session_thread_id, ..
+                        } => !created && session_thread_id == &child.id,
+                        _ => false,
+                    };
+                    matches
+                        .then(|| record.event_times.get(&event.id).copied())
+                        .flatten()
+                })
+            };
+            record.child_times.insert(
+                child.id.clone(),
+                ThreadTimeEvidence {
+                    created_at_unix_ms: lifecycle_time(true),
+                    // A process-local preview is not a committed update. The
+                    // last durable visible event owns the v2 observation;
+                    // if that event has no time, an older time cannot fill it.
+                    updated_at_unix_ms: visible
+                        .iter()
+                        .rev()
+                        .find(|event| !is_transient_event_id(&event.id))
+                        .and_then(|event| record.event_times.get(&event.id).copied()),
+                    archived_at_unix_ms: (child.status == SessionThreadStatus::Terminated)
+                        .then(|| lifecycle_time(false))
+                        .flatten(),
+                },
+            );
             // Creation/terminal time comes from the exact lifecycle event;
             // a prior broadcast interrupt or later cleanup cannot replace it.
             if let Some(at) = canonical.iter().find_map(|event| match &event.kind {

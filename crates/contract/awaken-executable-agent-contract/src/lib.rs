@@ -38,7 +38,8 @@ pub struct ExecutableAgentRegistration {
     pub workspace_id: String,
     pub agent_id: String,
     pub source_revision: u64,
-    /// First local commit of this exact publication. Historical commands may
+    /// Persisted timestamp sampled for this exact publication row, later committed.
+    /// Historical commands may
     /// lack the observation; absence must never become a read-time guess.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_at_unix_ms: Option<u64>,

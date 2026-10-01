@@ -94,10 +94,43 @@ impl ManagedState {
         descending: bool,
         include: impl Fn(&Event) -> bool,
     ) -> Result<ListEventsResponse, StateError> {
+        self.list_events_filtered_with_time(
+            session_id,
+            cursor,
+            limit,
+            descending,
+            false,
+            false,
+            include,
+            |_| true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn list_events_filtered_with_time(
+        &self,
+        session_id: &str,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+        descending: bool,
+        time_v2: bool,
+        requires_time: bool,
+        include: impl Fn(&Event) -> bool,
+        could_match_without_time: impl Fn(&Event) -> bool,
+    ) -> Result<ListEventsResponse, StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
-        Self::project_event_page(
-            record, session_id, session_id, cursor, limit, descending, include,
+        Self::project_event_page_with_time(
+            record,
+            session_id,
+            session_id,
+            cursor,
+            limit,
+            descending,
+            time_v2,
+            requires_time,
+            include,
+            could_match_without_time,
         )
     }
 }

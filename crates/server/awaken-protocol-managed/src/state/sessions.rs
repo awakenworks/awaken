@@ -172,6 +172,10 @@ impl ManagedState {
         record.session.status = Self::wire_session_status(persisted);
         record.session.created_at = super::constants::persisted_time(persisted.created_at_unix_ms);
         record.session.updated_at = super::constants::persisted_time(persisted.updated_at_unix_ms);
+        record.root_time = RootTimeEvidence {
+            created_at_unix_ms: persisted.created_at_unix_ms,
+            updated_at_unix_ms: persisted.updated_at_unix_ms,
+        };
         record.session.title = persisted.title.clone();
         record.session.metadata = persisted.metadata.clone();
         record.session.deployment_id = persisted.metadata.get("awaken.deployment_id").cloned();
@@ -560,6 +564,10 @@ impl ManagedState {
             session,
             persisted.revision,
             persisted.resources,
+            RootTimeEvidence {
+                created_at_unix_ms: persisted.created_at_unix_ms,
+                updated_at_unix_ms: persisted.updated_at_unix_ms,
+            },
             Vec::new(),
         );
         let session = record.session_projection();
@@ -817,6 +825,21 @@ impl ManagedState {
         &self,
         id: &str,
     ) -> Result<(Session, awaken_session_types::SessionRevision), StateError> {
+        self.get_session_with_revision_and_time(id)
+            .map(|(session, revision, _)| (session, revision))
+    }
+
+    pub(crate) fn get_session_with_revision_and_time(
+        &self,
+        id: &str,
+    ) -> Result<
+        (
+            Session,
+            awaken_session_types::SessionRevision,
+            RootTimeEvidence,
+        ),
+        StateError,
+    > {
         let sessions = self.sessions.lock().unwrap();
         sessions
             .get(id)
@@ -824,6 +847,7 @@ impl ManagedState {
                 (
                     record.session_projection(),
                     record.checkpoint.source.session_revision,
+                    record.root_time,
                 )
             })
             .ok_or(StateError::NotFound)
@@ -872,6 +896,18 @@ impl ManagedState {
         &self,
         scope: &str,
     ) -> Result<Vec<Session>, StateError> {
+        Ok(self
+            .list_sessions_scoped_durable_with_time(scope)
+            .await?
+            .into_iter()
+            .map(|(session, _)| session)
+            .collect())
+    }
+
+    pub(crate) async fn list_sessions_scoped_durable_with_time(
+        &self,
+        scope: &str,
+    ) -> Result<Vec<(Session, RootTimeEvidence)>, StateError> {
         let persisted = self
             .roles
             .roots
@@ -886,17 +922,24 @@ impl ManagedState {
                 continue;
             }
             if let Some(record) = cached.get(session_id.as_str()) {
-                out.push(record.session_projection());
+                out.push((record.session_projection(), record.root_time));
             } else {
-                out.push(self.rehydrated_session_for(
-                    session_id.as_str(),
-                    scope,
-                    session,
-                    RehydrationPurpose::CollectionRead,
-                )?);
+                let evidence = RootTimeEvidence {
+                    created_at_unix_ms: session.created_at_unix_ms,
+                    updated_at_unix_ms: session.updated_at_unix_ms,
+                };
+                out.push((
+                    self.rehydrated_session_for(
+                        session_id.as_str(),
+                        scope,
+                        session,
+                        RehydrationPurpose::CollectionRead,
+                    )?,
+                    evidence,
+                ));
             }
         }
-        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out.sort_by(|a, b| a.0.id.cmp(&b.0.id));
         Ok(out)
     }
 

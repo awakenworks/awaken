@@ -159,8 +159,8 @@ async fn compare_with_cold<T: Timeline>(
     refresh(timeline.warm(), timeline.session_id(), damaged)
         .await
         .map_err(|error| format!("{label}: warm {error}"))?;
-    let cold = timeline.cold();
-    refresh(&cold, timeline.session_id(), damaged)
+    let cold_state = timeline.cold();
+    refresh(&cold_state, timeline.session_id(), damaged)
         .await
         .map_err(|error| format!("{label}: cold {error}"))?;
     if damaged {
@@ -169,13 +169,34 @@ async fn compare_with_cold<T: Timeline>(
         return Ok(Vec::new());
     }
     let warm = durable_history(timeline.warm(), timeline.session_id());
-    let cold = durable_history(&cold, timeline.session_id());
+    let cold = durable_history(&cold_state, timeline.session_id());
     if warm != cold {
         return Err(format!(
             "{label}: warm {:?} != cold {:?}",
             types(&warm),
             types(&cold)
         ));
+    }
+    // Time-evidence decision rule: for every committed prefix and refresh
+    // schedule, a warm candidate and a cold rebuild consume the same typed
+    // root/order facts. They must publish equal v2 provenance even when v1
+    // fallback strings coincide; a failed prefix must publish neither.
+    let time_evidence = |state: &ManagedState| {
+        state
+            .sessions
+            .lock()
+            .unwrap()
+            .get(timeline.session_id())
+            .map(|record| {
+                (
+                    record.root_time,
+                    record.event_times.clone(),
+                    record.child_times.clone(),
+                )
+            })
+    };
+    if time_evidence(timeline.warm()) != time_evidence(&cold_state) {
+        return Err(format!("{label}: warm/cold typed time evidence diverged"));
     }
     one_aggregate_opening_per_interval(&warm).map_err(|error| format!("{label}: {error}"))?;
     Ok(warm)

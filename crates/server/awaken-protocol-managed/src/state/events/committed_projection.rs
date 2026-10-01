@@ -76,6 +76,10 @@ impl ManagedState {
             session,
             persisted.revision,
             persisted.resources.clone(),
+            RootTimeEvidence {
+                created_at_unix_ms: persisted.created_at_unix_ms,
+                updated_at_unix_ms: persisted.updated_at_unix_ms,
+            },
             Vec::new(),
         );
         record.cache_revision = memo.cache_revision;

@@ -11,6 +11,31 @@ Those establish that the **shapes** agree. This document is about the **promises
 behind the shapes**, which a golden snapshot cannot reach: in a promise failure
 the wire shape is still valid.
 
+## Historical time provenance
+
+The existing `/v1/sessions` Session, Thread, and Event GET/list responses keep
+their SDK-compatible timestamp strings. A historical row without a recorded
+time can therefore still carry the legacy `2026-01-01T00:00:00Z` placeholder in
+the default response. One exact request header,
+`x-awaken-session-time-version: 2`, selects the same history routes with nullable
+timestamp fields: a time from the committed Session root or canonical Event
+order is rendered, and missing typed evidence becomes JSON `null`. The archived
+Session timestamp is nullable when its historical string has no typed source.
+An actual persisted `2026-01-01T00:00:00Z` remains a date in v2; response text
+never decides provenance.
+
+Absent header selects the unchanged v1 serializer. Repeated or other header
+values return 400. SSE remains v1 only and rejects an explicit v2 selector
+with 400. A v2 list without time predicates retains unknown-time rows; when a
+Session or Event time predicate could include an unknown-time candidate, the
+whole request returns 503 instead of silently omitting it. Both versions read
+the same committed projection and ownership guard; v2 has no second history
+store or projector. Unfiltered Session pagination retains the existing stable
+cursor order; a null v2 timestamp must not be interpreted as that cursor's
+legacy placeholder date. Thread Event v2 lists use the same Event time filter;
+Thread lists have no time-filter contract and reject an explicit time predicate
+with 400 rather than ignoring it.
+
 ## The roster rules are enforced, and now pinned
 
 Every documented CMA roster rule is decided by an owner. Two owners, split by
