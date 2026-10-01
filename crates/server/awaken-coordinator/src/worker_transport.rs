@@ -24,6 +24,8 @@ pub trait WorkerRelayTargetObserver: Send + Sync {
 
 #[cfg(feature = "container-k8s")]
 mod kubernetes;
+#[cfg(target_os = "linux")]
+mod systemd;
 
 /// Private fields keep authentication and physical binding selected together.
 /// An injected authenticator alone is deliberately an unbound transport.
@@ -64,6 +66,28 @@ impl WorkerTransport {
 
     pub fn relay_target_source(&self) -> Option<Arc<dyn WorkerRelayTargetObserver>> {
         self.relay_targets.clone()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl WorkerTransport {
+    /// Bind one local independent Worker to its retained systemd user service.
+    /// Authentication and physical evidence are selected together, while the
+    /// existing Dispatch and Registry remain the only attempt authorities.
+    pub fn systemd_user(
+        authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
+        provider_id: &str,
+        evidence_dir: &std::path::Path,
+    ) -> Result<Self, String> {
+        let adapter = Arc::new(systemd::SystemdWorkerEvidence::new(
+            provider_id,
+            evidence_dir,
+        )?);
+        Ok(Self {
+            authenticator,
+            bindings: Some(adapter.clone()),
+            stops: Some(adapter),
+        })
     }
 }
 

@@ -316,6 +316,38 @@ replay. Its original source-closure and divergent-remote cases remain exercised.
 This source proof does not certify the pending original UI delivery or missing
 historical physical-attempt termination evidence.
 
+## Amendment 2026-10-02: local Worker exit evidence stays below the same ports
+
+A Linux user-service adapter now pairs the existing `WorkerExecutionBindingSource`
+and `WorkerExecutionStopSource` through one `WorkerTransport`. It binds an exact
+Worker incarnation to a unique systemd transient unit, its `InvocationID`,
+cgroup and kernel boot identity before Dispatch admits physical execution.
+The unit must retain exit state, have no automatic restart and use
+`KillMode=control-group`. Neither the Worker request nor a process-group PID is
+accepted as an exit receipt.
+
+After a closed Worker is authorized for stop, the adapter rechecks the original
+unit, kills its cgroup and waits for the exact invocation to have no remaining
+process group. It durably writes a provider-owned physical exit receipt before
+retiring the transient unit; response loss can reopen that receipt and finish
+the same unit retirement. A changed kernel boot proves the old local process
+cannot survive only when the unique unit name is not reused. Missing or
+conflicting evidence stays Unknown. The Registry still records the Worker exit,
+and Dispatch alone retires its physical attempt; this filesystem receipt is
+neither a Run result nor a Session cleanup manifest.
+
+The local adapter currently admits complete stop classification only for the
+Native model-only coverage profile. Journalled tools, opaque ACP execution and
+response-only remote requests remain Unknown until their independent effects
+have pre-entry enrollment and physical closure evidence. The platform launcher
+has not yet selected this adapter or started the matching unit automatically;
+the local product therefore does not yet claim user-invisible hard-crash
+recovery. Flow's existing `supervise_agent_worker` loop, not systemd
+`Restart=`, will own placement of each new Worker incarnation; the unit owns
+only physical process supervision and never becomes a second claim scheduler.
+Kubernetes cross-process Sandbox creation and original UI-root
+acceptance remain separate outstanding gates.
+
 ## Amendment 2026-10-05: unfinished terminal cleanup remains Worker demand
 
 A Hosted Run can settle its Dispatch lease after the Session root has recorded
