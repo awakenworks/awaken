@@ -41,11 +41,7 @@ impl NeutralPermissionResolver {
     }
 }
 
-/// A notification-only port. It cannot grant authority; it only observes the
-/// final allow verdict produced by Awaken's permission resolver.
-pub trait PermissionGrantObserver: Send + Sync {
-    fn on_allow(&self, call: &ToolCall);
-}
+pub use awaken_runtime_contract::permission::PermissionGrantObserver;
 
 /// The permission decisions one attempt made since its last commit.
 ///

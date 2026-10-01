@@ -117,7 +117,7 @@ impl AcpToolExecutionGrants {
     }
 }
 
-impl awaken_run_executor_acp::PermissionGrantObserver for AcpToolExecutionGrants {
+impl awaken_runtime_contract::permission::PermissionGrantObserver for AcpToolExecutionGrants {
     fn on_allow(&self, call: &ToolCall) {
         if !self.exported.contains(&call.tool_id) {
             return;
@@ -400,7 +400,7 @@ pub(crate) async fn export_tools(
     executors: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
 ) -> Result<
     (
-        Vec<awaken_run_executor_acp::SessionMcpServer>,
+        Vec<awaken_acp_contract::SessionMcpServer>,
         Vec<AcpToolExport>,
     ),
     String,
@@ -411,7 +411,7 @@ pub(crate) async fn export_tools(
         .await?;
     let server = match export.server.transport.clone() {
         awaken_runtime_contract::resolved::AcpMcpTransport::Stdio { command, args } => {
-            awaken_run_executor_acp::SessionMcpServer {
+            awaken_acp_contract::SessionMcpServer {
                 name: export.server.name.clone(),
                 command: Some(command),
                 args,
@@ -420,7 +420,7 @@ pub(crate) async fn export_tools(
             }
         }
         awaken_runtime_contract::resolved::AcpMcpTransport::Http { url } => {
-            awaken_run_executor_acp::SessionMcpServer {
+            awaken_acp_contract::SessionMcpServer {
                 name: export.server.name.clone(),
                 command: None,
                 args: Vec::new(),
@@ -576,7 +576,13 @@ mod tests {
 
     #[tokio::test]
     async fn exported_tool_requires_and_consumes_one_exact_awaken_grant() {
-        use awaken_run_executor_acp::PermissionGrantObserver;
+        // Causes: C1 the neutral permission observer received an Allow for the
+        // exact tool and arguments; C2 the call matches that grant; C3 it has
+        // not already been consumed. Effects: E1 only C1+C2+C3 executes the
+        // tool once; E2 missing, substituted or replayed calls fail closed.
+        // R1 no grant -> deny; R2 exact fresh grant -> one effect; R3 changed
+        // args or consumed grant -> deny. The observer supplies no authority.
+        use awaken_runtime_contract::permission::PermissionGrantObserver;
 
         let grants = Arc::new(AcpToolExecutionGrants::new(["write".into()]));
         let guarded = PermissionGuardedAcpTool::new(

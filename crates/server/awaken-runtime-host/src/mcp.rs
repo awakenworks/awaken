@@ -97,7 +97,7 @@ pub(crate) fn project_mcp_session_transport(
     relay: Option<&crate::mcp_relay::McpRelay>,
     receipt: &awaken_session_mcp_contract::McpRealizationReceipt,
     adapter: &awaken_run_executor_acp::AcpCli,
-) -> Result<awaken_run_executor_acp::SessionMcpServer, HostError> {
+) -> Result<awaken_acp_contract::SessionMcpServer, HostError> {
     let generation = &request.generation;
     if let McpTransportMaterialKind::SandboxStdio { command, args } = &prepared.transport {
         if receipt.actual_realization_kind
@@ -110,7 +110,7 @@ pub(crate) fn project_mcp_session_transport(
         receipt.verify(request).map_err(|_| {
             HostError::internal("MCP realization receipt does not match its exact stage request")
         })?;
-        return Ok(awaken_run_executor_acp::SessionMcpServer {
+        return Ok(awaken_acp_contract::SessionMcpServer {
             name: prepared.name.clone(),
             command: Some(command.clone()),
             args: args.clone(),
@@ -226,7 +226,7 @@ pub(crate) fn project_mcp_session_transport(
         }
         None => (original_url.to_string(), None),
     };
-    Ok(awaken_run_executor_acp::SessionMcpServer {
+    Ok(awaken_acp_contract::SessionMcpServer {
         name: prepared.name.clone(),
         command: None,
         args: Vec::new(),
