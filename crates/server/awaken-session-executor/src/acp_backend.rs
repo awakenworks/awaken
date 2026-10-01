@@ -575,23 +575,36 @@ mod tests {
     }
 
     #[test]
-    fn a_session_blob_root_enables_acp_recovery() {
-        // With a session-blob root set, the projecting-ACP startup wires the
-        // session-home recovery into the executor and still routes acp:* threads.
+    fn deployment_session_blob_root_is_the_only_recovery_configuration() {
+        // Causes: C1=the typed Deployment names a portable blob root;
+        // C2=it leaves the root absent. Constraint: C1 and C2 are exclusive.
+        // Effects: E1=C1 installs the one blob store and binds the ACP session
+        // home; E2=C2 installs neither; E3=both route the exact acp:* backend.
+        // Decision table: R1=C1 -> E1+E3; R2=C2 -> E2+E3. The prior
+        // post-construction override is deliberately absent from both rules.
         let cli = *awaken_run_executor_acp::acp_cli("claude").unwrap();
         let blobs = std::env::temp_dir().join(format!("acp-blobs-{}", std::process::id()));
-        let host = SharedHost::new(Arc::new(NoLlm), "test")
-            .with_session_blob_root(blobs)
-            .with_projected_acp(cli, Arc::new(FixedModel), None);
-        host.register_thread_backend_projection("t", "acp:claude");
-        assert!(host.exec.acp.is_some());
-        assert_eq!(
-            host.session_slots
-                .read("t", |slot| slot.backend_ref.clone())
-                .flatten()
-                .as_deref(),
-            Some("acp:claude")
-        );
+        for (root, installed, rule) in [(Some(blobs), true, "R1"), (None, false, "R2")] {
+            let mut deployment = crate::DeploymentConfig::ephemeral();
+            deployment.acp_session_blob_root = root;
+            let host = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
+                .with_projected_acp(cli, Arc::new(FixedModel), None);
+            assert_eq!(host.exec.session_blob_store.is_some(), installed, "{rule}");
+            let acp = host.exec.acp.as_ref().expect("projected ACP backend");
+            let AcpExecutorSource::Bound { session_home, .. } = &acp.source else {
+                panic!("{rule} must bind the selected launch source");
+            };
+            assert_eq!(session_home.is_some(), installed, "{rule}/session home");
+            host.register_thread_backend_projection("t", "acp:claude");
+            assert_eq!(
+                host.session_slots
+                    .read("t", |slot| slot.backend_ref.clone())
+                    .flatten()
+                    .as_deref(),
+                Some("acp:claude"),
+                "{rule}/E3"
+            );
+        }
     }
 
     #[tokio::test]
