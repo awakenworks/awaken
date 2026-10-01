@@ -344,9 +344,12 @@ BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
     ToolCallStates, TerminalToolCallStates, ToolDecisionStates,
     DelegatedChildStates, DelegationLinkStatuses, RuntimeAssumptions
 
+\* Cause: a committed Run ends while Safety holds. Effect: every safety
+\* conjunct still holds afterward. This cold action proof needs the same
+\* 60-second Z3 allowance as the other nontrivial Session action lemmas.
 LEMMA EndRunPreservesSafety ==
     RuntimeAssumptions /\ Safety /\ EndRun => Safety'
-BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
+BY Z3T(60) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
     TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
@@ -355,9 +358,11 @@ BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
     ToolCallStates, TerminalToolCallStates, ToolDecisionStates,
     DelegatedChildStates, DelegationLinkStatuses, RuntimeAssumptions
 
+\* Cause: cancellation is durably admitted while Safety holds. Effect: no
+\* action crosses the permission, delegation or terminal safety boundaries.
 LEMMA CancelPreservesSafety ==
     RuntimeAssumptions /\ Safety /\ Cancel => Safety'
-BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
+BY Z3T(60) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
     TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
