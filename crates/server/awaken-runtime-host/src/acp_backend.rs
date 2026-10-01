@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use awaken_run_executor_acp::{AcpRunExecutor, LaunchObserver, SessionHomeProvider};
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) fn deployment_test_binary(key: &str) -> std::path::PathBuf {
     let path =
         std::path::PathBuf::from(std::env::var_os(key).unwrap_or_else(|| panic!("required {key}")));

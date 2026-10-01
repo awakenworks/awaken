@@ -49,6 +49,15 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
     use awaken_runtime_contract::StaticPublishedAgentSnapshots;
     use awaken_runtime_contract::agent_bindings::AgentBindings;
 
+    // S1/E1: the model-visible Workdir path uses this host's separator.
+    fn skill_path() -> String {
+        std::path::Path::new(".skills")
+            .join("release-signal")
+            .join("SKILL.md")
+            .to_string_lossy()
+            .into_owned()
+    }
+
     #[derive(Clone, Default)]
     struct ToolFaceRecorder(Arc<Mutex<Vec<ChatRequest>>>);
 
@@ -72,12 +81,12 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
                 .is_some_and(|message| message.role == Role::Tool)
             {
                 AssistantOutput::text("used managed filesystem Skill")
-            } else if system.contains(".skills/release-signal/SKILL.md") {
+            } else if system.contains(&skill_path()) {
                 AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
                     call_id: "read-managed-skill".into(),
                     tool_id: "read".into(),
                     arguments: serde_json::json!({
-                        "path": ".skills/release-signal/SKILL.md"
+                        "path": skill_path()
                     }),
                 }])
             } else {
@@ -176,10 +185,7 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(system.contains("release-signal"), "S1/E1 name");
-        assert!(
-            system.contains(".skills/release-signal/SKILL.md"),
-            "S1/E1 path"
-        );
+        assert!(system.contains(&skill_path()), "S1/E1 path");
         assert!(
             !system.contains("Say READY"),
             "S1/E1 body remains on demand"
@@ -683,10 +689,28 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .path()
         .join("sandboxes/deferred-managed-filesystem-skill/.skills/release-signal/SKILL.md");
     let marker = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1);
-    std::fs::File::open(&skill_path)
-        .unwrap()
-        .set_times(std::fs::FileTimes::new().set_modified(marker))
+    #[cfg(windows)]
+    let file = {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        // FILE_WRITE_ATTRIBUTES grants only the metadata operation used by
+        // L12; the pinned Skill remains read-only for file content.
+        std::fs::OpenOptions::new()
+            .access_mode(0x0100)
+            .open(&skill_path)
+            .unwrap()
+    };
+    #[cfg(not(windows))]
+    let file = std::fs::File::open(&skill_path).unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(marker))
         .unwrap();
+    #[cfg(windows)]
+    assert!(
+        std::fs::metadata(&skill_path)
+            .unwrap()
+            .permissions()
+            .readonly(),
+        "L12 marker must leave the pinned Skill read-only"
+    );
     let active = host
         .thread_resource_manifest("deferred-managed-filesystem-skill")
         .unwrap();

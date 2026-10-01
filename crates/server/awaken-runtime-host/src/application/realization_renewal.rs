@@ -2,18 +2,20 @@
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Lease-only scheduling and response application for the canonical Session slot.
 
-use super::realization_control_deadline::{
-    DeadlineSessionRealizationControl, MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS,
-};
+use super::realization_control_deadline::DeadlineSessionRealizationControl;
+#[cfg(any(target_os = "linux", test))]
+use super::realization_control_deadline::MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS;
 use super::{RenewalFailureDisposition, realization_renewal_failure_disposition};
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_session_realization_contract::SessionRealizationControl as _;
+#[cfg(target_os = "linux")]
 use futures_util::stream::{self, StreamExt};
 use std::sync::Arc;
 
 /// Independent Session lease renewals are fast root CAS operations. Bound them
 /// per Worker so cloud replica count scales total capacity without removing
 /// local backpressure or allowing one Worker to overload Control.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS: usize =
     MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS;
 

@@ -398,14 +398,16 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     );
 }
 
-/// Repository detach decision table on the resident Namespace environment:
-/// C1 a create-time Repository is physically realized; C2 the next durable
-/// generation omits it; C3 the Session environment remains resident. E1 removes
+/// Repository detach decision table on the Linux resident Namespace environment:
+/// C0 the Linux Namespace substrate is available; C1 a create-time Repository
+/// is physically realized; C2 the next durable generation omits it; C3 the
+/// Session environment remains resident. E1 removes
 /// the exact working tree before the mutation returns and E2 preserves the same
 /// environment handle. A stale readable checkout is forbidden.
 ///
 /// | Rule | C1 | C2 | C3 | Effect |
 /// | RD1  | T  | T  | T  | E1 removed + E2 retained environment |
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
     let fixture = tempfile::tempdir().unwrap();

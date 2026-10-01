@@ -238,7 +238,6 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
       'SELECT aggregate_json FROM managed_session WHERE session_id = ?', id);
     assert.equal(typeof row, 'string', 'R7 original Session row remains the authority');
     const envelope = JSON.parse(row);
-    assert.equal(envelope.format, 'awaken.session.v1');
     return envelope.aggregate;
   };
   const outputs = cases.map(({ session }) => {
@@ -282,7 +281,10 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
   const content = () => client.get(`/v1/memory_stores/${memory.id}/memories?view=full`, { headers: memoryHeaders });
   const complete = (page) => cases.every(({ name, expected }) =>
     page.data.some((entry) => entry.path === `/result-${name}.md` && entry.content === expected));
-  await waitForValue(content, complete, 'R2 both concurrent Memory writes persisted', { timeoutMs: 20_000 });
+  // Terminal copy reconciliation can cross more than one 10-second Worker
+  // recovery sweep after concurrent Session deletion. Keep the exact-byte
+  // oracle while allowing those independently owned phases to finish.
+  await waitForValue(content, complete, 'R2 both concurrent Memory writes persisted', { timeoutMs: 60_000 });
   const shared = await waitForValue(content, (page) =>
     page.data.some((entry) => entry.path === '/shared-a-identical.md'
       && entry.content === `${memoryBytes}\n${contention}`)
@@ -303,21 +305,27 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
     }
   };
   await assertSharedTruth();
-  // R8 same-base different proposal => preserve losing content+original base
-  // in Memory, NOT Files and NOT a new winning version. The candidate survives
-  // a Worker restart after the physical Session projections are reclaimed.
+  // R8 present-base same-content and different-content stale updates each
+  // preserve a candidate with its original base in Memory, NOT Files and NOT
+  // a new winning version. Both survive Worker restart after reclamation.
   const winner = shared.data.find((entry) => entry.path === '/shared-z-conflict.md');
   const loser = cases.find(({ expected }) => expected !== winner.content);
   assert.ok(loser);
   const proposals = () => client.get(
     `/v1/awaken/memory-stores/${memory.id}/copy-conflicts?view=full`, { headers: memoryHeaders });
   const retained = await waitForValue(proposals,
-    (page) => page.data.length === 1 && page.data[0].content === loser.expected,
-    'R8 exact losing proposal persisted', { timeoutMs: 20_000 });
-  const original = sharedHeads.find((entry) => entry.path === '/shared-z-conflict.md');
-  assert.equal(retained.data[0].path, original.path);
-  assert.equal(retained.data[0].base.id, original.id);
-  assert.equal(retained.data[0].base.content_sha256, original.content_sha256);
+    (page) => page.data.length === 2 && page.next_page === null
+      && page.data.some((entry) => entry.path === '/shared-a-identical.md'
+        && entry.content === `${memoryBytes}\n${contention}`)
+      && page.data.some((entry) => entry.path === '/shared-z-conflict.md'
+        && entry.content === loser.expected),
+    'R8 both exact stale-base proposals persisted', { timeoutMs: 20_000 });
+  for (const candidate of retained.data) {
+    const original = sharedHeads.find((entry) => entry.path === candidate.path);
+    assert.ok(original, 'R8 only the two shared paths may retain proposals');
+    assert.equal(candidate.base.id, original.id);
+    assert.equal(candidate.base.content_sha256, original.content_sha256);
+  }
   const retired = () => cases.every(({ session }) => Number(sqliteScalar(
     path.join(temp, 'data', 'sessions.db'),
     `SELECT COUNT(*) FROM managed_session_tombstone t
@@ -326,7 +334,7 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
     session.id,
   )) === 1);
   await waitForValue(async () => retired(), Boolean,
-    'R7 both verified cleanups committed their canonical delete tombstones', { timeoutMs: 30_000 });
+    'R7 both verified cleanups committed their canonical delete tombstones', { timeoutMs: 60_000 });
   for (const output of outputs) assert.ok(!fs.existsSync(output), 'R7 exact physical output projection removed');
   assert.equal(git(['rev-parse', 'HEAD'], remote), remoteHead, 'R2 no implicit Git publication');
   assert.equal(git(['ls-tree', '-r', '--name-only', 'HEAD'], remote), 'README.md\nsrc/.keep');

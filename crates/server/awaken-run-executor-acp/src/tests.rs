@@ -1029,7 +1029,7 @@ fn permission_ticket(activation: &RunActivation) -> ResumeTicket {
     )
 }
 
-#[cfg(feature = "real-acp")]
+#[cfg(all(feature = "real-acp", unix))]
 const SESSION_CARRY_AGENT: &str = "while IFS= read -r line; do \
       case \"$line\" in \
         *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"loadSession\":true}}}';; \
@@ -4699,7 +4699,7 @@ async fn acp_session_id_is_carried_across_the_per_run_relaunch() {
 /// A durable ACP pause survives executor/process replacement. The replacement
 /// validates the committed ticket, restores the protocol session id from thread
 /// state, and issues `session/load` before continuing the SAME Run.
-#[cfg(feature = "real-acp")]
+#[cfg(all(feature = "real-acp", unix))]
 #[tokio::test]
 async fn paused_run_resumes_after_executor_replacement_with_the_committed_session_id() {
     // Causes: the fixtures below establish `paused run` with the concrete inputs, state,

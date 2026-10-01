@@ -37,6 +37,12 @@ impl CurrentExecutionAuthority for SessionExecutionAuthority {
         self.with_current_session(&mut |_, remaining| effect(remaining))
     }
 
+    // Linux has an Execution target that this effect must reject; other hosts
+    // only have Provider. Keep one match for the shared authorization path.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(clippy::infallible_destructuring_match)
+    )]
     fn with_current_effect(
         &self,
         asserted: &SandboxEffectFence,

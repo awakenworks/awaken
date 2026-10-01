@@ -555,6 +555,8 @@ mod tests {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum InitialEnvironment {
         Resident,
+        // Only the Linux scoped-creation rows construct this state.
+        #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
         CommittedCandidate,
         BeforeCommit,
         LostResponse,

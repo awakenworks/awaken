@@ -68,7 +68,20 @@ fn probe_negotiator(
 }
 
 fn probe_argv() -> Vec<String> {
-    vec!["/bin/cat".to_string()]
+    // C1 requires a live, stdin-bound child before the injected handshake stalls.
+    // The probe's identity uses these exact argv bytes on either host OS.
+    #[cfg(windows)]
+    {
+        vec![
+            std::env::var("ComSpec").expect("Windows command interpreter"),
+            "/c".into(),
+            "more".into(),
+        ]
+    }
+    #[cfg(not(windows))]
+    {
+        vec!["/bin/cat".into()]
+    }
 }
 
 fn probe_cwd() -> &'static Path {
