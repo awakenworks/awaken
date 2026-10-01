@@ -2,6 +2,8 @@
 
 mod claimed_commit_client;
 mod dispatch_client;
+#[doc(hidden)]
+pub mod execution_capacity;
 mod session_control;
 mod worker_control_client;
 

@@ -2158,6 +2158,7 @@ dependencies = [
  "awaken-store-inmem",
  "awaken-store-postgres",
  "awaken-store-sqlite",
+ "awaken-worker-runtime",
  "futures-lite",
  "futures-util",
  "rusqlite",
