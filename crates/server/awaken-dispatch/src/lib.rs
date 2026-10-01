@@ -54,7 +54,6 @@ mod service;
 mod sqlite;
 mod wake;
 mod worker;
-mod worker_context;
 
 pub use any::AnyDispatchStore;
 pub use application::{
@@ -93,6 +92,9 @@ pub use awaken_dispatch_contract::{
     SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
     StreamObservationRequest, WorkerIdentityRequest,
 };
+pub use awaken_coordinator_client::worker_context::{
+    ClaimedModelRequestGateFactory, InferenceMaterializerFn,
+};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 pub use dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CandidateFingerprint,
@@ -128,7 +130,6 @@ pub use wake::NatsWakeSignal;
 pub use wake::PgNotifyWake;
 pub use wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker, claim_bound_ownership_verifier};
-pub use worker_context::{ClaimedModelRequestGateFactory, InferenceMaterializerFn};
 
 #[cfg(any(feature = "durable", test))]
 fn next_supersession_epoch(max_epoch: i64) -> Result<i64, DispatchError> {

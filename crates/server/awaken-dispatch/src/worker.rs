@@ -61,9 +61,9 @@ use crate::dispatch::{
     Claimed, DispatchOutcome, PendingInput, RunClaim, SessionRunReservationResolution,
     SettleOutcome,
 };
-use crate::worker_context::WorkerContext;
 use awaken_lease_contract::WallClock;
 use awaken_coordinator_client::execution_capacity::ExecutionCapacity;
+use awaken_coordinator_client::worker_context::WorkerContext;
 
 mod claim_renewal;
 mod physical_attempt;
@@ -554,7 +554,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     #[must_use]
     pub fn with_inference_materializer(
         mut self,
-        resolve: crate::worker_context::InferenceMaterializerFn,
+        resolve: awaken_coordinator_client::worker_context::InferenceMaterializerFn,
     ) -> Self {
         self.exec = self.exec.with_inference_materializer(resolve);
         self

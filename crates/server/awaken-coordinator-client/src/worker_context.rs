@@ -19,9 +19,8 @@ use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use tokio_util::sync::CancellationToken;
 
-use crate::RunClaim;
-use awaken_dispatch_contract::ClaimedStreamPublisher;
-use awaken_coordinator_client::claimed_stream::{ClaimBoundStreamSink, LocalClaimedStreamPublisher};
+use crate::claimed_stream::{ClaimBoundStreamSink, LocalClaimedStreamPublisher};
+use awaken_dispatch_contract::{ClaimedStreamPublisher, RunClaim};
 
 /// Materializes the activation's admission-pinned inference access. A worker
 /// receives the complete activation and opaque access value; it neither selects a
@@ -46,7 +45,7 @@ pub type ClaimedModelRequestGateFactory =
 /// durable commit boundary (the single write authority, G1/G13) and the optional
 /// best-effort stream sink. Cancellation is created per attempt by the worker.
 #[derive(Clone)]
-pub(crate) struct WorkerContext {
+pub struct WorkerContext {
     commit: Arc<dyn CommitCoordinator>,
     reader: Option<Arc<dyn CommittedThreadView>>,
     /// Attempt-local capabilities inherited from ingress. Durable execution
@@ -63,7 +62,7 @@ pub(crate) struct WorkerContext {
 
 impl WorkerContext {
     /// Wire an attempt to its durable commit boundary.
-    pub(crate) fn new(commit: Arc<dyn CommitCoordinator>) -> Self {
+    pub fn new(commit: Arc<dyn CommitCoordinator>) -> Self {
         Self {
             commit,
             reader: None,
@@ -80,7 +79,7 @@ impl WorkerContext {
     /// (commit/read/ownership), so a delegated child cannot nest its own claim
     /// around the parent's already-fenced handles or steer through its inbox.
     #[must_use]
-    pub(crate) fn with_context(mut self, mut context: RuntimeRunContext) -> Self {
+    pub fn with_context(mut self, mut context: RuntimeRunContext) -> Self {
         let stream_checkpoint = self.context.stream_checkpoint.take();
         context.commit = None;
         context.reader = None;
@@ -95,13 +94,13 @@ impl WorkerContext {
 
     /// Install runtime-only inference materialization.
     #[must_use]
-    pub(crate) fn with_inference_materializer(mut self, resolve: InferenceMaterializerFn) -> Self {
+    pub fn with_inference_materializer(mut self, resolve: InferenceMaterializerFn) -> Self {
         self.inference_materializer = Some(resolve);
         self
     }
 
     #[must_use]
-    pub(crate) fn with_claimed_model_request_gate(
+    pub fn with_claimed_model_request_gate(
         mut self,
         factory: ClaimedModelRequestGateFactory,
     ) -> Self {
@@ -111,7 +110,7 @@ impl WorkerContext {
 
     /// Materialize the pinned access, or use the explicitly bound executor when no
     /// materializer was composed.
-    pub(crate) fn materialize_inference(
+    pub fn materialize_inference(
         &self,
         activation: &RunActivation,
         context: &RuntimeRunContext,
@@ -130,14 +129,14 @@ impl WorkerContext {
     /// Provide the committed-history read port so a fresh run continues the
     /// thread's conversation. Usually the same store as the commit.
     #[must_use]
-    pub(crate) fn with_reader(mut self, reader: Arc<dyn CommittedThreadView>) -> Self {
+    pub fn with_reader(mut self, reader: Arc<dyn CommittedThreadView>) -> Self {
         self.reader = Some(reader);
         self
     }
 
     /// Attach a best-effort live stream sink (live progress is never truth).
     #[must_use]
-    pub(crate) fn with_stream_sink(mut self, sink: Arc<dyn StreamSink>) -> Self {
+    pub fn with_stream_sink(mut self, sink: Arc<dyn StreamSink>) -> Self {
         self.stream_publisher = Some(Arc::new(LocalClaimedStreamPublisher::new(sink)));
         self
     }
@@ -145,7 +144,7 @@ impl WorkerContext {
     /// Attach the durable worker's claim-aware live publisher. Remote workers use
     /// this boundary to authenticate and fence each event at the Coordinator.
     #[must_use]
-    pub(crate) fn with_claimed_stream_publisher(
+    pub fn with_claimed_stream_publisher(
         mut self,
         publisher: Arc<dyn ClaimedStreamPublisher>,
     ) -> Self {
@@ -157,14 +156,14 @@ impl WorkerContext {
     /// dispatch re-executed after a crash resumes its in-flight step from the
     /// flushed partial instead of re-running it.
     #[must_use]
-    pub(crate) fn with_stream_checkpoint(mut self, store: Arc<dyn StreamCheckpointStore>) -> Self {
+    pub fn with_stream_checkpoint(mut self, store: Arc<dyn StreamCheckpointStore>) -> Self {
         self.context = self.context.with_stream_checkpoint(store);
         self
     }
 
     /// Build the runtime-facing context for one attempt, carrying the supplied
     /// cancellation token so the host can steer an in-flight run.
-    pub(crate) fn runtime_context(
+    pub fn runtime_context(
         &self,
         cancel: CancellationToken,
         claim: Option<&RunClaim>,
