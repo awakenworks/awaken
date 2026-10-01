@@ -61,9 +61,9 @@ use crate::dispatch::{
     Claimed, DispatchOutcome, PendingInput, RunClaim, SessionRunReservationResolution,
     SettleOutcome,
 };
-use crate::execution_capacity::ExecutionCapacity;
 use crate::worker_context::WorkerContext;
 use awaken_lease_contract::WallClock;
+use awaken_coordinator_client::execution_capacity::ExecutionCapacity;
 
 mod claim_renewal;
 mod physical_attempt;
