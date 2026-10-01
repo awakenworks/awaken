@@ -1,4 +1,4 @@
-//! Worker-owned runtime transport adapters over the protocol-neutral SharedHost.
+//! Worker-owned attempt context and transport adapters behind the neutral Host.
 
 mod claimed_commit_client;
 #[doc(hidden)]
@@ -7,6 +7,8 @@ mod dispatch_client;
 #[doc(hidden)]
 pub mod execution_capacity;
 mod session_control;
+#[doc(hidden)]
+pub mod worker_context;
 mod worker_control_client;
 
 pub use claimed_commit_client::{RemoteClaimedRunCommit, remote_claimed_commit};

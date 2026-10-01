@@ -108,7 +108,9 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
         stream_checkpoint: Option<
             Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>,
         >,
-        inference_materializer: Option<crate::worker_context::InferenceMaterializerFn>,
+        inference_materializer: Option<
+            awaken_coordinator_client::worker_context::InferenceMaterializerFn,
+        >,
         clock: Arc<dyn WallClock>,
     ) -> Self
     where
