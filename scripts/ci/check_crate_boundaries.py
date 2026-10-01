@@ -575,6 +575,12 @@ DIRECT_TRANSPORT_EXEMPTIONS = {
         "re-signs and replays one prepared `RequestBuilder` after a credential "
         "rotation, so the retry seam is the request builder itself"
     ),
+    "awaken-control": (
+        "the Control-owned OAuth Vault refresher sends form-encoded token exchanges "
+        "with Basic/client-secret authentication; the JSON-only external client "
+        "cannot express that request, while construction still uses the one "
+        "awaken-outbound-http rustls builder"
+    ),
     "awaken-session-executor": (
         "the MCP relay is a reverse proxy: it forwards a caller-chosen method, "
         "header set and raw body, none of which the JSON client models"

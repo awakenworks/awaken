@@ -1,109 +1,6 @@
-// @formal entrypoint credential.attempt_delivery_is_exact_epoch_bound_and_authority_preserving
-//! Claim-scoped recipient delivery from the existing Vault authority.
-//!
-//! This adapter owns no selection, queue or publication state. It revalidates
-//! the exact published credential revision and issues only a new transport for
-//! the already-frozen holder and target binding.
-
-use std::sync::Arc;
-
-use async_trait::async_trait;
-use awaken_credential_contract::{
-    CredentialEnvelopeIssuance, CredentialEnvelopeIssuer, CredentialMaterialError,
-};
-use awaken_lease_contract::WallClockExt as _;
-use awaken_runtime_contract::{
-    AttemptCredentialDelivery, AttemptCredentialDeliveryRequest, AttemptCredentialDeliverySource,
-    credential_access_without_delivery,
-};
-
-use super::PinnedCredentialMaterializer;
-
-#[derive(Clone)]
-pub struct VaultAttemptCredentialDeliverySource {
-    materializer: PinnedCredentialMaterializer,
-    issuer: Arc<dyn CredentialEnvelopeIssuer>,
-}
-
-impl VaultAttemptCredentialDeliverySource {
-    #[must_use]
-    pub fn new(
-        materializer: PinnedCredentialMaterializer,
-        issuer: Arc<dyn CredentialEnvelopeIssuer>,
-    ) -> Self {
-        Self {
-            materializer,
-            issuer,
-        }
-    }
-}
-
-#[async_trait]
-impl AttemptCredentialDeliverySource for VaultAttemptCredentialDeliverySource {
-    async fn deliver(
-        &self,
-        request: AttemptCredentialDeliveryRequest,
-    ) -> Result<AttemptCredentialDelivery, String> {
-        let access = credential_access_without_delivery(&request.published_access);
-        let source = self
-            .materializer
-            .load_active_source(&access.credential.id)
-            .await
-            .map_err(|error| error.to_string())?;
-        let revision = u64::try_from(source.version)
-            .map_err(|_| CredentialMaterialError::RevisionMismatch.to_string())?;
-        if revision != access.credential.revision {
-            return Err(CredentialMaterialError::RevisionMismatch.to_string());
-        }
-        if source.workspace_id != request.binding.workspace_id {
-            return Err(CredentialMaterialError::RecipientMismatch.to_string());
-        }
-        source
-            .validate_access_target(access.target.as_ref(), &access.usage)
-            .map_err(|_| CredentialMaterialError::BindingMismatch.to_string())?;
-        if let Some(descriptor) = &source.descriptor {
-            descriptor
-                .validate_expiry(self.materializer.clock.now_ms())
-                .map_err(|_| CredentialMaterialError::Expired.to_string())?;
-        }
-        let material = self
-            .materializer
-            .materialize_source(&source)
-            .await
-            .map_err(|error| error.to_string())?;
-        let envelope = self
-            .issuer
-            .issue(CredentialEnvelopeIssuance {
-                access: access.clone(),
-                selected_holder: request.selected_plaintext_holder.clone(),
-                binding: request.binding.clone(),
-                material,
-            })
-            .await?;
-        envelope
-            .validate_issuance(
-                &access,
-                &request.selected_plaintext_holder,
-                &request.binding,
-            )
-            .map_err(|error| error.to_string())?;
-        envelope
-            .validate_for_holder(
-                &request.selected_plaintext_holder,
-                self.materializer.clock.now_ms(),
-            )
-            .map_err(|error| error.to_string())?;
-        Ok(AttemptCredentialDelivery {
-            candidate_fingerprint: request.candidate_fingerprint,
-            access: access.with_envelope(envelope),
-            claim_epoch: request.claim_epoch,
-        })
-    }
-}
-
+// Cross-crate Vault envelope issuance tests over the real recipient-key issuer.
 #[cfg(test)]
 mod tests {
-    use super::*;
     use awaken_agent_contract::RedactedString;
     use awaken_credential_contract::{
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding,
@@ -113,10 +10,14 @@ mod tests {
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{
         CredentialCreateParams, CredentialKind, CredentialStatus, InMemorySecretStore,
+        VaultAttemptCredentialDeliverySource, VaultLocalMaterialAuthority,
     };
-    use awaken_runtime_contract::CandidateFingerprint;
     use awaken_runtime_contract::credential_access_has_same_authority;
+    use awaken_runtime_contract::{
+        AttemptCredentialDeliveryRequest, AttemptCredentialDeliverySource, CandidateFingerprint,
+    };
     use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use std::sync::Arc;
 
     fn key_document(path: &std::path::Path, holder: &PlaintextHolder) {
         std::fs::write(
@@ -143,12 +44,14 @@ mod tests {
     async fn redelivery_revalidates_exact_revision_and_changes_only_the_envelope() {
         // Cause/effect decision table: C1 current source is Active and exact
         // revision/workspace/target; C2 published delivery is expired; C3
-        // source becomes Disabled. R1 C1+C2 => fresh claim-epoch delivery whose
+        // source becomes Disabled; C4 provider coordinate is absent or foreign.
+        // R1 C1+C2 => fresh claim-epoch delivery whose
         // authority equals publication and whose plaintext resolves exactly.
         // R2 C3 => reject before issuance/material crosses the Vault boundary.
         // R3 the same still-current claim epoch asks again after a carrier
         // expires => issue another exact ephemeral delivery, not a new claim or
-        // Credential revision. This proves issuer capability, not that Worker
+        // Credential revision. R4 C4 => reject before material read/issuance.
+        // This proves issuer capability, not that Worker
         // runtime currently invokes it during a long Run.
         let credentials = Arc::new(InMemoryCredentialRepo::new());
         let secrets = Arc::new(InMemorySecretStore::new());
@@ -209,11 +112,11 @@ mod tests {
             .unwrap(),
         );
         let delivery_source = VaultAttemptCredentialDeliverySource::new(
-            PinnedCredentialMaterializer::new(
+            Arc::new(VaultLocalMaterialAuthority::new(
                 credentials.clone(),
                 secrets.clone(),
                 awaken_lease_contract::system_clock(),
-            ),
+            )),
             issuer.clone(),
         );
         let request = AttemptCredentialDeliveryRequest {
@@ -221,8 +124,30 @@ mod tests {
             published_access: published.clone(),
             selected_plaintext_holder: holder.clone(),
             binding: binding.clone(),
+            expected_provider: Some(
+                awaken_credential_contract::CredentialProviderExpectationOwned {
+                    provider_id: "deepseek".into(),
+                    protocol_endpoint_id: None,
+                },
+            ),
             claim_epoch: 7,
         };
+        let mut missing_coordinate = request.clone();
+        missing_coordinate.expected_provider = None;
+        assert!(
+            delivery_source.deliver(missing_coordinate).await.is_err(),
+            "R4 missing"
+        );
+        let mut foreign_coordinate = request.clone();
+        foreign_coordinate
+            .expected_provider
+            .as_mut()
+            .unwrap()
+            .provider_id = "other".into();
+        assert!(
+            delivery_source.deliver(foreign_coordinate).await.is_err(),
+            "R4 foreign"
+        );
         let delivery = delivery_source.deliver(request.clone()).await.expect("R1");
         assert!(
             credential_access_has_same_authority(&delivery.access, &published),
@@ -235,6 +160,7 @@ mod tests {
                 access: &delivery.access,
                 selected_holder: &holder,
                 binding: &binding,
+                expected_provider: None,
             },
         )
         .await
@@ -260,6 +186,7 @@ mod tests {
                     access: &reissued.access,
                     selected_holder: &holder,
                     binding: &binding,
+                    expected_provider: None,
                 },
             )
             .await
@@ -279,11 +206,11 @@ mod tests {
         credentials.put(disabled).await.unwrap();
         assert!(
             VaultAttemptCredentialDeliverySource::new(
-                PinnedCredentialMaterializer::new(
+                Arc::new(VaultLocalMaterialAuthority::new(
                     credentials,
                     secrets,
                     awaken_lease_contract::system_clock()
-                ),
+                )),
                 issuer,
             )
             .deliver(AttemptCredentialDeliveryRequest {
@@ -291,6 +218,12 @@ mod tests {
                 published_access: published,
                 selected_plaintext_holder: holder,
                 binding,
+                expected_provider: Some(
+                    awaken_credential_contract::CredentialProviderExpectationOwned {
+                        provider_id: "deepseek".into(),
+                        protocol_endpoint_id: None,
+                    }
+                ),
                 claim_epoch: 8,
             })
             .await

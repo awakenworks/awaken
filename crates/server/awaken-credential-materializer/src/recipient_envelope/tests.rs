@@ -72,6 +72,7 @@ async fn opened(
             access,
             selected_holder,
             binding,
+            expected_provider: None,
         })
         .await
 }

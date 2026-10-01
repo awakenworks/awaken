@@ -185,13 +185,42 @@ pub struct ResolvedCredentialMaterial {
     pub material: CredentialMaterial,
 }
 
+/// Exact provider scope retained alongside an opaque candidate fingerprint.
+#[derive(Debug, Clone, Copy)]
+pub struct CredentialProviderExpectation<'a> {
+    pub provider_id: &'a str,
+    pub protocol_endpoint_id: Option<&'a str>,
+}
+
+/// Owned transport projection of the same exact coordinate. The committed
+/// candidate, never a Vault lookup, supplies it to attempt delivery.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CredentialProviderExpectationOwned {
+    pub provider_id: String,
+    pub protocol_endpoint_id: Option<String>,
+}
+
+impl CredentialProviderExpectationOwned {
+    #[must_use]
+    pub fn as_borrowed(&self) -> CredentialProviderExpectation<'_> {
+        CredentialProviderExpectation {
+            provider_id: &self.provider_id,
+            protocol_endpoint_id: self.protocol_endpoint_id.as_deref(),
+        }
+    }
+}
+
 /// One already-selected resolution request. This is the complete input to every
 /// Control reference, Worker-private, or recipient-bound envelope adapter.
+/// The provider and endpoint remain readable because the authenticated
+/// target/use fingerprint is one-way; a local Vault source rechecks its live
+/// authorization scope before opening material.
 #[derive(Debug, Clone, Copy)]
 pub struct CredentialMaterialRequest<'a> {
     pub access: &'a CredentialAccess,
     pub selected_holder: &'a PlaintextHolder,
     pub binding: &'a CredentialMaterialBinding,
+    pub expected_provider: Option<CredentialProviderExpectation<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

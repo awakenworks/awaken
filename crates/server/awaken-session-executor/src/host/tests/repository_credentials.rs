@@ -2,6 +2,21 @@
 
 use super::*;
 
+fn pinned_vault(
+    credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
+) -> awaken_credential_materializer::PinnedCredentialMaterializer {
+    awaken_credential_materializer::PinnedCredentialMaterializer::new(
+        Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+            credentials,
+            secrets,
+            clock.clone(),
+        )),
+        clock,
+    )
+}
+
 fn repository_credential_descriptor(url: &str) -> awaken_credential_contract::CredentialDescriptor {
     awaken_credential_contract::CredentialDescriptor::new(
         "git",
@@ -113,11 +128,8 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
         )
         .await
         .expect("author dispatch Repository credential");
-        let materializer = awaken_credential_materializer::PinnedCredentialMaterializer::new(
-            credentials,
-            secrets,
-            awaken_lease_contract::system_clock(),
-        );
+        let materializer =
+            pinned_vault(credentials, secrets, awaken_lease_contract::system_clock());
         let host = Arc::new(if install_credentials {
             host.with_credential_materializer(materializer.clone())
         } else {
@@ -560,7 +572,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
             .await
             .expect("disable exact Repository credential");
         }
-        let materializer = awaken_credential_materializer::PinnedCredentialMaterializer::new(
+        let materializer = pinned_vault(
             credentials.clone(),
             secrets,
             awaken_lease_contract::system_clock(),

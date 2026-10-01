@@ -32,6 +32,8 @@ pub use mcp_catalog::{
 pub mod authz;
 mod component;
 pub mod control_stores;
+mod credential_refresh;
+pub use credential_refresh::{VaultRefreshFactory, VaultRefresher};
 mod credential_reference;
 mod data_subject;
 mod managed_agents;

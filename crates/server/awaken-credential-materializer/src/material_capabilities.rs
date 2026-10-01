@@ -20,7 +20,7 @@ impl PinnedCredentialMaterializer {
             .as_ref()
             .map(|resolver| resolver.material_capabilities())
             .unwrap_or_default();
-        if self.has_local_stores() {
+        if self.has_local_authority() {
             for holder in [
                 PlaintextHolder::new(
                     PlaintextBoundary::Worker,
@@ -51,7 +51,7 @@ impl PinnedCredentialMaterializer {
         realization: CredentialRealizationKind,
     ) -> CredentialRealizationCapabilities {
         let mut installed = self.installed_material_capabilities();
-        if self.has_local_stores() {
+        if self.has_local_authority() {
             installed.insert(CredentialMaterialCapability {
                 holder: holder.clone(),
                 source: CredentialMaterialSource::ControlPlaneReference,

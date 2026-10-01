@@ -47,6 +47,10 @@ async fn attach_claim_credential_deliveries(
                     published_access: published_access.clone(),
                     selected_plaintext_holder: binding.selected_plaintext_holder.clone(),
                     binding: material_binding,
+                    expected_provider: awaken_runtime_contract::candidate_provider_expectation(
+                        candidate,
+                    )
+                    .map_err(HostError::internal)?,
                     claim_epoch: claimed.lease.epoch,
                 })
                 .await

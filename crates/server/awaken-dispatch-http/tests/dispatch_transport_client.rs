@@ -208,6 +208,8 @@ fn refresh_request(
         published_access: published_access.clone(),
         selected_plaintext_holder: binding.selected_plaintext_holder.clone(),
         binding: material_binding,
+        expected_provider: awaken_runtime_contract::candidate_provider_expectation(candidate)
+            .unwrap(),
         claim_epoch: binding.claim_epoch,
     }
 }

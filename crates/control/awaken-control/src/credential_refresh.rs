@@ -6,10 +6,10 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::CredentialRefreshFactory;
 use awaken_agent_contract::RedactedString;
 use awaken_credential::{AuthChallenge, Credential, CredentialRefresher};
 use awaken_credential_contract::CredentialSourceId;
+use awaken_credential_materializer::CredentialRefreshFactory;
 use awaken_credential_vault::repo::{
     CredentialMaterialPatch, CredentialRepo, rotate_credential_materials_exact,
 };
