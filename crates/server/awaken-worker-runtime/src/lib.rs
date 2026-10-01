@@ -1,6 +1,8 @@
 //! Worker-owned runtime transport adapters over the protocol-neutral SharedHost.
 
 mod claimed_commit_client;
+#[doc(hidden)]
+pub mod claimed_stream;
 mod dispatch_client;
 #[doc(hidden)]
 pub mod execution_capacity;

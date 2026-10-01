@@ -3510,6 +3510,7 @@ dependencies = [
  "awaken-session-state-contract",
  "awaken-session-types",
  "awaken-session-work-contract",
+ "awaken-store-inmem",
  "awaken-worker-transport-security",
  "axum",
  "reqwest 0.12.28",

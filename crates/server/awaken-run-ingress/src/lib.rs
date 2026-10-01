@@ -23,7 +23,6 @@ pub use attempt_termination::{
 };
 mod any;
 mod application;
-mod claimed_stream;
 mod clock;
 mod commit_fence;
 mod dispatch;
@@ -65,6 +64,7 @@ pub use application::{
     ObservedAttemptStop, ObservedWorkerProcessExit, WorkerExecutionBindingSource,
     WorkerExecutionStopSource, WorkerProcessStopStatus, stop_expired_predecessor,
 };
+pub use awaken_run_ingress_contract::ClaimedStreamPublisher;
 pub use awaken_run_ingress_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, LeaseLossReason,
@@ -93,7 +93,6 @@ pub use awaken_run_ingress_contract::{
     SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
     StreamObservationRequest, WorkerIdentityRequest,
 };
-pub use claimed_stream::ClaimedStreamPublisher;
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 pub use dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CandidateFingerprint,
