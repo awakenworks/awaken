@@ -10,7 +10,7 @@ use awaken_cli::config::{ConfigOverrides, ResolvedDeployment};
 use awaken_cli::console::{self, Command};
 
 fn main() -> ExitCode {
-    awaken_cli::block_on_service(async_main())
+    awaken_cli::block_on_service(async_main)
 }
 
 async fn async_main() -> ExitCode {

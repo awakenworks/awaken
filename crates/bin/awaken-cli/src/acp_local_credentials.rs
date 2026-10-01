@@ -963,7 +963,8 @@ mod tests {
         //
         // Decision table:
         // P1 detected+available -> route + binding + acp capability + the same
-        // registration-bound Resource adapter used without ACP (W1/E4 above).
+        // registration-bound Resource adapter used without ACP (W1/E4 above),
+        // with the configured platform tier projected by the sole Host owner.
         // P2 repeated startup   -> same binding, no duplicate
         // P3 missing rows       -> diagnostics only, no route or binding
         // P4 explicitly unselected detected row -> diagnostic only, no acquisition
@@ -1052,7 +1053,10 @@ mod tests {
             "P1 mutable negotiated fingerprints belong only to heartbeat observations"
         );
         assert!(
-            worker.manifest().sandbox_backends.contains("namespace"),
+            worker
+                .manifest()
+                .sandbox_backends
+                .contains(deployment.runtime.sandbox_support().1),
             "P1 managed runs retain the deployment tier; BackendOwned selects Workdir per Session"
         );
         assert!(

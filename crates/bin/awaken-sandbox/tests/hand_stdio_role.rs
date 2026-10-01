@@ -51,6 +51,10 @@ impl AsyncWrite for ProcessChannel {
 
 #[tokio::test]
 async fn hand_stdio_executes_a_real_tool_over_the_child_process_channel() {
+    // H1: real child + writable native ledger root + one tool call => the Hand
+    // returns the actual output only after claim and completion directories
+    // flush. H2: a failed flush must return an error, never a successful reply;
+    // the ledger's persistence-fault test owns that negative branch.
     let ledger =
         std::env::temp_dir().join(format!("awaken-hand-stdio-role-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&ledger);
@@ -103,6 +107,7 @@ async fn explicit_mount_projection_survives_nested_cwd_and_separate_resource_roo
     // same CLI consumed by TrustedHost's Session-owned Hand, without a mount
     // namespace or host-root symlinks.
     // P4/P5/P7 require Ok(HandResult::Ok); P6 requires Ok(HandResult::Err).
+    // P8 a native directory completion fence must succeed before any Ok reply.
     // An outer Err means unavailable before dispatch, not a path denial, and
     // HandResult::Indeterminate cannot establish either successful I/O or
     // confinement. Both must fail every row rather than be flattened to Err.

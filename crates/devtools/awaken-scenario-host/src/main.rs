@@ -71,7 +71,7 @@ fn management_scenario_adapters(rate_limit_transition: bool) -> awaken_cli::Mana
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    awaken_cli::block_on_service(async_main())
+    awaken_cli::block_on_service(async_main)
 }
 
 async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

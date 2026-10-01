@@ -11,14 +11,20 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use awaken_lease_contract::{Expiry, WallClock};
+#[cfg(unix)]
+use awaken_lease_contract::Expiry;
+use awaken_lease_contract::WallClock;
+use awaken_sandbox_control::RepositoryGitCredentialQuery;
 
+#[cfg(unix)]
 use awaken_sandbox_control::{
-    CapabilityExpiresAtUnixMs, RepositoryGitCredentialQuery, SandboxControlRequest,
-    SandboxControlResponse,
+    CapabilityExpiresAtUnixMs, SandboxControlRequest, SandboxControlResponse,
 };
+#[cfg(unix)]
 use awaken_sandbox_control_transport::{read_frame, write_frame};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+#[cfg(any(unix, test))]
+use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 use zeroize::Zeroizing;
@@ -43,6 +49,7 @@ pub enum GitCredentialError {
     #[error("Sandbox credential service is unavailable")]
     Unavailable,
     #[error("Repository credential is not authorized")]
+    #[cfg(unix)]
     Denied,
 }
 

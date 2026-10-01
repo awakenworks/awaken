@@ -102,7 +102,7 @@ fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
     // the relationship while the child ticket owns answer kind and call identity.
     // Decision rules: R0=!C0=>E0; R1=C0+C1+C2+C3+C6=>E1+E5;
     // R2=R1+C4=>E2+E3+E4; R3=C5=>use K1, never a stale parent projection.
-    awaken_service_lifecycle::block_on_service(durable_child_run_scenario());
+    awaken_service_lifecycle::block_on_service(durable_child_run_scenario);
 }
 
 async fn durable_child_run_scenario() {

@@ -27,20 +27,41 @@ pub mod release_admission;
 /// Run a service future on the canonical Awaken process runtime.
 ///
 /// Managed execution crosses durable ingress, materialization, connector, and
-/// child-Run stacks in one poll. Tokio's default 2 MiB Worker stack is below the
-/// verified debug/recovery requirement, so every service launcher shares this
-/// one explicit process-level budget rather than an environment workaround.
-pub fn block_on_service<F: Future>(future: F) -> F::Output {
+/// child-Run stacks in one poll. Windows also gives the process main thread a
+/// smaller stack than that composition needs. Every service launcher therefore
+/// polls its root future on one explicitly sized thread and gives Tokio Workers
+/// the same process-level budget rather than using launcher-specific link flags.
+pub fn block_on_service<F, Fut, T>(start: F) -> T
+where
+    F: FnOnce() -> Fut + Send,
+    Fut: Future<Output = T>,
+    T: Send,
+{
+    const SERVICE_ROOT_STACK_BYTES: usize = 32 * 1024 * 1024;
     const SERVICE_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
+    const { assert!(SERVICE_ROOT_STACK_BYTES >= SERVICE_WORKER_STACK_BYTES) };
+    const { assert!(SERVICE_ROOT_STACK_BYTES.is_multiple_of(mem::size_of::<usize>())) };
     const { assert!(SERVICE_WORKER_STACK_BYTES >= 4 * 1024 * 1024) };
     const { assert!(SERVICE_WORKER_STACK_BYTES.is_multiple_of(mem::size_of::<usize>())) };
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_name("awaken-runtime")
-        .thread_stack_size(SERVICE_WORKER_STACK_BYTES)
-        .build()
-        .expect("build Awaken service runtime")
-        .block_on(future)
+    std::thread::scope(|scope| {
+        let root = std::thread::Builder::new()
+            .name("awaken-service-root".into())
+            .stack_size(SERVICE_ROOT_STACK_BYTES)
+            .spawn_scoped(scope, move || {
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .thread_name("awaken-runtime")
+                    .thread_stack_size(SERVICE_WORKER_STACK_BYTES)
+                    .build()
+                    .expect("build Awaken service runtime")
+                    .block_on(start())
+            })
+            .expect("spawn Awaken service root thread");
+        match root.join() {
+            Ok(output) => output,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    })
 }
 
 /// Run a deeply composed async test on the shared explicit test stack.
@@ -637,12 +658,41 @@ mod tests {
 
     #[test]
     fn canonical_service_runtime_polls_the_launcher_future() {
-        // Cause/effect graph: C1=the launcher supplies a Future; C2=the single
-        // service-lifecycle owner builds the process Runtime with its fixed stack
-        // contract. Effects: E1=the Future is polled; E2=its exact output is
-        // returned. Rule R1(C1+C2)->E1+E2. Runtime construction failure is
-        // terminal, so no launcher-local fallback or parallel builder exists.
-        assert_eq!(block_on_service(async { "service-ready" }), "service-ready");
+        // Cause/effect table: C1=the launcher supplies a Future factory;
+        // C2=the canonical owner starts a sized root thread and Tokio Workers;
+        // C3=the root future returns normally. E1=it is polled off the caller's
+        // smaller stack, E2=the exact output returns, E3=non-Send root futures
+        // remain supported. R1=C1+C2+C3 -> E1+E2+E3.
+        // Thread/runtime construction failure is terminal, with no second
+        // launcher-specific startup path.
+        let caller = std::thread::current().id();
+        let (root, name, value) = block_on_service(|| async move {
+            let value = std::rc::Rc::new("service-ready");
+            tokio::task::yield_now().await;
+            (
+                std::thread::current().id(),
+                std::thread::current().name().map(str::to_owned),
+                *value,
+            )
+        });
+        assert_ne!(root, caller, "R1/E1");
+        assert_eq!(name.as_deref(), Some("awaken-service-root"), "R1/E1");
+        assert_eq!(value, "service-ready", "R1/E2+E3");
+    }
+
+    #[test]
+    fn canonical_service_runtime_resumes_root_panic_on_the_caller() {
+        // C1=the root Future panics after construction; C2=the caller joins
+        // the sized root thread. E1=the exact panic reaches the caller rather
+        // than becoming a successful service result. R2=C1+C2 -> E1.
+        let panic =
+            std::panic::catch_unwind(|| block_on_service(|| async { panic!("root-failed") }));
+        let payload = panic.expect_err("R2/E1");
+        assert_eq!(
+            payload.downcast_ref::<&str>(),
+            Some(&"root-failed"),
+            "R2/E1"
+        );
     }
 
     #[test]
