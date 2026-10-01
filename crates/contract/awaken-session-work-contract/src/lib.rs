@@ -606,11 +606,9 @@ pub async fn acquire_session_work_receipt(
     ))
 }
 
-/// One-byte distinguishable spellings of a Work lease coordinate. Which
-/// spelling each coordinate carries is the symbolic choice; the comparison
-/// itself stays the production `String`/`SessionId` equality, so the proof
-/// constrains how [`SessionWorkAuthorityReceipt::matches_observation`] derives
-/// its six facts and not only how it combines them.
+/// One-byte distinguishable spellings of a Work lease coordinate. Effect
+/// authority proofs vary the owner through this fixture; receipt minting uses
+/// its exact owned row. All values enter through the production lease adapter.
 #[cfg(kani)]
 fn proof_representative_lease(
     session: bool,
@@ -634,46 +632,19 @@ fn proof_representative_lease(
 #[cfg(kani)]
 /// @obligation session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
 #[kani::proof]
-fn exact_session_work_receipt_rejects_every_changed_coordinate() {
-    // The receipt is minted through the one production door from a bounded
-    // representative acquisition, and compared against a fresh observation that
-    // independently chooses each coordinate's spelling. Causes: acquired and
-    // observed authority kind, and per-coordinate agreement of Session, owner,
-    // Work id, Environment and epoch, plus a changed expiry. Effect: the
-    // receipt matches exactly when both sides are the same authority kind and,
-    // when leased, every compared coordinate agrees -- expiry never enters.
-    //
-    // Bounds: which *kind* each side carries stays concrete. A symbolic
-    // `SessionWorkOwnership` variant makes CBMC carry the String-bearing
-    // `Leased` payload through every branch and the harness stops terminating,
-    // so the cross-kind rows below are enumerated as concrete witnesses while
-    // the coordinate comparison -- the part a code change can get wrong -- is
-    // fully symbolic.
+fn session_work_receipt_kind_and_minting_are_exact() {
+    // Causes: K1 the observed authority kind differs; K2 the acquisition is
+    // unowned; K3 Session or owner differs at minting. Effects: K1 never
+    // matches a leased receipt; K2-K3 mint nothing. A Work-free receipt matches
+    // only Work-free. Four symbolic minting rows and concrete cross-kind rows
+    // keep this branch separate from the executable coordinate matrix.
     let session_matches: bool = kani::any();
     let owner_matches: bool = kani::any();
-    let work_matches: bool = kani::any();
-    let environment_matches: bool = kani::any();
-    let epoch_matches: bool = kani::any();
-    let expiry_matches: bool = kani::any();
-
     let acquired = SessionWorkOwnership::Leased(proof_representative_lease(
         true, true, true, true, true, true,
     ));
     let receipt = SessionWorkAuthorityReceipt::from_acquired("s", "w", &acquired)
         .expect("an exactly owned acquisition mints a receipt");
-    let observation = SessionWorkOwnership::Leased(proof_representative_lease(
-        session_matches,
-        owner_matches,
-        work_matches,
-        environment_matches,
-        epoch_matches,
-        expiry_matches,
-    ));
-    assert_eq!(
-        receipt.matches_observation(&observation),
-        session_matches && owner_matches && work_matches && environment_matches && epoch_matches,
-        "every stable coordinate must agree, and a renewed expiry must not matter"
-    );
 
     // Cross-kind rows: a leased receipt never matches a Work-free or unowned
     // observation, and a NotRequired receipt matches only its own kind.
@@ -1179,38 +1150,62 @@ mod tests {
     /// | T3   | other Environment                       | no match          |
     /// | T4   | other owner                             | no match          |
     /// | T5   | successor epoch                         | no match          |
+    /// | T6   | foreign Session                         | no match          |
+    /// | T7   | any subset of five stable coordinates   | match iff none    |
+    /// |      | changed, with either expiry            |                  |
     /// | W1   | receipt encodes                         | the flat wire     |
     /// | W2   | that wire decodes                       | the same receipt  |
     /// | W3   | a leased wire with epoch 0              | refused on decode |
     #[test]
     fn a_leased_receipt_is_the_exact_tenure_on_an_unchanged_wire() {
-        let lease = |work: &str, environment: &str, owner: &str, epoch: u64, expiry: u64| {
-            SessionWorkOwnership::Leased(
-                SessionWorkLease::from_persisted(
-                    work,
-                    environment,
-                    "s".into(),
-                    owner,
-                    epoch,
-                    expiry,
+        let lease =
+            |work: &str, environment: &str, session: &str, owner: &str, epoch: u64, expiry: u64| {
+                SessionWorkOwnership::Leased(
+                    SessionWorkLease::from_persisted(
+                        work,
+                        environment,
+                        session.into(),
+                        owner,
+                        epoch,
+                        expiry,
+                    )
+                    .unwrap(),
                 )
-                .unwrap(),
-            )
-        };
+            };
         let receipt = super::SessionWorkAuthorityReceipt::from_acquired(
             "s",
             "w",
-            &lease("k", "e", "w", 3, 10),
+            &lease("k", "e", "s", "w", 3, 10),
         )
         .expect("an owned acquisition mints a receipt");
         for (rule, observation, matches) in [
-            ("T1", lease("k", "e", "w", 3, 99), true),
-            ("T2", lease("k2", "e", "w", 3, 10), false),
-            ("T3", lease("k", "e2", "w", 3, 10), false),
-            ("T4", lease("k", "e", "w2", 3, 10), false),
-            ("T5", lease("k", "e", "w", 4, 10), false),
+            ("T1", lease("k", "e", "s", "w", 3, 99), true),
+            ("T2", lease("k2", "e", "s", "w", 3, 10), false),
+            ("T3", lease("k", "e2", "s", "w", 3, 10), false),
+            ("T4", lease("k", "e", "s", "w2", 3, 10), false),
+            ("T5", lease("k", "e", "s", "w", 4, 10), false),
+            ("T6", lease("k", "e", "foreign", "w", 3, 10), false),
         ] {
             assert_eq!(receipt.matches_observation(&observation), matches, "{rule}");
+        }
+        // T7 cause/effect matrix: bits 0-4 independently alter Session,
+        // owner, Work, Environment and epoch; bit 5 alters only expiry. Every
+        // feasible combination yields a match exactly when bits 0-4 are clear.
+        // This joint table complements the bounded Kani minting/kind proof.
+        for changed in 0_u8..64 {
+            let observation = lease(
+                if changed & 4 == 0 { "k" } else { "K" },
+                if changed & 8 == 0 { "e" } else { "E" },
+                if changed & 1 == 0 { "s" } else { "S" },
+                if changed & 2 == 0 { "w" } else { "W" },
+                if changed & 16 == 0 { 3 } else { 4 },
+                if changed & 32 == 0 { 10 } else { 99 },
+            );
+            assert_eq!(
+                receipt.matches_observation(&observation),
+                changed & 31 == 0,
+                "T7 changed={changed}"
+            );
         }
         let wire = serde_json::to_value(&receipt).unwrap();
         assert_eq!(
