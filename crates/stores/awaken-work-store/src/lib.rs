@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_lease_contract::WallClock;
-#[cfg(test)]
+#[cfg(all(test, not(feature = "loom")))]
 use awaken_lease_contract::system_clock;
 use awaken_session_work_contract::{
     HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, SessionAccessDigest,
