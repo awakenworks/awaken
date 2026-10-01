@@ -486,6 +486,18 @@ def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
     full_job = re.search(r"^  full_quality:\n(?:(?!^  \S).|\n)*", quality, re.MULTILINE)
     portability = re.search(r"^  trusted_host_portability:\n(?:(?!^  \S).|\n)*", quality, re.MULTILINE)
     if portability:
+        portable_job = portability.group(0)
+        pnpm_marker = "      - uses: pnpm/action-setup@"
+        pnpm_at = portable_job.find(pnpm_marker)
+        pnpm_end = portable_job.find("\n      - ", pnpm_at + 1) if pnpm_at >= 0 else -1
+        pnpm_step = portable_job[pnpm_at:pnpm_end if pnpm_end >= 0 else None]
+        if (portable_job.count(pnpm_marker) != 1
+            or not (portable_job.find("      - uses: actions/setup-node@") < pnpm_at
+                    < portable_job.find("run: npm ci --prefix e2e")
+                    < portable_job.find("      - name: Verify TrustedHost"))
+            or "version: 11.6.0" not in pnpm_step
+            or re.search(r"^        if:", pnpm_step, re.MULTILINE)):
+            errors.append("portability matrix must install one pinned pnpm before the CLI build on every runner")
         calls = re.findall(
             r"^        run: scripts/ci/check-trusted-host-portability\.sh.*$",
             portability.group(0), re.MULTILINE,
@@ -1769,6 +1781,24 @@ def self_test() -> None:
         "  trusted_host_portability:\n", "  trusted_host_portability:\n    if: false\n", 1,
     )
     assert any("portability matrix" in error for error in workflow_gate_errors(changed)), "W11 job skip"
+    # W11b: C1 one pnpm 11.6 setup follows Node; C2 it precedes npm and the
+    # Rust gate on every runner. E1 the CLI build script sees the exact tool;
+    # E2 absent/late/conditional/duplicate/wrong-version setup fails the check.
+    # Rules P1=C1+C2=>E1; P2=!C1|!C2=>E2.
+    pnpm_step = re.search(
+        r"      - uses: pnpm/action-setup@[^\n]+\n        with:\n          version: 11\.6\.0\n",
+        quality,
+    ).group(0)
+    for broken in (
+        quality.replace(pnpm_step, "", 1),
+        quality.replace(pnpm_step, pnpm_step.replace("        with:", "        if: runner.os != 'Windows'\n        with:"), 1),
+        quality.replace(pnpm_step, pnpm_step.replace("11.6.0", "10.17.1"), 1),
+        quality.replace(pnpm_step, pnpm_step + pnpm_step, 1),
+        quality.replace(pnpm_step, "", 1).replace(call, call + "\n" + pnpm_step.rstrip(), 1),
+    ):
+        changed = dict(workflows)
+        changed[QUALITY_WORKFLOW] = broken
+        assert any("install one pinned pnpm" in error for error in workflow_gate_errors(changed)), "W11b"
     prefix, full_quality = quality.split("  full_quality:\n", 1)
     workflow_mutations = (
         quality.replace('test "$(git rev-parse HEAD)" = "$source_revision"', "true", 1),
