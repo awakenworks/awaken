@@ -84,25 +84,4 @@ impl SharedHost {
         self.exec.attempt_decorator = Some(decorator);
         self
     }
-
-    /// Harvest/restore each ACP CLI's session under `dir` (keyed by thread+adapter)
-    /// so it recovers across directories and — when `dir` is a shared location —
-    /// across workers/machines. Consumed by [`Self::with_projected_acp`]. Leave unset
-    /// on a single machine, where the per-thread config home is already stable.
-    #[must_use]
-    pub fn with_session_blob_root(mut self, dir: impl Into<PathBuf>) -> Self {
-        self.exec.session_blob_store = Some(Arc::new(
-            awaken_run_executor_acp::FsSessionBlobStore::new(dir.into()),
-        ));
-        self
-    }
-
-    /// The ACP session-content eraser, when portable session persistence is on.
-    #[must_use]
-    pub fn session_blob_eraser(&self) -> Option<Arc<dyn awaken_runtime_contract::ContentEraser>> {
-        self.exec
-            .session_blob_store
-            .as_ref()
-            .map(|store| store.clone() as Arc<dyn awaken_runtime_contract::ContentEraser>)
-    }
 }
