@@ -68,7 +68,8 @@ StartAssumptions == Root!KernelAssumptions
 \* every Event/Work-only action and crash stutters the complete root tuple.
 LEMMA StartStepRefinesRoot ==
     StartAssumptions /\ Root!Safety /\ [Next]_vars => [Root!Next]_rootVars
-BY Z3T(60) DEF StartAssumptions, Next, OtherNext, Root!Next,
+BY Z3T(60) DEF StartAssumptions, Next, OtherNext,
+   RootOtherNext, WorkOtherNext, EventOtherNext, Root!Next,
    Root!Safety, Root!TypeOK, Root!RealizationLeaseIsExact,
    CreateWithInitialEvent, ReplayCreate, ProjectWork, LoseQueuedWorkProjection,
    ClaimWork, ReclaimWork, HeartbeatWork, AdvanceStoreTime, BeginRealization,
@@ -112,28 +113,73 @@ StartAuthority ==
 LEMMA StartAuthorityInit == Init => StartAuthority
 BY DEF Init, Root!Init, Event!Init, StartAuthority
 
-LEMMA StartAuthorityStep ==
-    StartAuthority /\ [Next]_vars => StartAuthority'
-BY Z3T(60) DEF StartAuthority, Next, OtherNext, vars, rootVars, eventVars,
-   CreateWithInitialEvent, ReplayCreate, ProjectWork, LoseQueuedWorkProjection,
-   ClaimWork, ReclaimWork, HeartbeatWork, AdvanceStoreTime, BeginRealization,
-   StageRealization, ActivateRealization, CompleteRealization, FailRealization,
-   FenceStaleRealization, ReserveRun, RegisterRunActivity, ActivateRun, ClaimRun,
-   ObserveCommittedInput, AnchorCommittedInput, ObserveCommittedRun,
-   SettleRunActivity, SettleDispatch, MarkEventProcessed, SettleEventAndClose,
-   ReleaseWork, TerminateSession, SessionExecutable,
-   Root!Create, Root!ExactCreateReplay, Root!ProjectWork, Root!LoseWorkProjection,
-   Root!BeginRealization, Root!StageRealization, Root!ActivateRealization,
+\* Causes: root publication, realization, Event settlement and termination
+\* change the same canonical root tuple while the accepted response stutters.
+\* Effect: each preserves the acceptance, Work and terminal observations.
+LEMMA RootOtherPreservesAuthority ==
+    StartRootInductive /\ StartAuthority /\
+    UNCHANGED acceptedResponse /\ RootOtherNext => StartAuthority'
+BY Z3T(60), RootProofInstanceMatches
+   DEF StartRootInductive, StartAssumptions, RootFacts!Safety,
+   Root!Safety, Root!TypeOK, Root!VisibleRootIsComplete,
+   Root!RealizationLeaseIsExact, Root!WorkProjectionIsDisposableAndScoped,
+   Root!TerminalExecutionIsAbsorbing,
+   StartAuthority, RootOtherNext, rootVars, eventVars, workVars,
+   ProjectWork, LoseQueuedWorkProjection, BeginRealization,
+   StageRealization, ActivateRealization, CompleteRealization,
+   FailRealization, FenceStaleRealization, SettleEventAndClose,
+   TerminateSession, SessionExecutable, CurrentWork,
+   CurrentRealizationWork,
+   Root!ProjectWork, Root!LoseWorkProjection, Root!BeginRealization,
+   Root!StageRealization, Root!ActivateRealization,
    Root!CompleteRealization, Root!PermanentRealizationFailure,
-   Root!RetryableRealizationFailure, Root!CloseRunningInterval, Root!Terminate,
-   Event!AcceptInitialEvent, Event!ReserveRun, Event!RegisterRunActivity,
-   Event!ActivateRun, Event!ClaimRun, Event!ObserveCommittedInput,
-   Event!AnchorCommittedInput, Event!ObserveCommittedRun,
-   Event!SettleRunActivity, Event!SettleCommittedRun, Event!MarkProcessed,
-   Event!SettleInitialEventWake
+   Root!RetryableRealizationFailure, Root!CloseRunningInterval,
+   Root!Terminate, Event!SettleInitialEventWake
 
-THEOREM StartObservationsRetainOneAuthority == Spec => []StartAuthority
-BY StartAuthorityInit, StartAuthorityStep, PTL DEF Spec
+\* Causes: Work claim, reclaim, heartbeat, clock and release change only the
+\* canonical Work tuple. Effect: accepted/root/Event observations stutter.
+LEMMA WorkOtherPreservesAuthority ==
+    StartAuthority /\ UNCHANGED acceptedResponse /\
+    WorkOtherNext => StartAuthority'
+BY Z3T(60) DEF StartAuthority, WorkOtherNext,
+   ClaimWork, ReclaimWork, HeartbeatWork, AdvanceStoreTime,
+   ReleaseWork, rootVars, eventVars, workVars
+
+\* Causes: Run reservation, input observation and Event settlement mutate
+\* the Event owner while the canonical root and Work projection stutter.
+\* Effect: any newly visible Dispatch still belongs to the live Session.
+LEMMA EventOtherPreservesAuthority ==
+    StartRootInductive /\ StartAuthority /\
+    UNCHANGED acceptedResponse /\ EventOtherNext => StartAuthority'
+BY Z3T(60), RootProofInstanceMatches
+   DEF StartRootInductive, StartAssumptions, RootFacts!Safety,
+   Root!Safety, Root!TypeOK, StartAuthority, EventOtherNext,
+   ReserveRun, RegisterRunActivity, ActivateRun, ClaimRun,
+   ObserveCommittedInput, AnchorCommittedInput, ObserveCommittedRun,
+   SettleRunActivity, SettleDispatch, MarkEventProcessed,
+   SessionExecutable, CurrentWork, CurrentRealizationWork,
+   Event!ReserveRun, Event!RegisterRunActivity, Event!ActivateRun,
+   Event!ClaimRun, Event!ObserveCommittedInput,
+   Event!AnchorCommittedInput, Event!ObserveCommittedRun,
+   Event!SettleRunActivity, Event!SettleCommittedRun,
+   Event!MarkProcessed, rootVars, workVars
+
+\* Cause: a reachable Start state has both the canonical Root invariant and
+\* the observable acceptance/work equations. Effect: every composed action
+\* preserves those equations. The Root invariant comes from the existing
+\* StartRootInductive; the three branch proofs reuse canonical actions.
+LEMMA StartAuthorityStep ==
+    StartRootInductive /\ StartAuthority /\ [Next]_vars => StartAuthority'
+BY Z3T(60), RootOtherPreservesAuthority, WorkOtherPreservesAuthority,
+   EventOtherPreservesAuthority
+   DEF StartAuthority, Next, OtherNext, vars, rootVars, eventVars,
+   CreateWithInitialEvent, ReplayCreate, Root!Create,
+   Root!ExactCreateReplay, Event!AcceptInitialEvent
+
+THEOREM StartObservationsRetainOneAuthority ==
+    StartAssumptions /\ Spec => []StartAuthority
+BY StartAuthorityInit, StartAuthorityStep, StartRootInit, StartRootStep,
+   PTL DEF Spec, StartRootInductive
 
 StartRootGuarantees ==
     /\ AcceptedResponseIsDurableRoot
