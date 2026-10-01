@@ -11,7 +11,9 @@ use awaken_agent_channel::AgentChannel;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod adapter_policy;
 pub mod managed_credential;
+pub use adapter_policy::AcpAdapterPolicy;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NegotiatedAcpCapabilities {
