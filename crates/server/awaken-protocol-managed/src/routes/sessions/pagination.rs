@@ -239,6 +239,46 @@ pub(super) struct SessionListPage {
     prev_page: Option<String>,
 }
 
+impl SessionListPage {
+    pub(super) fn history_time_v2(
+        &self,
+        times: &std::collections::HashMap<String, crate::state::SessionRootTimeEvidence>,
+    ) -> serde_json::Value {
+        let mut page = serde_json::to_value(self).expect("Session page serializes");
+        let rows = page["data"].as_array_mut().expect("Session page has data");
+        for (row, session) in rows.iter_mut().zip(&self.data) {
+            let time = times.get(&session.id).expect("paged Session has evidence");
+            *row = super::session_time_v2(session, *time);
+        }
+        page
+    }
+}
+
+impl SessionListParams {
+    pub(super) fn has_time_predicate(&self) -> bool {
+        self.created_gt.is_some()
+            || self.created_gte.is_some()
+            || self.created_lt.is_some()
+            || self.created_lte.is_some()
+    }
+}
+
+pub(crate) fn ensure_v2_time_filter_answerable(
+    rows: &[(Session, crate::state::SessionRootTimeEvidence)],
+    params: &SessionListParams,
+) -> Result<(), WireErr> {
+    if params.has_time_predicate()
+        && rows.iter().any(|(session, time)| {
+            session_matches_without_time(session, params) && time.created_at_unix_ms.is_none()
+        })
+    {
+        return Err(error_response(StateError::Run(RunError::unavailable(
+            "historical Session time is unknown; time-filtered results cannot be completed",
+        ))));
+    }
+    Ok(())
+}
+
 pub(super) fn session_list_page(
     mut data: Vec<Session>,
     params: &SessionListParams,
@@ -306,6 +346,31 @@ fn session_to_cursor_order(
 }
 
 fn session_matches(session: &Session, params: &SessionListParams) -> bool {
+    if !session_matches_without_time(session, params) {
+        return false;
+    }
+    let Ok(created) = chrono::DateTime::parse_from_rfc3339(&session.created_at) else {
+        return false;
+    };
+    params
+        .created_gt
+        .as_ref()
+        .is_none_or(|bound| created > *bound)
+        && params
+            .created_gte
+            .as_ref()
+            .is_none_or(|bound| created >= *bound)
+        && params
+            .created_lt
+            .as_ref()
+            .is_none_or(|bound| created < *bound)
+        && params
+            .created_lte
+            .as_ref()
+            .is_none_or(|bound| created <= *bound)
+}
+
+pub(super) fn session_matches_without_time(session: &Session, params: &SessionListParams) -> bool {
     if !params.include_archived && session.archived_at.is_some() {
         return false;
     }
@@ -346,25 +411,7 @@ fn session_matches(session: &Session, params: &SessionListParams) -> bool {
     if !params.statuses.is_empty() && !params.statuses.contains(session.status.as_str()) {
         return false;
     }
-    let Ok(created) = chrono::DateTime::parse_from_rfc3339(&session.created_at) else {
-        return false;
-    };
-    params
-        .created_gt
-        .as_ref()
-        .is_none_or(|bound| created > *bound)
-        && params
-            .created_gte
-            .as_ref()
-            .is_none_or(|bound| created >= *bound)
-        && params
-            .created_lt
-            .as_ref()
-            .is_none_or(|bound| created < *bound)
-        && params
-            .created_lte
-            .as_ref()
-            .is_none_or(|bound| created <= *bound)
+    true
 }
 
 #[cfg(test)]

@@ -193,6 +193,22 @@ pub(super) struct ProjectionDeliveryMemo {
     pub(super) transient_owners: HashMap<String, String>,
 }
 
+/// The root's original optional observations. The v1 Session DTO renders a
+/// historical sentinel for missing values; versioned readers use this same
+/// candidate's typed source instead of interpreting that sentinel's bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RootTimeEvidence {
+    pub(crate) created_at_unix_ms: Option<u64>,
+    pub(crate) updated_at_unix_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ThreadTimeEvidence {
+    pub(crate) created_at_unix_ms: Option<u64>,
+    pub(crate) updated_at_unix_ms: Option<u64>,
+    pub(crate) archived_at_unix_ms: Option<u64>,
+}
+
 #[derive(Clone)]
 pub(super) struct SessionRecord {
     /// Process-local compare-and-swap coordinate. It is advanced by every
@@ -205,6 +221,11 @@ pub(super) struct SessionRecord {
     pub(super) committed_projection_ready: bool,
     pub(super) agent_id: String,
     pub(super) session: Session,
+    pub(super) root_time: RootTimeEvidence,
+    /// Times from the same canonical committed orders as `events`; absent
+    /// means no trustworthy persisted observation for this event identity.
+    pub(super) event_times: HashMap<String, u64>,
+    pub(super) child_times: HashMap<String, ThreadTimeEvidence>,
     /// Durable source of truth for the runtime's currently applied input projection.
     pub(super) resource_state: awaken_session_state_contract::SessionResourceState,
     /// Rendered projection result. Durable entries advance only through the one
@@ -255,6 +276,9 @@ impl SessionRecord {
             committed_projection_ready: _,
             agent_id: _,
             session: _,
+            root_time: _,
+            event_times: _,
+            child_times: _,
             resource_state: _,
             events,
             event_page_index: _,
@@ -316,6 +340,9 @@ impl SessionRecord {
             && self.checkpoint == other.checkpoint
             && self.overlay.anchors == other.overlay.anchors
             && self.event_thread_owners == other.event_thread_owners
+            && self.root_time == other.root_time
+            && self.event_times == other.event_times
+            && self.child_times == other.child_times
             && self_wire == other_wire)
     }
 
@@ -515,6 +542,7 @@ impl SessionRecord {
         session: Session,
         session_revision: awaken_session_types::SessionRevision,
         resource_state: awaken_session_state_contract::SessionResourceState,
+        root_time: RootTimeEvidence,
         events: Vec<Event>,
     ) -> Self {
         let checkpoint = ManagedProjectionCheckpoint {
@@ -530,6 +558,9 @@ impl SessionRecord {
             committed_projection_ready: false,
             agent_id,
             session,
+            root_time,
+            event_times: HashMap::new(),
+            child_times: HashMap::new(),
             resource_state,
             events,
             event_page_index,
