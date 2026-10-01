@@ -45,7 +45,6 @@ use awaken_runtime_contract::activation::RunActivation;
 
 use crate::Error;
 use crate::dispatch::{Claimed, PendingInput};
-use crate::execution_capacity::ExecutionCapacity;
 use crate::service::{
     DispatchServiceConfig, LocalMaintenanceSchedule, spawn_dispatch_depth_sampler,
     wait_for_terminal_reconciliation,
@@ -55,6 +54,7 @@ use crate::worker::{DispatchWorker, renew_claim_while_active};
 use awaken_lease_contract::WallClock;
 use awaken_lease_contract::WallClockExt;
 use awaken_dispatch_contract::RunDispatch;
+use awaken_coordinator_client::execution_capacity::ExecutionCapacity;
 
 /// Resolves the worker that owns a thread's runtime. The pool claims from the one
 /// shared queue, then asks the resolver for the session worker carrying the

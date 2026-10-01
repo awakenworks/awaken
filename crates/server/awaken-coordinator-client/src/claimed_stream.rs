@@ -11,18 +11,17 @@ use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_agent_contract::stream::sink::{Error as StreamError, Sink as StreamSink};
 
-use crate::RunClaim;
-pub use awaken_dispatch_contract::ClaimedStreamPublisher;
+use awaken_dispatch_contract::{ClaimedStreamPublisher, RunClaim};
 
 /// Reuses an existing process-local StreamSink behind the claim-bound worker
 /// port. Local execution needs no wire fence because the dispatch worker and
 /// sink share one trusted process; remote publishers consume the claim.
-pub(crate) struct LocalClaimedStreamPublisher {
+pub struct LocalClaimedStreamPublisher {
     sink: Arc<dyn StreamSink>,
 }
 
 impl LocalClaimedStreamPublisher {
-    pub(crate) fn new(sink: Arc<dyn StreamSink>) -> Self {
+    pub fn new(sink: Arc<dyn StreamSink>) -> Self {
         Self { sink }
     }
 }
@@ -42,13 +41,13 @@ impl ClaimedStreamPublisher for LocalClaimedStreamPublisher {
     }
 }
 
-pub(crate) struct ClaimBoundStreamSink {
+pub struct ClaimBoundStreamSink {
     claim: RunClaim,
     publisher: Arc<dyn ClaimedStreamPublisher>,
 }
 
 impl ClaimBoundStreamSink {
-    pub(crate) fn new(claim: RunClaim, publisher: Arc<dyn ClaimedStreamPublisher>) -> Self {
+    pub fn new(claim: RunClaim, publisher: Arc<dyn ClaimedStreamPublisher>) -> Self {
         Self { claim, publisher }
     }
 

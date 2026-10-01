@@ -32,6 +32,7 @@ tokio.workspace = true
 tracing = "0.1"
 
 [dev-dependencies]
+awaken-store-inmem.workspace = true
 awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-worker-transport-security.workspace = true
 async-trait.workspace = true
