@@ -14,6 +14,8 @@
 //! one from a typed configuration file (or explicitly for an embedding), and the
 //! library reads it rather than process-global deployment configuration.
 
+use awaken_acp_contract::AcpAdapterPolicy;
+use awaken_runtime_contract::resolved::ProviderServerTool;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
@@ -35,15 +37,14 @@ impl AcpWorkerProfile {
     ///
     /// Production images built with the catalog's `all` contract use this
     /// projection instead of making each embedding maintain a second id list.
-    pub fn all_known() -> Result<Self, String> {
-        Self::new(
-            awaken_run_executor_acp::known_acp_clis()
-                .iter()
-                .map(|cli| cli.id.to_string()),
-        )
+    pub fn all_known(policy: &dyn AcpAdapterPolicy<ProviderServerTool>) -> Result<Self, String> {
+        Self::new(policy.known_ids().into_iter().map(str::to_string), policy)
     }
 
-    pub fn new(cli_ids: impl IntoIterator<Item = String>) -> Result<Self, String> {
+    pub fn new(
+        cli_ids: impl IntoIterator<Item = String>,
+        policy: &dyn AcpAdapterPolicy<ProviderServerTool>,
+    ) -> Result<Self, String> {
         let mut normalized = BTreeSet::new();
         for cli_id in cli_ids {
             if cli_id.is_empty() || cli_id.trim() != cli_id {
@@ -52,7 +53,7 @@ impl AcpWorkerProfile {
                         .to_string(),
                 );
             }
-            if awaken_run_executor_acp::acp_cli(&cli_id).is_none() {
+            if !policy.contains(&cli_id) {
                 return Err(format!("unknown ACP CLI `{cli_id}`"));
             }
             if !normalized.insert(cli_id.clone()) {
@@ -1022,6 +1023,38 @@ fn local_pool_disabled(run_local_pool: Option<&str>, legacy_disable: Option<&str
 mod tests {
     use super::*;
 
+    struct TestAcpAdapterPolicy;
+
+    impl AcpAdapterPolicy<ProviderServerTool> for TestAcpAdapterPolicy {
+        fn lookup_id(&self, id: &str) -> Option<&'static str> {
+            match id {
+                "claude" => Some("claude"),
+                "codex" => Some("codex"),
+                "codex-alias" => Some("codex"),
+                _ => None,
+            }
+        }
+
+        fn known_ids(&self) -> Vec<&'static str> {
+            vec!["claude", "codex"]
+        }
+
+        fn admits_mcp_client_credential(
+            &self,
+            _id: &str,
+            _delivery: Option<awaken_credential_contract::McpCredentialDelivery>,
+            _http_transport: bool,
+        ) -> bool {
+            false
+        }
+
+        fn realizes_provider_server_tool(&self, _id: &str, _tool: &ProviderServerTool) -> bool {
+            false
+        }
+    }
+
+    static TEST_ACP_POLICY: TestAcpAdapterPolicy = TestAcpAdapterPolicy;
+
     #[test]
     fn container_relay_origin_requires_the_same_frozen_allowlist_host() {
         // Causes: C1 exposure is externally reachable and credential-free; C2
@@ -1299,26 +1332,46 @@ mod tests {
 
     #[test]
     fn acp_worker_profile_has_only_exact_routes() {
-        let profile = AcpWorkerProfile::new(["claude".to_string(), "codex".to_string()]).unwrap();
+        // Causes: C1 the injected catalog recognizes an exact CLI id; C2 the
+        // configured list is nonempty, normalized and duplicate-free. Effects:
+        // E1 C1+C2 builds only those routes; E2 any failed cause rejects before
+        // advertisement. R1 exact known set -> profile; R2 unknown/alias,
+        // empty/blank or duplicate -> error. `all_known` uses the policy list.
+        let profile = AcpWorkerProfile::new(
+            ["claude".to_string(), "codex".to_string()],
+            &TEST_ACP_POLICY,
+        )
+        .unwrap();
         assert_eq!(
             profile.cli_ids().collect::<Vec<_>>(),
             vec!["claude", "codex"]
         );
-        assert!(AcpWorkerProfile::new(["claude".to_string(), "claude".to_string()]).is_err());
-        assert!(AcpWorkerProfile::new(["unknown-third-party-cli".to_string()]).is_err());
-        assert!(AcpWorkerProfile::new(["".to_string(), "codex".to_string()]).is_err());
-        assert!(AcpWorkerProfile::new([" codex".to_string()]).is_err());
-        assert!(AcpWorkerProfile::new(["codex ".to_string()]).is_err());
+        assert!(
+            AcpWorkerProfile::new(
+                ["claude".to_string(), "claude".to_string()],
+                &TEST_ACP_POLICY
+            )
+            .is_err()
+        );
+        assert!(
+            AcpWorkerProfile::new(["unknown-third-party-cli".to_string()], &TEST_ACP_POLICY)
+                .is_err()
+        );
+        assert!(AcpWorkerProfile::new(["codex-alias".to_string()], &TEST_ACP_POLICY).is_err());
+        assert!(
+            AcpWorkerProfile::new(["".to_string(), "codex".to_string()], &TEST_ACP_POLICY).is_err()
+        );
+        assert!(AcpWorkerProfile::new([" codex".to_string()], &TEST_ACP_POLICY).is_err());
+        assert!(AcpWorkerProfile::new(["codex ".to_string()], &TEST_ACP_POLICY).is_err());
 
-        // Catalog-selection cause/effect rule: the production image's `all`
-        // contract selects every and only canonical row; embeddings therefore
-        // cannot drift by copying ids into their own configuration table.
-        let all = AcpWorkerProfile::all_known().unwrap();
+        // The production policy is tested against the sole catalog in
+        // execution-composition; this test proves Host uses its injected list.
+        let all = AcpWorkerProfile::all_known(&TEST_ACP_POLICY).unwrap();
         assert_eq!(
             all.cli_ids().collect::<std::collections::BTreeSet<_>>(),
-            awaken_run_executor_acp::known_acp_clis()
-                .iter()
-                .map(|cli| cli.id)
+            TEST_ACP_POLICY
+                .known_ids()
+                .into_iter()
                 .collect::<std::collections::BTreeSet<_>>()
         );
     }
@@ -1334,7 +1387,7 @@ mod tests {
         // A2 unadvertised route         -> reject
         // A3 empty/blank executable     -> reject
         // A4 mixed valid/invalid batch  -> reject atomically
-        let mut profile = AcpWorkerProfile::new(["codex".to_string()]).unwrap();
+        let mut profile = AcpWorkerProfile::new(["codex".to_string()], &TEST_ACP_POLICY).unwrap();
         profile
             .set_launch_argv("codex", vec!["/opt/awaken/codex-acp".into()])
             .expect("A1");
