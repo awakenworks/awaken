@@ -9,7 +9,7 @@
 //!
 //! The executable Agent inventory is injected by the process entry point. Production uses a live,
 //! Workspace-aware executable projection; [`default_models`] remains only for
-//! bare-host fixtures that have no configuration plane.
+//! explicit fixtures that provide their own observed publication instant.
 
 use std::sync::Arc;
 
@@ -27,10 +27,6 @@ use crate::resources::flavor::{
 };
 use crate::types::page::{deserialize_optional_query_value, paginate_id_page};
 use crate::types::{ErrorResponse, Page};
-
-/// Deterministic release timestamp stamped on every model (the wire needs a valid
-/// RFC-3339 `created_at`; a reproducible constant keeps tests stable).
-const CREATED_AT: &str = "2026-01-01T00:00:00Z";
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,6 +46,10 @@ pub(crate) struct ModelListQuery {
 pub struct ModelEntry {
     pub id: String,
     pub display_name: String,
+    /// First local durable publication time, not an upstream model release
+    /// date or a clock sampled while serving this GET. `None` is retained
+    /// internally until pagination selects the row; v1 never emits null.
+    pub created_at: Option<String>,
     /// The model's published context window (max input tokens) — the intrinsic
     /// attribute compaction and the ACP auto-compact window derive their budget from.
     /// `None` when the deployment doesn't publish it.
@@ -59,13 +59,31 @@ pub struct ModelEntry {
 }
 
 impl ModelEntry {
-    pub fn new(id: &str, display_name: &str) -> Self {
+    fn without_time(id: &str, display_name: &str) -> Self {
         Self {
             id: id.to_string(),
             display_name: display_name.to_string(),
+            created_at: None,
             context_window: None,
             max_output_tokens: None,
         }
+    }
+
+    pub fn new(id: &str, display_name: &str, created_at: &str) -> Self {
+        let mut entry = Self::without_time(id, display_name);
+        entry.created_at = Some(created_at.to_string());
+        entry
+    }
+
+    fn from_publication(
+        reference: awaken_executable_agent_contract::PublishedModelReference,
+    ) -> Self {
+        let mut entry = Self::without_time(&reference.model_reference, &reference.model_reference);
+        entry.created_at = reference.first_published_at_unix_ms.and_then(|time| {
+            (awaken_session_application_contract::project_epoch_millis(u128::from(time)) == time)
+                .then(|| awaken_session_application_contract::epoch_millis_to_rfc3339(time))
+        });
+        entry
     }
 
     /// Attach the model's published token limits (context window + output ceiling).
@@ -80,17 +98,17 @@ impl ModelEntry {
     /// model's published context window / output ceiling (or `null` when unknown);
     /// Beta alone includes an empty `allowed_fallback_models` list because
     /// fallbacks remain a gateway concern.
-    fn project(&self, surface: ManagedResourceApiSurface) -> ModelInfo<'_> {
-        ModelInfo {
+    fn project(&self, surface: ManagedResourceApiSurface) -> Option<ModelInfo<'_>> {
+        Some(ModelInfo {
             id: &self.id,
             kind: "model",
             display_name: &self.display_name,
-            created_at: CREATED_AT,
+            created_at: self.created_at.as_deref()?,
             allowed_fallback_models: (surface != ManagedResourceApiSurface::Ga).then(Vec::new),
             capabilities: None,
             max_input_tokens: self.context_window,
             max_tokens: self.max_output_tokens,
-        }
+        })
     }
 }
 
@@ -100,7 +118,7 @@ struct ModelInfo<'a> {
     #[serde(rename = "type")]
     kind: &'static str,
     display_name: &'a str,
-    created_at: &'static str,
+    created_at: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     allowed_fallback_models: Option<Vec<String>>,
     capabilities: Option<()>,
@@ -126,35 +144,33 @@ impl AvailableModels {
     async fn in_workspace(&self, workspace_id: &str) -> Result<Vec<ModelEntry>, String> {
         match self {
             Self::Fixed(models) => Ok(models.as_ref().clone()),
-            Self::ExecutableAgents(registrations) => {
-                awaken_executable_agent_contract::current_model_references(
-                    registrations.as_ref(),
-                    workspace_id,
-                )
+            Self::ExecutableAgents(registrations) => registrations
+                .current_model_publications(workspace_id)
                 .await
                 .map(|references| {
                     references
                         .into_iter()
-                        .map(|model_reference| ModelEntry::new(&model_reference, &model_reference))
+                        .map(ModelEntry::from_publication)
                         .collect()
                 })
-                .map_err(|error| error.to_string())
-            }
+                .map_err(|error| error.to_string()),
         }
     }
 }
 
-/// Deterministic model fixture for bare-host tests without a configuration plane.
+/// Deterministic model fixture for tests without a configuration plane. The
+/// caller supplies the fixture's publication instant explicitly.
 #[must_use]
-pub fn default_models() -> Vec<ModelEntry> {
+pub fn default_models(published_at_unix_ms: u64) -> Vec<ModelEntry> {
+    let at = awaken_session_application_contract::epoch_millis_to_rfc3339(published_at_unix_ms);
     vec![
         // Published context windows (max input tokens) — the intrinsic attribute the
         // compaction window derives from; 200K is the standard Claude context.
-        ModelEntry::new("claude-opus-4-8", "Claude Opus 4.8").with_limits(200_000, 64_000),
-        ModelEntry::new("claude-sonnet-5", "Claude Sonnet 5").with_limits(200_000, 64_000),
-        ModelEntry::new("claude-haiku-4-5-20251001", "Claude Haiku 4.5")
+        ModelEntry::new("claude-opus-4-8", "Claude Opus 4.8", &at).with_limits(200_000, 64_000),
+        ModelEntry::new("claude-sonnet-5", "Claude Sonnet 5", &at).with_limits(200_000, 64_000),
+        ModelEntry::new("claude-haiku-4-5-20251001", "Claude Haiku 4.5", &at)
             .with_limits(200_000, 32_000),
-        ModelEntry::new("claude-fable-5", "Fable 5").with_limits(200_000, 32_000),
+        ModelEntry::new("claude-fable-5", "Fable 5", &at).with_limits(200_000, 32_000),
     ]
 }
 
@@ -226,11 +242,18 @@ async fn list_models(
             );
         }
     };
-    let data = page
+    let Some(data) = page
         .data
         .iter()
         .map(|model| model.project(surface))
-        .collect();
+        .collect::<Option<Vec<_>>>()
+    else {
+        return model_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "api_error",
+            "model publication time unavailable",
+        );
+    };
     (
         StatusCode::OK,
         axum::Json(Page::new(data, page.has_more, page.first_id, page.last_id)),
@@ -262,7 +285,14 @@ async fn get_model(
         );
     };
     match models.iter().find(|m| m.id == id) {
-        Some(entry) => (StatusCode::OK, axum::Json(entry.project(surface))).into_response(),
+        Some(entry) => match entry.project(surface) {
+            Some(model) => (StatusCode::OK, axum::Json(model)).into_response(),
+            None => model_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "api_error",
+                "model publication time unavailable",
+            ),
+        },
         None => model_error(
             StatusCode::NOT_FOUND,
             "not_found_error",
@@ -278,6 +308,31 @@ mod tests {
     use tower::ServiceExt as _;
 
     struct UnavailableInventory;
+
+    struct PublishedInventory(Vec<awaken_executable_agent_contract::PublishedModelReference>);
+
+    #[async_trait::async_trait]
+    impl awaken_executable_agent_contract::ExecutableAgentInventorySource for PublishedInventory {
+        async fn current_registrations(
+            &self,
+            _workspace_id: &str,
+        ) -> Result<
+            Vec<awaken_executable_agent_contract::ExecutableAgentRegistration>,
+            awaken_executable_agent_contract::ExecutableAgentRegistrationError,
+        > {
+            Ok(Vec::new())
+        }
+
+        async fn current_model_publications(
+            &self,
+            _workspace_id: &str,
+        ) -> Result<
+            Vec<awaken_executable_agent_contract::PublishedModelReference>,
+            awaken_executable_agent_contract::ExecutableAgentRegistrationError,
+        > {
+            Ok(self.0.clone())
+        }
+    }
 
     #[async_trait::async_trait]
     impl awaken_executable_agent_contract::ExecutableAgentInventorySource for UnavailableInventory {
@@ -301,9 +356,10 @@ mod tests {
         // Cause/effect graph: C1 GA/Beta flavor; C2 known token limits; C3 unknown
         // capabilities. Effects: E1 both emit the seven shared ModelInfo fields;
         // E2 Beta alone emits allowed_fallback_models; E3 limits are numeric and
-        // capabilities null. Constraint: flavor never selects inventory/state.
+        // capabilities null; E4 created_at is the fixture-supplied instant.
+        // Constraint: flavor never selects inventory/state.
         // Decision rules: R1 C1=GA+C2+C3->E1+E3; R2 C1=Beta+C2+C3->E1+E2+E3.
-        let models = default_models();
+        let models = default_models(1_704_067_200_000);
         assert!(models.iter().any(|m| m.id == "claude-opus-4-8"));
         for m in &models {
             for (rule, surface, fields, fallback) in [
@@ -311,12 +367,13 @@ mod tests {
                 ("R2", ManagedResourceApiSurface::CapabilityBeta, 8, true),
                 ("R3", ManagedResourceApiSurface::QueryBeta, 8, true),
             ] {
-                let v = serde_json::to_value(m.project(surface)).unwrap();
+                let v = serde_json::to_value(m.project(surface).expect("fixture time")).unwrap();
                 assert_eq!(v.as_object().unwrap().len(), fields, "{rule}");
                 assert_eq!(v["type"], "model", "{rule}");
                 assert_eq!(v["id"], m.id, "{rule}");
                 assert!(v["display_name"].is_string(), "{rule}");
                 assert!(v["created_at"].is_string(), "{rule}");
+                assert_eq!(v["created_at"], "2024-01-01T00:00:00Z", "E4");
                 assert_eq!(
                     v.get("allowed_fallback_models").is_some(),
                     fallback,
@@ -340,9 +397,14 @@ mod tests {
     #[tokio::test]
     async fn models_route_uses_the_canonical_header_flavor_without_splitting_inventory() {
         // R3 C3+C4->E2+E3.
-        let app = models_router(Arc::new(vec![ModelEntry::new("model-a", "Model A")])).layer(
-            axum::Extension(awaken_tenancy::WorkspaceScope("default".into())),
-        );
+        let app = models_router(Arc::new(vec![ModelEntry::new(
+            "model-a",
+            "Model A",
+            "2024-01-01T00:00:00Z",
+        )]))
+        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+            "default".into(),
+        )));
         for (rule, uri, capability, fallback) in [
             ("R1", "/v1/models", false, false),
             ("R2", "/v1/models", true, true),
@@ -379,9 +441,9 @@ mod tests {
         // coordinates fail 400. This prevents a superficially decodable
         // `Page` from silently ignoring the official SDK's paginator inputs.
         let app = models_router(Arc::new(vec![
-            ModelEntry::new("a", "A"),
-            ModelEntry::new("b", "B"),
-            ModelEntry::new("c", "C"),
+            ModelEntry::new("a", "A", "2024-01-01T00:00:00Z"),
+            ModelEntry::new("b", "B", "2024-01-01T00:00:00Z"),
+            ModelEntry::new("c", "C", "2024-01-01T00:00:00Z"),
         ]))
         .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
             "default".into(),
@@ -460,9 +522,14 @@ mod tests {
     #[tokio::test]
     async fn retrieve_accepts_complete_slash_bearing_model_id() {
         let id = "provider/claude/model-a";
-        let app = models_router(Arc::new(vec![ModelEntry::new(id, "Model A")])).layer(
-            axum::Extension(awaken_tenancy::WorkspaceScope("default".into())),
-        );
+        let app = models_router(Arc::new(vec![ModelEntry::new(
+            id,
+            "Model A",
+            "2024-01-01T00:00:00Z",
+        )]))
+        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+            "default".into(),
+        )));
         let response = app
             .oneshot(
                 axum::http::Request::builder()
@@ -500,6 +567,106 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{rule}");
+        }
+    }
+
+    #[tokio::test]
+    async fn live_models_use_durable_first_publication_and_reject_unknown_time() {
+        // Causes: M1 exact first local publication instant exists; M2 the
+        // inventory has no durable time or an unrenderable time; M3 list
+        // versus exact retrieve; M4 a page excludes/includes an unknown model.
+        // Effects: E1 both routes carry the same factual instant, with no GET
+        // clock; E2 unknown history fails closed instead of publishing a fake
+        // date; E3 unaffected pages stay readable while a page containing
+        // unknown time fails. Rules M1+M3=>E1, M2+M3=>E2, M1+M2+M4=>E3.
+        let known = models_router_with_inventory(Arc::new(PublishedInventory(vec![
+            awaken_executable_agent_contract::PublishedModelReference {
+                model_reference: "model-a".into(),
+                first_published_at_unix_ms: Some(1_704_067_200_000),
+            },
+        ])))
+        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+            "default".into(),
+        )));
+        for path in ["/v1/models", "/v1/models/model-a"] {
+            let response = known
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(path)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "E1");
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let model = if path == "/v1/models" {
+                &value["data"][0]
+            } else {
+                &value
+            };
+            assert_eq!(model["created_at"], "2024-01-01T00:00:00Z", "E1");
+        }
+        for time in [None, Some(u64::MAX)] {
+            let unknown = models_router_with_inventory(Arc::new(PublishedInventory(vec![
+                awaken_executable_agent_contract::PublishedModelReference {
+                    model_reference: "model-a".into(),
+                    first_published_at_unix_ms: time,
+                },
+            ])))
+            .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+                "default".into(),
+            )));
+            for path in ["/v1/models", "/v1/models/model-a"] {
+                let response = unknown
+                    .clone()
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .uri(path)
+                            .body(axum::body::Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "E2");
+            }
+        }
+        let mixed = models_router_with_inventory(Arc::new(PublishedInventory(vec![
+            awaken_executable_agent_contract::PublishedModelReference {
+                model_reference: "model-a".into(),
+                first_published_at_unix_ms: Some(1_704_067_200_000),
+            },
+            awaken_executable_agent_contract::PublishedModelReference {
+                model_reference: "model-b".into(),
+                first_published_at_unix_ms: None,
+            },
+        ])))
+        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+            "default".into(),
+        )));
+        for (path, expected) in [
+            ("/v1/models?limit=1", StatusCode::OK),
+            ("/v1/models/model-a", StatusCode::OK),
+            ("/v1/models", StatusCode::SERVICE_UNAVAILABLE),
+            (
+                "/v1/models?after_id=model-a&limit=1",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            ("/v1/models/model-b", StatusCode::SERVICE_UNAVAILABLE),
+        ] {
+            let response = mixed
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(path)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "E3 {path}");
         }
     }
 }

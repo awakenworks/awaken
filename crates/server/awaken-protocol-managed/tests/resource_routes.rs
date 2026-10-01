@@ -51,7 +51,7 @@ async fn resource_routes_share_one_application_without_conflicts() {
             purge: resources.purge_scheduler(),
             clock: authorities.clock(),
         }))
-        .merge(models_router(Arc::new(default_models())));
+        .merge(models_router(Arc::new(default_models(1_704_067_200_000))));
 
     // Each plane's list entrypoint answers on the same app (200, not a 404 from a
     // dropped route). The listing bodies themselves are proven per-router elsewhere.

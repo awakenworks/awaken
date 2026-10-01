@@ -160,6 +160,9 @@ impl ConfigService {
                     workspace_id: execution_workspace.to_owned(),
                     agent_id: publication.agent_id.clone(),
                     source_revision: publication.source_revision,
+                    published_at_unix_ms: publication.published_at_unix_ms,
+                    publication_sequence: publication.publication_sequence,
+                    publication_order_verified: publication.publication_order_verified,
                     snapshot: publication.snapshot,
                     session_profile,
                 })

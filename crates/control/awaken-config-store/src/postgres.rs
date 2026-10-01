@@ -20,7 +20,7 @@ use sqlx::types::Json;
 use awaken_sql_storage::StoredU64;
 use awaken_tenancy::ScopeId;
 
-use crate::codec::decode_publication_value;
+use crate::codec::{attach_publication_row, decode_publication_value};
 use crate::management_effect_retirement_is_admitted;
 use crate::schema::{BUNDLE_ID, converged_config_bundle, selected_config_bundle};
 use awaken_agent_config::{
@@ -132,8 +132,8 @@ where
     E: sqlx::Executor<'e, Database = sqlx::Postgres>,
 {
     sqlx::query(&format!(
-        "INSERT INTO {NS}_publication (fingerprint, agent_id, state, record, scope_id) \
-         VALUES ($1, $2, $3, $4, $5) \
+        "INSERT INTO {NS}_publication (fingerprint, agent_id, state, record, scope_id, created_at, order_verified) \
+         VALUES ($1, $2, $3, $4, $5, clock_timestamp(), $6) \
          ON CONFLICT (scope_id, fingerprint) DO NOTHING"
     ))
     .bind(&publication.fingerprint)
@@ -141,6 +141,7 @@ where
     .bind(publication.state.as_str())
     .bind(Json(publication))
     .bind(&scope.0)
+    .bind(publication.publication_order_verified)
     .execute(executor)
     .await
     .map_err(reject)?;
@@ -189,6 +190,23 @@ fn domain_generation(value: i64) -> Result<u64, ConfigStoreError> {
         .map_err(reject)
 }
 
+/// The one Config-store transaction advisory-lock primitive. Both authoring
+/// revision and publication commit ordering use this existing PostgreSQL key
+/// vocabulary; hash collisions only over-serialize unrelated keys.
+async fn lock_advisory_pair(
+    conn: &mut sqlx::PgConnection,
+    left: &str,
+    right: &str,
+) -> Result<(), ConfigStoreError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+        .bind(left)
+        .bind(right)
+        .execute(conn)
+        .await
+        .map_err(reject)?;
+    Ok(())
+}
+
 /// Serialize every Config writer for one `(scope, id)` before it observes the
 /// row. Hash collisions only serialize unrelated keys; they cannot merge their
 /// separately predicated rows.
@@ -197,13 +215,24 @@ async fn lock_config_revision(
     scope: &ScopeId,
     id: &str,
 ) -> Result<(), ConfigStoreError> {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
-        .bind(&scope.0)
-        .bind(id)
-        .execute(conn)
-        .await
-        .map_err(reject)?;
-    Ok(())
+    lock_advisory_pair(conn, &scope.0, id).await
+}
+
+/// Serialize the sole production publication transaction per execution
+/// Workspace before it takes any Agent row lock. The lock remains held through
+/// commit, so `seq` allocation order is commit order among these writes.
+/// Hash collisions only serialize unrelated Workspaces. Acquiring this first
+/// avoids a lock-order cycle with Config's `(scope, id)` writer lock.
+async fn lock_publication_commit_order(
+    conn: &mut sqlx::PgConnection,
+    execution_workspace: &str,
+) -> Result<(), ConfigStoreError> {
+    lock_advisory_pair(
+        conn,
+        "awaken.config.publication.commit_order",
+        execution_workspace,
+    )
+    .await
 }
 
 /// Shared by unconditional, ordinary CAS and audited writes. A missing row is
@@ -749,6 +778,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         publication: &StoredPublication,
     ) -> Result<PublicationWrite, ConfigStoreError> {
         let mut tx = self.pool.begin().await.map_err(reject)?;
+        lock_publication_commit_order(&mut tx, publication.execution_workspace.as_str()).await?;
         let current_revision = sqlx::query_scalar::<_, i64>(&format!(
             "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2 FOR UPDATE"
         ))
@@ -796,7 +826,9 @@ impl ScopedConfigRegistry for PostgresConfigStore {
             tx.rollback().await.map_err(reject)?;
             return Ok(PublicationWrite::Conflict { current_revision });
         }
-        insert_publication(&mut *tx, scope, publication).await?;
+        let mut committed = publication.clone();
+        committed.publication_order_verified = true;
+        insert_publication(&mut *tx, scope, &committed).await?;
         tx.commit().await.map_err(reject)?;
         Ok(PublicationWrite::Committed {
             source_revision: publication.source_revision,
@@ -809,7 +841,8 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         fingerprint: &str,
     ) -> Result<Option<StoredPublication>, ConfigStoreError> {
         let row = sqlx::query(&format!(
-            "SELECT record FROM {NS}_publication WHERE fingerprint = $1 AND scope_id = $2"
+            "SELECT record, seq, order_verified, (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT AS published_at_unix_ms \
+             FROM {NS}_publication WHERE fingerprint = $1 AND scope_id = $2"
         ))
         .bind(fingerprint)
         .bind(&scope.0)
@@ -819,9 +852,16 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         match row {
             Some(row) => {
                 let Json(value): Json<serde_json::Value> = row.try_get("record").map_err(reject)?;
-                Ok(Some(
-                    decode_publication_value(value, scope).map_err(reject)?,
-                ))
+                let sequence: i64 = row.try_get("seq").map_err(reject)?;
+                let order_verified: bool = row.try_get("order_verified").map_err(reject)?;
+                let published_at: i64 = row.try_get("published_at_unix_ms").map_err(reject)?;
+                let publication = decode_publication_value(value, scope).map_err(reject)?;
+                Ok(Some(attach_publication_row(
+                    publication,
+                    sequence,
+                    published_at,
+                    order_verified,
+                )?))
             }
             None => Ok(None),
         }
@@ -833,13 +873,13 @@ impl ScopedConfigRegistry for PostgresConfigStore {
     ) -> Result<Vec<StoredPublication>, ConfigStoreError> {
         // Postgres is a durable store, so it must reload published publications for
         // warm-install (the default trait impl returns empty and is only right for
-        // the in-memory store). Oldest-first by insertion, with the monotonic `seq`
-        // identity column (migration V0005) as a deterministic tie-break for rows
-        // sharing a `created_at` — the Postgres analogue of SQLite's `rowid ASC`, so a
-        // map keyed by agent keeps the same latest-publication-per-agent on both.
+        // the in-memory store). The monotonic `seq` identity column (migration
+        // V0005) is the Postgres analogue of SQLite's `rowid`: wall-clock
+        // rollback must not reorder publication recovery.
         let rows = sqlx::query(&format!(
-            "SELECT record FROM {NS}_publication \
-             WHERE scope_id = $1 AND state = 'published' ORDER BY created_at ASC, seq ASC"
+            "SELECT record, seq, order_verified, (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT AS published_at_unix_ms \
+             FROM {NS}_publication \
+             WHERE scope_id = $1 AND state = 'published' ORDER BY seq ASC"
         ))
         .bind(&scope.0)
         .fetch_all(&self.pool)
@@ -848,7 +888,16 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             let Json(value): Json<serde_json::Value> = row.try_get("record").map_err(reject)?;
-            out.push(decode_publication_value(value, scope).map_err(reject)?);
+            let sequence: i64 = row.try_get("seq").map_err(reject)?;
+            let order_verified: bool = row.try_get("order_verified").map_err(reject)?;
+            let published_at: i64 = row.try_get("published_at_unix_ms").map_err(reject)?;
+            let publication = decode_publication_value(value, scope).map_err(reject)?;
+            out.push(attach_publication_row(
+                publication,
+                sequence,
+                published_at,
+                order_verified,
+            )?);
         }
         Ok(out)
     }

@@ -29,7 +29,11 @@ async fn publish_resolves_scope_access_once_into_the_persisted_snapshot() {
     let resolver = Arc::new(CountingProviderResolver {
         calls: std::sync::atomic::AtomicUsize::new(0),
     });
-    let service = Arc::new(ConfigService::new(resolver.clone(), test_registrar()));
+    let catalog = Arc::new(ExecutableAgentCatalog::new());
+    let service = Arc::new(ConfigService::new(
+        resolver.clone(),
+        Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
+    ));
     let plane = ConfigPlane::new(
         service,
         store,
@@ -50,6 +54,35 @@ async fn publish_resolves_scope_access_once_into_the_persisted_snapshot() {
     assert_eq!(scope_id.as_str(), "workspace-a");
     assert_eq!(credential.credential.id, "credential-workspace-a");
     assert_eq!(publication.fingerprint, publication.snapshot.fingerprint.0);
+    // C3 the compilation is fresh, C4 the store has committed its row.
+    // E3 only the durable row's timestamp enters registration, and the
+    // returned publication reports the same fact; C3+C4=>E3.
+    assert!(publication.published_at_unix_ms.is_some(), "E3");
+    assert!(publication.publication_sequence.is_some(), "E3");
+    assert!(publication.publication_order_verified, "E3");
+    assert_eq!(
+        catalog
+            .current("workspace-a", "agent-a")
+            .unwrap()
+            .published_at_unix_ms,
+        publication.published_at_unix_ms,
+        "E3"
+    );
+    assert_eq!(
+        catalog
+            .current("workspace-a", "agent-a")
+            .unwrap()
+            .publication_sequence,
+        publication.publication_sequence,
+        "E3"
+    );
+    assert!(
+        catalog
+            .current("workspace-a", "agent-a")
+            .unwrap()
+            .publication_order_verified,
+        "E3"
+    );
     assert_eq!(
         resolver.calls.load(std::sync::atomic::Ordering::SeqCst),
         1,
@@ -248,6 +281,33 @@ async fn unreviewed_publish_converges_after_one_concurrent_revision_advance() {
         8,
         "P2 no stale revision enters the executable catalog"
     );
+}
+
+#[tokio::test]
+async fn unreadable_or_foreign_committed_publication_never_registers() {
+    // Causes: R1 source CAS first conflicts and then commits; R2 committed
+    // fingerprint cannot be read back; R3 readback carries a foreign execution
+    // Workspace; R4 readback is unavailable. Effects: E1 no registration after
+    // any broken receipt;
+    // E2 the caller receives a Store error, not a successful publication.
+    // Rules R1+R2=>E1+E2, R1+R3=>E1+E2, R1+R4=>E1+E2.
+    for (mode, rule) in [(1, "R2"), (2, "R3"), (3, "R4")] {
+        let (service, catalog) = test_service_and_catalog();
+        let registry = AdvancingPublishRegistry::default();
+        registry
+            .read_behavior
+            .store(mode, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            matches!(
+                service
+                    .publish(&scope(DEFAULT_SCOPE), &registry, "a", &[])
+                    .await,
+                Err(PublishError::Store(_))
+            ),
+            "{rule}/E2"
+        );
+        assert!(catalog.current(DEFAULT_SCOPE, "a").is_none(), "{rule}/E1");
+    }
 }
 
 #[tokio::test]
