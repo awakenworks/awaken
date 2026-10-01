@@ -206,8 +206,14 @@ fn compose_git_command(
         SandboxError::unsupported("repository Git is unavailable on the Worker's absolute PATH")
     })?;
     let mut command = std::process::Command::new(git);
+    command.args(GIT_HOST_PROCESS_FLOOR);
+    // Git for Windows keeps its legacy path limit unless this process-scoped
+    // option is set. A bounded Sandbox root can still put clone's internal
+    // `.git/objects/pack/*.keep` beyond that limit; the operator's global Git
+    // configuration is intentionally excluded from network commands below.
+    #[cfg(windows)]
+    command.args(["-c", "core.longpaths=true"]);
     command
-        .args(GIT_HOST_PROCESS_FLOOR)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env_remove(GIT_CREDENTIAL_USERNAME_ENV)
         .env_remove(GIT_CREDENTIAL_PASSWORD_ENV)
@@ -321,6 +327,88 @@ fn compose_git_command(
     }
     command.args(args);
     Ok((command, isolated_cwd))
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn credential_isolated_clone_accepts_git_internal_paths_beyond_max_path() {
+        // Cause/effect table: C1=the test-only file transport is admitted;
+        // C2=the clone destination is below MAX_PATH but Git's pack keep file
+        // crosses it; C3=network Git excludes operator global configuration.
+        // E1=the exact source HEAD is cloned; E2=the deep stage remains under
+        // the caller-selected root. R1=C1+C2+C3 -> E1+E2. A real Windows Git
+        // clone with core.longpaths=false fails at its keep file for this path.
+        const STAGE_PATH_UNITS: usize = 207;
+        const LEGACY_PATH_LIMIT: usize = 260;
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        run_git(Some(&source), &["init", "-q"]).unwrap();
+        std::fs::write(source.join("a.txt"), b"fixture").unwrap();
+        run_git(Some(&source), &["add", "a.txt"]).unwrap();
+        run_git(
+            Some(&source),
+            &[
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+        )
+        .unwrap();
+        let url = url::Url::from_directory_path(&source).unwrap().to_string();
+        let stage_name = ".awaken-repository-test.stage";
+        let fixed_length = root.path().to_string_lossy().encode_utf16().count()
+            + 3
+            + "workspace".len()
+            + stage_name.len();
+        let segment_length = STAGE_PATH_UNITS
+            .checked_sub(fixed_length)
+            .expect("Windows temporary root leaves room for the test stage");
+        let parent = root
+            .path()
+            .join("x".repeat(segment_length))
+            .join("workspace");
+        std::fs::create_dir_all(&parent).unwrap();
+        let stage = parent.join(stage_name);
+        assert_eq!(
+            stage.to_string_lossy().encode_utf16().count(),
+            STAGE_PATH_UNITS,
+            "R1/C2"
+        );
+        assert!(
+            stage
+                .join(".git/objects/pack/pack-")
+                .to_string_lossy()
+                .encode_utf16()
+                .count()
+                + 45
+                > LEGACY_PATH_LIMIT,
+            "R1/C2"
+        );
+        credentialed_git_run(
+            &url,
+            &[
+                "clone",
+                "--no-checkout",
+                url.as_str(),
+                stage.to_str().unwrap(),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            git_stdout(Some(&stage), &["rev-parse", "HEAD"]).unwrap(),
+            git_stdout(Some(&source), &["rev-parse", "HEAD"]).unwrap(),
+            "R1/E1+E2"
+        );
+    }
 }
 
 fn git_command_output(

@@ -50,6 +50,9 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
   // R4 independent random File/Memory/Repo bytes + exact HEAD must ALL contribute
   // to the output; apply the exported patch to a fresh checkout as a separate
   // oracle. A static seed, guessed HEAD or string-shaped invalid patch fails.
+  // The oracle pins Git's line-ending conversion off for patch application:
+  // Windows system core.autocrlf=true otherwise changes LF bytes to CRLF in
+  // this verification checkout, independent of the exported patch's content.
   // N1 Native reuses the SAME resources, receipt and independent output oracle.
   // Its Bash Hand changes cwd explicitly: Native has no ACP session cwd option.
   // This covers default/nested TOOL cwd, not an invented Native Agent setting.
@@ -210,8 +213,10 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
       'R1 exact Repository edit appears in the downloaded Git diff');
     const verification = fs.mkdtempSync(path.join(temp, `patch-${name}-`));
     git(['clone', '-q', remote, verification]);
-    execFileSync('git', ['apply', '--check', '-'], { cwd: verification, input: diff });
-    execFileSync('git', ['apply', '-'], { cwd: verification, input: diff });
+    const applyPatch = (args) => execFileSync('git',
+      ['-c', 'core.autocrlf=false', 'apply', ...args], { cwd: verification, input: diff });
+    applyPatch(['--check', '-']);
+    applyPatch(['-']);
     assert.equal(fs.readFileSync(path.join(verification, `result-${name}.txt`), 'utf8'), expected,
       'R4 independently applying the patch reproduces all resource bytes and exact HEAD');
   };
