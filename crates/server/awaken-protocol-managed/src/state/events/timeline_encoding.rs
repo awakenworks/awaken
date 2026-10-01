@@ -9,9 +9,7 @@
 //! Consumers: every Managed projector that publishes a timeline fact.
 
 use super::*;
-use awaken_managed_session_events::{
-    FactKind, FactRole, IssuedToolEvent, RunFault, StopFact, TimelineFact,
-};
+use awaken_managed_session_events::{FactKind, FactRole, RunFault, StopFact, TimelineFact};
 
 /// Resolve a stop fact to the Managed stop reason, naming each answerable
 /// call by the public tool event that `owner_thread_id`'s stream published.
@@ -266,52 +264,6 @@ impl SessionRecord {
         self.publish_fact(fact, price_snapshot)?;
         Ok(true)
     }
-}
-
-/// The published built-in tool uses and results, seen neutrally, in
-/// publication order.
-pub(super) fn issued_tool_events(record: &SessionRecord) -> Vec<IssuedToolEvent<'_>> {
-    let session_id = record.session.id.as_str();
-    let primary = public_thread_id(session_id, session_id);
-    record
-        .events
-        .iter()
-        .filter_map(|event| {
-            let owned = record.event_thread_owners.contains_key(&event.id);
-            match &event.kind {
-                OutboundKind::AgentToolUse { name, input, .. } => {
-                    let identity = decode_managed_tool_event_id(&event.id);
-                    Some(IssuedToolEvent::Use {
-                        event_id: &event.id,
-                        call_id: identity.map_or(event.id.as_str(), |identity| identity.call_id),
-                        source: identity.map(|identity| {
-                            let thread = if identity.thread_id == primary {
-                                session_id
-                            } else {
-                                identity.thread_id
-                            };
-                            (thread, identity.source_id)
-                        }),
-                        name,
-                        input,
-                        owned,
-                    })
-                }
-                OutboundKind::AgentToolResult {
-                    tool_use_id,
-                    content,
-                    is_error,
-                } => Some(IssuedToolEvent::Result {
-                    event_id: &event.id,
-                    tool_use_id,
-                    content,
-                    is_error: *is_error,
-                    owned,
-                }),
-                _ => None,
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]

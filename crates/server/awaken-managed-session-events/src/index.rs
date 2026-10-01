@@ -254,6 +254,13 @@ impl<'a> OrderIndex<'a> {
             .and_then(|thread| thread.snapshot.commit_timestamps.get(&cursor).copied())
     }
 
+    /// The exact occurrence classifier already built for this Thread's
+    /// committed snapshot. Coordination reuses it instead of refolding the
+    /// same ToolUse/ToolResult prefix behind the ordering index.
+    pub fn transcript_evidence(&self, thread_id: &str) -> Option<&CommittedTranscriptEvidence> {
+        self.threads.get(thread_id).map(|thread| &thread.transcript)
+    }
+
     fn retain_earliest<K: std::hash::Hash + Eq>(
         orders: &mut HashMap<K, CanonicalOrder>,
         key: K,

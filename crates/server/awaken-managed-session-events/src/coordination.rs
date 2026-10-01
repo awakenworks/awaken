@@ -2,16 +2,16 @@
 // @formal reason: Parent-to-child coordination facts and their order, moved from the Managed projector:
 // @formal reason: the first eligible receipt of each `send_message` call, the exact link it targets,
 // @formal reason: max(source,result) commit anchoring and terminal-report ordering. Pure over the
-// @formal reason: published tool calls/results and committed evidence. Adjacent decision tables and
+// @formal reason: committed tool calls/results and committed evidence. Adjacent decision tables and
 // @formal reason: warm/cold late-result integration tests cover behavior; reducer TCB linked to the
 // @formal reason: paired-publication obligation, not a proof of joins or canonicalizer equivalence.
 //! Coordination between the primary Thread and its coordinated children.
 //!
 //! A parent `send_message` call becomes a cross-Thread message once its first
 //! eligible tool result accepts it for one exact child. These rules read the
-//! calls and results the protocol already published (their public identity is
-//! the protocol's), and decide which coordination facts exist and where each
-//! sits in the canonical order.
+//! calls and results in the committed root Thread prefix (with the protocol's
+//! stable public identity), and decide which coordination facts exist and where
+//! each sits in the canonical order.
 //!
 //! Consumer: the protocol adapter's delegation projector and canonical sort.
 
@@ -29,10 +29,10 @@ use crate::{
     TimelineFact,
 };
 
-/// One published tool event, seen neutrally.
+/// One committed tool event, seen neutrally.
 ///
-/// Consumer: every coordination rule here. The protocol builds these views
-/// from its published events in publication order.
+/// Consumer: every coordination rule here. The committed-prefix projector
+/// builds these views from source Messages in commit order.
 #[derive(Clone, Copy, Debug)]
 pub enum IssuedToolEvent<'a> {
     /// A built-in tool use (not a custom or MCP one).
@@ -377,7 +377,7 @@ fn retain_earliest(
 /// The canonical order of every coordination fact the evidence anchors: a
 /// link at its accepted spawn (or Advisor consultation), a follow-up at its
 /// accepted call, a report at its committed report. `orders` holds the order
-/// of every already-ordered published event, by public id.
+/// of each source-qualified call and source result, by its stable identity.
 #[must_use]
 pub fn coordination_orders(
     index: &OrderIndex<'_>,

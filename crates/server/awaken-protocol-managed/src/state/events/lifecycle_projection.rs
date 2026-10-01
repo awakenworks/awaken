@@ -9,7 +9,6 @@ impl ManagedState {
     /// source-order fold. A prior warm child status is never consulted.
     pub(super) fn plan_child_activity_projection(
         &self,
-        record: &SessionRecord,
         links: &[CoordinatedThreadLink],
         events: &[RunLifecycleEvent],
         historical_pending: &std::collections::HashMap<RunLifecycleCursor, Pending>,
@@ -17,7 +16,7 @@ impl ManagedState {
             String,
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
         >,
-        index: &awaken_managed_session_events::OrderIndex<'_>,
+        plan: &awaken_managed_session_events::CommittedProjection,
     ) -> Result<
         (
             awaken_managed_session_events::ChildLifecycle,
@@ -25,20 +24,11 @@ impl ManagedState {
         ),
         StateError,
     > {
-        let issued = timeline_encoding::issued_tool_events(record);
-        let tool_orders = committed_projection::committed_tool_orders(record, index);
-        let order_refs = tool_orders
-            .iter()
-            .map(|(id, order)| (id.as_str(), *order))
-            .collect();
-        let orders =
-            awaken_managed_session_events::coordination_orders(index, &issued, links, &order_refs);
-        let cross_posts = awaken_managed_session_events::cross_posts(&issued, links);
         let mut threads = awaken_managed_session_events::initial_coordinated_threads(links);
         let projection = awaken_managed_session_events::project_child_activity(
             &mut threads,
-            &cross_posts,
-            &orders,
+            &plan.cross_posts,
+            &plan.coordination_orders,
             events,
             historical_pending,
             snapshots,
@@ -106,7 +96,7 @@ impl ManagedState {
         &self,
         record: &mut SessionRecord,
         evidence: DelegationProjectionEvidence<'_>,
-        index: &awaken_managed_session_events::OrderIndex<'_>,
+        plan: &awaken_managed_session_events::CommittedProjection,
     ) -> Result<Vec<CoordinatedThread>, StateError> {
         let DelegationProjectionEvidence {
             links,
@@ -155,12 +145,11 @@ impl ManagedState {
             debug_assert_eq!(record.child_threads[index].id, thread_id);
         }
         let (activity, mut final_threads) = self.plan_child_activity_projection(
-            record,
             links,
             lifecycle_events,
             historical_pending,
             snapshots,
-            index,
+            plan,
         )?;
         // Child transcript projection resolves answerable tool ids before
         // lifecycle Idle/usage consumes them. Keep that existing dependency

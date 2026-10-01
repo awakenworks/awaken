@@ -8,8 +8,7 @@
 //! [`awaken_managed_session_events::FactKey`] of a multiagent event, the reversible
 //! identity of a tool use, or the admission of an inbound command, resolved by
 //! [`OrderIndex`] over the candidate's committed prefix. This module owns only
-//! the Managed concerns around that order: coordination receipts read from the
-//! wire tool results, live overlays, and DTO timestamps.
+//! the Managed concerns around that order: live overlays and DTO timestamps.
 
 use super::*;
 use awaken_managed_session_events::{CanonicalOrder, FactProvenance, FactRole, OrderIndex};
@@ -17,8 +16,8 @@ use std::collections::HashMap;
 
 pub(super) struct CanonicalizationEvidence<'a> {
     pub(super) outcome_projections: &'a [AnchoredOutcomeProjection],
-    pub(super) links: &'a [CoordinatedThreadLink],
     pub(super) index: &'a OrderIndex<'a>,
+    pub(super) coordination: &'a awaken_managed_session_events::CommittedProjection,
 }
 
 fn retain_earliest<K: std::hash::Hash + Eq>(
@@ -56,31 +55,6 @@ fn keyed_event_order(
     authenticated.then(|| index.fact_order(key)).flatten()
 }
 
-pub(in crate::state::events) fn committed_tool_orders(
-    record: &SessionRecord,
-    index: &OrderIndex<'_>,
-) -> HashMap<String, CanonicalOrder> {
-    let present_types = record
-        .events
-        .iter()
-        .map(|event| event.kind.type_str())
-        .collect::<std::collections::HashSet<_>>();
-    record
-        .events
-        .iter()
-        .filter(|event| {
-            matches!(
-                event.kind,
-                OutboundKind::AgentToolUse { .. } | OutboundKind::AgentToolResult { .. }
-            )
-        })
-        .filter_map(|event| {
-            keyed_event_order(record, index, event, &present_types)
-                .map(|order| (event.id.clone(), order))
-        })
-        .collect()
-}
-
 /// Attach each live overlay to its explicit retained predecessor, or the
 /// nearest earlier retained durable event. Consume the issued order once;
 /// leading/unanchored overlays must not repeatedly rescan their whole prefix.
@@ -116,8 +90,8 @@ impl ManagedState {
     ) -> Result<(), StateError> {
         let CanonicalizationEvidence {
             outcome_projections,
-            links,
             index,
+            coordination,
         } = evidence;
         let session_id = record.session.id.clone();
 
@@ -204,21 +178,13 @@ impl ManagedState {
                 }
             }
         }
-        let coordination = awaken_managed_session_events::coordination_orders(
-            index,
-            &timeline_encoding::issued_tool_events(record),
-            links,
-            &orders
-                .iter()
-                .map(|(id, order)| (id.as_str(), *order))
-                .collect(),
-        );
         for (id, key) in &coordination_facts {
-            if let Some(order) = coordination.get(key) {
+            if let Some(order) = coordination.coordination_orders.get(key) {
                 orders.insert(id.clone(), *order);
             }
         }
         let coordination_frontier = coordination
+            .coordination_orders
             .values()
             .map(|order| order.source_commit_cursor)
             .max()
