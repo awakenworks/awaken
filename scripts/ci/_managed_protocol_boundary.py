@@ -206,7 +206,10 @@ def _rust_function_body_spans(source: str, names: set[str]) -> list[tuple[int, i
 
 
 def projection_input_boundary_violations(
-    entrypoint: str, record: str, reducers: dict[str, str]
+    entrypoint: str,
+    record: str,
+    reducers: dict[str, str],
+    adjacent_modules: dict[str, str] | None = None,
 ) -> list[str]:
     """Keep published SessionRecord content out of committed fact selection."""
     errors: list[str] = []
@@ -247,6 +250,23 @@ def projection_input_boundary_violations(
         errors.append("Managed candidate reads durable projection fields from its warm record")
     if re.search(r"\bself\.owner_scope\s*\(", entrypoint):
         errors.append("Managed candidate reads owner scope from its warm map, not the durable root")
+    for relative, source in (adjacent_modules or {}).items():
+        production = _crate_boundary_workspace.production_rust(source)
+        # Child status lives in a sibling of committed_projection.rs. Discover
+        # that sibling from the owning events directory below, rather than
+        # keeping an allow/deny list of files that would miss a module split.
+        for start, end in _rust_function_body_spans(
+            production,
+            {
+                "plan_child_activity_projection",
+                "append_child_disposition_projection",
+                "append_parent_terminal_projection",
+            },
+        ):
+            if re.search(r"\brecord\s*\.\s*child_threads\b", production[start:end]):
+                errors.append(
+                    f"{relative}: child fact selection reads rendered child Thread status"
+                )
     for relative, source in reducers.items():
         if Path(relative).stem in test_only_modules:
             continue
@@ -282,10 +302,15 @@ def check_projection_input_boundary(repo_root: Path) -> list[str]:
         str(path.relative_to(repo_root)): path.read_text(encoding="utf-8")
         for path in sorted(module.with_suffix("").rglob("*.rs"))
     }
+    adjacent_modules = {
+        str(path.relative_to(repo_root)): path.read_text(encoding="utf-8")
+        for path in sorted(module.parent.rglob("*.rs"))
+    }
     return projection_input_boundary_violations(
         module.read_text(encoding="utf-8"),
         record.read_text(encoding="utf-8"),
         reducers,
+        adjacent_modules,
     )
 
 
@@ -434,6 +459,18 @@ fn into_delivery_memo(self) {
         + " fn reduce(shared: &ManagedState) { let alias = &shared.sessions; alias.lock(); }"
     }
     assert projection_input_boundary_violations(entry, record, alias_leak), "P5/E2 alias"
+    child_status_leak = {
+        "lifecycle_projection.rs": "fn plan_child_activity_projection(record: &SessionRecord) { record.child_threads.iter(); }"
+    }
+    assert projection_input_boundary_violations(
+        entry, record, {}, child_status_leak
+    ), "P7/E2 child output read"
+    child_wire_write = {
+        "lifecycle_projection.rs": "fn append_delegation_projections(record: &mut SessionRecord) { record.child_threads.push(child); }"
+    }
+    assert projection_input_boundary_violations(
+        entry, record, {}, child_wire_write
+    ) == [], "P7/E1 output write"
     assert projection_input_boundary_violations(
         entry + " fn late(&self) { self.owner_scope(session_id); }", record, {}
     ), "P6/E2 warm owner"
