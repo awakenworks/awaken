@@ -168,9 +168,7 @@ impl SharedHost {
                 &awaken_runtime_contract::resume::ResumeCommand::from_ticket(
                     &ticket,
                     result,
-                    awaken_agent_contract::clock::Clock::now_ms(
-                        &awaken_agent_contract::clock::SystemClock,
-                    ),
+                    awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref()),
                 ),
             )
             .map_err(|error| HostError::bad_request(error.to_string()))?;

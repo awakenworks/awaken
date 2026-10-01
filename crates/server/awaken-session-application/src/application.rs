@@ -425,10 +425,10 @@ impl SessionApplication {
         }
         for scoped in scan.sessions {
             let session = scoped.session;
-            if !session
+            if session
                 .realization
                 .as_ref()
-                .is_some_and(|lease| lease.owner == worker_id)
+                .is_none_or(|lease| lease.owner != worker_id)
             {
                 return Err(RunError::unavailable(
                     "Worker realization-owner read disagrees with Session root",

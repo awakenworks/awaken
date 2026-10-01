@@ -77,7 +77,7 @@ pub(crate) fn domain_router_with_authenticator(
 fn authenticate_observer(
     authenticator: &dyn awaken_service_auth_contract::ServiceRequestAuthenticator,
     headers: &HeaderMap,
-) -> Result<(), axum::response::Response> {
+) -> Result<(), StatusCode> {
     match authenticator.authenticate(
         headers
             .get(header::AUTHORIZATION)
@@ -89,13 +89,13 @@ fn authenticate_observer(
     ) {
         Ok(_) => Ok(()),
         Err(awaken_service_auth_contract::ServiceAuthError::Unauthorized) => {
-            Err(StatusCode::UNAUTHORIZED.into_response())
+            Err(StatusCode::UNAUTHORIZED)
         }
         Err(awaken_service_auth_contract::ServiceAuthError::Forbidden) => {
-            Err(StatusCode::FORBIDDEN.into_response())
+            Err(StatusCode::FORBIDDEN)
         }
         Err(awaken_service_auth_contract::ServiceAuthError::Unavailable(_)) => {
-            Err(StatusCode::SERVICE_UNAVAILABLE.into_response())
+            Err(StatusCode::SERVICE_UNAVAILABLE)
         }
     }
 }
@@ -108,8 +108,8 @@ async fn handle_domain(
         axum::extract::rejection::QueryRejection,
     >,
 ) -> axum::response::Response {
-    if let Err(response) = authenticate_observer(state.authenticator.as_ref(), &headers) {
-        return response;
+    if let Err(status) = authenticate_observer(state.authenticator.as_ref(), &headers) {
+        return status.into_response();
     }
     let identity = match query {
         Ok(Query(identity)) => identity,
@@ -189,8 +189,8 @@ async fn handle_list(
     State(state): State<BoundaryState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(response) = authenticate_observer(state.authenticator.as_ref(), &headers) {
-        return response;
+    if let Err(status) = authenticate_observer(state.authenticator.as_ref(), &headers) {
+        return status.into_response();
     }
     match state.source.list().await {
         Ok(workers) => (StatusCode::OK, Json(Ok::<_, String>(workers))).into_response(),

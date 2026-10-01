@@ -1,3 +1,6 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Native Run reads project existing committed Session and Dispatch
+// @formal reason: facts; replies delegate to the one Session coordination admission.
 //! Exact Run reads over the existing Session, dispatch and Thread authorities.
 
 use awaken_agent_contract::RunLifecycleCursor;
@@ -83,7 +86,7 @@ impl SessionApplication {
                 ),
             ));
         }
-        let mut dispatch = if limit == 0 {
+        let dispatch = if limit == 0 {
             DispatchPage {
                 events: Vec::new(),
                 next_cursor: dispatch_after,
@@ -96,13 +99,10 @@ impl SessionApplication {
                         "Session dispatch observation source is unavailable".into(),
                     )
                 })?
-                .events_after(dispatch_after, limit)
+                .events_after(dispatch_after, limit, Some(run_id))
                 .await
                 .map_err(|error| SessionProjectionRecoveryError::Unavailable(error.to_string()))?
         };
-        dispatch
-            .events
-            .retain(|event| event.operation.run_id() == run_id);
         let snapshot = self
             .runtime()
             .session_thread_run_recovery_snapshot(session_id, session_id.as_str(), run_id)
@@ -139,9 +139,6 @@ impl SessionApplication {
             .iter()
             .find(|run| &run.id == run_id && run.thread_id.0 == session_id.as_str())
             .ok_or(SessionProjectionRecoveryError::NotFound)?;
-        dispatch
-            .events
-            .retain(|event| event.operation.run_id() == run_id);
         let mut lifecycle = snapshot
             .lifecycle_events_after(lifecycle_after, limit)
             .map_err(|error| {

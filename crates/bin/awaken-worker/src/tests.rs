@@ -695,7 +695,8 @@ async fn namespace_fallback_manifest_participant() {
 
     let stale = derive_standard_manifest(StandardManifestInputs {
         deployment: &deployment,
-        materializer: None,
+        inference_schemes: &Default::default(),
+        inference_credentials: &Default::default(),
         credential_materializer: None,
         brokered_acp_model_access: None,
         worker_local_credential_resolver_installed: false,

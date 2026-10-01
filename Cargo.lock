@@ -2415,8 +2415,6 @@ dependencies = [
  "awaken-store-sqlite",
  "awaken-tenancy",
  "awaken-worker-registry",
- "awaken-worker-runtime",
- "awaken-worker-transport-security",
  "axum",
  "base64 0.22.1",
  "futures-util",

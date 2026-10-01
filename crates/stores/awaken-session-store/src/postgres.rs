@@ -1025,10 +1025,10 @@ impl PostgresManagedSessionRepository {
                 revision: row.try_get("revision").map_err(storage)?,
             })
             .map_err(corrupt)?;
-            if !session
+            if session
                 .realization
                 .as_ref()
-                .is_some_and(|lease| lease.owner == worker_id)
+                .is_none_or(|lease| lease.owner != worker_id)
             {
                 return Err(corrupt(
                     "Worker realization-owner index disagrees with Session root",
