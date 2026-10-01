@@ -692,7 +692,7 @@ mod runtime_session_store_tests {
         }
     }
 
-    fn session(id: &awaken_session_types::SessionId) -> PersistedSession {
+    pub(super) fn session(id: &awaken_session_types::SessionId) -> PersistedSession {
         PersistedSession {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
@@ -892,6 +892,8 @@ mod runtime_session_store_tests {
 mod process_role_surface_tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    use awaken_agent_contract::stable_fingerprint;
+    use awaken_session_state_contract::IdempotencyRecord;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt as _;
@@ -1155,14 +1157,22 @@ mod process_role_surface_tests {
             .expect("Coordinator test owns WorkQueue")
             .environment_work
             .clone();
+        let domain_sessions = coordinator_stores
+            .coordinator
+            .as_ref()
+            .expect("Coordinator test owns Session roots")
+            .sessions
+            .clone();
         let worker_directory = awaken_coordinator::test_worker_directory();
         // Domain-observation decision table: C1 private service token valid,
-        // C2 exact incarnation exists, C3 Dispatch and WorkQueue are empty.
+        // C2 exact incarnation exists, C3 Dispatch, WorkQueue and Session
+        // realization-owner reads are empty.
         // R1 no token -> 401 before query parsing; R2 valid token + exact
         // record + empty owners -> one read-only 200 projection; R3 missing
         // record -> 409, never a false empty-domain proof. R4 claimed Work,
         // even past its lease deadline, -> occupied; R5 ordinary owner release
-        // -> empty. Public listener remains absent in the role matrix above.
+        // -> empty. R6 exact expired Session realization with unfinished
+        // cleanup -> occupied. Public listener remains absent in the role matrix.
         let mut domain_manifest = awaken_worker_contract::WorkerManifest::default();
         domain_manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
         domain_manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
@@ -1336,6 +1346,7 @@ mod process_role_surface_tests {
         );
         assert_eq!(observed["physical_attempt_active"], false);
         assert_eq!(observed["work_claims_active"], false);
+        assert_eq!(observed["session_realizations_active"], false);
         domain_work
             .enqueue_session(
                 "domain-env",
@@ -1402,6 +1413,46 @@ mod process_role_surface_tests {
             .await
             .unwrap();
         assert_eq!(missing.status(), StatusCode::CONFLICT, "R3");
+        let mut realized = super::runtime_session_store_tests::session(
+            &awaken_session_types::SessionId::from("domain-affinity"),
+        );
+        realized.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+            owner: domain_identity.worker_id.clone(),
+            runtime_incarnation: "domain-test:old-pod".into(),
+            epoch: 1,
+            expires_at_unix_ms: 1,
+        });
+        let payload_hash = stable_fingerprint(&realized);
+        domain_sessions
+            .create(
+                "workspace",
+                realized,
+                IdempotencyRecord {
+                    key: "test:worker-domain-affinity".into(),
+                    payload_hash,
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("R6 durable Session realization owner");
+        let session_occupied = private_coordinator
+            .clone()
+            .oneshot(
+                Request::get(&domain_path)
+                    .header("authorization", "Bearer registration-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(session_occupied.status(), StatusCode::OK, "R6");
+        let session_occupied: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(session_occupied.into_body(), 1_000_000)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(session_occupied["session_realizations_active"], true, "R6");
         let session_on_private = private_coordinator
             .clone()
             .oneshot(Request::get("/v1/sessions").body(Body::empty()).unwrap())

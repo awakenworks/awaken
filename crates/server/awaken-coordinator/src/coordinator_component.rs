@@ -292,6 +292,7 @@ pub async fn build_coordinator_component(
             worker_directory.clone(),
             host.clone(),
             environments.clone(),
+            session_application.clone(),
             authenticator.clone(),
         )
     });

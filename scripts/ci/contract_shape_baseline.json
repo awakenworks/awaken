@@ -16,6 +16,9 @@
         "production_lines": "Keep typed continuation provenance beside MessageId minting and existing steer/report classifiers; seven net production lines after consolidating duplicate Session-scoped identity formatting. No new contract dependency, port, protocol field, or stored authority. This slice adds the versioned caller toolset value beside Agent toolsets and the committed ResumeTicket, one pure fact shared by activation and recovery. Bind durable ToolResult MessageId to the existing ToolBatch Run and Step coordinate instead of response-local provider call IDs, and recognize canonical new IDs while reading legacy committed results; no new port, protocol field, or stored authority."
       }
     },
+    "awaken-container-contract": {
+      "depth": 2
+    },
     "awaken-credential-contract": {
       "depth": 1,
       "production_lines": 2425,
@@ -47,7 +50,7 @@
     },
     "awaken-provisioning-contract": {
       "depth": 1,
-      "production_lines": 4464,
+      "production_lines": 4463,
       "catch_all_errors": 3,
       "growth_reasons": {
         "production_lines": "SandboxEffectFence becomes the kernel EffectFence over the SandboxRealization tenure: one admission shared by new() and the flat-wire decoder (nonzero epoch, non-blank identity), typed accessors replacing public fields, and the FenceTamper fixture for provider decision tables (+42); validate_identity() callers are gone because the invariant is structural",
@@ -63,10 +66,10 @@
     },
     "awaken-dispatch-contract": {
       "depth": 7,
-      "production_lines": 2412,
+      "production_lines": 2440,
       "catch_all_errors": 3,
       "growth_reasons": {
-        "production_lines": "Canonical Epoch deserialization on four existing dispatch wire fields rejects unminted zero grants; no new types, dependencies or grant rules.",
+        "production_lines": "Native Run observation adds one data-only dispatch page to the existing Run ingress contract, and physical Worker admission adds one required ControlDispatchQueue method. Both reuse the canonical Dispatch and Registry authorities; the existing canonical Epoch decoder still rejects zero grants. No parallel transport or default capability is added.",
         "depth": "Removing the compatibility facade exposes direct domain-owner dependencies; retaining explicit state, realization, runtime, and ingress boundaries avoids a replacement aggregator."
       }
     },
@@ -100,6 +103,9 @@
     },
     "awaken-session-dream-contract": {
       "depth": 1
+    },
+    "awaken-session-environment-contract": {
+      "depth": 2
     },
     "awaken-session-error-contract": {
       "depth": 0

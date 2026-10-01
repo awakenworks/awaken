@@ -86,6 +86,7 @@ impl awaken_dispatch_contract::DispatchOperationalFeed for ObservedDispatchFeed 
         &self,
         after: awaken_dispatch_contract::DispatchCursor,
         limit: usize,
+        run: Option<&RunId>,
     ) -> Result<awaken_dispatch_contract::DispatchPage, awaken_dispatch_contract::DispatchError>
     {
         self.calls.fetch_add(1, Ordering::SeqCst);
@@ -98,6 +99,7 @@ impl awaken_dispatch_contract::DispatchOperationalFeed for ObservedDispatchFeed 
             .events
             .iter()
             .filter(|event| event.cursor.0 > after.0)
+            .filter(|event| run.is_none_or(|run| event.operation.run_id() == run))
             .take(limit)
             .cloned()
             .collect::<Vec<_>>();
@@ -115,11 +117,12 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
     // C3 another Run interleaves facts/output; C4 page limit/cursors; C5 Ended
     // truth is visible before the dispatch Done row. Effects: E1 exact Run data
     // is readable despite C2; E2 other Run facts/output never leak; E3 cursors
-    // advance across inspected foreign facts; E4 separate pages preserve the
+    // skip foreign dispatch facts before the limit and advance lifecycle cursors
+    // across inspected foreign facts; E4 separate pages preserve the
     // original Done cursor; E5 zero limit preserves cursors without reading the
     // feed; E6 the query performs no Session write. Terminal projection belongs
     // to the Flow consumer and must wait for that Done fact.
-    // R1=C1+C2+C3+limit2 => E1/E2/E3/E6; R2=R1+next => E4;
+    // R1=C1+C2+C3+limit1 => E1/E2/E3/E6; R2=R1+next => E4;
     // R3=R1+limit0 => E5/E6; R4=exact replay => byte-identical page.
     use awaken_dispatch_contract::{
         DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOutcome, RunClaim,
@@ -235,7 +238,7 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
             &run,
             DispatchCursor(0),
             awaken_agent_contract::RunLifecycleCursor(0),
-            2,
+            1,
         )
         .await
         .unwrap();
@@ -243,10 +246,10 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
     assert_eq!(page.response, "exact native output", "E2");
     assert_eq!(page.dispatch.events.len(), 1, "E2");
     assert_eq!(page.dispatch.events[0].cursor.0, 7);
-    assert_eq!(page.dispatch.next_cursor.0, 8, "E3");
+    assert_eq!(page.dispatch.next_cursor.0, 7, "E3");
     assert_eq!(page.lifecycle.events.len(), 1, "E2");
     assert_eq!(page.lifecycle.events[0].cursor.0, 1_000);
-    assert_eq!(page.lifecycle.next_cursor.0, 2_000, "E3");
+    assert_eq!(page.lifecycle.next_cursor.0, 1_000, "E3");
     let replay = application
         .session_run_events_after(
             "workspace",
@@ -254,7 +257,7 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
             &run,
             DispatchCursor(0),
             awaken_agent_contract::RunLifecycleCursor(0),
-            2,
+            1,
         )
         .await
         .unwrap();
@@ -266,12 +269,13 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
             &run,
             page.dispatch.next_cursor,
             page.lifecycle.next_cursor,
-            2,
+            1,
         )
         .await
         .unwrap();
     assert_eq!(next.dispatch.events[0].cursor.0, 9, "E4");
     assert!(next.lifecycle.events.is_empty());
+    assert_eq!(next.lifecycle.next_cursor.0, 2_000, "E3");
     let calls = feed.calls.load(Ordering::SeqCst);
     let empty = application
         .session_run_events_after(

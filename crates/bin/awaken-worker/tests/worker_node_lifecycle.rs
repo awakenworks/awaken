@@ -754,7 +754,10 @@ fn static_and_registered_application_sources_are_mutually_exclusive() {
     let factory: awaken_worker::RegisteredWorkerApplicationFactory =
         Arc::new(|_| Ok(WorkerApplicationDependencies::default()));
     for reverse in [false, true] {
-        let builder = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"));
+        let builder = WorkerNodeBuilder::new(
+            WorkerUpstream::new("http://control"),
+            awaken_lease_contract::system_clock(),
+        );
         let builder = if reverse {
             builder
                 .with_registered_application_factory(
@@ -776,15 +779,18 @@ fn static_and_registered_application_sources_are_mutually_exclusive() {
         );
     }
     assert!(
-        WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
-            .with_registered_application_factory(
-                WorkerApplicationCapabilities::default(),
-                factory.clone()
-            )
-            .with_registered_application_factory(WorkerApplicationCapabilities::default(), factory)
-            .with_manifest(manifest())
-            .build()
-            .is_err(),
+        WorkerNodeBuilder::new(
+            WorkerUpstream::new("http://control"),
+            awaken_lease_contract::system_clock(),
+        )
+        .with_registered_application_factory(
+            WorkerApplicationCapabilities::default(),
+            factory.clone()
+        )
+        .with_registered_application_factory(WorkerApplicationCapabilities::default(), factory)
+        .with_manifest(manifest())
+        .build()
+        .is_err(),
         "R2"
     );
 }

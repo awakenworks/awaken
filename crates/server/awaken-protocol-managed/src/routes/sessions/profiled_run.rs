@@ -34,7 +34,8 @@ pub async fn get_profiled_session_run_events(
     Query(query): Query<awaken_protocol_awaken::ProfiledSessionRunEventsQuery>,
 ) -> Result<Json<awaken_dispatch_contract::SessionRunEventPage>, WireErr> {
     state
-        .session_application()
+        .roles
+        .profiled
         .session_run_events_after(
             &owner_scope,
             &awaken_session_types::SessionId::from(id),
@@ -74,7 +75,8 @@ pub async fn resume_profiled_session_run(
         receipt.run_id.clone(),
     );
     state
-        .session_application()
+        .roles
+        .profiled
         .reply_profiled_session_run_for_owner(&owner_scope, command)
         .await
         .map_err(session_projection_error)?;

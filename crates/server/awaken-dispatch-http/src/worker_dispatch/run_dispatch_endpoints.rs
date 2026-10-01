@@ -625,5 +625,5 @@ mod admission_cancellation_tests {
             RegistryMutation::Applied,
             "R2"
         );
-}
+    }
 }

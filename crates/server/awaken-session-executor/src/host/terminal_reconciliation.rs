@@ -83,24 +83,32 @@ impl SharedHost {
         directory: Arc<dyn awaken_dispatch::WorkerDirectory>,
         source: Arc<dyn awaken_dispatch::WorkerExecutionStopSource>,
     ) -> Result<(), HostError> {
-        self.dispatch.terminal_reconciliation.worker_evidence
+        self.dispatch
+            .terminal_reconciliation
+            .worker_evidence
             .set((directory, source))
             .map_err(|_| HostError::internal("Worker evidence reconciliation already bound"))
     }
 
     pub(super) async fn reconcile_worker_evidence(&self) -> Result<(), awaken_dispatch::Error> {
-        let Some((directory, source)) = self.dispatch.terminal_reconciliation.worker_evidence.get() else {
+        let Some((directory, source)) = self.dispatch.terminal_reconciliation.worker_evidence.get()
+        else {
             return Ok(());
         };
         let dispatch = self
             .dispatch_store()
             .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
-        let now = awaken_dispatch::Clock::now_ms(&awaken_dispatch::SystemClock);
+        let now = awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref());
         let mut records = directory
             .list()
             .await
             .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
-        let Ok(mut after) = self.dispatch.terminal_reconciliation.worker_evidence_after.try_lock() else {
+        let Ok(mut after) = self
+            .dispatch
+            .terminal_reconciliation
+            .worker_evidence_after
+            .try_lock()
+        else {
             return Ok(());
         };
         records.sort_by(|a, b| {
@@ -496,7 +504,7 @@ mod tests {
         let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "fixture")
             .with_dispatch_store(Arc::new(
                 awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
-                    awaken_dispatch::ManualClock::new(0),
+                    awaken_lease_testkit::ManualClock::new(0),
                 ))
                 .unwrap(),
             ));
@@ -575,7 +583,7 @@ mod tests {
                     .identity,
             );
         }
-        let clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let dispatch = Arc::new(
             awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone()).unwrap(),
         );

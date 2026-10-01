@@ -772,6 +772,9 @@ impl SessionRepository for PostgresManagedSessionRepository {
         use awaken_session_state_contract::SessionScanQuery;
         match query {
             SessionScanQuery::Reconcilable { after } => self.scan_reconcilable(after).await,
+            SessionScanQuery::WorkerRealizationOwner { worker_id } => {
+                self.scan_worker_realization_owner(worker_id).await
+            }
             SessionScanQuery::Workspace { workspace_id } => Ok(Self::scoped_scan(
                 workspace_id,
                 self.scan_workspace(workspace_id).await?,
@@ -993,6 +996,49 @@ impl PostgresManagedSessionRepository {
             });
         }
         tx.commit().await.map_err(storage)?;
+        Ok(scan)
+    }
+
+    async fn scan_worker_realization_owner(
+        &self,
+        worker_id: &str,
+    ) -> Result<SessionScan, SessionRepositoryError> {
+        // Filter by the one serialized root, including the historical unwrapped
+        // encoding. A malformed row fails the read; it cannot prove an empty
+        // Worker domain. The application alone classifies cleanup completion.
+        let rows = sqlx::query(
+            "SELECT scope_id, aggregate_json, revision FROM managed_session
+             WHERE COALESCE(
+               aggregate_json::jsonb #>> '{aggregate,realization,owner}',
+               aggregate_json::jsonb #>> '{realization,owner}'
+             ) = $1 ORDER BY session_id",
+        )
+        .bind(worker_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        let mut scan = SessionScan::default();
+        for row in rows {
+            let workspace_id: String = row.try_get("scope_id").map_err(storage)?;
+            let session = decode(EncodedSessionRow {
+                aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
+                revision: row.try_get("revision").map_err(storage)?,
+            })
+            .map_err(corrupt)?;
+            if session
+                .realization
+                .as_ref()
+                .is_none_or(|lease| lease.owner != worker_id)
+            {
+                return Err(corrupt(
+                    "Worker realization-owner index disagrees with Session root",
+                ));
+            }
+            scan.sessions.push(ScopedPersistedSession {
+                workspace_id,
+                session,
+            });
+        }
         Ok(scan)
     }
 
