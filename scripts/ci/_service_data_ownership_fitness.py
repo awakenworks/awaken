@@ -85,6 +85,7 @@ WEBHOOK_MANAGED_SOURCE = "crates/server/awaken-webhook-managed/src/lib.rs"
 WEBHOOK_CONTROL_PLANE_SOURCE = (
     "crates/server/awaken-webhook-managed/src/control_plane.rs"
 )
+WEBHOOK_AUTHORING_SOURCE = "crates/control/awaken-control/src/webhook_authoring.rs"
 EXECUTABLE_AGENT_CONTRACT_SOURCE = (
     "crates/contract/awaken-executable-agent-contract/src/lib.rs"
 )
@@ -467,7 +468,7 @@ NON_PRODUCT_APIS = (
     ),
     (
         "webhook webhook_config_router_loopback",
-        WEBHOOK_CONTROL_PLANE_SOURCE,
+        WEBHOOK_AUTHORING_SOURCE,
         r"\bpub\s+fn\s+webhook_config_router_loopback\b",
         FEATURE_TEST_SUPPORT_GATE,
     ),
@@ -1511,12 +1512,10 @@ def selftest() -> None:
         + "impl Default for ReqwestSender {}\n"
         + any_gate
         + "pub fn with_timeout() {}",
-        WEBHOOK_CONTROL_PLANE_SOURCE: (
-            feature_gate
-            + "pub fn loopback_lifecycle_delivery() {}\n"
-            + feature_gate
-            + "pub fn webhook_config_router_loopback() {}"
-        ),
+        WEBHOOK_CONTROL_PLANE_SOURCE: feature_gate
+        + "pub fn loopback_lifecycle_delivery() {}",
+        WEBHOOK_AUTHORING_SOURCE: feature_gate
+        + "pub fn webhook_config_router_loopback() {}",
     }
     assert non_product_surface_violations(volatile_surfaces) == []  # O17
     for label, path, declaration, gate in NON_PRODUCT_APIS:

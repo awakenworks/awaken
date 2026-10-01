@@ -113,7 +113,12 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     // 3. A managed surface over the canonical lifecycle composition. Only the
     // delivery transport admits this in-process loopback receiver; notifier and
     // replay ownership remain identical to production.
-    let delivery = webhooks::loopback_lifecycle_delivery(store, secrets, None);
+    let delivery = webhooks::loopback_lifecycle_delivery(
+        Arc::new(
+            awaken_control::webhook_authoring::ConfigPlaneSubscriptionSource::new(store, secrets),
+        ),
+        None,
+    );
     let host = awaken_scenario_host::build_unmounted_host(Arc::new(DeadModel), "test");
     let managed = Arc::new(
         ManagedState::new(ManagedHost::new(host).install_dispatch_session_runtime())

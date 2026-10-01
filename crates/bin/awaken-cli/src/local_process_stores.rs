@@ -86,8 +86,12 @@ pub(super) fn in_memory_split_coordinator() -> (ProcessStores, ControlServices) 
         .with_probe(Arc::new(ExtMcpProbe)),
     );
     let webhooks = awaken_webhook_managed::config_plane_lifecycle_delivery(
-        control.webhooks,
-        control.secrets,
+        Arc::new(
+            awaken_control::webhook_authoring::ConfigPlaneSubscriptionSource::new(
+                control.webhooks,
+                control.secrets,
+            ),
+        ),
         None,
     );
     let consent = Arc::new(
