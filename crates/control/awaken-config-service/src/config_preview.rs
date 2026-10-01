@@ -161,6 +161,9 @@ impl ConfigService {
                 workspace_id: workspace.as_str().to_owned(),
                 agent_id: preview_id.to_owned(),
                 source_revision,
+                published_at_unix_ms: None,
+                publication_sequence: None,
+                publication_order_verified: false,
                 snapshot: snapshot.clone(),
                 session_profile,
             })

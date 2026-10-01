@@ -89,6 +89,7 @@ WEBHOOK_AUTHORING_SOURCE = "crates/control/awaken-control/src/webhook_authoring.
 EXECUTABLE_AGENT_CONTRACT_SOURCE = (
     "crates/contract/awaken-executable-agent-contract/src/lib.rs"
 )
+EXECUTABLE_AGENT_CATALOG_SOURCE = "crates/server/awaken-executable-agent-catalog/src/lib.rs"
 PROTOCOL_MODEL_SOURCE = "crates/server/awaken-protocol-managed/src/control/models.rs"
 RUNTIME_PROCESS_ROUTER = "crates/bin/awaken-cli/src/runtime_process_router.rs"
 CREDENTIAL_INFERENCE_SOURCE = (
@@ -1073,23 +1074,29 @@ def webhook_mutation_authority_violations(source: str) -> list[str]:
 
 def model_inventory_authority_violations(
     contract_source: str,
+    catalog_source: str,
     coordinator_source: str,
     protocol_source: str,
     startup_source: str,
 ) -> list[str]:
-    """Keep one model-reference rule over executable Agent inventory."""
+    """Keep one model-reference rule and factual first-time projection."""
 
     errors: list[str] = []
     if contract_source.count("pub async fn current_model_references(") != 1:
         errors.append(
             "executable Agent contract must own exactly one current-model rule"
         )
-    for owner, source in (
-        ("Coordinator Dream readiness", coordinator_source),
-        ("Managed model projection", protocol_source),
-    ):
-        if "current_model_references(" not in source:
-            errors.append(f"{owner} bypasses the executable Agent inventory rule")
+    if contract_source.count("pub fn project_current_model_publications") != 1:
+        errors.append("executable Agent contract must own one model publication projection")
+    reference_owner = contract_source.split("pub async fn current_model_references(", 1)[-1]
+    if not re.search(r"registrations\s*\.\s*current_model_publications\s*\(", reference_owner):
+        errors.append("current model references bypass the publication projection")
+    if "project_current_model_publications(" not in catalog_source:
+        errors.append("executable Agent catalog bypasses the one model publication projector")
+    if "current_model_references(" not in coordinator_source:
+        errors.append("Coordinator Dream readiness bypasses the executable Agent inventory rule")
+    if not re.search(r"registrations\s*\.\s*current_model_publications\s*\(", protocol_source):
+        errors.append("Managed model projection bypasses the executable Agent inventory rule")
     if startup_source.count("let model_inventory:") != 1:
         errors.append("runtime startup must select exactly one executable Agent inventory")
     for forbidden in (
@@ -1635,20 +1642,30 @@ def selftest() -> None:
     ]  # O36
     # Model inventory FMECA/cause-effect table: FM1 independent Dream/HTTP model
     # normalization diverges; FM2 a Control catalog reader returns beside the
-    # executable publication inventory. R41 one rule + both consumers + one
-    # startup inventory => accept; R42 any missing cause or retired directory => reject.
+    # executable publication inventory. R41 one publication projector + both
+    # consumers + one startup inventory => accept; R42 missing ownership or a
+    # retired directory => reject.
     assert model_inventory_authority_violations(
-        "pub async fn current_model_references(",
+        "pub async fn current_model_references( registrations.current_model_publications( pub fn project_current_model_publications",
+        "project_current_model_publications(",
         "current_model_references(",
-        "current_model_references(",
+        "registrations.current_model_publications(",
         "let model_inventory:",
     ) == []  # O41
     assert model_inventory_authority_violations(
-        "pub async fn current_model_references(",
+        "pub async fn current_model_references( registrations.current_model_publications( pub fn project_current_model_publications",
+        "project_current_model_publications(",
         "ModelDirectory current_model_references(",
         "",
         "let model_inventory: let model_inventory:",
     )  # O42 retired path, missing consumer, and duplicate selection
+    assert model_inventory_authority_violations(
+        "pub async fn current_model_references( registrations.current_model_publications( pub fn project_current_model_publications",
+        "",
+        "current_model_references(",
+        "registrations.current_model_publications(",
+        "let model_inventory:",
+    ) == ["executable Agent catalog bypasses the one model publication projector"]  # O42a
     assert inference_materializer_authority_violations(
         "struct PinnedCandidateExecutor;",
         "pub mod coordinator_component;",
@@ -1882,6 +1899,7 @@ def check_all(repo_root: Path) -> list[str]:
         errors.append(f"awaken-cli persistence ownership: {error}")
     for error in model_inventory_authority_violations(
         (repo_root / EXECUTABLE_AGENT_CONTRACT_SOURCE).read_text(encoding="utf-8"),
+        (repo_root / EXECUTABLE_AGENT_CATALOG_SOURCE).read_text(encoding="utf-8"),
         (repo_root / COORDINATOR_SOURCE).read_text(encoding="utf-8"),
         (repo_root / PROTOCOL_MODEL_SOURCE).read_text(encoding="utf-8"),
         (repo_root / RUNTIME_PROCESS_ROUTER).read_text(encoding="utf-8"),

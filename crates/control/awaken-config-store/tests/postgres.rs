@@ -16,12 +16,60 @@ use awaken_agent_config::{
     ManagementEffect, PublicationState, PublicationWrite, ScopeId, ScopedConfigRegistry,
     StoredPublication, compile_resolved,
 };
-use awaken_config_store::PostgresConfigStore;
+use awaken_config_store::{PostgresConfigStore, config_bundle};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use sqlx::Executor;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::sync::Arc;
+
+#[tokio::test]
+async fn postgres_publication_order_migration_does_not_certify_old_rows() {
+    // Causes: M1 a pre-lock V11 publication row; M2 V12 migration; M3 reopen
+    // through the existing schema verifier. Effects: E1 the row remains but
+    // its commit order is unverified; E2 reopen does not promote its marker.
+    // Rules M1+M2=>E1, M1+M2+M3=>E2.
+    let Some(pool) = schema_pool("t_config_pub_order_migration").await else {
+        return;
+    };
+    let current = config_bundle().unwrap();
+    let old = awaken_scoped_migration::MigrationBundle::new(
+        "awaken.config",
+        current.migrations()[..2].to_vec(),
+    )
+    .unwrap();
+    let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+        pool.clone(),
+        "config",
+    )
+    .unwrap();
+    runner.run_bundle(&old).await.unwrap();
+    sqlx::query(
+        "INSERT INTO config_publication (fingerprint, agent_id, state, record, scope_id) \
+         VALUES ('fp-old', 'agent', 'published', '{}'::jsonb, 'ws')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    PostgresConfigStore::with_pool(pool.clone()).await.unwrap();
+    let verified: bool = sqlx::query_scalar(
+        "SELECT order_verified FROM config_publication WHERE fingerprint = 'fp-old'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(!verified, "E1");
+    PostgresConfigStore::with_existing_pool(pool.clone())
+        .await
+        .unwrap();
+    let replay: bool = sqlx::query_scalar(
+        "SELECT order_verified FROM config_publication WHERE fingerprint = 'fp-old'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(!replay, "E2");
+}
 
 #[path = "support/revision_cas.rs"]
 mod revision_cas;
@@ -615,10 +663,17 @@ fn agent_config() -> AgentConfig {
 
 #[tokio::test]
 async fn postgres_config_store_round_trips_config_and_publication() {
+    // Causes: P1 a first durable publication, P2 an exact retry, P3 a
+    // restart-equivalent history read. Effects: E1 the publication row supplies
+    // one factual sequence and instant; E2 retry preserves both; E3 point and history reads
+    // agree; E4 row metadata stays out of Control JSON. Rules P1=>E1+E4,
+    // P1+P2=>E2, P1+P3=>E3.
     let Some(pool) = schema_pool("t_config").await else {
         return;
     };
-    let store = PostgresConfigStore::with_pool(pool).await.expect("store");
+    let store = PostgresConfigStore::with_pool(pool.clone())
+        .await
+        .expect("store");
 
     let config = agent_config();
     store.put_config(&config).await.expect("put config");
@@ -644,6 +699,36 @@ async fn postgres_config_store_round_trips_config_and_publication() {
             .expect("put publication"),
         PublicationWrite::Committed { source_revision: 1 }
     );
+    // Set a deterministic historical row clock in this isolated schema. The
+    // read must use the durable row, never the current request clock.
+    sqlx::query(
+        "UPDATE config_publication SET created_at = '2024-01-01 00:00:00+00'::timestamptz \
+         WHERE fingerprint = $1",
+    )
+    .bind(&stored.fingerprint)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let first = store
+        .get_publication(&publication.fingerprint.0)
+        .await
+        .unwrap()
+        .expect("first publication");
+    assert_eq!(first.published_at_unix_ms, Some(1_704_067_200_000), "E1");
+    assert!(first.publication_order_verified, "E1 fenced PG insert");
+    assert!(
+        serde_json::to_value(&first)
+            .unwrap()
+            .get("publication_order_verified")
+            .is_none(),
+        "E4 row metadata does not change Control JSON"
+    );
+    assert!(
+        first
+            .publication_sequence
+            .is_some_and(|sequence| sequence > 0),
+        "E1"
+    );
     // Idempotent by fingerprint.
     store
         .put_publication_if_source_current(&stored)
@@ -657,6 +742,32 @@ async fn postgres_config_store_round_trips_config_and_publication() {
         .expect("publication exists");
     assert_eq!(loaded.fingerprint, publication.fingerprint.0);
     assert_eq!(loaded.snapshot.fingerprint.0, publication.fingerprint.0);
+    assert_eq!(
+        loaded.published_at_unix_ms, first.published_at_unix_ms,
+        "E2"
+    );
+    assert_eq!(
+        loaded.publication_sequence, first.publication_sequence,
+        "E2"
+    );
+    assert_eq!(
+        store
+            .list_published_scoped(&ScopeId::from("default"))
+            .await
+            .unwrap()[0]
+            .published_at_unix_ms,
+        first.published_at_unix_ms,
+        "E3"
+    );
+    assert_eq!(
+        store
+            .list_published_scoped(&ScopeId::from("default"))
+            .await
+            .unwrap()[0]
+            .publication_sequence,
+        first.publication_sequence,
+        "E3"
+    );
 }
 
 #[tokio::test]
@@ -854,19 +965,21 @@ async fn postgres_list_published_reloads_published_rows_of_the_scope() {
     );
 }
 
-/// TASK 1 (pg equivalent): multiple publications for the SAME agent id. SQLite orders
-/// `list_published_scoped` by `rowid ASC` (a monotonic per-row integer), giving a
-/// deterministic oldest-first reload and a deterministic "latest per agent" warm-load;
-/// Postgres orders by `created_at ASC`, which has NO tie-break key. This test pins the
-/// DETERMINISTIC guarantee (every published row of the agent is reloaded — set parity
-/// with sqlite) and characterizes the non-deterministic ordering below. Substrate-bound:
-/// skips when no Postgres is reachable.
+/// SQLite `rowid` and PostgreSQL `seq` both order immutable publication rows by
+/// insertion, independent of wall-clock changes. Explicitly configured PostgreSQL
+/// is required rather than silently skipped by `schema_pool`.
 #[tokio::test]
 async fn postgres_list_published_warm_load_same_agent_reloads_the_full_set() {
+    // Causes: W1 three rows inserted in v1/v2/v3 order; W2 the later v3 row
+    // receives an earlier clock value; W3 exact history reload. Effects: E1
+    // all rows remain; E2 sequence and reload remain v1/v2/v3; E3 the first
+    // time follows v1's row, not the minimum clock. W1+W2+W3=>E1+E2+E3.
     let Some(pool) = schema_pool("t_config_warmload").await else {
         return;
     };
-    let store = PostgresConfigStore::with_pool(pool).await.expect("store");
+    let store = PostgresConfigStore::with_pool(pool.clone())
+        .await
+        .expect("store");
     let a = ScopeId::from("ws_a");
 
     let tools = vec![ToolDescriptor::pinned(
@@ -907,6 +1020,21 @@ async fn postgres_list_published_warm_load_same_agent_reloads_the_full_set() {
         .await
         .expect("v3");
 
+    for (fingerprint, time) in [
+        (&v1.fingerprint, "2025-01-01 00:00:00+00"),
+        (&v2.fingerprint, "2026-01-01 00:00:00+00"),
+        (&v3.fingerprint, "2024-01-01 00:00:00+00"),
+    ] {
+        sqlx::query(
+            "UPDATE config_publication SET created_at = $1::timestamptz WHERE fingerprint = $2",
+        )
+        .bind(time)
+        .bind(fingerprint)
+        .execute(&pool)
+        .await
+        .expect("historical row clock fixture");
+    }
+
     let listed = store.list_published_scoped(&a).await.expect("list");
     // Every published row of the agent is reloaded (set parity with sqlite).
     let got: std::collections::BTreeSet<String> =
@@ -920,12 +1048,8 @@ async fn postgres_list_published_warm_load_same_agent_reloads_the_full_set() {
     .collect();
     assert_eq!(got, want, "pg must reload every published row of the agent");
 
-    // Deterministic tie-break: the monotonic `seq` identity column (migration V0005)
-    // gives Postgres a total insertion order — `ORDER BY created_at ASC, seq ASC` —
-    // even when same-instant inserts share a `created_at`. So the list comes back in
-    // the exact insertion order (v1, v2, v3), the Postgres analogue of SQLite's
-    // `rowid ASC`, making the warm-load's "latest publication per agent" (the last
-    // element) deterministic and matching across backends.
+    // The monotonic `seq` gives Postgres the same insertion order as SQLite
+    // `rowid`, even though the timestamps are deliberately out of order.
     let ordered: Vec<String> = listed.iter().map(|p| p.fingerprint.clone()).collect();
     assert_eq!(
         ordered,
@@ -934,6 +1058,199 @@ async fn postgres_list_published_warm_load_same_agent_reloads_the_full_set() {
             v2.fingerprint.clone(),
             v3.fingerprint.clone(),
         ],
-        "pg must reload publications in deterministic insertion order (tie-break by seq)"
+        "E2 insertion order survives clock rollback"
+    );
+    assert!(
+        listed
+            .windows(2)
+            .all(|pair| pair[0].publication_sequence < pair[1].publication_sequence),
+        "E2"
+    );
+    assert_eq!(
+        listed[0].published_at_unix_ms,
+        Some(1_735_689_600_000),
+        "E3"
+    );
+    assert_eq!(
+        listed[2].published_at_unix_ms,
+        Some(1_704_067_200_000),
+        "E3"
+    );
+    assert!(
+        listed.iter().all(|row| !row.publication_order_verified),
+        "E3 pre-fence history is unverified"
+    );
+}
+
+#[tokio::test]
+async fn postgres_publication_commit_order_lock_serializes_only_its_workspace() {
+    // Causes: L1 transaction A holds the ws-a publication lock after INSERT;
+    // L2 a second Agent in ws-a tries the sole production publication port;
+    // L3 a different ws-b Agent publishes while A is open; L4 A commits;
+    // L5 a ws-c holder rolls back while another ws-c publication waits.
+    // Effects: E1 L2 waits before assigning seq; E2 L3 succeeds in parallel;
+    // E3 L4 releases the lock and seq(A)<seq(L2); E4 L5 releases on rollback;
+    // E5 L2's row time is after its transaction start/lock wait.
+    // Rules L1+L2=>E1, L1+L3=>E2, L1+L2+L4=>E3+E5, L5=>E4.
+    const LOCK_NAMESPACE: &str = "awaken.config.publication.commit_order";
+    async fn observed_advisory_wait(pool: &PgPool, workspace: &str) -> Option<i64> {
+        sqlx::query_scalar(
+            "SELECT (EXTRACT(EPOCH FROM activity.xact_start) * 1000)::BIGINT \
+             FROM pg_locks AS locks JOIN pg_stat_activity AS activity ON activity.pid = locks.pid \
+             WHERE locks.locktype = 'advisory' AND locks.granted = false \
+               AND locks.classid = hashtext($1)::oid AND locks.objid = hashtext($2)::oid \
+             LIMIT 1",
+        )
+        .bind(LOCK_NAMESPACE)
+        .bind(workspace)
+        .fetch_optional(pool)
+        .await
+        .expect("inspect blocked publication")
+    }
+
+    let Some(pool) = schema_pool("t_config_pub_commit_order").await else {
+        return;
+    };
+    let store = Arc::new(
+        PostgresConfigStore::with_pool(pool.clone())
+            .await
+            .expect("store"),
+    );
+    let author = ScopeId::from("author");
+    let tools = vec![ToolDescriptor::pinned(
+        "test",
+        "echo",
+        "Echo",
+        serde_json::json!({"type": "object"}),
+    )];
+    let publication = |id: &str, workspace: &str| {
+        let mut source = agent_config();
+        source.id = id.into();
+        let snapshot = compile(&source, &tools).expect("compile publication fixture");
+        (
+            source,
+            StoredPublication::published_at_revision(snapshot, id, 1, workspace),
+        )
+    };
+    let (a_source, mut first) = publication("first", "ws-a");
+    let (b_source, second) = publication("second", "ws-a");
+    let (c_source, parallel) = publication("parallel", "ws-b");
+    let (d_source, after_rollback) = publication("after-rollback", "ws-c");
+    for source in [&a_source, &b_source, &c_source, &d_source] {
+        store
+            .put_config_scoped(&author, source)
+            .await
+            .expect("source");
+    }
+
+    let mut first_tx = pool.begin().await.expect("first transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+        .bind(LOCK_NAMESPACE)
+        .bind("ws-a")
+        .execute(&mut *first_tx)
+        .await
+        .expect("hold ws-a lock");
+    first.publication_order_verified = true;
+    sqlx::query(
+        "INSERT INTO config_publication (fingerprint, agent_id, state, record, scope_id, order_verified) \
+         VALUES ($1, $2, 'published', $3, $4, TRUE)",
+    )
+    .bind(&first.fingerprint)
+    .bind(&first.agent_id)
+    .bind(sqlx::types::Json(&first))
+    .bind(author.as_str())
+    .execute(&mut *first_tx)
+    .await
+    .expect("first insertion before commit");
+
+    let waiting_store = store.clone();
+    let waiting_author = author.clone();
+    let mut waiting = tokio::spawn(async move {
+        waiting_store
+            .put_publication_if_source_current_scoped(&waiting_author, &second)
+            .await
+    });
+    // awaken-wait: holding this exact PG lock is the behavior under test;
+    // the next query proves the task reached the database, not merely a timer.
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut waiting)
+            .await
+            .is_err(),
+        "E1 same-Workspace publication must remain pending"
+    );
+    let waiting_started_at = observed_advisory_wait(&pool, "ws-a")
+        .await
+        .expect("E1 exact advisory waiter");
+    let parallel_write = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        store.put_publication_if_source_current_scoped(&author, &parallel),
+    )
+    .await
+    .expect("different Workspace must not wait for ws-a")
+    .expect("parallel publication");
+    assert!(
+        matches!(parallel_write, PublicationWrite::Committed { .. }),
+        "E2"
+    );
+    first_tx.commit().await.expect("first commit releases lock");
+    assert!(
+        matches!(
+            waiting.await.unwrap().unwrap(),
+            PublicationWrite::Committed { .. }
+        ),
+        "E3"
+    );
+    let history = store.list_published_scoped(&author).await.expect("history");
+    let first_sequence = history
+        .iter()
+        .find(|row| row.agent_id == "first")
+        .unwrap()
+        .publication_sequence
+        .unwrap();
+    let second_row = history.iter().find(|row| row.agent_id == "second").unwrap();
+    let second_sequence = second_row.publication_sequence.unwrap();
+    assert!(first_sequence < second_sequence, "E1/E3");
+    assert!(
+        second_row.publication_order_verified,
+        "E3 fenced production row"
+    );
+    assert!(
+        second_row.published_at_unix_ms.unwrap() > waiting_started_at as u64,
+        "E5 row time sampled after the Workspace lock, not at transaction start"
+    );
+
+    let mut rollback_tx = pool.begin().await.expect("rollback transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+        .bind(LOCK_NAMESPACE)
+        .bind("ws-c")
+        .execute(&mut *rollback_tx)
+        .await
+        .expect("hold ws-c lock");
+    let rollback_store = store.clone();
+    let rollback_author = author.clone();
+    let mut after_rollback = tokio::spawn(async move {
+        rollback_store
+            .put_publication_if_source_current_scoped(&rollback_author, &after_rollback)
+            .await
+    });
+    // awaken-wait: rollback release of this exact PG lock is the behavior
+    // under test; the database waiter is checked before rolling back.
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut after_rollback)
+            .await
+            .is_err(),
+        "E4 same-Workspace publication must await rollback"
+    );
+    assert!(observed_advisory_wait(&pool, "ws-c").await.is_some(), "E4");
+    rollback_tx
+        .rollback()
+        .await
+        .expect("rollback releases lock");
+    assert!(
+        matches!(
+            after_rollback.await.unwrap().unwrap(),
+            PublicationWrite::Committed { .. }
+        ),
+        "E4"
     );
 }

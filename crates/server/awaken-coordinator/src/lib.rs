@@ -84,9 +84,7 @@ pub use awaken_acp_application::{
     LocalAcpPreparation, PreparedAcpCapabilities, ensure_workspace_bindings,
 };
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
-pub use awaken_protocol_managed::{
-    ResourcesRouterInput, default_models, models_router, resources_router,
-};
+pub use awaken_protocol_managed::{ResourcesRouterInput, models_router, resources_router};
 
 pub use awaken_dispatch_http::durable_ops_router;
 pub use awaken_session_executor::{
@@ -1618,7 +1616,7 @@ fn mount_with_managed_over_and_models(
         .merge(environment_warmups);
     // The Models API (`/v1/models`) over the deployment's model directory.
     let models = model_inventory.map_or_else(
-        || models_router(std::sync::Arc::new(default_models())),
+        || models_router(std::sync::Arc::new(Vec::new())),
         awaken_protocol_managed::models_router_with_inventory,
     );
     let managed = managed.merge(resource_management_router).merge(models);

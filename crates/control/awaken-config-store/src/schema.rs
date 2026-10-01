@@ -54,6 +54,12 @@ fn with_current_migrations(history: MigrationBundle) -> Result<MigrationBundle, 
         include_str!("migrations/V0011__audit_identity.postgres.sql").trim(),
         include_str!("migrations/V0011__audit_identity.sqlite.sql").trim(),
     )?);
+    migrations.push(Migration::per_dialect(
+        12,
+        "publication order is verified only after Workspace commit serialization",
+        include_str!("migrations/V0012__publication_commit_order.postgres.sql").trim(),
+        include_str!("migrations/V0012__publication_commit_order.sqlite.sql").trim(),
+    )?);
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
@@ -84,7 +90,7 @@ mod tests {
     #[test]
     fn current_baseline_has_one_history_and_captures_exact_revisions() {
         /* Causes: C1 empty ledger; C2 insert generation 1; C3 update to
-         * generation 2; C4 exact V1/V11 receipts on replay. Effects: E1 create only
+         * generation 2; C4 exact V1/V11/V12 receipts on replay. Effects: E1 create only
          * the five active Control tables; E2 append revision 1; E3 append
          * revision 2; E4 execute no SQL. Decision table: G1=C1=>E1;
          * G2=G1+C2=>E2; G3=G2+C3=>E3; G4=C4=>E4. */
@@ -95,11 +101,11 @@ mod tests {
                 .iter()
                 .map(Migration::version)
                 .collect::<Vec<_>>(),
-            [1, 11]
+            [1, 11, 12]
         );
         let conn = Connection::open_in_memory().expect("sqlite");
         let runner = SqliteMigrationRunner::with_prefix("config").expect("runner");
-        assert_eq!(runner.run_bundle(&conn, &bundle).expect("G1").len(), 2);
+        assert_eq!(runner.run_bundle(&conn, &bundle).expect("G1").len(), 3);
         let tables = conn
             .prepare(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'config_%' \
@@ -145,6 +151,36 @@ mod tests {
         assert_eq!(revisions, [1, 2], "G2/E2 + G3/E3");
         assert!(runner.run_bundle(&conn, &bundle).expect("G4").is_empty());
         assert_eq!(bundle.bundle_id(), BUNDLE_ID);
+    }
+
+    #[test]
+    fn sqlite_publication_order_migration_marks_old_rows_verified() {
+        // Causes: S1 a V11 SQLite publication predates the marker column;
+        // S2 V12 is applied; S3 migration is replayed. Effects: E1 the old
+        // row receives verified order because SQLite writes were serialized;
+        // E2 repeat migration leaves that same row unchanged.
+        // Rules S1+S2=>E1, S1+S2+S3=>E2.
+        let current = config_bundle().unwrap();
+        let old = MigrationBundle::new(BUNDLE_ID, current.migrations()[..2].to_vec()).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        let runner = SqliteMigrationRunner::with_prefix("config").unwrap();
+        runner.run_bundle(&conn, &old).unwrap();
+        conn.execute(
+            "INSERT INTO config_publication (fingerprint, agent_id, state, record, scope_id) \
+             VALUES ('fp', 'agent', 'published', '{}', 'ws')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(runner.run_bundle(&conn, &current).unwrap().len(), 1, "E1");
+        let verified: i64 = conn
+            .query_row(
+                "SELECT order_verified FROM config_publication WHERE fingerprint = 'fp'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(verified, 1, "E1");
+        assert!(runner.run_bundle(&conn, &current).unwrap().is_empty(), "E2");
     }
 
     #[test]
@@ -226,8 +262,8 @@ mod tests {
 
     #[test]
     fn published_config_histories_select_exact_v1_and_converge() {
-        /* History decision table: H1 empty/current V1 -> compact + common V11;
-         * H2 expanded V1 -> exact V1..V10 + same V11; H3 unknown V1 -> compact
+        /* History decision table: H1 empty/current V1 -> compact + common V11/V12;
+         * H2 expanded V1 -> exact V1..V10 + same V11/V12; H3 unknown V1 -> compact
          * checksum mismatch; H4 either current history -> unchanged seal.
          */
         let compact = config_bundle().expect("compact");
@@ -263,7 +299,8 @@ mod tests {
         // by the pinned table scanner. Lint the exact audit ownership slice:
         // published V7 declaration + current V11, with no hand-written DDL or
         // cross-bundle exemption. Executable migration tests cover both complete
-        // histories; the old convergence receipt remains an unchanged seal.
+        // histories and V12's publication-table upgrade; the old convergence
+        // receipt remains an unchanged seal.
         awaken_scoped_migration::lint(&[MigrationBundle::new(
             BUNDLE_ID,
             vec![

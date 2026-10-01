@@ -1158,7 +1158,11 @@ async fn the_same_publication_fingerprint_can_be_owned_independently_by_each_sco
 
 #[tokio::test]
 async fn source_fenced_publication_is_idempotent_by_fingerprint() {
-    // Re-putting the same publication is a no-op (DO NOTHING), not an error.
+    // Causes: C1 first source-fenced insert, C2 exact fingerprint replay,
+    // C3 get versus ordered history read. Effects: E1 one durable row owns the
+    // first publication sequence and instant; E2 replay replaces neither;
+    // E3 both reads return the same coordinate; E4 row metadata stays out of
+    // Control JSON. Rules C1=>E1+E4, C1+C2=>E2, C1+C3=>E3.
     let store = SqliteConfigStore::open_in_memory().expect("store");
     let a = ScopeId::from("ws_a");
     let source = agent_with("agent", "body");
@@ -1168,16 +1172,55 @@ async fn source_fenced_publication_is_idempotent_by_fingerprint() {
         .put_publication_if_source_current_scoped(&a, &publication)
         .await
         .expect("put");
+    let first = store
+        .get_publication_scoped(&a, &publication.fingerprint)
+        .await
+        .expect("first read")
+        .expect("first publication");
+    assert!(first.published_at_unix_ms.is_some(), "E1");
+    assert!(
+        first.publication_order_verified,
+        "E1 SQLite writer is serialized"
+    );
+    assert!(
+        serde_json::to_value(&first)
+            .unwrap()
+            .get("publication_order_verified")
+            .is_none(),
+        "E4 row metadata does not change Control JSON"
+    );
+    assert!(
+        first
+            .publication_sequence
+            .is_some_and(|sequence| sequence > 0),
+        "E1"
+    );
     store
         .put_publication_if_source_current_scoped(&a, &publication)
         .await
         .expect("re-put idempotent");
-    assert!(
-        store
-            .get_publication_scoped(&a, &publication.fingerprint)
-            .await
-            .expect("get")
-            .is_some()
+    let replay = store
+        .get_publication_scoped(&a, &publication.fingerprint)
+        .await
+        .expect("get")
+        .expect("publication");
+    assert_eq!(
+        replay.published_at_unix_ms, first.published_at_unix_ms,
+        "E2"
+    );
+    assert_eq!(
+        replay.publication_sequence, first.publication_sequence,
+        "E2"
+    );
+    assert_eq!(
+        store.list_published_scoped(&a).await.expect("history")[0].published_at_unix_ms,
+        first.published_at_unix_ms,
+        "E3"
+    );
+    assert_eq!(
+        store.list_published_scoped(&a).await.expect("history")[0].publication_sequence,
+        first.publication_sequence,
+        "E3"
     );
 }
 
@@ -1335,12 +1378,20 @@ async fn list_published_returns_only_published_rows_of_the_scope_in_insertion_or
 
 #[tokio::test]
 async fn list_published_warm_load_latest_per_agent_is_deterministic_on_sqlite() {
-    // TASK 1: multiple publications for the SAME agent id (distinct fingerprints via
-    // distinct instructions). SQLite orders `list_published_scoped` by `rowid ASC` — a
-    // monotonic per-row integer, i.e. insertion order — so a warm-load that folds the
-    // oldest-first list into an agent-keyed map DETERMINISTICALLY keeps the last-inserted
-    // publication per agent ("latest wins", the warm-install reload contract).
-    let store = SqliteConfigStore::open_in_memory().expect("store");
+    // Causes: W1 v1/v2/v3 are inserted in order; W2 v3's durable clock is
+    // rolled back before v1; W3 warm load reads one scope. Effects: E1 every
+    // row survives; E2 rowid/sequence order remains v1/v2/v3; E3 latest per
+    // Agent is v3 while first publication time remains v1's row time.
+    // Rule W1+W2+W3=>E1+E2+E3; SQLite rowid and PostgreSQL seq must agree.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "awaken-config-publication-order-{}-{nonce}.db",
+        std::process::id()
+    ));
+    let store = SqliteConfigStore::open(path.to_str().unwrap()).expect("store");
     let a = ScopeId::from("ws_a");
 
     let v1 = publication_for(&agent_with("dup", "v1"), "ws_a");
@@ -1365,8 +1416,23 @@ async fn list_published_warm_load_latest_per_agent_is_deterministic_on_sqlite() 
         .await
         .expect("v3");
 
+    let connection = rusqlite::Connection::open(&path).expect("historical row fixture");
+    for (fingerprint, time) in [
+        (&v1.fingerprint, "2025-01-01 00:00:00"),
+        (&v2.fingerprint, "2026-01-01 00:00:00"),
+        (&v3.fingerprint, "2024-01-01 00:00:00"),
+    ] {
+        connection
+            .execute(
+                "UPDATE config_publication SET created_at = ?1 WHERE fingerprint = ?2",
+                rusqlite::params![time, fingerprint],
+            )
+            .expect("historical row clock fixture");
+    }
+    drop(connection);
+
     let listed = store.list_published_scoped(&a).await.expect("list");
-    // rowid ASC == insertion order, deterministically.
+    // rowid ASC == insertion order despite the reversed clock.
     let order: Vec<String> = listed.iter().map(|p| p.fingerprint.clone()).collect();
     assert_eq!(
         order,
@@ -1377,6 +1443,26 @@ async fn list_published_warm_load_latest_per_agent_is_deterministic_on_sqlite() 
         ],
         "sqlite must reload oldest-first by rowid"
     );
+    assert!(
+        listed
+            .windows(2)
+            .all(|pair| pair[0].publication_sequence < pair[1].publication_sequence),
+        "E2"
+    );
+    assert_eq!(
+        listed[0].published_at_unix_ms,
+        Some(1_735_689_600_000),
+        "E3"
+    );
+    assert_eq!(
+        listed[2].published_at_unix_ms,
+        Some(1_704_067_200_000),
+        "E3"
+    );
+    assert!(
+        listed.iter().all(|row| row.publication_order_verified),
+        "E3"
+    );
 
     // Warm-load fold: agent-keyed map, oldest-first, last write wins → v3, deterministically.
     let mut warm: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
@@ -1384,6 +1470,8 @@ async fn list_published_warm_load_latest_per_agent_is_deterministic_on_sqlite() 
         warm.insert(p.agent_id.clone(), p.fingerprint.clone());
     }
     assert_eq!(warm.get("dup"), Some(&v3.fingerprint));
+    drop(store);
+    std::fs::remove_file(path).expect("remove task-owned SQLite fixture");
 }
 
 // --- TASK 2: PublicationState serde round-trip -------------------------------
