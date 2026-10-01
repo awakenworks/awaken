@@ -1,3 +1,10 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: The registration-bound Worker application assembly accepts one
+// @formal reason: identity and one declared capability set, then rejects mixed
+// @formal reason: sources or realized capability drift before Ready. The
+// @formal reason: registered_application_factory and mutually-exclusive-source
+// @formal reason: decision tests cover error, panic, drift and no physical setup;
+// @formal reason: registry durability and transport remain outside this source.
 //! Registration-bound attempt decoration assembly.
 
 use std::sync::Arc;
