@@ -148,8 +148,6 @@ pub struct WorkerNodeBuilder {
         awaken_provisioning_contract::SandboxCapabilities,
         &'static str,
     )>,
-    environment_checkpoint_store:
-        Option<Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>>,
     mcp_attachment_realizer:
         Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
@@ -265,7 +263,6 @@ impl WorkerNodeBuilder {
             enclosing_sandbox_boundary: None,
             session_container_provider: None,
             prepared_local_sandbox: None,
-            environment_checkpoint_store: None,
             mcp_attachment_realizer: None,
             memory_mounter_factory: None,
             admin_tools: Vec::new(),
@@ -886,7 +883,6 @@ impl WorkerNodeBuilder {
             acp_capability_observation_source: self.acp_capability_observation_source,
             session_container_provider: self.session_container_provider,
             prepared_local_sandbox: self.prepared_local_sandbox,
-            environment_checkpoint_store: self.environment_checkpoint_store,
             mcp_attachment_realizer: self.mcp_attachment_realizer,
             memory_mounter_factory: self.memory_mounter_factory,
             admin_tools: self.admin_tools,
@@ -987,8 +983,6 @@ pub struct WorkerNode {
         awaken_provisioning_contract::SandboxCapabilities,
         &'static str,
     )>,
-    environment_checkpoint_store:
-        Option<Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>>,
     mcp_attachment_realizer:
         Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,

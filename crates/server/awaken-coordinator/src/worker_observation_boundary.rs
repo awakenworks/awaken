@@ -42,6 +42,7 @@ struct DomainState {
     directory: Arc<dyn WorkerDirectory>,
     host: Arc<SharedHost>,
     environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+    sessions: Arc<awaken_session_application::SessionApplication>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
 }
 
@@ -52,12 +53,14 @@ struct WorkerDomainObservation {
     registered: RegisteredWorker,
     physical_attempt_active: bool,
     work_claims_active: bool,
+    session_realizations_active: bool,
 }
 
 pub(crate) fn domain_router_with_authenticator(
     directory: Arc<dyn WorkerDirectory>,
     host: Arc<SharedHost>,
     environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+    sessions: Arc<awaken_session_application::SessionApplication>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
 ) -> Router {
     Router::new()
@@ -66,6 +69,7 @@ pub(crate) fn domain_router_with_authenticator(
             directory,
             host,
             environments,
+            sessions,
             authenticator,
         })
 }
@@ -73,7 +77,7 @@ pub(crate) fn domain_router_with_authenticator(
 fn authenticate_observer(
     authenticator: &dyn awaken_service_auth_contract::ServiceRequestAuthenticator,
     headers: &HeaderMap,
-) -> Result<(), axum::response::Response> {
+) -> Result<(), StatusCode> {
     match authenticator.authenticate(
         headers
             .get(header::AUTHORIZATION)
@@ -85,13 +89,13 @@ fn authenticate_observer(
     ) {
         Ok(_) => Ok(()),
         Err(awaken_service_auth_contract::ServiceAuthError::Unauthorized) => {
-            Err(StatusCode::UNAUTHORIZED.into_response())
+            Err(StatusCode::UNAUTHORIZED)
         }
         Err(awaken_service_auth_contract::ServiceAuthError::Forbidden) => {
-            Err(StatusCode::FORBIDDEN.into_response())
+            Err(StatusCode::FORBIDDEN)
         }
         Err(awaken_service_auth_contract::ServiceAuthError::Unavailable(_)) => {
-            Err(StatusCode::SERVICE_UNAVAILABLE.into_response())
+            Err(StatusCode::SERVICE_UNAVAILABLE)
         }
     }
 }
@@ -104,8 +108,8 @@ async fn handle_domain(
         axum::extract::rejection::QueryRejection,
     >,
 ) -> axum::response::Response {
-    if let Err(response) = authenticate_observer(state.authenticator.as_ref(), &headers) {
-        return response;
+    if let Err(status) = authenticate_observer(state.authenticator.as_ref(), &headers) {
+        return status.into_response();
     }
     let identity = match query {
         Ok(Query(identity)) => identity,
@@ -139,12 +143,21 @@ async fn handle_domain(
         Ok(active) => active,
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
+    let session_realizations_active = match state
+        .sessions
+        .has_unfinished_worker_realizations(&identity.worker_id)
+        .await
+    {
+        Ok(active) => active,
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
     (
         StatusCode::OK,
         Json(WorkerDomainObservation {
             registered,
             physical_attempt_active,
             work_claims_active,
+            session_realizations_active,
         }),
     )
         .into_response()
@@ -176,8 +189,8 @@ async fn handle_list(
     State(state): State<BoundaryState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(response) = authenticate_observer(state.authenticator.as_ref(), &headers) {
-        return response;
+    if let Err(status) = authenticate_observer(state.authenticator.as_ref(), &headers) {
+        return status.into_response();
     }
     match state.source.list().await {
         Ok(workers) => (StatusCode::OK, Json(Ok::<_, String>(workers))).into_response(),

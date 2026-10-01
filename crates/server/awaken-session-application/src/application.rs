@@ -398,6 +398,53 @@ impl SessionApplication {
         self.sessions_repo.as_ref()
     }
 
+    /// Read the Session aggregate's one durable realization-owner authority.
+    /// Lease expiry does not release an incumbent Worker: only verified terminal
+    /// cleanup can make its retained physical source safe for replacement.
+    /// The repository query is complete and fail-closed across Workspaces.
+    pub async fn has_unfinished_worker_realizations(
+        &self,
+        worker_id: &str,
+    ) -> Result<bool, RunError> {
+        if worker_id.trim().is_empty() {
+            return Err(RunError::bad_request("Worker realization owner is empty"));
+        }
+        let scan = self
+            .session_repository()
+            .scan(
+                awaken_session_state_contract::SessionScanQuery::WorkerRealizationOwner {
+                    worker_id,
+                },
+            )
+            .await
+            .map_err(session_repository_error)?;
+        if scan.next_cursor.is_some() || !scan.quarantined.is_empty() {
+            return Err(RunError::unavailable(
+                "Worker realization-owner read is incomplete",
+            ));
+        }
+        for scoped in scan.sessions {
+            let session = scoped.session;
+            if session
+                .realization
+                .as_ref()
+                .is_none_or(|lease| lease.owner != worker_id)
+            {
+                return Err(RunError::unavailable(
+                    "Worker realization-owner read disagrees with Session root",
+                ));
+            }
+            if !session
+                .verified_terminal_cleanup()
+                .map_err(|error| RunError::unavailable(error.to_string()))?
+                .is_completed()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub async fn resolve_managed_list_price_snapshot(
         &self,
         request: awaken_session_budget_contract::ManagedListPriceRequest,

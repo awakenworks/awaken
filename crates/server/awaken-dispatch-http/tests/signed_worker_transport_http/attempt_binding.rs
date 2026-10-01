@@ -281,9 +281,10 @@ async fn registration_retention_failure_retries_the_same_durable_identity_before
     .unwrap();
     let upstream = WorkerUpstream::new(bootstrap.base_url())
         .with_worker_id("binding-http")
-        .with_request_authorizer(Arc::new(
-            SignedWorkerRequestAuthorizer::new(credential).with_clock(f.clock.clone()),
-        ));
+        .with_request_authorizer(Arc::new(SignedWorkerRequestAuthorizer::new(
+            credential,
+            f.clock.clone(),
+        )));
     let control = awaken_coordinator_client::WorkerControlClient::new(upstream);
     let mut manifest = WorkerManifest::default();
     manifest.runtime_protocol.min = 1;

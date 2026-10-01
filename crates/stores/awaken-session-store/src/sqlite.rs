@@ -1124,6 +1124,9 @@ impl SessionRepository for SqliteManagedSessionRepository {
         use awaken_session_state_contract::SessionScanQuery;
         match query {
             SessionScanQuery::Reconcilable { after } => self.scan_reconcilable(after).await,
+            SessionScanQuery::WorkerRealizationOwner { worker_id } => {
+                self.scan_worker_realization_owner(worker_id).await
+            }
             SessionScanQuery::Workspace { workspace_id } => Ok(Self::scoped_scan(
                 workspace_id,
                 self.scan_workspace(workspace_id).await?,
@@ -1372,6 +1375,57 @@ impl SqliteManagedSessionRepository {
                 }
             }
             tx.commit().map_err(storage)?;
+            Ok(scan)
+        })
+        .await
+    }
+
+    async fn scan_worker_realization_owner(
+        &self,
+        worker_id: &str,
+    ) -> Result<SessionScan, SessionRepositoryError> {
+        let worker_id = worker_id.to_string();
+        self.with_connection(move |conn| {
+            // Read the one root field in both current and historical encodings.
+            // Invalid JSON is an error, never evidence that no Session exists.
+            let mut statement = conn
+                .prepare(
+                    "SELECT scope_id, aggregate_json, revision FROM managed_session
+                     WHERE COALESCE(
+                       json_extract(aggregate_json, '$.aggregate.realization.owner'),
+                       json_extract(aggregate_json, '$.realization.owner')
+                     ) = ?1 ORDER BY session_id",
+                )
+                .map_err(storage)?;
+            let rows = statement
+                .query_map(params![worker_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        EncodedSessionRow {
+                            aggregate_json: row.get(1)?,
+                            revision: row.get(2)?,
+                        },
+                    ))
+                })
+                .map_err(storage)?;
+            let mut scan = SessionScan::default();
+            for row in rows {
+                let (workspace_id, encoded) = row.map_err(storage)?;
+                let session = decode(encoded).map_err(corrupt)?;
+                if session
+                    .realization
+                    .as_ref()
+                    .is_none_or(|lease| lease.owner != worker_id)
+                {
+                    return Err(corrupt(
+                        "Worker realization-owner index disagrees with Session root",
+                    ));
+                }
+                scan.sessions.push(ScopedPersistedSession {
+                    workspace_id,
+                    session,
+                });
+            }
             Ok(scan)
         })
         .await

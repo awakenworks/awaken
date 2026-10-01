@@ -265,6 +265,24 @@ pub trait ProfiledSessionCommands: Send + Sync {
         &self,
         admitted: AdmittedSessionRun,
     ) -> Result<SessionRunActivation, RunError>;
+
+    /// See [`SessionApplication::session_run_events_after`].
+    async fn session_run_events_after(
+        &self,
+        owner_scope: &str,
+        session_id: &SessionId,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        dispatch_after: awaken_dispatch_contract::DispatchCursor,
+        lifecycle_after: awaken_agent_contract::RunLifecycleCursor,
+        limit: usize,
+    ) -> Result<awaken_dispatch_contract::SessionRunEventPage, SessionProjectionRecoveryError>;
+
+    /// See [`SessionApplication::reply_profiled_session_run_for_owner`].
+    async fn reply_profiled_session_run_for_owner(
+        &self,
+        owner_scope: &str,
+        command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
+    ) -> Result<(), SessionProjectionRecoveryError>;
 }
 
 /// End a Session or one of its Threads.
@@ -710,6 +728,36 @@ impl ProfiledSessionCommands for SessionApplication {
             self, admitted,
         ))
         .await
+    }
+
+    async fn session_run_events_after(
+        &self,
+        owner_scope: &str,
+        session_id: &SessionId,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        dispatch_after: awaken_dispatch_contract::DispatchCursor,
+        lifecycle_after: awaken_agent_contract::RunLifecycleCursor,
+        limit: usize,
+    ) -> Result<awaken_dispatch_contract::SessionRunEventPage, SessionProjectionRecoveryError>
+    {
+        SessionApplication::session_run_events_after(
+            self,
+            owner_scope,
+            session_id,
+            run_id,
+            dispatch_after,
+            lifecycle_after,
+            limit,
+        )
+        .await
+    }
+
+    async fn reply_profiled_session_run_for_owner(
+        &self,
+        owner_scope: &str,
+        command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
+    ) -> Result<(), SessionProjectionRecoveryError> {
+        SessionApplication::reply_profiled_session_run_for_owner(self, owner_scope, command).await
     }
 }
 

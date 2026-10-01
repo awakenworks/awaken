@@ -689,3 +689,24 @@ compensate by reviving the invalid transport. A historical occupied slot with
 no original execution binding remains unknown even if a newer incarnation has
 no slots; no query, current-Pod inspection or phase transition may clear it or
 replay its original Run.
+
+## Amendment: Session affinity is part of Worker replacement evidence (2026-10-01)
+
+Registry Dead with zero in-flight, an empty Dispatch physical slot, and no
+WorkQueue claim do not prove a Worker has released Session realization
+ownership. A Session root can retain an expired Pod-bound
+`SessionRealizationLease` and unfinished terminal cleanup after the Worker Pod
+has disappeared; another Worker is correctly forbidden to reopen that physical
+source. The existing Coordinator Worker-domain read now composes a fourth
+read-only authority: the Session repository's exact realization-owner query.
+Its application owner classifies every matching root by verified terminal
+cleanup, independent of lease expiry. A retained, incomplete root reports
+occupied; an unavailable or corrupt query refuses the entire observation.
+
+This is one additional field on the authenticated Domain DTO, not a Session
+shadow store, cleanup receipt, or permission to reassign a lease. The release
+owner must close new admission and recheck the exact old Pod domain before any
+Worker PodTemplate replacement, including a Sandbox image or package registry
+wave. The field alone does not make an uncoordinated release safe. Historical
+sessions stranded by an earlier rollout retain their unknown physical effects;
+the new query cannot backfill process-exit evidence or authorize replay.
