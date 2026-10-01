@@ -348,6 +348,38 @@ only physical process supervision and never becomes a second claim scheduler.
 Kubernetes cross-process Sandbox creation and original UI-root
 acceptance remain separate outstanding gates.
 
+## Amendment 2026-10-02: Kubernetes Namespace deletion is not a request join
+
+The K8s adapter currently records an exact create attempt in process memory.
+`prepare` can create a retained PVC before its Pod, and `converge` can create
+ConfigMaps and Secrets after the Pod. The handle-free proof is deliberately
+restricted to a zero-participant plan and an attempt gate observed by the same
+process. A replacement Worker has no such gate and returns Unknown. This is the
+correct safety outcome, not completed cross-process recovery.
+
+A live isolated k3d v1.31.5 experiment rejected a tempting shortcut. A
+Pod Create passed `NamespaceLifecycle` and paused in a validating webhook. The
+Namespace then fully deleted. After the webhook released the already-admitted
+request, the API returned Pod creation success and an all-namespaces list showed
+the Pod under the deleted Namespace name. The isolated Pod and webhook were
+subsequently deleted. A namespace deletion timestamp, finalizer completion,
+namespace 404, Pod 404, and a finite retry count therefore cannot establish
+that every earlier admitted request has finished. A namespace may help isolate
+new requests, but is not a request-completion witness by itself.
+
+The physical effect owner must join every admitted Create request through an
+independent request lifetime and retain an exact, durable result before a
+replacement process may claim closure. That witness must cover PVC, Pod,
+ConfigMap, Secret and other participants admitted by the frozen plan; an
+unknown broker lifetime or result remains Unknown. The existing provider
+`preflight_create_for_effect`, `prepare_for_effect`, `activate_for_effect`,
+`prove_unmaterialized_absence`, exact UID deletion and Session cleanup receipt
+remain the only execution and cleanup path. The implementation must extend
+those ports rather than introduce a Flow cleanup queue or infer closure from
+Worker expiry. Until a provider-backed request join is implemented and tested
+across Worker and control-plane restarts, Flow cannot advance a successor on
+handle-free Kubernetes cleanup.
+
 ## Amendment 2026-10-05: unfinished terminal cleanup remains Worker demand
 
 A Hosted Run can settle its Dispatch lease after the Session root has recorded
