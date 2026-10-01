@@ -1182,14 +1182,16 @@ async fn claim_and_drive<S: ControlDispatch + 'static>(
                 // later runnable work.
                 admission.error_gate.release_probe(cycle).await;
                 admission.wake.notify_one();
-                worker
-                    .drive_claimed_with_renewal(
+                let result = worker
+                    .drive_claimed_with_cancellation(
                         claimed,
                         clock.clone(),
-                        claim_renewal,
+                        claim_renewal.attempt_cancellation(),
                         Some(admission.execution_capacity.clone()),
                     )
-                    .await
+                    .await;
+                drop(claim_renewal);
+                result
             }
             Err(error) if error.is_terminal_resolution() => {
                 resolver
