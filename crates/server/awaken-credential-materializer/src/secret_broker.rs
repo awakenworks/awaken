@@ -18,7 +18,7 @@ pub(super) struct PendingProcessSecret {
 pub(super) struct PendingCredentialArtifact {
     candidate: ResolvedModelCandidate,
     context: awaken_runtime_contract::RuntimeRunContext,
-    codec: awaken_run_executor_acp::CredentialArtifactCodec,
+    codec: awaken_acp_contract::managed_credential::CredentialArtifactCodec,
     expires_at_unix_ms: u64,
 }
 
@@ -64,8 +64,11 @@ impl PinnedCredentialMaterializer {
         &self,
         candidate: &ResolvedModelCandidate,
         context: &awaken_runtime_contract::RuntimeRunContext,
-        delivery: awaken_run_executor_acp::ManagedCredentialDelivery,
-    ) -> Result<Option<awaken_run_executor_acp::CredentialArtifactRequirement>, String> {
+        delivery: awaken_acp_contract::managed_credential::ManagedCredentialDelivery,
+    ) -> Result<
+        Option<awaken_acp_contract::managed_credential::CredentialArtifactRequirement>,
+        String,
+    > {
         let Some((access, binding)) = Self::claimed_provider_binding(candidate, context)? else {
             return Ok(None);
         };
@@ -95,7 +98,7 @@ impl PinnedCredentialMaterializer {
             },
         );
         Ok(Some(
-            awaken_run_executor_acp::CredentialArtifactRequirement::new(
+            awaken_acp_contract::managed_credential::CredentialArtifactRequirement::new(
                 reference,
                 artifact.relative_path,
             ),
