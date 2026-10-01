@@ -15,7 +15,6 @@ awaken-session-application-contract.workspace = true
 awaken-session-repository-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-tenancy.workspace = true
-awaken-authz-enforce.workspace = true
 awaken-webhook.workspace = true
 awaken-config-resolver.workspace = true
 awaken-credential-vault.workspace = true

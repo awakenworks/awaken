@@ -32,10 +32,9 @@ use awaken_webhook_managed::{
     reconcile_webhook_inventory, recover_webhook_mutations, webhook_config_router,
     webhook_config_router_loopback,
 };
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::routing::get;
-use axum::{Extension, Router};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -1693,48 +1692,6 @@ async fn committed_fact_identity_and_scope_are_projected_unchanged() {
     assert_eq!(delivered[1]["id"], "session:sesn_2:status_terminated");
     assert_eq!(delivered[1]["data"]["id"], "sesn_2");
     shutdown_lifecycle(&service_lifecycle).await;
-}
-
-#[tokio::test]
-async fn stamp_workspace_scope_maps_resolved_tenancy_to_the_scope() {
-    // The aspect→core seam: the guard-resolved `RequestTenancy` becomes the
-    // handler-visible `WorkspaceScope`; a request with no resolved tenancy passes
-    // through unstamped (the handler then falls back to the default scope).
-    async fn probe(scope: Option<Extension<WorkspaceScope>>) -> String {
-        scope
-            .map(|Extension(WorkspaceScope(w))| w)
-            .unwrap_or_else(|| "<none>".into())
-    }
-    let app = Router::new()
-        .route("/p", get(probe))
-        .layer(axum::middleware::from_fn(
-            awaken_webhook_managed::stamp_workspace_scope,
-        ));
-
-    // Tenancy stamped upstream → mapped to WorkspaceScope("ws_x").
-    let mut stamped = Request::builder()
-        .method("GET")
-        .uri("/p")
-        .body(Body::empty())
-        .unwrap();
-    stamped
-        .extensions_mut()
-        .insert(awaken_authz_enforce::RequestTenancy {
-            workspace_id: "ws_x".into(),
-        });
-    let resp = app.clone().oneshot(stamped).await.unwrap();
-    let body = resp.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(&body[..], b"ws_x", "resolved tenancy maps to the scope");
-
-    // No tenancy → passes through unstamped; the handler sees no scope.
-    let bare = Request::builder()
-        .method("GET")
-        .uri("/p")
-        .body(Body::empty())
-        .unwrap();
-    let resp = app.oneshot(bare).await.unwrap();
-    let body = resp.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(&body[..], b"<none>", "a bare request is not stamped");
 }
 
 #[tokio::test]
