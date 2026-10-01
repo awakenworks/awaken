@@ -10,7 +10,7 @@ evidence = [
 production_entrypoints = []
 
 [[bounds]]
-text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''
+text = '''Three bounded Kani harnesses call the sole production realization_lease_facts_authorize: independent owner/incarnation/epoch equality under one live nonregressed renewal; independent u16 asserted/current expiry with now at the epoch; and independent u16 current expiry/now under exact identity. All three passed 36 checks each with zero failures; the strict liveness partition took 23.7 solver seconds. The existing executable Session-realization contract table runs the public realization_lease_authorizes across every owner/incarnation/epoch mismatch and ordinary expiry/now combination, now including zero and u64::MAX wire boundaries. Arbitrary three-way full-width u64 expiry/now tuples are not claimed Kani-proved: the former combined query exhausted the 1800-second package budget without a counterexample. The generic fence succession law remains the one owner of renewal versus reassignment.'''
 
 [[bounds]]
 text = '''Expired-assignment successor selection is proved for every u64 epoch; SQLite failure-CAS rows and HTTP MCP hot-swap test the production expiry-to-recovery wiring, not SQL or network liveness proofs.'''
