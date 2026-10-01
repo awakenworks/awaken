@@ -3337,7 +3337,7 @@ async fn terminal_state_and_its_fact_share_one_repository_commit() {
     repo.complete_lifecycle("created").await.unwrap();
 
     let mut terminal = repo.get(&SessionId::from("sesn_terminal")).await.unwrap();
-    terminal.archive("2026-01-01T00:00:00Z").unwrap();
+    terminal.archive("2026-01-01T00:00:00Z", 0).unwrap();
     replace_fixture(
         &repo,
         "ws_a",
@@ -3621,7 +3621,7 @@ async fn postgres_round_trips_and_upserts() {
         .await
         .unwrap();
     let mut terminal = repo.get(&SessionId::from("sesn_pg_tx")).await.unwrap();
-    terminal.archive("2026-07-19T00:00:00Z").unwrap();
+    terminal.archive("2026-07-19T00:00:00Z", 0).unwrap();
     replace_fixture(
         &repo,
         "ws_a",

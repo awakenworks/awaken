@@ -15,6 +15,15 @@ use crate::{
     session_event_execution_may_close, session_inputs_allow_idle,
 };
 
+/// Secret-free active MCP projection consumed by protocol adapters. It is
+/// derived from this aggregate's typed attachment state without a JSON hop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VisibleMcpServer {
+    pub name: String,
+    pub target: crate::McpTarget,
+    pub prompts_as_skills: bool,
+}
+
 /// The aggregate's one terminality law: execution and retention are distinct
 /// causes. Archived/deleting/deleted roots deny new activity even while their
 /// execution projection has not yet been terminalized.
@@ -513,6 +522,7 @@ impl PersistedSession {
     pub fn archive(
         &mut self,
         archived_at: impl Into<String>,
+        archived_at_unix_ms: u64,
     ) -> Result<bool, SessionDispositionTransitionError> {
         match self.disposition {
             SessionDisposition::Deleting | SessionDisposition::Deleted => {
@@ -528,6 +538,7 @@ impl PersistedSession {
         self.terminal_cleanup.request(&self.session_id);
         self.disposition = SessionDisposition::Archived {
             archived_at: archived_at.into(),
+            archived_at_unix_ms: Some(archived_at_unix_ms),
         };
         Ok(true)
     }
@@ -1029,6 +1040,11 @@ impl PersistedSession {
     #[must_use]
     pub fn archived_at(&self) -> Option<&str> {
         self.disposition.archived_at()
+    }
+
+    #[must_use]
+    pub const fn archived_at_unix_ms(&self) -> Option<u64> {
+        self.disposition.archived_at_unix_ms()
     }
 
     /// Whether the Resource convergence driver owns work for this Session.

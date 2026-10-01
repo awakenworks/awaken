@@ -80,6 +80,7 @@ impl PersistedSession {
     pub fn archive_with_repository_publication(
         &mut self,
         archived_at: impl Into<String>,
+        archived_at_unix_ms: Option<u64>,
         intent: crate::SessionRepositoryPublicationIntent,
     ) -> Result<bool, SessionArchiveWithRepositoryPublicationError> {
         match self.disposition {
@@ -114,9 +115,12 @@ impl PersistedSession {
                 .into(),
             );
         }
+        let archived_at_unix_ms =
+            archived_at_unix_ms.ok_or(SessionDispositionTransitionError::ArchiveTimeRequired)?;
         self.terminal_cleanup
             .request_with_publication(&self.session_id, intent)?;
-        self.archive(archived_at).map_err(Into::into)
+        self.archive(archived_at, archived_at_unix_ms)
+            .map_err(Into::into)
     }
 }
 
@@ -183,7 +187,7 @@ mod tests {
         install_publication_input(&mut pending, &intent);
         install_live_publication_source(&mut pending);
         pending
-            .archive_with_repository_publication("2026-09-28T00:00:00Z", intent)
+            .archive_with_repository_publication("2026-09-28T00:00:00Z", Some(100), intent)
             .unwrap();
         pending.freeze_terminal_cleanup_targets([], 0, 0).unwrap();
         let command = pending
@@ -281,25 +285,40 @@ mod tests {
         // leaves the complete aggregate unchanged.
         //
         // | Rule | disposition | intent | cleanup | active matches | Effect |
-        // | A1 | Active | valid new | NotRequested | one | E1 |
-        // | A2 | Archived | exact replay | Completed publication | zero | E2 |
+        // | A1 | Active | valid new + typed time | NotRequested | one | E1 |
+        // | A2 | Archived | exact replay, no new time | Completed publication | zero | E2 |
         // | A3 | Active | invalid | NotRequested | one | E3 |
         // | A4 | Deleting | valid | any | one | E3 |
         // | A5 | Active | valid | legacy no-publication fence | one | E3 |
         // | A6 | Active | valid | NotRequested | zero | E3 |
         // | A7 | Active/corrupt | valid | NotRequested | duplicate | E3 |
         // | A8 | Active + Unmaterialized | valid | NotRequested | one | E3 |
+        // | A13 | Active | valid, no Application time | NotRequested | one | E3 |
         let intent = repository_publication_intent();
         let mut active = session("publish-archive", SessionRevision(1));
         install_live_publication_source(&mut active);
         install_publication_input(&mut active, &intent);
+        let before = active.clone();
         assert_eq!(
-            active.archive_with_repository_publication("2026-08-28T00:00:00Z", intent.clone()),
+            active.archive_with_repository_publication("ignored", None, intent.clone()),
+            Err(SessionArchiveWithRepositoryPublicationError::Disposition(
+                SessionDispositionTransitionError::ArchiveTimeRequired,
+            )),
+            "A13/E3"
+        );
+        assert_eq!(active, before, "A13/E3 no partial publication intent");
+        assert_eq!(
+            active.archive_with_repository_publication(
+                "2026-08-28T00:00:00Z",
+                Some(100),
+                intent.clone()
+            ),
             Ok(true),
             "A1/E1"
         );
         assert_eq!(active.execution, SessionExecutionState::Terminated, "A1/E1");
         assert_eq!(active.archived_at(), Some("2026-08-28T00:00:00Z"), "A1/E1");
+        assert_eq!(active.archived_at_unix_ms(), Some(100), "A1/E1");
         assert_eq!(
             active.terminal_cleanup.repository_publication_intent(),
             Some(&intent),
@@ -364,7 +383,11 @@ mod tests {
         assert!(active.resources.active.inputs().is_empty(), "A2 setup");
         let archived = active.clone();
         assert_eq!(
-            active.archive_with_repository_publication("2026-08-29T00:00:00Z", intent.clone()),
+            active.archive_with_repository_publication(
+                "2026-08-29T00:00:00Z",
+                None,
+                intent.clone()
+            ),
             Ok(false),
             "A2/E2"
         );
@@ -401,7 +424,11 @@ mod tests {
         invalid_expectation.expectation.branch.clear();
         assert!(
             matches!(
-                invalid.archive_with_repository_publication("ignored", invalid_expectation),
+                invalid.archive_with_repository_publication(
+                    "ignored",
+                    Some(0),
+                    invalid_expectation
+                ),
                 Err(SessionArchiveWithRepositoryPublicationError::Cleanup(
                     crate::SessionCleanupError::InvalidRepositoryPublicationIntent(_)
                 ))
@@ -416,7 +443,7 @@ mod tests {
         deleting.disposition = SessionDisposition::Deleting;
         let before = deleting.clone();
         assert_eq!(
-            deleting.archive_with_repository_publication("ignored", intent.clone()),
+            deleting.archive_with_repository_publication("ignored", None, intent.clone()),
             Err(SessionArchiveWithRepositoryPublicationError::Disposition(
                 SessionDispositionTransitionError::ArchiveAfterDelete,
             )),
@@ -430,7 +457,7 @@ mod tests {
         assert!(legacy_fenced.ensure_terminal_cleanup_fence());
         let before = legacy_fenced.clone();
         assert_eq!(
-            legacy_fenced.archive_with_repository_publication("ignored", intent.clone()),
+            legacy_fenced.archive_with_repository_publication("ignored", Some(0), intent.clone()),
             Err(SessionArchiveWithRepositoryPublicationError::Cleanup(
                 crate::SessionCleanupError::FrozenRepositoryPublicationMismatch,
             )),
@@ -443,7 +470,7 @@ mod tests {
         let before = absent.clone();
         assert!(
             matches!(
-                absent.archive_with_repository_publication("ignored", intent.clone()),
+                absent.archive_with_repository_publication("ignored", Some(0), intent.clone()),
                 Err(SessionArchiveWithRepositoryPublicationError::Cleanup(
                     crate::SessionCleanupError::InvalidRepositoryPublicationIntent(_)
                 ))
@@ -473,7 +500,7 @@ mod tests {
         let before = unmaterialized.clone();
         assert!(
             matches!(
-                unmaterialized.archive_with_repository_publication("ignored", intent),
+                unmaterialized.archive_with_repository_publication("ignored", Some(0), intent),
                 Err(SessionArchiveWithRepositoryPublicationError::Cleanup(
                     crate::SessionCleanupError::InvalidRepositoryPublicationIntent(_)
                 ))

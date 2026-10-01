@@ -212,6 +212,14 @@ impl ManagedState {
         }
     }
 
+    fn primary_thread_time(record: &SessionRecord) -> ThreadTimeEvidence {
+        ThreadTimeEvidence {
+            created_at_unix_ms: record.root_time.created_at_unix_ms,
+            updated_at_unix_ms: record.root_time.updated_at_unix_ms,
+            archived_at_unix_ms: record.root_time.archived_at_unix_ms,
+        }
+    }
+
     pub(crate) fn thread_agent_from_profile(
         agent_id: &str,
         profile: awaken_executable_agent_contract::ExecutableAgentSessionProfile,
@@ -284,11 +292,7 @@ impl ManagedState {
         let record = sessions.get(id).ok_or(StateError::NotFound)?;
         let mut threads = vec![(
             Self::primary_thread(record),
-            ThreadTimeEvidence {
-                created_at_unix_ms: record.root_time.created_at_unix_ms,
-                updated_at_unix_ms: record.root_time.updated_at_unix_ms,
-                archived_at_unix_ms: None,
-            },
+            Self::primary_thread_time(record),
         )];
         threads.extend(record.child_threads.iter().cloned().map(|thread| {
             let time = record
@@ -317,14 +321,7 @@ impl ManagedState {
         let internal_thread_id = internal_thread_id(id, thread_id);
         let primary = Self::primary_thread(record);
         if internal_thread_id == id {
-            return Ok((
-                primary,
-                ThreadTimeEvidence {
-                    created_at_unix_ms: record.root_time.created_at_unix_ms,
-                    updated_at_unix_ms: record.root_time.updated_at_unix_ms,
-                    archived_at_unix_ms: None,
-                },
-            ));
+            return Ok((primary, Self::primary_thread_time(record)));
         }
         record
             .child_threads

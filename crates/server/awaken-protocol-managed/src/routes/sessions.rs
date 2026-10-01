@@ -30,7 +30,7 @@ use crate::preview::ThreadPreviewProjector;
 use crate::routes::{ManagedJson, ManagedQuery};
 use crate::state::{
     CommittedEventDelivery, ManagedState, ProjectionObservationDecision, RunError, RunErrorKind,
-    StateError, internal_thread_id, lifecycle_event, lifecycle_fact,
+    StateError, internal_thread_id,
 };
 use crate::types::{
     DeletedSession, ErrorResponse, ListEventsResponse, PageCursor, PageQuery, SendEventsRequest,
@@ -41,6 +41,7 @@ use crate::types::{Event, StreamFrame};
 mod event_admission;
 mod execution_evidence;
 pub(crate) mod pagination;
+mod profiled_release;
 mod profiled_run;
 mod stream;
 #[cfg(test)]
@@ -119,7 +120,7 @@ fn session_time_v2(
         &[
             ("created_at", time.created_at_unix_ms),
             ("updated_at", time.updated_at_unix_ms),
-            ("archived_at", None),
+            ("archived_at", time.archived_at_unix_ms),
         ],
     )
 }
@@ -1344,24 +1345,9 @@ pub async fn release_profiled_session(
     }
 
     let observed_at = state.roles.clock.now_ms();
-    let binding_id = publication.binding_id;
+    let binding_id = publication.binding_id.clone();
     let outcome = Box::pin(state.roles.termination.archive_with_repository_publication(
-        awaken_session_application::SessionArchiveWithRepositoryPublicationCommand {
-            owner_scope: owner_scope.clone(),
-            session_id: awaken_session_types::SessionId::from(&id),
-            archived_at: awaken_session_application_contract::epoch_millis_to_rfc3339(observed_at),
-            lifecycle_fact: lifecycle_fact(
-                format!("session:{id}:terminated"),
-                &id,
-                Some(owner_scope),
-                lifecycle_event::SESSION_TERMINATED,
-                observed_at,
-            ),
-            repository: awaken_session_application::SessionRepositoryPublicationSelector {
-                binding_id: awaken_resource_contract::BindingId::new(binding_id.clone()),
-                expectation: publication.expectation,
-            },
-        },
+        profiled_release::command(&owner_scope, &id, publication, observed_at),
     ))
     .await
     .map_err(profiled_release_error_response)?;
