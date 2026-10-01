@@ -146,7 +146,6 @@ pub(super) async fn prepare_runtime_routers(
         cloud_api_base_url.as_deref(),
         &platform_workspace,
         &local_client_instance_id(stores.workspace_root.as_deref()),
-        stores.clock.clone(),
     );
     // Cloud-catalog startup decision table:
     // | Cloud models | authenticated brokered client | effect |
@@ -162,7 +161,11 @@ pub(super) async fn prepare_runtime_routers(
             .expect("AllInOne Cloud model discovery owns Control stores")
             .catalog
             .clone();
-        awaken_admin_config_api::reconcile_brokered_catalog(client.as_ref(), catalog.as_ref())
+        let discovery = crate::brokered_catalog::BrokeredCatalogAdapter::new(
+            client.clone(),
+            stores.clock.clone(),
+        );
+        awaken_admin_config_api::reconcile_brokered_catalog(&discovery, catalog.as_ref())
             .await
             .map_err(|error| {
                 format!("initial Cloud model catalog reconciliation failed: {error}")

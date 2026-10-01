@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
-use awaken_lease_contract::WallClock;
 use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
 };
@@ -168,8 +167,9 @@ const BROKERED_CATALOG_RETRY_DELAY: std::time::Duration = std::time::Duration::f
 /// Read one authoritative Cloud catalog snapshot. Both operations are GETs, so a
 /// transient transport/5xx failure can be retried without duplicating grants,
 /// usage, or billing side effects. Stable identity/entitlement failures remain
-/// fail-closed on the first attempt.
-async fn fetch_brokered_catalog(
+/// fail-closed on the first attempt. Consumer: Control's catalog projection
+/// adapter, which alone maps these neutral Cloud rows into its catalog types.
+pub async fn fetch_brokered_catalog(
     client: &dyn BrokeredModelCatalogClient,
 ) -> Result<Vec<BrokeredModel>, BrokeredInferenceError> {
     for attempt in 1..=BROKERED_CATALOG_MAX_ATTEMPTS {
@@ -195,7 +195,6 @@ async fn fetch_brokered_catalog(
 pub struct HttpBrokeredInferenceClient {
     http: reqwest::Client,
     base_url: String,
-    clock: Arc<dyn WallClock>,
     access_token_source: Arc<awaken_agent_contract::RedactedStringSource>,
     workspace_id: String,
     client_instance_id: String,
@@ -213,12 +212,17 @@ impl std::fmt::Debug for HttpBrokeredInferenceClient {
 }
 
 impl HttpBrokeredInferenceClient {
+    /// The validated Cloud endpoint used by Control's catalog projection.
+    #[must_use]
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     pub fn new(
         base_url: impl Into<String>,
         access_token_source: Arc<awaken_agent_contract::RedactedStringSource>,
         workspace_id: impl Into<String>,
         client_instance_id: impl Into<String>,
-        clock: Arc<dyn WallClock>,
     ) -> Result<Self, String> {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
         let client_instance_id = client_instance_id.into();
@@ -246,7 +250,6 @@ impl HttpBrokeredInferenceClient {
         Ok(Self {
             http: brokered_http_client(&base_url),
             base_url,
-            clock,
             access_token_source,
             workspace_id,
             client_instance_id,
@@ -847,9 +850,6 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
-    use awaken_admin_config_api::BrokeredCatalogDiscovery;
-    use awaken_lease_testkit::ManualClock;
-
     use super::*;
 
     fn static_access_token(value: &str) -> Arc<awaken_agent_contract::RedactedStringSource> {
@@ -1033,36 +1033,26 @@ mod tests {
     mod effect_scope;
 
     #[tokio::test]
-    async fn brokered_catalog_refresh_stamps_each_projection_from_the_injected_clock() {
-        // Causes: C1 the same valid Cloud catalog is read twice; C2 the
-        // composing process clock advances between those reads. Effects:
-        // R1 C1 at t=1,000 publishes that observation; R2 C1+C2 at t=2,000
-        // retains the exact model identity and route revision but stamps the
-        // new observation. Neither constructor time nor an ambient wall clock
-        // may become a second authority for this catalog projection.
+    async fn brokered_catalog_fetch_reuses_the_authenticated_cloud_client() {
+        // Causes: C1 readiness and models are successful authenticated GETs;
+        // C2 the same Cloud catalog is read again. Effects: R1 and R2 retain
+        // the exact model and route revision and each request carries the
+        // client's bearer. Control owns timestamp and dialect projection.
         const MODELS: &str = r#"{"data":[{"provider":"awaken-cloud","original_model_id":"model-a","native_protocol":"openai_responses","route_publication_revision":7}]}"#;
         let (base_url, server) =
             bearer_test_server(vec![(200, "{}"), (200, MODELS), (200, "{}"), (200, MODELS)]);
-        let clock = Arc::new(ManualClock::new(1_000));
         let client = HttpBrokeredInferenceClient::new(
             base_url,
             static_access_token("catalog-access"),
             "workspace-a",
             "desktop-a",
-            clock.clone(),
         )
         .unwrap();
-        let first = client.projection().await.unwrap();
-        assert_eq!(first.observed_at_unix_ms, 1_000, "R1");
-        assert_eq!(first.models.len(), 1, "R1 exact catalog");
-        clock.set(2_000);
-        let second = client.projection().await.unwrap();
-        assert_eq!(second.observed_at_unix_ms, 2_000, "R2");
-        assert_eq!(second.models, first.models, "R2 model authority unchanged");
-        assert_eq!(
-            second.models[0].publication_revision, 7,
-            "R2 route revision"
-        );
+        let first = fetch_brokered_catalog(&client).await.unwrap();
+        assert_eq!(first.len(), 1, "R1 exact catalog");
+        let second = fetch_brokered_catalog(&client).await.unwrap();
+        assert_eq!(second, first, "R2 model authority unchanged");
+        assert_eq!(second[0].route_publication_revision, 7, "R2 route revision");
         assert_eq!(server.join().unwrap(), vec!["catalog-access"; 4]);
     }
 
@@ -1086,7 +1076,6 @@ mod tests {
             static_access_token("cloud-access"),
             "workspace-tools",
             "desktop-tools",
-            awaken_lease_contract::system_clock(),
         )
         .unwrap();
         let mut registry = awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins();
@@ -1755,7 +1744,6 @@ mod tests {
                 static_access_token("secret-token"),
                 "workspace-1",
                 "client-1",
-                awaken_lease_contract::system_clock(),
             )
             .is_err()
         );
@@ -1764,7 +1752,6 @@ mod tests {
             static_access_token("secret-token"),
             "workspace-1",
             "client-1",
-            awaken_lease_contract::system_clock(),
         )
         .unwrap();
         let debug = format!("{client:?}");
@@ -1776,7 +1763,6 @@ mod tests {
                 static_access_token("local-emulator-token"),
                 "workspace-1",
                 "client-1",
-                awaken_lease_contract::system_clock(),
             )
             .is_ok()
         );
@@ -1799,7 +1785,6 @@ mod tests {
             static_access_token("current"),
             "workspace-1",
             "client-1",
-            awaken_lease_contract::system_clock(),
         )
         .unwrap();
         let response = current
@@ -1818,7 +1803,6 @@ mod tests {
             scripted_access_tokens([Ok("old"), Ok("old"), Ok("new")]),
             "workspace-1",
             "client-1",
-            awaken_lease_contract::system_clock(),
         )
         .unwrap();
         let response = rotating
@@ -1835,7 +1819,6 @@ mod tests {
             static_access_token("same"),
             "workspace-1",
             "client-1",
-            awaken_lease_contract::system_clock(),
         )
         .unwrap();
         let response = unchanged
@@ -1852,7 +1835,6 @@ mod tests {
             scripted_access_tokens([Ok("initial"), Err("expired")]),
             "workspace-1",
             "client-1",
-            awaken_lease_contract::system_clock(),
         )
         .unwrap();
         assert_eq!(

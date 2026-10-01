@@ -92,9 +92,7 @@ KNOWN_INVERSIONS: dict[tuple[str, str], str] = {
     **{
         ("awaken-credential-materializer", target): "credential materializer reaches control/worker implementations; depend on their contracts"
         for target in (
-            "awaken-admin-config-api",
             "awaken-credential-vault",
-            "awaken-model-catalog",
             "awaken-run-executor-acp",
         )
     },

@@ -11,7 +11,6 @@ authority = "credential-materializer"
 
 [dependencies]
 awaken-agent-contract.workspace = true
-awaken-admin-config-api = { workspace = true, optional = true }
 awaken-credential.workspace = true
 awaken-credential-vault = { workspace = true, optional = true }
 awaken-credential-contract.workspace = true
@@ -21,7 +20,6 @@ awaken-run-executor-acp.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-configuration-contract = { workspace = true, optional = true }
 awaken-provider-genai.workspace = true
-awaken-model-catalog = { workspace = true, optional = true }
 awaken-ext-builtin-tools = { workspace = true, optional = true }
 awaken-worker-contract.workspace = true
 async-trait.workspace = true
@@ -47,8 +45,6 @@ authority = [
     "dep:tokio",
 ]
 brokered = [
-    "dep:awaken-admin-config-api",
-    "dep:awaken-model-catalog",
     "dep:awaken-ext-builtin-tools",
     "dep:awaken-outbound-http",
     "dep:reqwest",
@@ -58,7 +54,6 @@ brokered = [
 [dev-dependencies]
 tempfile = "3"
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
-awaken-lease-testkit.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 
 [lints]

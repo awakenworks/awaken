@@ -12,6 +12,7 @@
 //! Every binary target is a thin shell over this library.
 mod acp_local_credentials;
 mod assistant_selection;
+mod brokered_catalog;
 pub mod config;
 pub mod console;
 mod console_assets;
@@ -566,7 +567,6 @@ fn brokered_inference_client(
     cloud_api_base_url: Option<&str>,
     execution_workspace: &str,
     client_instance_id: &str,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Option<Arc<awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient>> {
     if !cloud_models_enabled {
         return None;
@@ -599,7 +599,6 @@ fn brokered_inference_client(
             token_source,
             execution_workspace,
             client_instance_id,
-            clock,
         )
         .unwrap_or_else(|error| panic!("Cloud inference configuration: {error}")),
     ))
@@ -640,7 +639,6 @@ mod brokered_client_boundary_tests {
                 Some("https://api.awaken.test"),
                 workspace,
                 &instance,
-                awaken_lease_contract::system_clock(),
             )
             .is_some()
         );
@@ -654,7 +652,6 @@ mod brokered_client_boundary_tests {
                 Some("https://api.awaken.test"),
                 workspace,
                 &instance,
-                awaken_lease_contract::system_clock(),
             )
         });
         assert!(result.is_err());
