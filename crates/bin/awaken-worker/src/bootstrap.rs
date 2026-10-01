@@ -366,7 +366,12 @@ impl WorkerDaemonConfig {
         .apply(runtime.sandbox_tier, &mut runtime.sandbox)?;
         let acp_clis = file.acp_clis.unwrap_or_default();
         runtime.acp = (!acp_clis.is_empty())
-            .then(|| awaken_session_executor::AcpWorkerProfile::new(acp_clis))
+            .then(|| {
+                awaken_session_executor::AcpWorkerProfile::new(
+                    acp_clis,
+                    awaken_execution_composition::acp_adapter_policy(),
+                )
+            })
             .transpose()?;
         runtime.container_image = file.container_image;
         if let Some(path) = &file.worker_local_credential_bindings_file {
@@ -499,7 +504,10 @@ impl WorkerDaemonConfig {
             if selected.is_empty() {
                 return Err("no configured host ACP CLI is currently routable".into());
             }
-            let mut profile = awaken_session_executor::AcpWorkerProfile::new(selected.clone())?;
+            let mut profile = awaken_session_executor::AcpWorkerProfile::new(
+                selected.clone(),
+                awaken_execution_composition::acp_adapter_policy(),
+            )?;
             profile.apply_launch_argv(&prepared.routable_launch_argv())?;
             runtime.acp = Some(profile);
             if let Some(path) = &self.local_credential_bindings_file {

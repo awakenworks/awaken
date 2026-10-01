@@ -980,8 +980,13 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut deployment = crate::config::local_test_deployment(directory.path().into());
         deployment.configured_acp_clis = Some(vec!["codex".to_string()]);
-        deployment.runtime.acp =
-            Some(awaken_session_executor::AcpWorkerProfile::new(["codex".to_string()]).unwrap());
+        deployment.runtime.acp = Some(
+            awaken_session_executor::AcpWorkerProfile::new(
+                ["codex".to_string()],
+                awaken_execution_composition::acp_adapter_policy(),
+            )
+            .unwrap(),
+        );
         let observations = awaken_run_executor_acp::known_acp_clis()
             .iter()
             .map(|cli| {

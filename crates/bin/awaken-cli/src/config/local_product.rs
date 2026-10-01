@@ -30,7 +30,10 @@ impl ResolvedDeployment {
         self.runtime.acp = if routable_cli_ids.is_empty() {
             None
         } else {
-            Some(AcpWorkerProfile::new(routable_cli_ids)?)
+            Some(AcpWorkerProfile::new(
+                routable_cli_ids,
+                awaken_execution_composition::acp_adapter_policy(),
+            )?)
         };
         self.local_acp_observations = observations;
         Ok(())

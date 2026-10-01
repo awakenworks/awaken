@@ -15,8 +15,11 @@ use awaken_session_executor::SharedHost;
 use awaken_session_environment::SandboxEnvironmentProvider;
 use awaken_session_environment_contract::HandExecutorFactory;
 
+mod acp_policy;
 mod container;
 mod local;
+
+pub use acp_policy::acp_adapter_policy;
 
 pub use container::{
     ContainerTierPolicy, build_container_environment_for_realization, package_image_provisioner,
