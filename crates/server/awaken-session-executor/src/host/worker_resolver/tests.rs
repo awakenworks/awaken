@@ -988,7 +988,7 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
 impl awaken_dispatch_contract::ClaimedSessionRealizationControl for RecordingSessionControl {
     async fn resume_frozen(
         &self,
-        claim: &awaken_dispatch::RunClaim,
+        claim: &awaken_dispatch_contract::RunClaim,
         _session_id: &str,
         _session_work_authority: Option<&awaken_session_work_contract::SessionWorkAuthorityReceipt>,
         continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
@@ -1243,7 +1243,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     // frozen publication binds claim and lease together; CR3 same-Run retry
     // then sends precisely that installed lease. This sequence catches the
     // early-claim-publication bug that the static 20-case selector cannot.
-    let predecessor = awaken_dispatch::RunClaim {
+    let predecessor = awaken_dispatch_contract::RunClaim {
         run_id: awaken_agent_contract::agent::run::Id("previous-run".into()),
         owner: claimed.lease.owner.clone(),
         epoch: 0,
@@ -1295,7 +1295,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         .read("ordinary-remote", |slot| {
             assert_eq!(
                 slot.dispatch_claim,
-                Some(awaken_dispatch::RunClaim::from(&claimed.lease)),
+                Some(awaken_dispatch_contract::RunClaim::from(&claimed.lease)),
                 "CR2"
             );
             slot.realization_authority.lease().cloned()
@@ -1930,7 +1930,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
 async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
     let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
     let managed = managed_test_host(host.clone());
-    let claim = awaken_dispatch::RunClaim {
+    let claim = awaken_dispatch_contract::RunClaim {
         run_id: RunId("run-generation-fence".into()),
         owner: "worker-generation-fence".into(),
         epoch: 1,
@@ -2258,18 +2258,21 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
     struct ClaimFileSource;
 
     #[async_trait::async_trait]
-    impl crate::FileContentSource<awaken_dispatch::ResourceOperationFence> for ClaimFileSource {
+    impl crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>
+        for ClaimFileSource
+    {
         async fn read(
             &self,
             workspace_id: &str,
             file_id: &str,
             _purpose: &awaken_resource_contract::FileReadPurpose,
-            fence: Option<&awaken_dispatch::ResourceOperationFence>,
+            fence: Option<&awaken_dispatch_contract::ResourceOperationFence>,
         ) -> Result<
             Option<awaken_resource_contract::ResolvedFileContent>,
             awaken_resource_contract::FileContentSourceError,
         > {
-            let Some(awaken_dispatch::ResourceOperationFence::Run(claim)) = fence else {
+            let Some(awaken_dispatch_contract::ResourceOperationFence::Run(claim)) = fence
+            else {
                 return Ok(None);
             };
             if workspace_id != "workspace-remote"
@@ -2314,7 +2317,7 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         )
         .unwrap(),
     );
-    let claim = awaken_dispatch::RunClaim {
+    let claim = awaken_dispatch_contract::RunClaim {
         run_id: RunId("run-remote".into()),
         owner: "worker-remote".into(),
         epoch: 7,

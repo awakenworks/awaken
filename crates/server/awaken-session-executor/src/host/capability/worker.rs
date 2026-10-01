@@ -125,7 +125,7 @@ impl SharedHost {
     pub fn with_memory_reference_encoder<E>(mut self, encoder: Arc<E>) -> Self
     where
         E: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-                awaken_dispatch::RunClaim,
+                awaken_dispatch_contract::RunClaim,
             > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
                 awaken_session_realization_contract::SessionResourceMaterializationIntent,
             > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<

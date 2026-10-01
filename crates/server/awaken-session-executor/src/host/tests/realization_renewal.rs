@@ -308,7 +308,7 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
                 "removed" | "replaced_slot" => {}
                 _ => unreachable!(),
             }
-            let claim = awaken_dispatch::RunClaim {
+            let claim = awaken_dispatch_contract::RunClaim {
                 run_id: awaken_agent_contract::agent::run::Id("new-run".into()),
                 owner: "replacement".into(),
                 epoch: 2,
@@ -892,7 +892,7 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
             newer.runtime_incarnation = "worker-a:new".into();
             newer.epoch = 2;
         }
-        let claim = awaken_dispatch::RunClaim {
+        let claim = awaken_dispatch_contract::RunClaim {
             run_id: RunId("new-attempt".into()),
             owner: "worker-a:new".into(),
             epoch: 2,

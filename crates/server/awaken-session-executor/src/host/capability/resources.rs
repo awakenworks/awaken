@@ -9,7 +9,7 @@ use crate::host::*;
 /// silently opening a local content authority for the missing half.
 pub(in crate::host) struct WorkerContentAdapters {
     pub(in crate::host) file_content_source:
-        Arc<dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>>,
+        Arc<dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>>,
     pub(in crate::host) memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
 }
 
@@ -39,7 +39,7 @@ pub struct LocalSkillPorts {
     pub store: Arc<dyn awaken_resource_contract::SkillStore>,
     pub bundle_source: Arc<
         dyn awaken_session_configuration_contract::SkillBundleSource<
-                awaken_dispatch::ResourceOperationFence,
+                awaken_dispatch_contract::ResourceOperationFence,
             >,
     >,
     pub application: Arc<dyn awaken_session_configuration_contract::SkillCatalogApplication>,
@@ -74,7 +74,7 @@ pub(crate) struct ResourcePorts {
     /// the local catalog/store pair; a database-less Worker replaces it with the
     /// claim-fenced HTTP adapter before accepting work.
     pub(crate) file_content_source:
-        Arc<dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>>,
+        Arc<dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>>,
     /// Logical Files-API truth: public identity, metadata, Workspace visibility,
     /// Session scope, and harvest idempotency. Bytes remain in `file_store` only.
     #[cfg(any(test, feature = "test-support"))]
@@ -89,7 +89,7 @@ pub(crate) struct ResourcePorts {
     /// claim-fenced HTTP client.
     pub(crate) artifact_publisher: Arc<
         dyn awaken_resource_contract::ArtifactPublisher<
-                awaken_dispatch::ArtifactPublicationFence,
+                awaken_dispatch_contract::ArtifactPublicationFence,
             >,
     >,
     /// Durable resource-plane lifecycle/reference state. It contains intrinsic
@@ -214,7 +214,7 @@ impl ResourcePorts {
             )) as Arc<dyn awaken_resource_contract::FileApplicationService>
         });
         let file_content_source: Arc<
-            dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>,
+            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
         > = worker_content
             .as_ref()
             .map(|content| content.file_content_source.clone())
@@ -228,11 +228,15 @@ impl ResourcePorts {
                     );
                 }
                 Arc::new(awaken_resource_contract::UnavailableFileContentSource)
-                    as Arc<dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>>
+                    as Arc<
+                        dyn crate::FileContentSource<
+                                awaken_dispatch_contract::ResourceOperationFence,
+                            >,
+                    >
             });
         let artifact_publisher: Arc<
             dyn awaken_resource_contract::ArtifactPublisher<
-                    awaken_dispatch::ArtifactPublicationFence,
+                    awaken_dispatch_contract::ArtifactPublicationFence,
                 >,
         > = {
             #[cfg(test)]
@@ -312,11 +316,11 @@ impl SharedHost {
         mut self,
         application: Arc<dyn awaken_resource_contract::FileApplicationService>,
         content_source: Arc<
-            dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>,
+            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
         >,
         artifact_publisher: Arc<
             dyn awaken_resource_contract::ArtifactPublisher<
-                    awaken_dispatch::ArtifactPublicationFence,
+                    awaken_dispatch_contract::ArtifactPublicationFence,
                 >,
         >,
     ) -> Self {
@@ -333,7 +337,7 @@ impl SharedHost {
         mut self,
         publisher: Arc<
             dyn awaken_resource_contract::ArtifactPublisher<
-                    awaken_dispatch::ArtifactPublicationFence,
+                    awaken_dispatch_contract::ArtifactPublicationFence,
                 >,
         >,
     ) -> Self {
@@ -360,7 +364,9 @@ impl SharedHost {
     #[must_use]
     pub fn with_file_content_source(
         mut self,
-        source: Arc<dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>>,
+        source: Arc<
+            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
+        >,
     ) -> Self {
         self.resources.file_content_source = source;
         self

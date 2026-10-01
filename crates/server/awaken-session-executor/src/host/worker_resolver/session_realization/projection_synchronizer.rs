@@ -10,7 +10,7 @@ use super::*;
 
 pub(super) struct WorkerProjectionSynchronizer<'a> {
     pub(super) host: &'a SharedHost,
-    pub(super) claim: Option<&'a awaken_dispatch::RunClaim>,
+    pub(super) claim: Option<&'a awaken_dispatch_contract::RunClaim>,
     pub(super) published_snapshot: Option<&'a awaken_runtime_contract::ExecutableAgentSnapshot>,
     pub(super) rebuild_unavailable_environment: bool,
     pub(super) requires_runtime_before_effects: bool,
@@ -25,7 +25,7 @@ impl<'a> WorkerProjectionSynchronizer<'a> {
         session_id: &str,
         directive: &awaken_session_realization_contract::SessionRealizationDirective,
         claimed: Option<&'a awaken_dispatch::Claimed>,
-        claim: Option<&'a awaken_dispatch::RunClaim>,
+        claim: Option<&'a awaken_dispatch_contract::RunClaim>,
     ) -> Self {
         let published_snapshot = claimed.and_then(|claimed| {
             (claimed.request.thread_id().0 == session_id)
@@ -52,7 +52,7 @@ impl<'a> WorkerProjectionSynchronizer<'a> {
     pub(super) fn for_directive(
         host: &'a SharedHost,
         directive: &awaken_session_realization_contract::SessionRealizationDirective,
-        claim: Option<&'a awaken_dispatch::RunClaim>,
+        claim: Option<&'a awaken_dispatch_contract::RunClaim>,
         published_snapshot: Option<&'a awaken_runtime_contract::ExecutableAgentSnapshot>,
         rebuild_unavailable_environment: bool,
         claimed_environment_binding: Option<&'a str>,
@@ -1032,7 +1032,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
+        let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
         let lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: claim.owner.clone(),
             runtime_incarnation: "worker-a/boot-2".into(),
@@ -1597,7 +1597,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
+        let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
         let lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: claim.owner.clone(),
             runtime_incarnation: "worker-a/boot-1".into(),
@@ -1714,7 +1714,7 @@ mod tests {
             &remote_snapshot,
         );
         remote_projection.agent_publication = Some(remote_snapshot.clone());
-        let claim = awaken_dispatch::RunClaim {
+        let claim = awaken_dispatch_contract::RunClaim {
             run_id: RunId("run-remote-a2a-owner-conflict".into()),
             owner: "worker-a".into(),
             epoch: 2,

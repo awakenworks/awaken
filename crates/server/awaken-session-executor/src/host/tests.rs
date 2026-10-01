@@ -785,7 +785,7 @@ fn effective_repository(
 struct FixedRepositoryTransport(awaken_resource_contract::RepositoryTransport);
 
 #[async_trait::async_trait]
-impl crate::RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>
+impl crate::RepositoryBindingVerifier<awaken_dispatch_contract::ResourceOperationFence>
     for FixedRepositoryTransport
 {
     async fn verify(
@@ -793,7 +793,7 @@ impl crate::RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>
         _workspace_id: &str,
         _repository_id: &str,
         _config_version: awaken_resource_contract::ConfigVersion,
-        _authority: Option<&awaken_dispatch::ResourceOperationFence>,
+        _authority: Option<&awaken_dispatch_contract::ResourceOperationFence>,
     ) -> Result<
         awaken_resource_contract::RepositoryTransport,
         awaken_resource_contract::RepositoryBindingVerifierError,
@@ -805,7 +805,7 @@ impl crate::RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>
 struct SequencedRepositoryTransport(AtomicUsize);
 
 #[async_trait::async_trait]
-impl crate::RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>
+impl crate::RepositoryBindingVerifier<awaken_dispatch_contract::ResourceOperationFence>
     for SequencedRepositoryTransport
 {
     async fn verify(
@@ -813,7 +813,7 @@ impl crate::RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>
         _workspace_id: &str,
         _repository_id: &str,
         _config_version: awaken_resource_contract::ConfigVersion,
-        _authority: Option<&awaken_dispatch::ResourceOperationFence>,
+        _authority: Option<&awaken_dispatch_contract::ResourceOperationFence>,
     ) -> Result<
         awaken_resource_contract::RepositoryTransport,
         awaken_resource_contract::RepositoryBindingVerifierError,

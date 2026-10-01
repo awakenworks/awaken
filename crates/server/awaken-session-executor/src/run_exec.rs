@@ -103,7 +103,7 @@ impl ArtifactHarvestAttemptExecutor {
     async fn finish<T>(
         &self,
         thread: &str,
-        claim: Option<awaken_dispatch::RunClaim>,
+        claim: Option<awaken_dispatch_contract::RunClaim>,
         result: ExecutionResult<T>,
     ) -> ExecutionResult<T> {
         match result {
@@ -697,10 +697,10 @@ mod tests {
     struct RecordingArtifactPublisher {
         inner: Arc<
             dyn awaken_resource_contract::ArtifactPublisher<
-                    awaken_dispatch::ArtifactPublicationFence,
+                    awaken_dispatch_contract::ArtifactPublicationFence,
                 >,
         >,
-        claims: Arc<std::sync::Mutex<Vec<Option<awaken_dispatch::RunClaim>>>>,
+        claims: Arc<std::sync::Mutex<Vec<Option<awaken_dispatch_contract::RunClaim>>>>,
         dispatch: Arc<awaken_dispatch::AnyDispatchStore>,
     }
 
@@ -709,19 +709,21 @@ mod tests {
         // resume, failure and cancellation cannot borrow a successor claim.
         async fn record_claim(
             &self,
-            fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+            fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
         ) -> Result<
             Option<awaken_dispatch::CommitEpochGuard>,
             awaken_resource_contract::ArtifactPublicationError,
         > {
             let claim = fence.and_then(|fence| match fence {
-                awaken_dispatch::ArtifactPublicationFence::Run(claim) => Some(claim),
-                awaken_dispatch::ArtifactPublicationFence::SessionMaterialization(_)
-                | awaken_dispatch::ArtifactPublicationFence::RepositoryPublication { .. } => {
-                    None
-                }
-                awaken_dispatch::ArtifactPublicationFence::CheckpointRelease(_) => None,
-                awaken_dispatch::ArtifactPublicationFence::Terminal(_) => None,
+                awaken_dispatch_contract::ArtifactPublicationFence::Run(claim) => Some(claim),
+                awaken_dispatch_contract::ArtifactPublicationFence::SessionMaterialization(
+                    _,
+                )
+                | awaken_dispatch_contract::ArtifactPublicationFence::RepositoryPublication {
+                    ..
+                } => None,
+                awaken_dispatch_contract::ArtifactPublicationFence::CheckpointRelease(_) => None,
+                awaken_dispatch_contract::ArtifactPublicationFence::Terminal(_) => None,
             });
             let guard = if let Some(claim) = claim {
                 Some(
@@ -753,7 +755,7 @@ mod tests {
     struct ReplacingClaimExecutor {
         slots: crate::session_slot::SessionRuntimeSlots,
         thread: String,
-        replacement: awaken_dispatch::RunClaim,
+        replacement: awaken_dispatch_contract::RunClaim,
         failure: Option<&'static str>,
     }
 
@@ -761,7 +763,7 @@ mod tests {
         fn succeeding(
             slots: crate::session_slot::SessionRuntimeSlots,
             thread: &str,
-            replacement: awaken_dispatch::RunClaim,
+            replacement: awaken_dispatch_contract::RunClaim,
         ) -> Self {
             Self {
                 slots,
@@ -774,7 +776,7 @@ mod tests {
         fn failing(
             slots: crate::session_slot::SessionRuntimeSlots,
             thread: &str,
-            replacement: awaken_dispatch::RunClaim,
+            replacement: awaken_dispatch_contract::RunClaim,
             failure: &'static str,
         ) -> Self {
             Self {
@@ -787,9 +789,9 @@ mod tests {
     }
 
     fn assert_recorded_claims_since(
-        claims: &std::sync::Mutex<Vec<Option<awaken_dispatch::RunClaim>>>,
+        claims: &std::sync::Mutex<Vec<Option<awaken_dispatch_contract::RunClaim>>>,
         from: usize,
-        expected: Option<&awaken_dispatch::RunClaim>,
+        expected: Option<&awaken_dispatch_contract::RunClaim>,
         rule: &str,
     ) {
         let claims = claims.lock().expect("recorded claims mutex poisoned");
@@ -841,14 +843,16 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublicationFence>
-        for RecordingArtifactPublisher
+    impl
+        awaken_resource_contract::ArtifactPublisher<
+            awaken_dispatch_contract::ArtifactPublicationFence,
+        > for RecordingArtifactPublisher
     {
         async fn capture(
             &self,
             workspace_id: &str,
             session_id: &str,
-            fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+            fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
         ) -> Result<
             Option<awaken_resource_contract::ArtifactCapture>,
             awaken_resource_contract::ArtifactPublicationError,
@@ -860,7 +864,7 @@ mod tests {
         async fn replace_capture(
             &self,
             request: awaken_resource_contract::ReplaceArtifactCapture,
-            fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+            fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
         ) -> Result<
             awaken_resource_contract::ReplaceArtifactCaptureOutcome,
             awaken_resource_contract::ArtifactPublicationError,
@@ -872,7 +876,7 @@ mod tests {
         async fn publish(
             &self,
             publication: awaken_resource_contract::ArtifactPublication<
-                awaken_dispatch::ArtifactPublicationFence,
+                awaken_dispatch_contract::ArtifactPublicationFence,
             >,
         ) -> Result<
             awaken_resource_contract::ArtifactPublicationReceipt,
@@ -885,7 +889,7 @@ mod tests {
         async fn recover(
             &self,
             _recovery: awaken_resource_contract::ArtifactRecovery<
-                awaken_dispatch::ArtifactPublicationFence,
+                awaken_dispatch_contract::ArtifactPublicationFence,
             >,
         ) -> Result<
             Vec<awaken_resource_contract::ArtifactPublicationReceipt>,
@@ -1036,7 +1040,7 @@ mod tests {
             .await
             .expect("claim artifact attempt")
             .expect("artifact attempt available");
-        let expected_claim = awaken_dispatch::RunClaim::from(&claimed.lease);
+        let expected_claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
         let mut raw_host =
             SharedHost::new(Arc::new(NoLlm), "test").with_dispatch_store(dispatch.clone());
         let claims = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1141,7 +1145,7 @@ mod tests {
             .expect("R4");
         assert_eq!(inner.cancels.load(Ordering::SeqCst), 1, "R4");
 
-        let replacement = awaken_dispatch::RunClaim {
+        let replacement = awaken_dispatch_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
             owner: "worker-new".into(),
             epoch: expected_claim.epoch + 1,
@@ -1175,7 +1179,7 @@ mod tests {
             slot.dispatch_claim = Some(expected_claim.clone());
         });
 
-        let replacement = awaken_dispatch::RunClaim {
+        let replacement = awaken_dispatch_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
             owner: "worker-resume-new".into(),
             epoch: expected_claim.epoch + 1,
@@ -1213,7 +1217,7 @@ mod tests {
         host.session_slots.update(thread, |slot| {
             slot.dispatch_claim = Some(expected_claim.clone());
         });
-        let replacement = awaken_dispatch::RunClaim {
+        let replacement = awaken_dispatch_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
             owner: "worker-failing-new".into(),
             epoch: expected_claim.epoch + 1,
@@ -1254,7 +1258,7 @@ mod tests {
 
         host.session_slots
             .update(thread, |slot| slot.dispatch_claim = None);
-        let replacement = awaken_dispatch::RunClaim {
+        let replacement = awaken_dispatch_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
             owner: "worker-late".into(),
             epoch: expected_claim.epoch + 1,

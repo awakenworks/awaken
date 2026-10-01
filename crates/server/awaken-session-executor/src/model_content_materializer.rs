@@ -12,7 +12,7 @@ use awaken_agent_contract::agent::content::{ContentBlock, DocumentSource, ImageS
 use awaken_resource_contract::{
     FileContentSource, FileReadPurpose, ResolvedFileContent, content_id,
 };
-use awaken_dispatch::{ResourceOperationFence, RunClaim};
+use awaken_dispatch_contract::{ResourceOperationFence, RunClaim};
 use awaken_runtime_contract::llm::{ChatRequest, Error, ModelContentMaterializer};
 use base64::Engine as _;
 
@@ -254,6 +254,37 @@ mod tests {
 
     fn materializer(source: Arc<Source>) -> ResourceModelContentMaterializer {
         ResourceModelContentMaterializer::new(source, "workspace-a", "thread-a", None)
+    }
+
+    /// Causes: C1=the Run carries an exact claim (Run ID, owner, epoch);
+    /// C2=no claim. Constraint: C1 and C2 are exclusive. Effects: E1=the
+    /// existing Resource fence wraps the unchanged C1 claim; E2=C2 has no
+    /// authority. Decision table: R1=C1 -> E1, R2=C2 -> E2. This also keeps
+    /// the Host's Resource port bound to the contract-owned fence type.
+    #[test]
+    fn model_content_authority_uses_the_exact_contract_run_claim() {
+        let source = Arc::new(Source {
+            content: None,
+            fail: false,
+            reads: AtomicUsize::new(0),
+        });
+        let claim = RunClaim {
+            run_id: awaken_agent_contract::agent::run::Id("run-a".into()),
+            owner: "worker-a".into(),
+            epoch: 7,
+        };
+        let claimed = ResourceModelContentMaterializer::new(
+            source.clone(),
+            "workspace-a",
+            "thread-a",
+            Some(claim.clone()),
+        );
+        assert_eq!(
+            claimed.authority,
+            Some(ResourceOperationFence::Run(claim)),
+            "R1/E1"
+        );
+        assert_eq!(materializer(source).authority, None, "R2/E2");
     }
 
     /// Cause-effect graph and FMECA (model File materialization):

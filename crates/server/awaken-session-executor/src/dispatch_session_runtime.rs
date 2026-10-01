@@ -63,8 +63,9 @@ pub(crate) struct DispatchSessionRuntime {
         Option<Arc<dyn awaken_credential_materializer::PlatformMcpEgressProvisioner>>,
     pub(super) resource_validator:
         Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
-    pub(super) repository_binding_verifier:
-        Option<Arc<dyn RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>>>,
+    pub(super) repository_binding_verifier: Option<
+        Arc<dyn RepositoryBindingVerifier<awaken_dispatch_contract::ResourceOperationFence>>,
+    >,
     pub(super) mcp_realizer:
         Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
 }
@@ -90,7 +91,7 @@ impl DispatchSessionRuntime {
         &self,
         thread: &str,
         manifest: &awaken_session_resource_contract::SessionResourceManifest,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
     ) -> Result<(), RunError> {
         let managed = self.managed()?;
         // Resource generation is the innermost Session transition. A complete
@@ -199,7 +200,7 @@ impl DispatchSessionRuntime {
         &self,
         thread: &str,
         transition: &awaken_session_resource_contract::SessionResourceTransition,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
@@ -219,7 +220,7 @@ impl DispatchSessionRuntime {
         &self,
         thread: &str,
         transition: &awaken_session_resource_contract::SessionResourceTransition,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         self.managed()?
@@ -231,7 +232,7 @@ impl DispatchSessionRuntime {
         &self,
         thread: &str,
         transition: &awaken_session_resource_contract::SessionResourceTransition,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         self.managed()?
@@ -328,7 +329,7 @@ impl SharedHost {
         &self,
         thread: &str,
         manifest: &awaken_session_resource_contract::SessionResourceManifest,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()?
             .install(thread, manifest, claim)
@@ -344,7 +345,7 @@ impl SharedHost {
         &self,
         thread: &str,
         transition: &awaken_session_resource_contract::SessionResourceTransition,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
@@ -363,7 +364,7 @@ impl SharedHost {
         &self,
         thread: &str,
         transition: &awaken_session_resource_contract::SessionResourceTransition,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()?
@@ -375,7 +376,7 @@ impl SharedHost {
         &self,
         thread: &str,
         transition: &awaken_session_resource_contract::SessionResourceTransition,
-        claim: Option<&awaken_dispatch::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()?

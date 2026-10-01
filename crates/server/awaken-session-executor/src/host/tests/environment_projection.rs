@@ -99,7 +99,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     // Model the exact post-settlement residue observed by an idle durable
     // Session. No Dispatch store is installed, so any attempt to reinterpret
     // this cache as current Resource authority fails the test before effects.
-    let stale_claim = awaken_dispatch::RunClaim {
+    let stale_claim = awaken_dispatch_contract::RunClaim {
         run_id: RunId("settled-before-live-attach".into()),
         owner: "retired-worker".into(),
         epoch: 1,

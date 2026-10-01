@@ -25,7 +25,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::Message;
 use futures_util::StreamExt as _;
 
-use awaken_dispatch::RunClaim;
+use awaken_dispatch_contract::RunClaim;
 
 #[cfg(test)]
 pub(crate) use realization_renewal::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS;

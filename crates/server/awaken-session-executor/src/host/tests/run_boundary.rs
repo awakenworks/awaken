@@ -255,7 +255,7 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
         *ctx.active_run.lock().unwrap() = direct.then(|| run_id.clone());
         worker.session_slots.update("worker-stop", |slot| {
             slot.runtime = Some(ctx.clone());
-            slot.dispatch_claim = Some(awaken_dispatch::RunClaim {
+            slot.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
                 run_id,
                 owner: "worker-old".into(),
                 epoch: 1,
@@ -300,7 +300,7 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
     struct ConstructorFileSource;
 
     #[async_trait::async_trait]
-    impl crate::FileContentSource<awaken_dispatch::ResourceOperationFence>
+    impl crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>
         for ConstructorFileSource
     {
         async fn read(
@@ -308,7 +308,7 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
             workspace_id: &str,
             file_id: &str,
             _purpose: &awaken_resource_contract::FileReadPurpose,
-            _claim: Option<&awaken_dispatch::ResourceOperationFence>,
+            _claim: Option<&awaken_dispatch_contract::ResourceOperationFence>,
         ) -> Result<
             Option<awaken_resource_contract::ResolvedFileContent>,
             awaken_resource_contract::FileContentSourceError,

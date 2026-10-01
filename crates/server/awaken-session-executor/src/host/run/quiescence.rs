@@ -33,14 +33,14 @@ const fn terminal_dispatch_action(
 }
 
 fn expired_claim_for_fast_pending(
-    claim: awaken_dispatch::RunClaim,
+    claim: awaken_dispatch_contract::RunClaim,
     was_current: Option<bool>,
-) -> Option<awaken_dispatch::RunClaim> {
+) -> Option<awaken_dispatch_contract::RunClaim> {
     (was_current == Some(false)).then_some(claim)
 }
 
 fn exact_expired_slot_remains(
-    expected: &awaken_dispatch::RunClaim,
+    expected: &awaken_dispatch_contract::RunClaim,
     observed: Option<&awaken_dispatch::PhysicalAttempt>,
 ) -> bool {
     observed.is_some_and(|physical| physical.claim == *expected)
@@ -325,7 +325,7 @@ mod fast_pending_tests {
         // P2=(current|unknown,any)|(expired,missing|replaced|unknown)=>E2.
         // Probe failure is an optimization miss, never a reason to skip
         // durable cancellation or to accept physical quiescence.
-        let claim = awaken_dispatch::RunClaim {
+        let claim = awaken_dispatch_contract::RunClaim {
             run_id: RunId("fast-pending-run".into()),
             owner: "worker-a".into(),
             epoch: 1,
@@ -345,7 +345,7 @@ mod fast_pending_tests {
             session_thread_id: None,
         };
         let replacement = awaken_dispatch::PhysicalAttempt {
-            claim: awaken_dispatch::RunClaim {
+            claim: awaken_dispatch_contract::RunClaim {
                 epoch: 2,
                 ..claim.clone()
             },

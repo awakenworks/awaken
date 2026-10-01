@@ -31,7 +31,7 @@ const fn local_claimed_projection_is_ready(
 
 fn claimed_realization_continuation(
     slot: &crate::session_slot::SessionRuntimeSlot,
-    claim: &awaken_dispatch::RunClaim,
+    claim: &awaken_dispatch_contract::RunClaim,
 ) -> Option<awaken_session_resource_contract::SessionRealizationLease> {
     slot.dispatch_claim
         .as_ref()
@@ -84,7 +84,7 @@ pub(super) async fn install_claimed_session_projection(
     thread_id: &awaken_agent_contract::agent::thread::Id,
     dispatched_resources: Option<&awaken_session_resource_contract::SessionResourceManifest>,
 ) -> Result<(), awaken_dispatch::Error> {
-    let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
+    let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
     let (_realization, continuation) = host
         .session_slots
         .acquire_realization_with(&thread_id.0, |slot| {
@@ -140,7 +140,7 @@ pub(super) async fn install_claimed_session_projection(
         .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
     let ownership = awaken_dispatch::claim_bound_ownership_verifier(
         dispatch,
-        awaken_dispatch::RunClaim::from(&claimed.lease),
+        awaken_dispatch_contract::RunClaim::from(&claimed.lease),
     );
     ownership.verify_current().await.map_err(|error| {
         HostWorkerResolver::execution_error(format!(
@@ -226,7 +226,7 @@ mod tests {
         // no continuation, so ordinary fenced assignment remains authoritative.
         // In particular Work retirement must never reopen its Closed lease.
         use crate::session_slot::{SessionRealizationAuthority as A, SessionRuntimeSlot};
-        let claim = awaken_dispatch::RunClaim {
+        let claim = awaken_dispatch_contract::RunClaim {
             run_id: awaken_agent_contract::agent::run::Id("run".into()),
             owner: "worker:incarnation".into(),
             epoch: 2,
@@ -237,7 +237,7 @@ mod tests {
             epoch: 7,
             expires_at_unix_ms: u64::MAX,
         };
-        let previous = awaken_dispatch::RunClaim {
+        let previous = awaken_dispatch_contract::RunClaim {
             epoch: 1,
             ..claim.clone()
         };
@@ -489,12 +489,12 @@ mod tests {
                 Arc::new(crate::no_model::NoModelConfiguredExecutor),
                 "stub",
             ));
-            let old = awaken_dispatch::RunClaim {
+            let old = awaken_dispatch_contract::RunClaim {
                 run_id: awaken_agent_contract::agent::run::Id("run".into()),
                 owner: "old".into(),
                 epoch: 1,
             };
-            let new = awaken_dispatch::RunClaim {
+            let new = awaken_dispatch_contract::RunClaim {
                 owner: "new".into(),
                 epoch: 2,
                 ..old.clone()
