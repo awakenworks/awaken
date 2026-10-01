@@ -109,8 +109,12 @@ pub(super) async fn control_component_for_process(
             control.secrets.clone(),
         )),
         brokered_catalog: injected_brokered_catalog.or_else(|| {
-            brokered_client
-                .map(|client| client as Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>)
+            brokered_client.map(|client| {
+                Arc::new(crate::brokered_catalog::BrokeredCatalogAdapter::new(
+                    client,
+                    stores.clock.clone(),
+                )) as Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>
+            })
         }),
         model_supply,
         managed_runtime_available,
@@ -204,7 +208,6 @@ pub(super) async fn prepare_control_routers(
         process.cloud_api_base_url.as_deref(),
         &execution_workspace,
         &local_client_instance_id(stores.workspace_root.as_deref()),
-        stores.clock.clone(),
     );
     let model_services = resolve_model_services(
         model_supply,
