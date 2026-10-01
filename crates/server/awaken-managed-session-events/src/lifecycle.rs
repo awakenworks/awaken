@@ -3,9 +3,9 @@
 //! the facts its committed Run lifecycle, disposition and the parent terminal
 //! publish.
 //!
-//! Consumer: the protocol adapter's delegation projector, which feeds each
-//! child's published status in, encodes the returned facts in order and writes
-//! the advanced status back to its Thread record.
+//! Consumer: the protocol adapter's delegation projector, which starts from
+//! committed links, encodes the returned facts in order and writes the advanced
+//! status to its disposable Thread record.
 
 use std::collections::HashMap;
 
@@ -13,6 +13,7 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind};
 use awaken_session_application_contract::Pending;
 use awaken_session_event_contract::SessionAgentRunBoundary;
+use awaken_session_execution_contract::CoordinatedThreadLink;
 
 use crate::fault::run_fault;
 use crate::stop::terminal_stop;
@@ -34,6 +35,22 @@ pub struct CoordinatedThread {
     /// An Advisor consultation owns one Thread and closes after its one Run.
     pub advisor: bool,
     pub status: ThreadStatus,
+}
+
+/// Start the one child-status fold from committed relationship facts. Consumer:
+/// the Managed candidate reducer, which carries this state through activity,
+/// archival disposition and parent terminal projection without reading its
+/// rendered child DTO back as a decision input.
+#[must_use]
+pub fn initial_coordinated_threads(links: &[CoordinatedThreadLink]) -> Vec<CoordinatedThread> {
+    links
+        .iter()
+        .map(|link| CoordinatedThread {
+            thread: link.thread_id.0.clone(),
+            advisor: link.target.advisor_model().is_some(),
+            status: ThreadStatus::Running,
+        })
+        .collect()
 }
 
 /// The facts one lifecycle suffix publishes and the Run boundaries it
@@ -343,6 +360,80 @@ mod tests {
             advisor,
             status,
         }
+    }
+
+    #[test]
+    fn committed_links_own_one_child_status_fold_through_archive_and_parent_terminal() {
+        // Causes: C1 one Agent link and one Advisor link commit; C2 only the
+        // Agent is archived; C3 the parent becomes terminal. Effects: E1 both
+        // children begin Running with their exact kind; E2 archive closes only
+        // the Agent; E3 parent terminal closes only the still-open Advisor,
+        // then the primary and Session. Decision rows R1=C1=>E1,
+        // R2=C1+C2=>E1+E2, R3=C1+C2+C3=>E1+E2+E3. The same vector carries
+        // every state; no rendered child DTO is read back between stages.
+        use awaken_session_execution_contract::CoordinatedThreadTarget;
+
+        let link = |thread: &str, target| CoordinatedThreadLink {
+            session_id: "session".into(),
+            thread_id: ThreadId(thread.into()),
+            target,
+            created_by_operation_id: format!("create-{thread}"),
+            latest_run_id: None,
+        };
+        let links = [
+            link(
+                "agent",
+                CoordinatedThreadTarget::Agent {
+                    agent_id: "worker".into(),
+                },
+            ),
+            link(
+                "advisor",
+                CoordinatedThreadTarget::Advisor {
+                    model: "reviewer".into(),
+                },
+            ),
+        ];
+        let mut threads = initial_coordinated_threads(&links);
+        assert_eq!(
+            threads,
+            vec![
+                child("agent", false, ThreadStatus::Running),
+                child("advisor", true, ThreadStatus::Running),
+            ],
+            "R1/E1"
+        );
+        let archived = archive_children(
+            &mut threads,
+            &HashMap::from([(
+                "agent".into(),
+                awaken_agent_contract::ThreadDisposition::Archived,
+            )]),
+        );
+        assert_eq!(archived.len(), 1, "R2/E2 one absorbing archive");
+        assert_eq!(archived[0].key.thread, "agent", "R2/E2");
+        assert_eq!(threads[0].status, ThreadStatus::Terminated, "R2/E2");
+        assert_eq!(threads[1].status, ThreadStatus::Running, "R2/E2");
+        let terminal = terminate_session("session", &mut threads, false, false);
+        assert_eq!(
+            terminal
+                .iter()
+                .map(|fact| fact.key.role)
+                .collect::<Vec<_>>(),
+            vec![
+                FactRole::ParentTerminalChildStatusTerminated,
+                FactRole::ParentTerminalPrimaryStatusTerminated,
+                FactRole::ParentTerminalSessionStatusTerminated,
+            ],
+            "R3/E3"
+        );
+        assert_eq!(terminal[0].key.thread, "advisor", "R3/E3");
+        assert!(
+            threads
+                .iter()
+                .all(|thread| thread.status == ThreadStatus::Terminated),
+            "R3/E3"
+        );
     }
 
     fn roles(facts: &[TimelineFact]) -> Vec<(FactRole, FactKind)> {
