@@ -1,3 +1,6 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: One bootstrap installs the exact claimed ACP materializer as both launch
+// @formal reason: resolver and Session secret broker; this link is not a formal-proof claim.
 //! Worker-plane composition of Session execution environments.
 //!
 //! The Runtime Host holds only the Session environment ports
@@ -16,10 +19,12 @@ use awaken_session_environment::SandboxEnvironmentProvider;
 use awaken_session_environment_contract::HandExecutorFactory;
 
 mod acp_policy;
+mod acp_provision;
 mod container;
 mod local;
 
 pub use acp_policy::acp_adapter_policy;
+pub use acp_provision::PublishedAcpLaunchResolver;
 
 pub use container::{
     ContainerTierPolicy, build_container_environment_for_realization, package_image_provisioner,
@@ -203,4 +208,62 @@ pub async fn with_acp_launch_source(
     )
     .await?;
     Ok(with_backend_owned_environment(host).with_acp_launch_source(source))
+}
+
+/// Install the exact ACP routes advertised by this Host's typed deployment.
+///
+/// This is the sole production route builder for Worker and CLI process roots.
+/// It reads the same immutable `DeploymentConfig` the Host serves; the frozen
+/// Run binding still selects its CLI and candidate at attempt time. A missing
+/// profile installs no ACP executor, while an exact local materializer remains
+/// the same secret broker for the resolver and the Session environment.
+#[must_use]
+pub fn with_acp_from_deployment(
+    host: SharedHost,
+    credentials: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
+    brokered: Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
+) -> SharedHost {
+    let deployment = host.deployment_config().clone();
+    let Some(profile) = deployment.acp.as_ref() else {
+        return match credentials {
+            Some(credentials) => host.with_session_secret_broker(Arc::new(credentials)),
+            None => host,
+        };
+    };
+    let base = awaken_session_executor::session_sandbox_base(&deployment);
+    let routes = profile
+        .cli_ids()
+        .map(|id| {
+            let cli = *awaken_run_executor_acp::acp_cli(id)
+                .expect("AcpWorkerProfile validates every CLI");
+            let resolver = Arc::new(match (&credentials, &brokered) {
+                (Some(_), Some(_)) => {
+                    panic!("ACP credential materializers are mutually exclusive")
+                }
+                (Some(credentials), None) => {
+                    PublishedAcpLaunchResolver::new(cli, Some(base.clone()), credentials.clone())
+                }
+                (None, Some(materializer)) => PublishedAcpLaunchResolver::brokered(
+                    cli,
+                    Some(base.clone()),
+                    materializer.clone(),
+                ),
+                (None, None) => PublishedAcpLaunchResolver::backend_owned(cli, Some(base.clone())),
+            });
+            (
+                cli,
+                resolver as Arc<dyn awaken_run_executor_acp::LaunchResolver>,
+                profile.launch_argv(id).map(<[String]>::to_vec),
+            )
+        })
+        .collect();
+    let source = awaken_session_executor::LaunchSource::Projected(
+        awaken_session_executor::AcpLaunchRegistry::with_resolved_argv(routes)
+            .unwrap_or_else(|error| panic!("configure ACP launch routes: {error}")),
+    );
+    let host = host.with_acp_launch_source(source);
+    match credentials {
+        Some(credentials) => host.with_session_secret_broker(Arc::new(credentials)),
+        None => host,
+    }
 }
