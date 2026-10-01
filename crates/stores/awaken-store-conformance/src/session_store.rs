@@ -845,6 +845,96 @@ pub fn with_mcp_credential_source(
     value
 }
 
+pub async fn worker_realization_owner_scan_decision_table<
+    R: awaken_session_repository_contract::SessionStore,
+>(
+    r: &R,
+) {
+    // Worker-owner read cause/effect table: C1 matching/other/absent owner,
+    // C2 same/other Workspace, C3 live/expired lease. R1 either C2 with
+    // matching C1 -> one scoped root regardless of C3; R2 other/absent C1 ->
+    // no root. An expiry timestamp is never physical-exit evidence.
+    use awaken_session_resource_contract::SessionRealizationLease;
+    use awaken_session_state_contract::SessionScanQuery;
+    let with_owner = |id: &str, owner: &str, expiry| {
+        let mut value = session(id, id);
+        value.realization = Some(SessionRealizationLease {
+            owner: owner.into(),
+            runtime_incarnation: format!("{owner}:incarnation"),
+            epoch: 1,
+            expires_at_unix_ms: expiry,
+        });
+        value
+    };
+    create_session(
+        r,
+        "ws-affinity-a",
+        with_owner("affinity-a", "worker-a", 0),
+        Vec::new(),
+    )
+    .await;
+    create_session(
+        r,
+        "ws-affinity-b",
+        with_owner("affinity-b", "worker-a", u64::MAX / 2),
+        Vec::new(),
+    )
+    .await;
+    create_session(
+        r,
+        "ws-affinity-b",
+        with_owner("affinity-c", "worker-b", 0),
+        Vec::new(),
+    )
+    .await;
+    create_session(
+        r,
+        "ws-affinity-c",
+        session("affinity-empty", "empty"),
+        Vec::new(),
+    )
+    .await;
+
+    let selected = r
+        .scan(SessionScanQuery::WorkerRealizationOwner {
+            worker_id: "worker-a",
+        })
+        .await
+        .expect("R1 complete Worker-owner read");
+    assert!(selected.quarantined.is_empty() && selected.next_cursor.is_none());
+    let selected: Vec<_> = selected
+        .sessions
+        .iter()
+        .map(|item| (item.workspace_id.as_str(), item.session.session_id.as_str()))
+        .collect();
+    assert_eq!(
+        selected,
+        vec![
+            ("ws-affinity-a", "affinity-a"),
+            ("ws-affinity-b", "affinity-b"),
+        ],
+        "R1 both Workspaces and expired lease are retained",
+    );
+    let other = r
+        .scan(SessionScanQuery::WorkerRealizationOwner {
+            worker_id: "worker-b",
+        })
+        .await
+        .expect("R2 other owner");
+    assert_eq!(other.sessions.len(), 1, "R2");
+    assert_eq!(other.sessions[0].session.session_id.as_str(), "affinity-c");
+    assert!(
+        r.scan(SessionScanQuery::WorkerRealizationOwner {
+            worker_id: "worker-missing",
+        })
+        .await
+        .expect("R2 absent owner")
+        .sessions
+        .is_empty(),
+        "R2",
+    );
+}
+
 pub async fn credential_source_dependency_decision_table<
     R: awaken_session_repository_contract::SessionStore,
 >(
@@ -1418,6 +1508,7 @@ pub async fn run_suite<R: awaken_session_repository_contract::SessionStore + 'st
     global_environment_phase_count_has_no_recovery_batch_limit(&fresh()).await;
     vault_reference_index_returns_only_live_scoped_sessions(&fresh()).await;
     scan_query_decision_table(&fresh()).await;
+    worker_realization_owner_scan_decision_table(&fresh()).await;
     credential_source_dependency_decision_table(&fresh()).await;
     lifecycle_outbox_tracks_every_committed_transition(&fresh()).await;
     pending_resource_activation_index_is_durable(&fresh()).await;

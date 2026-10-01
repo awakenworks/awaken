@@ -3193,6 +3193,7 @@ dependencies = [
  "awaken-session-event-contract",
  "awaken-session-mcp-contract",
  "awaken-session-repository-contract",
+ "awaken-session-resource-contract",
  "awaken-session-state-contract",
  "awaken-session-types",
  "awaken-session-work-contract",

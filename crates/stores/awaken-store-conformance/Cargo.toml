@@ -21,6 +21,7 @@ awaken-resource-contract.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-repository-contract.workspace = true
+awaken-session-resource-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-dream-contract.workspace = true
 awaken-session-event-contract.workspace = true

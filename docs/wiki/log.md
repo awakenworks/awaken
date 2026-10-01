@@ -1,5 +1,13 @@
 # Wiki Update Log
 
+## 2026-10-01 — Include Session realization affinity in Worker-domain reads
+
+- [ADR-0065](../adr/0065-recoverable-embeddable-remote-worker.md)
+  now treats unfinished Session realization ownership as a separate
+  durable occupancy fact beside Registry, Dispatch and WorkQueue. An
+  expired lease is not an exit receipt; release writers must still close
+  admission and observe the complete domain before replacing a Worker.
+
 ## 2026-09-30 — Observe exact Worker occupancy at transport cutover
 
 - ADR-0065 keeps Registry, Dispatch and WorkQueue as the three read authorities

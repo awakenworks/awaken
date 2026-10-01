@@ -68,6 +68,12 @@ pub enum SessionScanQuery<'a> {
     /// Every visible aggregate owned by one Workspace, read from durable truth
     /// so a cold protocol projection cache cannot hide existing Sessions.
     Workspace { workspace_id: &'a str },
+    /// Complete, unpaged and fail-closed read of roots whose durable
+    /// realization lease names one logical Worker. Expired leases still
+    /// count: only the owning Session cleanup receipt can release affinity.
+    /// The application, not a SQL predicate, decides whether a matching
+    /// root has unfinished cleanup.
+    WorkerRealizationOwner { worker_id: &'a str },
     /// Healthy (non-terminal) Sessions whose immutable authoring baseline
     /// references one Vault in one Workspace.
     VaultReferences {

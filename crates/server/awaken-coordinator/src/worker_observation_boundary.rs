@@ -42,6 +42,7 @@ struct DomainState {
     directory: Arc<dyn WorkerDirectory>,
     host: Arc<SharedHost>,
     environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+    sessions: Arc<awaken_session_application::SessionApplication>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
 }
 
@@ -52,12 +53,14 @@ struct WorkerDomainObservation {
     registered: RegisteredWorker,
     physical_attempt_active: bool,
     work_claims_active: bool,
+    session_realizations_active: bool,
 }
 
 pub(crate) fn domain_router_with_authenticator(
     directory: Arc<dyn WorkerDirectory>,
     host: Arc<SharedHost>,
     environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+    sessions: Arc<awaken_session_application::SessionApplication>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
 ) -> Router {
     Router::new()
@@ -66,6 +69,7 @@ pub(crate) fn domain_router_with_authenticator(
             directory,
             host,
             environments,
+            sessions,
             authenticator,
         })
 }
@@ -139,12 +143,21 @@ async fn handle_domain(
         Ok(active) => active,
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
+    let session_realizations_active = match state
+        .sessions
+        .has_unfinished_worker_realizations(&identity.worker_id)
+        .await
+    {
+        Ok(active) => active,
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
     (
         StatusCode::OK,
         Json(WorkerDomainObservation {
             registered,
             physical_attempt_active,
             work_claims_active,
+            session_realizations_active,
         }),
     )
         .into_response()
