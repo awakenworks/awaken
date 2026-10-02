@@ -7,8 +7,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { cargoExecutable } from './cargo_binary.mjs';
 
 const repo = path.resolve(import.meta.dirname, '..');
+// Cause/effect rule: one resolved eval artifact plus many benchmark arguments
+// runs every importer/scorer against the same bytes; a build failure belongs to
+// cargo_binary's existing diagnostic tests, never to a second cargo-run path.
+const evalBin = cargoExecutable({ cwd: repo, packageName: 'awaken-eval', targetName: 'awaken-eval' });
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-public-benchmark-'));
 let covered = 0;
 const designed = 30;
@@ -25,10 +30,11 @@ function write(name: string, value: unknown) {
 }
 
 function run(args: string[], expectedStatus = 0) {
-  const result = spawnSync('cargo', ['run', '-q', '-p', 'awaken-eval', '--', ...args], {
+  const result = spawnSync(evalBin, args, {
     cwd: repo,
     encoding: 'utf8',
   });
+  if (result.error) throw result.error;
   assert.equal(result.status, expectedStatus, `${args[0]}: ${result.stderr}\n${result.stdout}`);
   return result.stdout.trim() ? JSON.parse(result.stdout) : null;
 }
