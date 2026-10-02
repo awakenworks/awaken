@@ -55,18 +55,19 @@ diagnostics() {
   # A failed host build has no cluster context. After a create attempt every
   # diagnostic is bounded and uses only this fixture's private kubeconfig.
   # Failure causes: D1 accepted Threads remain without exact reply pairs;
-  # D2 one Brain replica fails while its peers stay Ready; D3 hints are absent
+  # D2 the Brain Pod fails while broker/storage stay Ready; D3 hints are absent
   # or broker delivery stalls. Effects: D1 records canonical dispatch/message
-  # coordinates from one PostgreSQL snapshot, D2 captures every replica, and
+  # coordinates and retry eligibility against the database clock in one
+  # PostgreSQL statement, D2 captures the Brain log, and
   # D3 records actual NATS counters. Diagnostic failure never masks the body's
   # original failure. R1 D1+Postgres available => row evidence; R2 D2+Pods
-  # available => all Brain logs; R3 D3+monitor available => broker snapshot.
+  # available => the Brain log; R3 D3+monitor available => broker snapshot.
   (( CLUSTER_ATTEMPTED == 1 )) || return 0
   k3d_diagnostic_kubectl "$CLUSTER" -n "$NS" get pods -o wide || true
   k3d_diagnostic_kubectl "$CLUSTER" -n "$NS" get events --sort-by=.lastTimestamp || true
   k3d_diagnostic_kubectl "$CLUSTER" -n "$NS" exec deploy/postgres -- \
     env PGPASSWORD=test psql -U postgres -d awaken -v ON_ERROR_STOP=1 -tA -F ' ' -c \
-    "SELECT d.thread_id, d.status, d.attempt_count, d.lease_owner, d.active_attempt_owner, COALESCE(m.message_count, 0) FROM runtime_dispatch d LEFT JOIN (SELECT thread_id, count(*) AS message_count FROM runtime_message GROUP BY thread_id) m USING (thread_id) WHERE d.thread_id LIKE 'natswake-%' OR d.thread_id LIKE 'natspoll-%' ORDER BY d.thread_id LIMIT 64" || true
+    "SELECT d.thread_id, d.status, d.attempt_count, d.lease_epoch, d.retry_not_before, (EXTRACT(EPOCH FROM statement_timestamp()) * 1000)::bigint AS database_now_ms, d.lease_owner, d.active_attempt_owner, COALESCE(m.message_count, 0) FROM runtime_dispatch d LEFT JOIN (SELECT thread_id, count(*) AS message_count FROM runtime_message GROUP BY thread_id) m USING (thread_id) WHERE d.thread_id LIKE 'natswake-%' OR d.thread_id LIKE 'natspoll-%' ORDER BY d.thread_id LIMIT 64" || true
   k3d_diagnostic_kubectl "$CLUSTER" -n "$NS" logs -l app=brain \
     --all-containers=true --prefix --tail=80 --max-log-requests=3 || true
   if [[ -n "${MONITOR_PORT:-}" ]] \
@@ -191,6 +192,8 @@ main() {
   # S6-2 C1+C2+!C3+C4 => same durable result through bounded poll fallback.
   # S6-3 !C2 => explicit startup failure (owned by configuration/adapter tests).
   # S6-4 !C1 => no durable success (owned by the strict PostgreSQL suite).
+  # K1 one co-located Brain owns this Scenario Session/Resource projection;
+  # the separate distributed Control E2E owns cross-replica Session recovery.
   # A valid submit receipt AND process exit zero are prerequisites for both
   # batches. The shared SQL oracle requires total, distinct and per-Thread counts.
   log "live NATS: submit $M distinct Threads"

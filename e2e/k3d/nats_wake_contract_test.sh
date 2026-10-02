@@ -141,12 +141,12 @@ curl() {
   cat "$TEST_ROOT/broker.json"
   return "$curl_status"
 }
-printf '%s\n' '{"server_id":"original","connections":3,"subscriptions":3,"in_msgs":10,"out_msgs":30}' > "$TEST_ROOT/broker.json"
+printf '%s\n' '{"server_id":"original","connections":1,"subscriptions":1,"in_msgs":10,"out_msgs":30}' > "$TEST_ROOT/broker.json"
 curl_status=0
 wait_nats '' 1 >/dev/null
 cp "$RUN_DIR/nats-current.json" "$RUN_DIR/nats-before.json"
 ! wait_nats "$RUN_DIR/nats-before.json" 1 >/dev/null 2>&1
-printf '%s\n' '{"server_id":"original","connections":3,"subscriptions":1,"in_msgs":11,"out_msgs":31}' > "$TEST_ROOT/broker.json"
+printf '%s\n' '{"server_id":"original","connections":1,"subscriptions":1,"in_msgs":11,"out_msgs":31}' > "$TEST_ROOT/broker.json"
 wait_nats "$RUN_DIR/nats-before.json" 1 >/dev/null
 curl_status=22
 ! wait_nats "$RUN_DIR/nats-before.json" 1 >/dev/null 2>&1
