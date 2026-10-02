@@ -9,10 +9,10 @@
 
 use std::sync::Arc;
 
-use awaken_acp_contract::SessionMcpServer;
+use awaken_acp_contract::{AcpAdapterPolicy, SessionMcpServer};
 use awaken_runtime_contract::execution::RunAttemptExecutor;
 use awaken_runtime_contract::permission::{PermissionGrantObserver, ToolPermissionPolicy};
-use awaken_runtime_contract::resolved::Backend;
+use awaken_runtime_contract::resolved::{Backend, ProviderServerTool};
 use awaken_runtime_contract::resume::OwnedToolContinuation;
 use awaken_runtime_contract::tool_export::AttachedToolSet;
 
@@ -35,6 +35,10 @@ pub struct AcpSessionExecution {
 /// launch, channel source, and recovery adapter.
 pub trait AcpSessionExecutorFactory: Send + Sync {
     fn create(&self, request: AcpSessionExecution) -> Result<Arc<dyn RunAttemptExecutor>, String>;
+
+    /// The same canonical catalog that its launch source uses for exact CLI,
+    /// MCP delivery, and provider-tool decisions.
+    fn adapter_policy(&self) -> &dyn AcpAdapterPolicy<ProviderServerTool>;
 
     /// Report the same installed launch source's exact credential capability.
     fn credential_realization_capabilities(

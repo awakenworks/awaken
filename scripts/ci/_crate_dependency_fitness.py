@@ -82,10 +82,6 @@ PROTOCOL_INFRASTRUCTURE_CONTEXTS = frozenset({"shared", "runtime", "protocol"})
 # in the same commit that achieves it. Nothing may be added here.
 KNOWN_INVERSIONS: dict[tuple[str, str], str] = {
     **{
-        ("awaken-session-executor", target): "runtime-host links execution-plane implementations; inject them from the bin through provisioning/environment ports"
-        for target in ("awaken-run-executor-acp",)
-    },
-    **{
         ("awaken-session-executor", target): "runtime-host reaches another context's application/store; depend on its contract and let the bin inject the implementation"
         for target in ("awaken-dispatch",)
     },
