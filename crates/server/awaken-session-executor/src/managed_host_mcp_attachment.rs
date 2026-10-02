@@ -289,6 +289,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
                         let cli = backend.cli();
                         crate::host::acp_mcp_client_injection_capabilities(
                             injector,
+                            self.host.acp_adapter_policy().map_err(to_run_error)?,
                             cli,
                             request.target.http_url().is_some(),
                         )
@@ -463,6 +464,10 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
         let (native_wiring, mcp_process, projection_already_inserted) = if is_acp {
             (None, None, false)
         } else if let Some(target) = sandbox_stdio.as_ref() {
+            // A spawned MCP helper must have the one installed cleanup owner.
+            // Refuse before realizing an Environment or entering Staging when
+            // a Host was assembled without that process authority.
+            let process_reaper = self.host.mcp_process_reaper().map_err(to_run_error)?;
             let session_id = &request.generation.session_id();
             let environment = match self.host.session_environment(session_id.as_str()).await {
                 Some(environment) => environment,
@@ -597,11 +602,9 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
                         ));
                     }
                     Err(owner_error) => {
-                        let reap = awaken_run_executor_acp::Supervisor::reap(
-                            process.as_ref(),
-                            std::time::Duration::from_secs(5),
-                        )
-                        .await;
+                        let reap = process_reaper
+                            .reap(process.as_ref(), std::time::Duration::from_secs(5))
+                            .await;
                         staging.finish();
                         if let Err(error) = reap {
                             return Err(RunError::unavailable_classified(
@@ -743,6 +746,55 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct NoLlm;
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::llm::LlmExecutor for NoLlm {
+        async fn infer(
+            &self,
+            _: awaken_runtime_contract::llm::ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>
+        {
+            unreachable!("MCP reaper admission never runs inference")
+        }
+    }
+
+    #[tokio::test]
+    async fn sandbox_stdio_requires_reaper_before_environment_or_staging_effects() {
+        use awaken_session_execution_contract::McpAttachmentRealizer;
+
+        // Causes: C1 Native sandbox-stdio MCP target; C2 no installed process
+        // reaper. Effects: E1 stable unavailable reason; E2 no Environment
+        // realization, Staging projection, or process spawn. Constraint: an
+        // anonymous target needs no credential materialization. Decision row:
+        // S0 C1+C2 -> E1+E2, before any Session Environment effect.
+        let host = Arc::new(crate::SharedHost::new(Arc::new(NoLlm), "test"));
+        let generation =
+            crate::test_mcp::mcp_fence("mcp-no-reaper", "stdio", 1, "runtime-1", 1, u64::MAX);
+        let request = awaken_session_mcp_contract::StageMcpAttachment {
+            workspace_id: "workspace-a".into(),
+            generation: generation.clone(),
+            realization_id: "realize-1".into(),
+            stage_idempotency_key: "stage-1".into(),
+            name: "stdio".into(),
+            target: awaken_session_mcp_contract::McpTarget::sandbox_stdio("/usr/bin/true", vec![])
+                .unwrap(),
+            prompts_as_skills: false,
+            credential: None,
+            selected_plaintext_holder: None,
+        };
+        let error = crate::ManagedHost::new(host.clone())
+            .stage_mcp_attachment(request)
+            .await
+            .expect_err("S0 missing process owner");
+        assert_eq!(error.code, "mcp_generation_process_reaper_missing", "S0/E1");
+        assert!(host.mcp_projection(&generation).is_none(), "S0/no Staging");
+        assert!(
+            host.session_environment("mcp-no-reaper").await.is_none(),
+            "S0/no Environment"
+        );
+    }
 
     #[test]
     fn stdio_requires_an_explicit_secret_environment_binding_before_credentials() {

@@ -60,7 +60,6 @@ awaken-provisioning-contract = { workspace = true }
 awaken-tenancy = { workspace = true }
 awaken-dispatch = { workspace = true, default-features = false }
 awaken-dispatch-contract.workspace = true
-awaken-run-executor-acp = { workspace = true }
 awaken-connection-plan.workspace = true
 awaken-acp-contract = { workspace = true }
 awaken-credential-contract.workspace = true
@@ -104,6 +103,7 @@ test-support = [
 k8s-tests = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
+awaken-run-executor-acp = { workspace = true }
 awaken-worker-registry = { workspace = true, features = ["test-support"] }
 awaken-reliability-testkit.workspace = true
 # Test doubles decode real container handles through the container provider's

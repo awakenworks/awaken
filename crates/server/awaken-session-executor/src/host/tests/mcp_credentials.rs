@@ -914,7 +914,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         &default_projection.request,
         default_relay_host.mcp.mcp_relay.get(),
         &default_projection.receipt,
-        awaken_run_executor_acp::acp_cli("codex").unwrap(),
+        awaken_run_executor_acp::acp_adapter_policy(),
+        "codex",
     )
     .unwrap();
     assert!(
@@ -1086,7 +1087,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         &projection.request,
         secure_acp_host.mcp.mcp_relay.get(),
         &projection.receipt,
-        awaken_run_executor_acp::acp_cli("codex").unwrap(),
+        awaken_run_executor_acp::acp_adapter_policy(),
+        "codex",
     )
     .expect("H20 project opaque route");
     let route = projected.url.expect("H20 expected HTTP relay route");
@@ -1189,7 +1191,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         &client_projection.request,
         secure_acp_host.mcp.mcp_relay.get(),
         &client_projection.receipt,
-        awaken_run_executor_acp::acp_cli("claude").unwrap(),
+        awaken_run_executor_acp::acp_adapter_policy(),
+        "claude",
     )
     .expect("H23 exact ACP Session projection");
     assert_eq!(client_server.url.as_deref(), Some(mcp_url.as_str()), "H23");

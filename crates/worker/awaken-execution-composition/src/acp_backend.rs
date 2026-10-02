@@ -41,6 +41,14 @@ impl BoundAcpSessionFactory {
 }
 
 impl AcpSessionExecutorFactory for BoundAcpSessionFactory {
+    fn adapter_policy(
+        &self,
+    ) -> &dyn awaken_acp_contract::AcpAdapterPolicy<
+        awaken_runtime_contract::resolved::ProviderServerTool,
+    > {
+        awaken_run_executor_acp::acp_adapter_policy()
+    }
+
     fn create(&self, request: AcpSessionExecution) -> Result<Arc<dyn RunAttemptExecutor>, String> {
         let source = Arc::new(
             BoundLocalChannelSource::from_environment(

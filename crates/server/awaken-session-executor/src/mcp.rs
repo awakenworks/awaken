@@ -96,7 +96,10 @@ pub(crate) fn project_mcp_session_transport(
     request: &awaken_session_mcp_contract::StageMcpAttachment,
     relay: Option<&crate::mcp_relay::McpRelay>,
     receipt: &awaken_session_mcp_contract::McpRealizationReceipt,
-    adapter: &awaken_run_executor_acp::AcpCli,
+    adapter_policy: &dyn awaken_acp_contract::AcpAdapterPolicy<
+        awaken_runtime_contract::resolved::ProviderServerTool,
+    >,
+    adapter_id: &str,
 ) -> Result<awaken_acp_contract::SessionMcpServer, HostError> {
     let generation = &request.generation;
     if let McpTransportMaterialKind::SandboxStdio { command, args } = &prepared.transport {
@@ -159,7 +162,8 @@ pub(crate) fn project_mcp_session_transport(
     }
     let (url, auth) = match bearer {
         Some(bearer) if process_protocol_field => {
-            let admitted = adapter.admits_mcp_client_credential(
+            let admitted = adapter_policy.admits_mcp_client_credential(
+                adapter_id,
                 Some(awaken_credential_contract::McpCredentialDelivery::ClientInjection),
                 true,
             );
@@ -780,6 +784,13 @@ impl crate::SharedHost {
         } else {
             process
         };
+        // A missing cleanup authority may close visibility but must not
+        // cancel the active Run and then manufacture a Removed process proof.
+        // The exact Arc remains in Draining for a later retry.
+        let process_reaper = process
+            .as_ref()
+            .map(|_| self.mcp_process_reaper())
+            .transpose()?;
 
         if let Some(runtime) = runtime {
             if let Some(token) = runtime
@@ -813,17 +824,16 @@ impl crate::SharedHost {
         }
 
         if let Some(process) = process {
-            awaken_run_executor_acp::Supervisor::reap(
-                process.as_ref(),
-                std::time::Duration::from_secs(5),
-            )
-            .await
-            .map_err(|error| {
-                HostError::unavailable_classified(
-                    "mcp_generation_process_reap_failed",
-                    format!("MCP generation process did not terminate: {error}"),
-                )
-            })?;
+            process_reaper
+                .expect("a tracked MCP process required the installed reaper")
+                .reap(process.as_ref(), std::time::Duration::from_secs(5))
+                .await
+                .map_err(|error| {
+                    HostError::unavailable_classified(
+                        "mcp_generation_process_reap_failed",
+                        format!("MCP generation process did not terminate: {error}"),
+                    )
+                })?;
         }
 
         // This is the sole visible-route removal edge. It runs only after the
@@ -1024,7 +1034,7 @@ fn mcp_transport_error(
 /// protocol layered over its duplex channel.
 pub(crate) async fn connect_sandbox_stdio(
     server: &McpTransportMaterial,
-    channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
+    channel: Box<dyn awaken_agent_channel::AgentChannel>,
 ) -> Result<McpWiring, HostError> {
     if !matches!(
         server.transport,
@@ -1184,10 +1194,15 @@ mod acp_projection_tests {
             CredentialRealizationKind::ProcessProtocolField,
         );
         for backend in ["claude", "codex"] {
-            let adapter = awaken_run_executor_acp::acp_cli(backend).unwrap();
-            let projected =
-                project_mcp_session_transport(&prepared, &exact_request, None, &exact, adapter)
-                    .expect("P1 exact ClientInjection");
+            let projected = project_mcp_session_transport(
+                &prepared,
+                &exact_request,
+                None,
+                &exact,
+                awaken_run_executor_acp::acp_adapter_policy(),
+                backend,
+            )
+            .expect("P1 exact ClientInjection");
             assert_eq!(projected.url.as_deref(), Some("https://mcp.gh"));
             assert_eq!(
                 projected
@@ -1219,7 +1234,8 @@ mod acp_projection_tests {
                         &rejected_request,
                         None,
                         &rejected,
-                        adapter,
+                        awaken_run_executor_acp::acp_adapter_policy(),
+                        backend,
                     )
                     .is_err(),
                     "P2 alternate sink: {backend}"
@@ -1228,8 +1244,15 @@ mod acp_projection_tests {
             let mut tampered = exact.clone();
             tampered.receipt_fingerprint = "different-stage".into();
             assert!(
-                project_mcp_session_transport(&prepared, &exact_request, None, &tampered, adapter,)
-                    .is_err(),
+                project_mcp_session_transport(
+                    &prepared,
+                    &exact_request,
+                    None,
+                    &tampered,
+                    awaken_run_executor_acp::acp_adapter_policy(),
+                    backend
+                )
+                .is_err(),
                 "P2 tampered receipt: {backend}"
             );
         }
@@ -1239,7 +1262,8 @@ mod acp_projection_tests {
                 &exact_request,
                 None,
                 &exact,
-                awaken_run_executor_acp::acp_cli("opencode").unwrap(),
+                awaken_run_executor_acp::acp_adapter_policy(),
+                "opencode",
             )
             .is_err()
         );
@@ -1290,18 +1314,34 @@ mod acp_projection_tests {
         let p = prepared(Some("sk-RAW-SECRET"));
         let request = request(awaken_runtime_contract::PlaintextBoundary::Worker);
         let receipt = legacy_receipt(&request);
-        let adapter = awaken_run_executor_acp::acp_cli("codex").unwrap();
         // Without a live relay, fail closed: this process has no alternate
         // reference resolver and may not report a non-functional projection.
-        assert!(project_mcp_session_transport(&p, &request, None, &receipt, adapter).is_err());
+        assert!(
+            project_mcp_session_transport(
+                &p,
+                &request,
+                None,
+                &receipt,
+                awaken_run_executor_acp::acp_adapter_policy(),
+                "codex"
+            )
+            .is_err()
+        );
         // Anonymous access remains a direct secret-free route.
         let mut anonymous = request;
         anonymous.credential = None;
         anonymous.selected_plaintext_holder = None;
         let receipt = legacy_receipt(&anonymous);
         assert!(
-            project_mcp_session_transport(&prepared(None), &anonymous, None, &receipt, adapter,)
-                .is_ok()
+            project_mcp_session_transport(
+                &prepared(None),
+                &anonymous,
+                None,
+                &receipt,
+                awaken_run_executor_acp::acp_adapter_policy(),
+                "codex"
+            )
+            .is_ok()
         );
     }
 
@@ -1330,7 +1370,8 @@ mod acp_projection_tests {
             &request,
             None,
             &receipt,
-            awaken_run_executor_acp::acp_cli("codex").unwrap(),
+            awaken_run_executor_acp::acp_adapter_policy(),
+            "codex",
         )
         .unwrap();
         assert_eq!(projected.command.as_deref(), Some("playwright-mcp"));
@@ -1352,7 +1393,8 @@ mod acp_projection_tests {
             &request,
             Some(&relay),
             &receipt,
-            awaken_run_executor_acp::acp_cli("codex").unwrap(),
+            awaken_run_executor_acp::acp_adapter_policy(),
+            "codex",
         )
         .unwrap();
         assert!(!format!("{s:?}").contains("sk-RAW-SECRET"));

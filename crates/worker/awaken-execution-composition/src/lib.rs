@@ -186,6 +186,9 @@ pub async fn with_session_environment_from_deployment_at(
     namespace_hand_path: std::path::PathBuf,
     policy: &ContainerTierPolicy,
 ) -> Result<SharedHost, String> {
+    // One process owner for both warm and rebuilt Session MCP projections.
+    // The Supervisor remains the only TERM/KILL/wait algorithm.
+    let host = host.with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor));
     let host = install_container_environment(host, hand_factory.clone(), policy).await?;
     let host = select_local_session_environment(host, hand_factory, namespace_hand_path).await?;
     Ok(if host.deployment_config().acp.is_some() {

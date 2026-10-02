@@ -1918,6 +1918,7 @@ dependencies = [
  "awaken-agent-channel",
  "awaken-agent-contract",
  "awaken-provisioning-contract",
+ "awaken-session-environment-contract",
  "serde",
  "serde_json",
  "thiserror",
