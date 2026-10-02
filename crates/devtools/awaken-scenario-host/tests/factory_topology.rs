@@ -89,11 +89,14 @@ async fn get_status(app: axum::Router, uri: &str) -> StatusCode {
 
 #[tokio::test]
 async fn echo_factory_drives_a_run_and_reflects_the_user() {
-    // Causes: C1 the default factory receives one AI SDK User input. Effects:
-    // E1 the shared mount drives one Run and returns the EchoModel reply.
+    // Causes: C1 the default factory receives one AI SDK User input; C2 this
+    // in-process test has no globally installed Scenario Runtime authority.
+    // Effects: E1 the shared mount drives one Run and returns the EchoModel
+    // reply; E2 the scenario composition supplies one complete local Memory
+    // Dispatch authority, including its operational feed, before mounting.
     // Constraints/invariants: the factory selects the existing shared mount and
     // EchoModel; it owns no parallel Run or response path. Decision rule F1:
-    // C1 -> E1 with the exact reflected text.
+    // C1+C2 -> E1+E2 with the exact reflected text.
     let frames = drive_run(build_echo_router(), "probe-42").await;
     assert_eq!(assistant_text(&frames), "Echo: probe-42");
 }
