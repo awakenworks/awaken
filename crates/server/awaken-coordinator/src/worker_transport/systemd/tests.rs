@@ -54,6 +54,10 @@ fn systemd_binding_and_exit_decision_table_rejects_replacements_and_incomplete_p
     let boot_id = uuid::Uuid::nil().to_string();
     let source = running(unit, invocation);
     let observation = UnitObservation::parse(&source).unwrap();
+    assert!(
+        !observation.exact_quiescent(unit),
+        "running is not idle-retirable"
+    );
     let binding = observation
         .bind(unit, &boot_id)
         .expect("R1 exact running unit");
@@ -86,6 +90,7 @@ fn systemd_binding_and_exit_decision_table_rejects_replacements_and_incomplete_p
             "ControlGroup=",
         );
     let exited = UnitObservation::parse(&exited_text).unwrap();
+    assert!(exited.exact_quiescent(unit), "exact exit is idle-retirable");
     assert!(exited.exact_exit(&binding), "R3");
     let retired = UnitObservation::parse(&format!(
         "Id={unit}\nLoadState=not-found\nActiveState=inactive\nMainPID=0\nControlGroup=\n"
@@ -192,8 +197,11 @@ async fn live_systemd_unit_stop_survives_adapter_reopen() {
     // C4 the adapter reopens from disk after systemd drops InvocationID; C5
     // process crash after durable receipt but before StopUnit; C6 the existing
     // Flow placement monitor requests graceful drain without writing a stop
-    // receipt. L1=C1..C4 =>
-    // exact retained exit; L2=C1+C2+C3+C5 => replay finishes the same stop.
+    // receipt; C7 a closed idle Worker has no Dispatch physical slots, with
+    // its original unit still running or exactly exited. L1=C1..C4 =>
+    // exact retained exit; L2=C1+C2+C3+C5 => replay finishes the same stop;
+    // L3=C7+running => preserve the unit without blocking deregistration;
+    // L4=C7+exited => unload it without creating a physical exit receipt.
     // Replacement or unavailable manager stays Unknown. Provider I/O is real.
     if std::env::var("AWAKEN_SYSTEMD_WORKER_E2E").as_deref() != Ok("1") {
         eprintln!("skipping live systemd Worker: AWAKEN_SYSTEMD_WORKER_E2E=1 is required");
@@ -309,4 +317,76 @@ async fn live_systemd_unit_stop_survives_adapter_reopen() {
             "L1/L2 persisted"
         );
     }
+
+    let incarnation_id = uuid::Uuid::now_v7().simple().to_string();
+    let idle_worker = WorkerIdentity::new("systemd-idle-probe", &incarnation_id, 1);
+    let unit = unit_name(&idle_worker).unwrap();
+    let _cleanup = Probe(unit.clone());
+    let started = std::process::Command::new(&systemd_run)
+        .args([
+            "--user",
+            &format!("--unit={unit}"),
+            "--property=RemainAfterExit=yes",
+            "--property=KillMode=control-group",
+            "--property=Restart=no",
+            "/bin/sleep",
+            "600",
+        ])
+        .output()
+        .unwrap();
+    assert!(started.status.success(), "L3 idle fixture starts");
+    let root = tempfile::tempdir().unwrap();
+    let adapter =
+        SystemdWorkerEvidence::new("systemd-user", &root.path().join("evidence")).unwrap();
+    assert!(
+        adapter.owns_worker_evidence(&idle_worker),
+        "L3 provider owns the unit"
+    );
+    adapter
+        .release_closed_idle_worker_evidence(&idle_worker)
+        .await
+        .expect("L3 normal deregistration does not wait for its own main process");
+    assert!(
+        WorkerTransport::systemd_user_unit_running(&incarnation_id)
+            .await
+            .unwrap(),
+        "L3 live Worker retains its unit until its own exit"
+    );
+    adapter
+        .systemctl(&["kill", "--kill-who=main", "--signal=SIGTERM", &unit])
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if adapter.show(&unit).await.unwrap().exact_quiescent(&unit) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("L4 exact idle process exited");
+    adapter
+        .release_closed_idle_worker_evidence(&idle_worker)
+        .await
+        .expect("L4 exact closed idle unit retires");
+    assert!(
+        adapter
+            .show(&unit)
+            .await
+            .unwrap()
+            .retired_after_receipt(&unit)
+    );
+    assert!(
+        !root
+            .path()
+            .join("evidence")
+            .join(format!("{unit}.json"))
+            .exists(),
+        "L4 idle metadata release never fabricates a physical exit receipt"
+    );
+    adapter
+        .release_closed_idle_worker_evidence(&idle_worker)
+        .await
+        .expect("L4 response-loss replay of idle release is idempotent");
 }
