@@ -102,6 +102,10 @@ async function sendBatch(client, sessionId, events, terminalEffect, description)
   // caller's effect can pass. Constraint: the last receipt scopes delta and the
   // caller still owns the terminal oracle. Decision: !C1|!C2=>retry/fail;
   // C1+C2+caller effect=>return the full list, exact delta, and last Session.
+  // Generic batches observe committed history; D2S alone owns stream-first
+  // reconnect and proves it against the same receipts. Repeating that transport
+  // in every D3-D5 business rule adds no evidence and can leave an otherwise
+  // bounded observation waiting on an open SSE connection without a new frame.
   let lastSession;
   const settled = await waitForSessionEventReceipt(
     client,
@@ -122,7 +126,7 @@ async function sendBatch(client, sessionId, events, terminalEffect, description)
       return terminalEffect({ session: lastSession, listed, delta });
     },
     description,
-    { timeoutMs: 30_000, pollMs: 25, preferStream: true },
+    { timeoutMs: 30_000, pollMs: 25 },
   );
   return {
     session: lastSession,
@@ -339,10 +343,12 @@ async function exerciseDirectMatrix() {
 
     // Test design D3, applied to every ACP row.
     // Causes: C1=ACP permission request; C2=its qualified Managed tool-use id;
-    // C3=official SDK allow. Effects: E1=requires_action names C2; E2=the ACP
-    // option reply resumes the same logical turn; E3=allowed marker + end_turn.
+    // C3=official SDK allow; C4=replacement ACP process reissues the exact
+    // tool and arguments through the existing request_permission fixture branch.
+    // Effects: E1=requires_action names C2; E2=the one-shot permission is
+    // consumed only after C4; E3=allowed marker + end_turn.
     // Constraint: runtime-local `matrix-permission-call` is never used as the
-    // client reply id. Decision rule D3=C1+C2+C3=>E1-E3.
+    // client reply id. Decision rule D3=C1+C2+C3+C4=>E1-E3.
     for (const runtime of ACP_RUNTIME_IDS) {
       const sessionId = sessions.get(runtime).id;
       const waiting = await sendBatch(
