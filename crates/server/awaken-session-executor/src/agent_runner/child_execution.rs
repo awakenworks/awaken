@@ -16,7 +16,7 @@ use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoo
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch_erasure::AnyDispatchStore;
 use awaken_lease_contract::WallClock;
-use awaken_dispatch::{ClaimedRunCommit, PendingInput};
+use awaken_dispatch_contract::{ClaimedRunCommit, PendingInput};
 use awaken_runtime::RunInput;
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::activation::RunActivation;
@@ -128,7 +128,7 @@ pub(crate) struct RunScheduler {
     pub(crate) reader: Arc<dyn CommittedThreadView>,
     pub(crate) owner: String,
     pub(crate) claimed_commit: Option<Arc<dyn ClaimedRunCommit>>,
-    pub(crate) recovery_projection: Option<Arc<awaken_dispatch::RecoveryProjection>>,
+    pub(crate) recovery_projection: Option<Arc<awaken_dispatch_execution::RecoveryProjection>>,
     /// Parent Session resource authority inherited by a child dispatch. The child
     /// keeps its own Run/thread lifecycle while executing in the parent's Session
     /// environment, so a replacement worker must install the same frozen manifest.
@@ -141,7 +141,7 @@ pub(crate) struct RunScheduler {
     /// Rebind the existing Session model admission port to the child Worker's
     /// own durable claim. The parent attempt's gate cannot authorize this Run.
     pub(crate) claimed_model_request_gate:
-        Option<awaken_dispatch::ClaimedModelRequestGateFactory>,
+        Option<awaken_dispatch_execution::ClaimedModelRequestGateFactory>,
 }
 
 impl RunScheduler {

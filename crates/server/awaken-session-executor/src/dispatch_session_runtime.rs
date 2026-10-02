@@ -26,7 +26,7 @@ const fn dispatched_resource_scope_is_admitted(
 /// keeping scope validation here prevents either caller from inventing a second
 /// wire interpretation.
 pub(crate) fn decode_dispatched_resource_manifest(
-    dispatch: &awaken_dispatch::RunDispatch,
+    dispatch: &awaken_dispatch_contract::RunDispatch,
 ) -> Result<Option<awaken_session_resource_contract::SessionResourceManifest>, String> {
     let Some(envelope) = &dispatch.session_resources else {
         return Ok(None);
@@ -400,7 +400,7 @@ impl SharedHost {
     /// its parent Session's physical partition.
     pub(crate) async fn dispatched_memory_terminal_observer(
         &self,
-        dispatch: &awaken_dispatch::RunDispatch,
+        dispatch: &awaken_dispatch_contract::RunDispatch,
         commit: Arc<crate::store::HostCommit>,
     ) -> Result<
         Option<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>,

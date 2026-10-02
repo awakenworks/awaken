@@ -1,0 +1,19 @@
+[package]
+name = "awaken-run-ingress-application-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "coordinator"
+layer = "contract"
+kinds = ["types", "spi"]
+authority = "durable-run-application-port"
+
+[dependencies]
+awaken-agent-contract.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

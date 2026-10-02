@@ -635,7 +635,7 @@ impl CancellableRunDelegationService for HostRunDelegationService {
         let worker = Arc::new(crate::agent_runner::ChildWorkerFactory::cancellation(
             runtime, scheduler,
         ));
-        awaken_dispatch::LiveRunControlService::new(worker, scheduler.clock.clone())
+        awaken_dispatch_execution::LiveRunControlService::new(worker, scheduler.clock.clone())
             .cancel(&cancellation.child_run_id.0)
             .await
             .map_err(|error| DelegationExecutionError::retryable(error.to_string()))
@@ -651,7 +651,7 @@ mod durable_cancel_tests {
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
     use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-    use awaken_dispatch::DispatchQueue;
+    use awaken_dispatch_contract::DispatchQueue;
     use awaken_runtime_contract::agent_bindings::{
         AgentAdvisorBinding, AgentBindings, AgentDelegateBinding, InferenceOptions, ReasoningEffort,
     };

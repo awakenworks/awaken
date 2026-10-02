@@ -10,11 +10,13 @@ impl ManagedHost {
     /// supplies it to the Session application without exposing a second queue.
     pub fn dispatch_observation_source(
         &self,
-    ) -> Result<Arc<dyn awaken_dispatch::DispatchOperationalFeed>, AgentCoordinationInstallError>
-    {
+    ) -> Result<
+        Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed>,
+        AgentCoordinationInstallError,
+    > {
         self.host
             .dispatch_store()
-            .map(|source| source as Arc<dyn awaken_dispatch::DispatchOperationalFeed>)
+            .map(|source| source as Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed>)
             .map_err(|_| AgentCoordinationInstallError::DispatchObservationUnavailable)
     }
 

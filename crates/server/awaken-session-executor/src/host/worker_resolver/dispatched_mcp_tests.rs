@@ -19,7 +19,7 @@ async fn dispatched_mcp_effect_projection_decision_table() {
     // | R3 | present | exact/live | same | idempotent one |
     // | R4 | present | n/a | empty | drain all |
     // | R5 | present | foreign/expired | replace | reject, retain prior |
-    let legacy = awaken_dispatch::SessionRuntimeEnvelope::new(
+    let legacy = awaken_dispatch_contract::SessionRuntimeEnvelope::new(
         serde_json::json!({
             "environment": deferred_environment(),
             "toolsets": null

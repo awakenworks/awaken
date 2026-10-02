@@ -12,6 +12,7 @@ authority = "worker-runtime-transport"
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-dispatch-contract.workspace = true
+awaken-dispatch-execution.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-error-contract.workspace = true

@@ -13,8 +13,9 @@ authority = "run-ingress"
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-dispatch-contract = { workspace = true }
+awaken-run-ingress-application-contract.workspace = true
 awaken-dispatch-erasure.workspace = true
-awaken-coordinator-client = { workspace = true }
+awaken-dispatch-execution.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-runtime = { workspace = true }
 # W3C traceparent capture (submit) + `wake.dispatch` span (worker) so a durably
@@ -50,7 +51,7 @@ durable = [
     "dep:awaken-sqlite-pool",
 ]
 # Private SQLite dispatch authority for unit/integration/scenario fixtures.
-test-support = ["durable"]
+test-support = ["durable", "awaken-dispatch-execution/test-support"]
 # Optional cross-node wake signal over NATS. Off by default — the default build
 # and test suite stay free of the NATS driver; enable for a multi-node fleet.
 nats = ["durable", "dep:async-nats", "dep:futures-lite"]

@@ -41,7 +41,7 @@ fn expired_claim_for_fast_pending(
 
 fn exact_expired_slot_remains(
     expected: &awaken_dispatch_contract::RunClaim,
-    observed: Option<&awaken_dispatch::PhysicalAttempt>,
+    observed: Option<&awaken_dispatch_contract::dispatch::PhysicalAttempt>,
 ) -> bool {
     observed.is_some_and(|physical| physical.claim == *expected)
 }
@@ -192,7 +192,7 @@ impl SharedHost {
                         .list_dispatches()
                         .await
                         .map_err(|error| HostError::internal(error.to_string()))?;
-                    let active_here = |dispatch: &awaken_dispatch::DispatchSummary| {
+                    let active_here = |dispatch: &awaken_dispatch_contract::DispatchSummary| {
                         (dispatch.thread_id == thread_id
                             || dispatch.session_thread_id.as_ref() == Some(&thread_id))
                             && dispatch_remains_unsettled(dispatch.state)
@@ -337,14 +337,14 @@ mod fast_pending_tests {
                 "P1/P2 pre-cancel {current:?}"
             );
         }
-        let exact = awaken_dispatch::PhysicalAttempt {
+        let exact = awaken_dispatch_contract::dispatch::PhysicalAttempt {
             closing: false,
             claim: claim.clone(),
             binding: None,
             thread_id: None,
             session_thread_id: None,
         };
-        let replacement = awaken_dispatch::PhysicalAttempt {
+        let replacement = awaken_dispatch_contract::dispatch::PhysicalAttempt {
             claim: awaken_dispatch_contract::RunClaim {
                 epoch: 2,
                 ..claim.clone()

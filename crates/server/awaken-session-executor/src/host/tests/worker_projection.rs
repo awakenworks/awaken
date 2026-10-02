@@ -1098,7 +1098,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
 
 #[tokio::test]
 async fn managed_user_run_reservation_precedes_physical_environment_realization() {
-    use awaken_dispatch::DispatchQueue as _;
+    use awaken_dispatch_contract::DispatchQueue as _;
 
     // Cause/effect graph: C1 a cold Managed Session has no Runtime or
     // Environment; C2 its complete command is exact or operation/capabilities
@@ -1231,7 +1231,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert_eq!(rows.len(), 1, "R1/E1 exact reservation");
     assert_eq!(
         rows[0].state,
-        awaken_dispatch::DispatchState::Reserved,
+        awaken_dispatch_contract::DispatchState::Reserved,
         "R1/E1 remains unclaimable before activity activation"
     );
     assert!(host.session_environment(thread).await.is_none(), "R1/E2");
@@ -1338,11 +1338,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         dispatch
             .resolve_claimed_session_run_reservation(
                 &awaken_dispatch_contract::RunClaim::from(&recovery_claim.lease),
-                awaken_dispatch::SessionRunReservationResolution::Rejected,
+                awaken_dispatch_contract::SessionRunReservationResolution::Rejected,
             )
             .await
             .expect("R1 remove recovery probe"),
-        awaken_dispatch::SettleOutcome::Applied,
+        awaken_dispatch_contract::SettleOutcome::Applied,
         "R1 Recovery cleanup"
     );
 
@@ -1355,7 +1355,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             )
             .await
             .expect("R1 activate exact reservation"),
-        awaken_dispatch::SessionRunReservationActivation::Activated,
+        awaken_dispatch_contract::SessionRunReservationActivation::Activated,
         "R1/E4 inspection uses the ordinary post-activity transition"
     );
     assert_eq!(
@@ -1373,11 +1373,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         },
         "R1/E5 Activated"
     );
-    let mut manifest = awaken_dispatch::WorkerManifest::default();
+    let mut manifest = awaken_dispatch_contract::WorkerManifest::default();
     // R1 assumes an executable current Worker; protocol rejection must not
     // mask the reservation/physical-realization ordering being exercised.
     manifest.runtime_protocol.min = 1;
-    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.max = awaken_dispatch_contract::CURRENT_RUNTIME_PROTOCOL_VERSION;
     manifest
         .capabilities
         .insert("application:test-session-envelope/v1".into());
@@ -1387,9 +1387,13 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     let capability_fingerprint = manifest
         .fingerprint()
         .expect("R1 deterministic Worker capability fingerprint");
-    let worker = awaken_dispatch::WorkerSnapshot {
-        identity: awaken_dispatch::WorkerIdentity::new("inspection-worker", "boot-1", 1),
-        state: awaken_dispatch::WorkerState::Ready,
+    let worker = awaken_dispatch_contract::WorkerSnapshot {
+        identity: awaken_dispatch_contract::WorkerIdentity::new(
+            "inspection-worker",
+            "boot-1",
+            1,
+        ),
+        state: awaken_dispatch_contract::WorkerState::Ready,
         manifest,
         capability_fingerprint,
         in_flight: 0,
@@ -1411,7 +1415,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         claimed.request.placement.location,
-        awaken_dispatch::ExecutionLocation::RemoteRequired,
+        awaken_dispatch_contract::ExecutionLocation::RemoteRequired,
         "R1/E4 application protocol cannot fall back to a generic local executor"
     );
     assert!(
@@ -1432,12 +1436,12 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .settle(
                 &run_id,
                 claimed.lease.epoch,
-                awaken_dispatch::DispatchOutcome::Done,
+                awaken_dispatch_contract::DispatchOutcome::Done,
                 &[],
             )
             .await
             .expect("R1 settle Managed reservation"),
-        awaken_dispatch::SettleOutcome::Applied,
+        awaken_dispatch_contract::SettleOutcome::Applied,
         "R1 Completed precondition"
     );
     assert_eq!(
@@ -1475,7 +1479,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             )
             .await
             .expect("R3 activate empty-capability completion probe"),
-        awaken_dispatch::SessionRunReservationActivation::Activated,
+        awaken_dispatch_contract::SessionRunReservationActivation::Activated,
         "R3 Completed precondition"
     );
     clock.set(0);
@@ -1494,12 +1498,12 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .settle(
                 &empty_capabilities.run_id,
                 empty_capabilities_claim.lease.epoch,
-                awaken_dispatch::DispatchOutcome::Done,
+                awaken_dispatch_contract::DispatchOutcome::Done,
                 &[],
             )
             .await
             .expect("R3 settle empty-capability completion probe"),
-        awaken_dispatch::SettleOutcome::Applied,
+        awaken_dispatch_contract::SettleOutcome::Applied,
         "R3 Completed precondition"
     );
     assert_eq!(

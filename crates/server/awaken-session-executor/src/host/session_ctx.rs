@@ -261,7 +261,7 @@ pub(crate) struct SessionCtx {
     /// independent choice: durable contexts share this exact `Arc` with their
     /// durable coordinator, while direct contexts retain it only for pool-routed
     /// work such as asynchronous Session continuations.
-    pub(crate) claimed_worker: Arc<awaken_dispatch::DispatchWorker<AnyDispatchStore>>,
+    pub(crate) claimed_worker: Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>,
     pub(crate) runtime_publication_identity: Option<RuntimePublicationIdentity>,
     pub(crate) purpose: RuntimeContextPurpose,
     pub(crate) config: ExecutableAgentSnapshot,

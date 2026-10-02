@@ -845,6 +845,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-dispatch",
  "awaken-dispatch-contract",
+ "awaken-dispatch-execution",
  "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-outbound-http",
@@ -1040,14 +1041,15 @@ dependencies = [
  "async-nats",
  "async-trait",
  "awaken-agent-contract",
- "awaken-coordinator-client",
  "awaken-dispatch-contract",
  "awaken-dispatch-erasure",
+ "awaken-dispatch-execution",
  "awaken-dispatch-testkit",
  "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-observability",
  "awaken-reliability-testkit",
+ "awaken-run-ingress-application-contract",
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
@@ -1108,6 +1110,29 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-store-inmem",
  "tokio",
+]
+
+[[package]]
+name = "awaken-dispatch-execution"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-dispatch",
+ "awaken-dispatch-contract",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
+ "awaken-observability",
+ "awaken-run-ingress-application-contract",
+ "awaken-runtime",
+ "awaken-runtime-contract",
+ "awaken-session-execution-contract",
+ "awaken-store-inmem",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -2354,6 +2379,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-run-ingress-application-contract"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "thiserror",
+]
+
+[[package]]
 name = "awaken-runtime"
 version = "1.0.0"
 dependencies = [
@@ -2433,6 +2467,7 @@ dependencies = [
 name = "awaken-runtime-host-testkit"
 version = "1.0.0"
 dependencies = [
+ "awaken-dispatch",
  "awaken-ext-memory",
  "awaken-file-store",
  "awaken-lease-contract",
@@ -2960,6 +2995,7 @@ dependencies = [
  "awaken-dispatch",
  "awaken-dispatch-contract",
  "awaken-dispatch-erasure",
+ "awaken-dispatch-execution",
  "awaken-dispatch-testkit",
  "awaken-environment-contract",
  "awaken-ext-background-task",
@@ -2983,6 +3019,7 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-resource-store",
  "awaken-run-executor-acp",
+ "awaken-run-ingress-application-contract",
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-sandbox-container",

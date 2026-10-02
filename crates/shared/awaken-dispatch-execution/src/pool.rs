@@ -45,6 +45,7 @@ use awaken_runtime_contract::activation::RunActivation;
 
 use crate::Error;
 use crate::dispatch::{Claimed, PendingInput};
+use crate::execution_capacity::ExecutionCapacity;
 use crate::service::{
     DispatchServiceConfig, LocalMaintenanceSchedule, spawn_dispatch_depth_sampler,
     wait_for_terminal_reconciliation,
@@ -54,7 +55,6 @@ use crate::worker::{DispatchWorker, renew_claim_while_active};
 use awaken_lease_contract::WallClock;
 use awaken_lease_contract::WallClockExt;
 use awaken_dispatch_contract::RunDispatch;
-use awaken_coordinator_client::execution_capacity::ExecutionCapacity;
 
 /// Resolves the worker that owns a thread's runtime. The pool claims from the one
 /// shared queue, then asks the resolver for the session worker carrying the
@@ -891,7 +891,7 @@ async fn drain_loop<S: ControlDispatch + 'static>(
     dead_code,
     reason = "used by optional stores, executable tests, and the Kani admission proof"
 )]
-pub(crate) const fn retry_deadline_is_due(retry_not_before_ms: Option<u64>, now_ms: u64) -> bool {
+pub const fn retry_deadline_is_due(retry_not_before_ms: Option<u64>, now_ms: u64) -> bool {
     match retry_not_before_ms {
         None => true,
         Some(deadline) => deadline <= now_ms,
@@ -1375,9 +1375,9 @@ mod in_flight_tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::MemoryDispatchStore;
     use awaken_agent_contract::agent::run::EndCause;
     use awaken_lease_testkit::ManualClock;
+    use awaken_dispatch::MemoryDispatchStore;
 
     #[test]
     fn pool_admission_transition_is_total_and_drain_absorbing() {
@@ -1792,7 +1792,7 @@ mod in_flight_tests {
     ///
     /// Constraint: this cadence orchestrates the resolver only; it never infers
     /// terminal truth or mutates dispatch rows itself.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn maintenance_reconciliation_is_optional_retryable_and_event_driven() {
         let clock = Arc::new(ManualClock::new(42));
         let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
@@ -1818,7 +1818,12 @@ mod in_flight_tests {
             resolver: disabled_resolver.clone(),
             completion: None,
         }));
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        // R1 advances five configured poll cadences under virtual time. The
+        // disabled loop has entered before that window; no terminal or
+        // retention call may be fabricated at any of those opportunities.
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
         disabled_shutdown.cancel();
         disabled.await.expect("disabled maintenance exits");
         assert_eq!(disabled_resolver.calls.load(Ordering::SeqCst), 0, "R1");
@@ -1827,6 +1832,7 @@ mod in_flight_tests {
             0,
             "R1 retention shares schedule"
         );
+        tokio::time::resume();
 
         let retrying_resolver = Arc::new(ReconciliationResolver {
             calls: AtomicUsize::new(0),

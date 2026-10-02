@@ -1,0 +1,41 @@
+[package]
+name = "awaken-dispatch-execution"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+layer = "infrastructure"
+authority = "dispatch-execution"
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-dispatch-contract.workspace = true
+awaken-run-ingress-application-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-session-execution-contract.workspace = true
+awaken-runtime.workspace = true
+awaken-observability.workspace = true
+awaken-lease-contract.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing = "0.1"
+
+[features]
+default = []
+# The old Ingress test-support fixture reads the exact Worker reader selected
+# during construction. This does not expose a second committed-truth source.
+test-support = []
+
+[dev-dependencies]
+awaken-dispatch = { workspace = true, features = ["test-support"] }
+awaken-lease-testkit.workspace = true
+awaken-store-inmem.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "test-util"] }
+
+[lints]
+workspace = true

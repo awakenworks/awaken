@@ -19,6 +19,7 @@ use std::sync::Arc;
 use super::{ClaimedSnapshotAuthority, DispatchWorker};
 use crate::Error;
 use crate::dispatch::{AttemptAdmission, Claimed, DispatchError, RunClaim, SettleOutcome};
+use crate::execution_capacity::ExecutionCapacity;
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::run::RunState;
 use awaken_lease_contract::WallClock;
@@ -26,7 +27,6 @@ use awaken_lease_contract::WallClockExt;
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{AttemptRecoveryMode, LiveInput};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_coordinator_client::execution_capacity::ExecutionCapacity;
 
 /// An unconfirmed predecessor is a domain outcome for a cancellation request,
 /// not a successful cancel or a fabricated physical-return acknowledgement.

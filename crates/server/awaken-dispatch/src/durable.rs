@@ -22,9 +22,9 @@ use awaken_runtime_contract::execution::{Error as ExecError, Result as ExecResul
 
 use crate::Error;
 use crate::dispatch::{DispatchSummary, PendingInput, SubmitOptions};
-use crate::live_control::LiveRunControlService;
-use crate::service::{DispatchService, DispatchServiceConfig};
-use crate::worker::DispatchWorker;
+use awaken_dispatch_execution::{
+    DispatchService, DispatchServiceConfig, DispatchWorker, LiveRunControlService,
+};
 use awaken_lease_contract::WallClock;
 use awaken_dispatch_contract::RunDispatch;
 
@@ -109,7 +109,7 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
             Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>,
         >,
         inference_materializer: Option<
-            awaken_coordinator_client::worker_context::InferenceMaterializerFn,
+            awaken_dispatch_execution::worker_context::InferenceMaterializerFn,
         >,
         clock: Arc<dyn WallClock>,
     ) -> Self
@@ -429,11 +429,15 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
             .cancel(&run_id.0)
             .await
             .map_err(|error| match error {
-                crate::live_control::Error::NotFound(_) => ControlError::NotActive,
-                crate::live_control::Error::NoSubscriber(_) => {
+                awaken_dispatch_execution::LiveRunControlError::NotFound(_) => {
+                    ControlError::NotActive
+                }
+                awaken_dispatch_execution::LiveRunControlError::NoSubscriber(_) => {
                     ControlError::Rejected(error.to_string())
                 }
-                crate::live_control::Error::Dispatch(message) => ControlError::Rejected(message),
+                awaken_dispatch_execution::LiveRunControlError::Dispatch(message) => {
+                    ControlError::Rejected(message)
+                }
             })
     }
     /// Test/support convenience: persist a run, drive the worker, and return its

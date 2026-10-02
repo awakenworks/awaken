@@ -11,28 +11,38 @@
 //! Paired with the dispatch transport: a worker claims a run over
 //! the dispatch transport, drives it, then commits its facts here.
 
-use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
 use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
-use awaken_dispatch::{ClaimedOperationCoordinatorResolver, ClaimedRunCommit, RunDispatch};
+use awaken_run_ingress_application_contract::{
+    ApplicationError, ClaimedOperationCoordinatorResolver,
+};
+use awaken_dispatch_contract::ClaimedRunCommit;
 
 use crate::host::HostError;
 use crate::host::SharedHost;
-struct HostOperationCoordinatorResolver(Arc<SharedHost>);
+/// Resolves the Session's existing commit owner from the trusted dispatch.
+/// Coordinator composition installs this port in its sole ClaimedCommitService.
+pub struct HostOperationCoordinatorResolver(Arc<SharedHost>);
+
+impl HostOperationCoordinatorResolver {
+    #[must_use]
+    pub fn new(host: Arc<SharedHost>) -> Self {
+        Self(host)
+    }
+}
 
 #[async_trait::async_trait]
 impl ClaimedOperationCoordinatorResolver for HostOperationCoordinatorResolver {
     async fn resolve(
         &self,
-        trusted_dispatch: &RunDispatch,
-    ) -> Result<Arc<dyn OperationCoordinator>, awaken_dispatch::ApplicationError> {
+        session_thread: &awaken_agent_contract::agent::thread::Id,
+    ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError> {
         // Physical commit authority is Session-scoped. A child keeps its logical
         // Thread identity in the operation, while the guarded dispatch selects
         // the parent Session partition. This adapter can only resolve the
         // existing Coordinator; ClaimedCommitService remains the sole caller of
         // its authoritative write method.
-        let session_thread = trusted_dispatch.session_thread_id();
         self.0
             .commit_for_read(&session_thread.0)
             .await
@@ -41,32 +51,13 @@ impl ClaimedOperationCoordinatorResolver for HostOperationCoordinatorResolver {
     }
 }
 
-fn map_host_error(error: HostError) -> awaken_dispatch::ApplicationError {
+fn map_host_error(error: HostError) -> ApplicationError {
     match error.kind {
-        crate::HostErrorKind::BadRequest => {
-            awaken_dispatch::ApplicationError::invalid(error.message)
-        }
-        crate::HostErrorKind::Conflict => {
-            awaken_dispatch::ApplicationError::conflict(error.message)
-        }
-        crate::HostErrorKind::Internal => {
-            awaken_dispatch::ApplicationError::internal(error.message)
-        }
-        crate::HostErrorKind::Unavailable => {
-            awaken_dispatch::ApplicationError::unavailable(error.message)
-        }
+        crate::HostErrorKind::BadRequest => ApplicationError::invalid(error.message),
+        crate::HostErrorKind::Conflict => ApplicationError::conflict(error.message),
+        crate::HostErrorKind::Internal => ApplicationError::internal(error.message),
+        crate::HostErrorKind::Unavailable => ApplicationError::unavailable(error.message),
     }
-}
-
-#[must_use]
-pub fn claimed_commit_service(
-    dispatch: Arc<dyn ControlDispatchQueue>,
-    host: Arc<SharedHost>,
-) -> awaken_dispatch::ClaimedCommitService {
-    awaken_dispatch::ClaimedCommitService::with_coordinator_resolver(
-        dispatch,
-        Arc::new(HostOperationCoordinatorResolver(host)),
-    )
 }
 
 impl SharedHost {
@@ -100,12 +91,13 @@ mod tests {
     };
     use awaken_agent_contract::thread::commit::staged::ThreadCommit;
     use awaken_ext_memory::MemoryExtractionStatus;
+    use awaken_dispatch::ClaimedCommitService;
     use awaken_dispatch::{
         ApplicationErrorKind, ClaimedCommitRequest, MemoryDispatchStore, WorkerIdentity,
         WorkerResolver as _,
     };
     use awaken_dispatch_contract::DispatchQueue;
-    use awaken_dispatch_contract::RunClaim;
+    use awaken_dispatch_contract::{RunClaim, RunDispatch};
     use awaken_runtime_contract::RunActivation;
     use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ResolvedModelCandidate};
 
@@ -658,7 +650,8 @@ mod tests {
         // Thread matches/mismatches it; C4 dispatch has/has-not a distinct parent
         // Session affinity; C5 operation is fresh/replayed; C6 the target Coordinator
         // starts cold and the child dispatch carries an exact writable Memory binding;
-        // C7 the activation selects a published fallback. Effects: E1 reject before
+        // C7 the activation selects a published fallback; C8 the claim is
+        // current/stale. Effects: E1 reject before
         // any committed write; E2 append under the parent physical partition; E3
         // retain the child logical Thread/Run identity; E4 commit alone creates no
         // extraction; E5 authenticated settlement completes one extraction in the
@@ -680,6 +673,7 @@ mod tests {
         // | R4   | Y  | Y  | Y  | distinct | fresh  | exact | E2,E3,E4,E6      |
         // | R5   | Y  | Y  | Y  | distinct | settle | exact | E2,E3,E5,E6      |
         // | R6   | Y  | Y  | Y  | distinct | replay | exact | E2,E3,E5,E6,E7   |
+        // | R7   | Y  | Y  | Y  | distinct | any    | stale | E1, no resolver  |
         let parent_thread = "remote-parent-session";
         let child_thread = "remote-child-thread";
         let child_run = RunId("remote-child-run".into());
@@ -726,7 +720,10 @@ mod tests {
             .await
             .expect("claim child dispatch")
             .expect("child dispatch is claimable");
-        let service = claimed_commit_service(queue, host.clone());
+        let service = ClaimedCommitService::with_coordinator_resolver(
+            queue.clone(),
+            Arc::new(HostOperationCoordinatorResolver::new(host.clone())),
+        );
         let identity = WorkerIdentity::new("remote-child-worker", "boot", 1);
 
         let operation = |operation_run: RunId, commit_run: RunId, thread: &str| {
@@ -883,6 +880,24 @@ mod tests {
             "R4-R6 E6 logical child has no resident Session slot"
         );
         assert_no_resident_session_projection(&host, parent_thread, "R4-R6 E6");
+
+        assert_eq!(
+            queue
+                .settle(
+                    &claimed.lease.run_id,
+                    claimed.lease.epoch,
+                    awaken_dispatch_contract::DispatchOutcome::Done,
+                    &[],
+                )
+                .await
+                .expect("R7 close exact claim"),
+            awaken_dispatch_contract::SettleOutcome::Applied,
+        );
+        let stale = service
+            .apply_claimed(apply(operation(child_run.clone(), child_run, child_thread)))
+            .await
+            .expect_err("R7 stale claim never selects a commit owner");
+        assert_eq!(stale.kind, ApplicationErrorKind::InvalidRequest, "R7/E1");
     }
 
     #[test]

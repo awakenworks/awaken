@@ -18,11 +18,11 @@ use awaken_dispatch_contract::ControlDispatchQueue;
 pub(crate) struct TerminalReconciliationState {
     /// The run-ingress-owned maintenance loop used by a coordinator-only Host.
     /// Local pools already own the same canonical maintenance mechanism.
-    dispatch_reconciler: std::sync::OnceLock<awaken_dispatch::DispatchReconciler>,
-    terminal_scan: awaken_dispatch::TerminalReconciliationScan,
+    dispatch_reconciler: std::sync::OnceLock<awaken_dispatch_execution::DispatchReconciler>,
+    terminal_scan: awaken_dispatch_execution::TerminalReconciliationScan,
     worker_evidence: std::sync::OnceLock<(
-        Arc<dyn awaken_dispatch::WorkerDirectory>,
-        Arc<dyn awaken_dispatch::WorkerExecutionStopSource>,
+        Arc<dyn awaken_dispatch_contract::WorkerDirectory>,
+        Arc<dyn awaken_dispatch_execution::WorkerEvidenceRelease>,
     )>,
     worker_evidence_after: tokio::sync::Mutex<Option<String>>,
 }
@@ -80,8 +80,8 @@ impl SharedHost {
     /// Retention retry joins the original Dispatch reconciliation schedule.
     pub fn bind_worker_evidence_reconciliation(
         &self,
-        directory: Arc<dyn awaken_dispatch::WorkerDirectory>,
-        source: Arc<dyn awaken_dispatch::WorkerExecutionStopSource>,
+        directory: Arc<dyn awaken_dispatch_contract::WorkerDirectory>,
+        source: Arc<dyn awaken_dispatch_execution::WorkerEvidenceRelease>,
     ) -> Result<(), HostError> {
         self.dispatch
             .terminal_reconciliation
@@ -90,7 +90,9 @@ impl SharedHost {
             .map_err(|_| HostError::internal("Worker evidence reconciliation already bound"))
     }
 
-    pub(super) async fn reconcile_worker_evidence(&self) -> Result<(), awaken_dispatch::Error> {
+    pub(super) async fn reconcile_worker_evidence(
+        &self,
+    ) -> Result<(), awaken_dispatch_execution::Error> {
         let Some((directory, source)) = self.dispatch.terminal_reconciliation.worker_evidence.get()
         else {
             return Ok(());
@@ -139,10 +141,9 @@ impl SharedHost {
             }
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                awaken_dispatch::release_closed_idle_worker_evidence(
+                source.release_closed_idle_worker_evidence(
                     dispatch.as_ref(),
                     directory.as_ref(),
-                    source.as_ref(),
                     identity,
                 ),
             )
@@ -249,7 +250,7 @@ impl SharedHost {
         let Ok(store) = self.dispatch_store() else {
             return false;
         };
-        let resolver: Arc<dyn awaken_dispatch::WorkerResolver<AnyDispatchStore>> =
+        let resolver: Arc<dyn awaken_dispatch_execution::WorkerResolver<AnyDispatchStore>> =
             Arc::new(HostWorkerResolver {
                 host: Arc::downgrade(self),
             });
@@ -257,8 +258,8 @@ impl SharedHost {
             .authority
             .as_ref()
             .and_then(|authority| authority.dispatch_wake())
-            .unwrap_or_else(|| Arc::new(awaken_dispatch::LocalWakeSignal::new()));
-        let reconciler = awaken_dispatch::DispatchReconciler::spawn(
+            .unwrap_or_else(|| Arc::new(awaken_dispatch_execution::LocalWakeSignal::new()));
+        let reconciler = awaken_dispatch_execution::DispatchReconciler::spawn(
             store,
             self.clock.clone(),
             wake,
@@ -278,9 +279,11 @@ impl HostWorkerResolver {
     pub(super) async fn cancellation_worker(
         &self,
         host: &SharedHost,
-        claimed: &awaken_dispatch::Claimed,
-    ) -> Result<Arc<awaken_dispatch::DispatchWorker<AnyDispatchStore>>, awaken_dispatch::Error>
-    {
+        claimed: &awaken_dispatch_contract::Claimed,
+    ) -> Result<
+        Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>,
+        awaken_dispatch_execution::Error,
+    > {
         let thread_id = claimed.request.session_thread_id();
         let commit = Arc::new(
             host.build_commit(&thread_id.0)
@@ -296,17 +299,19 @@ impl HostWorkerResolver {
     pub(crate) async fn boundary_worker(
         &self,
         host: &SharedHost,
-        claimed: &awaken_dispatch::Claimed,
+        claimed: &awaken_dispatch_contract::Claimed,
         commit: Arc<crate::store::HostCommit>,
         context: Option<awaken_runtime_contract::RuntimeRunContext>,
         install_cancellation_executor: bool,
-    ) -> Result<awaken_dispatch::DispatchWorker<AnyDispatchStore>, awaken_dispatch::Error>
-    {
+    ) -> Result<
+        awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>,
+        awaken_dispatch_execution::Error,
+    > {
         let recovery_projection = commit.recovery_projection();
         let store = host
             .dispatch_store()
             .map_err(|error| Self::execution_error(error.to_string()))?;
-        let mut worker = awaken_dispatch::DispatchWorker::new(
+        let mut worker = awaken_dispatch_execution::DispatchWorker::new(
             Arc::new(awaken_runtime::Runtime::new()),
             store,
             commit.clone(),
@@ -371,7 +376,7 @@ impl HostWorkerResolver {
 pub(super) async fn reconcile_committed_terminals(
     resolver: &HostWorkerResolver,
     limit: usize,
-) -> Result<Vec<(RunId, RunState)>, awaken_dispatch::Error> {
+) -> Result<Vec<(RunId, RunState)>, awaken_dispatch_execution::Error> {
     let host = resolver.host()?;
     // A database-less Worker delegates committed truth upstream and has no
     // process-local registry from which to discover every Thread reader.
@@ -427,7 +432,7 @@ pub(super) async fn reconcile_committed_terminals(
                             .settle(
                                 &claimed.lease.run_id,
                                 claimed.lease.epoch,
-                                awaken_dispatch::DispatchOutcome::Awaiting,
+                                awaken_dispatch_contract::DispatchOutcome::Awaiting,
                                 &[],
                             )
                             .await;
@@ -452,23 +457,25 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct IdleEvidence {
-        released: std::sync::Mutex<Vec<awaken_dispatch::WorkerIdentity>>,
+        released: std::sync::Mutex<Vec<awaken_dispatch_contract::WorkerIdentity>>,
         fail_first: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait]
     impl awaken_dispatch::WorkerExecutionStopSource for IdleEvidence {
-        fn owns_worker_evidence(&self, _: &awaken_dispatch::WorkerIdentity) -> bool {
+        fn owns_worker_evidence(&self, _: &awaken_dispatch_contract::WorkerIdentity) -> bool {
             true
         }
         async fn release_closed_idle_worker_evidence(
             &self,
-            identity: &awaken_dispatch::WorkerIdentity,
-        ) -> Result<(), awaken_dispatch::ApplicationError> {
+            identity: &awaken_dispatch_contract::WorkerIdentity,
+        ) -> Result<(), awaken_run_ingress_application_contract::ApplicationError> {
             if self.fail_first.swap(false, Ordering::SeqCst) {
-                return Err(awaken_dispatch::ApplicationError::unavailable(
-                    "provider unavailable",
-                ));
+                return Err(
+                    awaken_run_ingress_application_contract::ApplicationError::unavailable(
+                        "provider unavailable",
+                    ),
+                );
             }
             self.released.lock().unwrap().push(identity.clone());
             Ok(())
@@ -476,27 +483,30 @@ mod tests {
         async fn stop_closed_worker(
             &self,
             _: &awaken_dispatch::ClosedWorkerExecution,
-        ) -> Result<awaken_dispatch::WorkerProcessStopStatus, awaken_dispatch::ApplicationError>
-        {
+        ) -> Result<
+            awaken_dispatch::WorkerProcessStopStatus,
+            awaken_run_ingress_application_contract::ApplicationError,
+        > {
             panic!("idle maintenance cannot issue a physical stop")
         }
     }
 
     #[tokio::test]
     async fn idle_retention_retries_expired_originals_without_starving_later_workers() {
+        // M0 one injected Ingress release adapter owns the provider action;
         // M1 expired exact registrations + empty original Dispatch -> close and
         // release metadata, no physical-stop receipt. M2 first provider failure
         // -> retain and advance scheduling; M3 next tick handles later Worker;
         // M4 cursor wraps -> original retry succeeds. The cursor is scheduling
         // only; Registry closure and physical-slot authority are re-read.
-        use awaken_dispatch::WorkerDirectory as _;
+        use awaken_dispatch_contract::WorkerDirectory as _;
         let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
         let mut identities = Vec::new();
         for id in ["retention-a", "retention-b"] {
             identities.push(
                 directory
                     .register(
-                        awaken_dispatch::WorkerRegistration {
+                        awaken_dispatch_contract::WorkerRegistration {
                             worker_id: id.into(),
                             incarnation_id: "boot".into(),
                             manifest: Default::default(),
@@ -521,8 +531,13 @@ mod tests {
             released: Default::default(),
             fail_first: std::sync::atomic::AtomicBool::new(true),
         });
-        host.bind_worker_evidence_reconciliation(directory.clone(), source.clone())
-            .unwrap();
+        host.bind_worker_evidence_reconciliation(
+            directory.clone(),
+            Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
+                source.clone(),
+            )),
+        )
+        .unwrap();
         for _ in 0..3 {
             host.reconcile_worker_evidence().await.unwrap();
         }
@@ -532,7 +547,10 @@ mod tests {
         );
         for identity in identities {
             let record = directory.incarnation(&identity).await.unwrap().unwrap();
-            assert_eq!(record.snapshot.state, awaken_dispatch::WorkerState::Dead);
+            assert_eq!(
+                record.snapshot.state,
+                awaken_dispatch_contract::WorkerState::Dead
+            );
             assert!(
                 record.process_exit.is_none(),
                 "M1 metadata release does not mint exit"
@@ -548,15 +566,17 @@ mod tests {
     impl awaken_dispatch::WorkerExecutionStopSource for UnownedEvidence {
         async fn release_closed_idle_worker_evidence(
             &self,
-            _: &awaken_dispatch::WorkerIdentity,
-        ) -> Result<(), awaken_dispatch::ApplicationError> {
+            _: &awaken_dispatch_contract::WorkerIdentity,
+        ) -> Result<(), awaken_run_ingress_application_contract::ApplicationError> {
             panic!("an unowned domain cannot release provider evidence")
         }
         async fn stop_closed_worker(
             &self,
             _: &awaken_dispatch::ClosedWorkerExecution,
-        ) -> Result<awaken_dispatch::WorkerProcessStopStatus, awaken_dispatch::ApplicationError>
-        {
+        ) -> Result<
+            awaken_dispatch::WorkerProcessStopStatus,
+            awaken_run_ingress_application_contract::ApplicationError,
+        > {
             panic!("expiry is not physical termination")
         }
     }
@@ -568,7 +588,9 @@ mod tests {
         // identity is live; U4 an unbound physical attempt remains occupied.
         // Effects: E1 U1+U2 closes only Registry admission; E2 U1+U3 preserves
         // the live identity; E3 no provider call/exit receipt is invented; E4
-        // U4 keeps the exact original slot. Rules UE1=U1+U2=>E1+E3+E4;
+        // U4 keeps the exact original slot. One injected Ingress release
+        // adapter owns the optional provider action; the Host only scans and
+        // expires the Registry. Rules UE1=U1+U2=>E1+E3+E4;
         // UE2=U1+U3=>E2+E3. This uses normal registration/claim/admission APIs,
         // not a database backfill or synthetic termination assertion.
         use awaken_dispatch::{DispatchQueue as _, WorkerDirectory as _};
@@ -578,7 +600,7 @@ mod tests {
             identities.push(
                 directory
                     .register(
-                        awaken_dispatch::WorkerRegistration {
+                        awaken_dispatch_contract::WorkerRegistration {
                             worker_id: id.into(),
                             incarnation_id: "boot".into(),
                             manifest: Default::default(),
@@ -607,10 +629,13 @@ mod tests {
         .await;
         assert_eq!(
             dispatch
-                .begin_attempt(&awaken_dispatch::RunClaim::from(&claimed.lease), None)
+                .begin_attempt(
+                    &awaken_dispatch_contract::RunClaim::from(&claimed.lease),
+                    None
+                )
                 .await
                 .unwrap(),
-            awaken_dispatch::AttemptAdmission::Applied
+            awaken_dispatch_contract::AttemptAdmission::Applied
         );
         let before = dispatch
             .load_physical_attempt(&claimed.lease.run_id)
@@ -620,8 +645,13 @@ mod tests {
         assert!(before.binding.is_none(), "U4 historical unbound slot");
         let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "fixture")
             .with_dispatch_store(dispatch.clone());
-        host.bind_worker_evidence_reconciliation(directory.clone(), Arc::new(UnownedEvidence))
-            .unwrap();
+        host.bind_worker_evidence_reconciliation(
+            directory.clone(),
+            Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
+                Arc::new(UnownedEvidence),
+            )),
+        )
+        .unwrap();
         for _ in 0..2 {
             host.reconcile_worker_evidence().await.unwrap();
         }
@@ -632,7 +662,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             expired.snapshot.state,
-            awaken_dispatch::WorkerState::Dead,
+            awaken_dispatch_contract::WorkerState::Dead,
             "UE1/E1"
         );
         assert!(expired.process_exit.is_none(), "UE1/E3");
@@ -643,7 +673,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             live.snapshot.state,
-            awaken_dispatch::WorkerState::Starting,
+            awaken_dispatch_contract::WorkerState::Starting,
             "UE2/E2"
         );
         assert!(live.process_exit.is_none(), "UE2/E3");
@@ -1034,7 +1064,7 @@ mod tests {
     #[tokio::test]
     async fn host_reconciles_only_exact_committed_terminals_without_opening_sessions() {
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
-        use awaken_dispatch::DispatchQueue;
+        use awaken_dispatch_contract::DispatchQueue;
 
         let mut local_pool = SharedHost::new(Arc::new(AdoptionModel), "stub");
         local_pool.deployment.durable = true;
@@ -1071,7 +1101,7 @@ mod tests {
             .settle(
                 &control.lease.run_id,
                 control.lease.epoch,
-                awaken_dispatch::DispatchOutcome::Awaiting,
+                awaken_dispatch_contract::DispatchOutcome::Awaiting,
                 &[],
             )
             .await
@@ -1089,7 +1119,7 @@ mod tests {
             .settle(
                 &terminal.lease.run_id,
                 terminal.lease.epoch,
-                awaken_dispatch::DispatchOutcome::Awaiting,
+                awaken_dispatch_contract::DispatchOutcome::Awaiting,
                 &[],
             )
             .await
@@ -1202,7 +1232,7 @@ mod tests {
                 .settle(
                     &parked.lease.run_id,
                     parked.lease.epoch,
-                    awaken_dispatch::DispatchOutcome::Awaiting,
+                    awaken_dispatch_contract::DispatchOutcome::Awaiting,
                     &[],
                 )
                 .await
@@ -1243,7 +1273,7 @@ mod tests {
             .settle(
                 &awaiting_probe.lease.run_id,
                 awaiting_probe.lease.epoch,
-                awaken_dispatch::DispatchOutcome::Awaiting,
+                awaken_dispatch_contract::DispatchOutcome::Awaiting,
                 &[],
             )
             .await
@@ -1267,7 +1297,7 @@ mod tests {
                 .settle(
                     &leased.lease.run_id,
                     leased.lease.epoch,
-                    awaken_dispatch::DispatchOutcome::Done,
+                    awaken_dispatch_contract::DispatchOutcome::Done,
                     &[],
                 )
                 .await
@@ -1396,7 +1426,7 @@ mod tests {
         let run = RunId("child-terminal".into());
         store
             .enqueue_session_child(
-                awaken_dispatch::RunDispatch::new(test_activation(&child.0, &run.0))
+                awaken_dispatch_contract::RunDispatch::new(test_activation(&child.0, &run.0))
                     .for_session(parent.clone()),
                 SessionChildAdmission::new(25, Vec::new()),
             )
@@ -1412,7 +1442,7 @@ mod tests {
             .settle(
                 &run,
                 claimed.lease.epoch,
-                awaken_dispatch::DispatchOutcome::Awaiting,
+                awaken_dispatch_contract::DispatchOutcome::Awaiting,
                 &[],
             )
             .await

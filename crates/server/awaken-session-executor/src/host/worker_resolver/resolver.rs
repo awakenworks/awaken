@@ -13,7 +13,7 @@ pub(crate) struct HostWorkerResolver {
 impl HostWorkerResolver {
     pub(super) fn require_local_execution(
         host: &SharedHost,
-    ) -> Result<(), awaken_dispatch::Error> {
+    ) -> Result<(), awaken_dispatch_execution::Error> {
         if host.runs_local_dispatch_pool() {
             Ok(())
         } else {
@@ -25,21 +25,23 @@ impl HostWorkerResolver {
 
     pub(in crate::host) fn execution_error(
         message: impl Into<String>,
-    ) -> awaken_dispatch::Error {
-        awaken_dispatch::Error::Execution(awaken_runtime_contract::execution::Error::Execution(
-            message.into(),
-        ))
-    }
-
-    pub(in crate::host) fn terminal_resolution_error(
-        message: impl Into<String>,
-    ) -> awaken_dispatch::Error {
-        awaken_dispatch::Error::TerminalResolution(
+    ) -> awaken_dispatch_execution::Error {
+        awaken_dispatch_execution::Error::Execution(
             awaken_runtime_contract::execution::Error::Execution(message.into()),
         )
     }
 
-    pub(in crate::host) fn host(&self) -> Result<Arc<SharedHost>, awaken_dispatch::Error> {
+    pub(in crate::host) fn terminal_resolution_error(
+        message: impl Into<String>,
+    ) -> awaken_dispatch_execution::Error {
+        awaken_dispatch_execution::Error::TerminalResolution(
+            awaken_runtime_contract::execution::Error::Execution(message.into()),
+        )
+    }
+
+    pub(in crate::host) fn host(
+        &self,
+    ) -> Result<Arc<SharedHost>, awaken_dispatch_execution::Error> {
         self.host
             .upgrade()
             .ok_or_else(|| Self::execution_error("host dropped; pool idling"))
@@ -51,8 +53,10 @@ impl HostWorkerResolver {
         thread_id: &awaken_agent_contract::agent::thread::Id,
         agent_id: Option<&str>,
         published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<Arc<awaken_dispatch::DispatchWorker<AnyDispatchStore>>, awaken_dispatch::Error>
-    {
+    ) -> Result<
+        Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>,
+        awaken_dispatch_execution::Error,
+    > {
         let agent = agent_id.filter(|a| !a.is_empty());
         let ctx = host
             .ctx_for_snapshot(&thread_id.0, agent, published_snapshot)
@@ -68,8 +72,10 @@ impl HostWorkerResolver {
         agent_id: Option<&str>,
         published_snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
         attempt: ClaimedRuntimeInput,
-    ) -> Result<Arc<awaken_dispatch::DispatchWorker<AnyDispatchStore>>, awaken_dispatch::Error>
-    {
+    ) -> Result<
+        Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>,
+        awaken_dispatch_execution::Error,
+    > {
         let agent = agent_id.filter(|a| !a.is_empty());
         let ctx = host
             .ctx_for_claimed_snapshot(&thread_id.0, agent, published_snapshot, attempt)

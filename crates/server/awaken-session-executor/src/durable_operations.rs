@@ -4,7 +4,7 @@
 //! Adapter exposing Host run/session orchestration through the neutral Run Ingress port.
 
 use awaken_agent_contract::agent::message::Message;
-use awaken_dispatch::{
+use awaken_run_ingress_application_contract::{
     ApplicationError, DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
 };
 

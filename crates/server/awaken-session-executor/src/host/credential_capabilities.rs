@@ -4,7 +4,9 @@
 //! Process-local credential realization capabilities.
 
 use super::*;
-use awaken_dispatch::{HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY};
+use awaken_dispatch_contract::{
+    HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
+};
 use awaken_runtime_contract::CredentialMaterialSource;
 
 const ACP_MCP_CLIENT_INJECTION_MATERIAL_TYPE: &str =
@@ -21,7 +23,7 @@ pub(super) fn model_realization_capability(
             Some(HOST_EXECUTOR_CAPABILITY)
         }
         awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => {
-            Some(awaken_dispatch::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
+            Some(awaken_dispatch_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
         }
         awaken_runtime_contract::resolved::ModelProvisioning::Provider {
             credential: Some(credential),
@@ -31,7 +33,7 @@ pub(super) fn model_realization_capability(
             credential: Some(credential),
             ..
         } if credential.material_source == CredentialMaterialSource::WorkerReference => {
-            Some(awaken_dispatch::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
+            Some(awaken_dispatch_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
         }
         awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. }
         | awaken_runtime_contract::resolved::ModelProvisioning::Remote {

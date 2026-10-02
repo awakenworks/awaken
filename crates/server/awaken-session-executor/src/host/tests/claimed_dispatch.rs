@@ -471,7 +471,7 @@ fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
             dispatch
                 .placement
                 .required_capabilities
-                .contains(awaken_dispatch::SESSION_RESOURCES_CAPABILITY),
+                .contains(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY),
             "{rule} selected manifest requires an eligible Worker",
         );
         assert_eq!(

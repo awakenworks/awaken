@@ -56,7 +56,9 @@ impl HostWorkerResolver {
     /// Preserve a deterministic Host admission refusal through the existing
     /// Session realization classification and pre-execution settlement path.
     /// Other Host failures keep their existing retryable queue behavior.
-    pub(super) fn map_host_resolution_error(error: crate::HostError) -> awaken_dispatch::Error {
+    pub(super) fn map_host_resolution_error(
+        error: crate::HostError,
+    ) -> awaken_dispatch_execution::Error {
         if error.kind == crate::HostErrorKind::BadRequest {
             Self::map_session_realization_drive_error(
                 awaken_session_realization_contract::SessionRealizationDriveError::Effect(
@@ -70,7 +72,7 @@ impl HostWorkerResolver {
 
     pub(super) fn map_session_realization_drive_error(
         error: awaken_session_realization_contract::SessionRealizationDriveError,
-    ) -> awaken_dispatch::Error {
+    ) -> awaken_dispatch_execution::Error {
         match error {
             awaken_session_realization_contract::SessionRealizationDriveError::Effect(error)
                 if error.kind == awaken_session_error_contract::RunErrorKind::Unavailable =>
@@ -80,7 +82,7 @@ impl HostWorkerResolver {
             awaken_session_realization_contract::SessionRealizationDriveError::Control(control) => {
                 match session_realization_worker_effect(control.disposition()) {
                     SessionRealizationWorkerEffect::Defer => {
-                        awaken_dispatch::Error::ResolutionNotReady(
+                        awaken_dispatch_execution::Error::ResolutionNotReady(
                             "Session realization is not ready".into(),
                         )
                     }
@@ -119,7 +121,10 @@ mod tests {
             let actual = HostWorkerResolver::map_host_resolution_error(error);
             assert_eq!(actual.is_terminal_resolution(), terminal);
             if !terminal {
-                assert!(matches!(actual, awaken_dispatch::Error::Execution(_)));
+                assert!(matches!(
+                    actual,
+                    awaken_dispatch_execution::Error::Execution(_)
+                ));
             }
         }
     }
@@ -148,7 +153,7 @@ mod tests {
         );
         assert!(matches!(
             retryable_effect,
-            awaken_dispatch::Error::Execution(_)
+            awaken_dispatch_execution::Error::Execution(_)
         ));
 
         let retryable_control = HostWorkerResolver::map_session_realization_drive_error(
@@ -160,7 +165,7 @@ mod tests {
         );
         assert!(matches!(
             retryable_control,
-            awaken_dispatch::Error::Execution(_)
+            awaken_dispatch_execution::Error::Execution(_)
         ));
 
         let not_ready = HostWorkerResolver::map_session_realization_drive_error(
@@ -170,7 +175,7 @@ mod tests {
         );
         assert!(matches!(
             not_ready,
-            awaken_dispatch::Error::ResolutionNotReady(_)
+            awaken_dispatch_execution::Error::ResolutionNotReady(_)
         ));
 
         for permanent in [
@@ -188,7 +193,7 @@ mod tests {
         ] {
             assert!(matches!(
                 HostWorkerResolver::map_session_realization_drive_error(permanent),
-                awaken_dispatch::Error::TerminalResolution(_)
+                awaken_dispatch_execution::Error::TerminalResolution(_)
             ));
         }
     }

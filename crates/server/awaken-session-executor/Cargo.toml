@@ -58,9 +58,10 @@ awaken-sandbox-control.workspace = true
 # (SandboxSpec/Command/NetworkPolicy) when realizing the namespace tier.
 awaken-provisioning-contract = { workspace = true }
 awaken-tenancy = { workspace = true }
-awaken-dispatch = { workspace = true, default-features = false }
 awaken-dispatch-contract.workspace = true
+awaken-run-ingress-application-contract.workspace = true
 awaken-dispatch-erasure.workspace = true
+awaken-dispatch-execution.workspace = true
 awaken-connection-plan.workspace = true
 awaken-acp-contract = { workspace = true }
 awaken-credential-contract.workspace = true
@@ -96,7 +97,6 @@ default = []
 # startup selects every authority before constructing SharedHost.
 test-support = [
     "dep:awaken-store-inmem",
-    "awaken-dispatch/test-support",
 ]
 # Live-backend tests only. The container tiers themselves are assembled by
 # `awaken-execution-composition`; these features enable a real backend in the

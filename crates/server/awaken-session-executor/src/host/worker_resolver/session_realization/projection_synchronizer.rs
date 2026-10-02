@@ -24,7 +24,7 @@ impl<'a> WorkerProjectionSynchronizer<'a> {
         host: &'a SharedHost,
         session_id: &str,
         directive: &awaken_session_realization_contract::SessionRealizationDirective,
-        claimed: Option<&'a awaken_dispatch::Claimed>,
+        claimed: Option<&'a awaken_dispatch_contract::Claimed>,
         claim: Option<&'a awaken_dispatch_contract::RunClaim>,
     ) -> Self {
         let published_snapshot = claimed.and_then(|claimed| {
@@ -33,7 +33,7 @@ impl<'a> WorkerProjectionSynchronizer<'a> {
         });
         let rebuild_unavailable_environment = claimed.is_some_and(|claimed| {
             claimed.request.placement.recovery
-                == awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth
+                == awaken_dispatch_contract::WorkerRecoveryMode::RebuildFromCommittedTruth
         });
         let claimed_environment_binding = claimed.and_then(|claimed| claimed.sandbox.as_deref());
         Self::for_directive(
@@ -1018,13 +1018,12 @@ mod tests {
         // CR4 projection publication now carries the actual Dispatch claim.
         // Use its authoritative queue row, not a fabricated tuple that would
         // bypass the deferred binding fence when the slot had no claim.
-        use awaken_dispatch::DispatchQueue as _;
+        use awaken_dispatch_contract::DispatchQueue as _;
         let dispatch = host.dispatch_store().unwrap();
         dispatch
-            .enqueue(awaken_dispatch::RunDispatch::new(test_activation(
-                thread,
-                "run-claimed-ready-durable",
-            )))
+            .enqueue(awaken_dispatch_contract::RunDispatch::new(
+                test_activation(thread, "run-claimed-ready-durable"),
+            ))
             .await
             .unwrap();
         let claimed = dispatch
@@ -1583,13 +1582,12 @@ mod tests {
 
         // CR4 the legacy recovery fixture must also exercise real binding CAS,
         // not an unregistered claim previously hidden by the empty local slot.
-        use awaken_dispatch::DispatchQueue as _;
+        use awaken_dispatch_contract::DispatchQueue as _;
         let dispatch = host.dispatch_store().unwrap();
         dispatch
-            .enqueue(awaken_dispatch::RunDispatch::new(test_activation(
-                thread,
-                "run-claimed-ready-v1",
-            )))
+            .enqueue(awaken_dispatch_contract::RunDispatch::new(
+                test_activation(thread, "run-claimed-ready-v1"),
+            ))
             .await
             .unwrap();
         let claimed = dispatch

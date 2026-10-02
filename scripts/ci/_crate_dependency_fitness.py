@@ -80,12 +80,7 @@ PROTOCOL_INFRASTRUCTURE_CONTEXTS = frozenset({"shared", "runtime", "protocol"})
 # refactor that removes it. The set only shrinks: a listed edge that no longer
 # exists, or no longer violates, is itself an error, so the removal is recorded
 # in the same commit that achieves it. Nothing may be added here.
-KNOWN_INVERSIONS: dict[tuple[str, str], str] = {
-    **{
-        ("awaken-session-executor", target): "runtime-host reaches another context's application/store; depend on its contract and let the bin inject the implementation"
-        for target in ("awaken-dispatch",)
-    },
-}
+KNOWN_INVERSIONS: dict[tuple[str, str], str] = {}
 
 
 class CrateSpec(NamedTuple):

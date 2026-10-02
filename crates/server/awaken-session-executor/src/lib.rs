@@ -28,7 +28,7 @@ pub use application::SessionRealizationRevocation;
 #[derive(Debug)]
 #[must_use]
 pub struct PoolDrainFence {
-    _ingress: awaken_dispatch::PoolDrainFence,
+    _ingress: awaken_dispatch_execution::PoolDrainFence,
 }
 
 mod authority;
@@ -128,7 +128,7 @@ use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialM
 use awaken_resource_contract::{FileContentSource, RepositoryBindingVerifier};
 // The root every composition selects its Session environment providers under.
 pub use crate::acp_backend::session_sandbox_base;
-pub use crate::commit_ingest::claimed_commit_service;
+pub use crate::commit_ingest::HostOperationCoordinatorResolver;
 pub use crate::config::{
     advertised_tools, authorable_tools, block_text, platform_plugin_capabilities,
     platform_plugin_capabilities_with_web_search,
@@ -482,7 +482,8 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
             {
                 // Protocol-specific capabilities are implemented only by a
                 // registered Worker; never fall back to a generic local runner.
-                let strict_remote = awaken_dispatch::PlacementRequirements::remote_required();
+                let strict_remote =
+                    awaken_dispatch_contract::PlacementRequirements::remote_required();
                 request.placement.location = strict_remote.location;
                 if request.placement.contract_version == 0 {
                     request.placement.contract_version = strict_remote.contract_version;
@@ -504,26 +505,26 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
                 .await
                 .map_err(|error| RunError::unavailable(error.to_string()))?
             {
-                awaken_dispatch::SessionRunReservationOutcome::Reserved => {
+                awaken_dispatch_contract::SessionRunReservationOutcome::Reserved => {
                     Ok(awaken_session_execution_contract::SessionRunReservation::Reserved)
                 }
-                awaken_dispatch::SessionRunReservationOutcome::AlreadyReserved => {
+                awaken_dispatch_contract::SessionRunReservationOutcome::AlreadyReserved => {
                     Ok(awaken_session_execution_contract::SessionRunReservation::AlreadyReserved)
                 }
-                awaken_dispatch::SessionRunReservationOutcome::RecoveryClaimed => {
+                awaken_dispatch_contract::SessionRunReservationOutcome::RecoveryClaimed => {
                     Ok(awaken_session_execution_contract::SessionRunReservation::RecoveryClaimed)
                 }
-                awaken_dispatch::SessionRunReservationOutcome::AlreadyActivated {
+                awaken_dispatch_contract::SessionRunReservationOutcome::AlreadyActivated {
                     session_activity_epoch,
                 } => Ok(
                     awaken_session_execution_contract::SessionRunReservation::AlreadyActivated {
                         session_activity_epoch,
                     },
                 ),
-                awaken_dispatch::SessionRunReservationOutcome::Completed => {
+                awaken_dispatch_contract::SessionRunReservationOutcome::Completed => {
                     Ok(awaken_session_execution_contract::SessionRunReservation::Completed)
                 }
-                awaken_dispatch::SessionRunReservationOutcome::Conflict => Err(
+                awaken_dispatch_contract::SessionRunReservationOutcome::Conflict => Err(
                     RunError::bad_request("Session Run id was reused with different input"),
                 ),
             }

@@ -4,12 +4,14 @@
 //! Durable run dispatch: the dispatch/server host above the runtime core.
 //!
 //! Direct attempts and durable delivery are intentionally different shapes
-//! (G5). The runtime ships `DirectAttemptDriver`; this crate owns `RunDispatch`,
-//! `DispatchQueue`, pending input, claim/lease/recovery, and `DispatchWorker`.
-//! It sits *above* the runtime (it depends on the kernel; the kernel never
-//! depends on it) and adds durability without owning the loop, agent truth, or
+//! (G5). The runtime ships `DirectAttemptDriver`; the run-ingress contract owns
+//! `RunDispatch` and the queue ports, this crate owns the Coordinator's
+//! SQLite/PostgreSQL dispatch adapters and claimed-commit application, and
+//! `awaken-dispatch-execution` owns the sole `DispatchWorker`/`DispatchPool`.
+//! The split adds durability without owning the runtime loop, agent truth, or
 //! a second commit mechanism (G6). Committed facts remain the single authority
-//! (G1/G13).
+//! (G1/G13). Historical reexports preserve caller source compatibility without
+//! retaining another execution implementation here.
 //!
 //! The aggregates follow the dispatch design's DDD split: [`DispatchQueue`] owns
 //! delivery opportunity (claim/lease/recovery), [`Inbox`] owns the
@@ -25,7 +27,6 @@ pub use attempt_termination::{
 mod any_factory;
 mod application;
 mod clock;
-mod commit_fence;
 mod dispatch;
 mod dispatch_schema;
 // Synchronous composition convenience for conformance and embedded fixtures.
@@ -33,13 +34,10 @@ mod dispatch_schema;
 // cannot depend on the former parallel ingress façade.
 #[cfg(feature = "test-support")]
 mod durable;
-mod fenced_checkpoint;
 #[cfg(any(feature = "durable", test, kani))]
 mod inbox_mutation;
-mod live_control;
 #[cfg(any(test, feature = "test-support"))]
 pub mod memory;
-mod pool;
 #[cfg(feature = "durable")]
 mod postgres;
 #[cfg(feature = "durable")]
@@ -48,13 +46,9 @@ mod postgres_checkpoint;
 mod postgres_helpers;
 #[cfg(feature = "durable")]
 mod postgres_identity;
-mod reconciliation;
-mod recovery_projection;
-mod service;
 #[cfg(feature = "durable")]
 mod sqlite;
 mod wake;
-mod worker;
 
 #[cfg(all(feature = "durable", any(test, feature = "test-support")))]
 pub use any_factory::open_sqlite_in_memory as open_sqlite_dispatch_store_in_memory;
@@ -79,11 +73,20 @@ pub use application::{
     ApplicationError, ApplicationErrorKind, AttemptClosureKind, AttemptStopStatus,
     ClaimedCommitService, ClaimedOperationCoordinatorResolver, ClosedAttemptExecution,
     ClosedWorkerExecution, DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
-    ObservedAttemptStop, ObservedWorkerProcessExit, WorkerExecutionBindingSource,
-    WorkerExecutionStopSource, WorkerProcessStopStatus, has_active_physical_attempt_for_owner,
-    release_closed_idle_worker_evidence, stop_expired_predecessor,
+    ObservedAttemptStop, ObservedWorkerProcessExit, WorkerEvidenceReleaseAdapter,
+    WorkerExecutionBindingSource, WorkerExecutionStopSource, WorkerProcessStopStatus,
+    has_active_physical_attempt_for_owner, release_closed_idle_worker_evidence,
+    stop_expired_predecessor,
 };
 pub use awaken_dispatch_erasure::AnyDispatchStore;
+pub use awaken_dispatch_execution::{
+    ClaimedCommitCoordinator, ClaimedModelRequestGateFactory, ClaimedRunCommit, CompletionSink,
+    DEFAULT_LEASE_MS, DispatchPool, DispatchReconciler, DispatchService, DispatchServiceConfig,
+    DispatchWorker, FencedStreamCheckpointStore, GuardedRunCommit, InferenceMaterializerFn,
+    LiveRunControlError, LiveRunControlService, LocalWakeSignal, PoolDrainFence,
+    RecoveryProjection, RecoveryProjectionError, TerminalReconciliationScan, WorkerResolver,
+    claim_bound_ownership_verifier, publish_dispatch_hint,
+};
 pub use awaken_dispatch_contract::ClaimedStreamPublisher;
 pub use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
@@ -113,10 +116,6 @@ pub use awaken_dispatch_contract::{
     SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
     StreamObservationRequest, WorkerIdentityRequest,
 };
-pub use awaken_coordinator_client::worker_context::{
-    ClaimedModelRequestGateFactory, InferenceMaterializerFn,
-};
-pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 pub use dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CandidateFingerprint,
     CasOutcome, Claimed, ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport,
@@ -131,26 +130,19 @@ pub use dispatch::{
 pub use dispatch_schema::dispatch_bundle;
 #[cfg(feature = "test-support")]
 pub use durable::DispatchTestHarness;
-pub use fenced_checkpoint::FencedStreamCheckpointStore;
-pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
 #[cfg(any(test, feature = "test-support"))]
 pub use memory::MemoryDispatchStore;
-pub use pool::{CompletionSink, DispatchPool, DispatchReconciler, PoolDrainFence, WorkerResolver};
 #[cfg(feature = "durable")]
 pub use postgres::{
     PostgresDispatchStore, PostgresStreamCheckpointStore, StoreError as PostgresStoreError,
 };
-pub use reconciliation::TerminalReconciliationScan;
-pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};
-pub use service::{DispatchService, DispatchServiceConfig};
 #[cfg(feature = "durable")]
 pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
 #[cfg(feature = "nats")]
 pub use wake::NatsWakeSignal;
 #[cfg(feature = "durable")]
 pub use wake::PgNotifyWake;
-pub use wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
-pub use worker::{DEFAULT_LEASE_MS, DispatchWorker, claim_bound_ownership_verifier};
+pub use wake::WakeSignal;
 
 #[cfg(any(feature = "durable", test))]
 fn next_supersession_epoch(max_epoch: i64) -> Result<i64, DispatchError> {
@@ -244,117 +236,7 @@ fn durable_i64(field: &str, value: u64) -> Result<i64, DispatchError> {
     })
 }
 
-#[cfg(test)]
-mod supersession_epoch_tests {
-    use super::*;
-
-    #[test]
-    fn supersession_epoch_overflow_fails_closed() {
-        // S1 a representable successor advances once; S2 the SQL maximum has
-        // no successor and rejects without wrapping. One case owns both bounds
-        // and the exact diagnostic, including in the database-less unit graph.
-        assert_eq!(next_supersession_epoch(0).unwrap(), 1);
-        assert!(matches!(
-            next_supersession_epoch(i64::MAX),
-            Err(DispatchError::Rejected(message))
-                if message == "dispatch supersession epoch exhausted; refusing to wrap ordering authority"
-        ));
-    }
-
-    #[test]
-    fn claim_epoch_rejects_negative_and_exhausted_database_values() {
-        assert_eq!(next_claim_epoch(0).unwrap(), 1);
-        assert!(matches!(
-            next_claim_epoch(-2),
-            Err(DispatchError::Rejected(message)) if message.contains("negative")
-        ));
-        assert!(matches!(
-            next_claim_epoch(i64::MAX),
-            Err(DispatchError::Rejected(message)) if message.contains("refusing to wrap")
-        ));
-    }
-
-    #[test]
-    fn durable_integer_boundary_rejects_negative_and_oversized_authority() {
-        assert_eq!(durable_u64("lease epoch", 7).unwrap(), 7);
-        assert!(matches!(
-            durable_u64("lease epoch", -1),
-            Err(DispatchError::Rejected(message)) if message.contains("negative")
-        ));
-        assert_eq!(durable_i64("lease epoch", 7).unwrap(), 7);
-        assert!(matches!(
-            durable_i64("lease epoch", u64::MAX),
-            Err(DispatchError::Rejected(message)) if message.contains("refusing to wrap")
-        ));
-    }
-}
-
-/// A durable-ingress failure: either the dispatch store rejected an operation or
-/// a runtime attempt failed. Kept as two arms so a queue-storage failure never
-/// masquerades as a run execution failure.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error(transparent)]
-    Dispatch(#[from] dispatch::DispatchError),
-    #[error(transparent)]
-    Execution(#[from] awaken_runtime_contract::execution::Error),
-    /// Session resolution identified an absorbing application failure; the
-    /// still-current Run claim must commit/settle the corresponding Run failure
-    /// instead of pretending the Worker crashed.
-    #[error(transparent)]
-    TerminalResolution(awaken_runtime_contract::execution::Error),
-    /// The claimed Run is valid, but its Session's Environment Work slot is
-    /// still occupied. This is scheduling pressure, not a Worker crash or an
-    /// absorbing Session failure.
-    #[error("Session resolution is not ready: {0}")]
-    ResolutionNotReady(String),
-    /// The Run already committed terminal truth, but its exact Session
-    /// settlement projection is not yet observable. Retry only this Dispatch;
-    /// this is not evidence that the shared store or Worker pool is unhealthy.
-    #[error("Session settlement observation is not ready: {0}")]
-    SettlementObservationPending(String),
-}
-
-impl Error {
-    #[must_use]
-    pub fn is_terminal_resolution(&self) -> bool {
-        matches!(self, Self::TerminalResolution(_))
-    }
-
-    #[must_use]
-    pub fn is_resolution_not_ready(&self) -> bool {
-        matches!(self, Self::ResolutionNotReady(_))
-    }
-
-    #[must_use]
-    pub fn is_settlement_observation_pending(&self) -> bool {
-        matches!(self, Self::SettlementObservationPending(_))
-    }
-
-    #[must_use]
-    pub fn is_dispatch_conflict(&self) -> bool {
-        matches!(self, Self::Dispatch(dispatch::DispatchError::Conflict(_)))
-    }
-}
-
-#[cfg(test)]
-mod error_scope_tests {
-    use super::{DispatchError, Error};
-
-    #[test]
-    fn only_an_exact_dispatch_conflict_is_a_benign_fence() {
-        /* Causes: C1 transport/store reports Conflict; C2 it reports Rejected
-         * or Unavailable; C3 Session settlement is locally pending. Effects:
-         * E1 C1 may be absorbed as an already-fenced claim; E2 C2 retains the
-         * ordinary fault path; E3 C3 uses request-local deferral. */
-        assert!(Error::Dispatch(DispatchError::Conflict("stale".into())).is_dispatch_conflict());
-        assert!(!Error::Dispatch(DispatchError::Rejected("invalid".into())).is_dispatch_conflict());
-        assert!(
-            !Error::Dispatch(DispatchError::Unavailable("store".into())).is_dispatch_conflict()
-        );
-        assert!(!Error::SettlementObservationPending("pending".into()).is_dispatch_conflict());
-    }
-}
+pub use awaken_dispatch_execution::Error;
 
 /// Shared policy adapter used by every durable backend. Eligibility and
 /// replacement authority remain in the worker-contract kernel; stores only use
@@ -410,5 +292,50 @@ pub(crate) fn policy_selects_requester(
         Ok(selected) => Ok(&selected.identity == attempt.requester),
         Err(PlacementError::NoEligibleWorker) => Ok(false),
         Err(error) => Err(DispatchError::Rejected(error.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod supersession_epoch_tests {
+    use super::*;
+
+    #[test]
+    fn supersession_epoch_overflow_fails_closed() {
+        // S1 a representable successor advances once; S2 the SQL maximum has
+        // no successor and rejects without wrapping. One case owns both bounds
+        // and the exact diagnostic, including in the database-less unit graph.
+        assert_eq!(next_supersession_epoch(0).unwrap(), 1);
+        assert!(matches!(
+            next_supersession_epoch(i64::MAX),
+            Err(DispatchError::Rejected(message))
+                if message == "dispatch supersession epoch exhausted; refusing to wrap ordering authority"
+        ));
+    }
+
+    #[test]
+    fn claim_epoch_rejects_negative_and_exhausted_database_values() {
+        assert_eq!(next_claim_epoch(0).unwrap(), 1);
+        assert!(matches!(
+            next_claim_epoch(-2),
+            Err(DispatchError::Rejected(message)) if message.contains("negative")
+        ));
+        assert!(matches!(
+            next_claim_epoch(i64::MAX),
+            Err(DispatchError::Rejected(message)) if message.contains("refusing to wrap")
+        ));
+    }
+
+    #[test]
+    fn durable_integer_boundary_rejects_negative_and_oversized_authority() {
+        assert_eq!(durable_u64("lease epoch", 7).unwrap(), 7);
+        assert!(matches!(
+            durable_u64("lease epoch", -1),
+            Err(DispatchError::Rejected(message)) if message.contains("negative")
+        ));
+        assert_eq!(durable_i64("lease epoch", 7).unwrap(), 7);
+        assert!(matches!(
+            durable_i64("lease epoch", u64::MAX),
+            Err(DispatchError::Rejected(message)) if message.contains("refusing to wrap")
+        ));
     }
 }

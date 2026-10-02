@@ -9,9 +9,11 @@
 use super::placement::remote_worker_placement;
 pub(crate) use super::placement::requires_local_environment;
 use super::*;
-#[cfg(test)]
-use awaken_dispatch::{HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY};
 use awaken_dispatch_contract::ControlDispatchQueue;
+#[cfg(test)]
+use awaken_dispatch_contract::{
+    HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
+};
 use std::collections::HashMap;
 
 impl SharedHost {
@@ -34,7 +36,7 @@ impl SharedHost {
         &self,
         delivery: awaken_session_execution_contract::SessionRunDelivery,
     ) -> Result<awaken_session_execution_contract::SessionRunActivation, HostError> {
-        use awaken_dispatch::Outbox as _;
+        use awaken_dispatch_contract::Outbox as _;
 
         if delivery.session_activity_epoch == 0 {
             return Err(HostError::bad_request(
@@ -51,26 +53,26 @@ impl SharedHost {
             .await
             .map_err(|error| HostError::unavailable(error.to_string()))?;
         let projected = match outcome {
-            awaken_dispatch::SessionRunReservationActivation::Activated => {
+            awaken_dispatch_contract::SessionRunReservationActivation::Activated => {
                 awaken_session_execution_contract::SessionRunActivation::Activated
             }
-            awaken_dispatch::SessionRunReservationActivation::AlreadyActivated {
+            awaken_dispatch_contract::SessionRunReservationActivation::AlreadyActivated {
                 session_activity_epoch,
             } => awaken_session_execution_contract::SessionRunActivation::AlreadyActivated {
                 session_activity_epoch,
             },
-            awaken_dispatch::SessionRunReservationActivation::RecoveryClaimed => {
+            awaken_dispatch_contract::SessionRunReservationActivation::RecoveryClaimed => {
                 awaken_session_execution_contract::SessionRunActivation::RecoveryClaimed
             }
-            awaken_dispatch::SessionRunReservationActivation::Completed => {
+            awaken_dispatch_contract::SessionRunReservationActivation::Completed => {
                 awaken_session_execution_contract::SessionRunActivation::Completed
             }
-            awaken_dispatch::SessionRunReservationActivation::MissingOrRejected => {
+            awaken_dispatch_contract::SessionRunReservationActivation::MissingOrRejected => {
                 return Err(HostError::bad_request(
                     "Session User Run reservation is missing or rejected",
                 ));
             }
-            awaken_dispatch::SessionRunReservationActivation::Conflict => {
+            awaken_dispatch_contract::SessionRunReservationActivation::Conflict => {
                 return Err(HostError::bad_request(
                     "Session User Run reservation activation conflicts with durable truth",
                 ));
@@ -638,7 +640,7 @@ mod completion_tests {
         Event as StreamEvent, Observation as StreamObservation,
     };
     use awaken_agent_contract::stream::sink::Sink as StreamSink;
-    use awaken_dispatch::CompletionSink;
+    use awaken_dispatch_execution::CompletionSink;
     use awaken_runtime_contract::resolved::{
         CatalogFingerprint, ModelBinding, ResolvedModelCandidate,
     };
@@ -939,7 +941,7 @@ mod completion_tests {
         assert!(!trusted.sandbox.enforced_readonly, "R3 advisory access");
         assert_eq!(
             trusted.sandbox_backend.as_deref(),
-            Some(awaken_dispatch::TRUSTED_HOST_SANDBOX_BACKEND),
+            Some(awaken_dispatch_contract::TRUSTED_HOST_SANDBOX_BACKEND),
             "R3 exact Worker backend"
         );
 
@@ -1174,7 +1176,7 @@ mod completion_tests {
             }))
             .expect("C3 installs the sole wakeup");
 
-        awaken_dispatch::CompletionSink::settled(
+        awaken_dispatch_execution::CompletionSink::settled(
             &registry,
             &RunId("completion-wakeup".into()),
             &RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
@@ -1549,7 +1551,7 @@ mod completion_tests {
         assert_eq!(placement.dispatch_contract_version, 1);
         assert_eq!(
             placement.runtime_protocol_version,
-            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION
+            awaken_dispatch_contract::CURRENT_RUNTIME_PROTOCOL_VERSION
         );
         assert!(placement.required_capabilities.contains("native-runtime"));
         assert!(
@@ -1644,21 +1646,21 @@ mod completion_tests {
         let placement = remote_worker_placement(&models, None, None, false);
         assert_eq!(
             placement.location,
-            awaken_dispatch::ExecutionLocation::RemoteRequired
+            awaken_dispatch_contract::ExecutionLocation::RemoteRequired
         );
         assert!(
             placement
                 .required_capabilities
-                .contains(awaken_dispatch::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
+                .contains(awaken_dispatch_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
         );
         assert_eq!(
             placement.required_credentials,
             std::collections::BTreeSet::from([
-                awaken_dispatch::WorkerCredentialRevision {
+                awaken_dispatch_contract::WorkerCredentialRevision {
                     id: "cred:fallback".into(),
                     revision: 5,
                 },
-                awaken_dispatch::WorkerCredentialRevision {
+                awaken_dispatch_contract::WorkerCredentialRevision {
                     id: "cred:primary".into(),
                     revision: 2,
                 },
@@ -1691,24 +1693,26 @@ mod completion_tests {
         let placement = remote_worker_placement(&models, None, None, false);
         assert_eq!(
             placement.location,
-            awaken_dispatch::ExecutionLocation::RemoteRequired
+            awaken_dispatch_contract::ExecutionLocation::RemoteRequired
         );
         assert!(
             placement
                 .required_capabilities
-                .contains(awaken_dispatch::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
+                .contains(awaken_dispatch_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
         );
         assert_eq!(
             placement.required_credentials,
-            std::collections::BTreeSet::from([awaken_dispatch::WorkerCredentialRevision {
-                id: "cred:local".into(),
-                revision: 7,
-            },])
+            std::collections::BTreeSet::from([
+                awaken_dispatch_contract::WorkerCredentialRevision {
+                    id: "cred:local".into(),
+                    revision: 7,
+                },
+            ])
         );
         assert_eq!(
             placement.required_acp_capabilities,
             std::collections::BTreeSet::from([
-                awaken_dispatch::WorkerAcpCapabilityRequirement {
+                awaken_dispatch_contract::WorkerAcpCapabilityRequirement {
                     backend_ref: "acp:codex".into(),
                     fingerprint: "sha256:test-capability".into(),
                 },
@@ -1728,12 +1732,12 @@ mod completion_tests {
         assert!(
             placement
                 .required_capabilities
-                .contains(awaken_dispatch::SESSION_RESOURCES_CAPABILITY)
+                .contains(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY)
         );
         assert!(
             placement
                 .required_capabilities
-                .contains(awaken_dispatch::REPOSITORY_CREDENTIALS_CAPABILITY)
+                .contains(awaken_dispatch_contract::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
         assert!(placement.sandbox.enforced_readonly);
     }
@@ -1748,13 +1752,13 @@ mod completion_tests {
         assert!(
             placement
                 .required_capabilities
-                .contains(awaken_dispatch::SESSION_RESOURCES_CAPABILITY),
+                .contains(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY),
             "an empty successor manifest may need to remove prior sandbox material"
         );
         assert!(
             !placement
                 .required_capabilities
-                .contains(awaken_dispatch::REPOSITORY_CREDENTIALS_CAPABILITY)
+                .contains(awaken_dispatch_contract::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
     }
 }
