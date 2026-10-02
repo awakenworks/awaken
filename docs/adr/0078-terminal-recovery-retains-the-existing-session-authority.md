@@ -382,6 +382,60 @@ Worker expiry. Until a provider-backed request join is implemented and tested
 across Worker and control-plane restarts, Flow cannot advance a successor on
 handle-free Kubernetes cleanup.
 
+## Amendment 2026-10-02: target provider-owned Kubernetes Create join
+
+The live late-Create counterexample above rules out Namespace deletion as the
+atomic close primitive. A point-in-time Pod/PVC read, Worker Pod termination,
+expired lease, or completed Namespace finalizer is likewise insufficient. The
+remaining provider capability is an independent Create executor whose admission
+and completion can be joined after the Worker process disappears. This is a
+**target**, not a current recovery guarantee.
+
+The existing `K8sRuntime` remains the Sandbox effect owner: it constructs the
+Pod, retained PVC, ConfigMap and Secret from the frozen plan and validates the
+current `ContainerEffectFence`. The existing signed Worker control transport
+and Kubernetes `WorkerTransport` select an independent Coordinator-side Create
+executor. The Worker receives no direct Create privilege for those Sandbox
+resources in this topology. The executor uses the existing Kubernetes client
+and exact object verification; it holds only physical request state, never a
+Session, Dispatch, Flow WorkUnit, cleanup queue or business retry policy.
+Production admission must independently verify that the Worker ServiceAccount
+cannot bypass the broker with direct Create calls.
+
+Before forwarding each Create, the executor atomically adds a ticket under the
+exact `(realization namespace, scope, effect owner, operation, runtime
+incarnation, epoch, object kind, object digest)` to a provider-owned durable
+ConfigMap in a separate control namespace. Kubernetes `resourceVersion` CAS
+orders this admission against an exact close transition. A request admitted
+before close remains visible as InFlight until its independent executor has
+observed the API outcome and durably recorded the object UID or a definitive
+no-effect refusal. A close that wins CAS rejects every later ticket. A ticket
+that wins first must be joined, even if its Worker has died or a stale response
+arrives. An executor crash between forwarding and durable completion leaves
+InFlight/Unknown; no response timeout, retry count or 404 may retire it. An
+active-active Coordinator must use the same CAS, not a process-local mutex, for
+this admission order. The ledger ConfigMap UID and provider configuration are
+retained with the ticket, so deleting and recreating its stable name cannot
+manufacture a closed witness.
+
+Once all admitted tickets are Complete, the same provider close checks the
+exact plan's full participant set, uses UID-fenced preparation/disposal, and
+retains the closed witness until the original Session cleanup owner commits
+its receipt. Only then may Flow's existing failed-stage progression continue.
+A missing ledger, legacy direct-Create path, broker read error, foreign UID,
+partial PVC/Pod, opaque remote effect or unmatched Worker execution domain
+remains Unknown. The present process-local `creation_attempts` gate is to be
+consolidated into this one provider admission path when the broker is selected;
+it cannot be treated as an independent cross-process fallback.
+
+Acceptance must include the IC-11 before-send, admitted-before-response,
+response-before-receipt, Worker death, Coordinator restart, same-name/foreign-UID,
+PVC-only, Pod/ConfigMap/Secret partial, stale response and cleanup-receipt-loss
+cuts. The corresponding test comments own the cause/effect table. The safety
+result is zero early receipts/successors whenever any ticket or participant is
+Unknown; conditional progress requires one exact terminal receipt and one
+successor after all independent physical results have been retained.
+
 ## Amendment 2026-10-05: unfinished terminal cleanup remains Worker demand
 
 A Hosted Run can settle its Dispatch lease after the Session root has recorded
