@@ -143,16 +143,7 @@ pub(super) async fn unit_running(incarnation_id: &str) -> Result<bool, String> {
     if observation.bind(&unit, &current_boot_id()?).is_some() {
         return Ok(true);
     }
-    if observation.value("MainPID") == "0"
-        && observation.value("ControlGroup").is_empty()
-        && matches!(
-            (
-                observation.value("ActiveState"),
-                observation.value("SubState")
-            ),
-            ("failed", "failed") | ("active", "exited") | ("inactive", "dead")
-        )
-    {
+    if observation.exact_quiescent(&unit) {
         return Ok(false);
     }
     Err("local Worker unit state is indeterminate".into())
@@ -241,13 +232,22 @@ impl UnitObservation {
     }
 
     fn exact_exit(&self, binding: &ProcessBinding) -> bool {
-        self.exact_policy(&binding.unit)
+        self.exact_quiescent(&binding.unit)
             && self.value("InvocationID") == binding.invocation_id
+            && matches!(
+                (self.value("ActiveState"), self.value("SubState")),
+                ("failed", "failed") | ("active", "exited")
+            )
+    }
+
+    fn exact_quiescent(&self, unit: &str) -> bool {
+        self.exact_policy(unit)
+            && incarnation(self.value("InvocationID"))
             && self.value("ControlGroup").is_empty()
             && self.value("MainPID") == "0"
             && matches!(
                 (self.value("ActiveState"), self.value("SubState")),
-                ("failed", "failed") | ("active", "exited")
+                ("failed", "failed") | ("active", "exited") | ("inactive", "dead")
             )
     }
 
@@ -454,29 +454,30 @@ impl SystemdWorkerEvidence {
         Ok(())
     }
 
+    async fn retire_loaded_unit(&self, unit: &str) -> Result<bool, ApplicationError> {
+        self.systemctl(&["stop", unit]).await?;
+        // A failed transient unit remains loaded (and manually restartable)
+        // after StopUnit. The caller has already observed exact process
+        // quiescence and either retains a durable exit receipt or has an
+        // authoritative no-physical-slot idle release.
+        let _ = self.systemctl(&["reset-failed", unit]).await;
+        for _ in 0..100 {
+            if self.show(unit).await?.retired_after_receipt(unit) {
+                return Ok(true);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        Ok(false)
+    }
+
     async fn retire_unit(
         &self,
         binding: &ProcessBinding,
     ) -> Result<Option<String>, ApplicationError> {
-        self.systemctl(&["stop", &binding.unit]).await?;
-        // A failed transient unit remains loaded (and manually restartable)
-        // after StopUnit. The durable exact exit receipt now owns the evidence,
-        // so release systemd's failed-unit history before permitting replay.
-        let _ = self.systemctl(&["reset-failed", &binding.unit]).await;
-        for _ in 0..100 {
-            if self
-                .show(&binding.unit)
-                .await?
-                .retired_after_receipt(&binding.unit)
-            {
-                return Ok(Some(format!(
-                    "systemd-user:{}:{}",
-                    binding.unit, binding.invocation_id
-                )));
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        Ok(None)
+        Ok(self
+            .retire_loaded_unit(&binding.unit)
+            .await?
+            .then(|| format!("systemd-user:{}:{}", binding.unit, binding.invocation_id)))
     }
 
     async fn stop_binding(
@@ -560,6 +561,43 @@ impl WorkerExecutionBindingSource for SystemdWorkerEvidence {
 
 #[async_trait::async_trait]
 impl WorkerExecutionStopSource for SystemdWorkerEvidence {
+    fn owns_worker_evidence(&self, worker: &WorkerIdentity) -> bool {
+        unit_name(worker).is_ok()
+    }
+
+    async fn release_closed_idle_worker_evidence(
+        &self,
+        worker: &WorkerIdentity,
+    ) -> Result<(), ApplicationError> {
+        // The caller has already checked closed Registry state and zero
+        // physical Dispatch slots. This edge releases only the old unit's
+        // retention metadata; it never fabricates a process-exit receipt.
+        let unit = unit_name(worker)?;
+        let observed = self.show(&unit).await?;
+        if observed.retired_after_receipt(&unit) {
+            return Ok(());
+        }
+        if observed.bind(&unit, &self.boot_id).is_some() {
+            // A graceful Worker sends deregistration while its own main
+            // process is still running. Do not block that RPC or kill it here;
+            // the existing maintenance tick revisits this closed idle record
+            // after the Worker has actually exited.
+            return Ok(());
+        }
+        if !observed.exact_quiescent(&unit) {
+            return Err(ApplicationError::unavailable(
+                "idle systemd Worker process is not exactly quiescent",
+            ));
+        }
+        if self.retire_loaded_unit(&unit).await? {
+            Ok(())
+        } else {
+            Err(ApplicationError::unavailable(
+                "idle systemd Worker unit retirement is pending",
+            ))
+        }
+    }
+
     async fn stop_closed_worker(
         &self,
         execution: &ClosedWorkerExecution,
