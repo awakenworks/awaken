@@ -1,13 +1,13 @@
 // Cause graph (fixture-driven eval harness):
 //   C1 dataset expectations all match -> E1 report every result as passed, exit 0
 //   C2 any expectation mismatches       -> E2 report the failed result, exit non-zero
-//   C3 cargo cannot build/start eval     -> E3 expose stderr as infrastructure failure
+//   C3 eval binary cannot build/start    -> E3 canonical resolver or spawn error
 //
 // Decision table:
 //   Rule  C1  C2  C3  Expected
 //   T1    Y   N   N   E1
 //   T2    N   Y   N   E2
-//   T3    -   -   Y   E3 (diagnostic assertion message)
+//   T3    -   -   Y   E3 (cargo_binary.test.mjs owns build diagnostics)
 //
 // Drive the real `awaken-eval` binary over a dataset file and assert it
 // replays each case through the real runtime and scores it.
@@ -20,16 +20,24 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { cargoExecutable } from './cargo_binary.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// One repository-owned artifact resolver supplies both dataset runs. Building
+// for each case would retake Cargo's host lane without changing the binary.
+const EVAL_BIN = cargoExecutable({
+  cwd: REPO_ROOT,
+  packageName: 'awaken-eval',
+  targetName: 'awaken-eval',
+});
 
 function runEval(dataset) {
   const dir = mkdtempSync(path.join(tmpdir(), 'awaken-eval-'));
   const file = path.join(dir, 'dataset.json');
   writeFileSync(file, JSON.stringify(dataset));
   const res = spawnSync(
-    'cargo',
-    ['run', '--quiet', '-p', 'awaken-eval', '--bin', 'awaken-eval', '--', file],
+    EVAL_BIN,
+    [file],
     { cwd: REPO_ROOT, encoding: 'utf8', env: process.env, maxBuffer: 16 * 1024 * 1024 },
   );
   if (res.error) throw res.error;
