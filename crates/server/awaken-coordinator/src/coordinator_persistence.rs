@@ -113,8 +113,14 @@ pub async fn init_scenario_runtime(
         && deployment.store == awaken_session_executor::StoreKind::Sqlite
         && deployment.dispatch_backend == awaken_session_executor::DispatchBackend::Sqlite
     {
+        let dispatch = awaken_dispatch::AnyDispatchStore::from_durable_dispatch(
+            std::sync::Arc::new(awaken_dispatch::MemoryDispatchStore::new(clock.clone())),
+        );
         return Ok(std::sync::Arc::new(
-            awaken_session_executor::EphemeralRuntimeAuthority::new(clock),
+            awaken_session_executor::EphemeralRuntimeAuthority::with_dispatch(
+                clock,
+                std::sync::Arc::new(dispatch),
+            ),
         ));
     }
     super::runtime_authority::DurableRuntimeAuthority::open(
@@ -313,15 +319,20 @@ mod tests {
         // Cause/effect graph: dispatch backend + storage coordinate + schema
         // mode -> one WorkerDirectory adapter -> persisted incarnation truth.
         // Decision table: R0 scenario runtime init + SQLite + no storage -> one
-        // explicit reference authority; R1 production
+        // explicitly injected reference authority with its original atomic
+        // Session-continuation role; R1 production
         // open + SQLite + no storage_dir -> startup error; R2 production open +
         // writable storage_dir -> durable registry; R3 reopen same directory ->
         // exact identity/generation survives. Postgres migrate/verify rules are
         // covered by worker-registry conformance and migration-ledger tests.
         let missing = DeploymentConfig::ephemeral();
-        init_scenario_runtime(&missing, awaken_lease_contract::system_clock())
+        let reference = init_scenario_runtime(&missing, awaken_lease_contract::system_clock())
             .await
             .expect("R0 scenario SQLite runtime needs no shared backend");
+        assert!(
+            reference.dispatch_store().session_continuation().is_some(),
+            "R0 exact durable role survives erasure"
+        );
         let missing_error = match open(&missing, awaken_lease_contract::system_clock()).await {
             Ok(_) => panic!("R1 must reject volatile authority"),
             Err(error) => error,

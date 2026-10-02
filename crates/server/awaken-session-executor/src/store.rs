@@ -134,7 +134,7 @@ pub(crate) enum HostCommitBoundary<A, R> {
     Local(A),
     /// The database-independent Worker's read boundary. Authoritative writes go
     /// through the attempt's claim-fenced operation coordinator; reads use the
-    /// [`awaken_dispatch::RecoveryProjection`]. It deliberately is not a
+    /// [`awaken_dispatch_execution::RecoveryProjection`]. It deliberately is not a
     /// [`crate::LocalCommit`]: the projection is an execution cache, never authoritative
     /// storage or an alternate commit path.
     Remote(R),
@@ -198,13 +198,13 @@ fn recovery_projection_cannot_mint_committed_authority() {
 }
 
 pub(crate) struct RemoteHostCommit {
-    projection: Arc<awaken_dispatch::RecoveryProjection>,
+    projection: Arc<awaken_dispatch_execution::RecoveryProjection>,
 }
 
 impl RemoteHostCommit {
     pub(crate) fn new() -> Self {
         Self {
-            projection: Arc::new(awaken_dispatch::RecoveryProjection::new()),
+            projection: Arc::new(awaken_dispatch_execution::RecoveryProjection::new()),
         }
     }
 
@@ -292,7 +292,7 @@ impl HostCommit {
 
     pub(crate) fn recovery_projection(
         &self,
-    ) -> Option<Arc<awaken_dispatch::RecoveryProjection>> {
+    ) -> Option<Arc<awaken_dispatch_execution::RecoveryProjection>> {
         match self {
             HostCommit::Local(_) => None,
             HostCommit::Remote(remote) => Some(remote.projection.clone()),

@@ -680,7 +680,7 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
     let mut run =
         tokio::spawn(async move { driver.run(None, "durable-interrupt", user("go")).await });
     await_interrupt_inference_gate(&reached, &mut run).await;
-    use awaken_dispatch::DispatchQueue as _;
+    use awaken_dispatch_contract::DispatchQueue as _;
     let before = dispatch.list_dispatches().await.unwrap();
     assert_eq!(before.len(), 1, "R1: exactly one admitted Run");
     let original = &before[0];
@@ -734,7 +734,7 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
 
 #[tokio::test]
 async fn live_only_durable_control_never_materializes_a_cold_session() {
-    use awaken_dispatch::DispatchQueue as _;
+    use awaken_dispatch_contract::DispatchQueue as _;
 
     // Cause/effect table for the Host boundary: C1 typed durable capability is
     // enabled; C2 a process-resident Session context exists; C3 the Runtime owns
@@ -882,7 +882,7 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
     assert_eq!(rows.len(), 1, "E1 exact row");
     assert_eq!(
         rows[0].state,
-        awaken_dispatch::DispatchState::Pending,
+        awaken_dispatch_contract::DispatchState::Pending,
         "E1 dead letter reuses the same runnable row"
     );
     assert!(rows[0].cancellation_requested, "E2 durable cancellation");

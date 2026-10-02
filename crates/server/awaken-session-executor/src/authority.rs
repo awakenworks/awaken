@@ -354,7 +354,7 @@ pub trait RuntimeAuthority: Send + Sync {
 
     fn dispatch_store(&self) -> Arc<awaken_dispatch_erasure::AnyDispatchStore>;
 
-    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch::WakeSignal>>;
+    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>>;
 
     fn stream_checkpoint(
         &self,
@@ -409,23 +409,32 @@ impl EphemeralRuntimeAuthority {
         self
     }
 
-    /// `clock` judges the dispatch store's rows and stamps every Thread's
-    /// commits; the Host that installs this authority passes its own.
+    /// The scenario composition supplies the exact backend-erased Dispatch
+    /// authority, including its continuation role; this shared Host selects no
+    /// concrete Coordinator queue implementation.
     #[must_use]
-    pub fn new(clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
-        // The ephemeral authority is the Coordinator-side durable owner used by
-        // scenario/integration compositions. Preserve its atomic Session
-        // continuation role when erasing the concrete Memory store; the
-        // Worker-only constructor intentionally omits that role.
-        let dispatch = awaken_dispatch_erasure::AnyDispatchStore::from_durable_dispatch(Arc::new(
-            awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
-        ));
+    pub fn with_dispatch(
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        dispatch: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
+    ) -> Self {
         Self {
             clock,
             commits: std::sync::Mutex::new(std::collections::HashMap::new()),
             checkpoints: std::sync::Mutex::new(std::collections::HashMap::new()),
-            dispatch: Arc::new(dispatch),
+            dispatch,
         }
+    }
+
+    /// Host-local unit tests compose the same Ingress reference backend through
+    /// a dev dependency. External test-support callers inject that backend at
+    /// their composition root through `with_dispatch`.
+    #[cfg(test)]
+    #[must_use]
+    pub fn new(clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+        let dispatch = awaken_dispatch_erasure::AnyDispatchStore::from_durable_dispatch(Arc::new(
+            awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
+        ));
+        Self::with_dispatch(clock, Arc::new(dispatch))
     }
 }
 
@@ -464,7 +473,7 @@ impl RuntimeAuthority for EphemeralRuntimeAuthority {
         self.dispatch.clone()
     }
 
-    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch::WakeSignal>> {
+    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>> {
         None
     }
 

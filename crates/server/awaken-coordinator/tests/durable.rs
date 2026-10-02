@@ -167,14 +167,18 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
 #[tokio::test]
 async fn in_memory_host_does_not_recover_an_awaiting_run_across_a_rebuild() {
     // Cause/effect table: C1 both hosts install the canonical dispatch Session
-    // Runtime; C2 no Coordinator-owned durable authority is injected. R1 C1+!C2
-    // -> the first host can await normally, while its replacement starts clean.
+    // Runtime; C2 each gets an explicitly composed in-memory authority over
+    // its own clock; C3 no durable root is shared. R1 C1+C2+C3 -> the first
+    // host can await normally, while its replacement starts clean. The testkit
+    // composes the sole Ingress MemoryDispatchStore; Host has no implicit store.
     let thread = "ephemeral-1";
 
     {
         let host = host_with_client_tool(
-            Arc::into_inner(build_unmounted_host(Arc::new(CustomToolModel), "custom"))
-                .expect("unmounted scenario host has one owner"),
+            awaken_runtime_host_testkit::with_volatile_runtime_authority(
+                Arc::into_inner(build_unmounted_host(Arc::new(CustomToolModel), "custom"))
+                    .expect("unmounted scenario host has one owner"),
+            ),
         );
         host.run(None, thread, vec![user("u1", "hi")])
             .await
@@ -183,8 +187,10 @@ async fn in_memory_host_does_not_recover_an_awaiting_run_across_a_rebuild() {
     }
 
     let host = host_with_client_tool(
-        Arc::into_inner(build_unmounted_host(Arc::new(CustomToolModel), "custom"))
-            .expect("unmounted scenario host has one owner"),
+        awaken_runtime_host_testkit::with_volatile_runtime_authority(
+            Arc::into_inner(build_unmounted_host(Arc::new(CustomToolModel), "custom"))
+                .expect("unmounted scenario host has one owner"),
+        ),
     );
     assert!(
         !host.is_awaiting(thread).await,

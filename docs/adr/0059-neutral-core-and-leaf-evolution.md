@@ -167,6 +167,15 @@ Verified state after the 2026-08-04 cut:
 - **Worker runtime interface** — `awaken-coordinator-client` owns registration, heartbeat,
   drain, and claim-fenced Session-control clients. `awaken-session-executor` no longer exports
   those Worker transport adapters.
+- **Dispatch execution (2026-10-02)** — `awaken-dispatch-execution` owns the sole
+  `DispatchWorker`, process `DispatchPool`, renewal guard, recovery projection,
+  process-local capacity, and neutral wake port. `awaken-dispatch` retains
+  Coordinator-only SQLite/PostgreSQL dispatch adapters, PG/NATS wake transports,
+  and the claimed-commit application; `awaken-dispatch-contract` owns queue
+  and claim vocabulary, while its application port has its own bounded contract.
+  Runtime Host consumes those contracts and the shared execution owner, with no
+  normal Cargo path to the Coordinator Ingress implementation. Test fixtures
+  still construct the one Ingress memory backend explicitly at composition.
 - **Sandbox realization (`sandbox_source`, `provisioning`)** — the sole ACP
   `sandbox_source` now lives in `awaken-execution-composition` and consumes the
   Session-owned process environment that ADR-0066 consolidated. Runtime Host

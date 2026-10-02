@@ -215,10 +215,11 @@ impl SharedHost {
             request = request.with_inference_plaintext_holder(holder);
         }
         if let Some(resources) = resources {
-            let envelope = awaken_dispatch::SessionResourceEnvelope::from_manifest(&resources)
-                .map_err(|error| {
-                HostError::internal(format!("serialize Session resource manifest: {error}"))
-            })?;
+            let envelope =
+                awaken_dispatch_contract::SessionResourceEnvelope::from_manifest(&resources)
+                    .map_err(|error| {
+                        HostError::internal(format!("serialize Session resource manifest: {error}"))
+                    })?;
             request = request.with_session_resources(envelope);
         }
         if let Some((environment, tools, mcp_stages)) = runtime_projection {
@@ -227,7 +228,7 @@ impl SharedHost {
             // canonical SandboxSpec identity used by Worker pool receipts.
             let preferred_shape =
                 crate::provisioning::environment_capacity_projection(&environment, true).shape_id;
-            let envelope = awaken_dispatch::SessionRuntimeEnvelope::from_projection(
+            let envelope = awaken_dispatch_contract::SessionRuntimeEnvelope::from_projection(
                 environment,
                 tools,
                 mcp_stages,

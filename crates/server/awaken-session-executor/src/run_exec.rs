@@ -615,7 +615,7 @@ mod tests {
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_dispatch::DispatchQueue as _;
+    use awaken_dispatch_contract::DispatchQueue as _;
     use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
     use awaken_runtime_contract::resume::ResumeResult;
@@ -711,7 +711,7 @@ mod tests {
             &self,
             fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
         ) -> Result<
-            Option<awaken_dispatch::CommitEpochGuard>,
+            Option<awaken_dispatch_contract::CommitEpochGuard>,
             awaken_resource_contract::ArtifactPublicationError,
         > {
             let claim = fence.and_then(|fence| match fence {
@@ -727,7 +727,7 @@ mod tests {
             });
             let guard = if let Some(claim) = claim {
                 Some(
-                    awaken_dispatch::DispatchQueue::lock_commit_epoch(
+                    awaken_dispatch_contract::DispatchQueue::lock_commit_epoch(
                         self.dispatch.as_ref(),
                         claim,
                     )
@@ -1032,7 +1032,9 @@ mod tests {
             .expect("artifact test dispatch"),
         );
         dispatch
-            .enqueue(awaken_dispatch::RunDispatch::new(activation("awaken")))
+            .enqueue(awaken_dispatch_contract::RunDispatch::new(activation(
+                "awaken",
+            )))
             .await
             .expect("enqueue artifact attempt");
         let claimed = dispatch
@@ -1296,7 +1298,7 @@ mod tests {
             .settle(
                 &claimed.lease.run_id,
                 claimed.lease.epoch,
-                awaken_dispatch::DispatchOutcome::Done,
+                awaken_dispatch_contract::DispatchOutcome::Done,
                 &[],
             )
             .await

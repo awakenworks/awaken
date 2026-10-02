@@ -31,7 +31,7 @@ pub use awaken_dispatch_contract::ClaimedRunCommit;
 /// Verify that committed logical Run/Thread truth belongs to the dispatch whose
 /// exact claim is currently fenced. Both embedded and remote workers cross this
 /// helper so topology cannot change the authority check.
-pub(crate) fn validate_commit_dispatch_binding(
+pub fn validate_commit_dispatch_binding(
     dispatch: &RunDispatch,
     commit: &ThreadCommit,
 ) -> Result<(), String> {

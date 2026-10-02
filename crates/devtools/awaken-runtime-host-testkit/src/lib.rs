@@ -117,11 +117,30 @@ pub fn volatile_host_with_deployment(
 /// Install the Workdir adapter under the Deployment's sandbox root as the
 /// non-authoritative fallback Session provider.
 fn with_workdir_fallback(host: SharedHost) -> SharedHost {
+    let host = with_volatile_runtime_authority(host);
     let base = awaken_session_executor::session_sandbox_base(host.deployment_config());
     host.with_fallback_session_environment_provider(
         awaken_session_environment::SandboxEnvironmentProvider::workdir(base)
             .into_session_provider(),
     )
+}
+
+/// Install the one reference Dispatch/commit authority at a test composition
+/// root. Call only when no explicit runtime authority was already selected.
+#[must_use]
+pub fn with_volatile_runtime_authority(host: SharedHost) -> SharedHost {
+    // Cause/effect fixture rule: C1 a volatile scenario Host has no injected
+    // authority; C2 the same Host clock stamps Dispatch and Thread commits.
+    // R1 C1+C2 -> one Ingress MemoryDispatchStore is selected here, retains its
+    // durable continuation role through AnyDispatchStore, and is injected once;
+    // product Host construction never selects a Coordinator backend implicitly.
+    let clock = host.clock();
+    let dispatch = awaken_dispatch::AnyDispatchStore::from_durable_dispatch(Arc::new(
+        awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
+    ));
+    host.with_runtime_authority(Arc::new(
+        awaken_session_executor::EphemeralRuntimeAuthority::with_dispatch(clock, Arc::new(dispatch)),
+    ))
 }
 
 /// Upgrade `host` to local durable storage under `dir`, with the canonical

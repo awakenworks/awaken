@@ -61,9 +61,9 @@ use crate::dispatch::{
     Claimed, DispatchOutcome, PendingInput, RunClaim, SessionRunReservationResolution,
     SettleOutcome,
 };
+use crate::execution_capacity::ExecutionCapacity;
+use crate::worker_context::WorkerContext;
 use awaken_lease_contract::WallClock;
-use awaken_coordinator_client::execution_capacity::ExecutionCapacity;
-use awaken_coordinator_client::worker_context::WorkerContext;
 
 mod claim_renewal;
 mod physical_attempt;
@@ -554,7 +554,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     #[must_use]
     pub fn with_inference_materializer(
         mut self,
-        resolve: awaken_coordinator_client::worker_context::InferenceMaterializerFn,
+        resolve: crate::worker_context::InferenceMaterializerFn,
     ) -> Self {
         self.exec = self.exec.with_inference_materializer(resolve);
         self
@@ -592,7 +592,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     }
 
     #[cfg(feature = "test-support")]
-    pub(crate) fn committed_reader(&self) -> Arc<dyn CommittedThreadView> {
+    pub fn committed_reader(&self) -> Arc<dyn CommittedThreadView> {
         Arc::clone(&self.reader)
     }
 
@@ -615,7 +615,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     fn execution_context_with(
         &self,
         claim: &RunClaim,
-        execution_scope: Option<&crate::ExecutionScopeRef>,
+        execution_scope: Option<&awaken_dispatch_contract::ExecutionScopeRef>,
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
         credential_bindings: &[AttemptCredentialBinding],
         credential_deliveries: &[AttemptCredentialDelivery],
@@ -942,10 +942,10 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                         .admit_session_run_activity(&claimed.request, &claim, mode)
                         .await
                 }
-                Some(_) => Err(crate::DispatchSettlementError(
+                Some(_) => Err(awaken_dispatch_contract::DispatchSettlementError(
                     "Session Run reservation claim is stale".to_string(),
                 )),
-                None => Err(crate::DispatchSettlementError(
+                None => Err(awaken_dispatch_contract::DispatchSettlementError(
                     "Session Run activity admission observer is not installed".to_string(),
                 )),
             };

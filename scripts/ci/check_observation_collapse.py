@@ -125,7 +125,7 @@ TRANSLATED_TRANSPORT = {
     ),
 }
 # The one place the transport's Result becomes an observation.
-TRANSLATOR = "crates/server/awaken-dispatch/src/fenced_checkpoint.rs"
+TRANSLATOR = "crates/shared/awaken-dispatch-execution/src/fenced_checkpoint.rs"
 TRANSLATION = re.compile(
     r"load_stream_checkpoint[\s\S]{0,400}?Ok\(None\)\s*=>\s*Observed::Absent[\s\S]{0,200}?"
     r"Err\([^)]*\)\s*=>\s*Observed::Unknown"

@@ -125,7 +125,7 @@ responsibility table above rather than expanding this catalog.
 | `ActiveAttemptScope` | process-local attempt owner | generation, neutral controls, fresh optional LiveInbox | Runtime registry, executor live-input capability | durable delivery or cross-attempt input | stale discovery or phantom durability | G18; generation/ownership tests |
 | `SubmitCommand` | command value | neutral activation or message submit data plus caller intent | `RunActivation`, caller/server intent | runtime loop state, durable internals, routing mode, batching policy | delivery policy leaks into public route contracts | G5, G6; submit-mode tests |
 | `RunDispatch` | data value | ingress-to-runtime execution data without live handles | `RunActivation`, durable persistence hints | registry handles, commit coordinator, inbox, cancellation handles | durable replay depends on process-local objects | G3, G4; serialization and replay tests |
-| `WorkerContext` | ingress worker wiring | sink, thread context, pending boundary, remote wait, and optional commit/catalog wiring used to build `RuntimeRunContext` | durable worker execution construction | durable input storage, product DTOs, immutable activation data | dispatch data and live handles become indistinguishable | G3, G13; worker-context tests |
+| `WorkerContext` | shared dispatch-execution wiring | sink, thread context, pending boundary, remote wait, and optional commit/catalog wiring used to build `RuntimeRunContext` | durable worker execution construction | durable input storage, product DTOs, immutable activation data | dispatch data and live handles become indistinguishable | G3, G13; worker-context tests |
 
 `CommitCoordinator` and event-store ports are consumed by durable ingress, but
 they are owned by the runtime/store contract. Durable ingress may verify
@@ -139,9 +139,12 @@ calling `RunExecutor`.
 
 ## Implemented Slice
 
-A first slice of this boundary ships in the `awaken-dispatch` crate
-([ADR-0009](../adr/0009-durable-run-ingress-slice.md)); the Rustdoc there co-owns
-the realized behaviour, this document owns the boundary it must keep. Realized
+A first slice of this boundary was introduced in `awaken-dispatch`
+([ADR-0009](../adr/0009-durable-run-ingress-slice.md)). Today its contract owns
+dispatch values/ports, `awaken-dispatch-execution` owns the one Worker/Pool, and
+Ingress retains Coordinator backends and claimed-commit authority. Rustdoc in
+those crates co-owns the realized behaviour; this document owns the boundary.
+Realized
 roles: `DirectAttemptDriver`, `ActiveAttemptScope`, `RunDispatch`,
 `DispatchQueue` / `DispatchPool` / `DispatchWorker`, `WorkerContext`, the
 `RunDispatch` queue (enqueue, single-owner claim/lease, lease-expiry recovery)

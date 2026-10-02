@@ -623,7 +623,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
             )
             .await
             .expect("settle child Awaiting"),
-        awaken_dispatch::SettleOutcome::Applied
+        awaken_dispatch_contract::SettleOutcome::Applied
     );
 
     let follow_up_run = RunId("coordinated-reply-follow-up".into());
@@ -635,7 +635,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     ))
     .for_session(parent.clone())
     .with_session_activity_epoch(43);
-    let follow_up_input = awaken_dispatch::PendingInput {
+    let follow_up_input = awaken_dispatch_contract::PendingInput {
         message_id: "coordinated-reply-follow-up-message".into(),
         run_id: follow_up_run.clone(),
         thread_id: child.clone(),
@@ -668,7 +668,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         )
         .await
         .expect("CR6 exact follow-up retry");
-    let changed_follow_up = awaken_dispatch::PendingInput {
+    let changed_follow_up = awaken_dispatch_contract::PendingInput {
         context_messages: Vec::new(),
         result: awaken_runtime_contract::resume::ResumeResult::Input("changed intent".into()),
         ..follow_up_input.clone()
@@ -688,7 +688,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     );
     assert_eq!(
         dispatch.list(&child).await.expect("CR6 child Inbox"),
-        vec![awaken_dispatch::PendingRecord {
+        vec![awaken_dispatch_contract::PendingRecord {
             input: follow_up_input.clone(),
             revision: 1,
         }],
@@ -992,7 +992,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
             )
             .await
             .expect("CR5 settle the replied-to old Run"),
-        awaken_dispatch::SettleOutcome::Applied,
+        awaken_dispatch_contract::SettleOutcome::Applied,
         "CR5/E7"
     );
     clock.set(3);
@@ -1398,7 +1398,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
                 .settle(&run_id, claimed.lease.epoch, DispatchOutcome::Awaiting, &[],)
                 .await
                 .expect("settle primary Awaiting"),
-            awaken_dispatch::SettleOutcome::Applied
+            awaken_dispatch_contract::SettleOutcome::Applied
         );
 
         let command = awaken_session_execution_contract::SessionThreadToolReplyCommand {
@@ -1943,7 +1943,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn durable_client_result_settles_the_authoritative_dispatch() {
-    use awaken_dispatch::DispatchQueue as _;
+    use awaken_dispatch_contract::DispatchQueue as _;
 
     async fn bounded_stage<T>(
         stage: &'static str,
@@ -2004,7 +2004,7 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
     assert_eq!(awaiting[0].run_id, first.run_id);
     assert_eq!(
         awaiting[0].state,
-        awaken_dispatch::DispatchState::Awaiting
+        awaken_dispatch_contract::DispatchState::Awaiting
     );
 
     let resumed = bounded_stage(
@@ -2037,7 +2037,7 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn coordinator_only_foreground_admission_survives_request_drop_without_a_pool() {
-    use awaken_dispatch::DispatchQueue as _;
+    use awaken_dispatch_contract::DispatchQueue as _;
 
     // Causes: C1 durable dispatch is installed; C2 this Coordinator owns no
     // local pool; C3 the foreground request is dropped before a remote Worker
@@ -2200,7 +2200,7 @@ async fn supersede_run_without_durable_ingress_fails_closed() {
 
 #[tokio::test]
 async fn managed_session_root_rejects_legacy_host_run_ingress() {
-    use awaken_dispatch::DispatchQueue as _;
+    use awaken_dispatch_contract::DispatchQueue as _;
 
     // Cause/effect graph: C1 the Thread is marked as a Managed Session root;
     // C2 a caller selects ordinary or superseding Host Run ingress. Effects:

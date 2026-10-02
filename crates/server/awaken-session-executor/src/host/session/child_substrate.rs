@@ -170,7 +170,7 @@ mod tests {
         )
         .await;
         let request = with_empty_session_resources(
-            awaken_dispatch::RunDispatch::new(test_activation(
+            awaken_dispatch_contract::RunDispatch::new(test_activation(
                 child_thread,
                 "run-cold-physical-child",
             ))

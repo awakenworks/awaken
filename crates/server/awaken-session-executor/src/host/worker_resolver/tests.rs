@@ -9,9 +9,10 @@ use super::test_support::{
     test_activation, with_empty_session_resources,
 };
 use super::*;
-use awaken_dispatch_contract::ControlDispatchQueue;
+use awaken_dispatch_contract as ingress;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
+use ingress::ControlDispatchQueue;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[path = "tests/trusted_host_admission.rs"]
@@ -29,7 +30,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     // boundary Worker; E3 no Session Environment or Sandbox side effect is
     // created. Decision rule R1=C0+C1+C2+C3=>E1+E2+E3. Missing/unknown command
     // fingerprints remain owned by the queue conformance table.
-    use awaken_dispatch::DispatchQueue;
+    use ingress::DispatchQueue;
 
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(
@@ -50,7 +51,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
         execution_requirements: Default::default(),
         replacement: Default::default(),
     };
-    let request = awaken_dispatch::RunDispatch::new(activation)
+    let request = ingress::RunDispatch::new(activation)
         .for_session(awaken_agent_contract::agent::thread::Id(session_id.into()))
         .with_session_command_fingerprint(
             awaken_session_execution_contract::SessionRunCommandFingerprint::current(&command),
@@ -60,7 +61,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
             .reserve_session_run(request, 1)
             .await
             .expect("R1 reserve"),
-        awaken_dispatch::SessionRunReservationOutcome::Reserved,
+        ingress::SessionRunReservationOutcome::Reserved,
         "R1/C1"
     );
     // C1 is governed by the queue-owned clock. Wait past the relative TTL,
@@ -135,7 +136,7 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
     let store = host.dispatch_store().expect("ephemeral dispatch authority");
     store
         .enqueue(
-            awaken_dispatch::RunDispatch::new(activation)
+            ingress::RunDispatch::new(activation)
                 .for_session(parent.clone())
                 .with_session_activity_epoch(7),
         )
@@ -214,7 +215,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     let claimed = ephemeral_store
         .claim(
             ephemeral.dispatch_owner(),
-            awaken_dispatch::DEFAULT_LEASE_MS,
+            awaken_dispatch_execution::DEFAULT_LEASE_MS,
             &Default::default(),
         )
         .await
@@ -331,12 +332,12 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
 /// claim-settled setup failure while D1 proves no Control lookup is needed.
 #[tokio::test]
 async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
-    use awaken_dispatch::DispatchQueue;
     use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
     use awaken_runtime_contract::snapshot::{
         AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
         AgentSnapshotMetadata,
     };
+    use ingress::DispatchQueue;
 
     let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
@@ -380,7 +381,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
             .expect("coherent delegated root fixture");
         activation
     };
-    let runtime = awaken_dispatch::SessionRuntimeEnvelope::from_projection(
+    let runtime = ingress::SessionRuntimeEnvelope::from_projection(
         deferred_environment(),
         Some(Default::default()),
         Vec::new(),
@@ -402,7 +403,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
 
     store
         .enqueue(with_empty_session_resources(
-            awaken_dispatch::RunDispatch::new(complete_activation)
+            ingress::RunDispatch::new(complete_activation)
                 .with_agent_publications(vec![child])
                 .with_session_runtime(runtime.clone()),
             host.local_workspace(),
@@ -434,7 +435,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
     };
     missing_store
         .enqueue(with_empty_session_resources(
-            awaken_dispatch::RunDispatch::new(delegated(
+            ingress::RunDispatch::new(delegated(
                 "cold-delegation-missing",
                 "run-cold-delegation-missing",
             ))
@@ -476,8 +477,8 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
     // lease identity remain attempt context, while publication/model inputs
     // are Runtime construction inputs. Rules K1=C1+C2=>E1+E2,
     // K2=C3=>E3, K3=C4=>E4.
-    use awaken_dispatch::DispatchQueue;
     use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
+    use ingress::DispatchQueue;
 
     let child_v1 = awaken_runtime_contract::ExecutableAgentSnapshot::builder("researcher")
         .instructions("catalog v1")
@@ -535,8 +536,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .ctx_for_snapshot("claimed-cache", Some("agent-a"), Some(root))
         .await
         .expect("K1 warm unclaimed context");
-    let request =
-        awaken_dispatch::RunDispatch::new(activation).with_agent_publications(vec![child_v2]);
+    let request = ingress::RunDispatch::new(activation).with_agent_publications(vec![child_v2]);
     store.enqueue(request).await.expect("enqueue K1");
     let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
     clock.set(now);
@@ -589,7 +589,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .settle(
             &reclaimed.lease.run_id,
             reclaimed.lease.epoch,
-            awaken_dispatch::DispatchOutcome::Done,
+            ingress::DispatchOutcome::Done,
             &[],
         )
         .await
@@ -634,8 +634,8 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
 /// represent one attempted mutation plus its authoritative readback replay.
 #[tokio::test]
 async fn durable_deferred_sandbox_publication_decision_table() {
-    use awaken_dispatch::DispatchQueue;
     use awaken_session_execution_contract::SessionRuntime;
+    use ingress::DispatchQueue;
 
     let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
     let storage = tempfile::tempdir().expect("isolated deferred Sandbox root");
@@ -887,7 +887,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
 
 #[tokio::test]
 async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() {
-    use awaken_dispatch::DispatchQueue;
+    use ingress::DispatchQueue;
 
     /* Claimed sandbox-stdio recovery cause/effect decision table. Causes:
      * C1 a cold Worker has no process-local Agent publication; C2 the durable
@@ -946,7 +946,7 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
         credential: None,
         selected_plaintext_holder: None,
     };
-    let runtime = awaken_dispatch::SessionRuntimeEnvelope::from_projection(
+    let runtime = ingress::SessionRuntimeEnvelope::from_projection(
         deferred_environment(),
         Some(Default::default()),
         vec![stage],
@@ -954,7 +954,7 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
     .expect("runtime envelope");
     store
         .enqueue(with_empty_session_resources(
-            awaken_dispatch::RunDispatch::new(activation).with_session_runtime(runtime),
+            ingress::RunDispatch::new(activation).with_session_runtime(runtime),
             host.local_workspace(),
         ))
         .await
@@ -985,16 +985,16 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
 }
 
 #[async_trait::async_trait]
-impl awaken_dispatch_contract::ClaimedSessionRealizationControl for RecordingSessionControl {
+impl ingress::ClaimedSessionRealizationControl for RecordingSessionControl {
     async fn resume_frozen(
         &self,
-        claim: &awaken_dispatch_contract::RunClaim,
+        claim: &ingress::RunClaim,
         _session_id: &str,
         _session_work_authority: Option<&awaken_session_work_contract::SessionWorkAuthorityReceipt>,
         continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionRealizationDirective>,
-        awaken_dispatch_contract::ClaimedSessionControlError,
+        ingress::ClaimedSessionControlError,
     > {
         self.resume_calls.fetch_add(1, Ordering::SeqCst);
         self.continuations
@@ -1188,7 +1188,7 @@ fn ordinary_frozen_projection() -> awaken_session_realization_contract::FrozenSe
 /// | O5 | live Run without Session pointer | n/a | present | bypass Session control |
 #[tokio::test]
 async fn claimed_worker_uses_only_frozen_session_realization() {
-    use awaken_dispatch::DispatchQueue;
+    use ingress::DispatchQueue;
 
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
@@ -1221,14 +1221,11 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     );
     dispatch
         .enqueue(with_empty_session_resources(
-            awaken_dispatch::RunDispatch::new(test_activation(
-                "ordinary-remote",
-                "run-ordinary-remote",
-            ))
-            .for_session(awaken_agent_contract::agent::thread::Id(
-                "ordinary-remote".into(),
-            ))
-            .with_session_activity_epoch(1),
+            ingress::RunDispatch::new(test_activation("ordinary-remote", "run-ordinary-remote"))
+                .for_session(awaken_agent_contract::agent::thread::Id(
+                    "ordinary-remote".into(),
+                ))
+                .with_session_activity_epoch(1),
             "workspace",
         ))
         .await
@@ -1243,7 +1240,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     // frozen publication binds claim and lease together; CR3 same-Run retry
     // then sends precisely that installed lease. This sequence catches the
     // early-claim-publication bug that the static 20-case selector cannot.
-    let predecessor = awaken_dispatch_contract::RunClaim {
+    let predecessor = ingress::RunClaim {
         run_id: awaken_agent_contract::agent::run::Id("previous-run".into()),
         owner: claimed.lease.owner.clone(),
         epoch: 0,
@@ -1295,7 +1292,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         .read("ordinary-remote", |slot| {
             assert_eq!(
                 slot.dispatch_claim,
-                Some(awaken_dispatch_contract::RunClaim::from(&claimed.lease)),
+                Some(ingress::RunClaim::from(&claimed.lease)),
                 "CR2"
             );
             slot.realization_authority.lease().cloned()
@@ -1344,7 +1341,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     .expect("O5 install complete ordinary Runtime projection");
     dispatch
         .enqueue(with_empty_session_resources(
-            awaken_dispatch::RunDispatch::new(ordinary_activation),
+            ingress::RunDispatch::new(ordinary_activation),
             host.local_workspace(),
         ))
         .await
@@ -1365,7 +1362,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
 
 #[tokio::test]
 async fn claimed_resource_conflict_is_terminal_before_realization() {
-    use awaken_dispatch::DispatchQueue;
+    use ingress::DispatchQueue;
 
     // Cause/effect graph: C1 the Run claim is live; C2 its immutable Resource
     // envelope differs from Control's desired Workspace/revision/bindings.
@@ -1419,7 +1416,7 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
         );
         dispatch
             .enqueue(with_empty_session_resources(
-                awaken_dispatch::RunDispatch::new(test_activation("conflict", "conflict-run"))
+                ingress::RunDispatch::new(test_activation("conflict", "conflict-run"))
                     .for_session(awaken_agent_contract::agent::thread::Id("conflict".into()))
                     .with_session_activity_epoch(1),
                 "workspace",
@@ -1473,18 +1470,17 @@ async fn resource_manifest_must_match_the_durable_execution_scope() {
     let host =
         Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
     let run = RunId("run-scope-mismatch".to_string());
-    let request =
-        awaken_dispatch::RunDispatch::new(test_activation("thread-scope-mismatch", &run.0))
-            .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                awaken_tenancy::ScopeId::from("workspace-b"),
-            ))
-            .with_session_resources(awaken_dispatch::SessionResourceEnvelope::new(
-                "workspace-a",
-                r#"{"inputs":[],"skills":[]}"#,
-            ));
-    let claimed = awaken_dispatch::Claimed {
+    let request = ingress::RunDispatch::new(test_activation("thread-scope-mismatch", &run.0))
+        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+            awaken_tenancy::ScopeId::from("workspace-b"),
+        ))
+        .with_session_resources(ingress::SessionResourceEnvelope::new(
+            "workspace-a",
+            r#"{"inputs":[],"skills":[]}"#,
+        ));
+    let claimed = ingress::Claimed {
         request,
-        lease: awaken_dispatch::Lease {
+        lease: ingress::Lease {
             run_id: run,
             owner: "worker-a".to_string(),
             expires_ms: 100,
@@ -1528,18 +1524,17 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
     let host =
         Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
     let run = RunId("run-malformed-resources".to_string());
-    let request =
-        awaken_dispatch::RunDispatch::new(test_activation("thread-malformed-resources", &run.0))
-            .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                awaken_tenancy::ScopeId::from("workspace-a"),
-            ))
-            .with_session_resources(awaken_dispatch::SessionResourceEnvelope::new(
-                "workspace-a",
-                "not-json",
-            ));
-    let claimed = awaken_dispatch::Claimed {
+    let request = ingress::RunDispatch::new(test_activation("thread-malformed-resources", &run.0))
+        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+            awaken_tenancy::ScopeId::from("workspace-a"),
+        ))
+        .with_session_resources(ingress::SessionResourceEnvelope::new(
+            "workspace-a",
+            "not-json",
+        ));
+    let claimed = ingress::Claimed {
         request,
-        lease: awaken_dispatch::Lease {
+        lease: ingress::Lease {
             run_id: run,
             owner: "worker-a".to_string(),
             expires_ms: 100,
@@ -1930,7 +1925,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
 async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
     let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
     let managed = managed_test_host(host.clone());
-    let claim = awaken_dispatch_contract::RunClaim {
+    let claim = ingress::RunClaim {
         run_id: RunId("run-generation-fence".into()),
         owner: "worker-generation-fence".into(),
         epoch: 1,
@@ -2258,21 +2253,18 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
     struct ClaimFileSource;
 
     #[async_trait::async_trait]
-    impl crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>
-        for ClaimFileSource
-    {
+    impl crate::FileContentSource<ingress::ResourceOperationFence> for ClaimFileSource {
         async fn read(
             &self,
             workspace_id: &str,
             file_id: &str,
             _purpose: &awaken_resource_contract::FileReadPurpose,
-            fence: Option<&awaken_dispatch_contract::ResourceOperationFence>,
+            fence: Option<&ingress::ResourceOperationFence>,
         ) -> Result<
             Option<awaken_resource_contract::ResolvedFileContent>,
             awaken_resource_contract::FileContentSourceError,
         > {
-            let Some(awaken_dispatch_contract::ResourceOperationFence::Run(claim)) = fence
-            else {
+            let Some(ingress::ResourceOperationFence::Run(claim)) = fence else {
                 return Ok(None);
             };
             if workspace_id != "workspace-remote"
@@ -2317,7 +2309,7 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         )
         .unwrap(),
     );
-    let claim = awaken_dispatch_contract::RunClaim {
+    let claim = ingress::RunClaim {
         run_id: RunId("run-remote".into()),
         owner: "worker-remote".into(),
         epoch: 7,
@@ -2431,7 +2423,7 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
         thread,
         &run_id,
         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-        awaken_dispatch::WorkerRecoveryMode::RequireSandboxContinuity,
+        ingress::WorkerRecoveryMode::RequireSandboxContinuity,
     )
     .await
     .expect("continuity mode adopts the durable handle");
@@ -2464,7 +2456,7 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
         missing_thread,
         &run_id,
         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-        awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth,
+        ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
     )
     .await
     .expect("rebuild mode may replace a missing sandbox from committed truth");
@@ -2479,7 +2471,7 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
             missing_thread,
             &run_id,
             &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-            awaken_dispatch::WorkerRecoveryMode::RequireSandboxContinuity,
+            ingress::WorkerRecoveryMode::RequireSandboxContinuity,
         )
         .await
         .is_err(),
@@ -2558,7 +2550,7 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
         thread,
         &RunId("run-backend-owned-adoption".into()),
         &provisioning,
-        awaken_dispatch::WorkerRecoveryMode::RequireSandboxContinuity,
+        ingress::WorkerRecoveryMode::RequireSandboxContinuity,
     )
     .await
     .expect("A2 adopt from the provisioning-selected provider");
@@ -2601,7 +2593,7 @@ async fn a_resident_environment_is_reused_without_a_second_adoption() {
         thread,
         &RunId("resident-run".into()),
         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-        awaken_dispatch::WorkerRecoveryMode::RequireSandboxContinuity,
+        ingress::WorkerRecoveryMode::RequireSandboxContinuity,
     )
     .await
     .expect("resident handle is already adopted");
@@ -2642,7 +2634,7 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
             thread,
             &run,
             &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-            awaken_dispatch::WorkerRecoveryMode::RequireSandboxContinuity,
+            ingress::WorkerRecoveryMode::RequireSandboxContinuity,
         )
         .await
         .is_err(),
@@ -2660,7 +2652,7 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
         thread,
         &run,
         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-        awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth,
+        ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
     )
     .await
     .expect("explicit rebuild may discard the dead resident environment");
@@ -2706,7 +2698,7 @@ async fn a_stale_binding_cannot_evict_a_different_resident_environment() {
             thread,
             &RunId("stale-binding-run".into()),
             &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-            awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth,
+            ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )
         .await
         .is_err(),
@@ -2742,7 +2734,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
         thread,
         &RunId("aba-fixture-run".into()),
         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-        awaken_dispatch::WorkerRecoveryMode::RequireSandboxContinuity,
+        ingress::WorkerRecoveryMode::RequireSandboxContinuity,
     )
     .await
     .expect("C1 publish first exact owner");
@@ -2823,9 +2815,9 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
         },
         Vec::new(),
     );
-    let claimed = awaken_dispatch::Claimed {
-        request: awaken_dispatch::RunDispatch::new(activation),
-        lease: awaken_dispatch::Lease {
+    let claimed = ingress::Claimed {
+        request: ingress::RunDispatch::new(activation),
+        lease: ingress::Lease {
             run_id: run,
             owner: "control-owner".to_string(),
             expires_ms: 100,
@@ -2860,7 +2852,7 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
 
 #[tokio::test]
 async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session_use() {
-    use awaken_dispatch::DispatchQueue;
+    use ingress::DispatchQueue;
     // Cause/effect table: ordinary Run + Coordinator-issued Session Work receipt
     // -> canonical frozen realization before runtime. No receipt -> O5's existing
     // ordinary path. Wrong Session/owner receipt -> reject before environment effects.
@@ -2902,7 +2894,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
         );
         dispatch
             .enqueue(with_empty_session_resources(
-                awaken_dispatch::RunDispatch::new(activation),
+                ingress::RunDispatch::new(activation),
                 "workspace",
             ))
             .await
@@ -2942,7 +2934,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
         assert!(host.session_environment(&thread).await.is_some());
         assert_eq!(
             claimed.request.admission_shape(),
-            awaken_dispatch_contract::DispatchAdmissionShape::OrdinaryRoot
+            ingress::DispatchAdmissionShape::OrdinaryRoot
         );
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &managed,

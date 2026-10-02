@@ -119,7 +119,7 @@ impl SharedHost {
 
     /// Read the exact claim-selected logical Run through its parent Session's
     /// physical commit partition. Registered-Worker recovery already holds the
-    /// guarded [`RunDispatch`](awaken_dispatch::RunDispatch), so it must not
+    /// guarded [`RunDispatch`](awaken_dispatch_contract::RunDispatch), so it must not
     /// reopen a logical child as a second physical Session.
     pub(crate) async fn session_thread_run_recovery_snapshot(
         &self,

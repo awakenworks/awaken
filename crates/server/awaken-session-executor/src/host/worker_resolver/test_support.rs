@@ -312,9 +312,9 @@ pub(super) fn remove_local_environment_root(host: &crate::host::SharedHost, thre
 }
 
 pub(crate) fn with_empty_session_resources(
-    request: awaken_dispatch::RunDispatch,
+    request: awaken_dispatch_contract::RunDispatch,
     workspace_id: &str,
-) -> awaken_dispatch::RunDispatch {
+) -> awaken_dispatch_contract::RunDispatch {
     let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
         workspace_id,
         awaken_session_resource_contract::ResolvedSessionResources::default(),
@@ -324,7 +324,7 @@ pub(crate) fn with_empty_session_resources(
             awaken_tenancy::ScopeId::from(workspace_id),
         ))
         .with_session_resources(
-            awaken_dispatch::SessionResourceEnvelope::from_manifest(&manifest)
+            awaken_dispatch_contract::SessionResourceEnvelope::from_manifest(&manifest)
                 .expect("serialize exact empty Resource manifest"),
         )
 }
@@ -515,12 +515,12 @@ pub(crate) async fn claim(
     owner: &str,
     now: u64,
     clock: &awaken_lease_testkit::ManualClock,
-) -> awaken_dispatch::Claimed {
-    use awaken_dispatch::DispatchQueue;
+) -> awaken_dispatch_contract::Claimed {
+    use awaken_dispatch_contract::DispatchQueue;
     store
-        .enqueue(awaken_dispatch::RunDispatch::new(test_activation(
-            thread, run,
-        )))
+        .enqueue(awaken_dispatch_contract::RunDispatch::new(
+            test_activation(thread, run),
+        ))
         .await
         .expect("enqueue deferred run");
     clock.set(now);

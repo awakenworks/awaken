@@ -874,7 +874,7 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
     // materialize an Environment. Rule T1=C1+C2=>E1+E2+E3. If activation wins,
     // guarded rejection stutters and the existing Pending cancellation Worker
     // owns settlement; the sibling parent/child tests cover that branch.
-    use awaken_dispatch::DispatchQueue as _;
+    use awaken_dispatch_contract::DispatchQueue as _;
 
     let host = SharedHost::new(Arc::new(OkModel), "stub");
     let dispatch = host.dispatch_store().expect("T1 dispatch authority");
@@ -899,7 +899,7 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
         },
         replacement: awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
     };
-    let request = awaken_dispatch::RunDispatch::new(activation)
+    let request = awaken_dispatch_contract::RunDispatch::new(activation)
         .for_session(session.clone())
         .with_session_command_fingerprint(
             awaken_session_execution_contract::SessionRunCommandFingerprint::current(&command),
@@ -909,7 +909,7 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
             .reserve_session_run(request, 30_000)
             .await
             .expect("T1/C1 reserve"),
-        awaken_dispatch::SessionRunReservationOutcome::Reserved,
+        awaken_dispatch_contract::SessionRunReservationOutcome::Reserved,
         "T1/C1"
     );
 
@@ -986,7 +986,7 @@ fn terminal_quiescence_and_thread_archive_share_the_exact_unsettled_states() {
     // states prohibit quiescence, while DeadLetter and Superseded do not.
     // Rules S1=Reserved/ReservationLeased/Pending/Leased/Awaiting=>true;
     // S2=DeadLetter/Superseded=>false. Both callers use the same predicate.
-    use awaken_dispatch::DispatchState as S;
+    use awaken_dispatch_contract::DispatchState as S;
     for (state, expected) in [
         (S::Reserved, true),
         (S::ReservationLeased, true),
@@ -1172,7 +1172,7 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
     let child_run = RunId("cold-terminal-child-run".into());
     dispatch
         .enqueue(
-            awaken_dispatch::RunDispatch::new(
+            awaken_dispatch_contract::RunDispatch::new(
                 crate::host::worker_resolver::test_support::test_activation(&child.0, &child_run.0),
             )
             .for_session(parent.clone()),

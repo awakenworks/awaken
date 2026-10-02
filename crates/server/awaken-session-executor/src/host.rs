@@ -30,13 +30,11 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunRecoverySource};
 use awaken_dispatch_erasure::AnyDispatchStore;
+use awaken_dispatch_execution::{CompletionSink, DEFAULT_LEASE_MS, DispatchPool, WorkerResolver};
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 #[cfg(any(test, feature = "test-support"))]
 use awaken_resource_contract::{FileCatalog, FileStore};
-use awaken_dispatch::{
-    CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue, Inbox, PendingInput,
-    RunDispatch, SubmitOptions, WorkerResolver,
-};
+use awaken_dispatch_contract::{DispatchQueue, Inbox, PendingInput, RunDispatch, SubmitOptions};
 use awaken_runtime::{DirectAttemptDriver, Runtime};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::RunDelegations;
@@ -69,14 +67,14 @@ pub(crate) static BASE_SEQ: AtomicU64 = AtomicU64::new(0);
 /// One committed-state predicate shared by Session terminal cleanup and child
 /// Thread archive. Neither observer may mistake an occupied execution row for
 /// quiescence; their different time budgets and completion owners stay separate.
-const fn dispatch_remains_unsettled(state: awaken_dispatch::DispatchState) -> bool {
+const fn dispatch_remains_unsettled(state: awaken_dispatch_contract::DispatchState) -> bool {
     matches!(
         state,
-        awaken_dispatch::DispatchState::Reserved
-            | awaken_dispatch::DispatchState::ReservationLeased
-            | awaken_dispatch::DispatchState::Pending
-            | awaken_dispatch::DispatchState::Leased
-            | awaken_dispatch::DispatchState::Awaiting
+        awaken_dispatch_contract::DispatchState::Reserved
+            | awaken_dispatch_contract::DispatchState::ReservationLeased
+            | awaken_dispatch_contract::DispatchState::Pending
+            | awaken_dispatch_contract::DispatchState::Leased
+            | awaken_dispatch_contract::DispatchState::Awaiting
     )
 }
 

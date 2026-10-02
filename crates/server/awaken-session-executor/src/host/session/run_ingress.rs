@@ -52,7 +52,7 @@ impl SharedHost {
     /// therefore configured once regardless of delivery durability.
     pub(super) async fn build_ingress(
         &self,
-        claimed_model_gate: Option<awaken_dispatch::ClaimedModelRequestGateFactory>,
+        claimed_model_gate: Option<awaken_dispatch_execution::ClaimedModelRequestGateFactory>,
         runtime: Arc<Runtime>,
         attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
         commit: Arc<HostCommit>,
@@ -61,7 +61,7 @@ impl SharedHost {
     ) -> Result<
         (
             ForegroundRunDelivery,
-            Arc<awaken_dispatch::DispatchWorker<AnyDispatchStore>>,
+            Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>,
         ),
         HostError,
     > {
@@ -85,7 +85,7 @@ impl SharedHost {
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
-        let mut worker = awaken_dispatch::DispatchWorker::new(
+        let mut worker = awaken_dispatch_execution::DispatchWorker::new(
             runtime.clone(),
             store,
             commit,
@@ -145,12 +145,12 @@ impl SharedHost {
     /// default (a single-model deployment is unaffected).
     pub(crate) fn worker_inference_materializer(
         &self,
-    ) -> Option<awaken_dispatch::InferenceMaterializerFn> {
+    ) -> Option<awaken_dispatch_execution::InferenceMaterializerFn> {
         self.agent
             .inference_routing
             .materializer()
             .map(|materializer| {
-                let resolve: awaken_dispatch::InferenceMaterializerFn =
+                let resolve: awaken_dispatch_execution::InferenceMaterializerFn =
                     Arc::new(move |activation, context| {
                         materializer.materialize(activation, context)
                     });

@@ -2,8 +2,8 @@
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_dispatch::LiveRunControlError;
-use awaken_dispatch::Outbox as _;
+use awaken_dispatch_execution::LiveRunControlError;
+use awaken_dispatch_contract::Outbox as _;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::control::{LiveCommand, LiveRunControl};
 use awaken_runtime_contract::resume::ResumeResult;
@@ -42,7 +42,7 @@ impl SharedHost {
         run_id: &RunId,
         live_runtime: Option<&Runtime>,
     ) -> Result<bool, HostError> {
-        use awaken_dispatch::DispatchQueue as _;
+        use awaken_dispatch_contract::DispatchQueue as _;
 
         let accepted = self
             .dispatch_store()?
@@ -73,7 +73,7 @@ impl SharedHost {
         run_id: &RunId,
         live_runtime: Option<&Runtime>,
     ) -> Result<bool, HostError> {
-        use awaken_dispatch::DispatchQueue as _;
+        use awaken_dispatch_contract::DispatchQueue as _;
 
         self.dispatch_store()?
             .requeue(run_id)
@@ -126,7 +126,7 @@ impl SharedHost {
             .ok_or_else(|| {
                 map_live_control_error(LiveRunControlError::NoSubscriber(run_id.to_owned()))
             })?;
-        awaken_dispatch::LiveRunControlService::new(worker, self.clock())
+        awaken_dispatch_execution::LiveRunControlService::new(worker, self.clock())
             .wake(run_id)
             .await
             .map_err(map_live_control_error)
@@ -165,7 +165,7 @@ impl SharedHost {
             .is_durable()
             .then(|| ctx.claimed_worker.clone())
             .ok_or_else(|| HostError::bad_request("pause requires durable delivery"))?;
-        awaken_dispatch::LiveRunControlService::new(worker, self.clock())
+        awaken_dispatch_execution::LiveRunControlService::new(worker, self.clock())
             .pause(&run_id)
             .await
             .map_err(map_live_control_error)?;
@@ -190,7 +190,7 @@ impl SharedHost {
             .ok_or_else(|| {
                 HostError::bad_request("no awaiting run on this thread to deliver to")
             })?;
-        let input = awaken_dispatch::PendingInput {
+        let input = awaken_dispatch_contract::PendingInput {
             message_id: awaken_runtime::fresh_process_id("xthread"),
             run_id: run_id.clone(),
             thread_id,
@@ -234,7 +234,7 @@ impl SharedHost {
             ));
         }
         self.dispatch_store()?
-            .stage(awaken_dispatch::PendingInput {
+            .stage(awaken_dispatch_contract::PendingInput {
                 message_id: awaken_runtime::fresh_process_id("manual-resume"),
                 run_id: run_id.clone(),
                 thread_id,

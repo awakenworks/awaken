@@ -188,7 +188,8 @@ mod tests {
     use tokio::sync::Notify;
 
     use crate::worker::DispatchWorker;
-    use crate::{DispatchQueue, MemoryDispatchStore, RunDispatch};
+    use crate::{DispatchQueue, RunDispatch};
+    use awaken_dispatch::MemoryDispatchStore;
 
     fn make_service() -> LiveRunControlService<MemoryDispatchStore> {
         let runtime = Arc::new(Runtime::new());

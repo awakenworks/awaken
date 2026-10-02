@@ -24,7 +24,7 @@ pub(crate) struct WorkerTransports {
     /// upstream ([`with_worker_claimed_commit`](SharedHost::with_worker_claimed_commit)).
     /// The Host holds only the neutral port; the wire client is composed by the
     /// Worker binary.
-    pub(crate) claimed_commit: Option<Arc<dyn awaken_dispatch::ClaimedRunCommit>>,
+    pub(crate) claimed_commit: Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>,
     /// Optional Resource-transport encoder installed by a remote Worker. The
     /// runtime knows only the neutral Resources contract, never an HTTP wire type.
     pub(crate) memory_reference_encoder: Option<Arc<dyn RuntimeMemoryReferenceEncoder>>,
@@ -34,7 +34,8 @@ pub(crate) struct WorkerTransports {
         Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
     /// Database-less Workers replace the process-local relay with the one
     /// authenticated, claim-fenced Coordinator publisher.
-    pub(crate) worker_stream_publisher: Option<Arc<dyn awaken_dispatch::ClaimedStreamPublisher>>,
+    pub(crate) worker_stream_publisher:
+        Option<Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>>,
 }
 
 impl SharedHost {
@@ -113,7 +114,7 @@ impl SharedHost {
     #[must_use]
     pub fn with_worker_claimed_commit(
         mut self,
-        claimed_commit: Arc<dyn awaken_dispatch::ClaimedRunCommit>,
+        claimed_commit: Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>,
     ) -> Self {
         self.worker.claimed_commit = Some(claimed_commit);
         self
@@ -140,7 +141,7 @@ impl SharedHost {
     #[must_use]
     pub fn with_worker_stream_publisher(
         mut self,
-        publisher: Arc<dyn awaken_dispatch::ClaimedStreamPublisher>,
+        publisher: Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>,
     ) -> Self {
         self.worker.worker_stream_publisher = Some(publisher);
         self

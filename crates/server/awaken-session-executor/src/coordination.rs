@@ -4,7 +4,7 @@
 //! Both adapters route through the Session application's existing authority. A
 //! co-located Host holds only its weak application edge; a database-less Worker
 //! uses the current dispatch claim and the existing authenticated
-//! [`awaken_dispatch::ClaimedSessionControl`] transport.
+//! [`awaken_dispatch_contract::ClaimedSessionControl`] transport.
 
 use std::sync::{Arc, Weak};
 
@@ -12,8 +12,10 @@ use awaken_ext_builtin_tools::{
     AgentCoordinator, AgentListRequest, AgentMessageReceipt, AgentMessageRequest,
     AgentMessageTarget, AgentRosterEntry,
 };
-use awaken_dispatch::{DispatchSettlementError, DispatchSettlementObserver, RunDispatch};
 use awaken_dispatch_contract::{ClaimedSessionCoordinationControl, RunClaim};
+use awaken_dispatch_contract::{
+    DispatchSettlementError, DispatchSettlementObserver, RunDispatch,
+};
 use awaken_runtime_contract::llm::{
     ModelRequestAdmission, ModelRequestAdmissionRequest, ModelRequestGate,
 };
@@ -58,19 +60,19 @@ impl crate::SharedHost {
 
     pub(crate) fn dispatch_settlement_observer(
         &self,
-    ) -> Option<Arc<dyn awaken_dispatch::DispatchSettlementObserver>> {
+    ) -> Option<Arc<dyn awaken_dispatch_contract::DispatchSettlementObserver>> {
         self.coordination_endpoint().map(|endpoint| {
             Arc::new(HostDispatchSettlementObserver::new(endpoint))
-                as Arc<dyn awaken_dispatch::DispatchSettlementObserver>
+                as Arc<dyn awaken_dispatch_contract::DispatchSettlementObserver>
         })
     }
 
     pub(crate) fn session_run_admission_observer(
         &self,
-    ) -> Option<Arc<dyn awaken_dispatch::SessionRunAdmissionObserver>> {
+    ) -> Option<Arc<dyn awaken_dispatch_contract::SessionRunAdmissionObserver>> {
         self.coordination_endpoint().map(|endpoint| {
             Arc::new(HostDispatchSettlementObserver::new(endpoint))
-                as Arc<dyn awaken_dispatch::SessionRunAdmissionObserver>
+                as Arc<dyn awaken_dispatch_contract::SessionRunAdmissionObserver>
         })
     }
 }
@@ -296,7 +298,7 @@ impl HostModelRequestGate {
 pub(crate) fn claimed_model_request_gate_factory(
     endpoint: CoordinationEndpoint,
     session_id: impl Into<String>,
-) -> awaken_dispatch::ClaimedModelRequestGateFactory {
+) -> awaken_dispatch_execution::ClaimedModelRequestGateFactory {
     let session_id = session_id.into();
     Arc::new(move |claim| {
         let gate: Arc<dyn ModelRequestGate> = Arc::new(HostModelRequestGate::claimed(
@@ -475,7 +477,7 @@ impl HostDispatchSettlementObserver {
 }
 
 #[async_trait::async_trait]
-impl awaken_dispatch::SessionRunAdmissionObserver for HostDispatchSettlementObserver {
+impl awaken_dispatch_contract::SessionRunAdmissionObserver for HostDispatchSettlementObserver {
     async fn admit_session_run_activity(
         &self,
         dispatch: &RunDispatch,

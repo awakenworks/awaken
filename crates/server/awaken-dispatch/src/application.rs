@@ -4,15 +4,18 @@
 // @formal evidence session_execution.one_physical_attempt_per_thread
 //! Protocol-neutral application ports used by Coordinator HTTP adapters.
 
+pub use awaken_run_ingress_application_contract::{
+    ApplicationError, ApplicationErrorKind, ClaimedOperationCoordinatorResolver,
+    DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
+};
 use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
 use awaken_agent_contract::thread::commit::operation::{CommitReceipt, commit_payload_hash};
 
-use crate::commit_fence::validate_commit_dispatch_binding;
-use crate::{ClaimedCommitRequest, RunDispatch};
+use crate::ClaimedCommitRequest;
+use awaken_dispatch_execution::validate_commit_dispatch_binding;
 
 /// Trusted Coordinator composition resolves an exact running execution domain
 /// before physical admission. Worker request JSON is never an implementation.
@@ -258,6 +261,36 @@ pub trait WorkerExecutionStopSource: Send + Sync {
         _recovery: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
     ) -> Result<AttemptStopStatus, ApplicationError> {
         Ok(AttemptStopStatus::Unknown)
+    }
+}
+
+/// Coordinator composition exposes the one existing closed-idle release to
+/// the Host's maintenance cadence without exporting private stop commands.
+pub struct WorkerEvidenceReleaseAdapter {
+    source: Arc<dyn WorkerExecutionStopSource>,
+}
+
+impl WorkerEvidenceReleaseAdapter {
+    #[must_use]
+    pub fn new(source: Arc<dyn WorkerExecutionStopSource>) -> Self {
+        Self { source }
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_dispatch_execution::WorkerEvidenceRelease for WorkerEvidenceReleaseAdapter {
+    fn owns_worker_evidence(&self, identity: &crate::WorkerIdentity) -> bool {
+        self.source.owns_worker_evidence(identity)
+    }
+
+    async fn release_closed_idle_worker_evidence(
+        &self,
+        dispatch: &dyn ControlDispatchQueue,
+        directory: &dyn crate::WorkerDirectory,
+        identity: &crate::WorkerIdentity,
+    ) -> Result<(), ApplicationError> {
+        release_closed_idle_worker_evidence(dispatch, directory, self.source.as_ref(), identity)
+            .await
     }
 }
 
@@ -551,135 +584,13 @@ async fn persisted_worker_exit(
     Ok(Some(exit))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApplicationErrorKind {
-    InvalidRequest,
-    Conflict,
-    Internal,
-    Unavailable,
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("{message}")]
-pub struct ApplicationError {
-    pub kind: ApplicationErrorKind,
-    pub message: String,
-}
-
-impl ApplicationError {
-    #[must_use]
-    pub fn invalid(message: impl Into<String>) -> Self {
-        Self {
-            kind: ApplicationErrorKind::InvalidRequest,
-            message: message.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn bad_request(message: impl Into<String>) -> Self {
-        Self::invalid(message)
-    }
-
-    #[must_use]
-    pub fn conflict(message: impl Into<String>) -> Self {
-        Self {
-            kind: ApplicationErrorKind::Conflict,
-            message: message.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn internal(message: impl Into<String>) -> Self {
-        Self {
-            kind: ApplicationErrorKind::Internal,
-            message: message.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn unavailable(message: impl Into<String>) -> Self {
-        Self {
-            kind: ApplicationErrorKind::Unavailable,
-            message: message.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DurableSupersedeResult {
-    pub state: String,
-    pub superseded: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DurableDispatchStatus {
-    pub run_id: String,
-    pub status: String,
-    pub attempts: u64,
-    pub sandbox_bound: bool,
-}
-
-/// Coordinator application dependency for the private durable operations API.
-#[async_trait::async_trait]
-pub trait DurableRunOperations: Send + Sync {
-    async fn submit_background(
-        &self,
-        agent: Option<&str>,
-        thread: &str,
-        messages: Vec<Message>,
-    ) -> Result<String, ApplicationError>;
-    async fn cancel(&self, thread: &str, run_id: &str) -> Result<(), ApplicationError>;
-    async fn pause(&self, thread: &str, run_id: Option<&str>) -> Result<String, ApplicationError>;
-    async fn resume(&self, thread: &str, text: String) -> Result<String, ApplicationError>;
-    async fn wake(&self, thread: &str, run_id: &str) -> Result<(), ApplicationError>;
-    async fn deliver(&self, thread: &str, allow: bool) -> Result<String, ApplicationError>;
-    async fn supersede(
-        &self,
-        agent: Option<&str>,
-        thread: &str,
-        messages: Vec<Message>,
-    ) -> Result<DurableSupersedeResult, ApplicationError>;
-    async fn messages(&self, thread: &str) -> Result<Vec<Message>, ApplicationError>;
-    async fn superseded(&self, thread: &str) -> Result<Vec<String>, ApplicationError>;
-    async fn dispatches(
-        &self,
-        thread: &str,
-    ) -> Result<Vec<DurableDispatchStatus>, ApplicationError>;
-    async fn reconcile(&self, thread: &str) -> Result<Vec<String>, ApplicationError>;
-    async fn quarantine_retry_exhausted(
-        &self,
-        thread: &str,
-        max_attempts: u64,
-        now_ms: u64,
-    ) -> Result<usize, ApplicationError>;
-    async fn dead_letters(&self, thread: &str) -> Result<Vec<String>, ApplicationError>;
-    async fn requeue_dead_letter(
-        &self,
-        thread: &str,
-        run_id: &str,
-    ) -> Result<bool, ApplicationError>;
-    async fn purge_dead_letters(&self, thread: &str) -> Result<usize, ApplicationError>;
-}
-
-#[async_trait::async_trait]
-pub trait ClaimedOperationCoordinatorResolver: Send + Sync {
-    /// Resolve the physical Coordinator selected by the claim-guarded
-    /// dispatch. `dispatch` is trusted queue truth, never Worker input. The
-    /// resolver may select an authority but cannot replace the one canonical
-    /// `OperationCoordinator::commit_operation` write boundary below.
-    async fn resolve(
-        &self,
-        trusted_dispatch: &RunDispatch,
-    ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError>;
-}
-
 struct FixedOperationCoordinatorResolver(Arc<dyn OperationCoordinator>);
 
 #[async_trait::async_trait]
 impl ClaimedOperationCoordinatorResolver for FixedOperationCoordinatorResolver {
     async fn resolve(
         &self,
-        _dispatch: &RunDispatch,
+        _session_thread_id: &awaken_agent_contract::agent::thread::Id,
     ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError> {
         Ok(self.0.clone())
     }
@@ -742,7 +653,12 @@ impl ClaimedCommitService {
                 "commit operation payload hash does not match ThreadCommit",
             ));
         }
-        let coordinator = self.coordinator.resolve(trusted_dispatch).await?;
+        // The guarded queue row, never the Worker request, selects the Session
+        // partition. A stale claim returned above before this resolution.
+        let coordinator = self
+            .coordinator
+            .resolve(trusted_dispatch.session_thread_id())
+            .await?;
         let committed = coordinator
             .commit_operation(request.operation)
             .await

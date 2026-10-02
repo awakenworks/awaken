@@ -314,7 +314,7 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
 #[tokio::test]
 async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identity() {
     use crate::host::worker_resolver::test_support::{BlockingBindingSink, claim};
-    use awaken_dispatch::DispatchQueue;
+    use awaken_dispatch_contract::DispatchQueue;
     use awaken_session_execution_contract::{SessionEnvironmentBindingSink, SessionRuntime};
     // Boundary decision table B: C1 source root receipt A; C2 owning sink
     // commits Adopt B; C3 SQLite dispatch claim current/stale; C4 retry count.

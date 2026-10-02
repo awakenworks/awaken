@@ -1,5 +1,5 @@
 use super::*;
-use awaken_dispatch::RunDispatch;
+use awaken_dispatch_contract::RunDispatch;
 use awaken_runtime_contract::execution::{
     Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
 };
@@ -76,7 +76,7 @@ struct InterruptedManagedRun {
 
 impl InterruptedManagedRun {
     /// The exact dispatch row, read from the durable authority.
-    async fn row(&self) -> Option<awaken_dispatch::DispatchSummary> {
+    async fn row(&self) -> Option<awaken_dispatch_contract::DispatchSummary> {
         self.dispatch
             .list_dispatches()
             .await
@@ -88,7 +88,7 @@ impl InterruptedManagedRun {
     /// Settle on one fact of the exact durable row (absent = settled).
     async fn settle_row(
         &self,
-        fact: impl Fn(Option<&awaken_dispatch::DispatchSummary>) -> bool,
+        fact: impl Fn(Option<&awaken_dispatch_contract::DispatchSummary>) -> bool,
         label: &str,
     ) {
         let settled = tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -225,7 +225,7 @@ async fn interrupt_with_admission_suspended(
     let active = interrupted.row().await.expect("C1 one exact dispatch");
     assert_eq!(
         active.state,
-        awaken_dispatch::DispatchState::Leased,
+        awaken_dispatch_contract::DispatchState::Leased,
         "C1 cancellation must land after the attempt is executing"
     );
     assert!(

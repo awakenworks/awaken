@@ -13,7 +13,9 @@ use super::*;
 /// Session projection authority is independent from the Run's admission shape.
 /// Outcome Runs retain OrdinaryRoot identity, but the Coordinator's subordinate
 /// Work receipt still requires the same frozen Session realization before effects.
-pub(super) fn has_session_projection_authority(claimed: &awaken_dispatch::Claimed) -> bool {
+pub(super) fn has_session_projection_authority(
+    claimed: &awaken_dispatch_contract::Claimed,
+) -> bool {
     claimed.request.session_thread_id.is_some() || claimed.session_work_authority.is_some()
 }
 
@@ -45,11 +47,13 @@ fn claimed_realization_continuation(
 fn map_claimed_session_control_error(
     run_id: &str,
     error: awaken_dispatch_contract::ClaimedSessionControlError,
-) -> awaken_dispatch::Error {
+) -> awaken_dispatch_execution::Error {
     match session_realization_worker_effect(error.disposition()) {
-        SessionRealizationWorkerEffect::Defer => awaken_dispatch::Error::ResolutionNotReady(
-            format!("run {run_id} is waiting for its Session Environment Work slot"),
-        ),
+        SessionRealizationWorkerEffect::Defer => {
+            awaken_dispatch_execution::Error::ResolutionNotReady(format!(
+                "run {run_id} is waiting for its Session Environment Work slot"
+            ))
+        }
         SessionRealizationWorkerEffect::Relinquish => HostWorkerResolver::execution_error(format!(
             "run {run_id} frozen Session resume failed: {error}"
         )),
@@ -80,10 +84,10 @@ fn control_projection_matches_dispatched_manifest(
 /// realize committed truth but cannot contribute another desired-state input.
 pub(super) async fn install_claimed_session_projection(
     host: &SharedHost,
-    claimed: &awaken_dispatch::Claimed,
+    claimed: &awaken_dispatch_contract::Claimed,
     thread_id: &awaken_agent_contract::agent::thread::Id,
     dispatched_resources: Option<&awaken_session_resource_contract::SessionResourceManifest>,
-) -> Result<(), awaken_dispatch::Error> {
+) -> Result<(), awaken_dispatch_execution::Error> {
     let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
     let (_realization, continuation) = host
         .session_slots
@@ -118,10 +122,12 @@ pub(super) async fn install_claimed_session_projection(
             })
             .unwrap_or(false);
         if !projection_ready {
-            return Err(awaken_dispatch::Error::ResolutionNotReady(format!(
-                "run {} is waiting for its co-located frozen Session projection",
-                claimed.lease.run_id.0
-            )));
+            return Err(awaken_dispatch_execution::Error::ResolutionNotReady(
+                format!(
+                    "run {} is waiting for its co-located frozen Session projection",
+                    claimed.lease.run_id.0
+                ),
+            ));
         }
         if let Some(manifest) = dispatched_resources {
             host.install_dispatched_resources(&thread_id.0, manifest, Some(&claim))
@@ -135,10 +141,10 @@ pub(super) async fn install_claimed_session_projection(
     // admitted Work/Run owner may advance its realization lease. Serializing
     // before the first Control mutation prevents a later entrant from fencing a
     // slow earlier effect between directive creation and installation.
-    let dispatch: Arc<dyn awaken_dispatch::DispatchQueue> = host
+    let dispatch: Arc<dyn awaken_dispatch_contract::DispatchQueue> = host
         .dispatch_store()
         .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
-    let ownership = awaken_dispatch::claim_bound_ownership_verifier(
+    let ownership = awaken_dispatch_execution::claim_bound_ownership_verifier(
         dispatch,
         awaken_dispatch_contract::RunClaim::from(&claimed.lease),
     );
@@ -466,9 +472,9 @@ mod tests {
         for (rule, failure, expected) in cases {
             let actual = map_claimed_session_control_error("run-a", failure.into());
             let actual = match actual {
-                awaken_dispatch::Error::ResolutionNotReady(_) => "resolution_not_ready",
-                awaken_dispatch::Error::Execution(_) => "execution",
-                awaken_dispatch::Error::TerminalResolution(_) => "terminal_resolution",
+                awaken_dispatch_execution::Error::ResolutionNotReady(_) => "resolution_not_ready",
+                awaken_dispatch_execution::Error::Execution(_) => "execution",
+                awaken_dispatch_execution::Error::TerminalResolution(_) => "terminal_resolution",
                 error => panic!("{rule}: unexpected {error:?}"),
             };
             assert_eq!(actual, expected, "{rule}");

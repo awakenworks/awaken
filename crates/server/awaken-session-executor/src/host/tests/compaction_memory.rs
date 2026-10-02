@@ -496,7 +496,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
         let claimed = dispatch
             .claim(
                 host.dispatch_owner(),
-                awaken_dispatch::DEFAULT_LEASE_MS,
+                awaken_dispatch_execution::DEFAULT_LEASE_MS,
                 &Default::default(),
             )
             .await

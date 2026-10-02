@@ -1506,8 +1506,13 @@ fn mount_with_managed_over_and_models(
     // loop before exposing the Worker transport; local-pool embeddings already
     // perform the same maintenance inside that pool.
     if let Some(source) = worker_execution_stops.as_ref() {
-        host.bind_worker_evidence_reconciliation(worker_directory.clone(), source.clone())
-            .map_err(|error| WorkerTransportBuildError::Dispatch(error.to_string()))?;
+        host.bind_worker_evidence_reconciliation(
+            worker_directory.clone(),
+            Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
+                source.clone(),
+            )),
+        )
+        .map_err(|error| WorkerTransportBuildError::Dispatch(error.to_string()))?;
     }
     host.ensure_terminal_dispatch_reconciliation();
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
@@ -1612,10 +1617,14 @@ fn mount_with_managed_over_and_models(
             ),
         ));
     let commit = Arc::new(awaken_dispatch_http::ClaimedCommitHttpService::new(
-        Arc::new(awaken_session_executor::claimed_commit_service(
-            dispatch as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
-            host.clone(),
-        )),
+        Arc::new(
+            awaken_dispatch::ClaimedCommitService::with_coordinator_resolver(
+                dispatch as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
+                Arc::new(awaken_session_executor::HostOperationCoordinatorResolver::new(
+                    host.clone(),
+                )),
+            ),
+        ),
         worker_directory.clone(),
         worker_authenticator,
         worker_clock.clone(),

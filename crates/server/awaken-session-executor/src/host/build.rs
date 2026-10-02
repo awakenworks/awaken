@@ -315,13 +315,13 @@ impl SharedHost {
             authority_role,
             deployment,
             authority: {
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(test)]
                 {
                     Some(Arc::new(crate::EphemeralRuntimeAuthority::new(
                         clock.clone(),
                     )))
                 }
-                #[cfg(not(any(test, feature = "test-support")))]
+                #[cfg(not(test))]
                 {
                     None
                 }
@@ -415,7 +415,7 @@ impl SharedHost {
     /// state back into the same host. The sink is notification-only: committed
     /// Run truth remains authoritative and the bounded timeout retains its
     /// existing one-read recovery fallback.
-    pub fn dispatch_completion_sink(&self) -> Arc<dyn awaken_dispatch::CompletionSink> {
+    pub fn dispatch_completion_sink(&self) -> Arc<dyn awaken_dispatch_execution::CompletionSink> {
         self.completion.clone()
     }
 
