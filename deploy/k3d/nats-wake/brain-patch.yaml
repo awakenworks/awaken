@@ -1,20 +1,19 @@
-# Three brain replicas use NATS instead of pg_notify for wake hints.
+# The Scenario Host owns its frozen Session/Resource projection in this Pod.
+# NATS and PostgreSQL stay separate Pods; the distributed Control E2E owns
+# cross-replica Session execution instead of borrowing this local projection.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: brain
 spec:
-  replicas: 3
+  replicas: 1
   template:
     spec:
-      topologySpreadConstraints:
-        - maxSkew: 1
-          topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
-          labelSelector:
-            matchLabels: { app: brain }
       containers:
         - name: brain
           env:
             - { name: SESSION_DEPLOYMENT_WAKE, value: nats }
             - { name: SESSION_DEPLOYMENT_NATS_URL, value: "nats://nats:4222" }
+            # Twelve concurrent Runs also renew leases and read projections;
+            # the durable-brain base's eight PG connections cannot serve them.
+            - { name: SESSION_DEPLOYMENT_POSTGRES_MAX_CONNECTIONS, value: "24" }
