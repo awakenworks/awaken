@@ -176,7 +176,13 @@ def main() -> None:
 
             profile_root = Path(directory) / "profile-root"
             profile_config_directory = profile_root / "configs"
-            profile_config_directory.mkdir(parents=True)
+            # P1 this profile selects a bearer credential; P2 the host umask
+            # may admit group writes. Effect: both directory and exact config
+            # stay owner-only, so SDK credential loading proves the intended
+            # profile route rather than failing its file-integrity preflight.
+            # Decision rule P1+P2 => private fixture before client creation.
+            profile_root.mkdir(mode=0o700)
+            profile_config_directory.mkdir(mode=0o700)
             profile_credentials_path = profile_root / "credentials.json"
             profile_credentials_path.write_text(json.dumps({
                 "version": "1.0",
@@ -184,7 +190,8 @@ def main() -> None:
                 "access_token": ADMIN_TOKEN,
             }), encoding="utf-8")
             profile_credentials_path.chmod(0o600)
-            (profile_config_directory / "fixture.json").write_text(json.dumps({
+            profile_config_path = profile_config_directory / "fixture.json"
+            profile_config_path.write_text(json.dumps({
                 "version": "1.0",
                 "authentication": {
                     "type": "user_oauth",
@@ -193,6 +200,7 @@ def main() -> None:
                 "base_url": BASE_URL,
                 "workspace_id": WORKSPACE_ID,
             }), encoding="utf-8")
+            profile_config_path.chmod(0o600)
             previous_config_directory = os.environ.get("ANTHROPIC_CONFIG_DIR")
             os.environ["ANTHROPIC_CONFIG_DIR"] = str(profile_root)
             try:

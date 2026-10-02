@@ -18,7 +18,7 @@ test('candidate delta ownership fails closed outside exercised change points', (
   // Cause/effect graph: C1 no operation is added/removed; C2 only existing
   // operations already exercised by a candidate owner change; C3 only scoped
   // declarations and runtime modules with an executable owner change in place,
-  // except the one reviewed Node facade addition; C4 any other delta. Effects:
+  // including exact pagination and upload filename paths; C4 any other delta. Effects:
   // E1 reuse the exact candidate runtime proof; E2 require a new explicit owner.
   // Decision rule D1 C1+C2+C3->E1; D2 C4->E2. This prevents a green smoke of
   // unchanged calls from certifying a newly added or unrelated SDK capability.
@@ -37,6 +37,7 @@ test('candidate delta ownership fails closed outside exercised change points', (
         { path: 'beta/skills/versions.d.ts' },
         { path: 'beta/webhooks.d.ts' },
         { path: 'managed/lib/sessions/accumulate.d.ts' },
+        { path: 'managed/core/pagination.d.ts' },
         { path: 'managed/lib/environments/worker.d.ts' },
         { path: 'managed/tools/agent-toolset/node.d.ts' },
         { path: 'managed/tools/agent-toolset/skills.d.ts' },
@@ -51,6 +52,7 @@ test('candidate delta ownership fails closed outside exercised change points', (
         { path: 'core/credentials.mjs' },
         { path: 'core/middleware.mjs' },
         { path: 'internal/file-store.mjs' },
+        { path: 'internal/to-file.mjs' },
         { path: 'internal/uploads.mjs' },
         { path: 'lib/credentials/identity-token.mjs' },
         { path: 'lib/middleware.mjs' },
@@ -88,9 +90,11 @@ test('candidate delta ownership fails closed outside exercised change points', (
     { ...owned, operations: { ...empty(), changed: [{ id: 'beta.sessions.create' }] } },
     { ...owned, declarations: { ...empty(), added: [{ path: 'beta/files/new.d.ts' }] } },
     { ...owned, declarations: { ...empty(), changed: [{ path: 'organization/admin.d.ts' }] } },
+    { ...owned, declarations: { ...empty(), changed: [{ path: 'managed/core/unknown.d.ts' }] } },
     { ...owned, runtime: { ...empty(), added: [{ path: 'lib/new-helper.mjs' }] } },
     { ...owned, runtime: { ...empty(), changed: [{ path: 'lib/tools/UnreviewedToolRunner.mjs' }] } },
     { ...owned, runtime: { ...empty(), changed: [{ path: 'internal/utils/sleep.mjs' }] } },
+    { ...owned, runtime: { ...empty(), changed: [{ path: 'internal/to-unknown.mjs' }] } },
     { ...owned, runtime: { ...empty(), changed: [{ path: 'lib/environments/index.mjs' }] } },
     { ...owned, declarations: { ...empty(), changed: [{ path: 'managed/lib/environments/index.d.ts' }] } },
     { ...owned, exports: { ...empty(), added: [{ id: 'tools/agent-toolset/node.mjs#newTool' }] } },

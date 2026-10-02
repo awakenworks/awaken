@@ -95,9 +95,9 @@
       "operation_fingerprint": "701ee5399eb5cdc42aaa4606904862d73bed85a39de5e1fa5f1e9feb28050f8c",
       "role": "current_oracle",
       "runtime_file_count": 113,
-      "runtime_fingerprint": "26b6034e1e4e2a0ec1254cdbc51ae80cd6d1257de0e713fae65d74a26a371e09",
-      "type_fingerprint": "9e05d784139fca08e1a781809cb32f05f42af9d945ce30e6aa803db78961a0c4",
-      "version": "0.128.0"
+      "runtime_fingerprint": "ae61ca46fe3119770ee14779362866487172e3771fd24b172b6318b921ff4320",
+      "type_fingerprint": "8c170979c112a6c011419594936bd3aa1b09f9dc44554d0be74a12dc16c02620",
+      "version": "0.131.0"
     }
   ],
   "current": {
@@ -338,6 +338,11 @@
       "BetaManagedAgentsRedactedBlock",
       "BetaManagedAgentsRefreshHTTPResponse",
       "BetaManagedAgentsRefreshObject",
+      "BetaManagedAgentsRepositoryAuthenticationError",
+      "BetaManagedAgentsRepositoryCheckoutError",
+      "BetaManagedAgentsRepositoryCloneError",
+      "BetaManagedAgentsRepositoryForbiddenError",
+      "BetaManagedAgentsRepositoryNotFoundError",
       "BetaManagedAgentsRetryStatusExhausted",
       "BetaManagedAgentsRetryStatusRetrying",
       "BetaManagedAgentsRetryStatusTerminal",
@@ -362,9 +367,12 @@
       "BetaManagedAgentsSessionEndTurn",
       "BetaManagedAgentsSessionErrorEvent",
       "BetaManagedAgentsSessionEvent",
+      "BetaManagedAgentsSessionEventType",
       "BetaManagedAgentsSessionEventsPageCursor",
       "BetaManagedAgentsSessionMultiagentCoordinator",
       "BetaManagedAgentsSessionRateLimitedRunError",
+      "BetaManagedAgentsSessionRefusal",
+      "BetaManagedAgentsSessionRefusalStopDetails",
       "BetaManagedAgentsSessionRequiresAction",
       "BetaManagedAgentsSessionResource",
       "BetaManagedAgentsSessionResourceConfig",
@@ -1989,9 +1997,9 @@
     ],
     "role": "current_oracle",
     "runtime_file_count": 113,
-    "runtime_fingerprint": "26b6034e1e4e2a0ec1254cdbc51ae80cd6d1257de0e713fae65d74a26a371e09",
-    "type_fingerprint": "9e05d784139fca08e1a781809cb32f05f42af9d945ce30e6aa803db78961a0c4",
-    "version": "0.128.0",
+    "runtime_fingerprint": "ae61ca46fe3119770ee14779362866487172e3771fd24b172b6318b921ff4320",
+    "type_fingerprint": "8c170979c112a6c011419594936bd3aa1b09f9dc44554d0be74a12dc16c02620",
+    "version": "0.131.0",
     "wire_contract": {
       "events": {
         "inbound": [
@@ -2478,6 +2486,161 @@
                     "type"
                   ]
                 },
+                "repository_authentication_error": {
+                  "nested": {
+                    "retry_status": {
+                      "exhausted": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "retrying": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "terminal": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "message",
+                    "repository_url",
+                    "retry_status",
+                    "type"
+                  ]
+                },
+                "repository_checkout_error": {
+                  "nested": {
+                    "retry_status": {
+                      "exhausted": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "retrying": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "terminal": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "message",
+                    "repository_url",
+                    "retry_status",
+                    "type"
+                  ]
+                },
+                "repository_clone_error": {
+                  "nested": {
+                    "retry_status": {
+                      "exhausted": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "retrying": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "terminal": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "message",
+                    "repository_url",
+                    "retry_status",
+                    "type"
+                  ]
+                },
+                "repository_forbidden_error": {
+                  "nested": {
+                    "retry_status": {
+                      "exhausted": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "retrying": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "terminal": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "message",
+                    "repository_url",
+                    "retry_status",
+                    "type"
+                  ]
+                },
+                "repository_not_found_error": {
+                  "nested": {
+                    "retry_status": {
+                      "exhausted": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "retrying": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "terminal": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "message",
+                    "repository_url",
+                    "retry_status",
+                    "type"
+                  ]
+                },
                 "unknown_error": {
                   "nested": {
                     "retry_status": {
@@ -2520,6 +2683,16 @@
           },
           "session.status_idle": {
             "nested": {
+              "stop_details": {
+                "refusal": {
+                  "optional": [],
+                  "required": [
+                    "category",
+                    "explanation",
+                    "type"
+                  ]
+                }
+              },
               "stop_reason": {
                 "budget_reached": {
                   "optional": [],
@@ -2528,6 +2701,12 @@
                   ]
                 },
                 "end_turn": {
+                  "optional": [],
+                  "required": [
+                    "type"
+                  ]
+                },
+                "refusal": {
                   "optional": [],
                   "required": [
                     "type"
@@ -2548,10 +2727,14 @@
                 }
               }
             },
+            "nullable": [
+              "stop_details"
+            ],
             "optional": [],
             "required": [
               "id",
               "processed_at",
+              "stop_details",
               "stop_reason",
               "type"
             ]
@@ -2592,6 +2775,16 @@
           },
           "session.thread_status_idle": {
             "nested": {
+              "stop_details": {
+                "refusal": {
+                  "optional": [],
+                  "required": [
+                    "category",
+                    "explanation",
+                    "type"
+                  ]
+                }
+              },
               "stop_reason": {
                 "budget_reached": {
                   "optional": [],
@@ -2600,6 +2793,12 @@
                   ]
                 },
                 "end_turn": {
+                  "optional": [],
+                  "required": [
+                    "type"
+                  ]
+                },
+                "refusal": {
                   "optional": [],
                   "required": [
                     "type"
@@ -2620,12 +2819,16 @@
                 }
               }
             },
+            "nullable": [
+              "stop_details"
+            ],
             "optional": [],
             "required": [
               "agent_name",
               "id",
               "processed_at",
               "session_thread_id",
+              "stop_details",
               "stop_reason",
               "type"
             ]
@@ -2675,6 +2878,9 @@
                       }
                     }
                   },
+                  "nullable": [
+                    "multiagent"
+                  ],
                   "optional": [],
                   "required": [
                     "description",
@@ -2701,6 +2907,10 @@
                 }
               }
             },
+            "nullable": [
+              "agent",
+              "budget"
+            ],
             "optional": [
               "agent",
               "budget",
@@ -2725,6 +2935,9 @@
                 }
               }
             },
+            "nullable": [
+              "budget"
+            ],
             "optional": [
               "budget"
             ],

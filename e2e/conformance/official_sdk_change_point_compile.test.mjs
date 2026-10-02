@@ -72,7 +72,18 @@ test('candidate compile fixtures are projection-complete and contain no escape h
     assert.match(v128, changePoint, 'T3 shared permission stays strongly typed');
     assert.doesNotMatch(ga, changePoint, 'T4 earlier declaration has no candidate-only import');
   }
-  for (const fixture of [beta, ga, v128]) {
+  // T5 refusal, repository error and required Memory Store fields exist in the
+  // reviewed declaration -> compile their exact types; T6 earlier declaration
+  // -> omit candidate-only imports. Runtime canary performs the real compile.
+  const v131 = officialSdkChangePointFixture({
+    filesProjection: 'ga', skillsProjection: 'ga', parseUnverified: true,
+    resolveSkillVersion: false, managedTypesV131: true,
+  });
+  for (const changePoint of [/BetaManagedAgentsSessionRefusalStopDetails/u, /repository_clone_error/u, /Required<Store, 'description'>/u]) {
+    assert.match(v131, changePoint, 'T5 candidate declaration boundary');
+    assert.doesNotMatch(ga, changePoint, 'T6 current anchor omits later types');
+  }
+  for (const fixture of [beta, ga, v128, v131]) {
     assert.match(fixture, /betaAgentToolset20260401/u, 'Managed helper subpath compiles');
     assert.match(fixture, /accumulateManagedAgentsEvent/u, 'Session accumulator subpath compiles');
     assert.doesNotMatch(fixture, /\bany\b|\sas\s|@ts-/u, 'E4');

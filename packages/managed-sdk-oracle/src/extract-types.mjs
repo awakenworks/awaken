@@ -114,6 +114,7 @@ function declarationContext(root, relative) {
     moduleResolution: ts.ModuleResolutionKind.NodeNext,
     noEmit: true,
     skipLibCheck: true,
+    strictNullChecks: true,
     target: ts.ScriptTarget.Latest,
   });
   const source = program.getSourceFile(filename);
@@ -182,6 +183,7 @@ function objectShape(context, type, depth) {
   const required = [];
   const optional = [];
   const nested = {};
+  const nullable = [];
   for (const property of context.checker.getPropertiesOfType(type)) {
     const name = property.getName();
     (property.flags & ts.SymbolFlags.Optional ? optional : required).push(name);
@@ -189,14 +191,21 @@ function objectShape(context, type, depth) {
     const declaration = property.valueDeclaration ?? property.declarations?.[0];
     if (!declaration) continue;
     const propertyType = context.checker.getTypeOfSymbolAtLocation(property, declaration);
-    const members = (propertyType.isUnion() ? propertyType.types : [propertyType]).filter(
+    const declaredMembers = propertyType.isUnion() ? propertyType.types : [propertyType];
+    const members = declaredMembers.filter(
       (member) => !(member.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)),
     );
     const variants = discriminatedShapes(context, members, depth - 1);
-    if (variants) nested[name] = variants;
+    if (variants) {
+      nested[name] = variants;
+      if (declaredMembers.some((member) => member.flags & ts.TypeFlags.Null)) {
+        nullable.push(name);
+      }
+    }
   }
   const shape = { required: required.sort(), optional: optional.sort() };
   if (Object.keys(nested).length > 0) shape.nested = nested;
+  if (nullable.length > 0) shape.nullable = nullable.sort();
   return shape;
 }
 

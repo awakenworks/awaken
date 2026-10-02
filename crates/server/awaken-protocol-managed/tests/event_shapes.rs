@@ -16,14 +16,26 @@
 //! key in R is emitted (or is a named gap); E3 a nested discriminated object
 //! obeys E1/E2 for its own variant. Decision rules: S1=C1+C2=>E1+E2;
 //! S2=C1+C3=>E3; S3=T unknown to the SDK=>fail. One rule per event below.
+//!
+//! Shape conformance alone only ever asks whether what this adapter emits is
+//! declared; it cannot notice a variant the SDK declares that nothing here
+//! emits, because an unemitted variant has no sample to walk. The second graph
+//! closes that direction: C7 the SDK declares variant V of the union a field
+//! names; C8 some sample emits V; C9 the table below names V unreachable with
+//! its reason. Effects: E7 a declared variant neither emitted nor named fails;
+//! E8 a named variant some sample does emit fails as stale; E9 a named variant
+//! the SDK no longer declares fails as rotted. Rules: S4=C7+!C8+!C9=>E7;
+//! S5=C8+C9=>E8; S6=C9+!C7=>E9.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::audit::permission::PermissionReasonCode;
 use awaken_protocol_managed::types::{
-    AutoEvaluatedPermission, ConfirmResult, EvaluatedPermission, Event, OutboundKind,
-    OutcomeRubric, RetryStatus, SessionError, SpanModelUsage, StopReason, ToolEvaluation, Usage,
+    AutoEvaluatedPermission, BudgetLimit, ConfirmResult, Currency, EvaluatedPermission, Event,
+    ModelConfig, MonetaryAmount, OutboundKind, OutcomeRubric, RetryStatus, SessionAgent,
+    SessionError, SessionMultiagentCoordinator, SessionMultiagentRosterEntry, SessionThreadAgent,
+    SpanModelUsage, StopReason, ToolEvaluation, Usage,
 };
 use serde_json::{Value, json};
 
@@ -33,6 +45,51 @@ use serde_json::{Value, json};
 /// it is what keeps this list honest rather than decorative.
 fn known_gaps() -> BTreeMap<&'static str, BTreeMap<&'static str, &'static str>> {
     BTreeMap::new()
+}
+
+/// Nested variants the SDK declares that this adapter cannot emit, each with the
+/// reason it is unreachable rather than forgotten. Keyed by `field[variant]`,
+/// not by the path the variant was found under: one closed Rust enum serves each
+/// wire union wherever it appears, so coverage is a property of the union.
+fn unreachable_variants() -> BTreeMap<&'static str, &'static str> {
+    let repository = "`SessionError` carries no `repository_url`, which this \
+         variant requires, and a repository fault fails sandbox provisioning \
+         before a Run can commit a `session.error`; reaching it is a projection \
+         that does not exist yet, not a missing match arm.";
+    BTreeMap::from([
+        (
+            "stop_details[refusal]",
+            "`StopDetails` is uninhabited because no Runtime transition claims a \
+             refusal, so `Some` cannot be constructed and the key is provably null.",
+        ),
+        (
+            "stop_reason[refusal]",
+            "The companion of the refusal detail: projecting it needs the same \
+             refusal transition the Runtime does not have.",
+        ),
+        (
+            "error[billing_error]",
+            "`SessionError::classify` maps no neutral fault code here; billing \
+             exhaustion arrives as `usage_limit` and is projected as the \
+             model-owned `model_request_failed_error`. Visible debt: a client \
+             keying recovery on the billing class does not see it.",
+        ),
+        (
+            "error[credential_host_unreachable_error]",
+            "`SessionError` carries neither `credential_id` nor `vault_id`, which \
+             this variant requires, and no fault code reaches it.",
+        ),
+        (
+            "error[model_overloaded_error]",
+            "`SessionError::classify` maps no neutral fault code here; an \
+             overloaded model arrives as the retryable `rate_limited`.",
+        ),
+        ("error[repository_authentication_error]", repository),
+        ("error[repository_checkout_error]", repository),
+        ("error[repository_clone_error]", repository),
+        ("error[repository_forbidden_error]", repository),
+        ("error[repository_not_found_error]", repository),
+    ])
 }
 
 fn oracle_shapes() -> Value {
@@ -85,6 +142,18 @@ fn assert_shape(object: &Value, shape: &Value, at: &str, gaps: &BTreeMap<&str, &
             let Some(value) = object.get(field) else {
                 continue;
             };
+            if value.is_null() {
+                // C6 a required nested discriminator may also declare `null`;
+                // E6 accept null only when the generated SDK shape says so.
+                // S2+C6=>E6, while an undeclared null still fails closed.
+                assert!(
+                    shape["nullable"]
+                        .as_array()
+                        .is_some_and(|fields| fields.iter().any(|name| name == field)),
+                    "{at}.{field}: null is not declared by the SDK"
+                );
+                continue;
+            }
             let discriminator = value["type"]
                 .as_str()
                 .unwrap_or_else(|| panic!("{at}.{field}: a discriminated object carries `type`"));
@@ -97,6 +166,66 @@ fn assert_shape(object: &Value, shape: &Value, at: &str, gaps: &BTreeMap<&str, &
                 &format!("{at}.{field}[{discriminator}]"),
                 &BTreeMap::new(),
             );
+        }
+    }
+}
+
+/// The discriminator each nested field actually carries, keyed by the field name
+/// the union is reached through. A `null` field carries no `type` and so records
+/// nothing, which is what makes a nullable union's only variant unemitted.
+fn collect_emitted(object: &Value, shape: &Value, out: &mut BTreeMap<String, BTreeSet<String>>) {
+    let Some(nested) = shape.get("nested").and_then(Value::as_object) else {
+        return;
+    };
+    for (field, variants) in nested {
+        let Some(value) = object.get(field) else {
+            continue;
+        };
+        let Some(discriminator) = value.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        out.entry(field.clone())
+            .or_default()
+            .insert(discriminator.to_string());
+        if let Some(variant) = variants.get(discriminator) {
+            collect_emitted(value, variant, out);
+        }
+    }
+}
+
+/// Every variant the SDK declares for each nested field. Recursion stops under a
+/// variant already named unreachable, so one decision costs one reason instead of
+/// a cascade of unreachable children. Two events declaring different variants for
+/// one field name would make the keying claim coverage it does not have, so that
+/// fails here rather than merging two unions into one claim.
+fn collect_declared(
+    shape: &Value,
+    named: &BTreeMap<&str, &str>,
+    at: &str,
+    out: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    let Some(nested) = shape.get("nested").and_then(Value::as_object) else {
+        return;
+    };
+    for (field, variants) in nested {
+        let Some(variants) = variants.as_object() else {
+            continue;
+        };
+        let declared: BTreeSet<String> = variants.keys().cloned().collect();
+        match out.get(field) {
+            Some(first) => assert_eq!(
+                *first, declared,
+                "{at}.{field}: one field name, two different declared unions"
+            ),
+            None => {
+                out.insert(field.clone(), declared);
+            }
+        }
+        for (name, variant) in variants {
+            if named.contains_key(format!("{field}[{name}]").as_str()) {
+                continue;
+            }
+            collect_declared(variant, named, &format!("{at}.{field}[{name}]"), out);
         }
     }
 }
@@ -199,8 +328,11 @@ fn samples() -> Vec<Event> {
             },
         }),
         event(OutboundKind::SessionStatusRunning {}),
+        // C4 a non-refusal Session idle has no detail; E4 the current SDK still
+        // requires the key with null. S1+C4 => stop_reason plus explicit null.
         event(OutboundKind::SessionStatusIdle {
             stop_reason: StopReason::EndTurn,
+            stop_details: None,
         }),
         event(OutboundKind::SessionUsage {
             usage: Usage::default(),
@@ -221,6 +353,9 @@ fn samples() -> Vec<Event> {
             session_thread_id: "sthr_1".into(),
             agent_name: "child".into(),
             stop_reason: StopReason::EndTurn,
+            // C5 a non-refusal Thread idle has no detail; S1+C5 => the same
+            // required null without a second thread-specific serializer.
+            stop_details: None,
         }),
         event(OutboundKind::SessionThreadStatusRescheduled {
             session_thread_id: "sthr_1".into(),
@@ -274,6 +409,123 @@ fn samples() -> Vec<Event> {
                 cache_creation_input_tokens: 0,
                 speed: None,
             },
+        }),
+    ]
+}
+
+/// Extra events whose only job is to reach a nested variant `samples()` does not.
+/// `samples()` stays exactly one event per `OutboundKind`, which is what
+/// `every_variant_is_sampled` counts, so variant coverage needs a second set;
+/// both go through the same field-by-field shape check. The errors are built
+/// through `SessionError::classify`, so a sample exercises the mapping production
+/// uses instead of restating its result.
+fn variant_samples() -> Vec<Event> {
+    let coordinator = SessionAgent {
+        id: "agt_coordinator".into(),
+        kind: "agent",
+        version: 4,
+        model: ModelConfig::new("model-1"),
+        name: "Coordinator".into(),
+        description: Some("delegates".into()),
+        system: Some("delegate carefully".into()),
+        tools: Vec::new(),
+        mcp_servers: Vec::new(),
+        skills: Vec::new(),
+        multiagent: Some(SessionMultiagentCoordinator {
+            kind: "coordinator",
+            agents: vec![SessionMultiagentRosterEntry::Agent(SessionThreadAgent {
+                id: "agt_researcher".into(),
+                kind: "agent",
+                version: 2,
+                model: ModelConfig::new("model-2"),
+                name: "Researcher".into(),
+                description: None,
+                system: None,
+                tools: Vec::new(),
+                mcp_servers: Vec::new(),
+                skills: Vec::new(),
+            })],
+        }),
+    };
+    let tool_use = |evaluated_permission, evaluation| {
+        event(OutboundKind::AgentToolUse {
+            name: "bash".into(),
+            input: json!({"command": "ls"}),
+            evaluated_permission: Some(evaluated_permission),
+            evaluation: Some(evaluation),
+            session_thread_id: None,
+        })
+    };
+    vec![
+        // stop_reason: the three further reasons a committed Run does project.
+        event(OutboundKind::SessionStatusIdle {
+            stop_reason: StopReason::BudgetReached,
+            stop_details: None,
+        }),
+        event(OutboundKind::SessionStatusIdle {
+            stop_reason: StopReason::RequiresAction {
+                event_ids: vec!["sevt_tool".into()],
+            },
+            stop_details: None,
+        }),
+        event(OutboundKind::SessionStatusIdle {
+            stop_reason: StopReason::RetriesExhausted,
+            stop_details: None,
+        }),
+        // error and retry_status: every classification this adapter reaches. Both
+        // mcp variants require `mcp_server_name`, so the message has to be one the
+        // classifier can read a server name out of — which is exactly the pairing
+        // a hand-written literal would have been free to get wrong.
+        event(OutboundKind::SessionError {
+            error: SessionError::classify(
+                "mcp_connection_failed",
+                "mcp server `calc`: connection refused",
+            ),
+        }),
+        event(OutboundKind::SessionError {
+            error: SessionError::classify(
+                "mcp_authentication_failed",
+                "mcp server `calc`: HTTP 401",
+            ),
+        }),
+        event(OutboundKind::SessionError {
+            error: SessionError::classify("rate_limited", "429 from the model"),
+        }),
+        event(OutboundKind::SessionError {
+            error: SessionError::classify("context_overflow", "the prompt exceeds the window"),
+        }),
+        // evaluation: the two policies that decide without consulting `auto`.
+        tool_use(EvaluatedPermission::Allow, ToolEvaluation::AlwaysAllow),
+        tool_use(EvaluatedPermission::Ask, ToolEvaluation::AlwaysAsk),
+        // evaluated_permission: `auto` allowing, the one outcome no other sample
+        // reaches.
+        tool_use(
+            EvaluatedPermission::Allow,
+            ToolEvaluation::Auto {
+                evaluated_permission: AutoEvaluatedPermission::Allow,
+            },
+        ),
+        // rubric: an outcome graded against an uploaded file.
+        event(OutboundKind::UserDefineOutcome {
+            description: "done".into(),
+            rubric: OutcomeRubric::File {
+                file_id: "file_1".into(),
+            },
+            max_iterations: None,
+            outcome_id: "outc_2".into(),
+        }),
+        // agent, multiagent and budget: the Session snapshot an update carries
+        // when the Agent coordinates and the Session has a spend limit.
+        event(OutboundKind::SessionUpdated {
+            title: None,
+            metadata: BTreeMap::new(),
+            agent: Some(coordinator),
+            budget: Some(Some(BudgetLimit::Limit {
+                max_list_cost: MonetaryAmount {
+                    amount: "25".into(),
+                    currency: Currency::USD,
+                },
+            })),
         }),
     ]
 }
@@ -339,7 +591,7 @@ fn every_committed_event_matches_the_sdk_declared_shape() {
     let shapes = oracle_shapes();
     let gaps = known_gaps();
     let mut checked = BTreeSet::new();
-    for sample in samples() {
+    for sample in samples().into_iter().chain(variant_samples()) {
         let type_name = sample.type_str();
         let value = serde_json::to_value(&sample).expect("event serializes");
         let Some(shape) = shapes.get(type_name) else {
@@ -360,6 +612,58 @@ fn every_committed_event_matches_the_sdk_declared_shape() {
         assert!(
             checked.contains(type_name),
             "gap named for an unchecked event {type_name}"
+        );
+    }
+}
+
+/// S4/S5/S6: the direction shape conformance cannot see. A variant the SDK
+/// declares is either emitted by a sample or named unreachable with its reason —
+/// and the table may only shrink honestly, so an entry that became emitted, or
+/// that the SDK stopped declaring, fails too.
+#[test]
+fn every_nested_variant_the_sdk_declares_is_emitted_or_named_unreachable() {
+    let shapes = oracle_shapes();
+    let named = unreachable_variants();
+    let mut declared = BTreeMap::new();
+    for (type_name, shape) in shapes.as_object().expect("shapes is an object") {
+        collect_declared(shape, &named, type_name, &mut declared);
+    }
+    let mut emitted = BTreeMap::new();
+    for sample in samples().into_iter().chain(variant_samples()) {
+        let Some(shape) = shapes.get(sample.type_str()) else {
+            continue;
+        };
+        let value = serde_json::to_value(&sample).expect("event serializes");
+        collect_emitted(&value, shape, &mut emitted);
+    }
+    for (field, variants) in &declared {
+        for variant in variants {
+            let key = format!("{field}[{variant}]");
+            let emits = emitted
+                .get(field)
+                .is_some_and(|seen| seen.contains(variant));
+            let excused = named.contains_key(key.as_str());
+            assert!(
+                emits || excused,
+                "{key}: the SDK declares this variant, no sample emits it, and no \
+                 reason names it unreachable (S4)"
+            );
+            assert!(
+                !(emits && excused),
+                "{key}: named unreachable, yet a sample emits it; drop the entry (S5)"
+            );
+        }
+    }
+    for key in named.keys() {
+        let (field, variant) = key
+            .strip_suffix(']')
+            .and_then(|key| key.split_once('['))
+            .unwrap_or_else(|| panic!("{key}: an entry is spelled `field[variant]`"));
+        assert!(
+            declared
+                .get(field)
+                .is_some_and(|variants| variants.contains(variant)),
+            "{key}: the SDK no longer declares this variant; drop the entry (S6)"
         );
     }
 }

@@ -237,7 +237,7 @@ export function assertLatestRuntimeOwnsCandidateDelta(delta) {
   if (delta.declarations.added.length > 0 || delta.declarations.removed.length > 0) {
     throw new Error('candidate adds or removes scoped declaration files; review the SDK scope');
   }
-  const supportedDeclaration = /^(?:beta\/.+\.d\.ts|ga\/.+\.d\.ts|managed\/(?:lib\/(?:sessions\/accumulate|environments\/worker)|tools\/agent-toolset\/(?:fs-util|node(?:\.browser)?|skills))\.d\.ts)$/u;
+  const supportedDeclaration = /^(?:beta\/.+\.d\.ts|ga\/.+\.d\.ts|managed\/(?:core\/pagination|lib\/(?:sessions\/accumulate|environments\/worker)|tools\/agent-toolset\/(?:fs-util|node(?:\.browser)?|skills))\.d\.ts)$/u;
   const unsupportedDeclaration = delta.declarations.changed.find(
     ({ path }) => !supportedDeclaration.test(path),
   );
@@ -258,7 +258,7 @@ export function assertLatestRuntimeOwnsCandidateDelta(delta) {
   }
   const runtimeOwners = [
     /^client\.mjs$/u,
-    /^(?:core\/middleware|internal\/(?:errors|parse|uploads))\.mjs$/u,
+    /^(?:core\/middleware|internal\/(?:errors|parse|to-file|uploads))\.mjs$/u,
     /^core\/streaming\.mjs$/u,
     /^core\/credentials\.mjs$/u,
     /^internal\/(?:file-store|node)\.mjs$/u,

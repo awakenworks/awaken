@@ -338,6 +338,7 @@ fn action(target: &str) -> Event {
             stop_reason: StopReason::RequiresAction {
                 event_ids: vec![target.into()],
             },
+            stop_details: None,
         },
     }
 }
@@ -365,6 +366,7 @@ fn reference_page(
         .filter_map(|event| match &event.kind {
             OutboundKind::SessionStatusIdle {
                 stop_reason: StopReason::RequiresAction { event_ids },
+                ..
             }
             | OutboundKind::SessionThreadStatusIdle {
                 stop_reason: StopReason::RequiresAction { event_ids },
@@ -429,6 +431,7 @@ async fn indexed_pages_match_filtered_directional_visibility_and_cursor_rules() 
                 stop_reason: StopReason::RequiresAction {
                     event_ids: vec!["thread-tool".into()],
                 },
+                stop_details: None,
             },
         },
         Event {

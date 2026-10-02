@@ -256,6 +256,19 @@ await withScenarioServer(
       `${current.version} Beta Models retains the ${changePoint.version} DTO`,
     );
     assert.equal((await latestClient.beta.models.retrieve('fake-haiku')).id, 'fake-haiku');
+    // M1 catalog offering exists after the shared Provider Connection setup;
+    // M2 each official anchor, including a selected candidate, calls GA Models.
+    // E1 list/retrieve decode the same id; E2 GA omits the Beta-only fallback
+    // field. Rule M1+M2=>E1+E2; the echo-only canary cannot assert M1.
+    for (const { version, Client } of QUALIFIED_CLIENTS) {
+      const gaClient = new Client({ apiKey: 'e2e-dummy', baseURL });
+      const gaModels = await drain(gaClient.models.list());
+      assert.ok(gaModels.some((model) => model.id === 'fake-haiku'), `${version} GA Models list`);
+      assert.ok(gaModels.every((model) => !Object.hasOwn(model, 'allowed_fallback_models')),
+        `${version} GA Models shape`);
+      assert.equal((await gaClient.models.retrieve('fake-haiku')).id, 'fake-haiku',
+        `${version} GA Models retrieve`);
+    }
     pass(`Models list/retrieve decode identically in SDK ${QUALIFIED_VERSIONS}`);
   },
   {},

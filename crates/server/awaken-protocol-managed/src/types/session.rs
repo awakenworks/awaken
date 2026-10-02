@@ -737,6 +737,17 @@ pub enum StopReason {
     RetriesExhausted,
 }
 
+/// Structured refusal detail on an idle event
+/// (`BetaManagedAgentsSessionRefusalStopDetails`). The SDK requires the key and
+/// declares it nullable; no Runtime transition claims a refusal, so this union
+/// has no inhabitant and `None` is the only value that can exist. An
+/// uninhabited enum states that as a type rather than as a comment: `Some`
+/// cannot be constructed, so the key is provably always `null`. The day a
+/// refusal transition exists, adding the variant here is what makes the
+/// compiler name every projection that must then decide.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum StopDetails {}
+
 /// The payload of an outbound event (its `type` plus kind-specific fields).
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
@@ -855,7 +866,10 @@ pub enum OutboundKind {
     #[serde(rename = "session.status_running")]
     SessionStatusRunning {},
     #[serde(rename = "session.status_idle")]
-    SessionStatusIdle { stop_reason: StopReason },
+    SessionStatusIdle {
+        stop_reason: StopReason,
+        stop_details: Option<StopDetails>,
+    },
     /// Periodic point-in-time snapshot of cumulative Session usage and its
     /// optional hard budget, matching `BetaManagedAgentsSessionUsageEvent`.
     #[serde(rename = "session.usage")]
@@ -905,6 +919,7 @@ pub enum OutboundKind {
         session_thread_id: String,
         agent_name: String,
         stop_reason: StopReason,
+        stop_details: Option<StopDetails>,
     },
     /// A Session Thread hit a transient error and is retrying
     /// (`session.thread_status_rescheduled`) — same identity shape as the other

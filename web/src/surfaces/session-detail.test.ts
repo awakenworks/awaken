@@ -93,6 +93,7 @@ function renderSessionDetailWithPresentation(
     type: "session.status_idle",
     processed_at: "t0",
     stop_reason: { type: "end_turn" },
+    stop_details: null,
   }]);
   useSessionLogStub.mockReturnValue({
     applyPending: vi.fn(),
