@@ -792,7 +792,11 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-execution-replacement" \
     -config formal/tla/SessionExecutionReplacement.cfg formal/tla/SessionExecutionReplacement.tla
-  java -Djava.io.tmpdir="$tlc_state_root" -Xmx2048m -XX:+UseParallelGC -jar "$tla_jar" -workers 4 \
+  # The same complete four-generation baseline is first qualified by the
+  # mutation runner at this budget. A deadline exit is a failed formal gate,
+  # never evidence that the model was fully explored.
+  run_with_deadline 1800 java -Djava.io.tmpdir="$tlc_state_root" -Xmx4096m -XX:+UseParallelGC \
+    -jar "$tla_jar" -workers 8 \
     -metadir "$tlc_state_root/session-execution-replacement-chain" \
     -config formal/tla/SessionExecutionReplacementChain.cfg formal/tla/SessionExecutionReplacement.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \

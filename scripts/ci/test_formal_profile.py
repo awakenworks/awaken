@@ -273,6 +273,34 @@ class ProfileTests(unittest.TestCase):
             "R1 requires one exact fail-closed G42/G43 qualification boundary",
         )
 
+    def test_replacement_chain_gate_uses_the_qualified_tlc_budget(self):
+        # Chain-gate cause/effect table: C1 the four-generation configuration
+        # has exactly one official call; C2 that call uses the existing process
+        # deadline; C3 heap/workers match the green mutation baseline. E1 the
+        # full model may publish evidence only after completing within the
+        # reviewed 1800s/4096MiB/eight-worker budget; E2 a missing, duplicate,
+        # unbounded, or weaker call is rejected before a long formal run.
+        # R1=C1+C2+C3 -> E1; R2=otherwise -> E2. The deadline helper's real
+        # exit-124 and process-group cleanup are owned by test_deadline.py.
+        root = Path(__file__).resolve().parents[2]
+        gate = (root / "scripts/ci/check_formal.sh").read_text()
+        commands = [
+            shlex.split(line, comments=True)
+            for line in gate.replace("\\\n", " ").splitlines()
+            if "formal/tla/SessionExecutionReplacementChain.cfg" in line
+            and not line.lstrip().startswith("#")
+        ]
+        self.assertEqual(len(commands), 1, "R2: exactly one official Chain call")
+        self.assertIn("source scripts/ci/_deadline.sh", gate, "R2: reuse the shared deadline owner")
+        self.assertEqual(commands[0], [
+            "run_with_deadline", "1800", "java",
+            "-Djava.io.tmpdir=$tlc_state_root", "-Xmx4096m",
+            "-XX:+UseParallelGC", "-jar", "$tla_jar", "-workers", "8",
+            "-metadir", "$tlc_state_root/session-execution-replacement-chain",
+            "-config", "formal/tla/SessionExecutionReplacementChain.cfg",
+            "formal/tla/SessionExecutionReplacement.tla",
+        ], "R2: official Chain command must match the green mutation baseline")
+
     def test_absent_guardrail_profiles_preserve_legacy_qualification(self):
         # Cause/effect graph: C1 promotion field is absent or an empty list;
         # C2 promotion field has the wrong type. E1 legacy feature requirements
