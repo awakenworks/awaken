@@ -2,8 +2,9 @@
 // Test design: official_sdk_dream_restart_interleaving
 //
 // Cause/effect decision table:
-// | Rule | Durable state at process loss | SDK action after restart | Effect |
-// | R1 | running Dream + live provider request | cancel | canceled + cleanup |
+// | Rule | Cause / durable state | SDK action | Effect |
+// | R1 | running Dream + live provider request; physical attempt settles promptly | cancel | canceled only after cleanup receipt |
+// | R1b | running Dream + live provider request; physical attempt still occupied | cancel returns 503, then retry | pending cleanup is retained; canceled only after exact retirement and cleanup receipt |
 // | R2 | canceled Dream | process restart | canceled state is restored |
 // | R3 | restored canceled Dream | archive twice | archive is durable/idempotent |
 // | R4 | archived Dream | second restart | archived state is restored/listable |
@@ -26,11 +27,11 @@ const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddee
 
 const client = (baseURL: string) => new Anthropic({ apiKey: 'e2e-dummy', baseURL });
 
-async function eventually<T>(read: () => Promise<T>, accept: (value: T) => boolean, label: string) {
-  for (let attempt = 0; attempt < 400; attempt += 1) {
+async function eventually<T>(read: () => Promise<T>, accept: (value: T) => boolean, label: string, attempts = 400, intervalMs = 10) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     const value = await read();
     if (accept(value)) return value;
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
   throw new Error(`timed out waiting for ${label}`);
 }
@@ -93,7 +94,25 @@ async function main() {
       (received) => received > 0,
       'the delayed provider request to arrive',
     );
-    const canceled = await sdk.beta.dreams.cancel(created.id);
+    // R1/R1b: the in-flight provider may leave an occupied physical slot. A
+    // transient 503 is the durable cleanup fence, not a completed cancellation.
+    // awaken-wait: allow the 15-second upstream fixture and one-second cleanup
+    // retry loop to settle, then require the SDK's successful cleanup receipt.
+    const canceled = await eventually(
+      async () => {
+        try {
+          return await sdk.beta.dreams.cancel(created.id);
+        } catch (error) {
+          if (error instanceof Anthropic.APIError && error.status === 503) return null;
+          throw error;
+        }
+      },
+      (dream) => dream !== null,
+      'exact Dream cancellation cleanup receipt',
+      120,
+      250,
+    );
+    assert.ok(canceled);
     assert.equal(canceled.status, 'canceled');
     assert.equal(await apiStatus(() => sdk.beta.dreams.cancel(created.id)), 200);
     assert.equal((await sdk.beta.dreams.retrieve(created.id)).status, 'canceled');
