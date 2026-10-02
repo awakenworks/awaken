@@ -60,6 +60,7 @@ awaken-provisioning-contract = { workspace = true }
 awaken-tenancy = { workspace = true }
 awaken-run-ingress = { workspace = true, default-features = false }
 awaken-run-ingress-contract.workspace = true
+awaken-dispatch-erasure.workspace = true
 awaken-connection-plan.workspace = true
 awaken-acp-contract = { workspace = true }
 awaken-credential-contract.workspace = true

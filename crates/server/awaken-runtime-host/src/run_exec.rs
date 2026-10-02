@@ -701,7 +701,7 @@ mod tests {
                 >,
         >,
         claims: Arc<std::sync::Mutex<Vec<Option<awaken_run_ingress_contract::RunClaim>>>>,
-        dispatch: Arc<awaken_run_ingress::AnyDispatchStore>,
+        dispatch: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
     }
 
     impl RecordingArtifactPublisher {
@@ -1026,7 +1026,7 @@ mod tests {
         let thread = "thread-router";
         let storage = tempfile::tempdir().unwrap();
         let dispatch = Arc::new(
-            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(
+            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(
                 awaken_lease_contract::system_clock(),
             )
             .expect("artifact test dispatch"),

@@ -193,6 +193,7 @@ awaken-sandbox-container = { path = "crates/worker/awaken-sandbox-container" }
 awaken-execution-composition = { path = "crates/worker/awaken-execution-composition" }
 awaken-runtime-examples = { path = "crates/devtools/awaken-runtime-examples" }
 awaken-run-ingress-contract = { path = "crates/contract/awaken-run-ingress-contract" }
+awaken-dispatch-erasure = { path = "crates/shared/awaken-dispatch-erasure" }
 awaken-run-ingress = { path = "crates/server/awaken-run-ingress", default-features = false }
 awaken-run-ingress-testkit = { path = "crates/server/awaken-run-ingress-testkit" }
 awaken-worker-transport-security = { path = "crates/server/awaken-worker-transport-security" }

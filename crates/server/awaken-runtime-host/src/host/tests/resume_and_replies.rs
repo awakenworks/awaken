@@ -340,7 +340,7 @@ async fn durable_foreground_run_relays_live_progress_before_committed_completion
     // | R2 | yes | no | yes | E2 (existing durable tests) |
     // | R3 | yes | yes | remote | E2 fallback; no false replay guarantee |
     let dispatch = Arc::new(
-        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(system_clock())
+        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(system_clock())
             .expect("in-memory dispatch"),
     );
     let host =
@@ -384,7 +384,7 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
     // | R4 | Ended | exact | any | zero | reject before mutation |
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
             .expect("in-memory dispatch"),
     );
     let host = Arc::new(
@@ -526,7 +526,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     let child_run = RunId("coordinated-reply-run".into());
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
             .expect("coordinated reply dispatch"),
     );
     let (host, _managed) = dispatch_test_host(
@@ -1305,7 +1305,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
         let run_id = RunId("primary-reply-run".into());
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let dispatch = Arc::new(
-            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .expect("primary reply dispatch"),
         );
         let (host, _managed) = dispatch_test_host(
@@ -1563,7 +1563,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
 
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
             .expect("budget resume dispatch"),
     );
     let (host, _managed) = dispatch_test_host(
@@ -1975,7 +1975,7 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
     // R3 is owned by run-ingress worker settle tests; R4 by the resume-identity
     // test plus each Inbox backend's idempotency-conflict conformance suite.
     let dispatch = Arc::new(
-        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(system_clock())
+        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(system_clock())
             .expect("in-memory dispatch"),
     );
     let host = Arc::new(
@@ -2144,7 +2144,7 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
     // M2 C1+supersede=>E1+E2. Constraint: Session Run reservation and its
     // activity receipt remain the sole Managed-root ingress; no Host fallback.
     let dispatch = Arc::new(
-        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(system_clock())
+        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(system_clock())
             .expect("managed ingress fence dispatch"),
     );
     let host = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone());

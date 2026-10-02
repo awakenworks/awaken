@@ -509,7 +509,7 @@ impl awaken_session_runtime_contract::SessionEnvironmentBindingSink for Blocking
 }
 
 pub(crate) async fn claim(
-    store: &awaken_run_ingress::AnyDispatchStore,
+    store: &awaken_dispatch_erasure::AnyDispatchStore,
     thread: &str,
     run: &str,
     owner: &str,

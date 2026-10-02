@@ -1002,6 +1002,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-dispatch-erasure"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-lease-contract",
+ "awaken-run-ingress",
+ "awaken-run-ingress-contract",
+ "awaken-runtime-contract",
+ "awaken-store-inmem",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-dream-application"
 version = "1.0.0"
 dependencies = [
@@ -2158,6 +2172,7 @@ dependencies = [
  "async-nats",
  "async-trait",
  "awaken-agent-contract",
+ "awaken-dispatch-erasure",
  "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-observability",
@@ -2373,6 +2388,7 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-credential-vault",
+ "awaken-dispatch-erasure",
  "awaken-environment-contract",
  "awaken-ext-background-task",
  "awaken-ext-builtin-tools",
