@@ -48,7 +48,7 @@ async function mcpNotify(url, method, state) {
   if (!response.ok) throw new Error(`MCP ${method} returned ${response.status}: ${await response.text()}`);
 }
 
-async function callAwakenTools() {
+async function readAwakenOutput() {
   const server = sessionRequest?.params?.mcpServers?.find((entry) => entry.name === 'awaken_session');
   const url = server?.url ?? server?.httpUrl;
   if (!url) throw new Error(`Awaken Session MCP route absent: ${JSON.stringify(sessionRequest?.params?.mcpServers)}`);
@@ -59,9 +59,6 @@ async function callAwakenTools() {
     clientInfo: { name: 'awaken-acp-tool-bridge-fixture', version: '1' },
   }, state);
   await mcpNotify(url, 'notifications/initialized', state);
-  const aliasTarget = sessionRequest.params._meta.claudeCode.options.toolAliases.Write;
-  assert.equal(aliasTarget, 'mcp__awaken_session__write');
-  await mcpRequest(url, 'tools/call', { name: aliasTarget.slice('mcp__awaken_session__'.length), arguments: WRITE_ARGUMENTS }, state);
   const read = await mcpRequest(url, 'tools/call', {
     name: 'read',
     arguments: { path: WRITE_ARGUMENTS.path },
@@ -70,6 +67,14 @@ async function callAwakenTools() {
   if (!rendered.includes(WRITE_ARGUMENTS.content)) {
     throw new Error(`read-back did not contain marker: ${rendered}`);
   }
+}
+
+function finishPrompt(id, text) {
+  send({ jsonrpc: '2.0', method: 'session/update', params: {
+    sessionId: 'awaken-tool-bridge-session',
+    update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+  } });
+  send({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } });
 }
 
 function emitToolCall() {
@@ -126,32 +131,32 @@ input.on('line', async (line) => {
     return;
   }
   if (request.method === 'session/prompt') {
+    const prompt = request.params?.prompt?.map((block) => block.text ?? '').join('\n') ?? '';
+    if (prompt.includes('Authoritative Awaken tool continuation results')) {
+      // The RuntimeToolBatch already settled the reserved Awaken write. The
+      // cancelled ACP callback is not a second execution authority.
+      assert.ok(prompt.includes(`"call_id":"${TOOL_CALL_ID}"`));
+      const allowed = prompt.includes('"is_error":false');
+      const denied = prompt.includes('"is_error":true');
+      assert.notEqual(allowed, denied, 'the committed owned-tool receipt has one outcome');
+      if (allowed) {
+        try {
+          await readAwakenOutput();
+          finishPrompt(request.id, 'ACP-BRIDGE-ALLOWED-READBACK-OK');
+        } catch (error) {
+          process.stderr.write(`${error.stack ?? error}\n`);
+          process.exitCode = 1;
+        }
+      } else {
+        finishPrompt(request.id, 'ACP-BRIDGE-DENIED-NO-EFFECT');
+      }
+      return;
+    }
     emitToolCall();
     return;
   }
   if (request.id !== 42) return;
   const outcome = request.result?.outcome;
-  if (outcome?.outcome === 'selected' && outcome.optionId === 'ok') {
-    try {
-      await callAwakenTools();
-      send({ jsonrpc: '2.0', method: 'session/update', params: {
-        sessionId: 'awaken-tool-bridge-session',
-        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ACP-BRIDGE-ALLOWED-READBACK-OK' } },
-      } });
-      send({ jsonrpc: '2.0', id: 3, result: { stopReason: 'end_turn' } });
-    } catch (error) {
-      process.stderr.write(`${error.stack ?? error}\n`);
-      process.exitCode = 1;
-    }
-    return;
-  }
-  if (outcome?.outcome === 'selected' && outcome.optionId === 'no') {
-    send({ jsonrpc: '2.0', method: 'session/update', params: {
-      sessionId: 'awaken-tool-bridge-session',
-      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ACP-BRIDGE-DENIED-NO-EFFECT' } },
-    } });
-    send({ jsonrpc: '2.0', id: 3, result: { stopReason: 'end_turn' } });
-    return;
-  }
+  assert.notEqual(outcome?.outcome, 'selected', 'reserved write is executed only by RuntimeToolBatch');
   process.exit(0);
 });
