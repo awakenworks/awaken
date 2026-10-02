@@ -113,8 +113,9 @@ pub async fn init_scenario_runtime(
         && deployment.store == awaken_session_executor::StoreKind::Sqlite
         && deployment.dispatch_backend == awaken_session_executor::DispatchBackend::Sqlite
     {
-        let dispatch = awaken_dispatch::AnyDispatchStore::from_durable_dispatch(
-            std::sync::Arc::new(awaken_dispatch::MemoryDispatchStore::new(clock.clone())),
+        let dispatch = awaken_dispatch::AnyDispatchStore::from_durable_store(
+            awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
+            None,
         );
         return Ok(std::sync::Arc::new(
             awaken_session_executor::EphemeralRuntimeAuthority::with_dispatch(
@@ -320,7 +321,7 @@ mod tests {
         // mode -> one WorkerDirectory adapter -> persisted incarnation truth.
         // Decision table: R0 scenario runtime init + SQLite + no storage -> one
         // explicitly injected reference authority with its original atomic
-        // Session-continuation role; R1 production
+        // Session-continuation and operational-feed roles; R1 production
         // open + SQLite + no storage_dir -> startup error; R2 production open +
         // writable storage_dir -> durable registry; R3 reopen same directory ->
         // exact identity/generation survives. Postgres migrate/verify rules are
@@ -332,6 +333,15 @@ mod tests {
         assert!(
             reference.dispatch_store().session_continuation().is_some(),
             "R0 exact durable role survives erasure"
+        );
+        use awaken_dispatch::DispatchOperationalFeed as _;
+        assert!(
+            reference
+                .dispatch_store()
+                .events_after(awaken_dispatch::DispatchCursor(0), 1, None)
+                .await
+                .is_ok(),
+            "R0 exact operational feed survives erasure"
         );
         let missing_error = match open(&missing, awaken_lease_contract::system_clock()).await {
             Ok(_) => panic!("R1 must reject volatile authority"),

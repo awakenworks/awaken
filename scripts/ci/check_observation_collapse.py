@@ -29,7 +29,7 @@ The corpus is *derived*, not listed. A hand-listed recovery path is a guard
 narrower than its subject: the nine files named here when the rule was written
 had already become thirty-one, and every file that had started reading
 checkpoints in between -- `awaken-dispatch/src/durable.rs`,
-`awaken-dispatch/src/worker.rs`, `awaken-session-executor/src/host/session/run_ingress.rs`
+`awaken-dispatch-execution/src/worker.rs`, `awaken-session-executor/src/host/session/run_ingress.rs`
 among them -- was outside the scan while looking exactly like it was inside it.
 So the recovery path is now *every production Rust module that names
 `StreamCheckpoint` or `Observed`*: a file joins the rule by doing the thing the

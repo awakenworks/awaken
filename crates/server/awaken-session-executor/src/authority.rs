@@ -431,9 +431,10 @@ impl EphemeralRuntimeAuthority {
     #[cfg(test)]
     #[must_use]
     pub fn new(clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
-        let dispatch = awaken_dispatch_erasure::AnyDispatchStore::from_durable_dispatch(Arc::new(
+        let dispatch = awaken_dispatch_erasure::AnyDispatchStore::from_durable_store(
             awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
-        ));
+            None,
+        );
         Self::with_dispatch(clock, Arc::new(dispatch))
     }
 }

@@ -215,6 +215,23 @@ pub(crate) fn resource_host_with_deployment(
     model_ref: impl Into<String>,
     deployment: awaken_session_executor::DeploymentConfig,
 ) -> ScenarioPlatform {
+    resource_host_with_selected_runtime(
+        llm,
+        model_ref,
+        deployment,
+        SCENARIO_RUNTIME_AUTHORITY.get(),
+    )
+}
+
+/// One assembly path for the binary's installed authority and direct test
+/// factories. Passing the selected port makes both branches testable without
+/// mutating the process-wide OnceLock in parallel unit tests.
+fn resource_host_with_selected_runtime(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    deployment: awaken_session_executor::DeploymentConfig,
+    selected: Option<&Arc<dyn awaken_session_executor::RuntimeAuthority>>,
+) -> ScenarioPlatform {
     // The Scenario process's Resources clock.
     let clock = awaken_lease_contract::system_clock();
     let resources = match deployment.storage_dir.clone() {
@@ -253,11 +270,33 @@ pub(crate) fn resource_host_with_deployment(
     .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes());
     // Plain deterministic fixtures keep the cheap Workdir adapter; Deployment
     // selection (`runtime_resource_host_with_deployment`) replaces it.
-    let mut host = awaken_execution_composition::with_workdir_fallback(host);
-    if let Some(authority) = SCENARIO_RUNTIME_AUTHORITY.get() {
-        host = host.with_runtime_authority(authority.clone());
-    }
+    let host = awaken_execution_composition::with_workdir_fallback(host);
+    let host = bind_scenario_runtime_authority(host, selected);
     ScenarioPlatform { host, resources }
+}
+
+/// Select one Runtime authority at the Scenario composition root. The binary
+/// installs its Coordinator-selected authority before any router is built;
+/// direct in-process fixture callers may select only the local volatile case.
+fn bind_scenario_runtime_authority(
+    host: SharedHost,
+    selected: Option<&Arc<dyn awaken_session_executor::RuntimeAuthority>>,
+) -> SharedHost {
+    match selected {
+        Some(authority) => host.with_runtime_authority(authority.clone()),
+        None => {
+            let deployment = host.deployment_config();
+            assert!(
+                !deployment.durable
+                    && deployment.database_url.is_none()
+                    && deployment.store == awaken_session_executor::StoreKind::Sqlite
+                    && deployment.dispatch_backend == awaken_session_executor::DispatchBackend::Sqlite
+                    && deployment.wake == awaken_session_executor::Wake::None,
+                "durable or distributed Scenario Runtime requires an installed Coordinator authority"
+            );
+            awaken_runtime_host_testkit::with_volatile_runtime_authority(host)
+        }
+    }
 }
 
 /// Build the scenario platform through the same typed Deployment -> Session
@@ -295,6 +334,35 @@ mod tests {
             .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
             .collect::<BTreeMap<_, _>>();
         scenario_deployment_from(|name| values.get(name).cloned())
+    }
+
+    #[tokio::test]
+    async fn installed_runtime_authority_is_reused_without_a_volatile_shadow() {
+        // Causes: C1 an explicit Coordinator authority is already selected;
+        // C2 the Scenario deployment is otherwise ephemeral. Effect E1 retain
+        // the exact injected Dispatch Arc, including its operational feed;
+        // no second Memory queue is constructed. Decision rule R1 C1+any C2
+        // -> E1. The absent/local R2 is exercised by factory_topology's AI SDK
+        // Run; absent/durable R3 is the fail-closed case below.
+        let deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+        let selected = awaken_coordinator::init_scenario_runtime(
+            &deployment,
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .expect("selected Coordinator scenario authority");
+        let exact_dispatch = selected.dispatch_store();
+        let (host, _resources) = resource_host_with_selected_runtime(
+            Arc::new(crate::EchoModel),
+            "installed-runtime-authority",
+            deployment,
+            Some(&selected),
+        )
+        .into_parts();
+        assert!(
+            Arc::ptr_eq(&host.dispatch_store().unwrap(), &exact_dispatch),
+            "R1/E1 selected Dispatch must not be shadowed"
+        );
     }
 
     #[test]
@@ -402,6 +470,28 @@ mod tests {
         ));
         assert!(storage.path().join("skills").exists(), "R1/E2");
         assert!(!storage.path().join("skills_catalog").exists(), "R1/E3");
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "durable or distributed Scenario Runtime requires an installed Coordinator authority"
+    )]
+    fn durable_scenario_without_installed_authority_fails_closed() {
+        // Causes: C1 no globally installed Runtime authority; C2 typed
+        // Deployment requests durable Run delivery. Effect E1 reject before a
+        // volatile Memory queue can be mistaken for persistent execution.
+        // Decision table for the shared selection seam: R1 Some+ephemeral or
+        // Some+durable -> retain the exact installed authority; R2 None+local
+        // ephemeral -> inject one testkit Memory authority; R3 None+durable or
+        // distributed -> E1. Factory topology covers R2's real Run, while
+        // scenario-main installation owns R1's production sequence.
+        let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+        deployment.durable = true;
+        let _ = resource_host_with_deployment(
+            Arc::new(crate::EchoModel),
+            "no-silent-volatile-fallback",
+            deployment,
+        );
     }
 
     #[test]
