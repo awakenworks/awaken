@@ -71,6 +71,28 @@ impl WorkerTransport {
 
 #[cfg(target_os = "linux")]
 impl WorkerTransport {
+    /// Probe a user manager and the same trusted executables used by the
+    /// binding/stop adapter before selecting invisible local placement.
+    pub async fn systemd_user_available() -> bool {
+        systemd::available().await
+    }
+
+    pub fn systemd_user_run_executable() -> Option<std::path::PathBuf> {
+        systemd::run_executable()
+    }
+
+    pub fn systemd_user_env_executable() -> Option<std::path::PathBuf> {
+        systemd::env_executable()
+    }
+
+    pub async fn systemd_user_unit_running(incarnation_id: &str) -> Result<bool, String> {
+        systemd::unit_running(incarnation_id).await
+    }
+
+    pub async fn systemd_user_request_drain(incarnation_id: &str) -> Result<(), String> {
+        systemd::request_drain(incarnation_id).await
+    }
+
     /// The single exact unit-name projection shared by a product launcher and
     /// this transport's physical binding/stop evidence.
     pub fn systemd_user_unit_name(incarnation_id: &str) -> Result<String, String> {

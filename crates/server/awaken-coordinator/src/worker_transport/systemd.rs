@@ -26,6 +26,112 @@ const UNIT_PREFIX: &str = "awaken-agent-worker-";
 const UNIT_SUFFIX: &str = ".service";
 const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
+fn trusted_operator_executable(name: &str) -> Option<PathBuf> {
+    awaken_local_process::resolve_operator_executable(
+        name,
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )
+}
+
+pub(super) fn run_executable() -> Option<PathBuf> {
+    trusted_operator_executable("systemd-run")
+}
+
+pub(super) fn control_executable() -> Option<PathBuf> {
+    trusted_operator_executable("systemctl")
+}
+
+pub(super) fn env_executable() -> Option<PathBuf> {
+    trusted_operator_executable("env")
+}
+
+pub(super) async fn available() -> bool {
+    let Some(systemctl) = control_executable() else {
+        return false;
+    };
+    if run_executable().is_none() || env_executable().is_none() {
+        return false;
+    }
+    systemctl_command(&systemctl, &["show-environment"])
+        .await
+        .is_ok()
+}
+
+async fn systemctl_command(
+    systemctl: &Path,
+    arguments: &[&str],
+) -> Result<String, ApplicationError> {
+    let mut command = tokio::process::Command::new(systemctl);
+    command.args(["--user", "--no-pager"]).args(arguments);
+    command.kill_on_drop(true);
+    let output = tokio::time::timeout(QUERY_TIMEOUT, command.output())
+        .await
+        .map_err(|_| ApplicationError::unavailable("systemd Worker control timed out"))?
+        .map_err(|_| ApplicationError::unavailable("systemd Worker control unavailable"))?;
+    if !output.status.success() {
+        return Err(ApplicationError::unavailable(
+            "systemd Worker control rejected the exact unit operation",
+        ));
+    }
+    String::from_utf8(output.stdout)
+        .map_err(|_| ApplicationError::unavailable("systemd returned non-UTF8 unit evidence"))
+}
+
+/// Placement observes liveness through the same exact unit parser as physical
+/// binding, but receives no exit receipt or Dispatch retirement authority.
+pub(super) async fn unit_running(incarnation_id: &str) -> Result<bool, String> {
+    let unit = unit_name_for_incarnation(incarnation_id)?;
+    let systemctl = control_executable().ok_or("trusted systemctl is unavailable")?;
+    let output = systemctl_command(
+        &systemctl,
+        &[
+            "show",
+            &unit,
+            "--property=Id,LoadState,InvocationID,ActiveState,SubState,MainPID,ControlGroup,KillMode,Restart,RemainAfterExit",
+        ],
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let observation = UnitObservation::parse(&output).map_err(|error| error.to_string())?;
+    if observation.retired_after_receipt(&unit) {
+        return Ok(false);
+    }
+    if !observation.exact_policy(&unit) {
+        return Err("local Worker unit policy changed".into());
+    }
+    if observation.bind(&unit, &current_boot_id()?).is_some() {
+        return Ok(true);
+    }
+    if observation.value("MainPID") == "0"
+        && observation.value("ControlGroup").is_empty()
+        && matches!(
+            (
+                observation.value("ActiveState"),
+                observation.value("SubState")
+            ),
+            ("failed", "failed") | ("active", "exited") | ("inactive", "dead")
+        )
+    {
+        return Ok(false);
+    }
+    Err("local Worker unit state is indeterminate".into())
+}
+
+pub(super) async fn request_drain(incarnation_id: &str) -> Result<(), String> {
+    if !unit_running(incarnation_id).await? {
+        return Ok(());
+    }
+    let unit = unit_name_for_incarnation(incarnation_id)?;
+    let systemctl = control_executable().ok_or("trusted systemctl is unavailable")?;
+    systemctl_command(
+        &systemctl,
+        &["kill", "--kill-who=main", "--signal=TERM", &unit],
+    )
+    .await
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ProcessBinding {
     unit: String,
@@ -172,11 +278,8 @@ impl SystemdWorkerEvidence {
         }
         awaken_fs_durability::sync_directory(evidence_dir)
             .map_err(|error| format!("sync systemd Worker evidence directory: {error}"))?;
-        let systemctl = awaken_local_process::resolve_operator_executable(
-            "systemctl",
-            &std::env::var_os("PATH").unwrap_or_default(),
-        )
-        .ok_or_else(|| "systemd Worker transport requires a trusted systemctl".to_owned())?;
+        let systemctl = trusted_operator_executable("systemctl")
+            .ok_or_else(|| "systemd Worker transport requires a trusted systemctl".to_owned())?;
         Ok(Self {
             provider_id: provider_id.to_owned(),
             systemctl,
@@ -186,20 +289,7 @@ impl SystemdWorkerEvidence {
     }
 
     async fn systemctl(&self, arguments: &[&str]) -> Result<String, ApplicationError> {
-        let mut command = tokio::process::Command::new(&self.systemctl);
-        command.args(["--user", "--no-pager"]).args(arguments);
-        command.kill_on_drop(true);
-        let output = tokio::time::timeout(QUERY_TIMEOUT, command.output())
-            .await
-            .map_err(|_| ApplicationError::unavailable("systemd Worker control timed out"))?
-            .map_err(|_| ApplicationError::unavailable("systemd Worker control unavailable"))?;
-        if !output.status.success() {
-            return Err(ApplicationError::unavailable(
-                "systemd Worker control rejected the exact unit operation",
-            ));
-        }
-        String::from_utf8(output.stdout)
-            .map_err(|_| ApplicationError::unavailable("systemd returned non-UTF8 unit evidence"))
+        systemctl_command(&self.systemctl, arguments).await
     }
 
     async fn show(&self, unit: &str) -> Result<UnitObservation, ApplicationError> {

@@ -162,16 +162,21 @@ fn boot_replacement_needs_a_changed_kernel_boot_and_no_reused_unit() {
 
 #[tokio::test]
 async fn live_systemd_unit_stop_survives_adapter_reopen() {
-    // C1 actual systemd user manager starts one unique, no-restart unit; C2
+    // C0 the manager and trusted launcher executable are available; C1 actual
+    // systemd user manager starts one unique, no-restart unit; C2
     // Coordinator binds before the process effect; C3 stop kills its cgroup;
     // C4 the adapter reopens from disk after systemd drops InvocationID; C5
-    // process crash after durable receipt but before StopUnit. L1=C1..C4 =>
+    // process crash after durable receipt but before StopUnit; C6 the existing
+    // Flow placement monitor requests graceful drain without writing a stop
+    // receipt. L1=C1..C4 =>
     // exact retained exit; L2=C1+C2+C3+C5 => replay finishes the same stop.
     // Replacement or unavailable manager stays Unknown. Provider I/O is real.
     if std::env::var("AWAKEN_SYSTEMD_WORKER_E2E").as_deref() != Ok("1") {
         eprintln!("skipping live systemd Worker: AWAKEN_SYSTEMD_WORKER_E2E=1 is required");
         return;
     }
+    assert!(WorkerTransport::systemd_user_available().await, "C0/E0");
+    let systemd_run = WorkerTransport::systemd_user_run_executable().expect("C0 trusted runner");
     struct Probe(String);
     impl Drop for Probe {
         fn drop(&mut self) {
@@ -192,7 +197,7 @@ async fn live_systemd_unit_stop_survives_adapter_reopen() {
         let worker = WorkerIdentity::new("systemd-probe", &incarnation_id, 1);
         let unit = unit_name(&worker).unwrap();
         let _cleanup = Probe(unit.clone());
-        let started = std::process::Command::new("systemd-run")
+        let started = std::process::Command::new(&systemd_run)
             .args([
                 "--user",
                 &format!("--unit={unit}"),
@@ -222,6 +227,12 @@ async fn live_systemd_unit_stop_survives_adapter_reopen() {
         })
         .await
         .expect("L1/L2 running exact unit");
+        assert!(
+            WorkerTransport::systemd_user_unit_running(&incarnation_id)
+                .await
+                .unwrap(),
+            "C6 placement sees the exact running invocation"
+        );
         if response_lost {
             adapter
                 .systemctl(&["kill", "--kill-who=all", "--signal=SIGKILL", &unit])
@@ -249,6 +260,9 @@ async fn live_systemd_unit_stop_survives_adapter_reopen() {
                 })
                 .unwrap();
         } else {
+            WorkerTransport::systemd_user_request_drain(&incarnation_id)
+                .await
+                .expect("C6 asks the original main process to drain");
             assert!(
                 adapter.stop_binding(&binding).await.unwrap().is_some(),
                 "L1 stop"
@@ -259,6 +273,12 @@ async fn live_systemd_unit_stop_survives_adapter_reopen() {
         assert!(
             reopened.stop_binding(&binding).await.unwrap().is_some(),
             "L1/L2 replay"
+        );
+        assert!(
+            !WorkerTransport::systemd_user_unit_running(&incarnation_id)
+                .await
+                .unwrap(),
+            "C6 retired unit cannot be reattached"
         );
         assert!(
             reopened.read_receipt(&binding).unwrap().is_some(),
