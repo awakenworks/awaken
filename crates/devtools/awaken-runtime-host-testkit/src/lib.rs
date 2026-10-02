@@ -132,12 +132,13 @@ pub fn with_volatile_runtime_authority(host: SharedHost) -> SharedHost {
     // Cause/effect fixture rule: C1 a volatile scenario Host has no injected
     // authority; C2 the same Host clock stamps Dispatch and Thread commits.
     // R1 C1+C2 -> one Ingress MemoryDispatchStore is selected here, retains its
-    // durable continuation role through AnyDispatchStore, and is injected once;
+    // continuation and operational-feed roles through AnyDispatchStore, and is injected once;
     // product Host construction never selects a Coordinator backend implicitly.
     let clock = host.clock();
-    let dispatch = awaken_dispatch::AnyDispatchStore::from_durable_dispatch(Arc::new(
+    let dispatch = awaken_dispatch::AnyDispatchStore::from_durable_store(
         awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
-    ));
+        None,
+    );
     host.with_runtime_authority(Arc::new(
         awaken_session_executor::EphemeralRuntimeAuthority::with_dispatch(clock, Arc::new(dispatch)),
     ))
