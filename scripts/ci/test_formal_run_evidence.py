@@ -3,11 +3,14 @@
 import json
 import os
 from pathlib import Path
+import select
+import signal
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 import formal_budget
@@ -611,7 +614,7 @@ class EvidenceTests(unittest.TestCase):
             with self.subTest(fail_seal=fail_seal):
                 env = dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"],
                            FAIL_SEAL=str(int(fail_seal)), AWAKEN_FORMAL_RUN_EVIDENCE=str(path))
-                result = subprocess.run(["bash", "-c", initialization + "\nexit 0\n",
+                result = subprocess.run(["bash", "-c", initialization + "\nformal_body_complete=1\nexit 0\n",
                                          "scripts/ci/check_formal.sh", "--require-tools"],
                                         cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 37 if fail_seal else 0, result.stderr)
@@ -622,6 +625,80 @@ class EvidenceTests(unittest.TestCase):
                         "kind": "execution-failed", "exit_code": 37,
                         "stage": "artifact-finalization", "subject": "formal",
                     })
+
+    def test_incomplete_or_interrupted_body_never_publishes_passed(self):
+        # Receipt cause/effect table: C1 the formal body exits zero before its
+        # last check; C2 TERM interrupts an in-progress body. E1 neither can
+        # publish Passed; E2 the one diagnostic bundle is sealed Failed with
+        # the same nonzero exit. R1=C1 -> exit 1 + E1/E2; R2=C2 -> exit 143
+        # + E1/E2. These execute the real gate initialization and EXIT owner,
+        # without claiming that a fixture has run any proof tool.
+        initialization = formal_gate_initialization(self.root)
+        path = self.root / "target/test-timings/formal-run.json"
+        for label, body, expected_exit in (
+            ("early-zero", "exit 0", 1),
+            ("term", "kill -TERM $$", 143),
+        ):
+            with self.subTest(label=label):
+                shutil.rmtree(self.root / "target", ignore_errors=True)
+                result = subprocess.run(
+                    ["bash", "-c", initialization + "\n" + body + "\n",
+                     "scripts/ci/check_formal.sh", "--require-tools"],
+                    cwd=self.root,
+                    env=dict(os.environ, AWAKEN_FORMAL_RUN_EVIDENCE=str(path)),
+                    capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(result.returncode, expected_exit, result.stderr)
+                record = json.loads(path.read_text())
+                self.assertEqual(record["status"], "not-passed")
+                self.assertEqual(record["outcome"]["exit_code"], expected_exit)
+                bundles = list((self.root / "target/test-timings").glob("formal-*/evidence.json"))
+                self.assertEqual(len(bundles), 1)
+                failure = verify_artifacts(bundles[0].parent, self.root)
+                self.assertEqual((failure["status"], failure["exit_code"]), ("failed", expected_exit))
+
+    def test_external_group_termination_cannot_certify_partial_formal_run(self):
+        # C1 the receipt and EXIT owner are installed; C2 an external TERM
+        # reaches the gate and its active child as one process group before the
+        # last proof. E1 the process exits 143, E2 the exact clean source gets
+        # Not-passed, E3 its diagnostic bundle seals Failed. R1=C1+C2->E1-E3.
+        # This is the real interruption shape that once left a strict Passed
+        # JSON after only manifest self-tests. The child starts before `ready`
+        # so the group signal reaches both owners; no proof is simulated Passed.
+        initialization = formal_gate_initialization(self.root)
+        path = self.root / "target/test-timings/formal-run.json"
+        process = subprocess.Popen(
+            ["bash", "-c", initialization + "\nsleep 30 & child=$!\nprintf 'ready\\n'\nwait \"$child\"\n",
+             "scripts/ci/check_formal.sh", "--require-tools"],
+            cwd=self.root,
+            env=dict(os.environ, AWAKEN_FORMAL_RUN_EVIDENCE=str(path)),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            ready = b""
+            deadline = time.monotonic() + 10
+            while b"ready\n" not in ready:
+                remaining = deadline - time.monotonic()
+                self.assertGreater(remaining, 0, "formal fixture never installed its EXIT owner")
+                self.assertTrue(select.select([process.stdout], [], [], remaining)[0], "formal fixture readiness timed out")
+                chunk = os.read(process.stdout.fileno(), 4096)
+                self.assertTrue(chunk, "formal fixture exited before readiness")
+                ready += chunk
+            os.killpg(process.pid, signal.SIGTERM)
+            _, stderr = process.communicate(timeout=10)
+            self.assertEqual(process.returncode, 143, stderr.decode())
+            record = json.loads(path.read_text())
+            self.assertEqual(record["status"], "not-passed")
+            self.assertEqual(record["outcome"]["exit_code"], 143)
+            bundles = list((self.root / "target/test-timings").glob("formal-*/evidence.json"))
+            self.assertEqual(len(bundles), 1)
+            failure = verify_artifacts(bundles[0].parent, self.root)
+            self.assertEqual((failure["status"], failure["exit_code"]), ("failed", 143))
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate(timeout=10)
 
     def test_actual_native_failure_retains_partial_trace_and_log(self):
         # A7 the actual native composition runs, first Cargo writes partial

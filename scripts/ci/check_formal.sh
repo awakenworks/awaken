@@ -90,8 +90,17 @@ formal_failure_kind=""
 formal_failure_stage=""
 formal_failure_subject=""
 formal_failure_deadline_seconds=""
+formal_body_complete=0
 finish_formal_artifacts() {
   first_result=$?
+  # EXIT can inherit zero when TERM arrives between successful commands. A
+  # strict receipt is eligible only after the final gate command was reached.
+  if [ "$formal_body_complete" -ne 1 ] && [ "$first_result" -eq 0 ]; then
+    first_result=1
+    formal_failure_kind="execution-failed"
+    formal_failure_stage="formal-gate"
+    formal_failure_subject="incomplete"
+  fi
   result=$first_result
   artifact_result=0
   trap - EXIT
@@ -133,6 +142,8 @@ finish_formal_artifacts() {
   exit "$result"
 }
 trap finish_formal_artifacts EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 # The canonical budget owner rejects invalid overrides. Resolve it only after
 # the Running receipt and EXIT owner exist, but before any verification command.
 # Causes: C1 valid budget; C2 invalid or over-ceiling override. Effects:
@@ -792,7 +803,11 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-execution-replacement" \
     -config formal/tla/SessionExecutionReplacement.cfg formal/tla/SessionExecutionReplacement.tla
-  java -Djava.io.tmpdir="$tlc_state_root" -Xmx2048m -XX:+UseParallelGC -jar "$tla_jar" -workers 4 \
+  # The same complete four-generation baseline is first qualified by the
+  # mutation runner at this budget. A deadline exit is a failed formal gate,
+  # never evidence that the model was fully explored.
+  run_with_deadline 1800 java -Djava.io.tmpdir="$tlc_state_root" -Xmx4096m -XX:+UseParallelGC \
+    -jar "$tla_jar" -workers 8 \
     -metadir "$tlc_state_root/session-execution-replacement-chain" \
     -config formal/tla/SessionExecutionReplacementChain.cfg formal/tla/SessionExecutionReplacement.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
@@ -1031,3 +1046,4 @@ if [ "$require_tools" -eq 1 ] && [ "$missing" -ne 0 ]; then
   echo "formal verification tools are required but unavailable" >&2
   exit 1
 fi
+formal_body_complete=1
