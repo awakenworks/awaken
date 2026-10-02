@@ -1008,7 +1008,7 @@ mod tests {
             );
             let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
             let dispatch = Arc::new(
-                awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+                awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                     .expect("coordinated Resource dispatch store"),
             );
             let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")

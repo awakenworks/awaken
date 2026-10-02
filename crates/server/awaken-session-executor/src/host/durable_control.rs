@@ -3,6 +3,7 @@
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch::LiveRunControlError;
+use awaken_dispatch::Outbox as _;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::control::{LiveCommand, LiveRunControl};
 use awaken_runtime_contract::resume::ResumeResult;
@@ -43,17 +44,15 @@ impl SharedHost {
     ) -> Result<bool, HostError> {
         use awaken_dispatch::DispatchQueue as _;
 
-        let accepted = if let Some(pool) = self.dispatch.dispatch_pool.get() {
-            pool.cancel(run_id)
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?
-        } else {
-            self.dispatch_store()?
-                .cancel(run_id)
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?
-                .is_some()
-        };
+        let accepted = self
+            .dispatch_store()?
+            .cancel(run_id)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?
+            .is_some();
+        if accepted && let Some(pool) = self.dispatch.dispatch_pool.get() {
+            pool.notify().await;
+        }
         if accepted && let Some(runtime) = live_runtime {
             let _ = runtime.deliver(LiveCommand::Cancel {
                 run_id: run_id.clone(),
@@ -175,10 +174,10 @@ impl SharedHost {
 
     /// Stage a durable cross-thread delivery answering `thread`'s awaiting run, then
     /// let the daemon relay it (ADR-0017, slice E follow-up). Resolves the awaiting
-    /// run's awaiting ticket from committed truth, stages a decision into the outbox
-    /// via `DispatchService::send`, and the daemon relays it to the run's pending
-    /// input and wakes it. Exercises the outbox stage→relay path. Requires the
-    /// daemon and an awaiting run.
+    /// run's awaiting ticket from committed truth, stages a decision into the
+    /// one dispatch store's outbox, then wakes the local pool to relay it to
+    /// pending input. Exercises the outbox stage→relay path. Requires the pool
+    /// and an awaiting run.
     pub async fn stage_decision(&self, thread: &str, allow: bool) -> Result<String, HostError> {
         let ctx = self.ctx_for(thread, None).await?;
         let pool = self.dispatch_pool_or_err()?;
@@ -204,9 +203,11 @@ impl SharedHost {
                 ResumeResult::deny(None)
             },
         };
-        pool.send(input)
+        self.dispatch_store()?
+            .stage(input)
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
+        pool.notify().await;
         Ok(run_id.0)
     }
 
@@ -232,17 +233,19 @@ impl SharedHost {
                 "durable text resume requires a manual-pause ticket",
             ));
         }
-        pool.send(awaken_dispatch::PendingInput {
-            message_id: awaken_runtime::fresh_process_id("manual-resume"),
-            run_id: run_id.clone(),
-            thread_id,
-            correlation_id: ticket.correlation_id,
-            available_at_ms: None,
-            context_messages: Vec::new(),
-            result: ResumeResult::Input(text),
-        })
-        .await
-        .map_err(|e| HostError::internal(e.to_string()))?;
+        self.dispatch_store()?
+            .stage(awaken_dispatch::PendingInput {
+                message_id: awaken_runtime::fresh_process_id("manual-resume"),
+                run_id: run_id.clone(),
+                thread_id,
+                correlation_id: ticket.correlation_id,
+                available_at_ms: None,
+                context_messages: Vec::new(),
+                result: ResumeResult::Input(text),
+            })
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))?;
+        pool.notify().await;
         Ok(run_id.0)
     }
 }

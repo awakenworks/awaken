@@ -152,7 +152,7 @@ mod tests {
             .model(ModelBinding::new("test", "model", "native"))
             .build();
         let store = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(
                 awaken_lease_contract::system_clock(),
             )
             .expect("dispatch store"),

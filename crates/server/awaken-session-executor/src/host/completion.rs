@@ -191,19 +191,18 @@ impl SharedHost {
             required_capabilities = ?request.placement.required_capabilities,
             placement = ?request.placement, holder = ?request.inference_plaintext_holder,
             "Submitting durable foreground dispatch");
-        // Enqueue only — never drive here; the pool is the sole claimer. The common
-        // path goes through `pool.submit` (which stamps the trace); a superseding
-        // submit needs the supersede option, so it enqueues on the shared store and
-        // nudges the pool directly.
+        // Enqueue only — never drive here. Both a local pool and a remote Worker
+        // claim from this same dispatch store; a local pool receives only a
+        // best-effort wake after the durable write. `resolved_dispatch` already
+        // captured the admitting trace before either topology reaches this point.
         if !ctx.delivery.is_durable() {
             return Err(HostError::internal(
                 "durable submit requires durable delivery",
             ));
         }
-        let worker = &ctx.claimed_worker;
+        let store = self.dispatch_store()?;
         if supersede {
-            worker
-                .store()
+            store
                 .enqueue_with(
                     request,
                     SubmitOptions {
@@ -213,23 +212,14 @@ impl SharedHost {
                 )
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
-            if let Some(pool) = self.dispatch.dispatch_pool.get() {
-                pool.notify().await;
-            }
-        } else if let Some(pool) = self.dispatch.dispatch_pool.get() {
-            pool.submit_dispatch(request)
-                .await
-                .map_err(|e| HostError::internal(e.to_string()))?;
         } else {
-            // A coordinator-only cell still authors the same durable dispatch;
-            // registered remote Workers are its only claimers. Their authenticated
-            // settle route wakes this Host's completion registry from committed
-            // Run truth, so no local executor or polling compatibility path exists.
-            worker
-                .store()
+            store
                 .enqueue(request)
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
+        }
+        if let Some(pool) = self.dispatch.dispatch_pool.get() {
+            pool.notify().await;
         }
         self.await_settled_event(ctx, &run_id, None, settled).await
     }
@@ -254,20 +244,13 @@ impl SharedHost {
                 "durable resume requires durable delivery",
             ));
         }
-        let worker = &ctx.claimed_worker;
+        let store = self.dispatch_store()?;
+        store
+            .append(input)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
         if let Some(pool) = self.dispatch.dispatch_pool.get() {
-            pool.deliver(input)
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
-        } else {
-            // Coordinator-only cells publish to the same shared store. Remote
-            // Workers claim it on their ordinary wake/poll path and committed-truth
-            // reconciliation below observes their settlement.
-            worker
-                .store()
-                .append(input)
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
+            pool.notify().await;
         }
         self.await_settled_event(ctx, &run_id, Some(&correlation_id), settled)
             .await

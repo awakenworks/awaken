@@ -30,14 +30,16 @@ use awaken_dispatch_testkit::ConformanceClock as _;
 use harness::{TICKET, activation, activation_on, tool_runtime};
 
 fn any_in_memory() -> AnyDispatchStore {
-    AnyDispatchStore::open_sqlite_in_memory(system_clock()).expect("open in-memory sqlite backend")
+    awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
+        .expect("open in-memory sqlite backend")
 }
 
 /// The same runtime-selected backend over a raw injected clock handle.
 fn any_in_memory_with_clock_handle(
     clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
 ) -> AnyDispatchStore {
-    AnyDispatchStore::open_sqlite_in_memory(clock).expect("open in-memory sqlite backend")
+    awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock)
+        .expect("open in-memory sqlite backend")
 }
 
 /// The same runtime-selected backend over a clock the test drives, because the
@@ -45,7 +47,8 @@ fn any_in_memory_with_clock_handle(
 fn any_in_memory_with_clock(
     clock: &awaken_dispatch_testkit::ManualStoreClock,
 ) -> AnyDispatchStore {
-    AnyDispatchStore::open_sqlite_in_memory(clock.clock()).expect("open in-memory sqlite backend")
+    awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clock())
+        .expect("open in-memory sqlite backend")
 }
 
 #[tokio::test]
@@ -457,6 +460,13 @@ async fn recovery_mode_is_enforced_from_the_durable_previous_assignment() {
 
 #[tokio::test]
 async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
+    // Causes: C1 the SQLite factory receives this caller-owned ManualStoreClock;
+    // C2 now is before/after the live lease; C3 owner is original/foreign.
+    // Effects: E1 one idempotent row and owner-a claim; E2 foreign owner cannot
+    // claim before expiry; E3 foreign owner can reclaim after expiry. Rules:
+    // F1 C1+C2(before)+C3(original) => E1; F2 C1+C2(before)+C3(foreign)
+    // => E2; F3 C1+C2(after)+C3(foreign) => E3. The moved erasure delegates
+    // to the same SQL row and does not install another clock or lease owner.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = any_in_memory_with_clock(&clock);
     store
@@ -725,6 +735,50 @@ async fn with_owner_drives_a_durable_run_over_any_sqlite() {
 }
 
 #[tokio::test]
+async fn postgres_factory_pairs_the_selected_store_with_its_wake() {
+    // Causes: C1 a reachable isolated PostgreSQL schema; C2 the factory builds
+    // its dispatch store and PG-NOTIFY wake from one supplied pool; C3 the
+    // hint is published after claim. Effects: E1 the store claims the exact row
+    // under the requested owner; E2 publish succeeds but cannot admit a foreign
+    // claim. Rules: W1 !C1 => environmental skip; W2 C1+C2 => E1; W3 C1+C2+C3
+    // => E2. The existing pg_notify_wake e2e owns cross-connection listener
+    // delivery; this case owns factory pairing and dispatch authority.
+    let Some(pool) = harness::schema_pool("t_any_factory_wake").await else {
+        return;
+    };
+    let (store, wake) = awaken_dispatch::with_postgres_dispatch_pool_and_wake(
+        pool,
+        "t_any_factory_wake_channel",
+    )
+    .await
+    .expect("W2 factory pairs the PostgreSQL store and wake");
+    store
+        .enqueue(RunDispatch::new(activation("wake-run")))
+        .await
+        .expect("W2 exact durable row");
+    assert_eq!(
+        store
+            .claim("wake-owner", 30_000, &Default::default())
+            .await
+            .expect("W2 claim")
+            .expect("W2 runnable row")
+            .lease
+            .owner,
+        "wake-owner",
+        "W2/E1"
+    );
+    wake.publish().await.expect("W3 paired wake transport");
+    assert!(
+        store
+            .claim("foreign", 1_000, &Default::default())
+            .await
+            .expect("W3 exact queue still fenced")
+            .is_none(),
+        "W3/E2 hint cannot admit a foreign claim"
+    );
+}
+
+#[tokio::test]
 async fn any_postgres_connect_and_claim() {
     // Cause/effect graph: C1 Postgres selected; C2 schema reachable; C3 wrapper
     // recreated over the same schema. Effects: E1 dispatch delegates to Postgres;
@@ -739,9 +793,12 @@ async fn any_postgres_connect_and_claim() {
     let Some(_pool) = harness::schema_pool(schema).await else {
         return;
     };
-    let store = AnyDispatchStore::connect_postgres(&harness::database_url_in_schema(schema), 10)
-        .await
-        .expect("connect postgres backend");
+    let store = awaken_dispatch::connect_postgres_dispatch_store(
+        &harness::database_url_in_schema(schema),
+        10,
+    )
+    .await
+    .expect("connect postgres backend");
     store
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
@@ -768,10 +825,12 @@ async fn any_postgres_connect_and_claim() {
         .await
         .expect("checkpoint put");
 
-    let restarted =
-        AnyDispatchStore::connect_postgres(&harness::database_url_in_schema(schema), 10)
-            .await
-            .expect("reconnect postgres backend");
+    let restarted = awaken_dispatch::connect_postgres_dispatch_store(
+        &harness::database_url_in_schema(schema),
+        10,
+    )
+    .await
+    .expect("reconnect postgres backend");
     assert_eq!(
         restarted
             .stream_checkpoint_store()

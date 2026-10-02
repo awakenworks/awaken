@@ -503,7 +503,7 @@ mod tests {
         }
         let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "fixture")
             .with_dispatch_store(Arc::new(
-                awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
+                awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
                     awaken_lease_testkit::ManualClock::new(0),
                 ))
                 .unwrap(),
@@ -585,7 +585,7 @@ mod tests {
         }
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let dispatch = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone()).unwrap(),
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone()).unwrap(),
         );
         let claimed = claim(
             &dispatch,
@@ -1039,7 +1039,7 @@ mod tests {
         let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(now));
         let store = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .expect("dispatch store"),
         );
         let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")
@@ -1166,7 +1166,7 @@ mod tests {
         let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .expect("dispatch store"),
         );
         let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")
@@ -1293,7 +1293,7 @@ mod tests {
         let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .expect("dispatch store"),
         );
         let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")
@@ -1373,7 +1373,7 @@ mod tests {
         let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .expect("dispatch store"),
         );
         let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")

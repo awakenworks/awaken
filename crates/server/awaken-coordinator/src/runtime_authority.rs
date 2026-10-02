@@ -292,7 +292,7 @@ pub(crate) async fn migrate_with_pool(
     pool: sqlx::PgPool,
 ) -> Result<(), String> {
     if deployment.dispatch_backend == DispatchBackend::Postgres {
-        AnyDispatchStore::with_postgres_pool(pool.clone()).await?;
+        awaken_dispatch::with_postgres_dispatch_pool(pool.clone()).await?;
     }
     if deployment.store == StoreKind::Postgres {
         PostgresCommitCoordinator::with_pool(pool)
@@ -326,8 +326,10 @@ async fn open_dispatch(
                     .to_owned()
             })?;
             std::fs::create_dir_all(root).map_err(|error| error.to_string())?;
-            let store =
-                AnyDispatchStore::open_sqlite(&root.join("dispatch.db").to_string_lossy(), clock)?;
+            let store = awaken_dispatch::open_sqlite_dispatch_store(
+                &root.join("dispatch.db").to_string_lossy(),
+                clock,
+            )?;
             Ok((Arc::new(store), None))
         }
         DispatchBackend::Postgres => {
@@ -337,9 +339,11 @@ async fn open_dispatch(
             match deployment.wake {
                 Wake::None => {
                     let store = match schema {
-                        SchemaAccess::Migrate => AnyDispatchStore::with_postgres_pool(pool).await?,
+                        SchemaAccess::Migrate => {
+                            awaken_dispatch::with_postgres_dispatch_pool(pool).await?
+                        }
                         SchemaAccess::Verify => {
-                            AnyDispatchStore::with_existing_postgres_pool(pool).await?
+                            awaken_dispatch::with_existing_postgres_dispatch_pool(pool).await?
                         }
                     };
                     Ok((Arc::new(store), None))
@@ -347,14 +351,14 @@ async fn open_dispatch(
                 Wake::PgNotify => {
                     let (store, wake) = match schema {
                         SchemaAccess::Migrate => {
-                            AnyDispatchStore::with_postgres_pool_and_wake(
+                            awaken_dispatch::with_postgres_dispatch_pool_and_wake(
                                 pool,
                                 &deployment.wake_channel,
                             )
                             .await?
                         }
                         SchemaAccess::Verify => {
-                            AnyDispatchStore::with_existing_postgres_pool_and_wake(
+                            awaken_dispatch::with_existing_postgres_dispatch_pool_and_wake(
                                 pool,
                                 &deployment.wake_channel,
                             )
@@ -380,8 +384,10 @@ async fn open_nats_dispatch(
         .as_deref()
         .ok_or_else(|| "NATS dispatch wake requires runtime.nats_url".to_owned())?;
     let store = match schema {
-        SchemaAccess::Migrate => AnyDispatchStore::with_postgres_pool(pool).await?,
-        SchemaAccess::Verify => AnyDispatchStore::with_existing_postgres_pool(pool).await?,
+        SchemaAccess::Migrate => awaken_dispatch::with_postgres_dispatch_pool(pool).await?,
+        SchemaAccess::Verify => {
+            awaken_dispatch::with_existing_postgres_dispatch_pool(pool).await?
+        }
     };
     let wake: Arc<dyn WakeSignal> = Arc::new(
         awaken_dispatch::NatsWakeSignal::connect(nats_url, deployment.wake_channel.clone())

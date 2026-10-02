@@ -12,7 +12,7 @@ use awaken_runtime_contract::resume::ResumeCommand;
 /// `RequirePredecessorQuiescence` recovery, so a replacement claim can take over
 /// only an acknowledged slot.
 struct BlockingManagedAttempt {
-    dispatch: Arc<awaken_dispatch::AnyDispatchStore>,
+    dispatch: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
     executions: AtomicUsize,
     entered: tokio::sync::Notify,
     live_cancel_observed: tokio::sync::Notify,
@@ -68,7 +68,7 @@ impl RunAttemptExecutor for BlockingManagedAttempt {
 
 struct InterruptedManagedRun {
     host: Arc<SharedHost>,
-    dispatch: Arc<awaken_dispatch::AnyDispatchStore>,
+    dispatch: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
     attempt: Arc<BlockingManagedAttempt>,
     thread: &'static str,
     run_id: RunId,
@@ -136,7 +136,7 @@ async fn interrupt_with_admission_suspended(
 ) -> InterruptedManagedRun {
     let run_id = RunId(format!("{thread}-run"));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(
             awaken_lease_contract::system_clock(),
         )
         .expect("dispatch store"),

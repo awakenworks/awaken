@@ -392,7 +392,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     assert!(ephemeral.dispatch.dispatch_pool.get().is_some(), "T1/E1");
 
     let local_store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite(":memory:", system_clock()).unwrap(),
+        awaken_dispatch::open_sqlite_dispatch_store(":memory:", system_clock()).unwrap(),
     );
     let local =
         Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(local_store));
@@ -401,7 +401,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     assert!(local.dispatch.dispatch_pool.get().is_some(), "T2/E1");
 
     let coordinator_store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite(":memory:", system_clock()).unwrap(),
+        awaken_dispatch::open_sqlite_dispatch_store(":memory:", system_clock()).unwrap(),
     );
     let coordinator = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub")
@@ -465,7 +465,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
                     awaken_dispatch_contract::RegisteredCapacity::of(&manifest).expect("R3"),
                 )
                 .with_coordinator_dispatch_store(Arc::new(
-                    awaken_dispatch::AnyDispatchStore::open_sqlite(":memory:", system_clock())
+                    awaken_dispatch::open_sqlite_dispatch_store(":memory:", system_clock())
                         .unwrap(),
                 )),
         );

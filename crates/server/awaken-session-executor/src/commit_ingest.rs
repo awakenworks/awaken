@@ -101,8 +101,8 @@ mod tests {
     use awaken_agent_contract::thread::commit::staged::ThreadCommit;
     use awaken_ext_memory::MemoryExtractionStatus;
     use awaken_dispatch::{
-        AnyDispatchStore, ApplicationErrorKind, ClaimedCommitRequest, MemoryDispatchStore,
-        WorkerIdentity, WorkerResolver as _,
+        ApplicationErrorKind, ClaimedCommitRequest, MemoryDispatchStore, WorkerIdentity,
+        WorkerResolver as _,
     };
     use awaken_dispatch_contract::DispatchQueue;
     use awaken_dispatch_contract::RunClaim;
@@ -545,8 +545,10 @@ mod tests {
             .expect("production root dispatch decoration");
 
         let queue = Arc::new(
-            AnyDispatchStore::open_sqlite_in_memory(awaken_lease_contract::system_clock())
-                .expect("durable dispatch store"),
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(
+                awaken_lease_contract::system_clock(),
+            )
+            .expect("durable dispatch store"),
         );
         let host = Arc::new(
             SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")

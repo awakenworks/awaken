@@ -21,7 +21,8 @@ pub use attempt_termination::{
     NativeAttemptFootprint, NativeAttemptTermination, NativeAttemptTerminationError,
     classify_native_attempt_termination,
 };
-mod any;
+#[cfg(feature = "durable")]
+mod any_factory;
 mod application;
 mod clock;
 mod commit_fence;
@@ -55,7 +56,25 @@ mod sqlite;
 mod wake;
 mod worker;
 
-pub use any::AnyDispatchStore;
+#[cfg(all(feature = "durable", any(test, feature = "test-support")))]
+pub use any_factory::open_sqlite_in_memory as open_sqlite_dispatch_store_in_memory;
+#[cfg(feature = "durable")]
+pub use any_factory::{
+    connect_postgres as connect_postgres_dispatch_store,
+    connect_postgres_existing as connect_postgres_existing_dispatch_store,
+    connect_postgres_existing_with_wake as connect_postgres_existing_dispatch_store_with_wake,
+    connect_postgres_with_wake as connect_postgres_dispatch_store_with_wake,
+    open_sqlite as open_sqlite_dispatch_store,
+    with_existing_postgres_pool as with_existing_postgres_dispatch_pool,
+    with_existing_postgres_pool_and_wake as with_existing_postgres_dispatch_pool_and_wake,
+    with_postgres_pool as with_postgres_dispatch_pool,
+    with_postgres_pool_and_wake as with_postgres_dispatch_pool_and_wake,
+};
+#[cfg(feature = "nats")]
+pub use any_factory::{
+    connect_postgres_existing_with_nats_wake as connect_postgres_existing_dispatch_store_with_nats_wake,
+    connect_postgres_with_nats_wake as connect_postgres_dispatch_store_with_nats_wake,
+};
 pub use application::{
     ApplicationError, ApplicationErrorKind, AttemptClosureKind, AttemptStopStatus,
     ClaimedCommitService, ClaimedOperationCoordinatorResolver, ClosedAttemptExecution,
@@ -64,6 +83,7 @@ pub use application::{
     WorkerExecutionStopSource, WorkerProcessStopStatus, has_active_physical_attempt_for_owner,
     release_closed_idle_worker_evidence, stop_expired_predecessor,
 };
+pub use awaken_dispatch_erasure::AnyDispatchStore;
 pub use awaken_dispatch_contract::ClaimedStreamPublisher;
 pub use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,

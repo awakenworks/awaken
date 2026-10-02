@@ -352,7 +352,7 @@ pub trait RuntimeAuthority: Send + Sync {
 
     async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RuntimeAuthorityError>;
 
-    fn dispatch_store(&self) -> Arc<awaken_dispatch::AnyDispatchStore>;
+    fn dispatch_store(&self) -> Arc<awaken_dispatch_erasure::AnyDispatchStore>;
 
     fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch::WakeSignal>>;
 
@@ -394,7 +394,7 @@ pub struct EphemeralRuntimeAuthority {
     commits: std::sync::Mutex<std::collections::HashMap<String, Arc<dyn LocalCommit>>>,
     checkpoints:
         std::sync::Mutex<std::collections::HashMap<String, Arc<dyn StreamCheckpointStore>>>,
-    dispatch: Arc<awaken_dispatch::AnyDispatchStore>,
+    dispatch: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -417,7 +417,7 @@ impl EphemeralRuntimeAuthority {
         // scenario/integration compositions. Preserve its atomic Session
         // continuation role when erasing the concrete Memory store; the
         // Worker-only constructor intentionally omits that role.
-        let dispatch = awaken_dispatch::AnyDispatchStore::from_durable_dispatch(Arc::new(
+        let dispatch = awaken_dispatch_erasure::AnyDispatchStore::from_durable_dispatch(Arc::new(
             awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
         ));
         Self {
@@ -460,7 +460,7 @@ impl RuntimeAuthority for EphemeralRuntimeAuthority {
             })
     }
 
-    fn dispatch_store(&self) -> Arc<awaken_dispatch::AnyDispatchStore> {
+    fn dispatch_store(&self) -> Arc<awaken_dispatch_erasure::AnyDispatchStore> {
         self.dispatch.clone()
     }
 

@@ -911,7 +911,7 @@ impl SharedHost {
         session_id: &str,
         ticket: &ResumeTicket,
         session_activity_epoch: u64,
-    ) -> Result<Arc<awaken_dispatch::AnyDispatchStore>, HostError> {
+    ) -> Result<Arc<awaken_dispatch_erasure::AnyDispatchStore>, HostError> {
         use awaken_dispatch::DispatchQueue as _;
 
         if ticket.thread_id.0 != session_id || session_activity_epoch == 0 {

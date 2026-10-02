@@ -822,7 +822,7 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
 
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .expect("archive saga dispatch"),
     );
     let host = Arc::new(

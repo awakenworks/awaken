@@ -509,7 +509,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Blocki
 }
 
 pub(crate) async fn claim(
-    store: &awaken_dispatch::AnyDispatchStore,
+    store: &awaken_dispatch_erasure::AnyDispatchStore,
     thread: &str,
     run: &str,
     owner: &str,

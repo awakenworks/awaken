@@ -340,7 +340,7 @@ async fn durable_foreground_run_relays_live_progress_before_committed_completion
     // | R2 | yes | no | yes | E2 (existing durable tests) |
     // | R3 | yes | yes | remote | E2 fallback; no false replay guarantee |
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .expect("in-memory dispatch"),
     );
     let host =
@@ -384,7 +384,7 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
     // | R4 | Ended | exact | any | zero | reject before mutation |
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .expect("in-memory dispatch"),
     );
     let host = Arc::new(
@@ -526,7 +526,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     let child_run = RunId("coordinated-reply-run".into());
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .expect("coordinated reply dispatch"),
     );
     let (host, _managed) = dispatch_test_host(
@@ -1305,7 +1305,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
         let run_id = RunId("primary-reply-run".into());
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let dispatch = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .expect("primary reply dispatch"),
         );
         let (host, _managed) = dispatch_test_host(
@@ -1563,7 +1563,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
 
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .expect("budget resume dispatch"),
     );
     let (host, _managed) = dispatch_test_host(
@@ -1957,7 +1957,7 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
 
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
-    // Cause/effect graph: C1 durable ingress; C2 a claimed Run settles Awaiting
+    // Cause/effect graph: C1 durable ingress with a local pool; C2 a claimed Run settles Awaiting
     // on a client-tool ticket; C3 the exact ClientResult arrives; C4 resumed work
     // ends; C5 resumed work awaits on a new ticket. Effects: E1 input is appended
     // to the canonical durable Inbox; E2 the Worker alone claims/resumes/settles;
@@ -1969,13 +1969,13 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
     //
     // | Rule | ingress | initial state | resume result | Effect |
     // | R1 | direct | Awaiting | Ended | inline E1/E2 not applicable (sibling test) |
-    // | R2 | durable | Awaiting(old ticket) | Ended | E1+E2+E3+E5 |
+    // | R2 | durable/local pool | Awaiting(old ticket) | Ended | E1+E2+E3+E5 |
     // | R3 | durable | Awaiting(old ticket) | Awaiting(new ticket) | E1+E2+E4 |
     // | R4 | durable | Awaiting(old ticket) | exact retry | one Inbox identity |
     // R3 is owned by run-ingress worker settle tests; R4 by the resume-identity
     // test plus each Inbox backend's idempotency-conflict conformance suite.
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .expect("in-memory dispatch"),
     );
     let host = Arc::new(
@@ -2032,6 +2032,71 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
             .iter()
             .all(|summary| summary.run_id != resumed.run_id),
         "R2/E3: terminal settlement removes the authoritative dispatch row"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn coordinator_only_foreground_admission_survives_request_drop_without_a_pool() {
+    use awaken_dispatch::DispatchQueue as _;
+
+    // Causes: C1 durable dispatch is installed; C2 this Coordinator owns no
+    // local pool; C3 the foreground request is dropped before a remote Worker
+    // claims. Effects: E1 one row is committed to the same DispatchStore;
+    // E2 no local physical attempt starts; E3 dropping the waiter does not
+    // retract that row. The sibling durable-client test covers local pool
+    // claim, resume and settlement through the same store.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // | Q1 | yes | no  | no  | local claim and settle (sibling) |
+    // | Q2 | yes | yes | yes | E1+E2+E3 |
+    let dispatch = Arc::new(
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
+            .expect("in-memory dispatch"),
+    );
+    let host = Arc::new(
+        SharedHost::new(Arc::new(ClientLookupModel), "stub")
+            .with_client_tools(HashSet::from(["lookup".to_string()]))
+            .with_coordinator_dispatch_store(dispatch.clone()),
+    );
+    let _managed = install_test_dispatch_runtime(&host);
+    host.ensure_dispatch_pool();
+    assert!(host.dispatch.dispatch_pool.get().is_none(), "Q2/E2");
+
+    let request = host.clone();
+    let foreground =
+        tokio::spawn(async move { request.run(None, "remote-dispatch", user("hi")).await });
+    let row = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(row) = dispatch
+                .list_dispatches()
+                .await
+                .expect("dispatch rows")
+                .into_iter()
+                .next()
+            {
+                break row;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("Q2/E1 bounded admission");
+    assert_eq!(row.thread_id, ThreadId("remote-dispatch".into()), "Q2/E1");
+    assert!(!row.physical_attempt_active, "Q2/E2");
+
+    foreground.abort();
+    assert!(
+        matches!(foreground.await, Err(error) if error.is_cancelled()),
+        "Q2/E3",
+    );
+    assert_eq!(
+        dispatch
+            .list_dispatches()
+            .await
+            .expect("retained dispatch")
+            .len(),
+        1,
+        "Q2/E3",
     );
 }
 
@@ -2144,7 +2209,7 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
     // M2 C1+supersede=>E1+E2. Constraint: Session Run reservation and its
     // activity receipt remain the sole Managed-root ingress; no Host fallback.
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .expect("managed ingress fence dispatch"),
     );
     let host = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone());

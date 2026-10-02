@@ -14,8 +14,9 @@ use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_dispatch_erasure::AnyDispatchStore;
 use awaken_lease_contract::WallClock;
-use awaken_dispatch::{AnyDispatchStore, ClaimedRunCommit, DispatchWorker, PendingInput};
+use awaken_dispatch::{ClaimedRunCommit, DispatchWorker, PendingInput};
 use awaken_runtime::RunInput;
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::activation::RunActivation;
@@ -557,7 +558,6 @@ mod tests {
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
     // Lifecycle and recovery fixtures: no deadline, so wall time.
-    use awaken_dispatch::AnyDispatchStore;
     use awaken_runtime_contract::CancellationToken;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
@@ -1165,8 +1165,10 @@ mod tests {
             let scheduler = durable.then(|| RunScheduler {
                 clock: awaken_lease_contract::system_clock(),
                 store: Arc::new(
-                    AnyDispatchStore::open_sqlite_in_memory(awaken_lease_contract::system_clock())
-                        .unwrap(),
+                    awaken_dispatch::open_sqlite_dispatch_store_in_memory(
+                        awaken_lease_contract::system_clock(),
+                    )
+                    .unwrap(),
                 ),
                 commit: commit.clone(),
                 reader: commit.clone(),
@@ -1289,7 +1291,7 @@ mod tests {
         let scheduler = RunScheduler {
             clock: awaken_lease_contract::system_clock(),
             store: Arc::new(
-                AnyDispatchStore::open_sqlite(
+                awaken_dispatch::open_sqlite_dispatch_store(
                     &dispatch_path,
                     awaken_lease_contract::system_clock(),
                 )
@@ -1361,7 +1363,7 @@ mod tests {
         let replacement = RunScheduler {
             clock: awaken_lease_contract::system_clock(),
             store: Arc::new(
-                AnyDispatchStore::open_sqlite(
+                awaken_dispatch::open_sqlite_dispatch_store(
                     &dispatch_path,
                     awaken_lease_contract::system_clock(),
                 )
@@ -1431,7 +1433,7 @@ mod tests {
             execution(RunScheduler {
                 clock: awaken_lease_contract::system_clock(),
                 store: Arc::new(
-                    AnyDispatchStore::open_sqlite(
+                    awaken_dispatch::open_sqlite_dispatch_store(
                         &dispatch_path,
                         awaken_lease_contract::system_clock(),
                     )

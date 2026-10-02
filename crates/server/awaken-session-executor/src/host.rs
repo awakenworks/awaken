@@ -29,12 +29,13 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunRecoverySource};
+use awaken_dispatch_erasure::AnyDispatchStore;
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 #[cfg(any(test, feature = "test-support"))]
 use awaken_resource_contract::{FileCatalog, FileStore};
 use awaken_dispatch::{
-    AnyDispatchStore, CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue, Inbox,
-    PendingInput, RunDispatch, SubmitOptions, WorkerResolver,
+    CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue, Inbox, PendingInput,
+    RunDispatch, SubmitOptions, WorkerResolver,
 };
 use awaken_runtime::{DirectAttemptDriver, Runtime};
 use awaken_runtime_contract::CancellationToken;

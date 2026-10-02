@@ -14,7 +14,7 @@ pub(crate) struct DispatchCapability {
     /// and resolve the configured durable backend; Workers inject their HTTP
     /// transport here so no process-global compatibility slot becomes a second
     /// dispatch authority.
-    pub(crate) dispatch_store_override: Option<Arc<awaken_dispatch::AnyDispatchStore>>,
+    pub(crate) dispatch_store_override: Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>>,
     /// Cold-Worker adapter over the configured Session Runtime. It owns only weak
     /// host wiring plus Resource/credential SPIs, so installing it cannot create
     /// an `Arc<SharedHost>` cycle or a second Vault/materialization path.
@@ -131,7 +131,10 @@ impl SharedHost {
     /// another process-global configuration source to activate a transport they
     /// supplied directly.
     #[must_use]
-    pub fn with_dispatch_store(mut self, store: Arc<awaken_dispatch::AnyDispatchStore>) -> Self {
+    pub fn with_dispatch_store(
+        mut self,
+        store: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
+    ) -> Self {
         self.dispatch.dispatch_store_override = Some(store);
         self.deployment.durable = true;
         self.deployment.disable_local_pool = false;
@@ -148,7 +151,7 @@ impl SharedHost {
     #[must_use]
     pub fn with_coordinator_dispatch_store(
         mut self,
-        store: Arc<awaken_dispatch::AnyDispatchStore>,
+        store: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
     ) -> Self {
         self.dispatch.dispatch_store_override = Some(store);
         self.deployment.durable = true;
@@ -176,11 +179,13 @@ impl SharedHost {
         self.dispatch.dispatch_pool_sizing =
             crate::DispatchPoolSizing::Registered(capacity.into_slots());
         self.with_dispatch_store(Arc::new(
-            awaken_dispatch::AnyDispatchStore::from_dispatch(dispatch),
+            awaken_dispatch_erasure::AnyDispatchStore::from_dispatch(dispatch),
         ))
     }
 
-    pub fn dispatch_store(&self) -> Result<Arc<awaken_dispatch::AnyDispatchStore>, HostError> {
+    pub fn dispatch_store(
+        &self,
+    ) -> Result<Arc<awaken_dispatch_erasure::AnyDispatchStore>, HostError> {
         self.optional_dispatch_store().ok_or_else(|| {
             HostError::internal("database-less Worker requires an injected dispatch transport")
         })
@@ -191,7 +196,7 @@ impl SharedHost {
     /// Thread truth without manufacturing a queue merely for discovery.
     pub(crate) fn optional_dispatch_store(
         &self,
-    ) -> Option<Arc<awaken_dispatch::AnyDispatchStore>> {
+    ) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>> {
         self.dispatch.dispatch_store_override.clone().or_else(|| {
             self.authority
                 .as_ref()

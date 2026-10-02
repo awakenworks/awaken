@@ -1122,7 +1122,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     let run_id = RunId("cold-session-reservation-run".into());
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .expect("reservation dispatch"),
     );
     let host =
@@ -1663,7 +1663,7 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     // this test does not introduce a second topology or recovery mechanism.
     let thread = "worker-owned-reservation";
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
             awaken_lease_testkit::ManualClock::new(0),
         ))
         .expect("report continuation queue"),

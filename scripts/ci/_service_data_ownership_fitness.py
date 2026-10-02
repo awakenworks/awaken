@@ -56,7 +56,7 @@ WORKER_REGISTRY_SQLITE_SOURCE = "crates/server/awaken-worker-registry/src/sqlite
 WORKER_REGISTRY_LIB_SOURCE = "crates/server/awaken-worker-registry/src/lib.rs"
 DREAM_APPLICATION_SOURCE = "crates/server/awaken-dream-application/src/lib.rs"
 TOOL_RELAY_SOURCE = "crates/worker/awaken-tool-relay/src/lib.rs"
-RUN_INGRESS_ANY_SOURCE = "crates/server/awaken-dispatch/src/any.rs"
+RUN_INGRESS_FACTORY_SOURCE = "crates/server/awaken-dispatch/src/any_factory.rs"
 RUN_INGRESS_LIB_SOURCE = "crates/server/awaken-dispatch/src/lib.rs"
 RUN_INGRESS_SQLITE_SOURCE = "crates/server/awaken-dispatch/src/sqlite.rs"
 RUNTIME_AUTHORITY_SOURCE = "crates/server/awaken-coordinator/src/runtime_authority.rs"
@@ -355,8 +355,8 @@ NON_PRODUCT_APIS = (
         TEST_SUPPORT_GATE,
     ),
     (
-        "AnyDispatchStore::open_sqlite_in_memory",
-        RUN_INGRESS_ANY_SOURCE,
+        "open_sqlite_dispatch_store_in_memory",
+        RUN_INGRESS_FACTORY_SOURCE,
         r"\bpub\s+fn\s+open_sqlite_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
@@ -1007,7 +1007,7 @@ def product_dispatch_fallback_violations(source: str) -> list[str]:
     )
     guarded = re.search(
         rf"None\s*=>\s*\{{.*?{TEST_SUPPORT_GATE}.*?"
-        rf"AnyDispatchStore::open_sqlite_in_memory\(\).*?"
+        rf"(?:awaken_dispatch::)?open_sqlite_dispatch_store_in_memory\(\).*?"
         rf"#\s*\[\s*cfg\s*\(\s*not\s*\(\s*any\s*\(\s*test\s*,\s*feature\s*=\s*\"test-support\"\s*\)\s*\)\s*\)\s*\].*?"
         r"return\s+Err\(.*?product SQLite dispatch requires a durable storage_dir",
         source,
@@ -1483,7 +1483,7 @@ def selftest() -> None:
         + "pub struct InMemoryDreamProcessStore;",
         TOOL_RELAY_SOURCE: any_gate
         + "pub use ledger::InMemoryOperationLedger;",
-        RUN_INGRESS_ANY_SOURCE: any_gate + "pub fn open_sqlite_in_memory() {}",
+        RUN_INGRESS_FACTORY_SOURCE: any_gate + "pub fn open_sqlite_in_memory() {}",
         RUN_INGRESS_LIB_SOURCE: any_gate
         + "pub mod memory;\n"
         + any_gate
@@ -1558,13 +1558,13 @@ def selftest() -> None:
     ]  # O20 target-conditioned normal edge
     guarded_dispatch = (
         'None => { #[cfg(any(test, feature = "test-support"))] '
-        "AnyDispatchStore::open_sqlite_in_memory()?; "
+        "awaken_dispatch::open_sqlite_dispatch_store_in_memory()?; "
         '#[cfg(not(any(test, feature = "test-support")))] '
         'return Err(internal("product SQLite dispatch requires a durable storage_dir")); }'
     )
     assert product_dispatch_fallback_violations(guarded_dispatch) == []  # O21
     assert product_dispatch_fallback_violations(
-        "None => AnyDispatchStore::open_sqlite_in_memory()?"
+        "None => awaken_dispatch::open_sqlite_dispatch_store_in_memory()?"
     ) == ["SQLite dispatch missing-storage path does not fail closed"]  # O22
     assert redundant_admin_store_reexport_violations("pub struct AdminState;") == []  # O23
     assert redundant_admin_store_reexport_violations(
