@@ -18,13 +18,16 @@ use awaken_session_executor::SharedHost;
 use awaken_session_environment::SandboxEnvironmentProvider;
 use awaken_session_environment_contract::HandExecutorFactory;
 
+mod acp_backend;
 mod acp_policy;
 mod acp_provision;
 mod container;
 mod local;
+mod sandbox_source;
 
 pub use acp_policy::acp_adapter_policy;
 pub use acp_provision::PublishedAcpLaunchResolver;
+pub use sandbox_source::{AcpLaunchRegistry, LaunchSource};
 
 pub use container::{
     ContainerTierPolicy, build_container_environment_for_realization, package_image_provisioner,
@@ -199,7 +202,7 @@ pub async fn with_session_environment_from_deployment_at(
 pub async fn with_acp_launch_source(
     host: SharedHost,
     hand_factory: Arc<dyn HandExecutorFactory>,
-    source: awaken_session_executor::LaunchSource,
+    source: LaunchSource,
 ) -> Result<SharedHost, String> {
     let host = with_session_environment_from_deployment(
         host,
@@ -207,7 +210,58 @@ pub async fn with_acp_launch_source(
         &ContainerTierPolicy::default(),
     )
     .await?;
-    Ok(with_backend_owned_environment(host).with_acp_launch_source(source))
+    Ok(install_acp_source(
+        with_backend_owned_environment(host),
+        source,
+        None,
+    ))
+}
+
+fn install_acp_source(
+    host: SharedHost,
+    source: LaunchSource,
+    store_dir: Option<std::path::PathBuf>,
+) -> SharedHost {
+    let portable_root = host.deployment_config().acp_session_blob_root.clone();
+    let observer = host.acp_launch_observer();
+    host.with_acp(Arc::new(acp_backend::BoundAcpSessionFactory::new(
+        source,
+        Some(observer),
+        portable_root,
+        store_dir,
+    )))
+}
+
+/// Deterministic test/dev startup on the same bound Session process factory.
+/// Its resolver remains the only source of model and credential requirements.
+#[must_use]
+pub fn with_projected_acp(
+    host: SharedHost,
+    cli: awaken_run_executor_acp::AcpCli,
+    resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver>,
+    store_dir: Option<std::path::PathBuf>,
+) -> SharedHost {
+    with_projected_acp_argv(host, cli, resolver, store_dir, None)
+}
+
+#[must_use]
+pub fn with_projected_acp_argv(
+    host: SharedHost,
+    cli: awaken_run_executor_acp::AcpCli,
+    resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver>,
+    store_dir: Option<std::path::PathBuf>,
+    launch_argv: Option<Vec<String>>,
+) -> SharedHost {
+    let secret_broker = resolver.secret_broker();
+    let source = LaunchSource::Projected(
+        AcpLaunchRegistry::single_with_resolved_argv(cli, resolver, launch_argv)
+            .unwrap_or_else(|error| panic!("configure projected ACP launch route: {error}")),
+    );
+    let host = install_acp_source(host, source, store_dir);
+    match secret_broker {
+        Some(broker) => host.with_session_secret_broker(broker),
+        None => host,
+    }
 }
 
 /// Install the exact ACP routes advertised by this Host's typed deployment.
@@ -257,11 +311,11 @@ pub fn with_acp_from_deployment(
             )
         })
         .collect();
-    let source = awaken_session_executor::LaunchSource::Projected(
-        awaken_session_executor::AcpLaunchRegistry::with_resolved_argv(routes)
+    let source = LaunchSource::Projected(
+        AcpLaunchRegistry::with_resolved_argv(routes)
             .unwrap_or_else(|error| panic!("configure ACP launch routes: {error}")),
     );
-    let host = host.with_acp_launch_source(source);
+    let host = install_acp_source(host, source, None);
     match credentials {
         Some(credentials) => host.with_session_secret_broker(Arc::new(credentials)),
         None => host,

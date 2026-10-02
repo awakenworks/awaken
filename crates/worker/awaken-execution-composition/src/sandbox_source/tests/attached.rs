@@ -210,11 +210,14 @@ fn source(sandbox: Arc<Sandbox>, fail: bool) -> (BoundLocalChannelSource, Arc<Ex
         drops: Arc::new(AtomicUsize::new(0)),
         fail,
     });
-    let tools = Arc::new(crate::acp_tool_export::AttachedToolSet {
-        exporter: exporter.clone(),
-        descriptors: vec![],
-        executors: vec![],
-    });
+    let tools = Arc::new(
+        awaken_runtime_contract::tool_export::AttachedToolSet::new(
+            exporter.clone(),
+            vec![],
+            vec![],
+        )
+        .unwrap(),
+    );
     (
         bound_projecting_source(sandbox, "claude").with_attached_tools(Some(tools)),
         exporter,
@@ -375,12 +378,15 @@ async fn unsupported_environment_adapter_and_exporter_fail_closed() {
     // adapter -> no attached process. A14 legacy HTTP-only exporter -> default
     // port rejects attached I/O and reaps helper, never starts the primary or
     // falls back to an inaccessible Worker HTTP URL.
-    let exporter = Arc::new(crate::acp_tool_export::RecordingAcpToolExporter::default());
-    let tools = Arc::new(crate::acp_tool_export::AttachedToolSet {
-        exporter: exporter.clone(),
-        descriptors: vec![],
-        executors: vec![],
-    });
+    let exporter = Arc::new(HttpOnlyExporter::default());
+    let tools = Arc::new(
+        awaken_runtime_contract::tool_export::AttachedToolSet::new(
+            exporter.clone(),
+            vec![],
+            vec![],
+        )
+        .unwrap(),
+    );
     let sandbox = Arc::new(CapturingAgentSandbox::default());
     let source =
         bound_projecting_source(sandbox.clone(), "claude").with_attached_tools(Some(tools.clone()));
@@ -426,5 +432,21 @@ async fn unsupported_environment_adapter_and_exporter_fail_closed() {
     );
     assert_eq!(sandbox.commands.lock().unwrap().len(), 1);
     assert!(*sandbox.helper.finished.borrow());
-    assert!(exporter.0.lock().unwrap().is_empty());
+    assert_eq!(exporter.0.load(Ordering::SeqCst), 0);
+}
+
+#[derive(Default)]
+struct HttpOnlyExporter(AtomicUsize);
+
+#[async_trait]
+impl AcpToolExporter for HttpOnlyExporter {
+    async fn export_set(
+        &self,
+        _: &str,
+        _: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
+        _: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+    ) -> Result<AcpToolExport, String> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err("attached export must not use the HTTP fallback".into())
+    }
 }

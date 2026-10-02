@@ -62,10 +62,10 @@ reason = "These checks compare two projections derived atomically from the same 
 evidence = "e2e/agent_publication_truth_e2e.ts; cargo test -p awaken-session-executor host::session"
 
 [[waiver]]
-path = "crates/server/awaken-session-executor/src/sandbox_source.rs"
+path = "crates/worker/awaken-execution-composition/src/sandbox_source.rs"
 ranges = ["144-146"]
 reason = "Host-identity support is an immutable SandboxBackend composition fact. Served runs consume the completed capability manifest but cannot replace Namespace with Workdir, or vice versa, after the process has bound."
-evidence = "e2e/acp_projected_local_e2e.mjs; e2e/acp_projected_container_e2e.mjs; cargo test -p awaken-session-executor sandbox_source"
+evidence = "e2e/acp_projected_local_e2e.mjs; e2e/acp_projected_container_e2e.mjs; cargo test -p awaken-execution-composition sandbox_source"
 
 [[waiver]]
 path = "crates/server/awaken-session-executor/src/deployment_config.rs"

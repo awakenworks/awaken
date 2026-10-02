@@ -167,18 +167,22 @@ Verified state after the 2026-08-04 cut:
 - **Worker runtime interface** — `awaken-coordinator-client` owns registration, heartbeat,
   drain, and claim-fenced Session-control clients. `awaken-session-executor` no longer exports
   those Worker transport adapters.
-- **Sandbox realization (`sandbox_source`, `provisioning`)** — `sandbox_source` has zero
-  host references and consumes the Session-owned environment that ADR-0066
-  consolidated; it still uses host-internal modules;
-  `provisioning` reads the run's resolved spec
-  (host-plane knowledge). Requires a narrow `SandboxSource` port; provisioning stays.
-- **ACP (`acp_backend`, `acp_serve`)** — add `impl SharedHost` methods and are held as the
-  `acp` field. The host-side `acp_provision` adapter (`PublishedAcpLaunchResolver`)
-  and deployment route assembly live in `awaken-execution-composition`: they
-  consume the Host's one typed deployment and realize snapshot-pinned access
-  through the shared credential materializer. Moving this config-aware adapter
-  into `run-executor-acp` would violate that crate's *config-free* invariant.
-  `SharedHost` retains the Session environment and Run execution boundary.
+- **Sandbox realization (`sandbox_source`, `provisioning`)** — the sole ACP
+  `sandbox_source` now lives in `awaken-execution-composition` and consumes the
+  Session-owned process environment that ADR-0066 consolidated. Runtime Host
+  hands it only frozen backend, permission, MCP and continuation facts through
+  the existing Session Environment SPI; `provisioning` still reads the run's
+  resolved spec in the Host plane.
+- **ACP (`acp_backend`, `acp_serve`)** — `SharedHost` holds one injected
+  `AcpSessionExecutorFactory` port, selects the frozen root or child backend,
+  and owns Run/Session effects and its hub observer. The bound factory, sole
+  `sandbox_source`, `PublishedAcpLaunchResolver`, and deployment route assembly
+  live in `awaken-execution-composition`; its one source reports the exact
+  credential capability and starts the process in the already selected Session
+  environment. The static ACP executor implements the same port for trusted
+  fixtures. Moving the config-aware resolver into `run-executor-acp` would
+  violate that crate's *config-free* invariant. Other Host ACP catalog and
+  non-ACP process-cleanup callers still require a separate dependency cut.
 - **Managed public routers** — already resolved. `files_router`, `models_router`,
   `memory_stores_router`, and `skills_router` are modules of the single
   `awaken-protocol-managed` anti-corruption boundary and consume injected application

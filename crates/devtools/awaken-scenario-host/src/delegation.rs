@@ -174,7 +174,7 @@ pub async fn build_delegation_router_with_deployment(
     );
     let platform = crate::acp_scenarios::bind_acp_session_environment(
         resource_host_with_deployment(model, model_ref, deployment),
-        awaken_session_executor::LaunchSource::FixedAcp(Box::new(launch)),
+        awaken_execution_composition::LaunchSource::FixedAcp(Box::new(launch)),
         None,
     )
     .await

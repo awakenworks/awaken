@@ -11,7 +11,7 @@ use crate::host::*;
 /// Session context assembly and ACP backend realization.
 pub(crate) struct AttemptBackends {
     /// ACP runtime backend (R3/R4): serves `acp:*` sessions on an external CLI.
-    pub(crate) acp: Option<Arc<crate::acp_backend::AcpBackend>>,
+    pub(crate) acp: Option<Arc<dyn awaken_session_environment_contract::AcpSessionExecutorFactory>>,
     /// Higher-layer transport adapter for Session-owned tools exposed to ACP.
     /// The Host names only this contract; concrete MCP server setup remains in
     /// `awaken-coordinator` and does not add a protocol dependency to the substrate.
@@ -24,30 +24,17 @@ pub(crate) struct AttemptBackends {
     /// adapter may retain another clone, but both share the same repositories,
     /// secret store, revision checks, and extension-consumer registry.
     pub(crate) credential_materializer: Option<crate::PinnedCredentialMaterializer>,
-    /// When set, an ACP CLI's session is harvested/restored under this store's
-    /// durable root (keyed by thread+adapter) so it survives a move to another
-    /// directory or worker. Point it at a **shared** location for cross-machine
-    /// recovery; leave `None` on a single machine (the per-thread config home is
-    /// already stable). The one adapter is shared by ACP recovery and data-subject
-    /// erasure so those paths cannot drift.
-    pub(crate) session_blob_store: Option<Arc<awaken_run_executor_acp::FsSessionBlobStore>>,
 }
 
 impl AttemptBackends {
-    /// No ACP backend or decorator yet; the session-blob store follows the
-    /// deployment's shared root when one is configured.
-    pub(in crate::host) fn new(deployment: &crate::deployment_config::DeploymentConfig) -> Self {
+    /// No ACP backend or decorator yet; process composition installs the
+    /// executor and its optional portable session-home adapter.
+    pub(in crate::host) fn new(_deployment: &crate::deployment_config::DeploymentConfig) -> Self {
         Self {
             acp: None,
             acp_tool_exporter: None,
             attempt_decorator: None,
             credential_materializer: None,
-            // A shared root (e.g. a networked mount) enables cross-machine ACP
-            // session recovery; unset means single-machine (stable config home).
-            session_blob_store: deployment
-                .acp_session_blob_root
-                .clone()
-                .map(|root| Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(root))),
         }
     }
 }

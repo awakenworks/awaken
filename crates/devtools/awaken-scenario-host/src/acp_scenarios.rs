@@ -44,7 +44,7 @@ pub async fn build_acp_control_router() -> Router {
     );
     build_acp_session_environment_router(
         scenario_deployment(),
-        awaken_session_executor::LaunchSource::Fixed(Box::new(launch)),
+        awaken_execution_composition::LaunchSource::Fixed(Box::new(launch)),
         None,
     )
     .await
@@ -90,7 +90,7 @@ pub async fn build_acp_relaunch_failure_router() -> Router {
         },
         &["/bin/sh", "-c", SLOW_FAKE_ACP_JSONRPC_SCRIPT],
     ));
-    let registry = awaken_session_executor::AcpLaunchRegistry::single(
+    let registry = awaken_execution_composition::AcpLaunchRegistry::single(
         cli,
         Arc::new(FailSecondAcpResolver {
             resolutions: std::sync::atomic::AtomicUsize::new(0),
@@ -98,7 +98,7 @@ pub async fn build_acp_relaunch_failure_router() -> Router {
     );
     build_acp_session_environment_router(
         scenario_deployment(),
-        awaken_session_executor::LaunchSource::Projected(registry),
+        awaken_execution_composition::LaunchSource::Projected(registry),
         None,
     )
     .await
@@ -138,8 +138,8 @@ pub async fn build_acp_jsonrpc_router_with_deployment(
             )
         })
         .collect();
-    let launch = awaken_session_executor::LaunchSource::Projected(
-        awaken_session_executor::AcpLaunchRegistry::new(routes)
+    let launch = awaken_execution_composition::LaunchSource::Projected(
+        awaken_execution_composition::AcpLaunchRegistry::new(routes)
             .expect("the production ACP catalog is a unique exact-route set"),
     );
     let mut snapshots = vec![
@@ -212,7 +212,7 @@ pub async fn build_acp_permission_router_with_deployment(
     );
     build_acp_session_environment_router(
         deployment,
-        awaken_session_executor::LaunchSource::FixedAcp(Box::new(launch)),
+        awaken_execution_composition::LaunchSource::FixedAcp(Box::new(launch)),
         None,
     )
     .await
@@ -276,7 +276,7 @@ pub async fn build_acp_tool_bridge_router() -> Router {
     let host_publication = publication.clone();
     let platform = bind_acp_session_environment(
         runtime_resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment).await,
-        awaken_session_executor::LaunchSource::FixedAcp(Box::new(launch)),
+        awaken_execution_composition::LaunchSource::FixedAcp(Box::new(launch)),
         None,
     )
     .await
@@ -459,7 +459,8 @@ pub async fn build_acp_managed_mcp_router() -> Router {
         // launch facts; a static executor here would bypass that environment
         // and reopen the process-placement decision.
         move |host| {
-            awaken_execution_composition::with_backend_owned_environment(host).with_projected_acp(
+            awaken_execution_composition::with_projected_acp(
+                awaken_execution_composition::with_backend_owned_environment(host),
                 scenario_host_acp_cli(fixture_cli),
                 Arc::new(FixedAcpModel),
                 store_dir,
@@ -514,13 +515,13 @@ pub async fn build_acp_real_mcp_router() -> Router {
         deployment,
         None,
         move |host| {
-            awaken_execution_composition::with_backend_owned_environment(host)
-                .with_projected_acp_argv(
-                    cli,
-                    Arc::new(acp_gateway::ScenarioEnvAcpModel),
-                    store_dir,
-                    launch_argv,
-                )
+            awaken_execution_composition::with_projected_acp_argv(
+                awaken_execution_composition::with_backend_owned_environment(host),
+                cli,
+                Arc::new(acp_gateway::ScenarioEnvAcpModel),
+                store_dir,
+                launch_argv,
+            )
         },
     )
     .await
@@ -572,13 +573,13 @@ pub async fn build_acp_gateway_router_with_deployment(
     let resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver> =
         Arc::new(acp_gateway::ScenarioEnvAcpModel);
     let broker = resolver.secret_broker();
-    let registry = awaken_session_executor::AcpLaunchRegistry::single(
+    let registry = awaken_execution_composition::AcpLaunchRegistry::single(
         scenario_host_acp_cli(fake_acp_cli()),
         resolver,
     );
     build_acp_session_environment_router(
         deployment,
-        awaken_session_executor::LaunchSource::Projected(registry),
+        awaken_execution_composition::LaunchSource::Projected(registry),
         broker,
     )
     .await
@@ -606,7 +607,7 @@ pub async fn build_acp_sandboxed_router_with_deployment(
     );
     build_acp_session_environment_router(
         deployment,
-        awaken_session_executor::LaunchSource::Fixed(Box::new(launch)),
+        awaken_execution_composition::LaunchSource::Fixed(Box::new(launch)),
         None,
     )
     .await
@@ -619,7 +620,7 @@ pub async fn build_acp_sandboxed_router_with_deployment(
 /// second sandbox or publication path.
 async fn build_acp_session_environment_router(
     mut deployment: awaken_session_executor::DeploymentConfig,
-    source: awaken_session_executor::LaunchSource,
+    source: awaken_execution_composition::LaunchSource,
     secret_broker: Option<Arc<dyn awaken_run_executor_acp::SecretBroker>>,
 ) -> Router {
     // One typed owner for both roots. Explicit storage/sandbox coordinates are
@@ -674,7 +675,7 @@ async fn build_acp_session_environment_router(
 /// each caller; physical environment selection and ACP binding do not.
 pub(crate) async fn bind_acp_session_environment(
     platform: crate::deployment::ScenarioPlatform,
-    source: awaken_session_executor::LaunchSource,
+    source: awaken_execution_composition::LaunchSource,
     secret_broker: Option<Arc<dyn awaken_run_executor_acp::SecretBroker>>,
 ) -> crate::deployment::ScenarioPlatform {
     platform
@@ -778,7 +779,7 @@ pub async fn build_acp_container_router() -> Router {
                 },
             ],
         );
-        let launch = awaken_session_executor::LaunchSource::Fixed(Box::new(
+        let launch = awaken_execution_composition::LaunchSource::Fixed(Box::new(
             awaken_run_executor_acp::AcpLaunch::custom(vec!["/bin/false".into()], vec![]),
         ));
         (publication, launch, Arc::new(NativePlaywrightMcpModel))
@@ -802,8 +803,11 @@ pub async fn build_acp_container_router() -> Router {
                 },
             }],
         );
-        let launch = awaken_session_executor::LaunchSource::Projected(
-            awaken_session_executor::AcpLaunchRegistry::single(fixture_cli, Arc::new(FixedAcpModel)),
+        let launch = awaken_execution_composition::LaunchSource::Projected(
+            awaken_execution_composition::AcpLaunchRegistry::single(
+                fixture_cli,
+                Arc::new(FixedAcpModel),
+            ),
         );
         (publication, launch, Arc::new(EchoModel))
     } else {
@@ -813,7 +817,7 @@ pub async fn build_acp_container_router() -> Router {
         let argv = scenario_argv(
             &std::env::var("AWAKEN_ACP_ARGV").expect("container scenario requires AWAKEN_ACP_ARGV"),
         );
-        let launch = awaken_session_executor::LaunchSource::Fixed(Box::new(
+        let launch = awaken_execution_composition::LaunchSource::Fixed(Box::new(
             awaken_run_executor_acp::AcpLaunch::custom(argv, vec![]),
         ));
         (publication, launch, Arc::new(EchoModel))

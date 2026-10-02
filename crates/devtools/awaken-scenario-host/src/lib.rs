@@ -126,7 +126,7 @@ pub async fn build_outcome_matrix_router() -> Router {
     let publication = fixed_host_backend_publication("acp-agent", "acp:claude", Vec::new());
     let platform = acp_scenarios::bind_acp_session_environment(
         resource_host(model, model_ref),
-        awaken_session_executor::LaunchSource::Fixed(Box::new(launch)),
+        awaken_execution_composition::LaunchSource::Fixed(Box::new(launch)),
         None,
     )
     .await
