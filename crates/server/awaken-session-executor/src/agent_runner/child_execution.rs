@@ -16,7 +16,7 @@ use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoo
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch_erasure::AnyDispatchStore;
 use awaken_lease_contract::WallClock;
-use awaken_dispatch::{ClaimedRunCommit, DispatchWorker, PendingInput};
+use awaken_dispatch::{ClaimedRunCommit, PendingInput};
 use awaken_runtime::RunInput;
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::activation::RunActivation;
@@ -233,12 +233,6 @@ pub(super) async fn await_committed_child_boundary(
         })?
 }
 
-pub(super) fn isolated_child_recovery_projection(
-    parent: Option<&Arc<awaken_dispatch::RecoveryProjection>>,
-) -> Option<Arc<awaken_dispatch::RecoveryProjection>> {
-    parent.map(|_| Arc::new(awaken_dispatch::RecoveryProjection::new()))
-}
-
 /// Drive a configured Agent to exactly one settled Run boundary.
 ///
 /// This is the substrate used by parent-mediated child Runs. Starting and
@@ -399,40 +393,18 @@ pub(crate) async fn run_configured_agent_until_boundary(
                 &adapters,
                 authorization.policy.clone(),
             )?;
-            // A database-independent Worker keeps one recovery projection per
-            // claimed Run. Reusing the parent's projection lets the child install
-            // its snapshot over the still-running parent and fences whichever one
-            // commits next. Local authoritative stores need no projection.
-            let child_projection =
-                isolated_child_recovery_projection(scheduler.recovery_projection.as_ref());
-            let worker_reader: Arc<dyn CommittedThreadView> = child_projection
-                .as_ref()
-                .map_or_else(|| reader.clone(), |projection| projection.clone());
-            boundary_reader = worker_reader.clone();
-            let mut worker = DispatchWorker::from_parts(
+            // The sole child assembly owns the local/remote reader choice and
+            // installs the child's exact claim authority before either start or
+            // resume enters the durable queue.
+            let (worker, worker_reader) = super::ChildWorkerFactory::parent_execution(
                 runtime,
-                scheduler.store.clone(),
-                scheduler.commit.clone(),
-                worker_reader,
-                scheduler.owner,
-            )
-            .with_context(context.clone())
-            .with_local_credential_capabilities(adapters.credential_capabilities.clone());
-            if context
-                .model_request_gate
-                .as_ref()
-                .is_some_and(|gate| gate.process_bound())
-                && let Some(factory) = &scheduler.claimed_model_request_gate
-            {
-                worker = worker.with_claimed_model_request_gate_factory(factory.clone());
-            }
-            worker.install_attempt_executor(attempt_executor);
-            if let Some(claimed_commit) = scheduler.claimed_commit {
-                worker = worker.with_claimed_commit(claimed_commit);
-            }
-            if let Some(projection) = child_projection {
-                worker = worker.with_recovery_projection(projection);
-            }
+                &scheduler,
+                reader.clone(),
+                context.clone(),
+                adapters.credential_capabilities.clone(),
+                attempt_executor,
+            );
+            boundary_reader = worker_reader.clone();
             Ok::<_, AgentRunError>(match operation {
                 (Some(activation), None) => {
                     // Stable child identity reconnects to committed truth. Only a
@@ -571,7 +543,7 @@ mod tests {
 
     use super::{
         ChildExecutionAdapters, ChildRunRequest, RunScheduler, await_committed_child_boundary,
-        isolated_child_recovery_projection, run_configured_agent_until_boundary,
+        run_configured_agent_until_boundary,
     };
     use crate::agent_catalog::AgentCatalog;
     use crate::agent_runner::AgentRunBoundary;
@@ -580,23 +552,6 @@ mod tests {
         AgentExecution, AgentRunSandbox, run_agent_until_boundary, run_configured_agent,
     };
     use crate::config::server_config;
-
-    #[test]
-    fn remote_child_never_reuses_the_parent_recovery_projection() {
-        // Cause/effect graph and decision table:
-        // C1 a local authoritative scheduler has no recovery projection -> E1
-        // the child adds none; C2 a database-independent Worker has a parent
-        // projection -> E2 the child gets a distinct empty projection.
-        // R1=!C2=>E1; R2=C2=>E2. FMECA: sharing C2 lets the child overwrite the
-        // running parent's cached claim snapshot and deterministically fences
-        // the next parent or child commit as the wrong Run.
-        assert!(isolated_child_recovery_projection(None).is_none(), "R1/E1");
-        let parent = Arc::new(awaken_dispatch::RecoveryProjection::new());
-        let child = isolated_child_recovery_projection(Some(&parent)).expect("R2/E2");
-        assert!(!Arc::ptr_eq(&parent, &child), "R2/E2");
-        assert!(parent.current().is_none());
-        assert!(child.current().is_none());
-    }
 
     struct EventuallySettledReader {
         reads: AtomicUsize,

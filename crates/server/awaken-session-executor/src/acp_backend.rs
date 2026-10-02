@@ -112,6 +112,19 @@ pub fn session_sandbox_base(deployment: &crate::DeploymentConfig) -> std::path::
         })
 }
 
+/// Install the existing ACP executor's policy/factory port for Host unit tests
+/// that exercise ACP projection without launching a real CLI process.
+#[cfg(test)]
+pub(crate) fn with_fixture_acp(host: crate::host::SharedHost) -> crate::host::SharedHost {
+    let launch = awaken_run_executor_acp::AcpLaunch::custom(vec!["true".into()], vec![]);
+    let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
+        launch,
+    ));
+    host.with_acp(Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(
+        source,
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,16 +174,6 @@ mod tests {
         {
             unreachable!("the builder test never runs a Run")
         }
-    }
-
-    fn with_fixture_acp(host: SharedHost) -> SharedHost {
-        let launch = awaken_run_executor_acp::AcpLaunch::custom(vec!["true".into()], vec![]);
-        let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
-            launch,
-        ));
-        host.with_acp(Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(
-            source,
-        )))
     }
 
     #[test]

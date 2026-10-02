@@ -106,44 +106,19 @@ impl HostWorkerResolver {
             authorization.policy,
         )
         .map_err(|error| Self::execution_error(error.to_string()))?;
-        let worker = self.boundary_worker(host, claimed, commit, false).await?;
-        let mut worker =
-            Arc::into_inner(worker).expect("a new child recovery boundary worker is not shared");
-        // A cold/replacement child must resolve the same publication-pinned model
-        // as the original attempt. The Runtime's host fallback is intentionally
-        // unconfigured on a database-independent Worker; omitting this common
-        // materializer silently turns a recovered child into a different Agent.
-        if let Some(materializer) = host.worker_inference_materializer() {
-            worker = worker.with_inference_materializer(materializer);
-        }
-        worker.install_attempt_executor(attempt);
-        let workspace_id = claimed.request.execution_scope.as_ref().map_or_else(
-            || host.local_workspace().to_owned(),
-            |scope| scope.0.0.clone(),
-        );
-        let child_context = substrate
-            .attempt_context
-            .with_model_content_materializer(Arc::new(
-                crate::model_content_materializer::ResourceModelContentMaterializer::new(
-                    host.resources.file_content_source.clone(),
-                    workspace_id,
-                    claimed.request.thread_id().0.clone(),
-                    Some(awaken_dispatch_contract::RunClaim::from(&claimed.lease)),
-                ),
-            ));
-        let has_model_request_gate = child_context.model_request_gate.is_some();
-        worker = worker
-            .with_context(child_context)
-            .with_local_credential_capabilities(adapters.credential_capabilities);
-        if has_model_request_gate && let Some(endpoint) = host.coordination_endpoint() {
-            worker = worker.with_claimed_model_request_gate_factory(
-                crate::coordination::claimed_model_request_gate_factory(
-                    endpoint,
-                    session_thread_id.0.clone(),
-                ),
-            );
-        }
-        Ok(Arc::new(worker))
+        crate::agent_runner::ChildWorkerFactory::claimed_recovery(
+            self,
+            host,
+            claimed,
+            commit,
+            session_thread_id,
+            crate::agent_runner::ClaimedChildAttempt {
+                executor: attempt,
+                context: substrate.attempt_context,
+                credentials: adapters.credential_capabilities,
+            },
+        )
+        .await
     }
 
     pub(super) async fn reconcile_dispatched_mcp(
@@ -265,7 +240,10 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                     .await
                     .map_err(|error| Self::execution_error(error.to_string()))?,
             );
-            return self.boundary_worker(&host, claimed, commit, false).await;
+            return Ok(Arc::new(
+                self.boundary_worker(&host, claimed, commit, None, false)
+                    .await?,
+            ));
         }
         if claimed.cancellation_requested {
             return self.cancellation_worker(&host, claimed).await;
@@ -511,7 +489,9 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 .await
                 .map_err(|commit_error| Self::execution_error(commit_error.to_string()))?,
         );
-        let worker = self.boundary_worker(&host, claimed, commit, false).await?;
+        let worker = self
+            .boundary_worker(&host, claimed, commit, None, false)
+            .await?;
         worker
             .fail_claimed_before_execution(claimed, "dispatch_resolution_failed", error.to_string())
             .await
@@ -528,7 +508,9 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 .await
                 .map_err(|error| Self::execution_error(error.to_string()))?,
         );
-        let worker = self.boundary_worker(&host, claimed, commit, false).await?;
+        let worker = self
+            .boundary_worker(&host, claimed, commit, None, false)
+            .await?;
         worker.terminalize_retry_exhausted(claimed).await
     }
 

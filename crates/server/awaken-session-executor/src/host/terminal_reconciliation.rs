@@ -287,16 +287,20 @@ impl HostWorkerResolver {
                 .await
                 .map_err(|error| Self::execution_error(error.to_string()))?,
         );
-        self.boundary_worker(host, claimed, commit, true).await
+        Ok(Arc::new(
+            self.boundary_worker(host, claimed, commit, None, true)
+                .await?,
+        ))
     }
 
-    pub(super) async fn boundary_worker(
+    pub(crate) async fn boundary_worker(
         &self,
         host: &SharedHost,
         claimed: &awaken_dispatch::Claimed,
         commit: Arc<crate::store::HostCommit>,
+        context: Option<awaken_runtime_contract::RuntimeRunContext>,
         install_cancellation_executor: bool,
-    ) -> Result<Arc<awaken_dispatch::DispatchWorker<AnyDispatchStore>>, awaken_dispatch::Error>
+    ) -> Result<awaken_dispatch::DispatchWorker<AnyDispatchStore>, awaken_dispatch::Error>
     {
         let recovery_projection = commit.recovery_projection();
         let store = host
@@ -314,15 +318,20 @@ impl HostWorkerResolver {
         if let Some(observer) = host.session_run_admission_observer() {
             worker = worker.with_session_run_admission_observer(observer);
         }
+        let mut context = context;
         if !host.is_database_less_worker()
             && let Some(observer) = host
                 .dispatched_memory_terminal_observer(&claimed.request, commit.clone())
                 .await
                 .map_err(|error| Self::execution_error(error.to_string()))?
         {
-            worker = worker.with_context(
-                awaken_runtime_contract::RuntimeRunContext::new().with_terminal_observer(observer),
-            );
+            // Child execution supplies its attempt context here. Adding the
+            // exact logical Run observer before the single `with_context`
+            // prevents a later child install from erasing terminal Memory work.
+            context = Some(context.unwrap_or_default().with_terminal_observer(observer));
+        }
+        if let Some(context) = context {
+            worker = worker.with_context(context);
         }
         if install_cancellation_executor
             && matches!(
@@ -355,7 +364,7 @@ impl HostWorkerResolver {
         if let Some(projection) = recovery_projection {
             worker = worker.with_recovery_projection(projection);
         }
-        Ok(Arc::new(worker))
+        Ok(worker)
     }
 }
 
@@ -409,7 +418,7 @@ pub(super) async fn reconcile_committed_terminals(
                 };
 
                 let worker = match resolver
-                    .boundary_worker(host, &claimed, commit, false)
+                    .boundary_worker(host, &claimed, commit, None, false)
                     .await
                 {
                     Ok(worker) => worker,
