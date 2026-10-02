@@ -45,6 +45,47 @@ pub(super) fn env_executable() -> Option<PathBuf> {
     trusted_operator_executable("env")
 }
 
+const LOCAL_WORKER_ENVIRONMENT_KEYS: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LANG",
+    "TMPDIR",
+    "XDG_RUNTIME_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+];
+
+fn launch_assignment(key: &str, value: &std::ffi::OsStr) -> Result<std::ffi::OsString, String> {
+    if value
+        .to_string_lossy()
+        .chars()
+        .any(|character| matches!(character, '\r' | '\n'))
+    {
+        return Err("local Worker launch environment contains a newline".into());
+    }
+    let mut assignment = std::ffi::OsString::from(key);
+    assignment.push("=");
+    assignment.push(value);
+    Ok(assignment)
+}
+
+/// Process-placement inputs only. The Worker still receives its model,
+/// credential, sandbox and endpoint policy through the existing deployment
+/// document and signed control plane, never an ambient provider key.
+pub(super) fn launch_environment() -> Result<Vec<std::ffi::OsString>, String> {
+    let mut assignments = Vec::new();
+    for key in LOCAL_WORKER_ENVIRONMENT_KEYS {
+        if let Some(value) = std::env::var_os(key) {
+            assignments.push(launch_assignment(key, &value)?);
+        }
+    }
+    Ok(assignments)
+}
+
 pub(super) async fn available() -> bool {
     let Some(systemctl) = control_executable() else {
         return false;

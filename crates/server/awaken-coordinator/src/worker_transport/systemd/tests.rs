@@ -8,6 +8,30 @@ fn running(unit: &str, invocation_id: &str) -> String {
 }
 
 #[test]
+fn local_worker_launch_environment_admits_only_safe_single_line_inputs() {
+    // Causes: C1 a process-placement key is in the closed allowlist; C2 its
+    // value has a newline; C3 an ambient model/proxy credential key exists.
+    // Effects: E1 C1+!C2 yields one exact assignment; E2 C2 refuses before
+    // unit launch; E3 C3 is never projected into the Worker command.
+    // | Rule | C1 | C2 | C3 | Effect |
+    // | L1   | Y  | N  | -  | E1     |
+    // | L2   | Y  | Y  | -  | E2     |
+    // | L3   | N  | -  | Y  | E3     |
+    assert_eq!(
+        launch_assignment("HOME", std::ffi::OsStr::new("/tmp/owner")).unwrap(),
+        std::ffi::OsString::from("HOME=/tmp/owner"),
+        "L1/E1"
+    );
+    assert!(
+        launch_assignment("HOME", std::ffi::OsStr::new("/tmp/owner\nforeign")).is_err(),
+        "L2/E2"
+    );
+    for key in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "HTTPS_PROXY"] {
+        assert!(!LOCAL_WORKER_ENVIRONMENT_KEYS.contains(&key), "L3/E3 {key}");
+    }
+}
+
+#[test]
 fn systemd_binding_and_exit_decision_table_rejects_replacements_and_incomplete_policy() {
     // C0 exact local-process incarnation derives one unit name for launcher
     // and evidence; malformed input is refused before a launch or bind. C1

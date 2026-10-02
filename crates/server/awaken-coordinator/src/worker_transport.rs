@@ -85,6 +85,10 @@ impl WorkerTransport {
         systemd::env_executable()
     }
 
+    pub fn systemd_user_launch_environment() -> Result<Vec<std::ffi::OsString>, String> {
+        systemd::launch_environment()
+    }
+
     pub async fn systemd_user_unit_running(incarnation_id: &str) -> Result<bool, String> {
         systemd::unit_running(incarnation_id).await
     }
