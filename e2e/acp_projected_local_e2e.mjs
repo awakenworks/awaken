@@ -338,8 +338,11 @@ async function main() {
   // E2=C3 reloads the existing ACP Session and history; E3=C4 maps process exit
   // to the classified terminal boundary without a phantom success.
   // Constraints/invariant: catalog identity, publication pin, and durable ACP
-  // session id are single authorities. Decision rules: L1=C1+C2=>E1;
-  // L2=L1+C3=>E2; L3=C4=>E3.
+  // session id are single authorities. C5=the Coordinator owns projection
+  // policy without an ACP executor while its registered Worker owns the exact
+  // launch route; E4=C5 permits the committed Session input to reach that
+  // Worker without installing a second Coordinator executor. Decision rules:
+  // L1=C1+C2=>E1; L2=L1+C3=>E2; L3=C4=>E3; L4=C1+C2+C5=>E4.
   installGeminiFixture();
   fs.mkdirSync(STORAGE, { recursive: true });
   const binary = awakenBin();

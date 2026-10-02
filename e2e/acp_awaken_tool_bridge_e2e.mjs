@@ -14,16 +14,19 @@ import {
   stopServer,
   waitForPort,
   waitForSessionEventReceipt,
+  waitForValue,
 } from './harness.mjs';
+import { sqliteRows } from './sqlite.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 39783);
 const BASE = `http://127.0.0.1:${PORT}`;
 const BETAS = ['managed-agents-2026-04-01'];
-// Permission/tool identity decision table: C1 the ACP client calls the Session
-// MCP server's `write`; C2 protocol projection qualifies MCP identities.
-// R1 C1+C2 => the durable approval event and its decision both use this one
-// canonical identity. A bare `write` would test a deprecated parallel alias.
-const QUALIFIED_WRITE = 'mcp.awaken_session.write';
+// Permission/tool identity decision table: C1 the ACP client calls the reserved
+// Session MCP server's `write`; C2 its wire alias is `mcp__awaken_session__write`.
+// R1 C1+C2 => permission and the Managed event use the one builtin `write`
+// identity; the pending event id, not the wire alias, binds the later decision.
+// External MCP tools retain their separate `agent.mcp_tool_use` projection.
+const BUILTIN_WRITE = 'write';
 const STORAGE = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-tool-bridge-'));
 
 async function listEvents(client, sessionId) {
@@ -52,19 +55,41 @@ async function begin(client) {
     receiptId,
     BETAS,
     ({ delta }) => delta.some((event) => event.type === 'agent.tool_use'
-      && event.name === QUALIFIED_WRITE
+      && event.name === BUILTIN_WRITE
       && event.evaluated_permission === 'ask')
       && delta.some((event) => event.type === 'session.status_idle'
         && event.stop_reason?.type === 'requires_action'),
     'ACP Session MCP write to reach durable approval',
   );
   const tool = awaiting.delta.find((event) => event.type === 'agent.tool_use'
-    && event.name === QUALIFIED_WRITE);
+    && event.name === BUILTIN_WRITE);
   assert.ok(tool);
+  const threadIdle = awaiting.delta.find((event) => event.type === 'session.thread_status_idle');
+  assert.deepEqual(threadIdle?.stop_reason?.event_ids, [tool.id], 'approval names the exact builtin tool event');
+  assert.ok(!awaiting.delta.some((event) => event.type === 'agent.mcp_tool_use'), 'reserved Session bridge is one builtin, not a second MCP tool');
   assert.deepEqual(tool.input, {
     path: '/mnt/session/outputs/acp-hitl.txt',
     content: 'AWAKEN-ACP-HITL-OK',
   }, 'Codex-style MCP envelope is normalized to exact Awaken write arguments');
+  // C1 the public requires_action is committed; C2 its Dispatch physical slot
+  // is still occupied or exactly retired. Only C1+C2(retired) permits the
+  // restart-and-approval rule; crashing on C1 alone is the retained-unknown
+  // scenario owned by the durable recovery suite. The slot is the source of
+  // truth, so no timer or Session status substitutes for its retirement.
+  // awaken-wait: wait for the exact durable physical boundary before restart.
+  await waitForValue(
+    async () => sqliteRows(
+      `${STORAGE}/dispatch.db`,
+      `SELECT status, active_attempt_owner, active_attempt_epoch
+         FROM runtime_dispatch WHERE thread_id = ?`,
+      session.id,
+    )[0],
+    (row) => row?.status === 'awaiting'
+      && row.active_attempt_owner === null
+      && row.active_attempt_epoch === null,
+    'the ACP awaiting dispatch to retire its physical attempt',
+    { timeoutMs: 30_000, pollMs: 20 },
+  );
   return { session, tool };
 }
 
@@ -82,6 +107,13 @@ async function decide(client, sessionId, toolId, result) {
 }
 
 async function main() {
+  // End-to-end decision table: C1 the exact ACP write is awaiting approval;
+  // C2 its physical attempt is retired; C3 the operator allows or denies;
+  // C4 RuntimeToolBatch commits success or a denied result. Effects:
+  // R1=C1+C2+allow+success -> one write, MCP readback, Artifact, end_turn;
+  // R2=C1+C2+deny+error -> model-visible denial, no write or Artifact;
+  // R3=repeated approval -> 400/409 and no second execution. An occupied
+  // attempt crash remains the separate retained-unknown recovery test.
   // Substrate decision table: C1 the ACP fixture requests sandbox-absolute
   // Awaken Session MCP write/read paths; C2 the provider is Workdir/Namespace.
   // R1 C1+Namespace preserves path identity across ACP and tool processes;
@@ -125,6 +157,15 @@ async function main() {
           && event.stop_reason?.type === 'end_turn'),
       'approved ACP bridge to execute and read back the rooted write',
       { timeoutMs: 120_000 },
+    );
+    // C1 the first Awaiting published a source-qualified tool and idle reason;
+    // C2 RuntimeToolBatch settles that exact call after approval. E1 the old
+    // prefix keeps its payload and completion time; E2 only new facts append.
+    // Rule H1=C1+C2=>E1+E2: the ACP callback is not a second write occurrence.
+    assert.deepEqual(
+      completed.events.slice(0, beforeRefresh.length),
+      beforeRefresh,
+      'approval appends without rewriting the committed requires_action prefix',
     );
     assert.equal(
       completed.events.filter((event) => event.type === 'agent.tool_use' && event.id === allowed.tool.id).length,

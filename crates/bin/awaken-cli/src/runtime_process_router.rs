@@ -625,7 +625,9 @@ pub(super) async fn prepare_runtime_routers(
             None,
         )
     } else {
-        host_builder
+        // Coordinator-only placement still projects ACP Session tools. Give it
+        // the existing catalog policy, never a second process/Hand executor.
+        host_builder.with_acp_projection_policy(awaken_run_executor_acp::acp_adapter_policy())
     };
     // Last-mile backend wiring the standard process does not own, supplied
     // by the process startup (a scenario that serves external-CLI sessions).

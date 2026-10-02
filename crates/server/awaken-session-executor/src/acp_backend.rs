@@ -66,13 +66,32 @@ impl crate::host::SharedHost {
             .acp
             .as_ref()
             .map(|factory| factory.adapter_policy())
+            .or(self.exec.acp_projection_policy)
             .ok_or_else(|| crate::HostError::bad_request("ACP backend is not installed"))
+    }
+
+    /// Install only the read-only ACP catalog port on a Coordinator that
+    /// delegates physical execution to a registered Worker.
+    #[must_use]
+    pub fn with_acp_projection_policy(
+        mut self,
+        policy: &'static dyn awaken_acp_contract::AcpAdapterPolicy<
+            awaken_runtime_contract::resolved::ProviderServerTool,
+        >,
+    ) -> Self {
+        assert!(
+            self.exec.acp.is_none(),
+            "ACP projection policy cannot shadow an executor"
+        );
+        self.exec.acp_projection_policy = Some(policy);
+        self
     }
 
     /// Install the one process-composed ACP execution factory. The frozen
     /// Session projection, not this installation, selects an ACP backend.
     #[must_use]
     pub fn with_acp(mut self, factory: Arc<dyn AcpSessionExecutorFactory>) -> Self {
+        self.exec.acp_projection_policy = None;
         self.exec.acp = Some(factory);
         self
     }
@@ -177,30 +196,45 @@ mod tests {
     }
 
     #[test]
-    fn host_reads_only_the_installed_factory_catalog_policy() {
-        // Causes: C1 no ACP factory or one installed factory; C2 exact known,
-        // noncanonical alias, or unknown CLI id. Effects: E1 absent factory
-        // refuses policy access; E2 installed factory returns the one executor
-        // catalog view; E3 only its exact canonical IDs pass. Decision table:
-        // P1 !C1 -> E1; P2 C1+known -> E2+E3; P3 C1+alias/unknown -> E2+!E3.
+    fn coordinator_catalog_policy_never_installs_an_acp_executor() {
+        // Causes: C1 no ACP installation, a projection-only catalog, or an
+        // executor factory; C2 canonical, alias, or unknown CLI id. Effects:
+        // E1 absent installation refuses policy; E2 projection-only and
+        // executor roles read the same catalog instance; E3 only the executor
+        // role can launch; E4 only canonical ids pass. Decision rules:
+        // P1=absent=>E1; P2=projection-only=>E2+!E3+E4;
+        // P3=executor=>E2+E3+E4; P4=alias|unknown=>!E4 for P2/P3.
         let host = SharedHost::new(Arc::new(NoLlm), "test");
         assert!(
             host.acp_adapter_policy()
                 .err()
-                .expect("P1 no catalog without an installed factory")
+                .expect("P1 absent policy")
                 .to_string()
                 .contains("not installed"),
             "P1"
         );
+        let host = host.with_acp_projection_policy(awaken_run_executor_acp::acp_adapter_policy());
+        assert!(host.exec.acp.is_none(), "P2/E3 no execution factory");
+        assert!(
+            std::ptr::eq(
+                host.acp_adapter_policy().expect("P2 policy"),
+                awaken_run_executor_acp::acp_adapter_policy()
+            ),
+            "P2/E2 one catalog instance"
+        );
         let host = with_fixture_acp(host);
-        let policy = host.acp_adapter_policy().expect("P2 installed policy");
+        assert!(
+            host.exec.acp_projection_policy.is_none(),
+            "P3 one effective policy owner"
+        );
+        let policy = host.acp_adapter_policy().expect("P3 installed policy");
         assert!(
             std::ptr::eq(policy, awaken_run_executor_acp::acp_adapter_policy()),
-            "P2 one catalog instance"
+            "P3/E2 one catalog instance"
         );
-        assert!(policy.contains("codex"), "P2 canonical");
-        assert!(!policy.contains("CODEX"), "P3 alias");
-        assert!(!policy.contains("unknown-cli"), "P3 unknown");
+        assert!(policy.contains("codex"), "P3/E4 canonical");
+        assert!(!policy.contains("CODEX"), "P4 alias");
+        assert!(!policy.contains("unknown-cli"), "P4 unknown");
     }
 
     #[test]
