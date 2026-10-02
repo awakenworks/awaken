@@ -105,6 +105,13 @@ and validate handshake evidence, but do not scan PATH/HOME, install wrappers,
 probe login, maintain an adapter inventory, persist observations or choose
 configuration.
 
+A Coordinator that delegates execution to a registered Worker still projects
+ACP Web and MCP settings from the frozen Agent. Its Host receives the existing
+catalog's `AcpAdapterPolicy` as a read-only port, without an ACP executor. The
+Worker alone installs `AcpSessionExecutorFactory` from its admitted
+`AcpWorkerProfile`; a missing execution route remains an error. The Host policy
+decision table and `acp_projected_local_e2e.mjs` cover this boundary.
+
 “Capability” has two related but distinct meanings:
 
 - a **discovered capability** is a Worker-owned, expiring observation used for

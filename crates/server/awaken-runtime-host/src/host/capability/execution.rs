@@ -12,6 +12,13 @@ use crate::host::*;
 pub(crate) struct AttemptBackends {
     /// ACP runtime backend (R3/R4): serves `acp:*` sessions on an external CLI.
     pub(crate) acp: Option<Arc<dyn awaken_session_environment_contract::AcpSessionExecutorFactory>>,
+    /// Coordinator-only read of the same catalog contract, without installing
+    /// an executor or becoming a second physical-effect owner.
+    pub(crate) acp_projection_policy: Option<
+        &'static dyn awaken_acp_contract::AcpAdapterPolicy<
+            awaken_runtime_contract::resolved::ProviderServerTool,
+        >,
+    >,
     /// Higher-layer transport adapter for Session-owned tools exposed to ACP.
     /// The Host names only this contract; concrete MCP server setup remains in
     /// `awaken-coordinator` and does not add a protocol dependency to the substrate.
@@ -32,6 +39,7 @@ impl AttemptBackends {
     pub(in crate::host) fn new(_deployment: &crate::deployment_config::DeploymentConfig) -> Self {
         Self {
             acp: None,
+            acp_projection_policy: None,
             acp_tool_exporter: None,
             attempt_decorator: None,
             credential_materializer: None,
