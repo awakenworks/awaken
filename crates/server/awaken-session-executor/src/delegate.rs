@@ -655,7 +655,7 @@ mod durable_cancel_tests {
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
     use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-    use awaken_dispatch::{AnyDispatchStore, DispatchQueue};
+    use awaken_dispatch::DispatchQueue;
     use awaken_runtime_contract::agent_bindings::{
         AgentAdvisorBinding, AgentBindings, AgentDelegateBinding, InferenceOptions, ReasoningEffort,
     };
@@ -1205,8 +1205,10 @@ mod durable_cancel_tests {
         let (_root, sandbox) = local_test_sandbox().await;
         let llm = Arc::new(CaptureAdvisorRequests::default());
         let store = Arc::new(
-            AnyDispatchStore::open_sqlite_in_memory(awaken_lease_contract::system_clock())
-                .expect("durable advisor dispatch store"),
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(
+                awaken_lease_contract::system_clock(),
+            )
+            .expect("durable advisor dispatch store"),
         );
         let commit = Arc::new(MemoryCommitCoordinator::new(
             awaken_lease_contract::system_clock(),
@@ -1460,8 +1462,10 @@ mod durable_cancel_tests {
         // Decision rule: execute durable cancellation D1, then exact replay D2.
         let (_root, sandbox) = local_test_sandbox().await;
         let store = Arc::new(
-            AnyDispatchStore::open_sqlite_in_memory(awaken_lease_contract::system_clock())
-                .expect("durable child dispatch store"),
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(
+                awaken_lease_contract::system_clock(),
+            )
+            .expect("durable child dispatch store"),
         );
         let commit = Arc::new(MemoryCommitCoordinator::new(
             awaken_lease_contract::system_clock(),

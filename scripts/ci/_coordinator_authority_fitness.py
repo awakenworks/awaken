@@ -17,10 +17,13 @@ AUTHORITY_IMPLS: dict[str, tuple[str, ...]] = {
     # Durable implementations remain in run-ingress. The one Worker-side HTTP
     # adapter implements the same port without storing or deciding authority;
     # its server-owned verbs fail closed and all accepted mutations cross the
-    # authenticated Coordinator boundary.
+    # authenticated Coordinator boundary. The one shared erased role delegator
+    # also implements this port over an already-selected Dispatch; it owns no
+    # SQL, claim transition, or second queue.
     "DispatchQueue": (
         "crates/server/awaken-dispatch/src/",
         "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
+        "crates/shared/awaken-dispatch-erasure/src/lib.rs",
     ),
     "OperationCoordinator": (
         "crates/runtime/awaken-store-inmem/src/",
@@ -125,7 +128,8 @@ def selftest() -> None:
     """Cause/effect decision table:
 
     R1 canonical durable owner + implementation/write -> accepted; R2 the one
-    non-authoritative Worker HTTP adapter -> accepted; R3 another non-owner + same
+    non-authoritative Worker HTTP adapter or sole role delegator -> accepted;
+    R3 another non-owner + same
     action -> rejected; R4 test-only implementation -> removed; R5 ordinary code
     -> preserved. These are the smallest rules that distinguish port adapters from
     database owners without treating test doubles as production authorities.
@@ -136,6 +140,9 @@ def selftest() -> None:
     assert implementation_violation(
         "crates/server/awaken-coordinator-client/src/dispatch_client.rs", "DispatchQueue"
     ) == []  # R2
+    assert implementation_violation(
+        "crates/shared/awaken-dispatch-erasure/src/lib.rs", "DispatchQueue"
+    ) == []  # R2 role delegation, not a second durable authority
     assert implementation_violation(
         "crates/server/awaken-session-executor/src/dispatch.rs", "DispatchQueue"
     )  # R3

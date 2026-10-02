@@ -1,17 +1,15 @@
 // @formal surface obligation=ingress.single_owner
 // @formal surface obligation=ingress.epoch_reclaim
 // @formal surface obligation=ingress.settle_fence
-// @formal reason: Backend-neutral dispatch implementation.
-//! A runtime-selectable dispatch backend: one type that carries either the SQLite
-//! or the Postgres store, chosen at assembly time (single-machine vs a multi-node
-//! fleet sharing one Postgres queue, ADR-0019). It holds the active backend as an
-//! `Arc<dyn Dispatch>` plus exact optional durable roles
-//! bundle by delegating through that trait object, so
-//! `DispatchWorker<AnyDispatchStore>` and `DispatchService<AnyDispatchStore>`
-//! carry either backend behind one concrete, non-generic type — the host holds a
-//! non-generic field and picks the variant from configuration.
+// @formal reason: Backend-neutral dispatch role delegation, not a claim or SQL owner.
+//! One backend-erased dispatch role bundle shared by Host, Worker and Coordinator.
 //!
-//! The trait-object indirection is deliberate: delegating through `dyn ControlDispatch`
+//! Process composition injects an existing `Dispatch` implementation and its
+//! explicit optional continuation, operational and checkpoint roles. This crate
+//! delegates to that implementation; it owns no queue, backend selection, clock,
+//! wake, claim transition or Worker. Ingress remains the sole SQL/NATS factory.
+//!
+//! The trait-object indirection is deliberate: delegating through `dyn Dispatch`
 //! erases the Postgres backend's sqlx `Executor` future to a `dyn Future + Send`
 //! at the trait boundary, so composing it into the daemon's spawned task stays
 //! `Send` (a direct enum match over the concrete sqlx store trips the sqlx
@@ -20,26 +18,22 @@
 use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
-use crate::{PlacementPolicy, WorkerSnapshot};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
+use awaken_dispatch_contract::{PlacementPolicy, WorkerSnapshot};
 use awaken_runtime_contract::resume::ResumeResult;
 
-use crate::dispatch::{
+use awaken_dispatch_contract::RunDispatch;
+use awaken_dispatch_contract::{
     AttemptCredentialBinding, CandidateFingerprint, CasOutcome, Claimed, CommitEpochGuard,
     CredentialRealizationReceipt, Dispatch, DispatchCompletion, DispatchError, DispatchOutcome,
     DispatchQueue, DispatchSummary, DurableDispatch, Inbox, LeaseRenewalOutcome, Outbox,
     PendingInput, PendingRecord, RunClaim, SessionChildAdmission, SessionRunReservationActivation,
     SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
-#[cfg(feature = "durable")]
-use crate::postgres::PostgresDispatchStore;
-#[cfg(feature = "durable")]
-use crate::sqlite::SqliteDispatchStore;
-use crate::{DispatchCursor, DispatchOperationalFeed, DispatchPage};
-use awaken_dispatch_contract::RunDispatch;
+use awaken_dispatch_contract::{DispatchCursor, DispatchOperationalFeed, DispatchPage};
 
 /// The active durable-dispatch backend behind one concrete type. Both a SQLite
 /// and a Postgres store satisfy the full `Dispatch` bundle; this holds whichever
@@ -51,7 +45,7 @@ use awaken_dispatch_contract::RunDispatch;
 /// [`Self::session_continuation`], covered by the construction test below.
 ///
 /// ```compile_fail
-/// use awaken_dispatch::AnyDispatchStore;
+/// use awaken_dispatch_erasure::AnyDispatchStore;
 /// use awaken_dispatch_contract::SessionContinuationOutbox;
 /// fn requires_continuation<T: SessionContinuationOutbox>() {}
 /// requires_continuation::<AnyDispatchStore>();
@@ -64,215 +58,19 @@ pub struct AnyDispatchStore {
 }
 
 impl AnyDispatchStore {
-    /// Open the SQLite backend at `path` (per-thread file queue; survives restart).
-    /// `clock` is the time the backend judges its own rows against — lease
-    /// expiry, retry due, reservation lapse — and is required for the reason
-    /// given on [`SqliteDispatchStore::open`].
-    #[cfg(feature = "durable")]
-    pub fn open_sqlite(
-        path: &str,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
-    ) -> Result<Self, String> {
-        SqliteDispatchStore::open(path, clock)
-            .map(Self::from_store)
-            .map_err(|e| e.to_string())
-    }
-
-    /// Open an in-memory SQLite backend for tests and scenario fixtures over a
-    /// caller-owned clock, so a test drives the exact time the selected backend
-    /// judges its rows against.
-    #[cfg(feature = "durable")]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn open_sqlite_in_memory(
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
-    ) -> Result<Self, String> {
-        SqliteDispatchStore::open_in_memory(clock)
-            .map(Self::from_store)
-            .map_err(|e| e.to_string())
-    }
-
-    /// Connect the shared Postgres backend at `url`: one queue for a multi-node
-    /// fleet, `FOR UPDATE SKIP LOCKED` gives distinct-claim across processes.
-    #[cfg(feature = "durable")]
-    pub async fn connect_postgres(url: &str, max_connections: u32) -> Result<Self, String> {
-        PostgresDispatchStore::connect(url, max_connections)
-            .await
-            .map(Self::from_postgres_store)
-            .map_err(|e| e.to_string())
-    }
-
-    /// Connect to a Postgres queue whose migration ledger was applied by the
-    /// deployment migration phase. No DDL is executed.
-    #[cfg(feature = "durable")]
-    pub async fn connect_postgres_existing(
-        url: &str,
-        max_connections: u32,
-    ) -> Result<Self, String> {
-        PostgresDispatchStore::connect_existing(url, max_connections)
-            .await
-            .map(Self::from_postgres_store)
-            .map_err(|e| e.to_string())
-    }
-
-    /// Build the migrated Postgres dispatch authority from the process-owned
-    /// pool. Composition roots use this to share one reconnect/backpressure
-    /// budget with commit and Worker-registry adapters for the same database.
-    #[cfg(feature = "durable")]
-    pub async fn with_postgres_pool(pool: sqlx::PgPool) -> Result<Self, String> {
-        PostgresDispatchStore::with_pool(pool)
-            .await
-            .map(Self::from_postgres_store)
-            .map_err(|error| error.to_string())
-    }
-
-    /// Verify an externally migrated dispatch schema over a process-owned pool.
-    #[cfg(feature = "durable")]
-    pub async fn with_existing_postgres_pool(pool: sqlx::PgPool) -> Result<Self, String> {
-        PostgresDispatchStore::with_existing_pool(pool)
-            .await
-            .map(Self::from_postgres_store)
-            .map_err(|error| error.to_string())
-    }
-
-    /// Pair a process-owned dispatch pool with its PG-NOTIFY hint. The listener
-    /// clones the pool handle; it does not create a second connection pool.
-    #[cfg(feature = "durable")]
-    pub async fn with_postgres_pool_and_wake(
-        pool: sqlx::PgPool,
-        channel: &str,
-    ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
-        Self::with_postgres_pool_and_wake_access(pool, channel, false).await
-    }
-
-    /// Pair an externally migrated process-owned dispatch pool with its
-    /// PG-NOTIFY hint without executing DDL.
-    #[cfg(feature = "durable")]
-    pub async fn with_existing_postgres_pool_and_wake(
-        pool: sqlx::PgPool,
-        channel: &str,
-    ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
-        Self::with_postgres_pool_and_wake_access(pool, channel, true).await
-    }
-
-    #[cfg(feature = "durable")]
-    async fn with_postgres_pool_and_wake_access(
-        pool: sqlx::PgPool,
-        channel: &str,
-        verify_only: bool,
-    ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
-        let store = if verify_only {
-            PostgresDispatchStore::with_existing_pool(pool).await
-        } else {
-            PostgresDispatchStore::with_pool(pool).await
-        }
-        .map_err(|error| error.to_string())?;
-        let wake: Arc<dyn crate::wake::WakeSignal> =
-            Arc::new(crate::wake::PgNotifyWake::new(store.wake_pool(), channel));
-        Ok((Self::from_postgres_store(store), wake))
-    }
-
-    /// Connect the Postgres backend and, sharing its pool, a `PgNotifyWake` over
-    /// `channel`: the served pool's wake fires `pg_notify` on the same database it
-    /// enqueues into, so a peer node's `LISTEN` is nudged with no extra
-    /// infrastructure (ADR-0019/0024). Returns the store plus the ready wake signal;
-    /// keeps sqlx out of the host crate. Only Postgres carries a cross-node wake —
-    /// SQLite is single-process, so it stays on the in-process `LocalWakeSignal`.
-    #[cfg(feature = "durable")]
-    pub async fn connect_postgres_with_wake(
-        url: &str,
-        channel: &str,
-        max_connections: u32,
-    ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
-        let store = PostgresDispatchStore::connect(url, max_connections)
-            .await
-            .map_err(|e| e.to_string())?;
-        let wake: Arc<dyn crate::wake::WakeSignal> =
-            Arc::new(crate::wake::PgNotifyWake::new(store.wake_pool(), channel));
-        Ok((Self::from_postgres_store(store), wake))
-    }
-
-    /// Verify and connect an already-migrated Postgres queue with a shared
-    /// `LISTEN`/`NOTIFY` wake adapter.
-    #[cfg(feature = "durable")]
-    pub async fn connect_postgres_existing_with_wake(
-        url: &str,
-        channel: &str,
-        max_connections: u32,
-    ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
-        let store = PostgresDispatchStore::connect_existing(url, max_connections)
-            .await
-            .map_err(|e| e.to_string())?;
-        let wake: Arc<dyn crate::wake::WakeSignal> =
-            Arc::new(crate::wake::PgNotifyWake::new(store.wake_pool(), channel));
-        Ok((Self::from_postgres_store(store), wake))
-    }
-
-    /// Connect the Postgres durable backend but pair it with a
-    /// [`NatsWakeSignal`](crate::wake::NatsWakeSignal)
-    /// (feature `nats`) instead of `pg_notify` for the cross-node wake hint. The
-    /// durable STORE stays Postgres (the queue authority); only the best-effort wake
-    /// fan-out moves to a NATS `subject`, for a fleet that already runs a NATS broker
-    /// (ADR-0019/0028). Returns the store plus the ready wake signal. Like every
-    /// [`WakeSignal`](crate::wake::WakeSignal) the hint is non-authoritative — a lost NATS message only defers
-    /// a drain to the poll fallback, so correctness never depends on it.
-    #[cfg(feature = "nats")]
-    pub async fn connect_postgres_with_nats_wake(
-        db_url: &str,
-        nats_url: &str,
-        subject: &str,
-        max_connections: u32,
-    ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
-        let store = PostgresDispatchStore::connect(db_url, max_connections)
-            .await
-            .map_err(|e| e.to_string())?;
-        let wake: Arc<dyn crate::wake::WakeSignal> = Arc::new(
-            crate::wake::NatsWakeSignal::connect(nats_url, subject.to_string())
-                .await
-                .map_err(|e| e.to_string())?,
-        );
-        Ok((Self::from_postgres_store(store), wake))
-    }
-
-    /// Verify and connect an already-migrated Postgres queue with a NATS wake
-    /// adapter. The NATS hint remains non-authoritative.
-    #[cfg(feature = "nats")]
-    pub async fn connect_postgres_existing_with_nats_wake(
-        db_url: &str,
-        nats_url: &str,
-        subject: &str,
-        max_connections: u32,
-    ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
-        let store = PostgresDispatchStore::connect_existing(db_url, max_connections)
-            .await
-            .map_err(|e| e.to_string())?;
-        let wake: Arc<dyn crate::wake::WakeSignal> = Arc::new(
-            crate::wake::NatsWakeSignal::connect(nats_url, subject.to_string())
-                .await
-                .map_err(|e| e.to_string())?,
-        );
-        Ok((Self::from_postgres_store(store), wake))
-    }
-
-    #[cfg(feature = "durable")]
-    fn from_store(store: impl DurableDispatch + DispatchOperationalFeed + 'static) -> Self {
+    /// Bind the exact durable queue, continuation, operational and optional
+    /// checkpoint roles selected by one Coordinator backend factory. No role
+    /// is inferred by probing an unsupported operation.
+    pub fn from_durable_store(
+        store: impl DurableDispatch + DispatchOperationalFeed + 'static,
+        stream_checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
+    ) -> Self {
         let store = Arc::new(store);
         Self {
             inner: store.clone(),
             continuation: Some(store.clone()),
             operational: Some(store),
-            stream_checkpoint: None,
-        }
-    }
-
-    #[cfg(feature = "durable")]
-    fn from_postgres_store(store: PostgresDispatchStore) -> Self {
-        let stream_checkpoint: Arc<dyn StreamCheckpointStore> = Arc::new(store.checkpoint_store());
-        let store = Arc::new(store);
-        Self {
-            inner: store.clone(),
-            continuation: Some(store.clone()),
-            operational: Some(store),
-            stream_checkpoint: Some(stream_checkpoint),
+            stream_checkpoint,
         }
     }
 
@@ -359,7 +157,7 @@ impl DispatchQueue for AnyDispatchStore {
 
     async fn worker_owns_run(
         &self,
-        identity: &crate::WorkerIdentity,
+        identity: &awaken_dispatch_contract::WorkerIdentity,
         run_id: &RunId,
     ) -> Result<Option<RunClaim>, DispatchError> {
         delegate!(self, worker_owns_run(identity, run_id))
@@ -490,7 +288,7 @@ impl DispatchQueue for AnyDispatchStore {
         &self,
         claim: &RunClaim,
         _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
-    ) -> Result<crate::AttemptAdmission, DispatchError> {
+    ) -> Result<awaken_dispatch_contract::AttemptAdmission, DispatchError> {
         delegate!(self, begin_attempt(claim, _binding))
     }
 
@@ -498,7 +296,7 @@ impl DispatchQueue for AnyDispatchStore {
         &self,
         claim: &RunClaim,
         _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
-    ) -> Result<crate::AttemptAdmission, DispatchError> {
+    ) -> Result<awaken_dispatch_contract::AttemptAdmission, DispatchError> {
         delegate!(self, handoff_attempt(claim, _binding))
     }
 
@@ -612,9 +410,10 @@ impl ControlDispatchQueue for AnyDispatchStore {
         binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
         guard: awaken_dispatch_contract::WorkerIncarnationGuard,
         handoff: bool,
-    ) -> Result<crate::AttemptAdmission, DispatchError> {
+    ) -> Result<awaken_dispatch_contract::AttemptAdmission, DispatchError> {
         delegate_control!(self, admit_attempt_guarded(claim, binding, guard, handoff))
     }
+
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,
@@ -684,7 +483,7 @@ impl ControlDispatchQueue for AnyDispatchStore {
     async fn load_physical_attempt(
         &self,
         run_id: &RunId,
-    ) -> Result<Option<crate::dispatch::PhysicalAttempt>, DispatchError> {
+    ) -> Result<Option<awaken_dispatch_contract::dispatch::PhysicalAttempt>, DispatchError> {
         delegate_control!(self, load_physical_attempt(run_id))
     }
 
@@ -776,20 +575,66 @@ impl Outbox for AnyDispatchStore {
 mod capability_tests {
     use super::*;
 
-    #[test]
-    fn erased_dispatch_retains_only_the_roles_selected_by_composition() {
-        // Cause/effect table. C1 a Worker/topology supplies only `Dispatch`;
-        // C2 a Coordinator supplies `DurableDispatch`. E1 C1 exposes no atomic
-        // Session continuation role; E2 C2 retains that exact role. This is a
-        // construction-time partition: neither branch probes an operation and
-        // catches an "unsupported" failure to infer topology.
-        let backend = Arc::new(crate::MemoryDispatchStore::new(
+    #[tokio::test]
+    async fn erased_dispatch_retains_only_the_roles_selected_by_composition() {
+        // Causes: C1 Worker supplies only Dispatch; C2 Coordinator supplies
+        // DurableDispatch only or its exact local operational role; C3 paired
+        // checkpoint absent/present. Effects: E1 no invented continuation,
+        // operational or checkpoint role; E2 continuation retained; E3 local
+        // operational feed retained; E4 checkpoint is the same injected Arc.
+        // Constraint: no branch probes an unsupported operation to infer a
+        // role. Decision table: R1 C1 => E1; R2 C2 durable-only => E2, !E3;
+        // R3 C2 local + !C3 => E2+E3, !E4; R4 C2 local + C3 => E2+E3+E4.
+        let backend = Arc::new(awaken_dispatch::MemoryDispatchStore::new(
             awaken_lease_contract::system_clock(),
         ));
         let worker = AnyDispatchStore::from_dispatch(backend.clone());
         let coordinator = AnyDispatchStore::from_durable_dispatch(backend);
+        let local = AnyDispatchStore::from_durable_store(
+            awaken_dispatch::MemoryDispatchStore::new(awaken_lease_contract::system_clock()),
+            None,
+        );
+        let checkpoint: Arc<dyn StreamCheckpointStore> =
+            Arc::new(awaken_store_inmem::MemoryStreamCheckpointStore::new());
+        let paired = AnyDispatchStore::from_durable_store(
+            awaken_dispatch::MemoryDispatchStore::new(awaken_lease_contract::system_clock()),
+            Some(checkpoint.clone()),
+        );
 
-        assert!(worker.session_continuation().is_none(), "C1/E1");
-        assert!(coordinator.session_continuation().is_some(), "C2/E2");
+        assert!(worker.session_continuation().is_none(), "R1/E1");
+        assert!(worker.stream_checkpoint_store().is_none(), "R1/E1");
+        assert!(
+            worker
+                .events_after(DispatchCursor(0), 1, None)
+                .await
+                .is_err(),
+            "R1/E1"
+        );
+        assert!(coordinator.session_continuation().is_some(), "R2/E2");
+        assert!(
+            coordinator
+                .events_after(DispatchCursor(0), 1, None)
+                .await
+                .is_err(),
+            "R2/!E3"
+        );
+        assert!(local.session_continuation().is_some(), "R3/E2");
+        assert!(
+            local.events_after(DispatchCursor(0), 1, None).await.is_ok(),
+            "R3/E3"
+        );
+        assert!(local.stream_checkpoint_store().is_none(), "R3/!E4");
+        assert!(paired.session_continuation().is_some(), "R4/E2");
+        assert!(
+            paired
+                .events_after(DispatchCursor(0), 1, None)
+                .await
+                .is_ok(),
+            "R4/E3"
+        );
+        assert!(
+            Arc::ptr_eq(&paired.stream_checkpoint_store().unwrap(), &checkpoint),
+            "R4/E4 exact checkpoint"
+        );
     }
 }

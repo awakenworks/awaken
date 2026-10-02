@@ -940,7 +940,7 @@ async fn terminal_physical_claim_fixture(
     ttl_ms: u64,
 ) -> (
     Arc<SharedHost>,
-    Arc<awaken_dispatch::AnyDispatchStore>,
+    Arc<awaken_dispatch_erasure::AnyDispatchStore>,
     Arc<awaken_lease_testkit::ManualClock>,
     ThreadId,
     RunId,
@@ -951,7 +951,7 @@ async fn terminal_physical_claim_fixture(
 
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .expect("physical Dispatch fixture"),
     );
     let host = Arc::new(
@@ -1117,7 +1117,7 @@ async fn terminal_quiescence_still_waits_for_a_pre_cancel_live_physical_claim() 
 }
 
 async fn settle_cancelled_dispatch_rows(
-    dispatch: Arc<awaken_dispatch::AnyDispatchStore>,
+    dispatch: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
     expected_rows: usize,
     worker: &'static str,
 ) -> Vec<RunId> {
@@ -1222,7 +1222,7 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
     use awaken_dispatch::{DispatchQueue, RunDispatch};
 
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .expect("remote quiescence dispatch"),
     );
     let host = Arc::new(

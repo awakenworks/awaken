@@ -660,7 +660,7 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
     let reached = Arc::new(tokio::sync::Notify::new());
     let gate = Arc::new(tokio::sync::Notify::new());
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .expect("dispatch store"),
     );
     let host = Arc::new(
@@ -771,7 +771,7 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
     );
 
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .expect("live-control dispatch store"),
     );
     let durable = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone());
@@ -837,7 +837,7 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
     let run_id = RunId("cold-managed-interrupt-run".into());
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .expect("dispatch store"),
     );
     dispatch
@@ -987,7 +987,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
         .expect("coherent active remote candidate");
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .expect("dispatch store"),
     );
     dispatch
@@ -1085,7 +1085,7 @@ async fn managed_primary_interrupt_cancels_every_exact_session_dispatch() {
     // | A2 | two | two | yes | E1+E2+E3 |
     let thread = "queued-managed-primary-interrupt";
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .expect("dispatch store"),
     );
     for run in ["awaiting-primary", "queued-report"] {

@@ -138,7 +138,7 @@ mod tests {
         let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .expect("dispatch store"),
         );
         let host = Arc::new(

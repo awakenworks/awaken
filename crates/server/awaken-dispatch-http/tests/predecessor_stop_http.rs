@@ -564,7 +564,7 @@ async fn postgres_guarded_admission_uses_one_process_connection_and_rejects_fore
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .unwrap();
-    let composed = awaken_dispatch::AnyDispatchStore::with_postgres_pool(pool.clone())
+    let composed = awaken_dispatch::with_postgres_dispatch_pool(pool.clone())
         .await
         .unwrap();
     let foreign = PostgresWorkerDirectory::connect_existing(&url, 1)

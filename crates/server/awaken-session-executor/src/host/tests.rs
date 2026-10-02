@@ -18,9 +18,8 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
     use awaken_dispatch::{DispatchOutcome, Outbox as _};
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
-    let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone()).unwrap(),
-    );
+    let dispatch =
+        Arc::new(awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone()).unwrap());
     let (host, _managed) = dispatch_test_host(
         SharedHost::new(Arc::new(MemoryHostModel), "stub").with_dispatch_store(dispatch.clone()),
     );

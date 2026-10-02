@@ -1,0 +1,25 @@
+[package]
+name = "awaken-dispatch-erasure"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+layer = "infrastructure"
+authority = "dispatch-role-erasure"
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-dispatch-contract.workspace = true
+awaken-runtime-contract.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+awaken-lease-contract.workspace = true
+awaken-dispatch = { workspace = true, features = ["test-support"] }
+awaken-store-inmem.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

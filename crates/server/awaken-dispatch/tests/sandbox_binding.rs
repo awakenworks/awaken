@@ -16,7 +16,7 @@
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_dispatch::{AnyDispatchStore, MemoryDispatchStore};
+use awaken_dispatch::MemoryDispatchStore;
 use awaken_dispatch_contract::RunDispatch;
 use awaken_dispatch_contract::dispatch::{
     DispatchOutcome, DispatchQueue, RunClaim, SettleOutcome,
@@ -133,7 +133,8 @@ async fn memory_backend_binds_and_recovers() {
 #[tokio::test]
 async fn runtime_selected_store_delegates_the_sandbox_binding() {
     let clock = ManualStoreClock::new(0);
-    let store = AnyDispatchStore::open_sqlite_in_memory(clock.clock()).expect("sqlite adapter");
+    let store = awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clock())
+        .expect("sqlite adapter");
     binding_survives_a_recovery_claim(&store, &clock).await;
 }
 

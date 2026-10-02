@@ -27,7 +27,7 @@ async fn failed_child_boundary_cancels_raced_follow_up_without_fencing_its_own_s
 
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .expect("failed follow-up race dispatch"),
     );
     let host = SharedHost::new(Arc::new(OkModel), "stub")

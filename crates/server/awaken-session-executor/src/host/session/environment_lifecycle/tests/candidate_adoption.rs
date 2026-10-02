@@ -334,7 +334,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone()).unwrap(),
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone()).unwrap(),
         );
         let host = Arc::new(
             SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
