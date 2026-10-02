@@ -467,8 +467,8 @@ mod tests {
 
     #[test]
     fn configured_acp_web_pair_keeps_one_owner_and_rejects_provider_approval() {
-        // Causes: C1 configured pair/owner, C2 exact tool permission, C3 ACP
-        // CLI projection support. Effects: Host exports, provider launch tools,
+        // Causes: C1 configured pair/owner, C2 exact tool permission, C3 the
+        // one installed ACP factory supplies CLI projection support. Effects: Host exports, provider launch tools,
         // or a closed configuration error. A failed pair returns no partial
         // ServerTool result, so one capability never has two execution owners.
         //
@@ -482,10 +482,10 @@ mod tests {
             AgentBindings, ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride,
             ToolsetPolicy, ToolsetSource,
         };
-        let host = crate::host::SharedHost::new(
+        let host = crate::acp_backend::with_fixture_acp(crate::host::SharedHost::new(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
-        );
+        ));
         let host_fetch = (
             awaken_ext_builtin_tools::web_fetch_descriptor(),
             Arc::new(ProbeTool(awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID))

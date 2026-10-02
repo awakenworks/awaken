@@ -33,12 +33,14 @@ fn memory_test_host(model: Arc<dyn LlmExecutor>, agent: &str) -> Arc<SharedHost>
 /// the Agent selecting binding `test-input-0`; C2 the Session pins that one
 /// writable store. C1+C2 produces one automatic Memory binding used by recall
 /// and terminal extraction, without a second publication or slot-write path.
+/// Return that same creation-time manifest so a cold child test can freeze its
+/// dispatch before any process-local Runtime slot derives a cached copy.
 async fn install_complete_memory_test_session(
     managed: &crate::ManagedHost,
     thread: &str,
     agent: &str,
     store: &str,
-) {
+) -> awaken_session_resource_contract::SessionResourceManifest {
     let resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
         id: store.into(),
@@ -50,6 +52,10 @@ async fn install_complete_memory_test_session(
     }]);
     let mut init = bare_session(agent, managed.host.local_workspace());
     init.resources = resources.clone();
+    let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
+        managed.host.local_workspace(),
+        resources.clone(),
+    );
     install_complete_test_session(managed, thread, init)
         .await
         .expect("install complete Memory Session projection");
@@ -66,6 +72,7 @@ async fn install_complete_memory_test_session(
     )
     .await
     .expect("compile exact Memory Resource transition");
+    manifest
 }
 
 /// The compactor (identified by its instructions) replies with a fixed summary;
@@ -416,6 +423,154 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
         reply, "tea",
         "the fresh thread should recall and use the saved memory"
     );
+}
+
+#[tokio::test]
+async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
+    use awaken_dispatch::{DispatchQueue as _, WorkerResolver as _};
+
+    // Causes: C1 a child Run is claimed for a Memory-enabled parent Session;
+    // C2 the parent Runtime is cold or warm; C3 the Worker is co-located, so it
+    // has the parent's authoritative commit and frozen Memory manifest; C4 the existing
+    // recording Session application accepts the child's settlement. Effects: E1
+    // one child terminal intent records child logical Thread/Run identity and
+    // parent physical Session authority; E2 extraction writes one version to
+    // the parent's selected Memory store. Constraints: cold recovery consumes
+    // the previously frozen child dispatch, never a new Runtime-slot manifest;
+    // a database-less Worker has no local Memory authority and uses the
+    // Coordinator settlement observer instead. Decision table: R1=C1+cold+C3=>E1+E2;
+    // R2=C1+warm+C3=>E1+E2; R3=C1+remote=>no local intent (the existing
+    // `commit_ingest::claimed_child_commit_uses_guarded_parent_partition_and_logical_child_thread`
+    // covers R3 at the Coordinator's single `worker_memory_settlement_observer`.
+    for warm in [false, true] {
+        let parent = format!("child-memory-parent-{warm}");
+        let child = ThreadId(format!("child-memory-thread-{warm}"));
+        let run = RunId(format!("child-memory-run-{warm}"));
+        let host = memory_test_host(Arc::new(MemLoopModel), "memory-agent");
+        install_test_memory_mounter(&host);
+        let managed =
+            managed_with_resource_source_using(host.clone(), install_recording_session_application);
+        let memory_store = test_memory_store_id();
+        let manifest =
+            install_complete_memory_test_session(&managed, &parent, "memory-agent", &memory_store)
+                .await;
+        if warm {
+            host.ctx_for(&parent, Some("memory-agent"))
+                .await
+                .expect("R2 warm parent context");
+        } else {
+            assert!(
+                host.session_slots
+                    .read(&parent, |slot| slot.runtime.is_none())
+                    .unwrap_or(true),
+                "R1 parent Runtime starts cold"
+            );
+        }
+        let parent_commit = host
+            .commit_for_read(&parent)
+            .await
+            .expect("parent commit authority");
+        let activation = RunActivation::new(
+            run.clone(),
+            child.clone(),
+            memory_test_snapshot("memory-agent"),
+            vec![Message::text(
+                MessageId(format!("child-memory-input-{warm}")),
+                Role::User,
+                "I really enjoy tea in the morning",
+            )],
+        );
+        let dispatch = host.dispatch_store().expect("shared dispatch authority");
+        let request = crate::agent_runner::child_dispatch_request(
+            activation,
+            ThreadId(parent.clone()),
+            Some(manifest),
+            host.agent.agent_publications.as_deref(),
+        )
+        .expect("freeze child dispatch through production owner")
+        .with_session_activity_epoch(7);
+        dispatch
+            .enqueue(request)
+            .await
+            .expect("enqueue exact child");
+        let claimed = dispatch
+            .claim(
+                host.dispatch_owner(),
+                awaken_dispatch::DEFAULT_LEASE_MS,
+                &Default::default(),
+            )
+            .await
+            .expect("claim child")
+            .expect("child is runnable");
+        assert!(
+            host.dispatched_memory_terminal_observer(&claimed.request, parent_commit.clone())
+                .await
+                .expect("resolve exact child terminal observer")
+                .is_some(),
+            "C1/C3 frozen child Memory publication and parent binding produce an observer"
+        );
+        let resolver = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        };
+        let worker = resolver
+            .worker_for_claimed(&claimed)
+            .await
+            .expect("resolve child through one factory");
+        let (_, state) = worker
+            .drive_claimed(claimed, host.clock())
+            .await
+            .expect("drive child")
+            .expect("child settles");
+        assert!(matches!(state, RunState::Ended(_)), "R1/R2 terminal child");
+        assert!(
+            parent_commit.run_state(&run).is_some(),
+            "R1/R2 child commits through parent authority"
+        );
+        assert!(
+            host.resources
+                .memory
+                .drain(std::time::Duration::from_secs(10))
+                .await,
+            "R1/R2 extraction drains"
+        );
+        let intent = host
+            .resources
+            .memory
+            .extraction_repository()
+            .get_extraction(&format!("memory-extraction:{}:{}", child.0, run.0))
+            .await
+            .expect("read exact child intent")
+            .expect("R1/R2 child terminal extraction exists");
+        assert_eq!(intent.session_id, parent, "R1/R2 physical partition");
+        assert_eq!(intent.logical_thread_id(), child.0, "R1/R2 logical child");
+        assert_eq!(intent.attempts, 1, "R1/R2 one extraction attempt");
+        assert_eq!(
+            intent.status,
+            awaken_ext_memory::MemoryExtractionStatus::Completed,
+            "R1/R2 terminal extraction completed"
+        );
+        assert_eq!(
+            host.resources
+                .memory_stores
+                .fs()
+                .list_versions(&memory_store)
+                .await
+                .expect("read governed Memory versions")
+                .len(),
+            1,
+            "R1/R2 exactly one parent-bound Memory version"
+        );
+        assert!(
+            !host
+                .authority
+                .as_ref()
+                .expect("local authority")
+                .durable_thread_exists(&child.0)
+                .await
+                .expect("child partition lookup"),
+            "R1/R2 no child physical commit partition"
+        );
+    }
 }
 
 #[tokio::test]

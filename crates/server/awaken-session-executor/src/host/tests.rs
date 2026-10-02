@@ -831,8 +831,15 @@ pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, 
 }
 
 fn managed_with_resource_source(host: Arc<SharedHost>) -> crate::ManagedHost {
+    managed_with_resource_source_using(host, install_test_session_application)
+}
+
+fn managed_with_resource_source_using(
+    host: Arc<SharedHost>,
+    install_coordination: fn(&Arc<SharedHost>),
+) -> crate::ManagedHost {
     let validator = test_resource_validator();
-    install_test_session_application(&host);
+    install_coordination(&host);
     let repository_bindings = Arc::new(
         awaken_resource_application::RegistryRepositoryBindingVerifier::new(validator.clone()),
     );
