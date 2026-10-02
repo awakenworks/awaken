@@ -632,12 +632,8 @@ impl CancellableRunDelegationService for HostRunDelegationService {
             )
             .with_run_delegation(Arc::new(self.clone())),
         );
-        let worker = Arc::new(awaken_run_ingress::DispatchWorker::from_parts(
-            runtime,
-            scheduler.store.clone(),
-            scheduler.commit.clone(),
-            scheduler.reader.clone(),
-            scheduler.owner.clone(),
+        let worker = Arc::new(crate::agent_runner::ChildWorkerFactory::cancellation(
+            runtime, scheduler,
         ));
         awaken_run_ingress::LiveRunControlService::new(worker, scheduler.clock.clone())
             .cancel(&cancellation.child_run_id.0)

@@ -23,6 +23,7 @@ use crate::config::latest_assistant_text;
 mod child_attempt;
 mod child_dispatch;
 mod child_execution;
+mod child_worker;
 #[cfg(test)]
 mod fixtures;
 mod root_execution;
@@ -34,6 +35,7 @@ pub(crate) use child_dispatch::child_dispatch_request;
 pub(crate) use child_execution::{
     AbortOnDropTask, ChildRunRequest, RunScheduler, run_configured_agent_until_boundary,
 };
+pub(crate) use child_worker::{ChildWorkerFactory, ClaimedChildAttempt};
 pub(crate) use root_execution::{
     AgentExecution, AgentRunError, AgentRunSandbox, run_agent, run_configured_agent_with_id,
 };

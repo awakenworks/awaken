@@ -1133,7 +1133,10 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
 /// test owns only the placement-to-validation-scope decision.
 #[tokio::test]
 async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
-    let mut host = SharedHost::new(Arc::new(OkModel), "stub");
+    // The absent provider in B1/B2 is the physical Environment provider. The
+    // exact ACP executor factory remains installed so this test isolates the
+    // Coordinator-versus-Worker placement decision.
+    let mut host = crate::acp_backend::with_fixture_acp(SharedHost::new(Arc::new(OkModel), "stub"));
     host.deployment.disable_local_pool = true;
     let host = Arc::new(host);
     let candidate = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
