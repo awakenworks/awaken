@@ -29,28 +29,117 @@ enum ObjectStoreConfigDecision {
     GcsHasS3Coordinates,
 }
 
-const fn object_store_config_decision(
-    provider: ObjectStoreProvider,
-    bucket_nonempty: bool,
-    prefix_nonempty: bool,
-    prefix_normalized: bool,
-    region_present: bool,
-    region_nonempty: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrefixShape {
+    Missing,
+    Invalid,
+    Normalized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegionShape {
+    Absent,
+    Blank,
+    Named,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ObjectStoreConfigShape {
+    bucket_nonblank: bool,
+    prefix: PrefixShape,
+    region: RegionShape,
     endpoint_present: bool,
+}
+
+fn classify_prefix_bytes(bytes: &[u8]) -> PrefixShape {
+    if bytes.iter().all(|byte| *byte == b'/') {
+        return PrefixShape::Missing;
+    }
+    let mut segment_start = 0;
+    for index in 0..=bytes.len() {
+        if index < bytes.len() && bytes[index] != b'/' {
+            continue;
+        }
+        let segment = &bytes[segment_start..index];
+        if segment.is_empty() || segment == b"." || segment == b".." {
+            return PrefixShape::Invalid;
+        }
+        segment_start = index + 1;
+    }
+    PrefixShape::Normalized
+}
+
+fn classify_prefix(prefix: &str) -> PrefixShape {
+    classify_prefix_bytes(prefix.as_bytes())
+}
+
+fn ascii_has_nonblank(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .any(|byte| !matches!(*byte, b'\t'..=b'\r' | b' '))
+}
+
+fn bucket_has_nonblank(bucket: &str) -> bool {
+    if bucket.is_ascii() {
+        // `str::trim` includes vertical tab; `u8::is_ascii_whitespace` does not.
+        ascii_has_nonblank(bucket.as_bytes())
+    } else {
+        !bucket.trim().is_empty()
+    }
+}
+
+fn object_store_config_shape(
+    bucket: &str,
+    prefix: &str,
+    region: Option<&str>,
+    endpoint: Option<&str>,
+) -> ObjectStoreConfigShape {
+    ObjectStoreConfigShape {
+        bucket_nonblank: bucket_has_nonblank(bucket),
+        prefix: classify_prefix(prefix),
+        region: match region {
+            None => RegionShape::Absent,
+            Some(value) if !bucket_has_nonblank(value) => RegionShape::Blank,
+            Some(_) => RegionShape::Named,
+        },
+        endpoint_present: endpoint.is_some(),
+    }
+}
+
+const fn object_store_config_kernel(
+    provider: ObjectStoreProvider,
+    shape: ObjectStoreConfigShape,
 ) -> ObjectStoreConfigDecision {
-    if !bucket_nonempty || !prefix_nonempty {
+    if !shape.bucket_nonblank || matches!(shape.prefix, PrefixShape::Missing) {
         return ObjectStoreConfigDecision::MissingBucketOrPrefix;
     }
-    if !prefix_normalized {
+    if matches!(shape.prefix, PrefixShape::Invalid) {
         return ObjectStoreConfigDecision::InvalidPrefix;
     }
     match provider {
-        ObjectStoreProvider::S3 if !region_nonempty => ObjectStoreConfigDecision::MissingS3Region,
-        ObjectStoreProvider::Gcs if endpoint_present || region_present => {
+        ObjectStoreProvider::S3 if !matches!(shape.region, RegionShape::Named) => {
+            ObjectStoreConfigDecision::MissingS3Region
+        }
+        ObjectStoreProvider::Gcs
+            if shape.endpoint_present || !matches!(shape.region, RegionShape::Absent) =>
+        {
             ObjectStoreConfigDecision::GcsHasS3Coordinates
         }
         ObjectStoreProvider::S3 | ObjectStoreProvider::Gcs => ObjectStoreConfigDecision::Accept,
     }
+}
+
+fn object_store_config_decision(
+    provider: ObjectStoreProvider,
+    bucket: &str,
+    prefix: &str,
+    region: Option<&str>,
+    endpoint: Option<&str>,
+) -> ObjectStoreConfigDecision {
+    object_store_config_kernel(
+        provider,
+        object_store_config_shape(bucket, prefix, region, endpoint),
+    )
 }
 
 /// Secret-free object allocation. Credentials come only from the provider
@@ -68,17 +157,10 @@ impl ObjectFileStoreConfig {
     pub fn validate(&self) -> Result<(), FileStoreError> {
         let decision = object_store_config_decision(
             self.provider,
-            !self.bucket.trim().is_empty(),
-            !self.prefix.trim_matches('/').is_empty(),
-            !self
-                .prefix
-                .split('/')
-                .any(|part| part.is_empty() || part == "." || part == ".."),
-            self.region.is_some(),
-            self.region
-                .as_deref()
-                .is_some_and(|value| !value.trim().is_empty()),
-            self.endpoint.is_some(),
+            &self.bucket,
+            &self.prefix,
+            self.region.as_deref(),
+            self.endpoint.as_deref(),
         );
         let invalid = |detail: &str| FileStoreError::InvalidConfiguration {
             detail: detail.into(),
@@ -103,46 +185,265 @@ impl ObjectFileStoreConfig {
 
 #[cfg(kani)]
 mod kani_proofs {
-    use super::{ObjectStoreConfigDecision, ObjectStoreProvider, object_store_config_decision};
+    use super::{
+        ObjectStoreConfigDecision, ObjectStoreConfigShape, ObjectStoreProvider, PrefixShape,
+        RegionShape, ascii_has_nonblank, classify_prefix_bytes, object_store_config_decision,
+        object_store_config_kernel,
+    };
 
     /// @obligation object_store.configuration_is_secret_free_and_provider_exact
     /// @kani features=object-store
-    /// @proof-input-debt free_symbol object_store_config_decision bucket_nonempty
-    /// @proof-input-debt free_symbol object_store_config_decision endpoint_present
-    /// @proof-input-debt free_symbol object_store_config_decision prefix_nonempty
-    /// @proof-input-debt free_symbol object_store_config_decision prefix_normalized
-    /// @proof-input-debt free_symbol object_store_config_decision region_nonempty
-    /// @proof-input-debt free_symbol object_store_config_decision region_present
+    /// Cause/effect rule K: enumerate both providers, both bucket classes,
+    /// all three prefix classes, all three region classes and both endpoint
+    /// states (72 combinations). Missing bucket/prefix wins first, invalid
+    /// prefix second, then provider-specific coordinates decide; both exact
+    /// rejection categories and acceptance are checked against this table.
+    /// Raw-string classification is a separate premise checked below; this
+    /// finite proof does not claim arbitrary UTF-8 classification.
     #[kani::proof]
-    fn object_store_configuration_accepts_exactly_the_provider_compatible_shape() {
-        let provider = if kani::any::<bool>() {
-            ObjectStoreProvider::S3
-        } else {
-            ObjectStoreProvider::Gcs
-        };
-        let bucket_nonempty: bool = kani::any();
-        let prefix_nonempty: bool = kani::any();
-        let prefix_normalized: bool = kani::any();
-        let region_present: bool = kani::any();
-        let region_nonempty: bool = kani::any();
-        let endpoint_present: bool = kani::any();
+    fn object_store_configuration_finite_kernel_accepts_exactly_compatible_shapes() {
+        for provider in [ObjectStoreProvider::S3, ObjectStoreProvider::Gcs] {
+            for bucket_nonblank in [false, true] {
+                for prefix in [
+                    PrefixShape::Missing,
+                    PrefixShape::Invalid,
+                    PrefixShape::Normalized,
+                ] {
+                    for region in [RegionShape::Absent, RegionShape::Blank, RegionShape::Named] {
+                        for endpoint_present in [false, true] {
+                            let shape = ObjectStoreConfigShape {
+                                bucket_nonblank,
+                                prefix,
+                                region,
+                                endpoint_present,
+                            };
+                            let expected =
+                                match (bucket_nonblank, prefix, provider, region, endpoint_present)
+                                {
+                                    (false, _, _, _, _) | (_, PrefixShape::Missing, _, _, _) => {
+                                        ObjectStoreConfigDecision::MissingBucketOrPrefix
+                                    }
+                                    (_, PrefixShape::Invalid, _, _, _) => {
+                                        ObjectStoreConfigDecision::InvalidPrefix
+                                    }
+                                    (
+                                        true,
+                                        PrefixShape::Normalized,
+                                        ObjectStoreProvider::S3,
+                                        RegionShape::Named,
+                                        _,
+                                    )
+                                    | (
+                                        true,
+                                        PrefixShape::Normalized,
+                                        ObjectStoreProvider::Gcs,
+                                        RegionShape::Absent,
+                                        false,
+                                    ) => ObjectStoreConfigDecision::Accept,
+                                    (
+                                        true,
+                                        PrefixShape::Normalized,
+                                        ObjectStoreProvider::S3,
+                                        _,
+                                        _,
+                                    ) => ObjectStoreConfigDecision::MissingS3Region,
+                                    (
+                                        true,
+                                        PrefixShape::Normalized,
+                                        ObjectStoreProvider::Gcs,
+                                        _,
+                                        _,
+                                    ) => ObjectStoreConfigDecision::GcsHasS3Coordinates,
+                                };
+                            assert_eq!(object_store_config_kernel(provider, shape), expected);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-        let accepted = object_store_config_decision(
-            provider,
-            bucket_nonempty,
-            prefix_nonempty,
-            prefix_normalized,
-            region_present,
-            region_nonempty,
-            endpoint_present,
-        ) == ObjectStoreConfigDecision::Accept;
-        let provider_exact = match provider {
-            ObjectStoreProvider::S3 => region_nonempty,
-            ObjectStoreProvider::Gcs => !region_present && !endpoint_present,
+    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
+    /// @kani features=object-store
+    /// Cause/effect rule S3-raw: a valid literal bucket and prefix hold their
+    /// two classifications fixed; the actual production decision receives an
+    /// absent, one-space or named region and an independently absent/present
+    /// endpoint. S3 accepts exactly the named region in both endpoint states;
+    /// the other four cases report MissingS3Region. This proves only these
+    /// borrowed raw representatives, not arbitrary UTF-8 region strings.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn object_store_configuration_derives_s3_region_from_raw_representatives() {
+        let region_case: u8 = kani::any();
+        kani::assume(region_case < 3);
+        let region = match region_case {
+            0 => None,
+            1 => Some(" "),
+            _ => Some("r"),
+        };
+        let endpoint_present: bool = kani::any();
+        let decision = object_store_config_decision(
+            ObjectStoreProvider::S3,
+            "b",
+            "p",
+            region,
+            endpoint_present.then_some("e"),
+        );
+        assert_eq!(
+            decision,
+            if region_case == 2 {
+                ObjectStoreConfigDecision::Accept
+            } else {
+                ObjectStoreConfigDecision::MissingS3Region
+            }
+        );
+    }
+
+    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
+    /// @kani features=object-store
+    /// Cause/effect rule BP-raw: an empty or named bucket crosses a missing,
+    /// malformed or normalized prefix. With valid S3 coordinates, the real
+    /// production decision reports Missing first, Invalid second, otherwise
+    /// Accept. Six raw-string combinations expose precedence without assuming
+    /// preclassified bucket/prefix bits; longer and Unicode inputs belong to
+    /// the executable differential tests, not this bounded proof.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn object_store_configuration_derives_bucket_prefix_from_raw_representatives() {
+        let bucket_named: bool = kani::any();
+        let prefix_case: u8 = kani::any();
+        kani::assume(prefix_case < 3);
+        let bucket = if bucket_named { "b" } else { "" };
+        let prefix = match prefix_case {
+            0 => "/",
+            1 => "/bad",
+            _ => "p",
+        };
+        let decision =
+            object_store_config_decision(ObjectStoreProvider::S3, bucket, prefix, Some("r"), None);
+        let expected = if !bucket_named || prefix_case == 0 {
+            ObjectStoreConfigDecision::MissingBucketOrPrefix
+        } else if prefix_case == 1 {
+            ObjectStoreConfigDecision::InvalidPrefix
+        } else {
+            ObjectStoreConfigDecision::Accept
+        };
+        assert_eq!(decision, expected);
+    }
+
+    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
+    /// @kani features=object-store
+    /// Cause/effect rule GCS-raw: with valid literal bucket and prefix,
+    /// absent, blank and named raw region options cross an independent absent
+    /// or present endpoint. GCS accepts only both absent; all five other
+    /// cases reject S3 coordinates, including an empty but present region.
+    /// This is a bounded representative proof, not arbitrary UTF-8 admission.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn object_store_configuration_derives_gcs_coordinates_from_raw_representatives() {
+        let region_case: u8 = kani::any();
+        kani::assume(region_case < 3);
+        let region = match region_case {
+            0 => None,
+            1 => Some(" "),
+            _ => Some("r"),
+        };
+        let endpoint_present: bool = kani::any();
+        let decision = object_store_config_decision(
+            ObjectStoreProvider::Gcs,
+            "b",
+            "p",
+            region,
+            endpoint_present.then_some("e"),
+        );
+        assert_eq!(
+            decision,
+            if region_case == 0 && !endpoint_present {
+                ObjectStoreConfigDecision::Accept
+            } else {
+                ObjectStoreConfigDecision::GcsHasS3Coordinates
+            }
+        );
+    }
+
+    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
+    /// @kani features=object-store
+    /// Cause/effect rule B-ASCII: zero to two bytes from the admitted ASCII
+    /// alphabet {space, 'a'} feed the production ASCII classifier. All-space
+    /// bytes are blank; any 'a' makes the bucket or region nonblank. The
+    /// production string wrapper uses this classifier only after is_ascii();
+    /// executable differential tests cover every short ASCII byte and Unicode.
+    /// Kani's unwinding assertion rejects an insufficient loop bound.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn object_store_configuration_classifies_bounded_ascii_blankness() {
+        let first = if kani::any::<bool>() { b' ' } else { b'a' };
+        let second = if kani::any::<bool>() { b' ' } else { b'a' };
+        let len: u8 = kani::any();
+        kani::assume(len <= 2);
+        let bytes = [first, second];
+        let raw = &bytes[..usize::from(len)];
+        let expected = (len >= 1 && first == b'a') || (len == 2 && second == b'a');
+        assert_eq!(ascii_has_nonblank(raw), expected);
+    }
+
+    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
+    /// @kani features=object-store
+    /// Cause/effect rule P-ASCII: zero to three bytes from {'/', 'p'} feed
+    /// the production prefix byte classifier. Empty/all slash is Missing;
+    /// a leading or trailing slash is Invalid; all other shapes are
+    /// Normalized. The full UTF-8 wrapper is covered by executable differential
+    /// tests against the original string rule, including dot and Unicode.
+    /// Kani's unwinding assertion rejects an insufficient loop bound.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn object_store_configuration_classifies_bounded_ascii_prefix() {
+        let first = if kani::any::<bool>() { b'/' } else { b'p' };
+        let middle = if kani::any::<bool>() { b'/' } else { b'p' };
+        let last = if kani::any::<bool>() { b'/' } else { b'p' };
+        let len: u8 = kani::any();
+        kani::assume(len <= 3);
+        let bytes = [first, middle, last];
+        let raw = &bytes[..usize::from(len)];
+        let expected = match len {
+            0 => PrefixShape::Missing,
+            1 if first == b'/' => PrefixShape::Missing,
+            1 => PrefixShape::Normalized,
+            2 if first == b'/' && middle == b'/' => PrefixShape::Missing,
+            2 if first == b'p' && middle == b'p' => PrefixShape::Normalized,
+            2 => PrefixShape::Invalid,
+            _ if first == b'/' && middle == b'/' && last == b'/' => PrefixShape::Missing,
+            _ if first == b'p' && last == b'p' => PrefixShape::Normalized,
+            _ => PrefixShape::Invalid,
+        };
+        assert_eq!(classify_prefix_bytes(raw), expected);
+    }
+
+    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
+    /// @kani features=object-store
+    /// Cause/effect rule P-dot: a whole dot or parent segment rejects;
+    /// a dot inside an ordinary segment accepts. Other slash patterns
+    /// belong to P-ASCII and the executable exhaustive differential table.
+    /// Kani's unwinding assertion rejects an insufficient loop bound.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn object_store_configuration_classifies_bounded_dot_segments() {
+        let prefix_case: u8 = kani::any();
+        kani::assume(prefix_case < 5);
+        let prefix = match prefix_case {
+            0 => b".".as_slice(),
+            1 => b"..".as_slice(),
+            2 => b"p/./q".as_slice(),
+            3 => b"p/../q".as_slice(),
+            _ => b"p.q".as_slice(),
         };
         assert_eq!(
-            accepted,
-            bucket_nonempty && prefix_nonempty && prefix_normalized && provider_exact
+            classify_prefix_bytes(prefix),
+            if prefix_case == 4 {
+                PrefixShape::Normalized
+            } else {
+                PrefixShape::Invalid
+            }
         );
     }
 }
@@ -283,6 +584,94 @@ mod tests {
     use super::*;
     use object_store::memory::InMemory;
 
+    #[test]
+    fn bucket_shape_preserves_original_trim_rule() {
+        // Causes: C1 zero, one or two ASCII bytes including control/space;
+        // C2 non-ASCII whitespace with or without visible content. Effects:
+        // E1 the sole classifier agrees with `!trim().is_empty()` for every
+        // C1 combination; E2 C2 retains the Unicode rule. Decision rows:
+        // R1 all whitespace -> false; R2 any non-whitespace -> true; R3
+        // non-ASCII -> the original Unicode result, not ASCII approximation.
+        assert!(!bucket_has_nonblank(""), "R1 empty");
+        for first in 0_u8..=127 {
+            let one = String::from_utf8(vec![first]).unwrap();
+            assert_eq!(
+                bucket_has_nonblank(&one),
+                !one.trim().is_empty(),
+                "R1/R2 {first}"
+            );
+            for second in 0_u8..=127 {
+                let two = String::from_utf8(vec![first, second]).unwrap();
+                assert_eq!(
+                    bucket_has_nonblank(&two),
+                    !two.trim().is_empty(),
+                    "R1/R2 {first},{second}",
+                );
+            }
+        }
+        for bucket in [
+            "\u{2003}",
+            " \u{2003} ",
+            "\u{2003}a",
+            "é",
+            "\u{00a0}\u{2003}",
+        ] {
+            assert_eq!(
+                bucket_has_nonblank(bucket),
+                !bucket.trim().is_empty(),
+                "R3 {bucket:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn prefix_shape_matches_original_string_rules() {
+        // Cause/effect graph: C1=empty or slash-only prefix, C2=a nonempty
+        // path with an empty, dot, or parent segment, C3=all ordinary nonempty
+        // segments. Effects: C1 -> Missing before C2, C2 -> Invalid, C3 ->
+        // Normalized. Decision table exhausts every 0..=6-byte ASCII path
+        // over '/', '.', and 'p'; Unicode examples preserve UTF-8 boundaries
+        // while exercising slash and dot decisions. The original string rules
+        // below are a test oracle only, never another production validator.
+        let original = |prefix: &str| {
+            if prefix.trim_matches('/').is_empty() {
+                PrefixShape::Missing
+            } else if prefix
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            {
+                PrefixShape::Invalid
+            } else {
+                PrefixShape::Normalized
+            }
+        };
+        let alphabet = ['/', '.', 'p'];
+        for length in 0..=6_u32 {
+            for mut encoded in 0..3_usize.pow(length) {
+                let mut prefix = String::new();
+                for _ in 0..length {
+                    prefix.push(alphabet[encoded % alphabet.len()]);
+                    encoded /= alphabet.len();
+                }
+                assert_eq!(classify_prefix(&prefix), original(&prefix), "{prefix:?}");
+            }
+        }
+        for prefix in [
+            "é",
+            "é/p",
+            "/é",
+            "é/",
+            "é//p",
+            "é/./p",
+            "é/../p",
+            "\u{2003}",
+            "p/\u{2003}",
+            "e\u{301}",
+        ] {
+            assert_eq!(classify_prefix(prefix), original(prefix), "{prefix:?}");
+        }
+    }
+
     fn minio_backend(
         secret_key: &str,
     ) -> Result<Option<Arc<dyn ObjectStore>>, Box<dyn std::error::Error>> {
@@ -372,11 +761,17 @@ mod tests {
 
     #[test]
     fn allocation_config_is_secret_free_and_provider_exact() {
-        // Cause/effect graph: C1=bucket non-empty, C2=normalized non-empty
-        // prefix, C3=S3 has region, C4=GCS has no S3-only coordinates.
-        // Decision table: S3(C1+C2+C3)->accept; GCS(C1+C2+C4)->accept;
-        // any missing/provider-conflicting cause -> reject before credentials
-        // or network are opened. Static key fields do not exist in the type.
+        // Cause/effect graph: C1=bucket has non-whitespace content;
+        // C2=prefix has one or more nonempty ordinary relative segments;
+        // C3=S3 region is present and nonblank; C4=GCS region and endpoint
+        // are absent. E1=accept, E2=InvalidConfiguration with the exact
+        // failing shape. Decision rules: R1=S3+C1+C2+C3 -> E1 (endpoint
+        // optional); R2=GCS+C1+C2+C4 -> E1; R3=!C1 or empty C2 -> E2
+        // bucket/prefix; R4=malformed C2 -> E2 prefix; R5=S3+!C3 -> E2
+        // region; R6=GCS+!C4 -> E2 GCS coordinates. validate() is the
+        // authority before SDK credential discovery or network access;
+        // R3 precedes R4, which precedes R5/R6 when causes overlap. Static
+        // key fields do not exist in the configuration type.
         let s3 = ObjectFileStoreConfig {
             provider: ObjectStoreProvider::S3,
             bucket: "awaken-a".into(),
@@ -385,6 +780,22 @@ mod tests {
             endpoint: None,
         };
         assert!(s3.validate().is_ok());
+        assert!(
+            ObjectFileStoreConfig {
+                prefix: "blobs".into(),
+                ..s3.clone()
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            ObjectFileStoreConfig {
+                endpoint: Some("https://objects.example".into()),
+                ..s3.clone()
+            }
+            .validate()
+            .is_ok()
+        );
         let gcs = ObjectFileStoreConfig {
             provider: ObjectStoreProvider::Gcs,
             bucket: "awaken-a".into(),
@@ -393,34 +804,193 @@ mod tests {
             endpoint: None,
         };
         assert!(gcs.validate().is_ok());
-        assert!(
-            ObjectFileStoreConfig {
-                region: Some("us-central1".into()),
-                ..gcs
+        let invalid_rows = [
+            (
+                "R3 empty bucket",
+                ObjectFileStoreConfig {
+                    bucket: "".into(),
+                    ..s3.clone()
+                },
+                "object bucket and prefix must be non-empty",
+            ),
+            (
+                "R3 whitespace bucket",
+                ObjectFileStoreConfig {
+                    bucket: " \t ".into(),
+                    ..s3.clone()
+                },
+                "object bucket and prefix must be non-empty",
+            ),
+            (
+                "R3 Unicode whitespace bucket",
+                ObjectFileStoreConfig {
+                    bucket: "\u{2003}".into(),
+                    ..s3.clone()
+                },
+                "object bucket and prefix must be non-empty",
+            ),
+            (
+                "R3 empty prefix",
+                ObjectFileStoreConfig {
+                    prefix: "".into(),
+                    ..s3.clone()
+                },
+                "object bucket and prefix must be non-empty",
+            ),
+            (
+                "R3 slash-only prefix",
+                ObjectFileStoreConfig {
+                    prefix: "/".into(),
+                    ..s3.clone()
+                },
+                "object bucket and prefix must be non-empty",
+            ),
+            (
+                "R3 wins over invalid prefix and missing S3 region",
+                ObjectFileStoreConfig {
+                    bucket: "".into(),
+                    prefix: "/bad".into(),
+                    region: None,
+                    ..s3.clone()
+                },
+                "object bucket and prefix must be non-empty",
+            ),
+            (
+                "R4 wins over missing S3 region",
+                ObjectFileStoreConfig {
+                    prefix: "/bad".into(),
+                    region: None,
+                    ..s3.clone()
+                },
+                "object prefix must be a normalized relative path",
+            ),
+            (
+                "R4 leading slash",
+                ObjectFileStoreConfig {
+                    prefix: "/blobs".into(),
+                    ..s3.clone()
+                },
+                "object prefix must be a normalized relative path",
+            ),
+            (
+                "R4 trailing slash",
+                ObjectFileStoreConfig {
+                    prefix: "blobs/".into(),
+                    ..s3.clone()
+                },
+                "object prefix must be a normalized relative path",
+            ),
+            (
+                "R4 empty segment",
+                ObjectFileStoreConfig {
+                    prefix: "blobs//a".into(),
+                    ..s3.clone()
+                },
+                "object prefix must be a normalized relative path",
+            ),
+            (
+                "R4 dot segment",
+                ObjectFileStoreConfig {
+                    prefix: "blobs/./a".into(),
+                    ..s3.clone()
+                },
+                "object prefix must be a normalized relative path",
+            ),
+            (
+                "R4 parent segment",
+                ObjectFileStoreConfig {
+                    prefix: "blobs/../a".into(),
+                    ..s3.clone()
+                },
+                "object prefix must be a normalized relative path",
+            ),
+            (
+                "R6 GCS present empty endpoint still conflicts",
+                ObjectFileStoreConfig {
+                    endpoint: Some(String::new()),
+                    ..gcs.clone()
+                },
+                "GCS object backing does not accept S3 region or endpoint fields",
+            ),
+            (
+                "R3 GCS empty bucket wins over prefix and coordinates",
+                ObjectFileStoreConfig {
+                    bucket: String::new(),
+                    prefix: "/bad".into(),
+                    region: Some("r".into()),
+                    endpoint: Some("e".into()),
+                    ..gcs.clone()
+                },
+                "object bucket and prefix must be non-empty",
+            ),
+            (
+                "R4 GCS invalid prefix wins over coordinates",
+                ObjectFileStoreConfig {
+                    prefix: "/bad".into(),
+                    region: Some("r".into()),
+                    endpoint: Some("e".into()),
+                    ..gcs.clone()
+                },
+                "object prefix must be a normalized relative path",
+            ),
+            // R5's Unicode shape is outside Kani's one-ASCII-space bound.
+            (
+                "R5 Unicode blank region",
+                ObjectFileStoreConfig {
+                    region: Some("\u{2003}".into()),
+                    ..s3.clone()
+                },
+                "S3 object backing requires a region",
+            ),
+        ];
+        for (rule, config, expected_detail) in invalid_rows {
+            match config.validate() {
+                Err(FileStoreError::InvalidConfiguration { detail }) => {
+                    assert_eq!(detail, expected_detail, "{rule}");
+                }
+                other => panic!("{rule}: expected InvalidConfiguration, got {other:?}"),
             }
-            .validate()
-            .is_err()
-        );
-        assert!(
-            ObjectFileStoreConfig {
-                prefix: "../shared".into(),
-                ..s3
+        }
+
+        // R1/R2/R5/R6 cross-product: both providers x four region shapes x
+        // two endpoint states = 16 rules. A valid bucket/prefix holds C1/C2
+        // true. S3 needs only the named region (endpoint is irrelevant);
+        // GCS needs both coordinates absent. Effects are exact acceptance or
+        // the corresponding InvalidConfiguration detail, including both
+        // conflicting GCS coordinates and S3 invalid region plus endpoint.
+        for provider in [ObjectStoreProvider::S3, ObjectStoreProvider::Gcs] {
+            for (region_case, region) in [None, Some(""), Some(" "), Some("r")]
+                .into_iter()
+                .enumerate()
+            {
+                for endpoint_present in [false, true] {
+                    let config = ObjectFileStoreConfig {
+                        provider,
+                        bucket: "b".into(),
+                        prefix: "p".into(),
+                        region: region.map(str::to_owned),
+                        endpoint: endpoint_present.then(|| "e".into()),
+                    };
+                    let expected: Result<(), FileStoreError> = match provider {
+                        ObjectStoreProvider::S3 if region_case == 3 => Ok(()),
+                        ObjectStoreProvider::S3 => Err(FileStoreError::InvalidConfiguration {
+                            detail: "S3 object backing requires a region".into(),
+                        }),
+                        ObjectStoreProvider::Gcs if region_case == 0 && !endpoint_present => Ok(()),
+                        ObjectStoreProvider::Gcs => Err(FileStoreError::InvalidConfiguration {
+                            detail:
+                                "GCS object backing does not accept S3 region or endpoint fields"
+                                    .into(),
+                        }),
+                    };
+                    assert_eq!(
+                        config.validate(),
+                        expected,
+                        "provider={provider:?} region_case={region_case} endpoint_present={endpoint_present}"
+                    );
+                }
             }
-            .validate()
-            .is_err()
-        );
-        assert!(
-            ObjectFileStoreConfig {
-                provider: ObjectStoreProvider::S3,
-                bucket: "awaken-a".into(),
-                prefix: "deployments/a/files".into(),
-                region: Some("  ".into()),
-                endpoint: None,
-            }
-            .validate()
-            .is_err(),
-            "blank S3 region is not a deployment coordinate"
-        );
+        }
     }
 
     /// Live round-trip against a real object store (MinIO/S3). Skips unless
