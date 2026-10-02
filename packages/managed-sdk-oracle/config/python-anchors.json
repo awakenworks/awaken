@@ -19,6 +19,9 @@
     { "version": "1.4.0", "role": "protocol_change_point", "reason": "per-request workspace/user-profile headers preserve client defaults; reject mixed httpx/httpx2 configuration" },
     { "version": "1.5.0", "role": "protocol_change_point", "reason": "auto tool-permission policy with per-call evaluation, user-profile external_user_details under user-profiles-2026-09-04, public GitHub repositories without an authorization_token, environment worker runs an item on its secret-carried sessions token, CredentialsError/IdentityTokenFileError, extra_body merged before client hooks" },
     { "version": "1.7.0", "role": "transport_change_point", "reason": "async credential providers and cleanup, single-flight token refresh, legacy no-argument providers, full Retry-After delay, UserProfile Workspace headers, compaction capability, safe annotation reflection" },
-    { "version": "1.8.0", "role": "current_oracle", "reason": "prepare one-shot request inputs once across retries and pagination, shared Managed tool-permission enum, safe stream finalization, claude-opus-5-5 model literal" }
+    { "version": "1.8.0", "role": "protocol_change_point", "reason": "prepare one-shot request inputs once across retries and pagination, shared Managed tool-permission enum, safe stream finalization, claude-opus-5-5 model literal" },
+    { "version": "1.9.0", "role": "protocol_change_point", "reason": "typed Managed event-list filter and updated Managed declarations" },
+    { "version": "1.10.0", "role": "protocol_change_point", "reason": "refusal stop details, repository error types, and unnamed multipart file transport" },
+    { "version": "1.11.0", "role": "current_oracle", "reason": "retains Managed 1.10 contracts with exact current wheel and Organization spend-limits surface" }
   ]
 }

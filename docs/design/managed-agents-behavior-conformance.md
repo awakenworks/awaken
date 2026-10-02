@@ -118,6 +118,18 @@ These Session-scoped rules cross roster admission, committed execution input,
 tool realization, and public events. Each claim below names its current owner
 and its executed evidence or states the remaining qualification boundary.
 
+- **The current official SDKs share one committed event contract.** The
+  TypeScript 0.131.0 and Python 1.11.0 anchors are extracted from exact npm and
+  PyPI packages by `managed-sdk-oracle`; the candidate delta and historical
+  matrices reuse the same Session, Resource, and event owners. Both Session and
+  Thread idle now serialize the SDK-required `stop_details` key as `null` for
+  every currently produced non-refusal stop. `event_shapes` compares this and
+  every other committed event against the generated nested SDK shape, including
+  whether a required discriminator may be null. The SDK's new `refusal` reason
+  and repository-error variants are declaration-qualified, but this work does
+  not claim the Runtime produces a refusal reason or every repository fault.
+  A non-null refusal detail must come from a committed refusal fact before it
+  can be projected; the protocol does not infer one from an ordinary failure.
 - **`auto` sees no session content.** CMA evaluates each call over "tool + input
   + session content so far" and may deny it as high-risk.
   `AutoPermissionEvaluator::evaluate(&self, call: &ToolCall)` is synchronous and
@@ -227,3 +239,56 @@ A second mechanism for the same purpose was written during this work and deleted
 `generate_hooks.py` already renders every trigger from the checker that owns the
 inputs, and the registry already ratchets the exceptions. Two guards for one
 invariant is the duplication this repository eliminates first.
+
+## The direction a shape gate cannot see
+
+The generated oracle moved from SDK 0.128.0 to 0.131.0 and brought three
+additions: `stop_reason` gained a `refusal` variant, a required-and-nullable
+`stop_details` appeared beside it on both idle events, and `session.error` gained
+five `repository_*` variants. One of the three was implemented. Nothing failed.
+
+`tests/event_shapes.rs` asked one question of every nested discriminator: *is the
+`type` this adapter emitted one the SDK declares?* That direction cannot notice a
+variant the SDK declares and nothing here emits, because an unemitted variant has
+no sample to walk. Measured against the extraction, the asymmetry was not
+marginal: the SDK declares 82 variants across 27 paths, and the samples reached
+one variant per field - `end_turn` of five stop reasons, `auto` of three
+evaluation policies, `text` of two rubrics, and one error type of thirteen.
+
+The second direction costs thirteen more samples and ten named entries. Coverage
+is keyed by field name rather than by the path a variant was found under, because
+one closed Rust enum serves each wire union wherever it appears; the keying would
+silently merge two unions that happened to share a field name, so a field whose
+declared variants differ between two events fails before the merge can claim
+coverage it does not have. Recursion also stops under a variant already named
+unreachable: one decision costs one reason instead of a cascade of unreachable
+children - naming `billing_error` unreachable should not also demand three
+entries for the `retry_status` nobody will ever read inside it.
+
+Two of the named gaps are structural rather than missing match arms.
+`credential_host_unreachable_error` requires `credential_id` and `vault_id`, and
+every `repository_*` variant requires `repository_url`; `SessionError` carries
+none of those fields, so the gap is a projection that does not exist, and the
+entry says so. `billing_error` is the one with a client-visible consequence worth
+stating plainly: billing exhaustion arrives as the neutral code `usage_limit` and
+is projected as `model_request_failed_error`, so a client that keys recovery on
+the billing class never sees it.
+
+`StopDetails` became an uninhabited enum rather than a variant nobody constructs.
+The wire fact is that the key is required, nullable, and always null here, because
+no Runtime transition claims a refusal. An uninhabited enum states exactly that
+and nothing more: `Some` cannot be constructed, so the null is not a convention
+the next edit can break. A `Refusal { category, explanation }` variant with zero
+construction sites would have claimed the opposite - and would have claimed it
+with both fields optional, where the SDK lists them required.
+
+Writing the first sample that emits an mcp error surfaced a fail-open the field
+check had never run on. `mcp_connection_failed_error` and
+`mcp_authentication_failed_error` both require `mcp_server_name`, and
+`SessionError` derives that field by searching the fault's prose for the literal
+marker ``mcp server ` ``. A fault whose message does not carry the marker loses
+the field to `skip_serializing_if`, and the event goes out missing a property the
+SDK requires - an official client cannot deserialize it. The presence of a
+required wire field must not depend on parsing prose, so the two are now produced
+together or not at all: when the server name cannot be established the error is
+the honest `unknown_error`, which requires no such field.

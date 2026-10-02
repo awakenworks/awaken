@@ -2,7 +2,9 @@
 // complements managed_error_paths (which covers fail-closed 404/wrong-ticket) by
 // driving the graceful-degradation + recovery branches a server must survive:
 // a bad agent, empty/huge content, concurrent sends to one session, a malformed
-// request followed by a good one, and interrupt/cancel edge cases. These exercise
+// request followed by a good one. Active interrupt/unknown is owned by
+// managed_native_acp_runtime_matrix_e2e; idle interrupt/reuse is owned by
+// managed_resilience_e2e. These exercise
 // the error/edge branches in the host, engine, protocol-managed router, and
 // live-control that the happy-path suite never reaches. Deterministic (echo).
 //
@@ -15,7 +17,6 @@ import {
   stopServer,
   waitForPort,
   waitForSessionEventReceipt,
-  waitForValue,
   pass,
   startUpstream,
   realServerEnv,
@@ -34,12 +35,6 @@ async function statusOf(promise, what) {
   throw new Error(`${what}: expected an error but the call succeeded`);
 }
 const isClientError = (s) => s >= 400 && s < 500;
-
-async function listEvents(client, id) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(id, { betas: BETAS })) events.push(ev);
-  return events;
-}
 
 async function main() {
   const upstream = await startUpstream('echo');
@@ -250,77 +245,6 @@ async function main() {
       } finally {
         await stopServer(retryServer.server);
         retryUpstream.close();
-      }
-    }
-
-    // 8. Interrupt an active turn, then steer the same idle session with a new
-    // user message. The neutral runtime owns the cancellation/continuation
-    // semantics; Managed only projects the resulting event sequence.
-    {
-      const slowUpstream = await startUpstream('echo', { delayMs: 900 });
-      const steerServer = spawnServer('real', PORT + 2, { ...realServerEnv('echo', slowUpstream) });
-      try {
-        await waitForPort(PORT + 2);
-        const steerClient = new Anthropic({ apiKey: 'e2e-dummy', baseURL: steerServer.baseUrl });
-        const session = await steerClient.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-        const active = steerClient.beta.sessions.events.send(session.id, {
-          events: [{ type: 'user.message', content: [{ type: 'text', text: 'long-running original' }] }],
-          betas: BETAS,
-        });
-        // R8: C1=the original Run reaches running and its exact User receipt is
-        // retained; C2=an exact interrupt receipt reaches idle; C3=a replacement
-        // receipt reaches its reply. Effects: E1=no timing guess and both C1/C2
-        // receipts process; E2=same-Session replacement completes. Constraint:
-        // committed running is the readiness authority, while exact receipts are
-        // fenced only after the interrupt terminal edge. C1+C2+C3=>E1+E2.
-        await waitForValue(
-          () => listEvents(steerClient, session.id),
-          (events) => events.some((event) => event.type === 'session.status_running'),
-          'R8 original Run reaches committed running before interrupt',
-          { timeoutMs: 10_000, pollMs: 10 },
-        );
-        const interruptReceipt = await steerClient.beta.sessions.events.send(session.id, {
-          events: [{ type: 'user.interrupt' }],
-          betas: BETAS,
-        });
-        await waitForSessionEventReceipt(
-          steerClient,
-          session.id,
-          interruptReceipt.data[0]?.id,
-          BETAS,
-          ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
-          'R8 interrupt receipt reaches idle',
-        );
-        const activeReceipt = (await active).data[0];
-        assert.equal(activeReceipt?.type, 'user.message', 'R8 exact original User receipt');
-        await waitForSessionEventReceipt(
-          steerClient,
-          session.id,
-          activeReceipt.id,
-          BETAS,
-          () => true,
-          'R8 original User receipt to process after interrupt idle',
-        );
-        const replacementReceipt = await steerClient.beta.sessions.events.send(session.id, {
-          events: [{ type: 'user.message', content: [{ type: 'text', text: 'steered replacement' }] }],
-          betas: BETAS,
-        });
-        const { delta } = await waitForSessionEventReceipt(
-          steerClient,
-          session.id,
-          replacementReceipt.data[0]?.id,
-          BETAS,
-          ({ delta: current }) => current.some((event) => event.type === 'agent.message')
-            && current.some((event) => event.type === 'session.status_idle'),
-          'R8 replacement receipt reaches its terminal reply',
-        );
-        const texts = delta.filter((event) => event.type === 'agent.message')
-          .flatMap((event) => event.content ?? []).map((part) => part.text ?? '').join(' ');
-        assert.ok(texts.includes('steered replacement'), `steered answer missing: ${texts}`);
-        pass('active interrupt followed by a replacement user.message completes on the same session');
-      } finally {
-        await stopServer(steerServer.server);
-        slowUpstream.close();
       }
     }
 

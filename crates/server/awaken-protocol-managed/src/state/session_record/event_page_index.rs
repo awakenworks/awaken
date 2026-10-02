@@ -58,6 +58,7 @@ impl EventPageIndex {
             match &event.kind {
                 OutboundKind::SessionStatusIdle {
                     stop_reason: StopReason::RequiresAction { event_ids },
+                    ..
                 }
                 | OutboundKind::SessionThreadStatusIdle {
                     stop_reason: StopReason::RequiresAction { event_ids },
@@ -139,6 +140,7 @@ mod tests {
                 stop_reason: StopReason::RequiresAction {
                     event_ids: vec![target.into()],
                 },
+                stop_details: None,
             },
         )
     }

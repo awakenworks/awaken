@@ -580,6 +580,7 @@ impl ManagedState {
                 }
                 OutboundKind::SessionStatusIdle {
                     stop_reason: StopReason::RequiresAction { event_ids },
+                    ..
                 } => {
                     for event_id in event_ids {
                         *event_id = latest.get(event_id).cloned().ok_or_else(|| {
