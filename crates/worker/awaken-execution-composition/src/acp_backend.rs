@@ -81,26 +81,109 @@ impl AcpSessionExecutorFactory for BoundAcpSessionFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_run_executor_acp::{
+        ConfigHome, FsSessionBlobStore, SessionBlobStore, SessionHomeKey, SessionHomePlan,
+    };
+    use awaken_runtime_contract::{ContentEraser, DataSubjectId};
 
-    #[test]
-    fn deployment_session_blob_root_is_the_only_recovery_configuration() {
+    #[tokio::test]
+    async fn deployment_session_blob_root_is_the_only_recovery_and_erasure_scope() {
         // Causes: C1 the frozen Deployment names a portable blob root; C2 it
-        // leaves that root absent. They are mutually exclusive. Effects: E1
-        // C1 installs the one session-home adapter; E2 C2 installs none. The
-        // exact acp:* route is independently checked by launch registry tests.
-        // Decision table: R1 C1 -> E1; R2 C2 -> E2.
-        let root = std::env::temp_dir().join(format!("acp-blobs-{}", std::process::id()));
-        for (portable_root, installed, rule) in [(Some(root), true, "R1"), (None, false, "R2")] {
-            let factory = BoundAcpSessionFactory::new(
-                LaunchSource::Fixed(Box::new(awaken_run_executor_acp::AcpLaunch::custom(
-                    vec!["fixture".into()],
-                    vec![],
-                ))),
-                None,
-                portable_root,
-                None,
-            );
-            assert_eq!(factory.session_home.is_some(), installed, "{rule}");
-        }
+        // leaves that root absent; C3 two subjects share thread and adapter;
+        // C4 one subject is erased. Effects: E1 C1 harvests into exactly that
+        // root; E2 C2 installs no portable home; E3 C3 scopes each opaque blob;
+        // E4 C4 removes only the erased subject and retains the other.
+        // Constraint: C1/C2 are mutually exclusive, and erasure consumes the
+        // same FsSessionBlobStore root that Coordinator configures from the
+        // Deployment. Decision table: R1 C1+C3 -> E1+E3; R2 C2 -> E2;
+        // R3 C1+C3+C4 -> E4. Exact CLI routing is covered by launch tests.
+        let root = tempfile::tempdir().unwrap();
+        let other_root = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+        deployment.acp_session_blob_root = Some(root.path().to_path_buf());
+        let launch = || {
+            LaunchSource::Fixed(Box::new(awaken_run_executor_acp::AcpLaunch::custom(
+                vec!["fixture".into()],
+                vec![],
+            )))
+        };
+        let factory = BoundAcpSessionFactory::new(
+            launch(),
+            None,
+            deployment.acp_session_blob_root.clone(),
+            Some(config.path().to_path_buf()),
+        );
+        let home = factory.session_home.as_ref().expect("R1 portable home");
+        let plan = SessionHomePlan {
+            config_home_env: "HOME".into(),
+            session_subpath: "projects/conv".into(),
+            exclude: vec![],
+            keyed_by_cwd: false,
+        };
+        let alice = SessionHomeKey {
+            data_subject_id: Some("alice".into()),
+            thread_id: "shared-thread".into(),
+            adapter: "claude".into(),
+        };
+        let bob = SessionHomeKey {
+            data_subject_id: Some("bob".into()),
+            ..alice.clone()
+        };
+        let source = ConfigHome::open(Some(config.path()), "shared-thread").unwrap();
+        source
+            .write("projects/conv/session.jsonl", b"alice")
+            .unwrap();
+        home.harvest(&alice, &plan).await;
+        source.write("projects/conv/session.jsonl", b"bob").unwrap();
+        home.harvest(&bob, &plan).await;
+
+        let blobs = FsSessionBlobStore::new(root.path().to_path_buf());
+        let wrong = FsSessionBlobStore::new(other_root.path().to_path_buf());
+        let fetched = tempfile::tempdir().unwrap();
+        assert!(
+            blobs.fetch(&alice, fetched.path(), &[]).await.unwrap(),
+            "R1"
+        );
+        assert_eq!(
+            std::fs::read(fetched.path().join("session.jsonl")).unwrap(),
+            b"alice",
+            "R1"
+        );
+        assert!(
+            !wrong.fetch(&alice, fetched.path(), &[]).await.unwrap(),
+            "R1 exact root"
+        );
+        assert_eq!(
+            blobs
+                .erase_subject(&DataSubjectId("alice".into()))
+                .await
+                .unwrap(),
+            1,
+            "R3"
+        );
+        let survivor = tempfile::tempdir().unwrap();
+        assert!(
+            !blobs.fetch(&alice, fetched.path(), &[]).await.unwrap(),
+            "R3 erased"
+        );
+        assert!(
+            blobs.fetch(&bob, survivor.path(), &[]).await.unwrap(),
+            "R3 retained"
+        );
+        assert_eq!(
+            std::fs::read(survivor.path().join("session.jsonl")).unwrap(),
+            b"bob",
+            "R3"
+        );
+
+        deployment.acp_session_blob_root = None;
+        let no_portable_home = BoundAcpSessionFactory::new(
+            launch(),
+            None,
+            deployment.acp_session_blob_root,
+            Some(config.path().to_path_buf()),
+        );
+        assert!(no_portable_home.session_home.is_none(), "R2");
     }
 }
