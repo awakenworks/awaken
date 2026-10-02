@@ -26,11 +26,23 @@ pub(super) fn gated_agent_command(
     command: &[String],
     effect_fence: &ContainerEffectFence,
 ) -> Vec<String> {
+    // The official Sandbox image already carries tini, but Kubernetes replaces
+    // its ENTRYPOINT with this projection gate. Restore the same PID-1 reaper
+    // for the canonical Sandbox role after the fence opens. Arbitrary fixture
+    // commands retain their declared executable and need no image capability.
+    let launch = if command
+        .first()
+        .is_some_and(|program| program == "/usr/local/bin/awaken-sandbox")
+    {
+        "exec /usr/bin/tini -- \"$@\""
+    } else {
+        "exec \"$@\""
+    };
     let mut gated = vec![
         "/bin/sh".into(),
         "-ec".into(),
         format!(
-            "expected=$1; marker={PROJECTION_MARKER}; while [ \"$(cat -- \"$marker\" 2>/dev/null || :)\" != \"$expected\" ]; do sleep 0.1; done; shift; exec \"$@\""
+            "expected=$1; marker={PROJECTION_MARKER}; while [ \"$(cat -- \"$marker\" 2>/dev/null || :)\" != \"$expected\" ]; do sleep 0.1; done; shift; {launch}"
         ),
         "awaken-projection-gate".into(),
         projection_fence_value(effect_fence),
@@ -160,10 +172,20 @@ mod tests {
             assert_ne!(projection_fence_value(&foreign), expected, "E3");
         }
 
-        let command = vec!["agent".into(), "--serve".into()];
+        // C4 the official Sandbox role would otherwise replace its image
+        // ENTRYPOINT and become PID 1; E4 the gate restores that image's tini
+        // before starting the unchanged command. C5 an arbitrary fixture image
+        // has no tini contract; E5 it retains its declared executable.
+        let command = vec!["/usr/local/bin/awaken-sandbox".into(), "hand".into()];
         let gated = gated_agent_command(&command, &original);
         assert_eq!(gated[0..2], ["/bin/sh", "-ec"], "E1");
         assert_eq!(gated[4], expected, "E1");
         assert_eq!(gated[5..], command, "E1");
+        assert!(gated[2].contains("exec /usr/bin/tini -- \"$@\""), "E4");
+
+        let fixture = vec!["sh".into(), "-c".into(), "sleep 1".into()];
+        let fixture_gate = gated_agent_command(&fixture, &original);
+        assert!(fixture_gate[2].ends_with("shift; exec \"$@\""), "E5");
+        assert_eq!(fixture_gate[5..], fixture, "E5");
     }
 }

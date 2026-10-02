@@ -201,6 +201,97 @@ fn managed_input_spec(scope: &str, path: &str, marker: &str) -> pc::SandboxSpec 
     }
 }
 
+#[tokio::test]
+async fn projected_official_hand_reaps_adopted_exec_descendants() {
+    /* PID-1 cause/effect table: P1 the official Sandbox image supplies tini,
+     * P2 an exact projection fence opens the Kubernetes command gate, and P3
+     * attached exec shells leave short-lived children behind. P1+P2 => the
+     * running Hand has tini as PID 1; P1+P2+P3 => all adopted children are
+     * reaped before a Session can accumulate zombies. The pure gate test owns
+     * fixture commands and changed-fence refusal; this live rule proves the
+     * actual image, Pod command override, and kernel child-reaping boundary. */
+    if !require_live_cluster() {
+        return;
+    }
+
+    let scope = format!("k8s-pid1-reap-{}", std::process::id());
+    let image = session_image();
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    let provider = ContainerProvider::new(Arc::new(runtime), image.clone())
+        .with_clock(awaken_lease_contract::system_clock())
+        .with_resident_hand(
+            ResidentHandConfig::new("/usr/local/bin/awaken-sandbox", 7777).unwrap(),
+        );
+    let mut sandbox_spec = managed_input_spec(&scope, "/mnt/session/inputs/reaper-proof", "ready");
+    sandbox_spec.environment = Some(container_environment(image));
+    let create_fence = effect_fence(&scope, "create", "reaper-owner", 1);
+    let sandbox = ContainerEnvironmentProvider::create_environment_for_effect(
+        &provider,
+        &sandbox_spec,
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
+    )
+    .await
+    .expect("create the projected Hand Pod");
+    let pod = container_id(&sandbox.handle());
+    let init = kubectl(&["exec", &pod, "-c", "agent", "--", "cat", "/proc/1/comm"]);
+    assert!(init.status.success(), "P1+P2 PID 1 is readable");
+    assert_eq!(
+        init.stdout.as_slice(),
+        b"tini\n",
+        "P1+P2 the image init was restored"
+    );
+
+    for _ in 0..12 {
+        let orphan = kubectl(&[
+            "exec",
+            &pod,
+            "-c",
+            "agent",
+            "--",
+            "sh",
+            "-c",
+            "sleep 0.05 </dev/null >/dev/null 2>&1 &",
+        ]);
+        assert!(
+            orphan.status.success(),
+            "P3 attached exec created an orphan"
+        );
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let zombies = kubectl(&[
+        "exec",
+        &pod,
+        "-c",
+        "agent",
+        "--",
+        "sh",
+        "-c",
+        "grep -l '^State:[[:space:]]*Z' /proc/[0-9]*/status 2>/dev/null || true",
+    ]);
+    assert!(
+        zombies.status.success(),
+        "P1+P2+P3 inspect adopted children"
+    );
+    assert!(zombies.stdout.is_empty(), "P1+P2+P3 no zombies remain");
+
+    let terminal_fence = effect_fence(&scope, "terminal", "reaper-owner", 2);
+    sandbox
+        .prepare_disposal_for_effect(&terminal_fence, &EffectAuthority::new(&terminal_fence))
+        .await
+        .expect("prepare exact physical cleanup");
+    sandbox
+        .dispose_for_effect(
+            &disposal_authorization(&terminal_fence),
+            &EffectAuthority::new(disposal_authorization(&terminal_fence).effect_fence()),
+        )
+        .await
+        .expect("dispose the probe Pod");
+}
+
 /// The e2e spec with one `File` mount whose bytes the provider resolves by id through the
 /// injected `BlobSource` — then realizes as a ConfigMap volume just like inline content.
 fn file_spec(scope: &str) -> pc::SandboxSpec {
