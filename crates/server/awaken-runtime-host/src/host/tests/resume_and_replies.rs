@@ -1957,7 +1957,7 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
 
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
-    // Cause/effect graph: C1 durable ingress; C2 a claimed Run settles Awaiting
+    // Cause/effect graph: C1 durable ingress with a local pool; C2 a claimed Run settles Awaiting
     // on a client-tool ticket; C3 the exact ClientResult arrives; C4 resumed work
     // ends; C5 resumed work awaits on a new ticket. Effects: E1 input is appended
     // to the canonical durable Inbox; E2 the Worker alone claims/resumes/settles;
@@ -1969,7 +1969,7 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
     //
     // | Rule | ingress | initial state | resume result | Effect |
     // | R1 | direct | Awaiting | Ended | inline E1/E2 not applicable (sibling test) |
-    // | R2 | durable | Awaiting(old ticket) | Ended | E1+E2+E3+E5 |
+    // | R2 | durable/local pool | Awaiting(old ticket) | Ended | E1+E2+E3+E5 |
     // | R3 | durable | Awaiting(old ticket) | Awaiting(new ticket) | E1+E2+E4 |
     // | R4 | durable | Awaiting(old ticket) | exact retry | one Inbox identity |
     // R3 is owned by run-ingress worker settle tests; R4 by the resume-identity
@@ -2032,6 +2032,71 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
             .iter()
             .all(|summary| summary.run_id != resumed.run_id),
         "R2/E3: terminal settlement removes the authoritative dispatch row"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn coordinator_only_foreground_admission_survives_request_drop_without_a_pool() {
+    use awaken_run_ingress::DispatchQueue as _;
+
+    // Causes: C1 durable dispatch is installed; C2 this Coordinator owns no
+    // local pool; C3 the foreground request is dropped before a remote Worker
+    // claims. Effects: E1 one row is committed to the same DispatchStore;
+    // E2 no local physical attempt starts; E3 dropping the waiter does not
+    // retract that row. The sibling durable-client test covers local pool
+    // claim, resume and settlement through the same store.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // | Q1 | yes | no  | no  | local claim and settle (sibling) |
+    // | Q2 | yes | yes | yes | E1+E2+E3 |
+    let dispatch = Arc::new(
+        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(system_clock())
+            .expect("in-memory dispatch"),
+    );
+    let host = Arc::new(
+        SharedHost::new(Arc::new(ClientLookupModel), "stub")
+            .with_client_tools(HashSet::from(["lookup".to_string()]))
+            .with_coordinator_dispatch_store(dispatch.clone()),
+    );
+    let _managed = install_test_dispatch_runtime(&host);
+    host.ensure_dispatch_pool();
+    assert!(host.dispatch.dispatch_pool.get().is_none(), "Q2/E2");
+
+    let request = host.clone();
+    let foreground =
+        tokio::spawn(async move { request.run(None, "remote-dispatch", user("hi")).await });
+    let row = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(row) = dispatch
+                .list_dispatches()
+                .await
+                .expect("dispatch rows")
+                .into_iter()
+                .next()
+            {
+                break row;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("Q2/E1 bounded admission");
+    assert_eq!(row.thread_id, ThreadId("remote-dispatch".into()), "Q2/E1");
+    assert!(!row.physical_attempt_active, "Q2/E2");
+
+    foreground.abort();
+    assert!(
+        matches!(foreground.await, Err(error) if error.is_cancelled()),
+        "Q2/E3",
+    );
+    assert_eq!(
+        dispatch
+            .list_dispatches()
+            .await
+            .expect("retained dispatch")
+            .len(),
+        1,
+        "Q2/E3",
     );
 }
 
