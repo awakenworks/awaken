@@ -26,7 +26,7 @@ pub(crate) struct BoundLocalChannelSource {
     codec: awaken_run_executor_acp::Codec,
     backend: awaken_runtime_contract::resolved::Backend,
     mcp_servers: Vec<awaken_acp_contract::SessionMcpServer>,
-    attached_tools: Option<Arc<crate::acp_tool_export::AttachedToolSet>>,
+    attached_tools: Option<Arc<awaken_runtime_contract::tool_export::AttachedToolSet>>,
 }
 
 /// The single launch-kind decision for Session MCP route ownership.
@@ -105,7 +105,7 @@ impl BoundLocalChannelSource {
 
     pub(crate) fn with_attached_tools(
         mut self,
-        tools: Option<Arc<crate::acp_tool_export::AttachedToolSet>>,
+        tools: Option<Arc<awaken_runtime_contract::tool_export::AttachedToolSet>>,
     ) -> Self {
         self.attached_tools = tools;
         self

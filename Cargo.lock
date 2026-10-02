@@ -1233,6 +1233,7 @@ dependencies = [
  "async-trait",
  "awaken-acp-contract",
  "awaken-agent-contract",
+ "awaken-connection-plan",
  "awaken-container-contract",
  "awaken-credential-contract",
  "awaken-credential-materializer",
@@ -1247,8 +1248,11 @@ dependencies = [
  "awaken-sandbox-local",
  "awaken-session-environment",
  "awaken-session-environment-contract",
+ "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2134,6 +2138,7 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
  "awaken-session-configuration-contract",
+ "awaken-session-environment-contract",
  "awaken-store-inmem",
  "libc",
  "loom",
@@ -2905,8 +2910,10 @@ name = "awaken-session-environment-contract"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-acp-contract",
  "awaken-agent-channel",
  "awaken-provisioning-contract",
+ "awaken-runtime-contract",
  "awaken-tool-contract",
 ]
 

@@ -342,53 +342,6 @@ impl RawTool for EnvironmentAcpTool {
     }
 }
 
-pub(crate) struct AttachedToolSet {
-    pub(crate) exporter: Arc<dyn AcpToolExporter>,
-    pub(crate) descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-    pub(crate) executors: Vec<Arc<dyn RawTool>>,
-}
-
-type PairedTools = (
-    Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-    Vec<Arc<dyn RawTool>>,
-);
-
-pub(crate) fn pair_tools(
-    descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-    executors: Vec<Arc<dyn RawTool>>,
-) -> Result<PairedTools, String> {
-    let descriptor_ids = descriptors
-        .iter()
-        .map(|descriptor| descriptor.id.clone())
-        .collect::<Vec<_>>();
-    let executor_ids = executors
-        .iter()
-        .map(|tool| tool.id().to_string())
-        .collect::<Vec<_>>();
-    let executors = executors
-        .into_iter()
-        .map(|tool| (tool.id().to_string(), tool))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    if descriptors.len() != executors.len() {
-        return Err(format!(
-            "ACP tool descriptor/executor sets differ: descriptors={descriptor_ids:?}, executors={executor_ids:?}"
-        ));
-    }
-    let mut paired_descriptors = Vec::with_capacity(descriptors.len());
-    let mut paired_executors = Vec::with_capacity(descriptors.len());
-    for descriptor in descriptors {
-        let tool = executors.get(&descriptor.id).cloned().ok_or_else(|| {
-            format!(
-                "ACP tool descriptor `{}` has no matching executor",
-                descriptor.id
-            )
-        })?;
-        paired_descriptors.push(descriptor);
-        paired_executors.push(tool);
-    }
-    Ok((paired_descriptors, paired_executors))
-}
-
 /// Export one exact descriptor/executor set through the existing ACP MCP port.
 /// The complete set is served by one Session MCP endpoint and one lifetime
 /// lease. Native and ACP therefore consume identical contracts without turning
@@ -405,7 +358,8 @@ pub(crate) async fn export_tools(
     ),
     String,
 > {
-    let (paired_descriptors, paired_executors) = pair_tools(descriptors, executors)?;
+    let (paired_descriptors, paired_executors) =
+        awaken_runtime_contract::tool_export::pair_tools(descriptors, executors)?;
     let export = exporter
         .export_set(namespace, paired_descriptors, paired_executors)
         .await?;

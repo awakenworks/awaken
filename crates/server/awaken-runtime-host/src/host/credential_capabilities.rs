@@ -92,11 +92,21 @@ impl SharedHost {
         environment: Arc<crate::session_environment::SessionEnvironment>,
     ) -> crate::agent_runner::ChildExecutionAdapters {
         crate::agent_runner::ChildExecutionAdapters {
-            acp: self
-                .exec
-                .acp
-                .as_ref()
-                .map(|acp| acp.child_executor_factory(environment.agent_process().clone())),
+            acp: self.exec.acp.as_ref().map(|acp| {
+                let acp = acp.clone();
+                let process = environment.agent_process().clone();
+                Arc::new(move |backend, permission| {
+                    acp.create(awaken_session_environment_contract::AcpSessionExecution {
+                        environment: process.clone(),
+                        backend,
+                        permission,
+                        mcp_servers: Vec::new(),
+                        attached_tools: None,
+                        grant_observer: None,
+                        continuation: None,
+                    })
+                }) as crate::agent_runner::ChildAcpExecutorFactory
+            }),
             remote: self.agent.remote_attempt_executor.clone(),
             credential_capabilities: self.local_credential_realization_capabilities(),
             web_search: Some(self.web_search_plugin(thread, None)),

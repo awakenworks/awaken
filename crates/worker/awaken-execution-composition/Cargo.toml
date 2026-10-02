@@ -24,6 +24,7 @@ awaken-run-executor-acp.workspace = true
 # The backend-erased container ports the Session owner holds.
 awaken-container-contract.workspace = true
 awaken-provisioning-contract.workspace = true
+awaken-connection-plan.workspace = true
 awaken-lease-contract.workspace = true
 # The container tier (podman/docker/k8s) this composition realizes; each backend
 # is enabled by the matching feature below.
@@ -35,7 +36,9 @@ awaken-session-environment-contract.workspace = true
 awaken-session-environment.workspace = true
 async-trait.workspace = true
 # The Namespace companion check and tier probe run at startup.
-tokio = { workspace = true, features = ["process", "time"] }
+tokio = { workspace = true, features = ["process", "time", "io-util", "sync"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
 
 [features]
 # Container Session tiers (AWAKEN_SANDBOX_TIER=docker|podman|k8s). Off by default:
@@ -53,6 +56,7 @@ awaken-agent-contract.workspace = true
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-credential-materializer = { workspace = true, features = ["authority"] }
 tempfile = "3"
+serde_json.workspace = true
 
 [lints]
 workspace = true
