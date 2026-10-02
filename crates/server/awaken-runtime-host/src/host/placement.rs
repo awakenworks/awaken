@@ -4,13 +4,13 @@
 
 use super::credential_capabilities::model_realization_capability;
 use super::{HostError, RunActivation};
-use awaken_run_ingress::PlacementRequirements;
+use awaken_run_ingress_contract::PlacementRequirements;
 use awaken_runtime_contract::CredentialMaterialSource;
 use std::collections::BTreeSet;
 
 pub(super) fn worker_local_credentials(
     models: &awaken_runtime_contract::resolved::ResolvedSpec,
-) -> BTreeSet<awaken_run_ingress::WorkerCredentialRevision> {
+) -> BTreeSet<awaken_run_ingress_contract::WorkerCredentialRevision> {
     std::iter::once(&models.model_binding)
         .chain(models.model_candidates.iter())
         .filter_map(|candidate| match candidate.provisioning() {
@@ -35,27 +35,29 @@ pub(super) fn worker_local_credentials(
 
 fn worker_acp_capabilities(
     models: &awaken_runtime_contract::resolved::ResolvedSpec,
-) -> BTreeSet<awaken_run_ingress::WorkerAcpCapabilityRequirement> {
+) -> BTreeSet<awaken_run_ingress_contract::WorkerAcpCapabilityRequirement> {
     std::iter::once(&models.model_binding)
         .chain(models.model_candidates.iter())
         .filter_map(|candidate| match candidate.provisioning() {
             awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { acp, .. }
                 if !acp.capability_fingerprint.trim().is_empty() =>
             {
-                Some(awaken_run_ingress::WorkerAcpCapabilityRequirement {
-                    backend_ref: candidate.binding().identity().2.to_owned(),
-                    fingerprint: acp.capability_fingerprint.clone(),
-                })
+                Some(
+                    awaken_run_ingress_contract::WorkerAcpCapabilityRequirement {
+                        backend_ref: candidate.binding().identity().2.to_owned(),
+                        fingerprint: acp.capability_fingerprint.clone(),
+                    },
+                )
             }
             awaken_runtime_contract::resolved::ModelProvisioning::Provider {
                 acp: Some(acp),
                 ..
-            } if !acp.capability_fingerprint.trim().is_empty() => {
-                Some(awaken_run_ingress::WorkerAcpCapabilityRequirement {
+            } if !acp.capability_fingerprint.trim().is_empty() => Some(
+                awaken_run_ingress_contract::WorkerAcpCapabilityRequirement {
                     backend_ref: candidate.binding().identity().2.to_owned(),
                     fingerprint: acp.capability_fingerprint.clone(),
-                })
-            }
+                },
+            ),
             _ => None,
         })
         .collect()
@@ -256,7 +258,7 @@ pub fn remote_worker_placement(
         };
         if requires_trusted_host {
             placement.sandbox_backend =
-                Some(awaken_run_ingress::TRUSTED_HOST_SANDBOX_BACKEND.to_string());
+                Some(awaken_run_ingress_contract::TRUSTED_HOST_SANDBOX_BACKEND.to_string());
         }
         if let Some(environment) = environment {
             placement.resources = crate::provisioning::sandbox_resource_requests(environment);
@@ -282,11 +284,11 @@ pub fn remote_worker_placement(
         }
         placement
             .required_capabilities
-            .insert(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY.to_string());
+            .insert(awaken_run_ingress_contract::SESSION_RESOURCES_CAPABILITY.to_string());
         if has_credentialed_repository {
             placement
                 .required_capabilities
-                .insert(awaken_run_ingress::REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
+                .insert(awaken_run_ingress_contract::REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
         }
     }
     placement

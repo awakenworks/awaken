@@ -677,11 +677,13 @@ const fn sandbox_support_projection(
 impl DeploymentConfig {
     /// Project the one deployment-owned fallback interval into the existing
     /// dispatch service schedule for local pools and coordinator-only repair.
-    pub(crate) fn dispatch_service_config(&self) -> awaken_run_ingress::DispatchServiceConfig {
-        awaken_run_ingress::DispatchServiceConfig {
+    pub(crate) fn dispatch_service_config(
+        &self,
+    ) -> awaken_dispatch_execution::DispatchServiceConfig {
+        awaken_dispatch_execution::DispatchServiceConfig {
             poll_interval: self.dispatch_poll_interval,
             sample_dispatch_queue_depth: self.sample_dispatch_queue_depth,
-            ..awaken_run_ingress::DispatchServiceConfig::default()
+            ..awaken_dispatch_execution::DispatchServiceConfig::default()
         }
     }
 
@@ -801,7 +803,7 @@ impl DeploymentConfig {
             database_url: None,
             postgres_max_connections: default_postgres_max_connections(),
             dispatch_owner: "embedded-worker".to_string(),
-            dispatch_poll_interval: awaken_run_ingress::DispatchServiceConfig::default()
+            dispatch_poll_interval: awaken_dispatch_execution::DispatchServiceConfig::default()
                 .poll_interval,
             sample_dispatch_queue_depth: true,
             sandbox_tier: SandboxTier::Namespace,

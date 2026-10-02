@@ -522,6 +522,8 @@ pub(super) async fn prepare_runtime_routers(
     // Resource Registry the capability inventory reads, so a skill or memory store the
     // host serves is exactly what the assistant enumerates, and identity survives a
     // restart.
+    #[cfg(any(test, feature = "test-support"))]
+    let needs_reference_authority = deployment.is_none() && runtime_authority.is_none();
     let mut host_builder = match deployment {
         Some(deployment) => SharedHost::new_with_runtime_resources_and_deployment(
             model_wiring.executor,
@@ -547,6 +549,13 @@ pub(super) async fn prepare_runtime_routers(
         None => unreachable!("product runtime process requires a resolved deployment"),
     }
     .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes());
+    #[cfg(any(test, feature = "test-support"))]
+    if needs_reference_authority {
+        // Cause/effect fixture rule: C1 no typed Deployment; C2 no authority
+        // already selected. R1 C1+C2 -> install exactly one reference authority
+        // at this composition root; R2 !C1 or !C2 -> retain the selected owner.
+        host_builder = awaken_runtime_host_testkit::with_volatile_runtime_authority(host_builder);
+    }
     let local_dispatch = runtime_authority
         .as_ref()
         .map(|authority| authority.dispatch_store());

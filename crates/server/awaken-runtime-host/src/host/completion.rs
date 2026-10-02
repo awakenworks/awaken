@@ -9,9 +9,11 @@
 use super::placement::remote_worker_placement;
 pub(crate) use super::placement::requires_local_environment;
 use super::*;
-#[cfg(test)]
-use awaken_run_ingress::{HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY};
 use awaken_run_ingress_contract::ControlDispatchQueue;
+#[cfg(test)]
+use awaken_run_ingress_contract::{
+    HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
+};
 use std::collections::HashMap;
 
 impl SharedHost {
@@ -34,7 +36,7 @@ impl SharedHost {
         &self,
         delivery: awaken_session_runtime_contract::SessionRunDelivery,
     ) -> Result<awaken_session_runtime_contract::SessionRunActivation, HostError> {
-        use awaken_run_ingress::Outbox as _;
+        use awaken_run_ingress_contract::Outbox as _;
 
         if delivery.session_activity_epoch == 0 {
             return Err(HostError::bad_request(
@@ -51,26 +53,26 @@ impl SharedHost {
             .await
             .map_err(|error| HostError::unavailable(error.to_string()))?;
         let projected = match outcome {
-            awaken_run_ingress::SessionRunReservationActivation::Activated => {
+            awaken_run_ingress_contract::SessionRunReservationActivation::Activated => {
                 awaken_session_runtime_contract::SessionRunActivation::Activated
             }
-            awaken_run_ingress::SessionRunReservationActivation::AlreadyActivated {
+            awaken_run_ingress_contract::SessionRunReservationActivation::AlreadyActivated {
                 session_activity_epoch,
             } => awaken_session_runtime_contract::SessionRunActivation::AlreadyActivated {
                 session_activity_epoch,
             },
-            awaken_run_ingress::SessionRunReservationActivation::RecoveryClaimed => {
+            awaken_run_ingress_contract::SessionRunReservationActivation::RecoveryClaimed => {
                 awaken_session_runtime_contract::SessionRunActivation::RecoveryClaimed
             }
-            awaken_run_ingress::SessionRunReservationActivation::Completed => {
+            awaken_run_ingress_contract::SessionRunReservationActivation::Completed => {
                 awaken_session_runtime_contract::SessionRunActivation::Completed
             }
-            awaken_run_ingress::SessionRunReservationActivation::MissingOrRejected => {
+            awaken_run_ingress_contract::SessionRunReservationActivation::MissingOrRejected => {
                 return Err(HostError::bad_request(
                     "Session User Run reservation is missing or rejected",
                 ));
             }
-            awaken_run_ingress::SessionRunReservationActivation::Conflict => {
+            awaken_run_ingress_contract::SessionRunReservationActivation::Conflict => {
                 return Err(HostError::bad_request(
                     "Session User Run reservation activation conflicts with durable truth",
                 ));
@@ -638,7 +640,7 @@ mod completion_tests {
         Event as StreamEvent, Observation as StreamObservation,
     };
     use awaken_agent_contract::stream::sink::Sink as StreamSink;
-    use awaken_run_ingress::CompletionSink;
+    use awaken_dispatch_execution::CompletionSink;
     use awaken_runtime_contract::resolved::{
         CatalogFingerprint, ModelBinding, ResolvedModelCandidate,
     };
@@ -939,7 +941,7 @@ mod completion_tests {
         assert!(!trusted.sandbox.enforced_readonly, "R3 advisory access");
         assert_eq!(
             trusted.sandbox_backend.as_deref(),
-            Some(awaken_run_ingress::TRUSTED_HOST_SANDBOX_BACKEND),
+            Some(awaken_run_ingress_contract::TRUSTED_HOST_SANDBOX_BACKEND),
             "R3 exact Worker backend"
         );
 
@@ -1174,7 +1176,7 @@ mod completion_tests {
             }))
             .expect("C3 installs the sole wakeup");
 
-        awaken_run_ingress::CompletionSink::settled(
+        awaken_dispatch_execution::CompletionSink::settled(
             &registry,
             &RunId("completion-wakeup".into()),
             &RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
@@ -1549,7 +1551,7 @@ mod completion_tests {
         assert_eq!(placement.dispatch_contract_version, 1);
         assert_eq!(
             placement.runtime_protocol_version,
-            awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION
+            awaken_run_ingress_contract::CURRENT_RUNTIME_PROTOCOL_VERSION
         );
         assert!(placement.required_capabilities.contains("native-runtime"));
         assert!(
@@ -1644,21 +1646,21 @@ mod completion_tests {
         let placement = remote_worker_placement(&models, None, None, false);
         assert_eq!(
             placement.location,
-            awaken_run_ingress::ExecutionLocation::RemoteRequired
+            awaken_run_ingress_contract::ExecutionLocation::RemoteRequired
         );
         assert!(
             placement
                 .required_capabilities
-                .contains(awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
+                .contains(awaken_run_ingress_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
         );
         assert_eq!(
             placement.required_credentials,
             std::collections::BTreeSet::from([
-                awaken_run_ingress::WorkerCredentialRevision {
+                awaken_run_ingress_contract::WorkerCredentialRevision {
                     id: "cred:fallback".into(),
                     revision: 5,
                 },
-                awaken_run_ingress::WorkerCredentialRevision {
+                awaken_run_ingress_contract::WorkerCredentialRevision {
                     id: "cred:primary".into(),
                     revision: 2,
                 },
@@ -1691,24 +1693,26 @@ mod completion_tests {
         let placement = remote_worker_placement(&models, None, None, false);
         assert_eq!(
             placement.location,
-            awaken_run_ingress::ExecutionLocation::RemoteRequired
+            awaken_run_ingress_contract::ExecutionLocation::RemoteRequired
         );
         assert!(
             placement
                 .required_capabilities
-                .contains(awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
+                .contains(awaken_run_ingress_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
         );
         assert_eq!(
             placement.required_credentials,
-            std::collections::BTreeSet::from([awaken_run_ingress::WorkerCredentialRevision {
-                id: "cred:local".into(),
-                revision: 7,
-            },])
+            std::collections::BTreeSet::from([
+                awaken_run_ingress_contract::WorkerCredentialRevision {
+                    id: "cred:local".into(),
+                    revision: 7,
+                },
+            ])
         );
         assert_eq!(
             placement.required_acp_capabilities,
             std::collections::BTreeSet::from([
-                awaken_run_ingress::WorkerAcpCapabilityRequirement {
+                awaken_run_ingress_contract::WorkerAcpCapabilityRequirement {
                     backend_ref: "acp:codex".into(),
                     fingerprint: "sha256:test-capability".into(),
                 },
@@ -1728,12 +1732,12 @@ mod completion_tests {
         assert!(
             placement
                 .required_capabilities
-                .contains(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY)
+                .contains(awaken_run_ingress_contract::SESSION_RESOURCES_CAPABILITY)
         );
         assert!(
             placement
                 .required_capabilities
-                .contains(awaken_run_ingress::REPOSITORY_CREDENTIALS_CAPABILITY)
+                .contains(awaken_run_ingress_contract::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
         assert!(placement.sandbox.enforced_readonly);
     }
@@ -1748,13 +1752,13 @@ mod completion_tests {
         assert!(
             placement
                 .required_capabilities
-                .contains(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY),
+                .contains(awaken_run_ingress_contract::SESSION_RESOURCES_CAPABILITY),
             "an empty successor manifest may need to remove prior sandbox material"
         );
         assert!(
             !placement
                 .required_capabilities
-                .contains(awaken_run_ingress::REPOSITORY_CREDENTIALS_CAPABILITY)
+                .contains(awaken_run_ingress_contract::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
     }
 }

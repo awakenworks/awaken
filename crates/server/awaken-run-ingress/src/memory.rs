@@ -374,7 +374,7 @@ fn thread_has_claim_blocking_peer(
 }
 
 fn retry_deadline_is_due(row: &Row, now_ms: u64) -> bool {
-    crate::pool::retry_deadline_is_due(row.retry_not_before_ms, now_ms)
+    awaken_dispatch_execution::pool::retry_deadline_is_due(row.retry_not_before_ms, now_ms)
 }
 
 /// Whether one exact row is runnable under the same policy as [`select_where`]. The

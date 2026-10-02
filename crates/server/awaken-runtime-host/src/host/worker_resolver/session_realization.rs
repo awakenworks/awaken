@@ -159,7 +159,7 @@ mod tests {
             &eager_activation.snapshot,
         )
         .await;
-        let eager_runtime = awaken_run_ingress::SessionRuntimeEnvelope::from_projection(
+        let eager_runtime = awaken_run_ingress_contract::SessionRuntimeEnvelope::from_projection(
             eager_environment,
             Some(Default::default()),
             Vec::new(),
@@ -167,7 +167,7 @@ mod tests {
         .expect("encode eager Runtime projection");
         store
             .enqueue(with_empty_session_resources(
-                awaken_run_ingress::RunDispatch::new(eager_activation)
+                awaken_run_ingress_contract::RunDispatch::new(eager_activation)
                     .with_session_runtime(eager_runtime),
                 host.local_workspace(),
             ))
@@ -198,7 +198,7 @@ mod tests {
             &deferred_activation.snapshot,
         )
         .await;
-        let runtime = awaken_run_ingress::SessionRuntimeEnvelope::from_projection(
+        let runtime = awaken_run_ingress_contract::SessionRuntimeEnvelope::from_projection(
             deferred_environment,
             Some(Default::default()),
             Vec::new(),
@@ -206,7 +206,7 @@ mod tests {
         .expect("encode runtime projection");
         store
             .enqueue(with_empty_session_resources(
-                awaken_run_ingress::RunDispatch::new(deferred_activation)
+                awaken_run_ingress_contract::RunDispatch::new(deferred_activation)
                     .with_session_runtime(runtime),
                 host.local_workspace(),
             ))

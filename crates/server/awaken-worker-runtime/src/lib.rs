@@ -1,15 +1,14 @@
 //! Worker-owned attempt context and transport adapters behind the neutral Host.
 
 mod claimed_commit_client;
-#[doc(hidden)]
-pub mod claimed_stream;
 mod dispatch_client;
-#[doc(hidden)]
-pub mod execution_capacity;
 mod session_control;
-#[doc(hidden)]
-pub mod worker_context;
 mod worker_control_client;
+
+// Existing external module paths remain aliases of the one shared owner while
+// transport callers migrate; no worker-side copy of these types is retained.
+#[doc(hidden)]
+pub use awaken_dispatch_execution::{claimed_stream, execution_capacity, worker_context};
 
 pub use claimed_commit_client::{RemoteClaimedRunCommit, remote_claimed_commit};
 pub use dispatch_client::{

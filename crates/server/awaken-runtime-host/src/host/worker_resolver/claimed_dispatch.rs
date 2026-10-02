@@ -22,9 +22,11 @@ pub(super) async fn adopt_bound_sandbox(
     expected_sandbox_id: &str,
     run_id: &RunId,
     provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
-    recovery: awaken_run_ingress::WorkerRecoveryMode,
-) -> Result<crate::host::session::SessionEnvironmentAdoptionDisposition, awaken_run_ingress::Error>
-{
+    recovery: awaken_run_ingress_contract::WorkerRecoveryMode,
+) -> Result<
+    crate::host::session::SessionEnvironmentAdoptionDisposition,
+    awaken_dispatch_execution::Error,
+> {
     let provider = host
         .session_environment_provider_for_thread(expected_sandbox_id, provisioning)
         .map_err(HostWorkerResolver::map_host_resolution_error)?;
@@ -33,7 +35,7 @@ pub(super) async fn adopt_bound_sandbox(
         encoded,
         provider,
         None,
-        recovery == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
+        recovery == awaken_run_ingress_contract::WorkerRecoveryMode::RebuildFromCommittedTruth,
     )
     .await
     .map_err(|mut error| {
@@ -46,11 +48,13 @@ impl HostWorkerResolver {
     async fn recovered_child_worker(
         &self,
         host: &SharedHost,
-        claimed: &awaken_run_ingress::Claimed,
+        claimed: &awaken_run_ingress_contract::Claimed,
         session_thread_id: &awaken_agent_contract::agent::thread::Id,
         publication_source: Arc<awaken_runtime_contract::StaticPublishedAgentSnapshots>,
-    ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
-    {
+    ) -> Result<
+        Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>,
+        awaken_dispatch_execution::Error,
+    > {
         crate::agent_runner::validate_child_tool_configuration(
             &claimed.request.activation.snapshot,
             claimed.request.activation.inherited_toolsets(),
@@ -125,7 +129,7 @@ impl HostWorkerResolver {
         host: &SharedHost,
         session_id: &str,
         stages: Vec<awaken_session_mcp_contract::StageMcpAttachment>,
-    ) -> Result<(), awaken_run_ingress::Error> {
+    ) -> Result<(), awaken_dispatch_execution::Error> {
         use awaken_session_runtime_contract::McpAttachmentRealizer as _;
 
         let existing = host.active_mcp_projections(session_id);
@@ -214,8 +218,10 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         &self,
         thread_id: &awaken_agent_contract::agent::thread::Id,
         agent_id: Option<&str>,
-    ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
-    {
+    ) -> Result<
+        Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>,
+        awaken_dispatch_execution::Error,
+    > {
         let host = self.host()?;
         Self::require_local_execution(&host)?;
         self.resolve(&host, thread_id, agent_id.filter(|id| !id.is_empty()), None)
@@ -224,9 +230,11 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
 
     async fn worker_for_claimed(
         &self,
-        claimed: &awaken_run_ingress::Claimed,
-    ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
-    {
+        claimed: &awaken_run_ingress_contract::Claimed,
+    ) -> Result<
+        Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>,
+        awaken_dispatch_execution::Error,
+    > {
         let host = self.host()?;
         Self::require_local_execution(&host)?;
         // Reservation repair owns no executable Run yet. It needs only the
@@ -479,9 +487,9 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
 
     async fn settle_claimed_resolution_failure(
         &self,
-        claimed: &awaken_run_ingress::Claimed,
-        error: awaken_run_ingress::Error,
-    ) -> Result<Option<(RunId, RunState)>, awaken_run_ingress::Error> {
+        claimed: &awaken_run_ingress_contract::Claimed,
+        error: awaken_dispatch_execution::Error,
+    ) -> Result<Option<(RunId, RunState)>, awaken_dispatch_execution::Error> {
         let host = self.host()?;
         let thread_id = claimed.request.session_thread_id();
         let commit = Arc::new(
@@ -499,8 +507,8 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
 
     async fn terminalize_retry_exhausted(
         &self,
-        claimed: &awaken_run_ingress::Claimed,
-    ) -> Result<Option<(RunId, RunState)>, awaken_run_ingress::Error> {
+        claimed: &awaken_run_ingress_contract::Claimed,
+    ) -> Result<Option<(RunId, RunState)>, awaken_dispatch_execution::Error> {
         let host = self.host()?;
         let thread_id = claimed.request.session_thread_id();
         let commit = Arc::new(
@@ -517,11 +525,11 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
     async fn reconcile_committed_terminals(
         &self,
         limit: usize,
-    ) -> Result<Vec<(RunId, RunState)>, awaken_run_ingress::Error> {
+    ) -> Result<Vec<(RunId, RunState)>, awaken_dispatch_execution::Error> {
         crate::host::terminal_reconciliation::reconcile_committed_terminals(self, limit).await
     }
 
-    async fn reconcile_worker_evidence(&self) -> Result<(), awaken_run_ingress::Error> {
+    async fn reconcile_worker_evidence(&self) -> Result<(), awaken_dispatch_execution::Error> {
         self.host()?.reconcile_worker_evidence().await
     }
 }

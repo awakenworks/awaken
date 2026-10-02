@@ -1016,6 +1016,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-dispatch-execution"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
+ "awaken-observability",
+ "awaken-run-ingress",
+ "awaken-run-ingress-application-contract",
+ "awaken-run-ingress-contract",
+ "awaken-runtime",
+ "awaken-runtime-contract",
+ "awaken-session-runtime-contract",
+ "awaken-store-inmem",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "awaken-dream-application"
 version = "1.0.0"
 dependencies = [
@@ -2173,10 +2196,12 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-dispatch-erasure",
+ "awaken-dispatch-execution",
  "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-observability",
  "awaken-reliability-testkit",
+ "awaken-run-ingress-application-contract",
  "awaken-run-ingress-contract",
  "awaken-run-ingress-testkit",
  "awaken-runtime",
@@ -2189,7 +2214,6 @@ dependencies = [
  "awaken-store-inmem",
  "awaken-store-postgres",
  "awaken-store-sqlite",
- "awaken-worker-runtime",
  "futures-lite",
  "futures-util",
  "rusqlite",
@@ -2201,6 +2225,15 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "awaken-run-ingress-application-contract"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "thiserror",
 ]
 
 [[package]]
@@ -2389,6 +2422,7 @@ dependencies = [
  "awaken-credential-materializer",
  "awaken-credential-vault",
  "awaken-dispatch-erasure",
+ "awaken-dispatch-execution",
  "awaken-environment-contract",
  "awaken-ext-background-task",
  "awaken-ext-builtin-tools",
@@ -2412,6 +2446,7 @@ dependencies = [
  "awaken-resource-store",
  "awaken-run-executor-acp",
  "awaken-run-ingress",
+ "awaken-run-ingress-application-contract",
  "awaken-run-ingress-contract",
  "awaken-run-ingress-testkit",
  "awaken-runtime",
@@ -2470,6 +2505,7 @@ dependencies = [
  "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-persistence",
+ "awaken-run-ingress",
  "awaken-runtime-contract",
  "awaken-runtime-host",
  "awaken-session-environment",
@@ -3533,6 +3569,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-dispatch-execution",
  "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-outbound-http",

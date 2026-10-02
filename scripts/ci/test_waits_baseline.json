@@ -9,7 +9,6 @@
       "crates/server/awaken-coordinator/src/runtime_authority.rs": 2,
       "crates/server/awaken-environment-image-build/src/sqlite.rs": 2,
       "crates/server/awaken-run-ingress-http/tests/active_active_postgres.rs": 1,
-      "crates/server/awaken-run-ingress/src/pool.rs": 1,
       "crates/server/awaken-run-ingress/tests/crash_before_settle.rs": 1,
       "crates/server/awaken-run-ingress/tests/nats.rs": 1,
       "crates/server/awaken-run-ingress/tests/pool_memory.rs": 8,

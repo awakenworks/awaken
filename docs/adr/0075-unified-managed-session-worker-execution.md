@@ -887,11 +887,15 @@ Invalid input and a changed command under the same Run identity are
 or mismatched admission truth is `500`. Exact replay returns the same receipt.
 The receipt is an acknowledgement after activation, not another Run status.
 
-The static dependency direction remains one-way:
+The static dependency direction remains one-way; process composition mounts the
+Coordinator Ingress implementation while the shared Host consumes only its
+contracts and the shared dispatch-execution owner:
 
 ```text
 profiled wire DTO/router -> Managed wire lowering -> SessionApplication
-                                                -> Runtime Host -> RunIngress
+                                                -> RunApplication port (Host implementation)
+Runtime Host -> run-ingress contracts + shared dispatch-execution
+Coordinator composition -> RunIngress implementation (durable queue/claimed commit)
 Managed GET/SSE projection <------------- committed Session/Thread/Run truth
 ```
 

@@ -402,10 +402,13 @@ impl SharedHost {
                 // A standalone Host has no autonomous pool. Preserve its direct
                 // ingress behavior for tests/embedders while served deployments
                 // always take the non-blocking process-pool branch above.
-                awaken_run_ingress::LiveRunControlService::new((*ingress).clone(), self.clock())
-                    .cancel(&run_id.0)
-                    .await
-                    .map_err(|error| HostError::internal(error.to_string()))?;
+                awaken_dispatch_execution::LiveRunControlService::new(
+                    (*ingress).clone(),
+                    self.clock(),
+                )
+                .cancel(&run_id.0)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
             }
             if let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref() {
                 token.cancel();
@@ -691,7 +694,7 @@ impl SharedHost {
     pub(crate) async fn durable_worker(
         &self,
         thread: &str,
-    ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, HostError> {
+    ) -> Result<Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>, HostError> {
         self.require_durable_delivery()?;
         let ctx = self.ctx_for(thread, None).await?;
         ctx.delivery
@@ -722,7 +725,7 @@ impl SharedHost {
     async fn durable_dispatch_rows(
         &self,
         thread: &str,
-    ) -> Result<Vec<awaken_run_ingress::DispatchSummary>, HostError> {
+    ) -> Result<Vec<awaken_run_ingress_contract::DispatchSummary>, HostError> {
         self.require_durable_delivery()?;
         let thread_id = ThreadId(thread.to_owned());
         self.dispatch_store()?
@@ -776,7 +779,7 @@ impl SharedHost {
         let rows = self.durable_dispatch_rows(thread).await?;
         Ok(rows
             .into_iter()
-            .filter(|row| row.state == awaken_run_ingress::DispatchState::DeadLetter)
+            .filter(|row| row.state == awaken_run_ingress_contract::DispatchState::DeadLetter)
             .map(|row| row.run_id.0)
             .collect())
     }
@@ -794,7 +797,7 @@ impl SharedHost {
             .any(|row| {
                 row.run_id.0 == run_id
                     && row.thread_id.0 == thread
-                    && row.state == awaken_run_ingress::DispatchState::DeadLetter
+                    && row.state == awaken_run_ingress_contract::DispatchState::DeadLetter
             });
         if !belongs_to_thread {
             return Ok(false);
@@ -843,7 +846,7 @@ impl SharedHost {
         let rows = self.durable_dispatch_rows(thread).await?;
         Ok(rows
             .into_iter()
-            .filter(|row| row.state == awaken_run_ingress::DispatchState::Superseded)
+            .filter(|row| row.state == awaken_run_ingress_contract::DispatchState::Superseded)
             .map(|row| row.run_id.0)
             .collect())
     }
@@ -890,7 +893,7 @@ impl SharedHost {
             // the shared store so a remote database-less worker drains it over the
             // dispatch transport. Non-durable keeps the original "enable the pool" error.
             Err(e) if self.deployment.durable => {
-                use awaken_run_ingress::DispatchQueue;
+                use awaken_run_ingress_contract::DispatchQueue;
                 let _ = e;
                 let store = self.dispatch_store()?;
                 store
@@ -912,7 +915,7 @@ impl SharedHost {
         ticket: &ResumeTicket,
         session_activity_epoch: u64,
     ) -> Result<Arc<awaken_dispatch_erasure::AnyDispatchStore>, HostError> {
-        use awaken_run_ingress::DispatchQueue as _;
+        use awaken_run_ingress_contract::DispatchQueue as _;
 
         if ticket.thread_id.0 != session_id || session_activity_epoch == 0 {
             return Err(HostError::internal(
@@ -1007,12 +1010,12 @@ impl SharedHost {
                     && dispatch.session_thread_id.as_ref() == Some(&parent)
                     && matches!(
                         dispatch.state,
-                        awaken_run_ingress::DispatchState::Reserved
-                            | awaken_run_ingress::DispatchState::ReservationLeased
-                            | awaken_run_ingress::DispatchState::Pending
-                            | awaken_run_ingress::DispatchState::Leased
-                            | awaken_run_ingress::DispatchState::Awaiting
-                            | awaken_run_ingress::DispatchState::DeadLetter
+                        awaken_run_ingress_contract::DispatchState::Reserved
+                            | awaken_run_ingress_contract::DispatchState::ReservationLeased
+                            | awaken_run_ingress_contract::DispatchState::Pending
+                            | awaken_run_ingress_contract::DispatchState::Leased
+                            | awaken_run_ingress_contract::DispatchState::Awaiting
+                            | awaken_run_ingress_contract::DispatchState::DeadLetter
                     )
             })
             .filter(|dispatch| {
@@ -1032,7 +1035,7 @@ impl SharedHost {
         delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,
     ) -> Result<awaken_session_application_contract::SessionBudgetResumeDisposition, HostError>
     {
-        use awaken_run_ingress::Outbox as _;
+        use awaken_run_ingress_contract::Outbox as _;
 
         if delivery.session_activity_epoch == 0 {
             return Err(HostError::bad_request(

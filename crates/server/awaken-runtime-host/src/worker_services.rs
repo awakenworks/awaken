@@ -8,9 +8,11 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
-use awaken_run_ingress::CompletionSink;
-use awaken_run_ingress::{DispatchSettlementError, DispatchSettlementObserver, RunDispatch};
+use awaken_dispatch_execution::CompletionSink;
 use awaken_run_ingress_contract::RunClaim;
+use awaken_run_ingress_contract::{
+    DispatchSettlementError, DispatchSettlementObserver, RunDispatch,
+};
 
 use crate::{FileContentSource, SharedHost};
 

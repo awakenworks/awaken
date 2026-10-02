@@ -24,7 +24,7 @@ use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::delegation::{DelegationId, DelegationOrigin};
 use awaken_agent_contract::thread::read::lifecycle::{RunLifecycleCursor, RunLifecycleFeed as _};
 use awaken_ext_builtin_tools::{AgentMessageReceipt, SendMessageArgs};
-use awaken_run_ingress::Outbox as _;
+use awaken_run_ingress_contract::Outbox as _;
 use awaken_runtime_contract::tool_batch::ToolBatch;
 use awaken_session_runtime_contract::{
     CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadKind, CoordinatedThreadLink,
@@ -35,7 +35,7 @@ use awaken_session_runtime_contract::{
 const MAX_LIFECYCLE_PAGE: usize = 1_024;
 
 fn reply_dispatch_activity(
-    dispatch: Option<&awaken_run_ingress::DispatchSummary>,
+    dispatch: Option<&awaken_run_ingress_contract::DispatchSummary>,
     thread: &ThreadId,
     parent: &ThreadId,
 ) -> Result<awaken_session_runtime_contract::SessionThreadToolReplyActivity, HostError> {
@@ -62,11 +62,17 @@ fn reply_dispatch_activity(
     }
 }
 
-fn dispatch_admission_error(error: awaken_run_ingress::DispatchError) -> HostError {
+fn dispatch_admission_error(error: awaken_run_ingress_contract::DispatchError) -> HostError {
     match error {
-        awaken_run_ingress::DispatchError::Rejected(message) => HostError::bad_request(message),
-        awaken_run_ingress::DispatchError::Conflict(message) => HostError::conflict(message),
-        awaken_run_ingress::DispatchError::Unavailable(message) => HostError::unavailable(message),
+        awaken_run_ingress_contract::DispatchError::Rejected(message) => {
+            HostError::bad_request(message)
+        }
+        awaken_run_ingress_contract::DispatchError::Conflict(message) => {
+            HostError::conflict(message)
+        }
+        awaken_run_ingress_contract::DispatchError::Unavailable(message) => {
+            HostError::unavailable(message)
+        }
     }
 }
 
@@ -372,7 +378,7 @@ impl SharedHost {
         thread_id: &ThreadId,
         intent: CoordinatedRunIntent,
         max_unarchived_threads: usize,
-    ) -> Result<awaken_run_ingress::SessionChildAdmission, HostError> {
+    ) -> Result<awaken_run_ingress_contract::SessionChildAdmission, HostError> {
         if max_unarchived_threads == 0 {
             return Err(HostError::bad_request(
                 "Session child capacity must be greater than zero",
@@ -416,10 +422,11 @@ impl SharedHost {
                 CoordinatedThreadTarget::Agent { .. } => {}
             }
         }
-        Ok(
-            awaken_run_ingress::SessionChildAdmission::new(max_unarchived_threads, archived)
-                .with_capacity_exempt_threads(capacity_exempt),
+        Ok(awaken_run_ingress_contract::SessionChildAdmission::new(
+            max_unarchived_threads,
+            archived,
         )
+        .with_capacity_exempt_threads(capacity_exempt))
     }
 
     pub(crate) async fn admit_coordinated_run(
@@ -689,7 +696,7 @@ impl SharedHost {
         &self,
         session_id: &str,
         thread_id: &ThreadId,
-    ) -> Result<Vec<awaken_run_ingress::DispatchSummary>, HostError> {
+    ) -> Result<Vec<awaken_run_ingress_contract::DispatchSummary>, HostError> {
         let parent = ThreadId(session_id.to_string());
         Ok(self
             .dispatch_store()?
@@ -717,8 +724,11 @@ impl SharedHost {
         {
             // This is only a latency hint. The durable cancellation intent and
             // dispatch row remain the recovery authority if the hint is lost.
-            awaken_run_ingress::publish_dispatch_hint(wake.as_ref(), &CancellationToken::new())
-                .await;
+            awaken_dispatch_execution::publish_dispatch_hint(
+                wake.as_ref(),
+                &CancellationToken::new(),
+            )
+            .await;
         }
 
         const SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -772,10 +782,10 @@ impl SharedHost {
             && child_rows.iter().any(|dispatch| {
                 matches!(
                     dispatch.state,
-                    awaken_run_ingress::DispatchState::Reserved
-                        | awaken_run_ingress::DispatchState::ReservationLeased
-                        | awaken_run_ingress::DispatchState::Pending
-                        | awaken_run_ingress::DispatchState::Leased
+                    awaken_run_ingress_contract::DispatchState::Reserved
+                        | awaken_run_ingress_contract::DispatchState::ReservationLeased
+                        | awaken_run_ingress_contract::DispatchState::Pending
+                        | awaken_run_ingress_contract::DispatchState::Leased
                 )
             })
         {
@@ -784,9 +794,9 @@ impl SharedHost {
             ));
         }
         if already_archived
-            || child_rows
-                .iter()
-                .any(|dispatch| dispatch.state == awaken_run_ingress::DispatchState::Awaiting)
+            || child_rows.iter().any(|dispatch| {
+                dispatch.state == awaken_run_ingress_contract::DispatchState::Awaiting
+            })
         {
             // The protocol projects an Awaiting tool boundary as idle for archive admission. Use
             // the ordinary claim-fenced interruption path to close its pending
@@ -870,15 +880,15 @@ mod tests {
         // a new activity; E2 the original activity remains recoverable; E3 exact
         // retry remains mandatory. Decision table: R1=C1->BadRequest/E1,
         // R2=C2->Conflict/E2, R3=C3->Unavailable/E3.
-        let rejected = dispatch_admission_error(awaken_run_ingress::DispatchError::Rejected(
-            "invalid shape".into(),
-        ));
-        let conflict = dispatch_admission_error(awaken_run_ingress::DispatchError::Conflict(
-            "identity collision".into(),
-        ));
-        let unavailable = dispatch_admission_error(awaken_run_ingress::DispatchError::Unavailable(
-            "response lost".into(),
-        ));
+        let rejected = dispatch_admission_error(
+            awaken_run_ingress_contract::DispatchError::Rejected("invalid shape".into()),
+        );
+        let conflict = dispatch_admission_error(
+            awaken_run_ingress_contract::DispatchError::Conflict("identity collision".into()),
+        );
+        let unavailable = dispatch_admission_error(
+            awaken_run_ingress_contract::DispatchError::Unavailable("response lost".into()),
+        );
         assert_eq!(rejected.kind, HostErrorKind::BadRequest, "R1/E1");
         assert_eq!(conflict.kind, HostErrorKind::Conflict, "R2/E2");
         assert_eq!(unavailable.kind, HostErrorKind::Unavailable, "R3/E3");
@@ -932,7 +942,7 @@ mod tests {
         // | C1   | none   | 0->B       | B      | none         | E1,E4,E5  |
         // | C2   | A      | A->B       | B      | A            | E2,E4,E5  |
         // | C3   | A      | none       | A      | A            | E3,E4,E5  |
-        use awaken_run_ingress::DispatchQueue as _;
+        use awaken_run_ingress_contract::DispatchQueue as _;
 
         let manifest = |revision| {
             awaken_session_resource_contract::SessionResourceManifest::at_revision(
@@ -1088,7 +1098,7 @@ mod tests {
                     .request
                     .placement
                     .required_capabilities
-                    .contains(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY),
+                    .contains(awaken_run_ingress_contract::SESSION_RESOURCES_CAPABILITY),
                 "{rule}/E4 eligible Worker capability",
             );
             assert_eq!(
