@@ -1541,15 +1541,14 @@ impl SharedHost {
                         .as_deref()
                         .is_some_and(|env| env.agent_process().is_container())
                     {
-                        let (descriptors, executors) =
-                            crate::acp_tool_export::pair_tools(descriptors, executors)
-                                .map_err(HostError::internal)?;
-                        acp_attached_tools =
-                            Some(Arc::new(crate::acp_tool_export::AttachedToolSet {
-                                exporter: exporter.clone(),
+                        acp_attached_tools = Some(Arc::new(
+                            awaken_runtime_contract::tool_export::AttachedToolSet::new(
+                                exporter.clone(),
                                 descriptors,
                                 executors,
-                            }));
+                            )
+                            .map_err(HostError::internal)?,
+                        ));
                     } else {
                         let (servers, exports) = crate::acp_tool_export::export_tools(
                             exporter.as_ref(),
@@ -1574,30 +1573,27 @@ impl SharedHost {
                 .as_ref()
                 .zip(env.clone())
                 .map(|(acp, env)| {
-                    acp.executor_for(
-                        env.agent_process().clone(),
-                        permission,
-                        execution_backend.clone(),
-                        acp_mcp_servers,
-                        acp_attached_tools,
-                        acp_tool_grants.clone().map(|observer| {
-                            observer
-                                as Arc<dyn awaken_runtime_contract::permission::PermissionGrantObserver>
-                        }),
-                    )
-                    .map(|executor| {
-                        let continuation = acp_tool_grants.clone().map(|exports| {
-                            let port: Arc<
-                                dyn awaken_runtime_contract::resume::OwnedToolContinuation,
-                            > = Arc::new(crate::acp_tool_export::AcpToolContinuation {
+                    let continuation = acp_tool_grants.clone().map(|exports| {
+                        let port: Arc<dyn awaken_runtime_contract::resume::OwnedToolContinuation> =
+                            Arc::new(crate::acp_tool_export::AcpToolContinuation {
                                 runtime: runtime.clone(),
                                 host_exports: Some(exports),
                                 client_tools: acp_client_tool_ids.clone(),
                                 client_requests: acp_client_tool_requests.clone(),
                             });
-                            port
-                        });
-                        Arc::new(executor.with_owned_tool_continuation(continuation))
+                        port
+                    });
+                    acp.create(awaken_session_environment_contract::AcpSessionExecution {
+                        environment: env.agent_process().clone(),
+                        backend: execution_backend.clone(),
+                        permission,
+                        mcp_servers: acp_mcp_servers,
+                        attached_tools: acp_attached_tools,
+                        grant_observer: acp_tool_grants.clone().map(|observer| {
+                            observer
+                                as Arc<dyn awaken_runtime_contract::permission::PermissionGrantObserver>
+                        }),
+                        continuation,
                     })
                 })
                 .transpose()
@@ -1612,9 +1608,7 @@ impl SharedHost {
             let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
                 Arc::new(crate::run_exec::SessionAttemptExecutor::from_executors(
                     runtime.clone(),
-                    acp_executor.map(|executor| {
-                        executor as Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>
-                    }),
+                    acp_executor,
                     self.agent.remote_attempt_executor.clone(),
                     &attempt_specs,
                 ));

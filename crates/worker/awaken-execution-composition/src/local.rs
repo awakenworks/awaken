@@ -507,7 +507,8 @@ mod startup_tests {
                     deployment.sandbox.trusted_host_scoped_execution = scoped;
                     let mut host = host(deployment);
                     if prior_acp {
-                        host = host.with_projected_acp(
+                        host = crate::with_projected_acp(
+                            host,
                             *awaken_run_executor_acp::acp_cli("claude").unwrap(),
                             Arc::new(FixedModel),
                             None,

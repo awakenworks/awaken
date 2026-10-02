@@ -60,7 +60,7 @@ impl AttachedTools {
 
     pub(super) async fn open(
         sandbox: &dyn awaken_session_environment_contract::AgentProcessEnvironment,
-        tools: &crate::acp_tool_export::AttachedToolSet,
+        tools: &awaken_runtime_contract::tool_export::AttachedToolSet,
     ) -> Result<Self, OpenError> {
         let helper = sandbox
             .channel_helper()
@@ -106,7 +106,7 @@ impl AttachedTools {
             ));
         }
         let (reader, writer) = tokio::io::split(channel);
-        let result = match tools.exporter.attached_channels() {
+        let result = match tools.exporter().attached_channels() {
             Some(exporter) => {
                 exporter
                     .export_channel_set(
@@ -117,8 +117,8 @@ impl AttachedTools {
                                 args: attached.server.args.clone(),
                             },
                         },
-                        tools.descriptors.clone(),
-                        tools.executors.clone(),
+                        tools.descriptors().to_vec(),
+                        tools.executors().to_vec(),
                         Box::new(reader),
                         Box::new(writer),
                     )

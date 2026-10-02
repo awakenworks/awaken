@@ -49,6 +49,7 @@
 
 use std::sync::Arc;
 
+mod acp;
 mod agent_view;
 mod files;
 mod hand;
@@ -57,6 +58,7 @@ mod provider;
 mod provider_effect;
 mod realized;
 
+pub use acp::{AcpSessionExecution, AcpSessionExecutorFactory};
 pub use agent_view::{AgentFilesystemClient, AgentFilesystemView, AgentPathView};
 pub use files::{CapturedArtifact, DiscoveredSkillFile};
 pub use hand::{ContainerHandResidency, HandExecutorFactory};

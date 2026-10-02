@@ -69,7 +69,6 @@ mod provisioning;
 mod redact;
 mod run_application_host;
 mod run_exec;
-mod sandbox_source;
 mod session_environment;
 mod session_memory_tools;
 mod session_slot;
@@ -122,13 +121,11 @@ pub use crate::host::{
     AttemptExecutorDecorator, DispatchPoolSizing, HostProcess, HostResume,
     RemoteAttemptInstallation, SharedHost, remote_worker_placement, self_hosted_inference_holder,
 };
+pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 pub use crate::run_application_host::RunApplicationHost;
 use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};
 use awaken_resource_contract::{FileContentSource, RepositoryBindingVerifier};
-// ACP launch projection consumes the Session environment selected by the host.
-pub use crate::hub::{ThreadEvent, ThreadEventHub};
-pub use crate::sandbox_source::{AcpLaunchRegistry, LaunchSource};
 // The root every composition selects its Session environment providers under.
 pub use crate::acp_backend::session_sandbox_base;
 pub use crate::commit_ingest::claimed_commit_service;
