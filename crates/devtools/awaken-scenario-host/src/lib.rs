@@ -358,6 +358,8 @@ const FAKE_ACP_JSONRPC_SCRIPT: &str = "runtime=${AWAKEN_MATRIX_RUNTIME:-unknown}
           exit 0;; \
         *'\"id\":3'*) \
           case \"$line\" in \
+            *'The pending write request (matrix-permission-call) was approved.'*) \
+              request_permission;; \
             *matrix-hitl*) \
               request_permission;; \
             *matrix-error*) printf '%s\\n' 'not-json: deterministic ACP adapter failure'; exit 0;; \
