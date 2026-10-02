@@ -137,10 +137,29 @@ impl SessionError {
         let message = message.into();
         let mcp_server_name = code_message_server_name(code, &message);
         let (kind, retry_status) = match code {
-            "mcp_connection_failed" => ("mcp_connection_failed_error", RetryStatus::Retrying),
-            "mcp_authentication_failed" => {
-                ("mcp_authentication_failed_error", RetryStatus::Terminal)
-            }
+            // Both mcp variants require `mcp_server_name` on the wire, and the
+            // name is read out of the fault's prose below. A message without the
+            // marker cannot satisfy the variant its code would otherwise select,
+            // and claiming it anyway emits an event an official client cannot
+            // deserialize, because the required property is simply absent. The
+            // kind and the field are therefore decided in one expression: the
+            // variant is reachable only when its required field exists, and a
+            // nameless mcp fault degrades to `unknown_error`, which requires no
+            // such field. The recovery the client keys on does not degrade with
+            // it — an unreachable server is still retryable, a rejected
+            // credential still terminal.
+            "mcp_connection_failed" => (
+                mcp_server_name
+                    .as_ref()
+                    .map_or("unknown_error", |_| "mcp_connection_failed_error"),
+                RetryStatus::Retrying,
+            ),
+            "mcp_authentication_failed" => (
+                mcp_server_name
+                    .as_ref()
+                    .map_or("unknown_error", |_| "mcp_authentication_failed_error"),
+                RetryStatus::Terminal,
+            ),
             "rate_limited" => ("model_rate_limited_error", RetryStatus::Exhausted),
             // These are model-owned, non-retryable failures. In particular,
             // billing exhaustion must not lose its model origin or look like
@@ -168,4 +187,81 @@ fn code_message_server_name(code: &str, message: &str) -> Option<String> {
     let start = message.find(marker)? + marker.len();
     let rest = &message[start..];
     Some(rest.split('`').next()?.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two mcp variants are the only committed errors with a required field
+    /// this adapter has to derive, and it derives it from the fault's prose. A
+    /// message without the marker therefore cannot satisfy the variant its code
+    /// selects, so the kind and the field are produced together or not at all.
+    ///
+    /// | Rule | code                      | marker in message | kind                           | mcp_server_name | retry_status |
+    /// | R1   | mcp_authentication_failed | yes               | mcp_authentication_failed_error | the name        | terminal     |
+    /// | R2   | mcp_authentication_failed | no                | unknown_error                   | absent          | terminal     |
+    /// | R3   | mcp_connection_failed     | yes               | mcp_connection_failed_error     | the name        | retrying     |
+    /// | R4   | mcp_connection_failed     | no                | unknown_error                   | absent          | retrying     |
+    /// | R5   | rate_limited              | irrelevant        | model_rate_limited_error        | absent          | exhausted    |
+    #[test]
+    fn an_mcp_variant_is_claimed_only_with_the_server_name_it_requires() {
+        let cases = [
+            (
+                "R1",
+                "mcp_authentication_failed",
+                "mcp server `calc`: HTTP 401",
+                "mcp_authentication_failed_error",
+                Some("calc"),
+                RetryStatus::Terminal,
+            ),
+            (
+                "R2",
+                "mcp_authentication_failed",
+                "the upstream rejected the credential",
+                "unknown_error",
+                None,
+                RetryStatus::Terminal,
+            ),
+            (
+                "R3",
+                "mcp_connection_failed",
+                "mcp server `offline`: connection refused",
+                "mcp_connection_failed_error",
+                Some("offline"),
+                RetryStatus::Retrying,
+            ),
+            (
+                "R4",
+                "mcp_connection_failed",
+                "connection refused",
+                "unknown_error",
+                None,
+                RetryStatus::Retrying,
+            ),
+            (
+                "R5",
+                "rate_limited",
+                "mcp server `calc` is irrelevant here",
+                "model_rate_limited_error",
+                None,
+                RetryStatus::Exhausted,
+            ),
+        ];
+        for (rule, code, message, kind, server, retry_status) in cases {
+            let error = SessionError::classify(code, message);
+            assert_eq!(error.kind, kind, "{rule} kind");
+            assert_eq!(error.mcp_server_name.as_deref(), server, "{rule} server");
+            assert_eq!(error.retry_status, retry_status, "{rule} retry_status");
+            // The property every row shares, and the one the wire depends on:
+            // the field exists exactly when the variant requires it. A serialized
+            // event can then never omit a required property, and can never carry
+            // one its variant does not declare.
+            assert_eq!(
+                error.kind.starts_with("mcp_"),
+                error.mcp_server_name.is_some(),
+                "{rule}: an mcp variant and its required field are one decision"
+            );
+        }
+    }
 }
