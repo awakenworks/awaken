@@ -26,7 +26,7 @@ def snapshot(raw: str) -> dict:
 
 
 def qualifies(current: dict, baseline: dict | None = None) -> bool:
-    if current["connections"] < 3 or current["subscriptions"] == 0:
+    if current["connections"] == 0 or current["subscriptions"] == 0:
         return False
     if baseline is None:
         return True
