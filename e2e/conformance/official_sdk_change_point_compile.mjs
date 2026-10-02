@@ -221,6 +221,38 @@ function managedTypesV128Fixture(enabled) {
   }`;
 }
 
+function managedTypesV131Fixture(enabled) {
+  if (!enabled) return '';
+  // Causes: C1 refusal ends a Managed turn with structured details; C2 a
+  // repository failure has its own typed error; C3 Memory Store fields became
+  // required. Effects: each exact candidate declaration compiles with those
+  // shapes and rejects an optional field substituted for a required one.
+  // R1 C1+C2+C3 => all three type boundaries remain represented.
+  return `
+  {
+  type Idle = import('@anthropic-ai/sdk/resources/beta/sessions/events').BetaManagedAgentsSessionStatusIdleEvent;
+  type Store = import('@anthropic-ai/sdk/resources/beta/memory-stores/memory-stores').BetaManagedAgentsMemoryStore;
+  type Required<T, K extends keyof T> = {} extends Pick<T, K> ? never : true;
+  const refusal: import('@anthropic-ai/sdk/resources/beta/sessions/events').BetaManagedAgentsSessionRefusal = { type: 'refusal' };
+  const details: import('@anthropic-ai/sdk/resources/beta/sessions/events').BetaManagedAgentsSessionRefusalStopDetails = {
+    type: 'refusal', category: null, explanation: null,
+  };
+  const idleReason: Idle['stop_reason'] = refusal;
+  const idleDetails: Idle['stop_details'] = details;
+  const stopDetailsRequired: Required<Idle, 'stop_details'> = true;
+  const descriptionRequired: Required<Store, 'description'> = true;
+  const metadataRequired: Required<Store, 'metadata'> = true;
+  const archivedAtRequired: Required<Store, 'archived_at'> = true;
+  const repositoryError: import('@anthropic-ai/sdk/resources/beta/sessions/events').BetaManagedAgentsSessionErrorEvent['error'] = {
+    type: 'repository_clone_error', message: 'clone failed', repository_url: null,
+    retry_status: { type: 'terminal' },
+  };
+  void idleReason; void idleDetails; void stopDetailsRequired;
+  void descriptionRequired; void metadataRequired; void archivedAtRequired;
+  void repositoryError;
+  }`;
+}
+
 export function officialSdkChangePointFixture({
   filesProjection,
   skillsProjection,
@@ -230,6 +262,7 @@ export function officialSdkChangePointFixture({
   managedTypesV125 = false,
   managedTypesV127 = false,
   managedTypesV128 = false,
+  managedTypesV131 = false,
   workspaceRouting = false,
 }) {
   return `// Generated in memory by official_sdk_change_point_compile.mjs.
@@ -274,6 +307,7 @@ ${managedTypesV127 ? `
 ` : ''}
 ${workspaceRoutingFixture(workspaceRouting)}
 ${managedTypesV128Fixture(managedTypesV128)}
+${managedTypesV131Fixture(managedTypesV131)}
   client.beta.webhooks.unwrap('{}', { headers: {
     'webhook-id': 'event_compile',
     'webhook-timestamp': '0',

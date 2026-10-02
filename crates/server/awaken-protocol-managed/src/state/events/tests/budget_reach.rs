@@ -246,7 +246,8 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
         issued.iter().all(|event| !matches!(
             &event.kind,
             OutboundKind::SessionStatusIdle {
-                stop_reason: StopReason::BudgetReached
+                stop_reason: StopReason::BudgetReached,
+                ..
             }
         )),
         "B1/E1"
@@ -297,7 +298,8 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
             .filter(|event| matches!(
                 &event.kind,
                 OutboundKind::SessionStatusIdle {
-                    stop_reason: StopReason::BudgetReached
+                    stop_reason: StopReason::BudgetReached,
+                    ..
                 }
             ))
             .count(),
@@ -333,7 +335,8 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
             warm_suffix.data.iter().any(|event| matches!(
                 &event.kind,
                 OutboundKind::SessionStatusIdle {
-                    stop_reason: StopReason::BudgetReached
+                    stop_reason: StopReason::BudgetReached,
+                    ..
                 }
             )),
             "B3/E2 BudgetReached remains in the suffix after {cursor}"

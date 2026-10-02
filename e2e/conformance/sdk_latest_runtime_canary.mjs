@@ -36,6 +36,7 @@ import {
   stopServer,
   waitForSessionEventReceipt,
   waitForPort,
+  waitForValue,
   withRealServer,
   withServer,
   withScenarioServer,
@@ -108,6 +109,7 @@ const completeBehaviorOwner = (owner) => completedBehaviorOwners.add(owner);
 // matches a reviewed qualification. Extraction above reads package files but
 // executes none of them, so a same-path supply-chain mutation fails closed.
 const { default: Anthropic, toFile } = await import(pathToFileURL(resolve(packageRoot, 'index.mjs')));
+const { PageCursor } = await import(pathToFileURL(resolve(packageRoot, 'core/pagination.mjs')));
 const {
   accumulateManagedAgentsEvent,
 } = await import(pathToFileURL(resolve(packageRoot, 'lib/sessions/accumulate.mjs')));
@@ -184,6 +186,9 @@ const managedTypesV127 = /BetaCompactionCapability/u.test(
 const managedTypesV128 = /export type BetaManagedAgentsAgentEvaluatedPermission =/u.test(
   readFileSync(resolve(packageRoot, 'resources/beta/sessions/events.d.ts'), 'utf8'),
 );
+const managedTypesV131 = /export interface BetaManagedAgentsSessionRefusalStopDetails/u.test(
+  readFileSync(resolve(packageRoot, 'resources/beta/sessions/events.d.ts'), 'utf8'),
+);
 const requiredRetainedOwners = new Set(retainedOfficialSdkBehaviorOwners(
   manifest.version,
   qualificationCatalog.qualifications,
@@ -199,6 +204,7 @@ compileOfficialSdkChangePoints(packageRoot, {
   managedTypesV125,
   managedTypesV127,
   managedTypesV128,
+  managedTypesV131,
   workspaceRouting: workspaceRuntimeModules.length > 0,
 });
 completeBehaviorOwner('candidate.typescript-change-points');
@@ -206,6 +212,7 @@ if (managedTypesV123) completeBehaviorOwner('candidate.managed-type-change-point
 if (managedTypesV125) completeBehaviorOwner('candidate.managed-type-change-points-v125');
 if (managedTypesV127) completeBehaviorOwner('candidate.managed-type-change-points-v127');
 if (managedTypesV128) completeBehaviorOwner('candidate.managed-type-change-points-v128');
+if (managedTypesV131) completeBehaviorOwner('candidate.managed-type-change-points-v131');
 
 async function exerciseInlineToolHelperTelemetry() {
   if (!requiredRetainedOwners.has('candidate.inline-tool-helper-telemetry')) return;
@@ -294,6 +301,36 @@ async function exerciseSdkCoreTransport() {
   });
   assert.deepEqual(await drain(client.beta.files.list({ limit: 1 })), [], 'T1 page decode');
   assert.equal(requests, 1, 'T1 exact request');
+  if (betaFiles.projection === 'ga'
+    && Object.hasOwn(PageCursor.prototype, 'hasNextPage')) {
+    // P1 first cursor page is empty but names a successor; P2 successor holds
+    // one item and no further cursor. E1 two exact SDK requests, E2 one item,
+    // E3 no duplicate or early termination. Decision rule P1+P2=>E1-E3;
+    // current anchors without this override retain their existing owner.
+    const observedUrls = [];
+    const paged = new Anthropic({
+      apiKey: 'transport-only', // awaken-allow: secret
+      baseURL: 'https://managed.invalid',
+      maxRetries: 0,
+      fetch: async (input, init) => {
+        assertCandidateFilesTransport(input, init);
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        observedUrls.push(url);
+        return new Response(JSON.stringify(observedUrls.length === 1
+          ? { data: [], next_page: 'page-two' }
+          : { data: [{ id: 'file_after_empty' }], next_page: null }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      },
+    });
+    const first = await paged.beta.files.list({ limit: 1 });
+    assert.equal(first.data.length, 0, 'P1 empty first page');
+    assert.equal(first.hasNextPage(), true, 'P1 cursor survives empty items');
+    assert.deepEqual((await drain(first)).map(({ id }) => id), ['file_after_empty'], 'P2/E2');
+    assert.deepEqual(observedUrls.map((url) => url.searchParams.get('page')),
+      [null, 'page-two'], 'P1+P2/E1+E3');
+    completeBehaviorOwner('candidate.pagination-empty-page');
+  }
   // T2 (0.125): a retry budget that is not a non-negative integer is refused at
   // construction, so a misconfigured client can never retry forever or NaN times.
   for (const maxRetries of [-1, 1.5, Number.NaN]) {
@@ -635,8 +672,12 @@ async function exerciseRefusalFallbackMiddleware() {
   ];
   const bodies = [];
   const nonStreaming = betaRefusalFallbackMiddleware([{ model: 'fallback-model' }]);
+  const nonStreamingInput = {
+    model: 'primary-model', messages: history,
+    ...(managedTypesV131 ? { thinking: { type: 'between_tools' } } : {}),
+  };
   const nonStreamingResponse = await nonStreaming(
-    { headers: new Headers(), body: JSON.stringify({ model: 'primary-model', messages: history }) },
+    { headers: new Headers(), body: JSON.stringify(nonStreamingInput) },
     async (request) => {
       bodies.push(JSON.parse(request.body));
       if (bodies.length === 1) {
@@ -664,7 +705,7 @@ async function exerciseRefusalFallbackMiddleware() {
       options: {
         method: 'post',
         path: '/v1/messages?beta=true',
-        body: { model: 'primary-model', messages: history },
+        body: nonStreamingInput,
         stream: false,
       },
       parse: (response) => response.clone().json(),
@@ -677,15 +718,26 @@ async function exerciseRefusalFallbackMiddleware() {
     [history[0], history[2]],
     'M1 preserves an originally empty message and removes a fallback-only replay',
   );
+  if (managedTypesV131) {
+    // F1 between_tools is valid on the first model; F2 the fallback may not
+    // support it. Effect: the non-streaming fallback receives disabled thinking
+    // while the authored first request remains unchanged. Rule F1+F2=>effect.
+    assert.deepEqual(bodies[0].thinking, { type: 'between_tools' }, 'F1 authored request');
+    assert.deepEqual(bodies[1].thinking, { type: 'disabled' }, 'F2 fallback request');
+  }
 
   const transformations = [{ type: 'candidate_input_transformation' }];
   let streamHop = 0;
   let fallbackRequest;
   const streaming = betaRefusalFallbackMiddleware([{ model: 'fallback-model' }]);
+  const streamingInput = {
+    model: 'primary-model', messages: [history[2]], stream: true,
+    ...(managedTypesV131 ? { thinking: { type: 'between_tools' } } : {}),
+  };
   const spliced = await streaming(
     {
       headers: new Headers(),
-      body: JSON.stringify({ model: 'primary-model', messages: [history[2]], stream: true }),
+      body: JSON.stringify(streamingInput),
     },
     async (request) => {
       streamHop += 1;
@@ -733,7 +785,7 @@ async function exerciseRefusalFallbackMiddleware() {
       options: {
         method: 'post',
         path: '/v1/messages?beta=true',
-        body: { model: 'primary-model', messages: [history[2]], stream: true },
+        body: streamingInput,
         stream: true,
       },
       parse: (response) => response.clone().json(),
@@ -746,6 +798,11 @@ async function exerciseRefusalFallbackMiddleware() {
     && event.delta?.stop_reason === 'end_turn');
   assert.deepEqual(terminal?.input_transformations, transformations, 'M2 spliced transformation');
   assert.equal(streamHop, 2, 'M2 exactly one streaming fallback request');
+  if (managedTypesV131) {
+    // F3 streaming replay carries only the reviewed thinking downgrade; a
+    // between_tools value copied to the fallback would be rejected upstream.
+    assert.deepEqual(fallbackRequest.thinking, { type: 'disabled' }, 'F3 streamed fallback');
+  }
   if (managedTypesV127) {
     // M3 null start shell + final compaction delta + accepted prefill claim =>
     // the next request receives exact final plaintext and opaque encrypted
@@ -886,6 +943,30 @@ async function exerciseSdkHelperRuntime() {
       requestUrls.every((url) => url === 'data:,'),
       'H5 invalid upload values fail before API transport',
     );
+    if (managedTypesV131) {
+      // U3 a caller supplies a named File containing a path; U4 a bare Blob
+      // remains covered by S0. Effect: multipart preserves the File's exact
+      // chosen name through the candidate SDK, without a guessed placeholder
+      // or basename rewrite. Rule U3=>one exact filename on the wire.
+      const file = new File(['file-content'], 'nested/input.txt', { type: 'text/plain' });
+      assert.equal((await toFile(file)).name, file.name, 'U3 toFile identity');
+      let filename;
+      const namedClient = new Anthropic({
+        apiKey: 'transport-only', // awaken-allow: secret
+        baseURL: 'https://managed.invalid',
+        maxRetries: 0,
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          if (request.url === 'data:,') return new Response('');
+          filename = (await request.formData()).get('file')?.name;
+          return new Response(JSON.stringify({ id: 'file_candidate', type: 'file' }), {
+            headers: { 'content-type': 'application/json' },
+          });
+        },
+      });
+      await namedClient.beta.files.upload({ file });
+      assert.equal(filename, file.name, 'U3 multipart sends the exact File name');
+    }
   }
 
   if (hasRuntime('core/middleware.mjs') || hasRuntime('internal/parse.mjs')) {
@@ -917,6 +998,70 @@ async function exerciseSdkHelperRuntime() {
     completeBehaviorOwner('candidate.sse-parser');
   }
   pass(`registry SDK ${manifest.version} preserves Managed helper dependency semantics`);
+}
+
+async function exerciseSessionToolRunnerTerminalIdle() {
+  if (!managedTypesV131) return;
+  const { SessionToolRunner } = await import(
+    pathToFileURL(resolve(packageRoot, 'lib/tools/SessionToolRunner.mjs')),
+  );
+  // T1 refusal ends a turn; T2 requires_action waits for the named user input.
+  // Effects: T1 runner stops without tool/result side effects; T2 stays live
+  // through a 5ms idle deadline and stops only on explicit abort. These are
+  // the two branches of the SDK's changed endsTurn predicate; the stream and
+  // list agree on the same committed event, so reconciliation cannot hide it.
+  for (const [rule, stopReason, expectedAbort] of [
+    ['T1', { type: 'refusal' }, true],
+    ['T2', { type: 'requires_action', event_ids: ['confirmation_candidate'] }, false],
+  ]) {
+    const event = {
+      id: `idle_${rule}`, type: 'session.status_idle',
+      stop_reason: stopReason, stop_details: null,
+      processed_at: '2026-10-02T00:00:00Z',
+    };
+    let observed;
+    const seen = new Promise((resolveSeen) => { observed = resolveSeen; });
+    const client = { beta: { sessions: { events: {
+      stream: async (_id, _params, { signal }) => ({
+        async *[Symbol.asyncIterator]() {
+          yield event;
+          observed();
+          if (!signal.aborted) {
+            await new Promise((resolveAbort) => signal.addEventListener('abort', resolveAbort, { once: true }));
+          }
+        },
+      }),
+      list: async function* () { yield event; },
+    } } } };
+    const runner = new SessionToolRunner('session_candidate', {
+      client, tools: [], maxIdleMs: 5,
+    });
+    const results = [];
+    const consuming = (async () => {
+      for await (const result of runner) results.push(result);
+    })();
+    try {
+      await seen;
+      if (expectedAbort) {
+        await waitForValue(
+          () => runner.signal.aborted,
+          Boolean,
+          'refusal idle stops the candidate tool runner',
+          { timeoutMs: 1_000, pollMs: 5 },
+        );
+      } else {
+        // awaken-wait: the candidate idle timer is 5ms; after four timer
+        // windows, requires_action must still be live until explicit abort.
+        await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+        assert.equal(runner.signal.aborted, false, 'T2 requires_action stays live');
+      }
+    } finally {
+      runner.abort();
+      await consuming;
+    }
+    assert.deepEqual(results, [], `${rule} no fabricated tool result`);
+  }
+  completeBehaviorOwner('candidate.session-toolrunner-streaming');
 }
 
 async function exerciseBetaFiles(client) {
@@ -1002,6 +1147,15 @@ async function exerciseBetaSkills(client) {
   const document = '---\nname: latest-beta-canary\ndescription: first\n---\nFirst.';
   const revised = '---\nname: latest-beta-canary\ndescription: second\n---\nSecond.';
   if (hasRuntime('internal/uploads.mjs')) {
+    // U1 caller supplies a bare Blob; U2 the exact SDK gives it an empty or
+    // fallback name. Effects: both forms reach the product's bundle validator
+    // and fail before mutation, with the error selected by the emitted name.
+    // Rule U1+U2 => one product rejection; the SDK's own toFile determines U2.
+    const unnamed = await toFile(new Blob([document]));
+    assert.ok(['', 'unknown_file'].includes(unnamed.name), 'U2 exact reviewed bare-Blob name');
+    const missingNameError = unnamed.name === ''
+      ? /top-level directory/u
+      : /SKILL\.md/u;
     await assert.rejects(
       () => client.beta.skills.create({
         ...(betaSkills.projection === 'beta'
@@ -1009,7 +1163,7 @@ async function exerciseBetaSkills(client) {
           : { display_name: 'Bare Blob' }),
         files: [new Blob([document], { type: 'text/markdown' })],
       }),
-      managedError(400, 'invalid_request_error', /SKILL\.md/u),
+      managedError(400, 'invalid_request_error', missingNameError),
       'S0 candidate bare Blob crosses multipart encoding and fails at bundle validation',
     );
   }
@@ -1370,6 +1524,7 @@ await exerciseStreamingBufferViews();
 await exerciseSdkNodeRuntimeFacade();
 await exerciseRefusalFallbackMiddleware();
 await exerciseSdkHelperRuntime();
+await exerciseSessionToolRunnerTerminalIdle();
 
 await withRealServer('echo', Number(process.env.E2E_PORT), async (baseURL) => {
   // Cause/effect graph: C0=Session Event send returns one exact durable
@@ -1450,13 +1605,13 @@ await withRealServer('echo', Number(process.env.E2E_PORT), async (baseURL) => {
 
   // Cause/effect graph: C3=0.120 exposes GA Files and Skills outside `beta`;
   // C4=both project the existing FileCatalog/SkillStore; C5=GA Files expiry and
-  // ids[] pagination, GA Model capabilities, and GA Skill source/latest-version
-  // fields differ from beta.
+  // ids[] pagination and GA Skill source/latest-version fields differ from beta.
   // Effects: E3 generated GA paths run without a beta header, E4 exact GA DTOs
   // decode, E5 the same created ids remain visible through their one repository.
   // Decision table: R3 C3+C4+C5 -> every GA Files/Skills method round-trips;
-  // R4 C3+C4 -> GA Models list/retrieve decode from the existing inventory;
-  // any accidental beta projection, missing expiry, or duplicate store fails.
+  // The shared SDK resource-handoff scenario owns GA Models against a configured
+  // model directory; this echo fixture has no catalog offering to list.
+  // Any accidental beta projection, missing expiry, or duplicate store fails.
   const file = await client.files.upload({
     file: await toFile(Buffer.from(manifest.version), 'latest.txt'),
     expires_in_seconds: 3600,
@@ -1472,12 +1627,6 @@ await withRealServer('echo', Number(process.env.E2E_PORT), async (baseURL) => {
     'R3 uploaded inputs remain non-downloadable through the latest GA client',
   );
   await client.files.delete(file.id);
-
-  const models = [];
-  for await (const model of client.models.list()) models.push(model);
-  assert.ok(models.length > 0, 'R4 GA Models list is non-empty');
-  assert.ok(models.every((model) => !Object.hasOwn(model, 'allowed_fallback_models')), 'R4 GA shape');
-  assert.equal((await client.models.retrieve(models[0].id)).id, models[0].id, 'R4 retrieve');
 
   const skill = await client.skills.create({
     display_name: `Latest ${manifest.version}`,
@@ -1510,7 +1659,7 @@ await withRealServer('echo', Number(process.env.E2E_PORT), async (baseURL) => {
   await client.skills.delete(skill.id);
 
   pass(
-    `registry SDK ${manifest.version} runs Session, Memory, Beta/GA Models, Files, and Skills defaults`,
+    `registry SDK ${manifest.version} runs Session, Memory, Files, and Skills defaults`,
   );
 });
 

@@ -45,6 +45,9 @@ WORKSPACE_RESPONSE_CONTEXT_VERSIONS = frozenset({
     "1.5.0",
     "1.7.0",
     "1.8.0",
+    "1.9.0",
+    "1.10.0",
+    "1.11.0",
 })
 CREDENTIAL_PROVIDER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0"}
 ENVIRONMENT_HELPER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0", "0.100.0"}
@@ -91,9 +94,9 @@ UNICODE_WORKER_HEADER_REJECTING_VERSIONS = frozenset(
         "0.125.0",
     }
 )
-MULTIPART_HEADER_NAME_REJECTING_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.7.0", "1.8.0"})
-ASYNC_CREDENTIAL_PROVIDER_VERSIONS = frozenset({"1.7.0", "1.8.0"})
-FULL_RETRY_AFTER_VERSIONS = frozenset({"1.7.0", "1.8.0"})
+MULTIPART_HEADER_NAME_REJECTING_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.7.0", "1.8.0", "1.9.0", "1.10.0", "1.11.0"})
+ASYNC_CREDENTIAL_PROVIDER_VERSIONS = frozenset({"1.7.0", "1.8.0", "1.9.0", "1.10.0", "1.11.0"})
+FULL_RETRY_AFTER_VERSIONS = frozenset({"1.7.0", "1.8.0", "1.9.0", "1.10.0", "1.11.0"})
 HTTP_FIELD_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
 
 
@@ -1242,7 +1245,10 @@ async def _exercise_error_and_retry_contract_for_mode(
     )
     client_type = anthropic_module.AsyncAnthropic if asynchronous else anthropic_module.Anthropic
     supports_preparation = hasattr(client_type, "_copy_and_prepare")
-    assert supports_preparation is (anthropic_module.__version__ in {"1.8.0"}), "unreviewed preparation change point"
+    # P1 exact later wheels retain the one-shot preparation owner; P2 an
+    # earlier reviewed anchor does not expose it. E1 request inputs remain
+    # prepared once across retries/pagination; E2 unreviewed drift fails here.
+    assert supports_preparation is (anthropic_module.__version__ in {"1.8.0", "1.9.0", "1.10.0", "1.11.0"}), "unreviewed preparation change point"
     if supports_preparation:
         await exercise_request_preparation(
             anthropic_module, transport_module, _call_session_create, asynchronous=asynchronous,

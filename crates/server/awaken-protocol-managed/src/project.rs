@@ -405,6 +405,7 @@ impl Transcoder for ManagedEncoder {
                 stop_reason: StopReason::RequiresAction {
                     event_ids: pending_tool_use_id.clone().into_iter().collect(),
                 },
+                stop_details: None,
             })],
             Fact::RunFinished { exhausted } => {
                 let stop_reason = if *exhausted {
@@ -414,6 +415,7 @@ impl Transcoder for ManagedEncoder {
                 };
                 vec![ProjectedEvent::minted(OutboundKind::SessionStatusIdle {
                     stop_reason,
+                    stop_details: None,
                 })]
             }
             // The managed wire vocabulary has no error stop reason; a failed
@@ -422,6 +424,7 @@ impl Transcoder for ManagedEncoder {
             Fact::RunFailed { .. } => {
                 vec![ProjectedEvent::minted(OutboundKind::SessionStatusIdle {
                     stop_reason: StopReason::EndTurn,
+                    stop_details: None,
                 })]
             }
             // A continuation-guard round is an internal audit fact, not an

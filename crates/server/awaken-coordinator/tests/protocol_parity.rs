@@ -104,7 +104,7 @@ fn managed_stop(events: &[OutboundKind]) -> StopReason {
     events
         .iter()
         .find_map(|e| match e {
-            OutboundKind::SessionStatusIdle { stop_reason } => Some(stop_reason.clone()),
+            OutboundKind::SessionStatusIdle { stop_reason, .. } => Some(stop_reason.clone()),
             _ => None,
         })
         .expect("managed step ends with exactly one session.status_idle")

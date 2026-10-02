@@ -100,6 +100,7 @@ pub(super) fn encode_fact(
             session_thread_id: thread_id.to_string(),
             agent_name: child_name(record, thread_id)?,
             stop_reason: resolve_stop(record, Some(thread_id), stop)?,
+            stop_details: None,
         },
         FactKind::ThreadTerminated if primary => {
             primary_thread_status_kind(record, PrimaryThreadStatusProjection::Terminated)
@@ -119,6 +120,7 @@ pub(super) fn encode_fact(
         FactKind::SessionRescheduled => OutboundKind::SessionStatusRescheduled {},
         FactKind::SessionIdle { stop, calls_owner } => OutboundKind::SessionStatusIdle {
             stop_reason: resolve_stop(record, owner(record, calls_owner).as_deref(), stop)?,
+            stop_details: None,
         },
         FactKind::SessionTerminated => OutboundKind::SessionStatusTerminated {},
         FactKind::IntervalUsage(interval) => {

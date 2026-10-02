@@ -158,7 +158,9 @@ test('current wire contract describes every committed event down to its nested d
   // required/optional names; E2 a nested discriminated field is described per
   // variant, two levels deep; E3 an array-of-blocks field is not mistaken for
   // a discriminated object. Decision rules: S1=C1=>E1; S2=C1+C2=>E2;
-  // S3=content arrays=>E3. This is what makes a field added to an existing
+  // S3=content arrays=>E3; S4=nullable nested union=>record the exact field
+  // so a required null is admitted without admitting arbitrary nulls.
+  // This is what makes a field added to an existing
   // event a visible contract change rather than a fingerprint delta nobody
   // can read.
   const wire = managedWireContract('@anthropic-ai/sdk-current');
@@ -183,6 +185,10 @@ test('current wire contract describes every committed event down to its nested d
   assert.deepEqual(auto.nested.evaluated_permission.allow.required, ['type'], 'S2');
   assert.deepEqual(wire.events.shapes['agent.mcp_tool_use'].nested.evaluation, toolUse.nested.evaluation, 'S2 same object on both tool-use events');
   assert.equal(wire.events.shapes['agent.message'].nested, undefined, 'S3 content blocks are not a discriminated field');
+  for (const eventType of ['session.status_idle', 'session.thread_status_idle']) {
+    assert.deepEqual(wire.events.shapes[eventType].nullable, ['stop_details'], 'S4 nullable refusal detail');
+    assert.deepEqual(Object.keys(wire.events.shapes[eventType].nested.stop_details), ['refusal'], 'S2 refusal detail');
+  }
   assert.ok(wire.events.shapes['span.outcome_evaluation_end'].required.includes('usage'), 'S1 a required field the adapter must carry');
 });
 

@@ -5457,7 +5457,8 @@ async fn root_terminal_defers_idle_until_the_session_activity_cas_settles() {
         record.events.iter().any(|event| matches!(
             event.kind,
             OutboundKind::SessionStatusIdle {
-                stop_reason: StopReason::EndTurn
+                stop_reason: StopReason::EndTurn,
+                ..
             }
         )),
         "R1-R2/E2 the idle carries the terminal's reason"
@@ -5593,7 +5594,7 @@ async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
         .events
         .iter()
         .filter_map(|event| match &event.kind {
-            OutboundKind::SessionStatusIdle { stop_reason } => Some(stop_reason),
+            OutboundKind::SessionStatusIdle { stop_reason, .. } => Some(stop_reason),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -7614,7 +7615,8 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
         live.iter().any(|event| matches!(
             &event.kind,
             OutboundKind::SessionStatusIdle {
-                stop_reason: StopReason::RequiresAction { event_ids }
+                stop_reason: StopReason::RequiresAction { event_ids },
+                ..
             } if event_ids.len() == 1
         )),
         "B2-B3/E4 aggregate requires_action priority"
@@ -8777,6 +8779,7 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
         .find_map(|event| match &event.kind {
             OutboundKind::SessionStatusIdle {
                 stop_reason: StopReason::RequiresAction { event_ids },
+                ..
             } => Some(event_ids.clone()),
             _ => None,
         })
@@ -12024,6 +12027,7 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
             }
             | OutboundKind::SessionStatusIdle {
                 stop_reason: StopReason::RequiresAction { event_ids },
+                ..
             } => Some(event_ids.as_slice()),
             _ => None,
         })
@@ -12290,7 +12294,8 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         completed_events.iter().any(|event| matches!(
             &event.kind,
             OutboundKind::SessionStatusIdle {
-                stop_reason: StopReason::EndTurn
+                stop_reason: StopReason::EndTurn,
+                ..
             }
         )),
         "O5/E5 completed path reaches EndTurn"

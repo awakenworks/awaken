@@ -87,6 +87,7 @@ impl ManagedState {
                 at(FactRole::BudgetReachStatusIdle),
                 OutboundKind::SessionStatusIdle {
                     stop_reason: StopReason::BudgetReached,
+                    stop_details: None,
                 },
             );
             record.checkpoint.source.budget_reach_generation = generation;
@@ -146,7 +147,10 @@ impl ManagedState {
             );
             record.append_fact_once(
                 close.idle.clone(),
-                OutboundKind::SessionStatusIdle { stop_reason },
+                OutboundKind::SessionStatusIdle {
+                    stop_reason,
+                    stop_details: None,
+                },
             );
         }
         Ok(())

@@ -493,6 +493,7 @@ fn primary_thread_status_kind(
                 session_thread_id,
                 agent_name,
                 stop_reason,
+                stop_details: None,
             }
         }
         PrimaryThreadStatusProjection::Terminated => OutboundKind::SessionThreadStatusTerminated {

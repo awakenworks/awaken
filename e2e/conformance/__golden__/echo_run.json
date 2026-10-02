@@ -45,7 +45,8 @@
     "agent_name": "assistant",
     "stop_reason": {
       "type": "end_turn"
-    }
+    },
+    "stop_details": null
   },
   {
     "type": "session.usage",
@@ -67,6 +68,7 @@
     "type": "session.status_idle",
     "stop_reason": {
       "type": "end_turn"
-    }
+    },
+    "stop_details": null
   }
 ]

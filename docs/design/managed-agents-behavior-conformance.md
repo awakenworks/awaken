@@ -118,6 +118,18 @@ These Session-scoped rules cross roster admission, committed execution input,
 tool realization, and public events. Each claim below names its current owner
 and its executed evidence or states the remaining qualification boundary.
 
+- **The current official SDKs share one committed event contract.** The
+  TypeScript 0.131.0 and Python 1.11.0 anchors are extracted from exact npm and
+  PyPI packages by `managed-sdk-oracle`; the candidate delta and historical
+  matrices reuse the same Session, Resource, and event owners. Both Session and
+  Thread idle now serialize the SDK-required `stop_details` key as `null` for
+  every currently produced non-refusal stop. `event_shapes` compares this and
+  every other committed event against the generated nested SDK shape, including
+  whether a required discriminator may be null. The SDK's new `refusal` reason
+  and repository-error variants are declaration-qualified, but this work does
+  not claim the Runtime produces a refusal reason or every repository fault.
+  A non-null refusal detail must come from a committed refusal fact before it
+  can be projected; the protocol does not infer one from an ordinary failure.
 - **`auto` sees no session content.** CMA evaluates each call over "tool + input
   + session content so far" and may deny it as high-risk.
   `AutoPermissionEvaluator::evaluate(&self, call: &ToolCall)` is synchronous and

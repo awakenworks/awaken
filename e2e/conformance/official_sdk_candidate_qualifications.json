@@ -528,6 +528,121 @@
           ]
         }
       ]
+    },
+    {
+      "baseline_version": "0.128.0",
+      "candidate_version": "0.131.0",
+      "module": "@anthropic-ai/sdk-candidate",
+      "package_integrity": "sha512-9+PepoU7qVMmM70jSahdnfcMHAvAnzhMOLv2W9WjRLO+OG/MAiBETkwKZqv7KIJ1Cj5h8eZ019bHzZaq+Mbepw==",
+      "delta_fingerprint": "7d57eeab193a01532a7296225a8e2707c2317d76c4cb4d5328f00de01b0e20df",
+      "evidence_groups": [
+        {
+          "owner": "candidate.agent-toolset-node",
+          "coordinates": [
+            "declarations:changed:managed/tools/agent-toolset/node.d.ts",
+            "runtime:changed:tools/agent-toolset/node.mjs"
+          ],
+          "witnesses": {
+            "declarations:changed:managed/tools/agent-toolset/node.d.ts": "starts a turn's `tool\\.run` calls"
+          }
+        },
+        {
+          "owner": "candidate.core-transport",
+          "coordinates": [
+            "runtime:changed:client.mjs",
+            "runtime:changed:version.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.generated-module-loadability",
+          "coordinates": [
+            "runtime:changed:index.mjs",
+            "runtime:changed:tools/agent-toolset/memories.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.managed-type-change-points-v131",
+          "coordinates": [
+            "declarations:changed:beta/agents/agents.d.ts",
+            "declarations:changed:beta/deployment-runs.d.ts",
+            "declarations:changed:beta/deployments.d.ts",
+            "declarations:changed:beta/dreams.d.ts",
+            "declarations:changed:beta/environments/environments.d.ts",
+            "declarations:changed:beta/memory-stores/memories.d.ts",
+            "declarations:changed:beta/memory-stores/memory-stores.d.ts",
+            "declarations:changed:beta/memory-stores/memory-versions.d.ts",
+            "declarations:changed:beta/models.d.ts",
+            "declarations:changed:beta/sessions/events.d.ts",
+            "declarations:changed:beta/sessions/index.d.ts",
+            "declarations:changed:beta/sessions/resources.d.ts",
+            "declarations:changed:beta/sessions/sessions.d.ts",
+            "declarations:changed:beta/sessions/threads/threads.d.ts",
+            "declarations:changed:beta/tunnels/certificates.d.ts",
+            "declarations:changed:beta/tunnels/tunnels.d.ts",
+            "declarations:changed:beta/user-profiles.d.ts",
+            "declarations:changed:beta/vaults/credentials.d.ts",
+            "declarations:changed:beta/vaults/vaults.d.ts",
+            "declarations:changed:ga/models.d.ts"
+          ],
+          "witnesses": {
+            "declarations:changed:beta/agents/agents.d.ts": "claude-sonnet-5-5",
+            "declarations:changed:beta/deployment-runs.d.ts": "Snapshot of the agent at fire time",
+            "declarations:changed:beta/deployments.d.ts": "Computed status of the deployment",
+            "declarations:changed:beta/dreams.d.ts": "volatile and may change without the deprecation period",
+            "declarations:changed:beta/environments/environments.d.ts": "Package manager configuration",
+            "declarations:changed:beta/memory-stores/memories.d.ts": "Optional condition that must hold for an update to apply",
+            "declarations:changed:beta/memory-stores/memory-stores.d.ts": "archived_at: string \\| null;",
+            "declarations:changed:beta/memory-stores/memory-versions.d.ts": "Identifies who performed an operation",
+            "declarations:changed:beta/models.d.ts": "Whether the clear_thinking_20251015 strategy is supported",
+            "declarations:changed:beta/sessions/events.d.ts": "export interface BetaManagedAgentsSessionRefusal",
+            "declarations:changed:beta/sessions/index.d.ts": "BetaManagedAgentsSessionRefusal",
+            "declarations:changed:beta/sessions/resources.d.ts": "Access mode for the mounted store",
+            "declarations:changed:beta/sessions/sessions.d.ts": "BetaManagedAgentsSessionRefusal",
+            "declarations:changed:beta/sessions/threads/threads.d.ts": "Snapshot of the agent at thread",
+            "declarations:changed:beta/tunnels/certificates.d.ts": "RFC 3339 datetime string indicating when the certificate",
+            "declarations:changed:beta/tunnels/tunnels.d.ts": "RFC 3339 datetime string indicating when the tunnel",
+            "declarations:changed:beta/user-profiles.d.ts": "When this user profile was created",
+            "declarations:changed:beta/vaults/credentials.d.ts": "Authentication configuration for this credential",
+            "declarations:changed:beta/vaults/vaults.d.ts": "When the vault was archived",
+            "declarations:changed:ga/models.d.ts": "Deprecated\\. This parameter will be removed"
+          }
+        },
+        {
+          "owner": "candidate.pagination-empty-page",
+          "coordinates": [
+            "declarations:changed:managed/core/pagination.d.ts",
+            "runtime:changed:core/pagination.mjs"
+          ],
+          "witnesses": {
+            "declarations:changed:managed/core/pagination.d.ts": "hasNextPage\\(\\): boolean;"
+          }
+        },
+        {
+          "owner": "candidate.refusal-fallback-middleware",
+          "coordinates": [
+            "runtime:changed:lib/middleware.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.session-toolrunner-streaming",
+          "coordinates": [
+            "runtime:changed:lib/tools/SessionToolRunner.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.streaming-buffer-views",
+          "coordinates": [
+            "runtime:changed:core/streaming.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.upload-admission",
+          "coordinates": [
+            "runtime:changed:internal/to-file.mjs",
+            "runtime:changed:internal/uploads.mjs"
+          ]
+        }
+      ]
     }
   ]
 }
