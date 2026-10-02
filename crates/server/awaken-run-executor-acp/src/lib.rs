@@ -23,9 +23,11 @@
 
 use std::sync::Arc;
 
+mod adapter_policy;
 mod cleanup;
 pub mod host;
 mod session_factory;
+pub use adapter_policy::acp_adapter_policy;
 pub use cleanup::{ChannelOpenDoor, open_session as open_agent_session};
 use cleanup::{CleanupScope, preserve_terminal_outcome};
 

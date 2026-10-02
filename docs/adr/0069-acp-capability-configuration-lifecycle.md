@@ -479,7 +479,10 @@ effective Worker observation
 Agent config/publishing ----> placement/claim
        |
        v
-Runtime Host ----> ResolvedAcpLaunch ----> ACP executor/protocol
+Runtime Host -- frozen Session/Run facts --> Session Environment SPI
+       ^                                      |
+       | injected factory, policy and reaper  v
+Worker execution composition ----> sole AcpCli catalog / ACP executor / protocol
 ```
 
 Neither arrow points from Runtime/executor back to discovery. The application
@@ -619,7 +622,7 @@ Ownership is deliberately split:
 | installation, login and negotiated capability | Worker ACP application | authoring/readiness/publication/placement | persisting Agent choices |
 | backend/model/mode/native option intent | Agent aggregate | publication | copying discovered defaults or schemas |
 | executable scheduling demand | immutable publication | placement, claim and Runtime Host | materializing secrets or launching a process |
-| environment and resolved launch | Runtime Host/provisioning | ACP executor | scanning PATH/HOME, probing login, installing wrappers or choosing an Agent option |
+| environment and resolved launch | Session Environment and Worker execution composition | ACP executor | scanning PATH/HOME, probing login, installing wrappers or choosing an Agent option |
 | ACP wire sequencing | ACP executor/protocol | Run lifecycle | discovery inventory, repositories, placement or fallback |
 | authorization | Awaken policy and realized environment | Runtime/ACP permission handling | delegation to an ACP preference |
 

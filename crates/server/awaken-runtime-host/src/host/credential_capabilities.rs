@@ -50,17 +50,19 @@ pub(super) fn model_realization_capability(
 /// in one alternative so claim admission cannot synthesize them across peers.
 pub(crate) fn acp_mcp_client_injection_capabilities(
     materializer: &awaken_credential_materializer::PinnedCredentialMaterializer,
+    policy: &dyn awaken_acp_contract::AcpAdapterPolicy<
+        awaken_runtime_contract::resolved::ProviderServerTool,
+    >,
     cli: &str,
     http_transport: bool,
 ) -> Option<awaken_runtime_contract::CredentialRealizationCapabilities> {
     use awaken_runtime_contract::{CredentialRealizationKind, PlaintextBoundary};
 
-    let adapter = awaken_run_executor_acp::acp_cli(cli)?;
     let delivery = awaken_credential_contract::select_mcp_credential_delivery(
         PlaintextBoundary::Workload,
         CredentialRealizationKind::ProcessProtocolField,
     );
-    if !adapter.admits_mcp_client_credential(delivery, http_transport) {
+    if !policy.admits_mcp_client_credential(cli, delivery, http_transport) {
         return None;
     }
     let holder =
@@ -147,20 +149,18 @@ impl SharedHost {
                     awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
                 ),
             );
-            if self.exec.acp.is_some() {
+            if let Some(acp) = &self.exec.acp {
+                let policy = acp.adapter_policy();
                 let configured = self
                     .deployment
                     .acp
                     .as_ref()
                     .map(|profile| profile.cli_ids().map(str::to_string).collect::<Vec<_>>())
                     .unwrap_or_else(|| {
-                        awaken_run_executor_acp::known_acp_clis()
-                            .iter()
-                            .map(|cli| cli.id.to_string())
-                            .collect()
+                        policy.known_ids().into_iter().map(str::to_string).collect()
                     });
                 profiles.extend(configured.into_iter().filter_map(|cli| {
-                    acp_mcp_client_injection_capabilities(materializer, &cli, true)
+                    acp_mcp_client_injection_capabilities(materializer, policy, &cli, true)
                 }));
             }
         }

@@ -53,6 +53,7 @@ mod acp;
 mod agent_view;
 mod files;
 mod hand;
+mod process;
 mod proofs;
 mod provider;
 mod provider_effect;
@@ -62,6 +63,7 @@ pub use acp::{AcpSessionExecution, AcpSessionExecutorFactory};
 pub use agent_view::{AgentFilesystemClient, AgentFilesystemView, AgentPathView};
 pub use files::{CapturedArtifact, DiscoveredSkillFile};
 pub use hand::{ContainerHandResidency, HandExecutorFactory};
+pub use process::ProcessReaper;
 pub use proofs::{EnvironmentQuiescenceProof, EnvironmentStopProof, HandStopProof};
 pub use provider::{
     EnvironmentAdoption, EnvironmentCapacity, EnvironmentProviderInstallation,

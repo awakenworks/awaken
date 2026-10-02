@@ -1400,14 +1400,16 @@ impl SharedHost {
             // after restart, durable rehydration stages and publishes them first.
             let relay = self.mcp.mcp_relay.get();
             let mut acp_mcp_servers = if is_acp {
-                let adapter = match &execution_backend {
-                    awaken_runtime_contract::resolved::Backend::Acp(backend) => {
-                        awaken_run_executor_acp::acp_cli(backend.cli()).ok_or_else(|| {
-                            HostError::internal(format!("unknown ACP adapter `{backend}`"))
-                        })?
-                    }
+                let cli = match &execution_backend {
+                    awaken_runtime_contract::resolved::Backend::Acp(backend) => backend.cli(),
                     _ => unreachable!("is_acp is derived from the execution backend"),
                 };
+                let policy = self.acp_adapter_policy()?;
+                if !policy.contains(cli) {
+                    return Err(HostError::internal(format!(
+                        "unknown ACP adapter `acp:{cli}`"
+                    )));
+                }
                 let publication = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(
                     config.resolved_spec.plugin_config.plugins(),
                 )
@@ -1426,7 +1428,8 @@ impl SharedHost {
                             &projection.request,
                             relay,
                             &projection.receipt,
-                            adapter,
+                            policy,
+                            cli,
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?;

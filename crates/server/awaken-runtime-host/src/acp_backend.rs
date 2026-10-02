@@ -54,6 +54,21 @@ impl LaunchObserver for HubLaunchObserver {
 }
 
 impl crate::host::SharedHost {
+    pub(crate) fn acp_adapter_policy(
+        &self,
+    ) -> Result<
+        &dyn awaken_acp_contract::AcpAdapterPolicy<
+            awaken_runtime_contract::resolved::ProviderServerTool,
+        >,
+        crate::HostError,
+    > {
+        self.exec
+            .acp
+            .as_ref()
+            .map(|factory| factory.adapter_policy())
+            .ok_or_else(|| crate::HostError::bad_request("ACP backend is not installed"))
+    }
+
     /// Install the one process-composed ACP execution factory. The frozen
     /// Session projection, not this installation, selects an ACP backend.
     #[must_use]
@@ -156,6 +171,33 @@ mod tests {
         host.with_acp(Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(
             source,
         )))
+    }
+
+    #[test]
+    fn host_reads_only_the_installed_factory_catalog_policy() {
+        // Causes: C1 no ACP factory or one installed factory; C2 exact known,
+        // noncanonical alias, or unknown CLI id. Effects: E1 absent factory
+        // refuses policy access; E2 installed factory returns the one executor
+        // catalog view; E3 only its exact canonical IDs pass. Decision table:
+        // P1 !C1 -> E1; P2 C1+known -> E2+E3; P3 C1+alias/unknown -> E2+!E3.
+        let host = SharedHost::new(Arc::new(NoLlm), "test");
+        assert!(
+            host.acp_adapter_policy()
+                .err()
+                .expect("P1 no catalog without an installed factory")
+                .to_string()
+                .contains("not installed"),
+            "P1"
+        );
+        let host = with_fixture_acp(host);
+        let policy = host.acp_adapter_policy().expect("P2 installed policy");
+        assert!(
+            std::ptr::eq(policy, awaken_run_executor_acp::acp_adapter_policy()),
+            "P2 one catalog instance"
+        );
+        assert!(policy.contains("codex"), "P2 canonical");
+        assert!(!policy.contains("CODEX"), "P3 alias");
+        assert!(!policy.contains("unknown-cli"), "P3 unknown");
     }
 
     #[test]

@@ -39,6 +39,9 @@ enum AcpWebToolRealization {
 }
 
 fn acp_web_tool_disposition(
+    policy: &dyn awaken_acp_contract::AcpAdapterPolicy<
+        awaken_runtime_contract::resolved::ProviderServerTool,
+    >,
     acp_cli_id: &str,
     descriptor: &awaken_runtime_contract::resolved::ToolDescriptor,
     display_name: &str,
@@ -46,10 +49,12 @@ fn acp_web_tool_disposition(
     let Some(projection) = descriptor.provider_server_tool.as_ref() else {
         return Ok(AcpWebToolDisposition::ExportHostTool);
     };
-    let adapter = awaken_run_executor_acp::acp_cli(acp_cli_id).ok_or_else(|| {
-        crate::HostError::bad_request(format!("unknown ACP adapter `{acp_cli_id}`"))
-    })?;
-    if adapter.realizes_provider_server_tool(projection) {
+    if !policy.contains(acp_cli_id) {
+        return Err(crate::HostError::bad_request(format!(
+            "unknown ACP adapter `{acp_cli_id}`"
+        )));
+    }
+    if policy.realizes_provider_server_tool(acp_cli_id, projection) {
         return Ok(AcpWebToolDisposition::UseAcpBuiltin);
     }
     Err(crate::HostError::bad_request(format!(
@@ -193,8 +198,12 @@ impl crate::host::SharedHost {
         let Some((descriptor, tool)) = configured else {
             return Ok(AcpWebToolRealization::NotConfigured);
         };
-        if acp_web_tool_disposition(acp_cli_id, &descriptor, display_name)?
-            == AcpWebToolDisposition::UseAcpBuiltin
+        if acp_web_tool_disposition(
+            self.acp_adapter_policy()?,
+            acp_cli_id,
+            &descriptor,
+            display_name,
+        )? == AcpWebToolDisposition::UseAcpBuiltin
         {
             tracing::info!(
                 acp_cli = acp_cli_id,
@@ -340,7 +349,13 @@ mod tests {
         // | A3 | incompatible builtin | E3/fail closed |
         let host = awaken_ext_builtin_tools::web_fetch_descriptor();
         assert_eq!(
-            acp_web_tool_disposition("codex", &host, "WebFetch").unwrap(),
+            acp_web_tool_disposition(
+                awaken_run_executor_acp::acp_adapter_policy(),
+                "codex",
+                &host,
+                "WebFetch"
+            )
+            .unwrap(),
             AcpWebToolDisposition::ExportHostTool,
             "A1/E1"
         );
@@ -357,7 +372,13 @@ mod tests {
             let native = awaken_ext_builtin_tools::web_search_descriptor()
                 .with_provider_server_tool(projection);
             assert_eq!(
-                acp_web_tool_disposition(cli, &native, "WebSearch").unwrap(),
+                acp_web_tool_disposition(
+                    awaken_run_executor_acp::acp_adapter_policy(),
+                    cli,
+                    &native,
+                    "WebSearch"
+                )
+                .unwrap(),
                 AcpWebToolDisposition::UseAcpBuiltin,
                 "native search must not also be exported through MCP"
             );
@@ -367,7 +388,13 @@ mod tests {
                 awaken_runtime_contract::resolved::ProviderServerTool::AnthropicWebSearch,
             );
         assert!(
-            acp_web_tool_disposition("codex", &wrong_cli, "WebSearch").is_err(),
+            acp_web_tool_disposition(
+                awaken_run_executor_acp::acp_adapter_policy(),
+                "codex",
+                &wrong_cli,
+                "WebSearch"
+            )
+            .is_err(),
             "an ACP protocol match must not inherit another CLI's builtin"
         );
         for (cli, projection) in [
@@ -389,7 +416,13 @@ mod tests {
             let unverified = awaken_ext_builtin_tools::web_search_descriptor()
                 .with_provider_server_tool(projection);
             assert!(
-                acp_web_tool_disposition(cli, &unverified, "WebSearch").is_err(),
+                acp_web_tool_disposition(
+                    awaken_run_executor_acp::acp_adapter_policy(),
+                    cli,
+                    &unverified,
+                    "WebSearch"
+                )
+                .is_err(),
                 "an ACP builtin without a launch projection must fail closed"
             );
         }
@@ -398,7 +431,12 @@ mod tests {
                 awaken_runtime_contract::resolved::OpenRouterWebFetchParameters::default(),
             ),
         );
-        let error = match acp_web_tool_disposition("codex", &provider, "WebFetch") {
+        let error = match acp_web_tool_disposition(
+            awaken_run_executor_acp::acp_adapter_policy(),
+            "codex",
+            &provider,
+            "WebFetch",
+        ) {
             Ok(_) => panic!("A2 unsupported provider-server placeholder must not be exported"),
             Err(error) => error,
         };

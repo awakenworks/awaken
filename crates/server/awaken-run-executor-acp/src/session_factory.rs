@@ -13,6 +13,14 @@ use awaken_session_environment_contract::{AcpSessionExecution, AcpSessionExecuto
 use crate::AcpRunExecutor;
 
 impl AcpSessionExecutorFactory for AcpRunExecutor {
+    fn adapter_policy(
+        &self,
+    ) -> &dyn awaken_acp_contract::AcpAdapterPolicy<
+        awaken_runtime_contract::resolved::ProviderServerTool,
+    > {
+        crate::acp_adapter_policy()
+    }
+
     fn create(&self, request: AcpSessionExecution) -> Result<Arc<dyn RunAttemptExecutor>, String> {
         if request.attached_tools.is_some() {
             return Err("attached MCP tools require the bound Environment ACP source".into());

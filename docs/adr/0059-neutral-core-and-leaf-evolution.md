@@ -181,8 +181,12 @@ Verified state after the 2026-08-04 cut:
   credential capability and starts the process in the already selected Session
   environment. The static ACP executor implements the same port for trusted
   fixtures. Moving the config-aware resolver into `run-executor-acp` would
-  violate that crate's *config-free* invariant. Other Host ACP catalog and
-  non-ACP process-cleanup callers still require a separate dependency cut.
+  violate that crate's *config-free* invariant. The factory exposes the same
+  executor-owned `AcpCli` policy for Host admission. MCP process cleanup uses
+  one injected `ProcessReaper` port implemented by the existing ACP Supervisor;
+  its TERM/KILL/wait kernel is not copied. Runtime Host has no normal Cargo
+  dependency on `awaken-run-executor-acp`; direct fixture references remain
+  dev-only.
 - **Managed public routers** — already resolved. `files_router`, `models_router`,
   `memory_stores_router`, and `skills_router` are modules of the single
   `awaken-protocol-managed` anti-corruption boundary and consume injected application

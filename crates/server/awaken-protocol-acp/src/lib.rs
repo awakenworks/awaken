@@ -676,6 +676,21 @@ impl ReapFailure {
     }
 }
 
+#[async_trait]
+impl awaken_session_environment_contract::ProcessReaper for Supervisor {
+    async fn reap(
+        &self,
+        process: &dyn pc::ProcessHandle,
+        grace: std::time::Duration,
+    ) -> Result<bool, String> {
+        // This is a projection of the existing Supervisor kernel, not a second
+        // signal ladder. Keep Host MCP diagnostics byte-for-byte at this seam.
+        Supervisor::reap(process, grace)
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
 impl Supervisor {
     /// Settle a process after the protocol has already produced a terminal fact.
     ///
@@ -1298,12 +1313,30 @@ mod tests {
 
     #[tokio::test]
     async fn reap_stops_at_term_when_the_agent_exits() {
+        // Causes: C1 the same process owner observes exit after TERM; C2 the
+        // caller enters directly or through the Session Environment SPI.
+        // Effects: E1 both report no KILL escalation and exactly one TERM.
+        // Decision table: R1 C1+direct -> E1; R2 C1+port -> E1.
         let (process, signalled) = FakeProcess::new(true); // exits right after SIGTERM
         let killed = Supervisor::reap(&process, std::time::Duration::from_millis(50))
             .await
             .unwrap();
         assert!(!killed);
         assert_eq!(signalled.lock().unwrap().as_slice(), &[pc::Signal::Term]);
+        let (port_process, port_signalled) = FakeProcess::new(true);
+        let port_killed = awaken_session_environment_contract::ProcessReaper::reap(
+            &Supervisor,
+            &port_process,
+            std::time::Duration::from_millis(50),
+        )
+        .await
+        .unwrap();
+        assert_eq!(port_killed, killed, "R2 outcome");
+        assert_eq!(
+            port_signalled.lock().unwrap().as_slice(),
+            &[pc::Signal::Term],
+            "R2 signals"
+        );
     }
 
     #[tokio::test]
@@ -1430,9 +1463,9 @@ mod tests {
 
     #[tokio::test]
     async fn reap_total_deadline_also_bounds_a_stuck_provider_poll() {
-        // Causes: C1 provider poll never returns; C2 caller needs ACP or typed
+        // Causes: C1 provider poll never returns; C2 caller needs ACP, port, or typed
         // Sandbox classification; C3 provider poll returns Transport. Effects:
-        // E1 both bound the same operation; E2 ACP keeps its IO wording; E3
+        // E1 all bound the same operation; E2 ACP and port keep identical IO wording; E3
         // Sandbox returns Timeout for C1; E4 C3 keeps the original Transport.
         // R1 C1+C2 enters one deadline and never reports physical exit;
         // R2 C3 returns the provider class before signalling.
@@ -1461,6 +1494,14 @@ mod tests {
             .await
             .expect_err("the total cleanup deadline must cover provider polling");
         assert!(error.to_string().contains("total deadline"));
+        let port_error = awaken_session_environment_contract::ProcessReaper::reap(
+            &Supervisor,
+            &StuckPoll,
+            std::time::Duration::from_millis(5),
+        )
+        .await
+        .expect_err("the injected port cannot claim an unobserved exit");
+        assert_eq!(port_error, error.to_string(), "R1 original Host wording");
         let typed = Supervisor::reap_process(&StuckPoll, std::time::Duration::from_millis(5))
             .await
             .expect_err("the typed caller also has a bounded poll");
