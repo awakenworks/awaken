@@ -43,6 +43,7 @@ import {
   spawnServer,
   stopServer,
   waitForPort,
+  waitForRetainedUnknownExecution,
   waitForSessionEventReceipt,
   pass,
 } from './harness.mjs';
@@ -483,11 +484,6 @@ async function main() {
     // | B5   | N  | N  | -  | Y  | Y  | 200 pool member frozen                 |
     // | B6   | N  | N  | -  | -  | Y  | 200 credential-free direct candidate  |
     // | B7   | N  | N  | -  | -  | N  | 409 qualified endpoint required       |
-    const directTarget = {
-      model_id: 'direct-publication-e2e',
-      provider_id: 'openai',
-      protocol_endpoint_id: 'openai.open_ai_chat',
-    };
     result = await req(base, 'POST', '/v1/config/provider-connections', cachedToken, {
       body: {
         idempotency_key: 'cloud-iam-direct-primary',
@@ -501,6 +497,13 @@ async function main() {
       },
     });
     assert.equal(result.status, 201, JSON.stringify(result.body));
+    // C5: publication must use the workspace-scoped endpoint returned by the
+    // successful discovery, or the binding fails before B2-B6 reach access.
+    const directTarget = {
+      model_id: 'direct-publication-e2e',
+      provider_id: 'openai',
+      protocol_endpoint_id: result.body.endpoint.id,
+    };
     const directCredentialId = result.body.credential.id;
     for (const [poolId, members] of [
       ['publication-empty-pool', []],
@@ -682,7 +685,7 @@ async function main() {
 
     const client = new Anthropic({ apiKey: cachedToken, baseURL: base });
     const betas = ['managed-agents-2026-04-01'];
-    const runBrokeredTurn = async (content, observationOptions) => {
+    const runBrokeredTurn = async (content, observationOptions = {}) => {
       const isolated = await client.beta.sessions.create({
         agent: brokeredAgent,
         environment_id: 'env_local',
@@ -692,6 +695,20 @@ async function main() {
         events: [{ type: 'user.message', content }],
         betas,
       });
+      const { retainedUnknown = false, ...waitOptions } = observationOptions;
+      if (retainedUnknown) {
+        // G2: complete HTTP response with invalid JSON has no proved model
+        // result. The existing unknown-execution oracle owns the pending input,
+        // public terminal error and occupied physical slot decision table.
+        return (await waitForRetainedUnknownExecution(
+          client,
+          isolated.id,
+          receipt.data[0]?.id,
+          betas,
+          path.join(directory, 'dispatch.db'),
+          'brokered Cloud invalid response retains unknown execution',
+        )).events;
+      }
       // T3/T6-T8 receipt rule: C1=exact brokered input; C2=committed idle or
       // session.error. E1=full scenario history. Constraint: grant/Gateway
       // assertions remain caller-owned. C1&&!C2=>observe; C1+C2=>E1.
@@ -703,7 +720,7 @@ async function main() {
         ({ delta }) => delta.some((event) => event.type === 'session.error')
           || delta.some((event) => event.type === 'session.status_idle'),
         'brokered Cloud turn reaches its terminal public effect',
-        observationOptions,
+        waitOptions,
       )).events;
     };
     const session = await client.beta.sessions.create({
@@ -796,7 +813,7 @@ async function main() {
     // Grant/Gateway cause graph: C1 grant succeeds; C2 error body is a known
     // Cloud code; C3 an unknown code has a discriminating HTTP status; C4 the
     // Gateway returns HTTP success; C5 its native payload is structurally valid;
-    // C6 an unknown HTTP 429 carries Retry-After=11s through two bounded retries.
+    // C6 an unknown HTTP 429 carries Retry-After=11s into one recovered retry.
     //
     // | Rule | C1 | C2 | C3 | C4 | C5 | Expected effect                         |
     // | E1   | N  | auth/account | - | - | - | login-required Session error       |
@@ -807,14 +824,16 @@ async function main() {
     // | E6   | Y  | - | - | N | - | Session error; issued grant still closes    |
     // | E7   | Y  | - | - | Y | N | Session error; issued grant still closes    |
     // | E8   | Y  | - | - | Y | Y | terminal response                           |
-    // E5/C6 rule: the unknown 429 makes exactly three grant attempts, then
-    // commits model_rate_limited_error/exhausted with zero Gateway or close.
-    // Constraint K: the runtime owns both 11s waits. The receipt observer only
-    // reads committed history; its 30s budget is 2*11s plus 8s bounded overhead
-    // and applies solely to C6 (no sleep and no lifecycle-driving fallback).
+    // | E9   | N  | N | 429 | - | - | next grant succeeds, then requires_action |
+    // E5/C6 rule: one unknown 429 is classified as a throttle and the same
+    // logical request retries to a real grant, Gateway call and close.
+    // Constraint K: Runtime owns the backoff and its extended throttle count;
+    // runtime policy tests own exhaustion, and Managed projection tests own the
+    // exhausted error. This observer only reads committed history, with one
+    // 11s provider pause plus bounded dispatch/commit overhead on loaded hosts.
     const UNKNOWN_429_RETRY_AFTER_SECONDS = 11;
-    const UNKNOWN_429_TERMINAL_TIMEOUT_MS =
-      (2 * UNKNOWN_429_RETRY_AFTER_SECONDS * 1_000) + 8_000;
+    const UNKNOWN_429_RECOVERY_TIMEOUT_MS =
+      (UNKNOWN_429_RETRY_AFTER_SECONDS * 1_000) + 39_000;
     const grantErrorRows = [
       [401, 'authentication_required'],
       [409, 'account_selection_required'],
@@ -827,23 +846,18 @@ async function main() {
       [500, 'temporarily_unavailable'],
       [401, 'unknown_authentication_code'],
       [403, 'unknown_entitlement_code'],
-      [429, 'unknown_quota_code', String(UNKNOWN_429_RETRY_AFTER_SECONDS)],
     ];
     for (const [status, code, retryAfter] of grantErrorRows) {
       const gatewayCount = iam.gatewayCalls.length;
-      const createCount = iam.grantCalls.filter((entry) => entry.kind === 'create').length;
       const closeCount = iam.grantCalls.filter((entry) => entry.kind === 'close').length;
       const retryable = code === 'quota_exceeded'
-        || code === 'temporarily_unavailable'
-        || (code === 'unknown_quota_code' && status === 429);
+        || code === 'temporarily_unavailable';
       iam.failGrants(status, code, retryAfter, retryable ? 10 : 1);
       let failedEvents;
       try {
         failedEvents = await runBrokeredTurn([
           { type: 'text', text: `exercise grant rejection ${code}` },
-        ], code === 'unknown_quota_code'
-          ? { timeoutMs: UNKNOWN_429_TERMINAL_TIMEOUT_MS }
-          : undefined);
+        ]);
       } finally {
         iam.clearGrantFailures();
       }
@@ -857,33 +871,47 @@ async function main() {
         closeCount,
         `${code} did not issue a closable grant`,
       );
-      if (code === 'unknown_quota_code') {
-        assert.equal(
-          iam.grantCalls.filter((entry) => entry.kind === 'create').length - createCount,
-          3,
-          'unknown 429 exhausts the initial grant attempt plus exactly two retries',
-        );
-        const terminal = failedEvents.find((event) => event.type === 'session.error');
-        assert.equal(terminal?.error?.type, 'model_rate_limited_error');
-        assert.equal(terminal?.error?.retry_status?.type, 'exhausted');
-      }
     }
     pass('Cloud grant rejection matrix preserves the public error taxonomy before Gateway I/O');
 
-    for (const [label, responseBody, status] of [
-      ['gateway HTTP error', { error: 'gateway_down' }, 503],
-      ['invalid Responses JSON', '{not-json', 200],
+    const recoveredCreates = iam.grantCalls.filter((entry) => entry.kind === 'create').length;
+    const recoveredCloses = iam.grantCalls.filter((entry) => entry.kind === 'close').length;
+    const recoveredGatewayCalls = iam.gatewayCalls.length;
+    iam.failGrants(429, 'unknown_quota_code', String(UNKNOWN_429_RETRY_AFTER_SECONDS));
+    let recoveredEvents;
+    try {
+      recoveredEvents = await runBrokeredTurn([
+        { type: 'text', text: 'exercise one unknown 429 then recover' },
+      ], { timeoutMs: UNKNOWN_429_RECOVERY_TIMEOUT_MS });
+    } finally {
+      iam.clearGrantFailures();
+    }
+    assert.ok(recoveredEvents.some((event) => event.type === 'agent.custom_tool_use'));
+    assert.ok(recoveredEvents.some((event) => event.type === 'session.status_idle'
+      && event.stop_reason?.type === 'requires_action'));
+    assert.ok(!recoveredEvents.some((event) => event.type === 'session.error'));
+    assert.equal(iam.grantCalls.filter((entry) => entry.kind === 'create').length - recoveredCreates, 2);
+    assert.equal(iam.grantCalls.filter((entry) => entry.kind === 'close').length - recoveredCloses, 1);
+    assert.equal(iam.gatewayCalls.length - recoveredGatewayCalls, 1);
+    pass('unknown 429 retries once into a scoped grant and public client action');
+
+    for (const [label, responseBody, status, retainedUnknown] of [
+      ['gateway HTTP error', { error: 'gateway_down' }, 503, false],
+      ['invalid Responses JSON', '{not-json', 200, true],
       ['invalid function arguments', {
         status: 'completed',
         output: [{ type: 'function_call', call_id: 'bad-call', name: 'cloud_echo', arguments: '{' }],
-      }, 200],
+      }, 200, false],
     ]) {
       const createCount = iam.grantCalls.filter((entry) => entry.kind === 'create').length;
       const closeCount = iam.grantCalls.filter((entry) => entry.kind === 'close').length;
       iam.respondNextGateway(responseBody, status, 10);
       let failedEvents;
       try {
-        failedEvents = await runBrokeredTurn([{ type: 'text', text: label }]);
+        failedEvents = await runBrokeredTurn(
+          [{ type: 'text', text: label }],
+          { retainedUnknown },
+        );
       } finally {
         iam.clearGatewayResponses();
       }
