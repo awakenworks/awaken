@@ -41,6 +41,9 @@ use awaken_runtime_contract::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[path = "tests/terminal_pending.rs"]
+mod terminal_pending;
+
 #[test]
 fn fresh_durable_cancel_consults_the_executor_continuation_authority() {
     // Cause/effect decision table: C1=claim is recovered; C2=claim carries a
@@ -562,35 +565,35 @@ fn remote_projection_is_the_single_awaiting_resume_reader() {
     assert_eq!(runtime_reader.resume_ticket(&run_id), Some(ticket), "P2/E3");
 }
 
-#[tokio::test]
-async fn terminal_recovery_rejects_conflicting_committed_identity_before_settlement() {
-    struct ConflictingTerminalView(RunRecord);
+struct TerminalView(RunRecord);
 
-    impl CommittedThreadView for ConflictingTerminalView {
-        fn committed_messages(
-            &self,
-            _thread_id: &ThreadId,
-        ) -> Vec<awaken_agent_contract::agent::message::Message> {
-            Vec::new()
-        }
-
-        fn run(&self, _run_id: &RunId) -> Option<RunRecord> {
-            Some(self.0.clone())
-        }
-
-        fn latest_run(&self, _thread_id: &ThreadId) -> Option<RunRecord> {
-            Some(self.0.clone())
-        }
-
-        fn resume_ticket(&self, _run_id: &RunId) -> Option<ResumeTicket> {
-            None
-        }
-
-        fn open_wait_for_thread(&self, _thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
-            None
-        }
+impl CommittedThreadView for TerminalView {
+    fn committed_messages(
+        &self,
+        _thread_id: &ThreadId,
+    ) -> Vec<awaken_agent_contract::agent::message::Message> {
+        Vec::new()
     }
 
+    fn run(&self, _run_id: &RunId) -> Option<RunRecord> {
+        Some(self.0.clone())
+    }
+
+    fn latest_run(&self, _thread_id: &ThreadId) -> Option<RunRecord> {
+        Some(self.0.clone())
+    }
+
+    fn resume_ticket(&self, _run_id: &RunId) -> Option<ResumeTicket> {
+        None
+    }
+
+    fn open_wait_for_thread(&self, _thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+        None
+    }
+}
+
+#[tokio::test]
+async fn terminal_recovery_rejects_conflicting_committed_identity_before_settlement() {
     // Cause/effect graph: C1 the dispatch claim names Run R and Thread T; C2
     // committed terminal truth reports R vs another Run; C3 it reports T vs
     // another Thread. Effects: E1 exact identity may enter terminal settlement;
@@ -653,7 +656,7 @@ async fn terminal_recovery_rejects_conflicting_committed_identity_before_settlem
         let commit = Arc::new(MemoryCommitCoordinator::new(
             awaken_lease_contract::system_clock(),
         ));
-        let reader: Arc<dyn CommittedThreadView> = Arc::new(ConflictingTerminalView(record));
+        let reader: Arc<dyn CommittedThreadView> = Arc::new(TerminalView(record));
         let worker = DispatchWorker::from_parts(
             Arc::new(Runtime::new()),
             store.clone(),

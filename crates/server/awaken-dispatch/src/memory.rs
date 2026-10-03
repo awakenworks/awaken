@@ -498,7 +498,10 @@ fn claim_exact_with_mode(
                 matches!(row.state, DispatchState::Pending | DispatchState::Awaiting)
                     && row.lease.is_none()
                     && !thread_busy;
-            if row.active_attempt.is_some() || (!quiescent_unleased && !expired_running) {
+            if !retry_deadline_is_due(row, now_ms)
+                || row.active_attempt.is_some()
+                || (!quiescent_unleased && !expired_running)
+            {
                 return Ok(None);
             }
             let previous = expired_running
