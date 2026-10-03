@@ -65,11 +65,11 @@ would reintroduce run resurrection.
 
 ### D5: Commit/settle gaps repair through the same fenced Done path
 
-A quiescent `awaiting` dispatch can survive a historical crash or defect even
-after the matching committed Run is terminal. The same gap can recur if the
+A quiescent `pending` or `awaiting` dispatch can survive a historical crash or
+defect even after the matching committed Run is terminal. The same gap can recur if the
 reconciler crashes after claiming that row but before its `Done` settlement,
 leaving an expired `running` lease. The store-owning Runtime Host periodically
-reads both shapes through its own Thread commit boundary. A Host with a local
+reads these shapes through its own Thread commit boundary. A Host with a local
 execution pool uses that pool's maintenance loop; a coordinator-only Host starts
 one mutually exclusive reconciliation daemon. Database-less Workers do neither.
 Only an exact committed `RunState::Ended` proof permits a special claim of an
@@ -80,7 +80,8 @@ terminal observer redelivery and the D2 completion tombstone.
 
 The dispatch store never accepts or derives Run outcome truth. It only exposes
 the narrowly scoped claim command, preserves the one-running-dispatch-per-Thread
-constraint, and rejects pending, live-leased, dead-lettered, or superseded rows.
+constraint, and rejects a deferred pending row until its persisted retry deadline,
+as well as live-leased, dead-lettered, or superseded rows.
 Reclaiming an expired lease advances the existing epoch and fences the crashed
 owner. The worker checks committed truth both before and after the claim; a stale
 proof restores `Awaiting`. This adds no cleanup table, outcome status, or direct

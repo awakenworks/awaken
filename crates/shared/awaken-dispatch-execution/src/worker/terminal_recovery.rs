@@ -390,10 +390,26 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                 .await?;
             return Ok(None);
         };
-        Ok(self
+        match self
             .settle_projected_terminal(&claimed, terminal, &[])
-            .await?
-            .into_processed())
+            .await
+        {
+            Ok(settled) => Ok(settled.into_processed()),
+            Err(error) if error.is_settlement_observation_pending() => {
+                // The Session observer has not yet accepted the committed
+                // terminal boundary. No Done receipt was written. Release only
+                // this exact mutation claim behind the Pool's existing retry
+                // deadline so a registered Worker can recover it instead of
+                // letting the Coordinator scanner re-own it indefinitely.
+                let claim = RunClaim::from(&claimed.lease);
+                let retry_after_ms =
+                    crate::pool::claim_failure_backoff(claim.epoch).as_millis() as u64;
+                crate::pool::defer_failed_claim(self.store.as_ref(), &claim, retry_after_ms)
+                    .await?;
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub(super) async fn redeliver_terminal_observers(

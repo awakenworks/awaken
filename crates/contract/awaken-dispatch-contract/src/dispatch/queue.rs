@@ -520,8 +520,10 @@ pub trait ControlDispatchQueue: DispatchQueue {
 
     /// Claim one quiescent unleased `pending`/`awaiting` row or expired `running`
     /// lease after the committed Run authority has already proved that the same
-    /// `run_id` is terminal. A `pending` row is the canonical immediate-retry
-    /// shape after a post-commit settlement failure released its mutation claim.
+    /// `run_id` is terminal. A `pending` row is the canonical retry shape after
+    /// a post-commit settlement failure released its mutation claim. If that
+    /// release set a durable retry deadline, terminal recovery observes the
+    /// same deadline as an ordinary claim.
     ///
     /// This is the repair-side entry into the ordinary fenced settlement path:
     /// it never reads or accepts Run outcome truth, never executes the Run, and
@@ -531,7 +533,8 @@ pub trait ControlDispatchQueue: DispatchQueue {
     /// row whose Thread has no running dispatch, or a `running` row whose lease
     /// is strictly expired. Every state requires an empty physical slot: this
     /// maintenance entry cannot execute or observe an occupied predecessor.
-    /// A live lease, occupied, missing, superseded, or dead-lettered row returns `None`.
+    /// A live lease, occupied, not-yet-due, missing, superseded, or dead-lettered
+    /// row returns `None`.
     async fn claim_for_terminal_recovery(
         &self,
         run_id: &RunId,
