@@ -23,12 +23,10 @@
 //!    unauthenticated durable submit/cancel is admitted (and then judged purely on
 //!    payload), identically to an unauthenticated `/v1/sessions` create.
 //!
-//! The durable pool is engaged process-wide for this test binary via
-//! `SESSION_DEPLOYMENT_INGRESS=durable` + an on-disk `SESSION_DEPLOYMENT_STORAGE_DIR` (the sqlite dispatch
-//! queue), mirroring how the durable e2e drivers configure the server. Env is set
-//! exactly once, race-free, through a `LazyLock` every test touches before it
-//! builds a router (the `LazyLock` `Once` synchronizes the single write
-//! happens-before every later env read).
+//! This binary selects one Coordinator-owned SQLite Runtime authority before
+//! building any durable Scenario router, matching the process entry point.
+//! The four test cases serialize their shared dispatch observations through
+//! `GATE`; no environment variable or Host-local fallback selects an owner.
 
 use std::sync::Arc;
 
@@ -39,7 +37,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 use tower::ServiceExt;
 
 /// The durable dispatch queue is one process-shared sqlite file and the
@@ -49,8 +47,14 @@ use tower::ServiceExt;
 /// test submits, so a queue-count delta is attributable to the window's own
 /// operations alone.
 static GATE: Mutex<()> = Mutex::const_new(());
+static AUTHORITY_INSTALLED: OnceCell<()> = OnceCell::const_new();
 
-fn app() -> Router {
+async fn app() -> Router {
+    // Fixture cause/effect table: C1 the typed deployment is durable; C2 the
+    // Coordinator-selected authority is installed once before router assembly;
+    // C3 a later test shares the same process authority. E1 C1+C2 reaches the
+    // admission router; E2 C1+!C2 fails before any HTTP effect; E3 C3 reuses
+    // the installed authority and does not open a competing Host queue.
     let dir = std::env::temp_dir().join(format!("awaken-durable-admission-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create durable storage dir");
     let deployment = DeploymentConfig {
@@ -58,6 +62,18 @@ fn app() -> Router {
         storage_dir: Some(dir),
         ..DeploymentConfig::ephemeral()
     };
+    AUTHORITY_INSTALLED
+        .get_or_init(|| async {
+            let authority = awaken_coordinator::init_scenario_runtime(
+                &deployment,
+                awaken_lease_contract::system_clock(),
+            )
+            .await
+            .expect("select Coordinator-owned durable Scenario Runtime");
+            awaken_scenario_host::install_scenario_runtime_authority(authority)
+                .expect("install the single Scenario Runtime authority");
+        })
+        .await;
     build_router_with_deployment(Arc::new(EchoModel), "echo", deployment)
 }
 
@@ -136,7 +152,7 @@ async fn dispatch_count(app: &Router, thread: &str) -> usize {
 #[tokio::test(flavor = "multi_thread")]
 async fn malformed_durable_submit_is_rejected_4xx_and_enqueues_nothing() {
     let _gate = GATE.lock().await;
-    let app = app();
+    let app = app().await;
     let thread = "admission-malformed-submit";
     let uri = format!("/v1/durable/threads/{thread}/submit_background");
 
@@ -192,7 +208,7 @@ async fn malformed_durable_submit_is_rejected_4xx_and_enqueues_nothing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn malformed_durable_cancel_is_rejected_4xx() {
     let _gate = GATE.lock().await;
-    let app = app();
+    let app = app().await;
     let thread = "admission-malformed-cancel";
     let uri = format!("/v1/durable/threads/{thread}/cancel");
 
@@ -223,7 +239,7 @@ async fn malformed_durable_cancel_is_rejected_4xx() {
 #[tokio::test(flavor = "multi_thread")]
 async fn oversized_durable_submit_is_rejected_by_the_body_limit() {
     let _gate = GATE.lock().await;
-    let app = app();
+    let app = app().await;
     let thread = "admission-oversized";
     let uri = format!("/v1/durable/threads/{thread}/submit_background");
 
@@ -256,7 +272,7 @@ async fn oversized_durable_submit_is_rejected_by_the_body_limit() {
 #[tokio::test(flavor = "multi_thread")]
 async fn durable_plane_shares_its_managed_siblings_open_local_trust_posture() {
     let _gate = GATE.lock().await;
-    let app = app();
+    let app = app().await;
 
     // Sibling baseline: an unauthenticated managed session create is admitted
     // (this plane is open by design — IAM is the separate management router).
