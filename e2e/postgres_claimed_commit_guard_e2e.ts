@@ -130,7 +130,10 @@ async function claimOrCompleteEventually(
   // still held by drained A; C3 B or the terminal scanner next acquires that
   // independent authority. Effects: E1 no premature B claim; E2 B's higher
   // epoch claim OR the exact completion tombstone closes the wait. Rules
-  // C1+C2=>E1, C1+C3=>E2. Five seconds covered only the row lock, not Work.
+  // C1+C2=>E1, C1+C3=>E2. A terminal scanner that claims while the Session
+  // settlement observer is pending defers that exact claim; it cannot keep
+  // renewing an embedded-worker lease and starve B. Five seconds covered only
+  // the row lock, not Work.
   const deadline = Date.now() + timeoutMs;
   let nextHeartbeat = Date.now() + 10_000;
   while (Date.now() <= deadline) {

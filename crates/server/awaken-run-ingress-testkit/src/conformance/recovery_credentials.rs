@@ -239,6 +239,84 @@ async fn caller_owned_run_identity_is_exact(
     );
 }
 
+/// Deferred-terminal recovery decision table. Causes: C1 a quiescent Pending
+/// target has an exact claim whose settlement was deferred; C2 retry deadline is
+/// not due or due; C3 another owner uses ordinary claim or terminal recovery.
+/// Effects: E1 neither path may claim before the deadline; E2 an ordinary
+/// Worker may reclaim at a higher epoch after it; E3 the former owner is fenced.
+/// Constraint: the same persisted retry deadline governs both claim verbs; an
+/// undeferred Pending row remains immediately repairable under T3 below.
+///
+/// | Rule | C1 | C2 | C3 | Effect |
+/// |---|---|---|---|---|
+/// | D1 | yes | not due | terminal/ordinary | E1 |
+/// | D2 | yes | due | ordinary | E2 |
+/// | D3 | yes | due, B claimed | former owner | E3 |
+async fn deferred_pending_terminal_recovery_obeys_retry_deadline(
+    store: &dyn ControlDispatchQueue,
+    ns: &str,
+    clock: &dyn ConformanceClock,
+) {
+    clock.set(120_000);
+    let request = dispatch(ns, "deferred-terminal", "deferred-terminal-thread");
+    let run_id = request.run_id().clone();
+    store.enqueue(request).await.expect("D1 enqueue");
+    let first = store
+        .claim_run(&run_id, "deferred-first", LEASE_MS, &Default::default())
+        .await
+        .expect("D1 claim")
+        .expect("D1 initial claim");
+    let old_epoch = first.lease.epoch;
+    assert_eq!(
+        store
+            .defer_claim(&RunClaim::from(&first.lease), 1_000)
+            .await
+            .expect("D1 defer exact claim"),
+        SettleOutcome::Applied
+    );
+    assert!(
+        store
+            .claim_for_terminal_recovery(&run_id, "deferred-scanner", LEASE_MS)
+            .await
+            .expect("D1 terminal claim")
+            .is_none(),
+        "D1/E1 scanner must honor the same retry deadline"
+    );
+    assert!(
+        store
+            .claim_run(&run_id, "deferred-second", LEASE_MS, &Default::default())
+            .await
+            .expect("D1 ordinary claim")
+            .is_none(),
+        "D1/E1 Worker must honor retry deadline"
+    );
+    clock
+        .advance_past(first.lease.expires_ms.saturating_add(1_000))
+        .await;
+    let second = store
+        .claim_run(&run_id, "deferred-second", LEASE_MS, &Default::default())
+        .await
+        .expect("D2 ordinary claim")
+        .expect("D2 retry is due");
+    assert!(second.lease.epoch > old_epoch, "D2/E2 higher epoch");
+    assert_eq!(
+        store
+            .settle(&run_id, old_epoch, DispatchOutcome::Done, &[])
+            .await
+            .expect("D3 stale settlement"),
+        SettleOutcome::Fenced,
+        "D3/E3 former owner remains fenced"
+    );
+    assert_eq!(
+        store
+            .settle(&run_id, second.lease.epoch, DispatchOutcome::Done, &[])
+            .await
+            .expect("D2 current settlement"),
+        SettleOutcome::Applied,
+        "D2/E2 current claim can complete"
+    );
+}
+
 /// Committed-terminal recovery cause/effect graph. Causes: C1 the target is a
 /// quiescent unleased Pending or Awaiting row; C2 a distinct fresh peer is
 /// Pending; C3 a distinct peer is Running; C4 the target has a live repair lease;

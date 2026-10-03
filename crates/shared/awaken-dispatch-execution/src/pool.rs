@@ -1229,7 +1229,7 @@ async fn claim_and_drive<S: ControlDispatch + 'static>(
     Ok(true)
 }
 
-async fn defer_failed_claim<S: ControlDispatch + 'static>(
+pub(crate) async fn defer_failed_claim<S: ControlDispatch + 'static>(
     store: &S,
     claim: &crate::RunClaim,
     retry_after_ms: u64,

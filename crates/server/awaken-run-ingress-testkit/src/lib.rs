@@ -404,6 +404,7 @@ pub async fn assert_dispatch_conformance_with_clock<S: ControlDispatch>(
     completion_is_atomic_and_prevents_resurrection(store, namespace, capabilities, clock).await;
     if capabilities.completion_events {
         committed_terminal_recovery_reuses_fenced_settlement(store, namespace, clock).await;
+        deferred_pending_terminal_recovery_obeys_retry_deadline(store, namespace, clock).await;
     }
     // This rule intentionally leaves 25 distinct unarchived child Threads as its
     // postcondition, so run it after every conformance rule that broadly claims

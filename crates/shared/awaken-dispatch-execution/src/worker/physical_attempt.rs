@@ -141,11 +141,9 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                 // clears a prior deadline; failed cancellation retries do not.
                 let retry_after_ms =
                     crate::pool::claim_failure_backoff(claim.epoch).as_millis() as u64;
-                match self.store.defer_claim(&claim, retry_after_ms).await? {
-                    SettleOutcome::Applied | SettleOutcome::Fenced => {
-                        return Ok(PhysicalAttemptOutcome::Deferred);
-                    }
-                }
+                crate::pool::defer_failed_claim(self.store.as_ref(), &claim, retry_after_ms)
+                    .await?;
+                return Ok(PhysicalAttemptOutcome::Deferred);
             }
             AttemptAdmission::Fenced => {
                 return Err(Error::Execution(

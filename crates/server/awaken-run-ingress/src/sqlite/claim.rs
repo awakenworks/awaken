@@ -149,7 +149,9 @@ pub(super) fn claim_exact_transaction_with_mode(
                  ((d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until <= ?2) \
                  OR (d.status IN ('pending', 'awaiting') \
                  AND d.lease_owner IS NULL AND d.lease_until IS NULL \
-                 AND {no_running_peer})) AND ?3 IS NULL"
+                 AND {no_running_peer})) \
+                 AND (d.retry_not_before IS NULL OR d.retry_not_before <= ?2) \
+                 AND ?3 IS NULL"
             )
         }
         ExactClaimMode::RetryExhausted { .. } => {
