@@ -17,7 +17,7 @@ import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import Anthropic from '@anthropic-ai/sdk';
+import Anthropic, { toFile } from '@anthropic-ai/sdk';
 // @ts-expect-error shared JavaScript harness intentionally has no declarations.
 import { childDirectories, onlyChildDirectory, pass, spawnServer, stopServer, waitForPort, waitForSessionEventReceipt, waitForValue } from './harness.mjs';
 // @ts-expect-error shared JavaScript fixture intentionally has no declarations.
@@ -140,7 +140,9 @@ async function json(method: string, route: string, body?: unknown): Promise<any>
   return value ? JSON.parse(value) : undefined;
 }
 
-async function main(): Promise<void> {
+export async function runRemoteWorkerScenario(
+  { resourceOnly = false }: { resourceOnly?: boolean } = {},
+): Promise<void> {
   assert.ok(['local', 'namespace', 'docker', 'podman'].includes(TIER), `supported remote Worker tier: ${TIER}`);
   if (TIER === 'namespace' && !requireOrSkipBwrap()) return;
   if (!containerAvailable()) {
@@ -201,89 +203,160 @@ async function main(): Promise<void> {
     const calc = { name: 'calc', type: 'url' as const, url: fixture.url };
     const initialManagedContainers = managedContainerIds();
 
-    const brain = await client.beta.sessions.create({
-      agent: alwaysAllowMcpAgent('assistant', [calc]),
-      environment_id: environment.id,
-      betas: BETAS,
-    });
-    try {
-      var brainObservation = await sendAndObserveDispatch(
-        client,
-        brain.id,
-        'brain',
+    if (!resourceOnly) {
+      const brain = await client.beta.sessions.create({
+        agent: alwaysAllowMcpAgent('assistant', [calc]),
+        environment_id: environment.id,
+        betas: BETAS,
+      });
+      try {
+        var brainObservation = await sendAndObserveDispatch(
+          client,
+          brain.id,
+          'brain',
+          false,
+          ({ delta }) => delta.some(
+            (event) => event.type === 'agent.mcp_tool_use' && event.name === 'mcp__calc__add',
+          ) && delta.some((event) => event.type === 'session.status_idle'),
+          `${RULES.brain} exact receipt reaches MCP and idle`,
+        );
+      } catch (error) {
+        throw new Error(`${error}\ndispatch=${JSON.stringify(await dispatch(brain.id))}\nworker=${workerOutput}`);
+      }
+      const brainDispatch = brainObservation.dispatch;
+      const brainEvents = brainObservation.events;
+      assert.ok(
+        brainEvents.some((event) => event.type === 'agent.mcp_tool_use' && event.name === 'mcp__calc__add'),
+        `${RULES.brain} remote Worker executes MCP in Brain: ${JSON.stringify(brainEvents)}\n${workerOutput}`,
+      );
+      assert.equal(brainDispatch.sandbox_bound, false, `${RULES.brain} durable dispatch has no Sandbox binding`);
+      assert.equal(
+        CONTAINER
+          ? [...managedContainerIds()].some((id) => !initialManagedContainers.has(id))
+          : childDirectories(path.join(workerStorage, 'sandboxes')).length > 0,
         false,
-        ({ delta }) => delta.some(
-          (event) => event.type === 'agent.mcp_tool_use' && event.name === 'mcp__calc__add',
-        ) && delta.some((event) => event.type === 'session.status_idle'),
-        `${RULES.brain} exact receipt reaches MCP and idle`,
+        `${RULES.brain} creates no Worker Sandbox`,
       );
-    } catch (error) {
-      throw new Error(`${error}\ndispatch=${JSON.stringify(await dispatch(brain.id))}\nworker=${workerOutput}`);
-    }
-    const brainDispatch = brainObservation.dispatch;
-    const brainEvents = brainObservation.events;
-    assert.ok(
-      brainEvents.some((event) => event.type === 'agent.mcp_tool_use' && event.name === 'mcp__calc__add'),
-      `${RULES.brain} remote Worker executes MCP in Brain: ${JSON.stringify(brainEvents)}\n${workerOutput}`,
-    );
-    assert.equal(brainDispatch.sandbox_bound, false, `${RULES.brain} durable dispatch has no Sandbox binding`);
-    assert.equal(
-      CONTAINER
-        ? [...managedContainerIds()].some((id) => !initialManagedContainers.has(id))
-        : childDirectories(path.join(workerStorage, 'sandboxes')).length > 0,
-      false,
-      `${RULES.brain} creates no Worker Sandbox`,
-    );
-    pass(`${RULES.brain} ${TIER} remote Worker executes dynamic MCP without a Sandbox`);
+      pass(`${RULES.brain} ${TIER} remote Worker executes dynamic MCP without a Sandbox`);
 
-    const hand = await client.beta.sessions.create({
-      agent: 'assistant',
-      environment_id: environment.id,
-      betas: BETAS,
-    });
-    try {
-      var handObservation = await sendAndObserveDispatch(
-        client,
-        hand.id,
-        'hand',
-        true,
-        ({ delta }) => delta.some(
-          (event) => event.type === 'agent.tool_result'
-            && !JSON.stringify(event.content).includes('sandbox executor unavailable'),
-        ) && delta.some((event) => event.type === 'session.status_idle'),
-        `${RULES.hand} exact receipt reaches Hand result and idle`,
+      const hand = await client.beta.sessions.create({
+        agent: 'assistant',
+        environment_id: environment.id,
+        betas: BETAS,
+      });
+      try {
+        var handObservation = await sendAndObserveDispatch(
+          client,
+          hand.id,
+          'hand',
+          true,
+          ({ delta }) => delta.some(
+            (event) => event.type === 'agent.tool_result'
+              && !JSON.stringify(event.content).includes('sandbox executor unavailable'),
+          ) && delta.some((event) => event.type === 'session.status_idle'),
+          `${RULES.hand} exact receipt reaches Hand result and idle`,
+        );
+      } catch (error) {
+        throw new Error(`${error}\ndispatch=${JSON.stringify(await dispatch(hand.id))}\nworker=${workerOutput}`);
+      }
+      const handDispatch = handObservation.dispatch;
+      const handEvents = handObservation.events;
+      assert.ok(
+        handEvents.some((event) => event.type === 'agent.tool_use' && event.name === 'read'),
+        `${RULES.hand} remote Hand call is visible: ${JSON.stringify(handEvents)}\n${workerOutput}`,
       );
-    } catch (error) {
-      throw new Error(`${error}\ndispatch=${JSON.stringify(await dispatch(hand.id))}\nworker=${workerOutput}`);
-    }
-    const handDispatch = handObservation.dispatch;
-    const handEvents = handObservation.events;
-    assert.ok(
-      handEvents.some((event) => event.type === 'agent.tool_use' && event.name === 'read'),
-      `${RULES.hand} remote Hand call is visible: ${JSON.stringify(handEvents)}\n${workerOutput}`,
-    );
-    assert.ok(
-      handEvents.some((event) => event.type === 'agent.tool_result'
-        && !JSON.stringify(event.content).includes('sandbox executor unavailable')),
-      `${RULES.hand} remote Hand placement succeeds: ${JSON.stringify(handEvents)}\n${workerOutput}`,
-    );
-    assert.equal(handDispatch.sandbox_bound, true, `${RULES.hand} Control persists the Worker-created Sandbox binding`);
-    if (CONTAINER) {
-      const created = [...managedContainerIds()].filter((id) => !initialManagedContainers.has(id));
-      assert.equal(created.length, 1, `${RULES.hand} one managed Sandbox lives on remote Worker`);
-    } else {
-      onlyChildDirectory(
-        path.join(workerStorage, 'sandboxes'),
-        `${RULES.hand} one opaque Sandbox lives on the remote Worker`,
+      assert.ok(
+        handEvents.some((event) => event.type === 'agent.tool_result'
+          && !JSON.stringify(event.content).includes('sandbox executor unavailable')),
+        `${RULES.hand} remote Hand placement succeeds: ${JSON.stringify(handEvents)}\n${workerOutput}`,
       );
+      assert.equal(handDispatch.sandbox_bound, true, `${RULES.hand} Control persists the Worker-created Sandbox binding`);
+      if (CONTAINER) {
+        const created = [...managedContainerIds()].filter((id) => !initialManagedContainers.has(id));
+        assert.equal(created.length, 1, `${RULES.hand} one managed Sandbox lives on remote Worker`);
+      } else {
+        onlyChildDirectory(
+          path.join(workerStorage, 'sandboxes'),
+          `${RULES.hand} one opaque Sandbox lives on the remote Worker`,
+        );
+      }
+      assert.deepEqual(
+        childDirectories(path.join(controlStorage, 'sandboxes')),
+        [],
+        'coordinator created no Sandbox',
+      );
+      pass(`${RULES.hand} first Hand tool lazily materializes the ${TIER} Sandbox on the remote Worker`);
     }
-    assert.deepEqual(
-      childDirectories(path.join(controlStorage, 'sandboxes')),
-      [],
-      'coordinator created no Sandbox',
-    );
-    pass(`${RULES.hand} first Hand tool lazily materializes the ${TIER} Sandbox on the remote Worker`);
-    console.log(`E2E PASS: remote Worker Hand/Brain lazy Sandbox matrix (${TIER}).`);
+    if (resourceOnly && CONTAINER) {
+      // Resource decision table: R1 Control freezes one File, live MemoryStore,
+      // and binary Skill on a new Session; R2 the remote Worker claims that
+      // exact Work and mounts all three into its own container; R3 the Hand
+      // reads the File. R1+R2+R3 => one new Worker container, the exact File
+      // tool result, current Memory bytes, and exact Skill asset. The Coordinator
+      // creates no Sandbox and the Worker retains no node-local Resource authority.
+      const fileBytes = Buffer.from('REMOTE-WORKER-FILE-OK');
+      const resourceFile = await client.beta.files.upload({
+        file: await toFile(fileBytes, 'remote-worker.txt'),
+        betas: [...BETAS, 'files-api-2025-04-14'],
+      });
+      const memoryName = `remote-worker-memory-${process.pid}`;
+      const memoryHeaders = { 'anthropic-beta': 'agent-memory-2026-07-22' };
+      const memory = await client.post('/v1/memory_stores', {
+        body: { name: memoryName }, headers: memoryHeaders,
+      }) as { id: string };
+      await client.post(`/v1/memory_stores/${memory.id}/memories`, {
+        body: { path: '/fact.md', content: 'REMOTE-WORKER-MEMORY-OK' },
+        headers: memoryHeaders,
+      });
+      const skillBytes = Buffer.from([0, 159, 146, 150, 255, 13, 0, 10]);
+      const skill = await client.beta.skills.create({
+        files: [
+          await toFile(Buffer.from('---\nname: remote-resource\ndescription: remote Resource proof\nenvironment: filesystem\n---\nRead the asset.'), 'SKILL.md'),
+          await toFile(skillBytes, 'assets/data.bin'),
+        ],
+        betas: ['skills-2025-10-02'],
+      });
+      const beforeResources = managedContainerIds();
+      const resourceSession = await client.beta.sessions.create({
+        agent: {
+          id: 'assistant',
+          type: 'agent_with_overrides',
+          skills: [{ type: 'custom', skill_id: skill.id, version: '1' }],
+        },
+        environment_id: environment.id,
+        resources: [
+          { type: 'file', file_id: resourceFile.id, mount_path: '/workspace/missing-remote-hand.txt' },
+          { type: 'memory_store', memory_store_id: memory.id },
+        ],
+        betas: BETAS,
+      });
+      const resourceObservation = await sendAndObserveDispatch(
+        client, resourceSession.id, 'resource-file', true,
+        ({ delta }) => delta.some((event) => event.type === 'agent.tool_result'
+          && JSON.stringify(event.content).includes(fileBytes.toString()))
+          && delta.some((event) => event.type === 'session.status_idle'),
+        'remote Worker reads the Control-frozen File and reaches idle',
+      );
+      assert.ok(resourceObservation.events.some((event) =>
+        event.type === 'agent.tool_result' && JSON.stringify(event.content).includes(fileBytes.toString())));
+      const resourceContainers = [...managedContainerIds()].filter((id) => !beforeResources.has(id));
+      assert.equal(resourceContainers.length, 1, 'one resource Session container belongs to the Worker');
+      assert.equal(execFileSync(TIER, ['exec', resourceContainers[0], 'cat',
+        `/mnt/memory/${memoryName}/fact.md`], { encoding: 'utf8' }), 'REMOTE-WORKER-MEMORY-OK');
+      assert.deepEqual(execFileSync(TIER, ['exec', resourceContainers[0], 'cat',
+        `/workspace/.skills/${skill.id}/assets/data.bin`]), skillBytes,
+      'remote Worker materializes the exact binary Skill asset');
+      for (const localAuthority of ['files.db', 'memory_fs.db', 'resources.db', 'skills']) {
+        assert.equal(fs.existsSync(path.join(workerStorage, localAuthority)), false,
+          `Worker must read ${localAuthority} from Control, not node-local Resource truth`);
+      }
+      assert.deepEqual(childDirectories(path.join(controlStorage, 'sandboxes')), [],
+        'Coordinator remains free of resource Sandbox state');
+      pass(`${TIER} remote Worker materializes Control-frozen File, Skill, and current Memory content`);
+    }
+    console.log(resourceOnly
+      ? `E2E PASS: remote Worker Control-frozen Resource manifest (${TIER}).`
+      : `E2E PASS: remote Worker Hand/Brain lazy Sandbox matrix (${TIER}).`);
   } finally {
     if (worker) {
       // The Worker is a long-lived poller and does not treat stdin EOF as a
@@ -297,7 +370,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error('E2E FAIL:', error);
-  process.exitCode = 1;
-});
+if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+  runRemoteWorkerScenario().catch((error) => {
+    console.error('E2E FAIL:', error);
+    process.exitCode = 1;
+  });
+}

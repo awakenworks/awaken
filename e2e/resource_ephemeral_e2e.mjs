@@ -180,9 +180,12 @@ async function main() {
       path: '/notes/a.md', content: 'duplicate',
     });
     assert.equal(duplicateMemory.status, 409, JSON.stringify(duplicateMemory.body));
-    await json('POST', WORKSPACE, `memory_stores/${store}/memories`, {
+    const displaced = await json('POST', WORKSPACE, `memory_stores/${store}/memories`, {
       path: '/notes/b.md', content: 'displaced',
     });
+    assert.equal(displaced.status, 200);
+    assert.notEqual(displaced.body.content_sha256, first.body.content_sha256,
+      'two different durable heads provide a real stale digest');
     await json('POST', WORKSPACE, `memory_stores/${store}/memories`, {
       path: '/root.md', content: 'root',
     });
@@ -209,11 +212,21 @@ async function main() {
       versionsBeforeRejectedUpdate.body.data.length,
       'invalid target path rolls back content and history',
     );
+    // Memory precondition decision table: M1 malformed digest -> 400 before
+    // mutation; M2 valid digest of another head + different target -> 409;
+    // M3 old valid digest + already-current content/path -> idempotent 200.
+    const malformed = await json(
+      'POST', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`, {
+        content: 'alpha', path: '/notes/stale-move.md',
+        precondition: { type: 'content_sha256', content_sha256: 'stale' },
+      },
+    );
+    assert.equal(malformed.status, 400, JSON.stringify(malformed.body));
     const staleMove = await json(
       'POST', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`, {
         content: 'alpha',
         path: '/notes/stale-move.md',
-        precondition: { type: 'content_sha256', content_sha256: 'stale' },
+        precondition: { type: 'content_sha256', content_sha256: displaced.body.content_sha256 },
       },
     );
     assert.equal(staleMove.status, 409, JSON.stringify(staleMove.body));
@@ -244,7 +257,7 @@ async function main() {
       'rename-replace appends displaced delete plus one combined head update',
     );
     const idempotent = await json('POST', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`, {
-      content: 'beta', precondition: { type: 'content_sha256', content_sha256: 'stale' },
+      content: 'beta', precondition: { type: 'content_sha256', content_sha256: first.body.content_sha256 },
     });
     assert.equal(idempotent.status, 200);
     assert.equal(idempotent.body.memory_version_id, updated.body.memory_version_id);

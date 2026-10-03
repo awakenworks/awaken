@@ -128,7 +128,6 @@
       "e2e/resource_scope_boundary_e2e.mjs": 1,
       "e2e/stage_change_coverage_e2e.ts": 1,
       "e2e/trace_backends_e2e.mjs": 1,
-      "e2e/worker_resource_manifest_e2e.ts": 2,
       "web/e2e/assistant-real.spec.ts": 3,
       "web/e2e/real-llm.spec.ts": 1,
       "web/e2e/state-machine-real.spec.ts": 1,

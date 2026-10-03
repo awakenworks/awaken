@@ -135,6 +135,24 @@ async function main() {
     const oldUpdate = 'old update value';
     const already = 'already committed value';
     const updateHead = await createMemory(store.id, '/update.md', oldUpdate);
+    // The SDK exposes a content digest, but the repository CAS authority is
+    // the complete MemoryGeneration. Read that one head from the durable store
+    // before constructing the test-owned post-extraction crash snapshots.
+    const [updateRow] = sqliteRows(
+      path.join(STORE_DIR, 'memory_fs.db'),
+      'SELECT id, version, sha FROM memory_store_memories WHERE store_id = ? AND path = ?',
+      store.id, '/update.md',
+    );
+    assert.ok(updateRow, 'the SDK-created Memory has one durable head');
+    assert.equal(updateRow.sha, updateHead.content_sha256,
+      'the SDK digest reflects that exact durable head');
+    assert.ok(Number.isSafeInteger(Number(updateRow.version)) && Number(updateRow.version) > 0,
+      'the head version is representable in this E2E fixture');
+    const observedUpdateGeneration = {
+      memory_id: updateRow.id,
+      version: Number(updateRow.version),
+      content_sha256: updateRow.sha,
+    };
     await createMemory(store.id, '/already.md', already);
     const session = await client.beta.sessions.create({
       agent: 'assistant',
@@ -181,19 +199,19 @@ async function main() {
       {
         path: '/created.md',
         content: createContent,
-        observed_sha256: null,
+        observed_generation: null,
         target_sha256: sha256(createContent),
       },
       {
         path: '/update.md',
         content: updateContent,
-        observed_sha256: updateHead.content_sha256,
+        observed_generation: observedUpdateGeneration,
         target_sha256: sha256(updateContent),
       },
       {
         path: '/already.md',
         content: already,
-        observed_sha256: 'unused-after-idempotency-match',
+        observed_generation: null,
         target_sha256: sha256(already),
       },
     ];
@@ -240,7 +258,10 @@ async function main() {
       mutations: [{
         path: '/update.md',
         content: conflictContent,
-        observed_sha256: 'stale-observed-sha256',
+        observed_generation: {
+          ...observedUpdateGeneration,
+          content_sha256: '0'.repeat(64),
+        },
         target_sha256: sha256(conflictContent),
       }],
       receipt: null,
@@ -312,8 +333,12 @@ async function main() {
       'staged extraction intents to reach terminal states',
     );
     const rows = new Map(extractionRows(database).map((row) => [row.intent.intent_id, row.intent]));
-    assert.equal(rows.get(extracted.intent_id).status, 'completed');
-    assert.equal(rows.get(stored.intent_id).status, 'completed');
+    const extractedResult = rows.get(extracted.intent_id);
+    const storedResult = rows.get(stored.intent_id);
+    assert.equal(extractedResult.status, 'completed',
+      JSON.stringify({ attempts: extractedResult.attempts, error: extractedResult.last_error }));
+    assert.equal(storedResult.status, 'completed',
+      JSON.stringify({ attempts: storedResult.attempts, error: storedResult.last_error }));
     assert.equal(rows.get(conflict.intent_id).status, 'terminal_failed');
     assert.equal(rows.get(conflict.intent_id).attempts, 5);
     assert.match(rows.get(conflict.intent_id).last_error, /changed after extraction planning/u);

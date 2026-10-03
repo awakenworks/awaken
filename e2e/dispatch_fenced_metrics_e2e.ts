@@ -1,7 +1,8 @@
 // A live stale-attempt race through the durable API. Attempt A remains inside a
-// real provider call while its lease is expired and recovered; attempt B commits
-// the run, then A returns and its settlement is fenced. The process OTLP pipeline
-// must export the dedicated fenced counter.
+// real provider call while its lease is expired and recovered. B receives a
+// higher claim epoch but cannot replay A's unknown model effect; A's late
+// commit is fenced. A returned A slot may close, while B's failed entry keeps
+// its own slot occupied. The process OTLP pipeline exports both counters.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -63,19 +64,29 @@ async function main() {
     // Fencing cause graph and decision table:
     // C1 attempt A is running; C2 its lease expires; C3 a replacement claims the
     // next epoch; C4 attempt A returns late. C1+C2+C3+C4 => the old settlement is
-    // rejected and awaken.dispatch.commits.fenced is exported.
+    // rejected and both awaken.dispatch.runs.recovered and
+    // awaken.dispatch.commits.fenced are exported by this same process.
     //
     // | Rule | C1 | C2 | C3 | C4 | Expected |
     // |---|---|---|---|---|---|
     // | F1 | T | F | F | T | ordinary attempt A commit |
-    // | F2 | T | T | T | F | attempt B owns current epoch |
-    // | F3 | T | T | T | T | B commits; A fenced; metric emitted |
+    // | F2 | T | T | T | F | B owns a higher epoch but cannot replay A |
+    // | F3 | T | T | T | T | A fenced; B cannot replay; both metrics emitted |
     //
     // Node's in-process SQLite keeps lease-boundary control portable and avoids
     // making an external sqlite3 executable part of the E2E environment contract.
     const connection = new DatabaseSync(database);
+    let firstEpoch: number;
+    let runId: string;
     try {
       connection.exec('PRAGMA busy_timeout = 10000');
+      const first = connection.prepare(
+        "SELECT run_id, lease_epoch, active_attempt_epoch FROM runtime_dispatch WHERE status = 'running'",
+      ).get() as { run_id: string; lease_epoch: number; active_attempt_epoch: number | null };
+      assert.equal(first.active_attempt_epoch, first.lease_epoch,
+        'F1 current physical attempt entered before lease expiry');
+      firstEpoch = first.lease_epoch;
+      runId = first.run_id;
       connection.exec("UPDATE runtime_dispatch SET lease_until = 0 WHERE status = 'running'");
     } finally {
       connection.close();
@@ -90,24 +101,39 @@ async function main() {
       `one expired dispatch cannot produce multiple reconcile winners: ${recoveryBody}`,
     );
 
-    // The process-level pool and the operator reconcile endpoint are deliberately
-    // allowed to race for the same expired lease. Either may win the epoch bump;
-    // an empty response therefore means the pool already claimed attempt B, not
-    // that recovery failed. The externally observable proof is the second provider
-    // attempt followed by a fenced settlement from attempt A.
-    await waitUntil('replacement attempt B to call the provider', () => upstream.received >= 2);
+    // The process-level pool and operator reconcile may race for the same
+    // expired lease. The durable row, not response cardinality, proves B's
+    // higher epoch and retained execution exclusion. A's slot may close on its
+    // actual return, so B may own the occupied slot after its refused entry.
+    await waitUntil('replacement claim with an occupied physical attempt', () => {
+      const observation = new DatabaseSync(database, { readOnly: true });
+      try {
+        const row = observation.prepare(
+          'SELECT lease_epoch, active_attempt_epoch FROM runtime_dispatch WHERE run_id = ?',
+        ).get(runId) as { lease_epoch: number; active_attempt_epoch: number | null } | undefined;
+        return row !== undefined && row.lease_epoch > firstEpoch
+          && row.active_attempt_epoch !== null;
+      } finally {
+        observation.close();
+      }
+    });
     await run;
     await waitUntil(
       'stale attempt fenced metric export',
       () => payloads.some((body) => body.includes(Buffer.from('awaken.dispatch.commits.fenced'))),
       20_000,
     );
+    await waitUntil(
+      'expired-lease recovery metric export',
+      () => payloads.some((body) => body.includes(Buffer.from('awaken.dispatch.runs.recovered'))),
+      20_000,
+    );
     assert.equal(
       upstream.received,
-      2,
-      'exactly the stale attempt and its replacement reached inference',
+      1,
+      'F2/F3 the replacement never replays the unknown model operation',
     );
-    console.log('DISPATCH FENCED METRICS TS API E2E PASS: replacement committed once and the stale in-process attempt exported the fenced counter.');
+    console.log('DISPATCH FENCED METRICS TS API E2E PASS: expired claim and stale commit exported recovered/fenced counters without model replay.');
   } finally {
     await stopServer(server);
     upstream.close();

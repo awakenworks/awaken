@@ -130,9 +130,15 @@ export function cargoExecutable({
   prebuiltEnvironmentName,
   snapshotDestination,
 }) {
-  if (prebuiltEnvironmentName) {
-    const prebuilt = requirePrebuiltExecutable(prebuiltEnvironmentName, environment);
-    if (prebuilt) return snapshotDestination
+  const prebuilt = prebuiltEnvironmentName
+    ? requirePrebuiltExecutable(prebuiltEnvironmentName, environment)
+    : undefined;
+  // The runner's immutable snapshot represents only the default debug binary.
+  // A feature, profile, or target-kind request changes its executable bytes;
+  // resolve that request through the same Cargo artifact path below.
+  if (prebuilt && targetKind === 'bin' && features.length === 0
+      && !noDefaultFeatures && !release) {
+    return snapshotDestination
       ? snapshotExecutable(prebuilt, snapshotDestination) : prebuilt;
   }
 

@@ -149,7 +149,7 @@ function sessionEnvelope(database, sessionId) {
   assert.equal(rows.length, 1, `missing Session ${sessionId}`);
   assert.ok(rows[0].aggregate_json, `Session ${sessionId} has no canonical aggregate`);
   const envelope = parseDurableJson(rows[0].aggregate_json);
-  assert.equal(envelope.format, 'awaken.session.v1');
+  assert.equal(envelope.format, 'awaken.session.v2');
   return envelope;
 }
 

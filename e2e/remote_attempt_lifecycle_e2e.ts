@@ -807,62 +807,9 @@ async function main(): Promise<void> {
     await waitForDispatchGone(cancelThread, cancelSubmit.runId);
     await publishRemote(peer.endpoint);
 
-    // A crash may expose old/corrupt continuation data written by a previous
-    // binary or operator. Recovery must never invent a remote identity, switch
-    // endpoint, or silently start a fresh task. Inject the damage directly into
-    // this throwaway durable store: no production-only diagnostic API exists.
-    const corruptions = await Promise.all(
-      ['missing endpoint', 'missing task', 'missing context', 'endpoint mismatch', 'missing reference'].map(async (marker) => {
-        const thread = await createSession(client);
-        const receipt = await sendText(client, thread, 'need remote input');
-        const toolUse = await waitForPendingTool(client, thread, receipt.id);
-        return { marker, thread, toolUseId: toolUse.id };
-      }),
-    );
-    const corruptionKilled = new Promise<void>((resolve) => server.once('exit', () => resolve()));
-    const corruptionThreads = corruptions.map(({ thread }) => thread).sort();
-    // Recovery admission decision table: every created Session committed to the
-    // durable aggregate => all exact ids survive restart; any missing id => fail
-    // before interpreting the separately committed A2A continuation state.
-    assert.deepEqual(persistedSessions(storage, corruptionThreads), corruptionThreads);
-    server.kill('SIGKILL');
-    await corruptionKilled;
-    for (const { marker, thread } of corruptions) {
-      rewriteLatestRemoteOperation(storage, thread, (command) => {
-        if (marker === 'missing endpoint') delete command.action.Set.reference.endpoint;
-        else if (marker === 'missing task') delete command.action.Set.reference.task_id;
-        else if (marker === 'missing context') delete command.action.Set.reference.context_id;
-        else if (marker === 'endpoint mismatch') command.action.Set.reference.endpoint = 'http://127.0.0.1:1';
-        else command.action = 'Remove';
-      });
-    }
-    server = spawnServer('config', PORT, environment).server;
-    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE, maxRetries: 0, timeout: 30_000 });
-    await waitForPort(PORT, 180_000, server);
-    assert.deepEqual(persistedSessions(storage, corruptionThreads), corruptionThreads);
-    // Restore the exact publication first so each request reaches the damaged
-    // A2A continuation boundary. Otherwise the publication's correct 503 masks
-    // every corruption case and the test proves only fail-closed startup.
-    await publishRemote(peer.endpoint);
-    for (const { marker, thread, toolUseId } of corruptions) {
-      if (marker === 'missing reference') {
-        await expectRemovedOperationToFail(client, thread, marker, toolUseId);
-      } else {
-        await expectCorruptAcceptedOperationToRemainUnconfirmed(
-          client,
-          storage,
-          thread,
-          marker,
-          toolUseId,
-        );
-      }
-    }
-    assert.ok(
-      !peer.sent.some((message) => corruptions.some(({ marker }) => message.text === marker)),
-      'invalid durable continuations never reached the remote peer',
-    );
-    // 4) Cancellation while a root remote attempt is actively polling uses the
-    // same task driver as cold/awaiting cancellation and aborts the pinned task.
+    // 4) An interrupt while a root remote attempt is actively polling retains
+    // the unknown physical effect; unlike the quiescent Awaiting partition it
+    // cannot claim a remote cancellation receipt on the revoked attempt.
     const activeCancelThread = await createSession(client);
     const activeSubmit = await submitManagedRun(
       client,
@@ -882,25 +829,46 @@ async function main(): Promise<void> {
     }), 30_000, 'active remote interrupt admission');
     const interruptReceipt = interrupted.data?.[0];
     assert.ok(interruptReceipt && typeof interruptReceipt.id === 'string', 'active interrupt returns one exact receipt');
-    await waitForRemoteCancel(peer.cancels, 'active-cancel-task');
-    // Interrupt rule: C1=exact SDK interrupt receipt; C2=the peer receives cancel
-    // for the pinned task. E1=C1 is processed and C2 occurs once. K1=peer state is
-    // the side-effect oracle; history only owns the receipt fence. D1=C1+C2=>E1.
+    // Active-interrupt decision table: C1 the A2A GET is in flight; C2 the
+    // interrupt revokes that claim; C3 no exact physical terminal receipt has
+    // closed its slot. C1+C2+C3 => the replacement commits Indeterminate while
+    // retaining the old physical slot, and cannot send a second task:cancel or
+    // replay message:send. The earlier Awaiting case has a quiescent slot and
+    // is the positive remote-cancel partition.
     await waitForSessionEventReceipt(
       client,
       activeCancelThread,
       interruptReceipt.id,
       BETAS,
       () => true,
-      'active interrupt receipt to process after pinned peer cancellation',
+      'active interrupt receipt to process without inventing remote quiescence',
       { timeoutMs: 30_000 },
     );
-    await waitForDispatchGone(activeCancelThread, activeSubmit.runId);
+    const activeDispatchDatabase = dispatchDatabases(storage).find((database) =>
+      sqliteRows(database, 'SELECT run_id FROM runtime_dispatch WHERE run_id = ?', activeSubmit.runId).length === 1);
+    assert.ok(activeDispatchDatabase, 'the interrupted Run retains its exact Dispatch authority');
+    const activeRunDatabase = sqliteDatabaseForThread(storage, activeCancelThread, 'runtime_state_command');
+    await waitForValue(
+      () => ({
+        phase: JSON.parse(String(sqliteRows(activeRunDatabase,
+          'SELECT phase FROM runtime_run_record WHERE run_id = ?', activeSubmit.runId)[0]?.phase ?? '{}')).Ended,
+        dispatch: sqliteRows(activeDispatchDatabase,
+          'SELECT lease_epoch, active_attempt_epoch, cancel_requested FROM runtime_dispatch WHERE run_id = ?', activeSubmit.runId)[0],
+      }),
+      (observed: any) => observed.phase === 'Indeterminate'
+        && Number(observed.dispatch?.cancel_requested) === 1
+        && typeof observed.dispatch?.active_attempt_epoch === 'number'
+        && observed.dispatch.lease_epoch > observed.dispatch.active_attempt_epoch,
+      'active A2A interrupt to retain Indeterminate and the occupied predecessor slot',
+      { timeoutMs: 20_000, pollMs: 25 },
+    );
     assert.equal(
       peer.cancels.filter((taskId) => taskId === 'active-cancel-task').length,
-      1,
-      'active cancellation delivers once and settles only after exact terminal GET',
+      0,
+      'unknown physical termination cannot authorize a second remote cancel',
     );
+    assert.equal(peer.sent.filter((message) => message.text?.includes('active remote cancel')).length,
+      1, 'the accepted remote task was never resent');
 
     // Cancellation observes an already-terminal task and remains idempotent at
     // the remote boundary (no unnecessary tasks/cancel request).
@@ -1013,7 +981,7 @@ async function main(): Promise<void> {
         events: BetaManagedAgentsSessionEvent[];
         sent: SeenMessage[];
       }) => observed.session.status === 'running'
-        && observed.sent.some((message) => message.text === 'trigger remote send rejection'),
+        && observed.sent.some((message) => message.text?.includes('trigger remote send rejection')),
       'F1 Prepared operation to reach the failing remote send',
       { timeoutMs: 20_000, pollMs: 25 },
     );
@@ -1234,13 +1202,77 @@ async function main(): Promise<void> {
       [],
       'F3/E2 retryable resume does not fabricate execution or terminal effects',
     );
+    // 8) Corrupt continuation evidence runs last: each rejected row is retained
+    // under its physical attempt fence and must not starve the independent
+    // cancellation, terminal-carrier, and transport-failure decision rows.
+    await stopServer(server);
+    server = spawnServer('config', PORT, environment).server;
+    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE, maxRetries: 0, timeout: 30_000 });
+    await waitForPort(PORT, 180_000, server);
+    await publishRemote(peer.endpoint);
+    // A crash may expose old/corrupt continuation data written by a previous
+    // binary or operator. Recovery must never invent a remote identity, switch
+    // endpoint, or silently start a fresh task. Inject the damage directly into
+    // this throwaway durable store: no production-only diagnostic API exists.
+    const corruptions = await Promise.all(
+      ['missing endpoint', 'missing task', 'missing context', 'endpoint mismatch', 'missing reference'].map(async (marker) => {
+        const thread = await createSession(client);
+        const receipt = await sendText(client, thread, 'need remote input');
+        const toolUse = await waitForPendingTool(client, thread, receipt.id);
+        return { marker, thread, toolUseId: toolUse.id };
+      }),
+    );
+    const corruptionKilled = new Promise<void>((resolve) => server.once('exit', () => resolve()));
+    const corruptionThreads = corruptions.map(({ thread }) => thread).sort();
+    // Recovery admission decision table: every created Session committed to the
+    // durable aggregate => all exact ids survive restart; any missing id => fail
+    // before interpreting the separately committed A2A continuation state.
+    assert.deepEqual(persistedSessions(storage, corruptionThreads), corruptionThreads);
+    server.kill('SIGKILL');
+    await corruptionKilled;
+    for (const { marker, thread } of corruptions) {
+      rewriteLatestRemoteOperation(storage, thread, (command) => {
+        if (marker === 'missing endpoint') delete command.action.Set.reference.endpoint;
+        else if (marker === 'missing task') delete command.action.Set.reference.task_id;
+        else if (marker === 'missing context') delete command.action.Set.reference.context_id;
+        else if (marker === 'endpoint mismatch') command.action.Set.reference.endpoint = 'http://127.0.0.1:1';
+        else command.action = 'Remove';
+      });
+    }
+    server = spawnServer('config', PORT, environment).server;
+    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE, maxRetries: 0, timeout: 30_000 });
+    await waitForPort(PORT, 180_000, server);
+    assert.deepEqual(persistedSessions(storage, corruptionThreads), corruptionThreads);
+    // Restore the exact publication first so each request reaches the damaged
+    // A2A continuation boundary. Otherwise the publication's correct 503 masks
+    // every corruption case and the test proves only fail-closed startup.
+    await publishRemote(peer.endpoint);
+    for (const { marker, thread, toolUseId } of corruptions) {
+      if (marker === 'missing reference') {
+        await expectRemovedOperationToFail(client, thread, marker, toolUseId);
+      } else {
+        await expectCorruptAcceptedOperationToRemainUnconfirmed(
+          client,
+          storage,
+          thread,
+          marker,
+          toolUseId,
+        );
+      }
+    }
+    assert.ok(
+      !peer.sent.some((message) => corruptions.some(({ marker }) => message.text === marker)),
+      'invalid durable continuations never reached the remote peer',
+    );
     console.log(
       'REMOTE ATTEMPT TS API E2E PASS: crash reattach, input/auth resume, terminal states, send failure, and pinned-task cancellation.',
     );
   } finally {
     await stopServer(server).catch(() => {});
     await peer.close();
-    fs.rmSync(storage, { recursive: true, force: true });
+    if (process.env.E2E_KEEP_ARTIFACTS !== '1') {
+      fs.rmSync(storage, { recursive: true, force: true });
+    }
   }
 }
 

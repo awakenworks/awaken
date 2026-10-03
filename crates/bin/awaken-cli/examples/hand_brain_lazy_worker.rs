@@ -53,6 +53,13 @@ impl LlmExecutor for HandBrainModel {
                     tool_id: "read".into(),
                     arguments: serde_json::json!({"path": "missing-remote-hand.txt"}),
                 }]),
+                "resource-file" => AssistantOutput::from_tool_calls(vec![ToolCall {
+                    call_id: format!("remote-resource-{}", request.messages.len()),
+                    tool_id: "read".into(),
+                    arguments: serde_json::json!({
+                        "path": "/mnt/session/uploads/workspace/missing-remote-hand.txt"
+                    }),
+                }]),
                 _ => AssistantOutput::text(format!("Echo: {prompt}")),
             }
         };

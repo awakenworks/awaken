@@ -1,8 +1,8 @@
 // Durable cancellation through both the operational API and Managed Agents SDK.
 //
-// The operational rule cancels one Awaiting run. Managed rules crash after the
-// cancellation intent and after the terminal commit respectively, then recover
-// through the same dispatch/Run/Worker authorities without Provider inference.
+// The operational rule cancels one Awaiting run. Managed rules crash after a
+// pre-dispatch cancellation intent and during an unacknowledged model call.
+// The former commits Cancelled; the latter stays Indeterminate and cannot replay.
 //
 // Run: node e2e/durable_worker_cancel_e2e.mjs
 
@@ -36,7 +36,7 @@ const THREAD = 'durable-cancel-1';
 const AWAITING_AGENT = 'durable-cancel-awaiting-agent';
 const STORE = `/tmp/awaken-durable-cancel-${process.pid}`;
 const INTENT_STORE = `${STORE}-intent`;
-const TERMINAL_STORE = `${STORE}-terminal`;
+const UNKNOWN_STORE = `${STORE}-unknown`;
 const MARK = 'CANCEL-ME-EFFECT';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -110,7 +110,8 @@ async function interruptManagedRun(client, sessionId, rule) {
 function dispatchRow(database, runId) {
   return sqliteRows(
     database,
-    `SELECT status, cancel_requested, lease_owner, lease_until, attempt_count,
+    `SELECT status, cancel_requested, lease_owner, lease_until, lease_epoch,
+            retry_not_before, attempt_count,
             active_attempt_owner, active_attempt_epoch
      FROM runtime_dispatch WHERE run_id = ?`,
     runId,
@@ -148,30 +149,23 @@ async function crashAfterManagedInterruptIntent() {
   fs.mkdirSync(INTENT_STORE, { recursive: true });
   const database = `${INTENT_STORE}/dispatch.db`;
   const upstream = await startUpstream('probe');
-  let upstreamOpen = true;
   let srv = spawnDurable(INTENT_STORE, upstream, 'probe', true);
 
   try {
     await waitForPort(PORT, 180_000, srv.server);
     const { client, session } = await managedSession(srv);
-    // Managed cancel crash-recovery cause/effect graph:
-    // C1=an official-SDK Session owns exactly one canonical root dispatch;
-    // C2=the coordinator is durable and has no local claim pool; C3=the SDK
-    // user.interrupt is processed; C4=the process crashes after cancellation
-    // intent persistence but before any Worker terminal/settlement; C5=the same
-    // store restarts with its canonical local Worker while the Provider is down.
-    // Effects: E1=interrupt retains exactly one pending row with cancel_requested
-    // and no lease/completion; E2=restart consumes that intent without inference,
-    // commits Cancelled, settles Done exactly once, and removes the dispatch;
-    // E3=re-cancel fails closed after the completion tombstone is authoritative.
-    // Constraints: the fixture may only hard-stop the real server and deny the
-    // Provider after the durable bit is observed; it never writes cancellation,
-    // Run terminal, or completion facts. Session/Run/Worker remain the production
-    // authorities, and the operational endpoint is used only to inspect/re-cancel.
-    //
-    // | Rule | C1 | C2 | C3 | C4 | C5 | Expected |
-    // |---|---|---|---|---|---|---|
-    // | R1 | T | T | T | T | T | E1 + E2 + E3 |
+    // Managed cancel decision table. C1 durable Coordinator has no local pool;
+    // C2 SDK interrupt persists; C3 process dies before a Worker claims; C4
+    // replacement commits Cancelled without provider I/O; C5 test trigger
+    // rejects only exact Dispatch Done; C6 second crash removes that trigger.
+    // E1 pending cancel intent; E2 committed Cancelled plus empty physical slot
+    // and retained dispatch; E3 one fenced Done repair/no inference; E4 later
+    // re-cancel fails closed. The fixture changes no Run, cancel bit, physical
+    // slot or completion fact: Session/Run/Worker own them.
+    // | Rule | Causes | Effects |
+    // | R1 | C1+C2+C3 | E1 |
+    // | R2 | E1+C4+C5 | E2 |
+    // | R3 | E2+C6 | E3+E4 |
     const runId = await submitManagedRun(
       client,
       session.id,
@@ -195,106 +189,16 @@ async function crashAfterManagedInterruptIntent() {
 
     await hardKill(srv.server, 'R1');
     srv = null;
-    const providerRequestsBeforeRestart = upstream.received;
-    await upstream.close();
-    upstreamOpen = false;
-    srv = spawnDurable(INTENT_STORE, upstream, 'probe');
-    await waitForPort(PORT, 180_000, srv.server);
-    await waitForValue(
-      () => [dispatchRow(database, runId), completionCount(database, runId)],
-      ([row, completions]) => row === null && completions === 1,
-      'R1 restarted Worker to settle the retained cancellation',
-      { timeoutMs: 20_000, pollMs: 25 },
-    );
-    assert.equal(upstream.received, providerRequestsBeforeRestart, 'R1 recovery performs no inference');
-    const again = await post(`/v1/durable/threads/${session.id}/cancel`, { run_id: runId });
-    assert.equal(again.status, 400, 'R1 re-cancel after terminal settlement fails closed');
-    pass('R1 recovered the cancellation exactly once without Provider inference');
-  } finally {
-    if (srv) await stopServer(srv.server);
-    if (upstreamOpen) await upstream.close();
-    fs.rmSync(INTENT_STORE, { recursive: true, force: true });
-  }
-}
-
-async function recoverCommittedCancellationAfterSettleCrash() {
-  fs.rmSync(TERMINAL_STORE, { recursive: true, force: true });
-  fs.mkdirSync(TERMINAL_STORE, { recursive: true });
-  const database = `${TERMINAL_STORE}/dispatch.db`;
-  const upstream = await startUpstream('echo', { firstDelayMs: 30_000 });
-  let upstreamOpen = true;
-  let srv = spawnDurable(TERMINAL_STORE, upstream, 'echo');
-
-  try {
-    await waitForPort(PORT, 180_000, srv.server);
-    const { client, session } = await managedSession(srv);
-    // Committed-terminal settlement recovery cause/effect graph:
-    // C1=the canonical local Worker owns a running Managed Session dispatch;
-    // C2=an official-SDK interrupt persists cancellation and cancels that attempt;
-    // C3=the real Done settlement alone is faulted after Runtime commits Cancelled;
-    // C4=the physical cancellation attempt is authoritatively quiescent, then the
-    // process crashes while terminal settlement self-retry is either unleased
-    // Pending or owns its next Running mutation claim; C5=the settlement fault is
-    // removed and any live mutation lease is expired; C6=a durable,
-    // coordinator-only restart lets the canonical startup reconciler race one
-    // explicit reconciliation request against the same store.
-    // Effects: E1=C1+C2+C3 retains one cancel_requested running row, exact
-    // Ended(Cancelled) truth, and no completion tombstone; E2=C4+C5+C6 claims the
-    // terminal row without re-execution, performs ordinary fenced Done settlement,
-    // writes one completion tombstone, and removes the row; E3=no Provider request
-    // occurs during recovery. The explicit response contains either this run id
-    // or no id when startup already owns the exact claim; no other id is valid.
-    // Constraints: the fixture blocks only DELETE of this run's real dispatch row,
-    // observes the canonical physical-attempt slot clear before crashing, then
-    // removes that blocker and, only for R3b, expires lease_until. It never writes
-    // the cancel bit, physical slot, Run phase, completion, Session event, or
-    // terminal fact. Crashing while the physical slot is occupied is a different
-    // fail-closed rule and cannot be used as a settlement-recovery witness.
-    //
-    // | Rule | terminal row at crash | settle fault | lease normalization | claim winner | Expected |
-    // |---|---|---|---|---|---|
-    // | R2 | Running | installed | none | none | E1 |
-    // | R3a | Pending | removed | none | startup or explicit | E2 + E3 |
-    // | R3b | Running retry claim | removed | expire mutation lease | startup or explicit | E2 + E3 |
-    const runId = await submitManagedRun(
-      client,
-      session.id,
-      'hold this Managed Session run in inference until it is interrupted',
-      'R2',
-    );
-    await waitForValue(
-      () => upstream.received,
-      (received) => received === 1,
-      'R2 canonical Worker to enter Provider inference',
-      { timeoutMs: 15_000, pollMs: 20 },
-    );
-
-    const runDatabase = await waitForRunDatabase(TERMINAL_STORE, session.id, 'R2');
-    const running = await waitForValue(
-      () => dispatchRow(database, runId),
-      (row) => row?.status === 'running' && row.lease_owner !== null,
-      'R2 exact dispatch to be leased by the canonical Worker',
-      { timeoutMs: 10_000, pollMs: 20 },
-    );
-    assert.deepEqual(
-      [Number(running.cancel_requested), Number(running.attempt_count)],
-      [0, 0],
-      'R2 running claim starts uncancelled and unretried',
-    );
-
+    // R2 holds only the exact queue Done mutation. The restarted Worker remains
+    // the sole owner of the Cancelled Run commit and has no model to call.
     const runLiteral = sqliteScalar(database, 'SELECT quote(?)', runId);
     assert.equal(typeof runLiteral, 'string', 'R2 SQLite owns exact run-id quoting');
-    sqliteExec(
-      database,
-      `CREATE TRIGGER r2_block_dispatch_done
-       BEFORE DELETE ON runtime_dispatch
-       WHEN OLD.run_id = ${runLiteral}
-       BEGIN
-         SELECT RAISE(ABORT, 'R2 settle crash boundary');
-       END`,
-    );
-
-    await interruptManagedRun(client, session.id, 'R2');
+    sqliteExec(database, `CREATE TRIGGER r2_block_dispatch_done
+      BEFORE DELETE ON runtime_dispatch WHEN OLD.run_id = ${runLiteral}
+      BEGIN SELECT RAISE(ABORT, 'R2 settle crash boundary'); END`);
+    srv = spawnDurable(INTENT_STORE, upstream, 'probe');
+    await waitForPort(PORT, 180_000, srv.server);
+    const runDatabase = await waitForRunDatabase(INTENT_STORE, session.id, 'R2');
     const terminalRetained = await waitForValue(
       () => ({
         cause: runEndCause(runDatabase, runId),
@@ -302,80 +206,155 @@ async function recoverCommittedCancellationAfterSettleCrash() {
         completions: completionCount(database, runId),
       }),
       ({ cause, dispatch, completions }) => cause === 'Cancelled'
-        && dispatch?.status === 'running'
+        && dispatch !== null
         && Number(dispatch.cancel_requested) === 1
-        && dispatch.active_attempt_owner === null
         && dispatch.active_attempt_epoch === null
         && completions === 0,
-      'R2 real Cancelled commit and physical quiescence to stop at the faulted Done settlement',
+      'R2 Cancelled Run committed while only its exact Done settlement is held',
       { timeoutMs: 20_000, pollMs: 25 },
     );
-    assert.deepEqual(
-      [Boolean(terminalRetained.dispatch.lease_owner), Number(terminalRetained.dispatch.lease_until) > 0,
-        terminalRetained.dispatch.active_attempt_owner, terminalRetained.dispatch.active_attempt_epoch,
-        upstream.received],
-      [true, true, null, null, 1],
-      'R2 retains one leased terminal row after physical quiescence without replacement inference',
-    );
-    pass('R2 retained one committed Cancelled run at the real Done-settlement boundary');
+    assert.ok(['pending', 'running'].includes(terminalRetained.dispatch.status),
+      'R2 held terminal dispatch stays repairable');
+    assert.equal(upstream.received, 0, 'R2 cancellation never entered the provider');
+    pass('R2 retained committed Cancelled with an empty physical slot and no Done receipt');
 
     await hardKill(srv.server, 'R3');
     srv = null;
-    const providerRequestsBeforeRestart = upstream.received;
-    await upstream.close();
-    upstreamOpen = false;
-
-    // Offline repair removes only the E2E fault. The authoritative Cancelled fact
-    // and cancellation bit remain untouched for the restarted Worker to observe.
     sqliteExec(database, 'DROP TRIGGER r2_block_dispatch_done');
-    assert.equal(runEndCause(runDatabase, runId), 'Cancelled', 'R3 preserves terminal truth offline');
-
-    srv = spawnDurable(TERMINAL_STORE, upstream, 'echo', true);
-    await waitForPort(PORT, 180_000, srv.server);
-    const crashRow = dispatchRow(database, runId);
-    assert.ok(
-      crashRow?.status === 'pending' || crashRow?.status === 'running',
-      `R3 crash snapshot is Pending or an in-progress retry claim: ${JSON.stringify(crashRow)}`,
-    );
-    assert.equal(Number(crashRow.cancel_requested), 1, 'R3 retains the authoritative cancellation intent');
-    if (crashRow.status === 'pending') {
-      assert.deepEqual(
-        [crashRow.lease_owner, crashRow.lease_until],
-        [null, null],
-        'R3a released settlement retries carry no mutation lease',
-      );
-    } else {
-      const accelerated = sqliteRun(
-        database,
+    const retry = dispatchRow(database, runId);
+    assert.ok(retry, 'R3 exact terminal row survives the second crash');
+    if (retry.status === 'running') {
+      const expired = sqliteRun(database,
         "UPDATE runtime_dispatch SET lease_until = 0 WHERE run_id = ? AND status = 'running'",
-        runId,
-      );
-      assert.equal(Number(accelerated.changes), 1, 'R3b fixture expires only the live retry claim');
+        runId);
+      assert.equal(Number(expired.changes), 1, 'R3 expires only the failed settlement claim');
     }
-
+    // The retry deadline belongs to Dispatch, so the fixture advances only its
+    // own observation time, never the retained Run, slot or completion facts.
+    const waitMs = Math.max(0, Number(retry.retry_not_before ?? 0) - Date.now());
+    if (waitMs > 0) await sleep(waitMs + 1);
+    srv = spawnDurable(INTENT_STORE, upstream, 'probe', true);
+    await waitForPort(PORT, 180_000, srv.server);
     const reconcile = await post(`/v1/durable/threads/${session.id}/reconcile`, undefined);
     assert.equal(reconcile.status, 200, `R3 reconcile accepted: ${JSON.stringify(reconcile.body)}`);
-    assert.ok(
-      JSON.stringify(reconcile.body.recovered) === '[]'
-        || JSON.stringify(reconcile.body.recovered) === JSON.stringify([runId]),
-      `R3 only startup or explicit reconciliation may own the exact terminal claim: ${JSON.stringify({ crashRow, reconcile })}`,
-    );
+    assert.ok(JSON.stringify(reconcile.body.recovered) === '[]'
+      || JSON.stringify(reconcile.body.recovered) === JSON.stringify([runId]),
+    'R3 only startup or explicit reconciliation owns the exact terminal claim');
     await waitForValue(
       () => [dispatchRow(database, runId), completionCount(database, runId)],
       ([row, completions]) => row === null && completions === 1,
-      'R3 terminal recovery to remove the settled dispatch',
+      'R3 committed terminal repair to settle the retained cancellation once',
+      { timeoutMs: 20_000, pollMs: 25 },
+    );
+    assert.equal(runEndCause(runDatabase, runId), 'Cancelled', 'R3 preserves the committed cause');
+    assert.equal(upstream.received, 0, 'R3 recovery performs no inference');
+    const again = await post(`/v1/durable/threads/${session.id}/cancel`, { run_id: runId });
+    assert.equal(again.status, 400, 'R3 re-cancel after terminal settlement fails closed');
+    pass('R3 repaired the same committed cancellation without Provider inference');
+  } finally {
+    if (srv) await stopServer(srv.server);
+    await upstream.close();
+    fs.rmSync(INTENT_STORE, { recursive: true, force: true });
+  }
+}
+
+async function inFlightCancellationRetainsUnknown() {
+  fs.rmSync(UNKNOWN_STORE, { recursive: true, force: true });
+  fs.mkdirSync(UNKNOWN_STORE, { recursive: true });
+  const database = `${UNKNOWN_STORE}/dispatch.db`;
+  const upstream = await startUpstream('echo', { firstDelayMs: 30_000 });
+  let srv = spawnDurable(UNKNOWN_STORE, upstream, 'echo');
+
+  try {
+    await waitForPort(PORT, 180_000, srv.server);
+    const { client, session } = await managedSession(srv);
+    // In-flight cancel decision table: C1 an exact Worker/model request is
+    // running; C2 the SDK interrupt is durably accepted before a complete
+    // response; C3 the process dies; C4 the lease expires. C1+C2 commits
+    // Indeterminate with an occupied physical slot and no Done receipt;
+    // C1+C2+C3+C4 may reclaim a mutation epoch but cannot replay the model.
+    // | U1 | C1+C2 | Indeterminate, occupied slot, no Done |
+    // | U2 | U1+C3+C4 | higher mutation epoch, no replay |
+    // The unclaimed-intent case above owns the positive Cancelled partition.
+    const runId = await submitManagedRun(
+      client,
+      session.id,
+      'hold this Managed Session run in inference until it is interrupted',
+      'U1',
+    );
+    await waitForValue(
+      () => upstream.received,
+      (received) => received === 1,
+      'U1 canonical Worker to enter Provider inference',
+      { timeoutMs: 15_000, pollMs: 20 },
+    );
+
+    const runDatabase = await waitForRunDatabase(UNKNOWN_STORE, session.id, 'U1');
+    const running = await waitForValue(
+      () => dispatchRow(database, runId),
+      (row) => row?.status === 'running' && row.lease_owner !== null,
+      'U1 exact dispatch to be leased by the canonical Worker',
       { timeoutMs: 10_000, pollMs: 20 },
     );
     assert.deepEqual(
-      [runEndCause(runDatabase, runId), upstream.received],
-      ['Cancelled', providerRequestsBeforeRestart],
-      'R3 preserves terminal cause and performs no inference',
+      [Number(running.cancel_requested), Number(running.attempt_count)],
+      [0, 0],
+      'U1 running claim starts uncancelled and unretried',
     );
-    pass('R3 reconciled the committed cancellation once without re-execution');
+
+    await interruptManagedRun(client, session.id, 'U1');
+    const unknownRetained = await waitForValue(
+      () => ({
+        cause: runEndCause(runDatabase, runId),
+        dispatch: dispatchRow(database, runId),
+        completions: completionCount(database, runId),
+      }),
+      ({ cause, dispatch, completions }) => cause === 'Indeterminate'
+        && dispatch?.status === 'running'
+        && Number(dispatch.cancel_requested) === 1
+        && dispatch.active_attempt_owner !== null
+        && dispatch.active_attempt_epoch !== null
+        && completions === 0,
+      'U1 committed Indeterminate after the interrupted model effect stayed unknown',
+      { timeoutMs: 45_000, pollMs: 25 },
+    );
+    assert.ok(unknownRetained.dispatch.lease_owner && Number(unknownRetained.dispatch.lease_until) > 0,
+      'U1 retains a current mutation claim');
+    assert.ok(unknownRetained.dispatch.active_attempt_epoch > 0
+      && unknownRetained.dispatch.active_attempt_epoch <= unknownRetained.dispatch.lease_epoch,
+    'U1 retains the occupied predecessor physical slot across any newer claim');
+    assert.equal(upstream.received, 1, 'U1 no second provider request');
+    pass('U1 retained committed Indeterminate and the exact occupied attempt');
+
+    await hardKill(srv.server, 'U2');
+    srv = null;
+    const providerRequestsBeforeRestart = upstream.received;
+    const accelerated = sqliteRun(
+      database,
+      "UPDATE runtime_dispatch SET lease_until = 0 WHERE run_id = ? AND status = 'running'",
+      runId,
+    );
+    assert.equal(Number(accelerated.changes), 1, 'U2 expires only the exact abandoned claim');
+    srv = spawnDurable(UNKNOWN_STORE, upstream, 'echo');
+    await waitForPort(PORT, 180_000, srv.server);
+    const reclaimed = await waitForValue(
+      () => dispatchRow(database, runId),
+      (row) => row?.lease_epoch > unknownRetained.dispatch.lease_epoch
+        && row.active_attempt_epoch === unknownRetained.dispatch.active_attempt_epoch,
+      'U2 replacement to retain the old physical slot under a higher mutation epoch',
+      { timeoutMs: 10_000, pollMs: 20 },
+    );
+    assert.deepEqual(
+      [runEndCause(runDatabase, runId), Number(reclaimed.cancel_requested),
+        completionCount(database, runId), upstream.received],
+      ['Indeterminate', 1, 0, providerRequestsBeforeRestart],
+      'U2 retains committed uncertainty and never replays the model',
+    );
+    pass('U2 reclaimed the logical lease but retained the unknown physical effect');
   } finally {
     if (srv) await stopServer(srv.server);
-    if (upstreamOpen) await upstream.close();
-    fs.rmSync(TERMINAL_STORE, { recursive: true, force: true });
+    await upstream.close();
+    fs.rmSync(UNKNOWN_STORE, { recursive: true, force: true });
   }
 }
 
@@ -450,18 +429,17 @@ async function cancelAwaitingDurableRun() {
     assert.ok(!afterRows.some((d) => d.run_id === runId), 'the cancelled run is removed from the dispatch queue');
     pass('cancelled run removed from the dispatch queue (not runnable)');
 
-    // It must NOT later resume or double-commit: reconcile must not re-drive it, and
-    // committed truth stays stable and never gains the tool effect over time.
+    // The exact cancellation is terminal: reconciliation cannot re-drive it,
+    // and the committed transcript contains no tool effect. The empty queue
+    // and no-recovery receipt are durable facts; a fixed delay adds no proof.
     const rec = await post(`/v1/durable/threads/${THREAD}/reconcile`, undefined);
     assert.equal(rec.status, 200, 'reconcile ok');
     assert.ok(!(rec.body.recovered ?? []).includes(runId), 'reconcile does not re-drive the cancelled run');
 
-    const snap1 = (await get(`/v1/durable/threads/${THREAD}/messages`)).body.messages;
-    await sleep(1500);
-    const snap2 = (await get(`/v1/durable/threads/${THREAD}/messages`)).body.messages;
-    assert.deepEqual(snap2, snap1, 'committed truth is stable after cancel (no late resume, no double-commit)');
-    assert.ok(!JSON.stringify(snap2).includes('done'), 'the cancelled run never produced a terminal reply');
-    pass('cancelled run never resumed and never double-committed (stable committed truth)');
+    const committed = (await get(`/v1/durable/threads/${THREAD}/messages`)).body.messages;
+    assert.ok(!JSON.stringify(committed).includes('done'),
+      'the cancelled run committed no terminal reply or tool effect');
+    pass('cancelled run remains absent after explicit reconciliation');
 
     // Fail-closed: an unknown run id, and re-cancelling the now-gone run, both 400.
     const unknown = await post(`/v1/durable/threads/${THREAD}/cancel`, { run_id: 'run-does-not-exist' });
@@ -479,9 +457,9 @@ async function cancelAwaitingDurableRun() {
 async function main() {
   try {
     await crashAfterManagedInterruptIntent();
-    await recoverCommittedCancellationAfterSettleCrash();
+    await inFlightCancellationRetainsUnknown();
     await cancelAwaitingDurableRun();
-    console.log('E2E PASS: Managed interrupt survives crash; durable cancel removes a run and never double-commits.');
+    console.log('E2E PASS: pre-dispatch Managed cancel repairs one committed Cancelled after two crashes; in-flight cancel retains Indeterminate and never replays; Awaiting cancel settles once.');
   } catch (err) {
     console.error('E2E FAIL:', err);
     process.exitCode = 1;
