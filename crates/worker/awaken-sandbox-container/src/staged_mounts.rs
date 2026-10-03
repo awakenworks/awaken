@@ -455,6 +455,11 @@ pub(super) fn reserve_memory_binds(
             "memory-{}",
             super::stage_name(&projection.mount_path)
         ));
+        // Podman validates bind sources at `create`, before the MemoryMounter
+        // hydrates this reserved path. The private staging guard owns this
+        // empty directory until the exact reservation takes responsibility.
+        std::fs::create_dir(&host_path)
+            .map_err(|error| pc::SandboxError::backend("reserve_memory_binds", error))?;
         plan.binds.push(BindPlan {
             source_ref: host_path.to_string_lossy().into_owned(),
             mount_path: projection.mount_path,
