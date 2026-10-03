@@ -206,7 +206,9 @@ bash e2e/k3d/distributed_control_e2e.sh
 Set `ADR71_KEEP_FAILED_CLUSTER=1` only while diagnosing a failure; the default
 always deletes its dedicated cluster and disposable role binaries.
 The default name is `awaken-adr71`; concurrent worktrees must set distinct
-`AWAKEN_K3D_CLUSTER` names and private `KUBECONFIG`/`TMPDIR` locations. Each run
+`AWAKEN_K3D_CLUSTER` names and `TMPDIR` locations. The distributed runner creates
+and removes its own private `KUBECONFIG`, so another worktree changing the host's
+current kubectl context cannot redirect its fault injections. Each run
 uses `awaken-roles:<cluster>` through the same Kustomize topology, preventing
 another worktree from replacing a shared role tag during image import.
 Every distributed-control run resolves the current role binaries through Cargo

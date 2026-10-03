@@ -105,6 +105,8 @@ async function main(): Promise<void> {
   try {
   await withScenarioServer('management', 'mcp', PORT, async (base: string) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
+    const catalogBefore = await request(base, 'GET', '/v1/config/mcp-servers');
+    assert.equal(catalogBefore.status, 200);
 
     await publishDelegate(base, 'delegate-a');
     await publishDelegate(base, 'delegate-b');
@@ -204,13 +206,18 @@ async function main(): Promise<void> {
     assertPinned(stillPinned, 'delegate-a', 'docs-a', fixtureA.url);
     pass('republish affects only later Sessions; existing Session remains pinned');
 
-    // The removed aggregate API must not quietly become a second authoring path.
-    assert.equal((await request(base, 'GET', '/v1/config/mcp-servers')).status, 404);
+    // Authority decision table: C1 the config-only MCP catalog exists; C2
+    // Agent draft/publish changes its own bindings; C3 the retired per-Agent
+    // MCP authoring route is absent. C1+C2 => E1 the catalog remains byte-for-
+    // byte unchanged while Sessions pin Agent publications; C3 => E2 404.
+    const catalogAfter = await request(base, 'GET', '/v1/config/mcp-servers');
+    assert.equal(catalogAfter.status, 200);
+    assert.deepEqual(catalogAfter.body, catalogBefore.body);
     assert.equal(
       (await request(base, 'GET', `/v1/config/agents/${PARENT}/mcp`)).status,
       404,
     );
-    pass('legacy MCP aggregate routes are absent');
+    pass('MCP catalog remains independent; retired per-Agent MCP authoring route is absent');
   });
   } finally {
     await fixtureA.close();

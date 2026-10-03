@@ -144,6 +144,8 @@ fn scenario_deployment_from(
     deployment.durable = read("SESSION_DEPLOYMENT_INGRESS").as_deref() == Some("durable");
     deployment.disable_local_pool =
         read("SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL").as_deref() == Some("1");
+    deployment.sandbox.package_build_host_network =
+        read("SESSION_DEPLOYMENT_PACKAGE_BUILD_HOST_NETWORK").as_deref() == Some("1");
     deployment.sandbox_tier = match read("SESSION_DEPLOYMENT_SANDBOX_TIER").as_deref() {
         None | Some("") | Some("namespace") => awaken_session_executor::SandboxTier::Namespace,
         Some("local") => awaken_session_executor::SandboxTier::Local,
@@ -367,8 +369,8 @@ mod tests {
 
     #[test]
     fn omitted_scenario_inputs_keep_ephemeral_defaults() {
-        // Cause/effect rule SD1: no scenario inputs -> no durable/store/wake or
-        // remote-owner effects. This is the negative rule for every cluster axis.
+        // Cause/effect rule SD1: no scenario inputs -> no durable/store/wake,
+        // package-build host networking, or remote-owner effects.
         assert_eq!(
             from(&[]),
             awaken_session_executor::DeploymentConfig::ephemeral()
@@ -378,7 +380,7 @@ mod tests {
     #[test]
     fn distributed_scenario_inputs_build_one_typed_deployment() {
         // Cause/effect decision rule SD2: durable + Postgres store/dispatch + NATS
-        // wake + exact pool/owner inputs -> every typed field changes together;
+        // wake + exact pool/owner and package-build network inputs -> every typed field changes together;
         // there is no legacy AWAKEN_* compatibility path to merge or override it.
         let deployment = from(&[
             ("SESSION_DEPLOYMENT_INGRESS", "durable"),
@@ -393,6 +395,7 @@ mod tests {
             ("SESSION_DEPLOYMENT_NATS_URL", "nats://fixture"),
             ("SESSION_DEPLOYMENT_DISPATCH_OWNER", "brain-2"),
             ("SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL", "1"),
+            ("SESSION_DEPLOYMENT_PACKAGE_BUILD_HOST_NETWORK", "1"),
             ("SESSION_DEPLOYMENT_SANDBOX_TIER", "local"),
         ]);
 
@@ -421,6 +424,10 @@ mod tests {
         assert_eq!(deployment.nats_url.as_deref(), Some("nats://fixture"));
         assert_eq!(deployment.dispatch_owner, "brain-2");
         assert!(deployment.disable_local_pool);
+        assert!(
+            deployment.sandbox.package_build_host_network,
+            "SD2 explicit package-build network opt-in reaches the one deployment field"
+        );
         assert_eq!(
             deployment.sandbox_tier,
             awaken_session_executor::SandboxTier::Local

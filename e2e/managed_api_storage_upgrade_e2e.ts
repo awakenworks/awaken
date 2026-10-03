@@ -81,7 +81,7 @@ async function main() {
       session.id,
     )[0] as { aggregate_json: string; revision: number };
     const envelope = parseDurableJson(sessionRow.aggregate_json);
-    assert.equal(envelope.format, 'awaken.session.v1', 'fixture starts from current explicit format');
+    assert.equal(envelope.format, 'awaken.session.v2', 'fixture starts from current explicit format');
     const legacySession = envelope.aggregate;
     delete legacySession.event_batches;
     delete legacySession.active_activity_epochs;
@@ -98,9 +98,12 @@ async function main() {
       'missing field `event_batches` from the previous release',
       sessionRow.revision,
     );
+    // U2 cause: current creation may already have queued the Session for
+    // reconciliation. Preserve one keyed work row at the legacy revision;
+    // the store's canonical upsert owns this same identity/revision rule.
     sqliteRun(
       database,
-      'INSERT INTO managed_session_reconciliation_work (session_id, observed_revision) VALUES (?, ?)',
+      'INSERT INTO managed_session_reconciliation_work (session_id, observed_revision) VALUES (?, ?) ON CONFLICT (session_id) DO UPDATE SET observed_revision = excluded.observed_revision',
       session.id,
       sessionRow.revision,
     );
@@ -172,7 +175,7 @@ async function main() {
       'SELECT aggregate_json FROM managed_session WHERE session_id = ?',
       session.id,
     )[0] as { aggregate_json: string }).aggregate_json);
-    assert.equal(rewrittenSession.format, 'awaken.session.v1', 'U3');
+    assert.equal(rewrittenSession.format, 'awaken.session.v2', 'U3');
     assert.ok(Array.isArray(rewrittenSession.aggregate.event_batches), 'U3');
     assert.ok(Array.isArray(rewrittenSession.aggregate.active_activity_epochs), 'U3');
     const rewrittenDeployment = JSON.parse((sqliteRows(

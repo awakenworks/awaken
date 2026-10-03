@@ -5,12 +5,14 @@
 // Cause/effect graph: C1=a retained DefineOutcome owns one stable command/id;
 // C2=foreground and lifecycle supervisor prepare C1 concurrently; C3=a distinct
 // DefineOutcome arrives while C1 is active; C4=the process dies after a Worker
-// commit and during Judge execution; C5=terminal/inactive aggregates are scanned
+// commit and after the Judge request reaches the Provider but before that Run
+// commits; C5=terminal/inactive aggregates are scanned
 // after restart; C6=User interrupt targets an active Outcome; C7=Judge decision,
 // schema, or Provider execution fails; C8=the pinned Judge is inference-only and
 // therefore owns no physical Environment capability. Effects: E1=C1 is processed without
 // duplicate execution; E2=C3 remains unprocessed/retryable until C1 terminates;
-// E3=C4 resumes the exact id/binding without another define or repeated Worker;
+// E3=C4 retains the exact id and projects Indeterminate without replaying the
+// unknown Judge or repeating the committed Worker;
 // E4=C5 causes no new work; E5=C6 projects one interrupted terminal report;
 // its exact interrupt receipt returns without any non-interrupted terminal report;
 // E6=decision failure is a terminal report, while infrastructure/schema failures
@@ -19,7 +21,7 @@
 // | Rule | Cause | Effect |
 // | R1 | C1+C2 | E1 one Outcome, one initial Worker |
 // | R2 | C1+C3 | E2 then two ordered terminal Outcomes |
-// | R3 | C1+C4+C8 | E3+E7 |
+// | R3 | C1+C4+C8 | E3+E7, no partial Outcome span |
 // | R4 | C5 terminal/inactive | E4 |
 // | R5 | C1+C6 at Worker/Judge/ack | E5 |
 // | R6 | C7 decision / infrastructure | failed report / E6 |
@@ -44,7 +46,12 @@ const BETAS = ['managed-agents-2026-04-01'];
 const BASE_PORT = Number(process.env.E2E_PORT);
 const clientFor = (baseURL: string) => new Anthropic({ apiKey: 'e2e-dummy', baseURL });
 type OutcomeEndEvent = Extract<BetaManagedAgentsSessionEvent, { type: 'span.outcome_evaluation_end' }>;
+type SessionErrorEvent = Extract<BetaManagedAgentsSessionEvent, { type: 'session.error' }>;
 type FailedArrivalKind = 'outcome-initial' | 'outcome-judge';
+
+function isIndeterminateSessionError(event: BetaManagedAgentsSessionEvent): event is SessionErrorEvent {
+  return event.type === 'session.error' && event.error.message.includes('Indeterminate');
+}
 
 function outcomeEnds(
   events: BetaManagedAgentsSessionEvent[],
@@ -172,7 +179,7 @@ async function interruptAt(
     // delta is not a causal boundary for this terminal-owned projection.
     const events = await waitForValue(
       () => listEvents(client, session.id),
-      (history) => history.some((event) =>
+      (history: BetaManagedAgentsSessionEvent[]) => history.some((event) =>
         event.id === acceptedInterrupt.id && event.processed_at != null)
         && outcomeEnds(history, accepted.outcome_id).some((event) => event.result === 'interrupted'),
       `${phase} interrupt receipt and terminal projection`,
@@ -290,15 +297,17 @@ async function executionFailurePath(port: number, failedKind: FailedArrivalKind)
 async function competingOutcomeCommands(port: number) {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-outcome-competing-'));
   const upstream = await startUpstream('revise', { delayMs: 350 });
-  const spawned = spawnServer('outcome-matrix', port, {
+  const environment = {
     ...realServerEnv('revise', upstream, { mode: 'outcome-matrix' }),
     SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
     AWAKEN_OUTCOME_JUDGE_RUNTIME: 'native',
     SESSION_DEPLOYMENT_STORAGE_DIR: storage,
-  });
+  };
+  let spawned = spawnServer('outcome-matrix', port, environment);
   try {
     await waitForPort(port);
-    const client = clientFor(spawned.baseUrl);
+    let client = clientFor(spawned.baseUrl);
+    const inactive = await createSession(client);
     const session = await createSession(client);
 
     // R2/F2: the first retained command is in a real Provider request when the
@@ -355,6 +364,32 @@ async function competingOutcomeCommands(port: number) {
       `R1-R2 each retained command executes one initial Worker: ${upstream.arrivals}`,
     );
     pass('same-command replay deduplicates; competing Outcome stays retryable then runs once');
+
+    // R4: terminal and inactive aggregates are cold-read facts, not new work.
+    // The owning evaluation timestamp and span ids survive the same-store
+    // restart, while the Provider receives no additional request.
+    const terminalSession = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
+    const terminalEvaluation = terminalSession.outcome_evaluations.find((value) => value.outcome_id === first.outcome_id);
+    const terminalEnd = outcomeEnds(completed, first.outcome_id).at(-1);
+    assert.ok(terminalEvaluation?.completed_at && terminalEnd?.processed_at);
+    assert.equal(terminalEvaluation.completed_at, terminalEnd.processed_at);
+    const receivedAtTerminal = upstream.received;
+    await stopServer(spawned.server);
+    spawned = spawnServer('outcome-matrix', port, environment);
+    await waitForPort(port);
+    client = clientFor(spawned.baseUrl);
+    const replayed = await terminalOutcomeEvents(client, session.id, first.id, first.outcome_id, 'satisfied');
+    await client.beta.sessions.retrieve(inactive.id, { betas: BETAS });
+    const coldSession = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
+    assert.deepEqual(coldSession.outcome_evaluations, terminalSession.outcome_evaluations, 'R4 restart preserves exact durable evaluations');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(upstream.received, receivedAtTerminal, 'R4 terminal/inactive restart performs no work');
+    assert.deepEqual(
+      replayed.filter((event) => event.type.startsWith('span.outcome_evaluation_')).map((event) => event.id),
+      completed.filter((event) => event.type.startsWith('span.outcome_evaluation_')).map((event) => event.id),
+      'R4 terminal replay preserves stable span ids without duplication',
+    );
+    pass('terminal and inactive cold replay preserve durable Outcome truth without new work');
   } finally {
     await stopServer(spawned.server).catch(() => {});
     upstream.close();
@@ -375,7 +410,6 @@ async function recoverAfterJudgeCrash(port: number) {
   try {
     await waitForPort(port);
     let client = clientFor(spawned.baseUrl);
-    const inactive = await createSession(client);
     const session = await createSession(client);
     const accepted = outcomeReceipt(await defineOutcome(client, session.id, 'FINAL'));
     await waitForValue(
@@ -399,16 +433,22 @@ async function recoverAfterJudgeCrash(port: number) {
     });
     await waitForPort(port);
     client = clientFor(spawned.baseUrl);
-    const recoveredEvents = await terminalOutcomeEvents(
+    // R3: the Judge request reached the Provider before SIGKILL, so its result
+    // is unknown. Recovery may reuse committed Worker truth, but cannot repeat
+    // the unconfirmed Judge or turn absence of its receipt into success.
+    const { events: recoveredEvents }: { events: BetaManagedAgentsSessionEvent[] } = await waitForSessionEventReceipt(
       client,
       session.id,
       accepted.id,
-      accepted.outcome_id,
-      'satisfied',
+      BETAS,
+      ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) => delta.some(isIndeterminateSessionError),
+      'R3 unknown Judge result to project a terminal Session error',
     );
-    const ends = outcomeEnds(recoveredEvents, accepted.outcome_id);
     const arrivals: string[] = upstream.arrivals;
-    assert.deepEqual(ends.map((event) => event.result), ['needs_revision', 'satisfied']);
+    const errors = recoveredEvents.filter(isIndeterminateSessionError);
+    assert.equal(errors.length, 1, 'R3 one exact Indeterminate projection');
+    assert.equal(errors[0].error.retry_status.type, 'exhausted');
+    assert.equal(outcomeEnds(recoveredEvents, accepted.outcome_id).length, 0, 'R3 no partial Outcome report');
     assert.equal(
       arrivals.filter((kind) => kind === 'outcome-initial').length,
       1,
@@ -416,52 +456,40 @@ async function recoverAfterJudgeCrash(port: number) {
     );
     assert.equal(
       arrivals.filter((kind) => kind === 'outcome-revision').length,
-      1,
-      `recovery runs exactly one revision Worker: ${upstream.arrivals}`,
+      0,
+      `R3 unknown Judge cannot authorize a revision Worker: ${upstream.arrivals}`,
     );
-    assert.ok(
-      arrivals.filter((kind) => kind === 'outcome-judge').length >= 3,
-      `the interrupted Judge plus two recovered evaluations are observable: ${upstream.arrivals}`,
+    assert.equal(
+      arrivals.filter((kind) => kind === 'outcome-judge').length,
+      1,
+      `R3 unconfirmed Judge inference is never replayed: ${upstream.arrivals}`,
     );
     assert.equal(
       recoveredEvents.filter((event) => event.type === 'user.define_outcome').length,
       1,
-      'R3 recovery resumes retained provenance without a second DefineOutcome',
+      'R3 recovery retains provenance without a second DefineOutcome',
     );
 
-    // R4/C2-C3: restart once more after terminal settlement. The completed
-    // aggregate and an unrelated inactive Session must drive no Provider work.
-    // R4-time: terminal span and Session readback share the owning evaluation
-    // commit time. A cold process must preserve both identity AND completion
-    // time, not replace it with process startup or the latest unrelated commit.
-    const terminalSession = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
-    const terminalEvaluation = terminalSession.outcome_evaluations.find((value) => value.outcome_id === accepted.outcome_id);
-    const terminalEnd = outcomeEnds(recoveredEvents, accepted.outcome_id).at(-1);
-    assert.ok(terminalEvaluation?.completed_at && terminalEnd?.processed_at);
-    assert.equal(terminalEvaluation.completed_at, terminalEnd.processed_at);
-    const receivedAtTerminal = upstream.received;
+    // Cold replay preserves the one public error identity and cannot turn the
+    // unknown Judge into a later success or another Provider attempt.
+    const receivedAtError = upstream.received;
     await stopServer(spawned.server);
     spawned = spawnServer('outcome-matrix', port, environment);
     await waitForPort(port);
     client = clientFor(spawned.baseUrl);
-    const replayed = await terminalOutcomeEvents(
+    const { events: replayed }: { events: BetaManagedAgentsSessionEvent[] } = await waitForSessionEventReceipt(
       client,
       session.id,
       accepted.id,
-      accepted.outcome_id,
-      'satisfied',
+      BETAS,
+      ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) => delta.some(isIndeterminateSessionError),
+      'R3 cold replay preserves the exact unknown Judge error',
     );
-    await client.beta.sessions.retrieve(inactive.id, { betas: BETAS });
-    const coldSession = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
-    assert.deepEqual(coldSession.outcome_evaluations, terminalSession.outcome_evaluations, 'R4-time restart preserves the exact durable evaluation');
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    assert.equal(upstream.received, receivedAtTerminal, 'R4 terminal/inactive restart performs no work');
-    assert.deepEqual(
-      replayed.filter((event) => event.type.startsWith('span.outcome_evaluation_')).map((event) => event.id),
-      recoveredEvents.filter((event) => event.type.startsWith('span.outcome_evaluation_')).map((event) => event.id),
-      'R4 terminal replay preserves stable span ids without duplication',
-    );
-    pass('SIGKILL recovery and terminal/inactive replay use durable Thread truth');
+    const replayedErrors = replayed.filter(isIndeterminateSessionError);
+    assert.deepEqual(replayedErrors.map((event) => event.id), errors.map((event) => event.id));
+    assert.equal(outcomeEnds(replayed, accepted.outcome_id).length, 0, 'R3 cold replay adds no Outcome span');
+    assert.equal(upstream.received, receivedAtError, 'R3 cold restart performs no new Provider work');
+    pass('SIGKILL during an unconfirmed Judge retains Indeterminate without model replay');
   } finally {
     await stopServer(spawned.server).catch(() => {});
     upstream.close();

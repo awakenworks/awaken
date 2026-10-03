@@ -1042,6 +1042,12 @@ not a repository. The removed `McpServerDef`, `AgentMcpConfig`,
 `ResolvedMcpServerView`, their repositories, and their HTTP routes must not be
 reintroduced.
 
+The later config-only `McpConfiguration` catalog is a separate Workspace
+source for reusable server definitions and credential preferences. Its
+`/v1/config/mcp-servers` route remains supported; copying an exact binding
+into `AgentConfig` does not make the catalog an execution or Agent-publication
+authority. See [MCP Configuration, Defaults, And Online Inspection](../design/credentials-and-vaults.md#mcp-configuration-defaults-and-online-inspection).
+
 `AgentInputConfig` remains separate by design. It owns Agent-to-resource
 identity defaults whose Memory/Repository configuration versions are selected
 at Session creation under ADR-0063. It has a different lifecycle and invariant

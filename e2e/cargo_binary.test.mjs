@@ -194,7 +194,11 @@ if(args[0]==='metadata') {
 // => failure + rendered diagnostics; S3 successful Cargo without exact artifact
 // => failure; S4 unknown CLI option => reject before Cargo. Cross S1 with the
 // actual K3d shell adapter to prove forwarding of feature/toolchain/target inputs.
-// These tests execute a fake Cargo process, never a second production resolver.
+// S5 a default prebuilt binary exists and no output-shaping option is requested
+// => reuse its bytes without Cargo; S6 the same prebuilt exists but features,
+// profile, or target kind differ => the canonical resolver builds the exact
+// artifact and leaves the default snapshot untouched. These tests execute a
+// fake Cargo process, never a second production resolver.
 test('shell and JS consumers share one fail-closed Cargo build', { skip: process.platform === 'win32' }, () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cargo-resolver-'));
   try {
@@ -204,7 +208,7 @@ test('shell and JS consumers share one fail-closed Cargo build', { skip: process
     fs.writeFileSync(path.join(temp, 'cargo'), `#!/usr/bin/env node
 const fs = require('node:fs');
 fs.appendFileSync(process.env.CALLS, JSON.stringify({args:process.argv.slice(2), target:process.env.CARGO_TARGET_DIR, toolchain:process.env.RUSTUP_TOOLCHAIN})+'\\n');
-if (process.env.MODE !== 'missing') console.log(JSON.stringify({reason:'compiler-artifact', target:{name:'server',kind:['bin']}, executable:'/artifact with spaces/server'}));
+if (process.env.MODE !== 'missing') console.log(JSON.stringify({reason:'compiler-artifact', target:{name:'server',kind:[process.argv.includes('--example')?'example':'bin']}, executable:'/artifact with spaces/server'}));
 if (process.env.MODE === 'failed') {
   console.log(JSON.stringify({reason:'compiler-message', message:{rendered:'fixture compilation failed'}}));
   process.exit(7);
@@ -234,6 +238,34 @@ if (process.env.MODE === 'failed') {
         assert.equal(result.stdout, '', mode);
         assert.match(result.stderr, mode === 'failed' ? /fixture compilation failed/ : mode === 'missing' ? /no bin artifact/ : /Unknown option/);
       }
+    }
+    const prebuilt = path.join(temp, 'prebuilt');
+    fs.writeFileSync(prebuilt, 'default binary');
+    const environment = { ...process.env, PATH: `${temp}:${process.env.PATH}`,
+      CALLS: calls, MODE: 'success', PREBUILT: prebuilt,
+      CARGO_TARGET_DIR: path.join(temp, 'target'), RUSTUP_TOOLCHAIN: 'fixture-toolchain' };
+    const options = { cwd: temp, packageName: 'app', targetName: 'server',
+      environment, prebuiltEnvironmentName: 'PREBUILT' };
+    fs.writeFileSync(calls, '');
+    assert.equal(cargoExecutable(options), prebuilt, 'S5 default snapshot');
+    assert.equal(fs.readFileSync(calls, 'utf8'), '', 'S5 does not build');
+    for (const qualifier of [
+      { features: ['container-docker'] },
+      { noDefaultFeatures: true },
+      { release: true },
+      { targetKind: 'example' },
+    ]) {
+      fs.writeFileSync(calls, '');
+      assert.equal(cargoExecutable({ ...options, ...qualifier }),
+        '/artifact with spaces/server', 'S6 exact artifact');
+      const builds = fs.readFileSync(calls, 'utf8').trim().split('\n').map(JSON.parse);
+      assert.deepEqual(builds, [{
+        args: cargoArguments({ packageName: 'app', targetName: 'server', ...qualifier }),
+        target: environment.CARGO_TARGET_DIR,
+        toolchain: 'fixture-toolchain',
+      }], 'S6 requested build arguments');
+      assert.equal(fs.readFileSync(prebuilt, 'utf8'), 'default binary',
+        'S6 default snapshot retained');
     }
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });

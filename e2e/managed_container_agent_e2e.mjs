@@ -26,6 +26,7 @@ import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
 import {
   assertPendingReceiptHasNoRuntimeEffects,
   REPO_ROOT,
+  retryableReadStatus,
   waitForPort,
   waitForSessionEventReceipt,
 } from './harness.mjs';
@@ -45,6 +46,15 @@ const ENGINE_TIMEOUT_MS = 30_000;
 const TMP = path.join(os.tmpdir(), `awaken-container-agent-${ENGINE}-e2e-${process.pid}`);
 const ACP_FIXTURE = `process.stdin.once('data',()=>{console.log(JSON.stringify({type:'message',text:'${MARKER}'}));console.log(JSON.stringify({type:'turn_end',reason:'natural_end'}))})`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Observation table: R1 an exact receipt plus a transient 503/read failure
+// retries only the idempotent history GET; R2 a committed Agent marker returns;
+// R3 any write failure or unclassified read failure surfaces unchanged. The
+// production projection intentionally has a bounded read budget during writes.
+const COMMITTED_EVENT_WAIT = {
+  timeoutMs: 180_000,
+  pollMs: 100,
+  retryReadError: (error) => retryableReadStatus(error) !== null,
+};
 
 async function listSessionEvents(client, sessionId) {
   const events = [];
@@ -160,7 +170,7 @@ async function exerciseContainerEnvironment(
             && (event.content ?? []).some((content) => String(content.text ?? '').includes(expectedMarker)),
         ),
         `${name} container Run to commit its Agent marker`,
-        { timeoutMs: 180_000, pollMs: 100 },
+        COMMITTED_EVENT_WAIT,
       ));
       assert.ok(
         events.some(
@@ -190,8 +200,8 @@ async function exerciseContainerEnvironment(
           );
           assert.match(
             realizedImages.at(-1),
-            /\|10001$/,
-            `${name} package build must restore the base image's non-root runtime user`,
+            /\|10001:10001$/,
+            `${name} package build must retain the provider's non-root runtime user`,
           );
           if (process.env.AWAKEN_PACKAGE_IMAGE_REGISTRY) {
             assert.match(
@@ -365,28 +375,6 @@ async function exercisePodmanRootfsMatrix(client) {
   );
 }
 
-function git(args, cwd) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' });
-}
-
-function seedSkillRepository() {
-  const work = `${TMP}/skill-seed`;
-  fs.mkdirSync(`${work}/greet`, { recursive: true });
-  git(['init', '-q'], work);
-  git(['symbolic-ref', 'HEAD', 'refs/heads/main'], work);
-  git(['config', 'user.email', 'container-e2e@awaken.invalid'], work);
-  git(['config', 'user.name', 'Awaken Container E2E'], work);
-  fs.writeFileSync(
-    `${work}/greet/SKILL.md`,
-    '---\nname: greet\ndescription: container skill\n---\nCONTAINER-SKILL-OK\n',
-  );
-  git(['add', '-A'], work);
-  git(['commit', '-q', '-m', 'seed container skill'], work);
-  const bare = `${TMP}/skills.git`;
-  git(['clone', '-q', '--bare', work, bare]);
-  return bare;
-}
-
 function containerAvailable() {
   // A CLI can be installed while its daemon is unreachable. Bound the probe so
   // this optional E2E reaches its documented skip/fail-closed branch instead of
@@ -523,7 +511,7 @@ function buildBrain() {
 async function main() {
   // Test design (container matrix). Causes: C1=the selected Docker/Podman engine
   // is reachable; C2=package/image/rootfs and immutable Environment variants;
-  // C3=ACP, Native, local MCP, Hand, File, Memory, Repository, Skill, and browser
+  // C3=ACP, Native, local MCP, Hand, File, Memory, Skill, and browser
   // resources are frozen on the Session. Effects: E1=!C1 skips or fails when
   // explicitly required; E2=each C2 arm realizes and cleans its exact container;
   // E3=C3 is observable only inside that Session's shared sandbox.
@@ -543,7 +531,6 @@ async function main() {
   fs.mkdirSync(TMP, { recursive: true });
   ensureSessionImage();
   ensurePackageFixtureImage();
-  const skillRepository = seedSkillRepository();
   const bin = buildBrain();
   const addr = `127.0.0.1:${PORT}`;
   const brainEnv = {
@@ -552,6 +539,10 @@ async function main() {
     AWAKEN_MODEL_MODE: 'acp-container',
     AWAKEN_CONTAINER_IMAGE: IMAGE,
     SESSION_ENVIRONMENT_TIER: ENGINE,
+    // Package installation is a build-time effect. This explicit deployment
+    // opt-in uses the existing Docker/Podman package-build network decision;
+    // the resulting Session container still obeys its own network policy.
+    SESSION_DEPLOYMENT_PACKAGE_BUILD_HOST_NETWORK: '1',
     SESSION_DEPLOYMENT_STORAGE_DIR: `${TMP}/storage`,
     AWAKEN_SCENARIO_SKILL_ID: 'delivered-container',
     AWAKEN_ACP_ARGV: `node -e ${ACP_FIXTURE}`,
@@ -650,7 +641,7 @@ async function main() {
     // | M2   | yes       | yes/none  | yes  | yes  | yes     | harvest durable edit   |
     // | M3   | yes       | yes/none  | yes  | yes  | no      | no read-side harvest   |
     // M1 is observed by the in-container seed assertion; M2 by the post-delete
-    // repository assertion. The delete boundary between them excludes M3.
+    // memory assertion. The delete boundary between them excludes M3.
     const memory = await client.post('/v1/memory_stores', {
       body: { name: MEMORY_STORE_NAME },
       headers: MEMORY_HEADERS,
@@ -671,7 +662,6 @@ async function main() {
       resources: [
         { type: 'file', file_id: file.id, mount_path: '/workspace/input.txt' },
         { type: 'memory_store', memory_store_id: memory.id },
-        { type: 'github_repository', url: skillRepository, mount_path: '/workspace/skills' },
       ],
       betas: BETAS,
     });
@@ -680,11 +670,14 @@ async function main() {
       MEMORY_MOUNT_PATH,
       'the MemoryStore catalog name owns the frozen container mount path',
     );
-    // Main container Run rule: C1 Session owns File+Memory+Repository+Skill;
+    // Main container Run rule: C1 Session owns File+Memory+Skill;
     // C2 exact User receipt is admitted; C3 ACP container commits MARKER after
     // C2. Effects: one later Agent message and one shared Session container.
     // Constraints/invariant: only events following the exact processed receipt
     // can prove this Run and all resources stay inside that Session container.
+    // Docker/Podman advertise no Repository Git control service. A Repository
+    // would require that service and fail capability admission before this Run;
+    // Namespace and Kubernetes own the positive Repository partitions.
     const initialReceipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'run the containerized agent' }] }],
       betas: BETAS,
@@ -701,7 +694,7 @@ async function main() {
           && (event.content ?? []).some((content) => String(content.text ?? '').includes(MARKER)),
       ),
       'the main container Run to round-trip its Agent marker',
-      { timeoutMs: 180_000, pollMs: 100 },
+      COMMITTED_EVENT_WAIT,
     );
 
     const messages = events
@@ -721,13 +714,6 @@ async function main() {
       }),
       'CONTAINER-FILE-OK',
       'the uploaded file must be materialized into the Session container',
-    );
-    assert.match(
-      execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/skills/greet/SKILL.md'], {
-        encoding: 'utf8',
-      }),
-      /CONTAINER-SKILL-OK/,
-      'the repository-backed workspace skill must be imported into the Session container',
     );
     const deliveredSkill = `/workspace/.skills/${deliveredSkillRecord.id}/SKILL.md`;
     assert.match(
@@ -853,7 +839,7 @@ async function main() {
           && (event.content ?? []).some((content) => String(content.text ?? '').includes(MARKER)),
       ),
       'the adopted container Run to commit a new Agent marker',
-      { timeoutMs: 180_000, pollMs: 100 },
+      COMMITTED_EVENT_WAIT,
     );
     assert.ok(
       resumedEvents.some(
@@ -926,7 +912,7 @@ async function main() {
     }
 
     console.log(
-      `E2E PASS: container agent — ACP, hand, file, memory, repository, workspace skill and immutable delivered skill shared one Session-owned ${ENGINE} environment.`,
+      `E2E PASS: container agent — ACP, hand, file, memory and immutable delivered skill shared one Session-owned ${ENGINE} environment.`,
     );
   } finally {
     brain.kill('SIGINT');

@@ -96,8 +96,13 @@ async function main() {
   }
   pass('standalone Worker is the sole execution-process entry and requires exact server authority');
 
-  await rejected(bin, { run_local_pool: false }, /run_local_pool=false requires runtime_database_url/u);
-  pass('pool-less coordinator requires a typed shared dispatch store');
+  // Cause/effect rule: AllInOne + no local pool + no private listener cannot
+  // accept remote Worker traffic (D1 reject). With an internal listener, one
+  // SQLite Coordinator remains valid (D2, covered by the canonical role-policy
+  // unit test and the remote Worker E2E); only the separate Coordinator role
+  // requires a shared PostgreSQL Dispatch backend (D3).
+  await rejected(bin, { run_local_pool: false }, /run_local_pool=false requires internal_bind/u);
+  pass('pool-less all-in-one requires a private remote Worker listener');
 
   await rejected(bin, { resource_database_url: path.join(os.tmpdir(), 'resources.sqlite') }, /must be postgres:\/\//u);
   pass('resource plane rejects a second embedded database path');

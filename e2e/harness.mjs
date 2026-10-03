@@ -1229,9 +1229,14 @@ export function waitForChatSettled(chat, effect, description, options = {}) {
 }
 
 export function childDirectories(parent) {
+  // Scope-observation rule: C1 a provider-owned Sandbox child; C2 the Namespace
+  // provider's private `.awaken-control` rendezvous beside those children.
+  // C1 counts as a Sandbox; C2 does not. The exact control directory has its
+  // own ownership/permissions tests and must not make a single scope appear
+  // ambiguous to every E2E caller of this one inventory helper.
   return fs.existsSync(parent)
     ? fs.readdirSync(parent, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
+      .filter((entry) => entry.isDirectory() && entry.name !== '.awaken-control')
       .map((entry) => path.join(parent, entry.name))
       .sort()
     : [];

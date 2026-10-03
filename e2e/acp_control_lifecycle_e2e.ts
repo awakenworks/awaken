@@ -158,8 +158,8 @@ async function main(): Promise<void> {
     // ManualPause boundary. Effects: E0
     // idle/awaiting/ended never advertises a live inbox; E1 C1 advertises the
     // Worker-owned inbox and pause returns the active Run id; E2 the Run settles
-    // at its durable ManualPause boundary without fabricating an answerable
-    // Managed tool event; E3 one resumed continuation commits the second ACP
+    // at its durable ManualPause boundary with `requires_action([])` but no
+    // answerable Managed tool event; E3 one resumed continuation commits the second ACP
     // marker; E4 a post-settlement pause is rejected; E5 C1's receipt is processed
     // only after the ManualPause boundary commits. Constraints: foreground
     // request lifetime and local-pool topology are not ownership; the official
@@ -187,13 +187,13 @@ async function main(): Promise<void> {
       () => true,
       'P1 original User receipt to process at the durable ManualPause boundary',
     );
-    assert.ok(
-      !pausedEvents.some(
-        (event: any) => event.type === 'session.status_idle'
-          && event.stop_reason?.type === 'requires_action',
-      ),
-      `ManualPause must not fabricate a Managed tool action: ${JSON.stringify(pausedEvents)}`,
-    );
+    const manualIdle = pausedEvents.find((event: any) => event.type === 'session.status_idle'
+      && event.stop_reason?.type === 'requires_action');
+    assert.deepEqual(manualIdle?.stop_reason?.event_ids, [],
+      `ManualPause has no answerable Managed tool identity: ${JSON.stringify(pausedEvents)}`);
+    assert.ok(!pausedEvents.some((event: any) => event.type === 'agent.tool_use'
+      || event.type === 'agent.custom_tool_use'),
+    'ManualPause does not invent a tool action');
     pass('HTTP pause reaches the active ACP attempt and commits a durable ManualPause boundary');
 
     const resume = await post(`/v1/durable/threads/${paused.id}/resume`, {
