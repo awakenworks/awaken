@@ -272,7 +272,7 @@ impl SharedHost {
         });
         let config = self.deployment.dispatch_service_config();
         let concurrency = self.dispatch.dispatch_pool_sizing.slots().get();
-        // On the Postgres backend with `AWAKEN_DISPATCH_WAKE=pg-notify` or `=nats`,
+        // On the Postgres backend with a typed PgNotify or NATS wake selection,
         // spawn the pool with the cross-node wake so a peer's enqueue nudges this pool
         // without busy-poll; otherwise the in-process `LocalWakeSignal` suffices.
         let completion = self.completion.clone() as Arc<dyn CompletionSink>;

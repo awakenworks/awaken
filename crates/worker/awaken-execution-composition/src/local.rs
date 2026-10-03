@@ -100,6 +100,12 @@ async fn validate_namespace_hand_bin(path: &Path) -> Result<(), String> {
 pub(crate) fn namespace_hand_path(current_exe: &Path) -> PathBuf {
     let binary_name = format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX);
     let sibling = current_exe.with_file_name(&binary_name);
+    // A release bundle (including an example's explicit snapshot) owns its
+    // adjacent Hand bytes. A profile-level Cargo artifact may be stale or
+    // feature-unqualified and must not shadow that exact sibling.
+    if sibling.is_file() {
+        return sibling;
+    }
     let Some(parent) = current_exe.parent() else {
         return sibling;
     };
@@ -339,10 +345,12 @@ mod tests {
     fn namespace_companion_resolution_preserves_release_and_cargo_test_layouts() {
         // Cause/effect table: C1 a release executable and companion are siblings
         // -> E1 keep the sibling path; C2 Cargo runs a test from `debug/deps`
-        // or an example from `debug/examples` while the built companion is in
-        // `debug` -> E2 use that profile-level companion. A missing profile
-        // companion falls back to the release sibling so validation owns the
-        // one fail-closed error path.
+        // or an example from `debug/examples` without a sibling while the built
+        // companion is in `debug` -> E2 use that profile-level companion. C3
+        // both sibling and profile copies exist -> E3 choose the exact sibling;
+        // `hand --check` still rejects an invalid sibling without fallback. A
+        // missing profile companion falls back to the release sibling so
+        // validation owns the one fail-closed error path.
         let root = tempfile::tempdir().unwrap();
         let profile = root.path().join("debug");
         let deps = profile.join("deps");
@@ -365,6 +373,21 @@ mod tests {
             namespace_hand_path(&profile.join("examples/awaken-example")),
             companion,
             "C2 example/E2"
+        );
+        let examples = profile.join("examples");
+        std::fs::create_dir_all(&examples).unwrap();
+        let example_companion = examples.join(&companion_name);
+        std::fs::write(&example_companion, []).unwrap();
+        assert_eq!(
+            namespace_hand_path(&examples.join("awaken-example")),
+            example_companion,
+            "C3/E3 sibling wins over a profile-level artifact"
+        );
+        std::fs::remove_file(&example_companion).unwrap();
+        assert_eq!(
+            namespace_hand_path(&examples.join("awaken-example")),
+            companion,
+            "C2/E2 profile fallback is selected only without a sibling"
         );
         std::fs::remove_file(&companion).unwrap();
         assert_eq!(

@@ -297,6 +297,17 @@ async function main(): Promise<void> {
     worker = spawn(credentialReferenceWorkerFixture({ root: ROOT }), [], { cwd: ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] });
     worker.stdout.on('data', (chunk) => (workerOutput += chunk.toString()));
     worker.stderr.on('data', (chunk) => (workerOutput += chunk.toString()));
+    // Registration decision rule: C1 the Worker process has started; C2 the
+    // authenticated upstream has accepted its installed manifest. C1&&!C2 is
+    // startup, not a failed provider Run; C2 permits the separate reply clock.
+    // Reuse the fixture's one output waiter and retain its exact failure log.
+    await waitForOutput(() => workerOutput, 'awaken-worker registered with', 30_000)
+      .catch(async (error) => {
+        // EOF releases a Tokio blocking-stdin reader if startup returned an
+        // error before registration could publish its diagnostic.
+        await stopServer(worker).catch(() => {});
+        throw new Error(`${error instanceof Error ? error.message : error}\nworker output after EOF:\n${workerOutput}`);
+      });
 
     const messages = await waitForGatewayReply(worker).catch((error) => {
       return fetch(`${BASE}/v1/durable/threads/${THREAD}/dispatches`)
