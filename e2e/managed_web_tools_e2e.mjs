@@ -112,6 +112,10 @@ async function runToolTurn(client, agent, prompt, expectedTool) {
 async function main() {
   const fixture = await startFetchFixture();
   try {
+    // R0 cause/effect: the management-web test-support AllInOne has a typed
+    // Deployment but no caller-supplied RuntimeAuthority. Its composition
+    // selects one scenario authority before both Host and SessionApplication
+    // bind Dispatch; startup and the Web turns below must both succeed.
     await withScenarioServer('management-web', 'default', PORT, async (baseURL) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL });
       const model = {
