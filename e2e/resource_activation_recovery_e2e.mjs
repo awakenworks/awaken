@@ -131,7 +131,9 @@ function sessionRow(database, sessionId) {
   assert.equal(rows.length, 1, `missing durable Session ${sessionId}`);
   assert.ok(rows[0].aggregate_json, `Session ${sessionId} has no canonical aggregate`);
   const envelope = parseDurableJson(rows[0].aggregate_json);
-  assert.equal(envelope.format, 'awaken.session.v1');
+  // Fresh roots use the Session Store's current v2 writer. Historical v1
+  // normalization has its own exact upgrade test and is not this fault seam.
+  assert.equal(envelope.format, 'awaken.session.v2');
   const aggregate = envelope.aggregate;
   return {
     envelope,

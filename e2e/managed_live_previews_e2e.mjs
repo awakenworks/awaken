@@ -22,7 +22,8 @@
 //     terminal commit, backfills committed events without inventing previews.
 //
 // Cause/effect graph: C1=session stream opts into `agent.message`; C2=the
-// Provider emits multiple text deltas before one durable assistant Message;
+// Provider emits enough text to cross the bounded live-delta coalescer before
+// one durable assistant Message;
 // C3=the opt-in is omitted; C4=the requested delta family is unsupported;
 // C5=the official selector is used on a public primary Thread stream. Effects:
 // E1=C1+C2 yields one preview start plus ordered deltas sharing the eventual
@@ -163,11 +164,16 @@ async function main() {
           environment_id: 'env_local',
           betas: BETAS,
         });
+        // The real Provider sends many small deltas, while its canonical live
+        // sink coalesces nearby bytes. Cross the byte ceiling deterministically
+        // so P1 proves multiple wire previews without depending on scheduler
+        // timing or disabling the production coalescer.
+        const previewInput = 'stream-these-previews '.repeat(40);
         const { frames, observation } = await streamRun(
           baseUrl,
           client,
           session.id,
-          'stream-these-previews',
+          previewInput,
           '?event_deltas[]=agent.message',
         );
 

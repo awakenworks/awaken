@@ -84,7 +84,7 @@ const scenarios: Scenario[] = [
   { id: 'mcp_http', file: 'e2e/mcp_streamable_http_e2e.ts' },
   { id: 'resource_plane_postgres', file: 'e2e/resource_plane_postgres_e2e.ts', postgres: true },
   { id: 'control_plane_postgres', file: 'e2e/control_plane_postgres_e2e.ts', postgres: true },
-  { id: 'worker_resource_manifest', file: 'e2e/worker_resource_manifest_e2e.ts', postgres: true },
+  { id: 'remote_worker_resources', file: 'e2e/remote_worker_resource_stage_e2e.ts', environment: { SESSION_ENVIRONMENT_TIER: 'docker', AWAKEN_E2E_REQUIRE_CONTAINER: '1' } },
   { id: 'remote_attempt', file: 'e2e/remote_attempt_lifecycle_e2e.ts' },
   { id: 'remote_child_lifecycle', file: 'e2e/delegated_remote_lifecycle_e2e.ts' },
   { id: 'acp_permission', file: 'e2e/acp_permission_resume_e2e.mjs' },
@@ -140,22 +140,18 @@ const obligations: Obligation[] = [
   { id: 'D4-09', stage: '4 credential injection', behavior: 'the production composition projects endpoint and credential use once into the per-thread ACP sandbox', scenario: 'acp_projected_local' },
   { id: 'D4-10', stage: '4 credential injection', behavior: 'Codex rejects an incompatible bearer-only publication without restoring its removed environment credential path', scenario: 'acp_projected_local' },
   { id: 'D4-11', stage: '4 credential injection', behavior: 'the production container projection carries model access, MCP metadata, and a File input into one frozen run', scenario: 'acp_projected_container' },
-  { id: 'D4-E01', stage: '4 credential injection', behavior: 'a recipient-bound envelope with a mismatched payload fingerprint fails before provider I/O', scenario: 'credential_materialization_worker' },
-  { id: 'D4-E02', stage: '4 credential injection', behavior: 'an exact envelope cannot be replayed for a different endpoint binding', scenario: 'credential_materialization_worker' },
-  { id: 'D4-E03', stage: '4 credential injection', behavior: 'an expired envelope fails closed before material resolution', scenario: 'credential_materialization_worker' },
-  { id: 'D4-E04', stage: '4 credential injection', behavior: 'an envelope addressed to another Worker trust domain fails closed', scenario: 'credential_materialization_worker' },
-  { id: 'D4-E05', stage: '4 credential injection', behavior: 'the exact recipient, target, use, payload and claim epoch resolve once and commit one provider reply', scenario: 'credential_materialization_worker' },
-
 
   { id: 'D5-01', stage: '5 durable child lifecycle', behavior: 'child has a first-class stable run identity', scenario: 'child_recovery' },
   { id: 'D5-02', stage: '5 durable child lifecycle', behavior: 'hard process crash leaves the in-flight child provider attempt physically fenced', scenario: 'child_recovery' },
-  { id: 'D5-03', stage: '5 durable child lifecycle', behavior: 'replacement reuses the same child run only after exact predecessor terminal proof', scenario: 'child_recovery' },
+  { id: 'D5-03', stage: '5 durable child lifecycle', behavior: 'replacement repairs the same child dispatch from a committed terminal Run and empty physical slot', scenario: 'child_recovery' },
   { id: 'D5-04', stage: '5 durable child lifecycle', behavior: 'recovered child result resumes and completes the parent', scenario: 'child_recovery' },
   { id: 'D5-05', stage: '5 durable child lifecycle', behavior: 'recovery does not duplicate child seed', scenario: 'child_recovery' },
   { id: 'D5-06', stage: '5 durable child lifecycle', behavior: 'recovery commits one child terminal result', scenario: 'child_recovery' },
   { id: 'D5-07', stage: '5 durable child lifecycle', behavior: 'awaiting durable run can be cancelled through HTTP', scenario: 'durable_cancel' },
   { id: 'D5-08', stage: '5 durable child lifecycle', behavior: 'cancelled run cannot recover or commit late', scenario: 'durable_cancel' },
   { id: 'D5-09', stage: '5 durable child lifecycle', behavior: 'unknown and duplicate cancel fail closed', scenario: 'durable_cancel' },
+  { id: 'D5-10', stage: '5 durable child lifecycle', behavior: 'in-flight Managed interrupt with unknown model evidence retains its physical slot and never replays after claim recovery', scenario: 'durable_cancel' },
+  { id: 'D5-11', stage: '5 durable child lifecycle', behavior: 'committed pre-dispatch Cancelled survives a failed Done settlement and repairs exactly once without provider inference', scenario: 'durable_cancel' },
 
   { id: 'D6-01', stage: '6 sandbox/recovery/metrics', behavior: 'sandbox handle is durably bound before crash', scenario: 'child_recovery' },
   { id: 'D6-02', stage: '6 sandbox/recovery/metrics', behavior: 'native child shares parent session sandbox', scenario: 'child_recovery' },
@@ -169,7 +165,7 @@ const obligations: Obligation[] = [
   { id: 'D6-10', stage: '6 sandbox/recovery/metrics', behavior: 'queue-depth metric exports over OTLP', scenario: 'dispatch_metrics' },
   { id: 'D6-11', stage: '6 sandbox/recovery/metrics', behavior: 'commit count and duration export over OTLP', scenario: 'dispatch_metrics' },
   { id: 'D6-12', stage: '6 sandbox/recovery/metrics', behavior: 'in-flight metric exports over OTLP', scenario: 'dispatch_metrics' },
-  { id: 'D6-13', stage: '6 sandbox/recovery/metrics', behavior: 'expired-lease recovery metric exports over OTLP', scenario: 'child_recovery' },
+  { id: 'D6-13', stage: '6 sandbox/recovery/metrics', behavior: 'expired-lease recovery metric exports over OTLP', scenario: 'dispatch_fenced_metrics' },
   { id: 'D6-14', stage: '6 sandbox/recovery/metrics', behavior: 'fenced-commit counter exports from a stale in-process worker attempt', scenario: 'dispatch_fenced_metrics' },
   { id: 'D6-15', stage: '6 sandbox/recovery/metrics', behavior: 'container tiers without matching build capabilities fail before accepting traffic', scenario: 'container_provider_config' },
   { id: 'D6-16', stage: '6 sandbox/recovery/metrics', behavior: 'a docker-only build still rejects unsupported podman and Kubernetes tiers', scenario: 'container_provider_config' },
@@ -201,12 +197,10 @@ const obligations: Obligation[] = [
   { id: 'D7-19a', stage: '7 resource persistence', behavior: 'Postgres reclamation fences recover from contention, late references, physical faults, and release faults', scenario: 'resource_plane_postgres' },
   { id: 'D7-20', stage: '7 resource persistence', behavior: 'Extracted and Stored Memory intents resume while stale mutations and unavailable extractors fail terminally', scenario: 'memory_extraction_stage_recovery' },
   { id: 'D7-21', stage: '7 resource persistence', behavior: 'a Managed Session writes and reads one authored SKILL.md within its sandbox, while archive performs no implicit Skill promotion', scenario: 'managed_full_chain' },
-  { id: 'D7-22', stage: '7 resource persistence', behavior: 'a cold remote worker realizes the frozen Session File manifest from shared resource truth', scenario: 'worker_resource_manifest' },
+  { id: 'D7-22', stage: '7 resource persistence', behavior: 'a cold remote worker realizes the frozen Session File manifest from shared resource truth', scenario: 'remote_worker_resources' },
   { id: 'D7-23', stage: '7 resource persistence', behavior: 'the Managed Session aggregate drives an explicit live resource detach through its complete previous-to-desired transition', scenario: 'managed_namespace_session_environment' },
-  { id: 'D7-24', stage: '7 resource persistence', behavior: 'a mismatched dispatch and resource Workspace fails before sandbox creation', scenario: 'worker_resource_manifest' },
-  { id: 'D7-25', stage: '7 resource persistence', behavior: 'a remote worker hash-verifies and materializes one frozen binary Skill bundle without consulting node-local resource truth', scenario: 'worker_resource_manifest' },
-  { id: 'D7-26', stage: '7 resource persistence', behavior: 'a remote worker uses the pinned Memory configuration to mount current mutable content from the shared data plane', scenario: 'worker_resource_manifest' },
-  { id: 'D7-27', stage: '7 resource persistence', behavior: 'archiving a MemoryStore live denies a later claim even though its immutable configuration remains pinned', scenario: 'worker_resource_manifest' },
+  { id: 'D7-25', stage: '7 resource persistence', behavior: 'a remote worker materializes the exact frozen binary Skill asset without consulting node-local resource truth', scenario: 'remote_worker_resources' },
+  { id: 'D7-26', stage: '7 resource persistence', behavior: 'a remote worker uses the pinned Memory configuration to mount current mutable content from the shared data plane', scenario: 'remote_worker_resources' },
   { id: 'D7-28', stage: '7 resource persistence', behavior: 'all control-plane repository ports select Postgres without changing the HTTP publication or Session execution path', scenario: 'control_plane_postgres' },
   { id: 'D7-29', stage: '7 resource persistence', behavior: 'Postgres-backed catalog, credential, Agent publication, admin resources, webhooks, and Sessions survive process replacement', scenario: 'control_plane_postgres' },
   { id: 'D7-30', stage: '7 resource persistence', behavior: 'configuration through Session invocation and release produces a listed downloadable File with exact sandbox bytes', scenario: 'managed_full_chain' },
@@ -218,7 +212,7 @@ const obligations: Obligation[] = [
   { id: 'D7-A06', stage: '7 remote A2A attempt', behavior: 'resume preserves the committed remote context and stable message identity', scenario: 'remote_attempt' },
   { id: 'D7-A07', stage: '7 remote A2A attempt', behavior: 'durable cancellation addresses the pinned remote task exactly once', scenario: 'remote_attempt' },
   { id: 'D7-A08', stage: '7 remote A2A attempt', behavior: 'cancelled remote attempt is no longer dispatchable', scenario: 'remote_attempt' },
-  { id: 'D7-A08a', stage: '7 remote A2A attempt', behavior: 'active root polling cancellation aborts its pinned remote task', scenario: 'remote_attempt' },
+  { id: 'D7-A08a', stage: '7 remote A2A attempt', behavior: 'active root polling interrupt retains Indeterminate and the occupied physical slot without inventing a remote cancel receipt', scenario: 'remote_attempt' },
   { id: 'D7-A08b', stage: '7 remote A2A attempt', behavior: 'remote poll and resume transport failures remain fail-closed errors', scenario: 'remote_attempt' },
   { id: 'D7-A08c', stage: '7 remote A2A attempt', behavior: 'cancellation does not re-cancel an already-terminal remote task', scenario: 'remote_attempt' },
   { id: 'D7-A09', stage: '7 remote A2A attempt', behavior: 'remote coordinated child input-required resumes through its exact pending ticket', scenario: 'remote_child_lifecycle' },
@@ -267,15 +261,17 @@ const obligations: Obligation[] = [
   { id: 'G42-P02', stage: '9 guardrail promotion evidence', behavior: 'a public SDK Session Run executes from the Postgres-backed Control publication after process replacement', scenario: 'control_plane_postgres' },
   { id: 'G42-P03', stage: '9 guardrail promotion evidence', behavior: 'Worker realization commands require the exact authenticated owner, incarnation and live monotonic lease before Control effects', scenario: 'worker_transport' },
   { id: 'G42-P04', stage: '9 guardrail promotion evidence', behavior: 'replacement Worker recovery transfers exact frozen placement and Work authority while fencing the stale claim epoch', scenario: 'remote_worker_recovery' },
-  { id: 'G42-P05', stage: '9 guardrail promotion evidence', behavior: 'a frozen Resource manifest and Workspace cross the durable remote Worker boundary without widening an invalid request', scenario: 'worker_resource_manifest' },
+  { id: 'G42-P05', stage: '9 guardrail promotion evidence', behavior: 'a Control-frozen Resource manifest crosses the durable remote Worker boundary without a node-local Resource authority', scenario: 'remote_worker_resources' },
   { id: 'G42-P06', stage: '9 guardrail promotion evidence', behavior: 'corrupt, cross-Session, wrong-provider and missing physical Environment bindings fail recovery without replacement', scenario: 'session_environment_faults' },
   { id: 'G42-P07', stage: '9 guardrail promotion evidence', behavior: 'full replacement publishes only the exact realized MCP generation while replay, conflict, removal and failed stage preserve durable truth', scenario: 'managed_mcp_hot_swap' },
   { id: 'G42-P08', stage: '9 guardrail promotion evidence', behavior: 'process replacement recovers the exact active MCP generation and never resurrects a removed generation', scenario: 'managed_mcp_recovery' },
   { id: 'G43-P01', stage: '9 guardrail promotion evidence', behavior: 'credential materialization binds exact source, recipient, target, usage, payload and claim epoch', scenario: 'credential_materialization_worker' },
-  // The concrete credential_files.rs resolver matrix proves these negative
-  // partitions. The one-process materialization E2E proves only the positive
-  // exact pin; counting its formerly synthetic Run refusals here was false E2E
-  // coverage, so both rows remain visible as explicit cross-process gaps.
+  // The former D4-E01..E05 rows repeated these G43 obligations and falsely
+  // counted the negative partitions as E2E evidence. D4-08 keeps the distinct
+  // database-less Worker-to-provider proof. The concrete credential_files.rs
+  // resolver matrix proves the negative partitions, while the one-process
+  // materialization E2E proves only the positive exact pin. Keep the two
+  // cross-process gaps visible until a real Worker rejects those envelopes.
   { id: 'G43-P02', stage: '9 guardrail promotion evidence', behavior: 'mismatched payload or target cannot replay an envelope' },
   { id: 'G43-P03', stage: '9 guardrail promotion evidence', behavior: 'expired or wrong-recipient material fails before provider I/O' },
   { id: 'G43-P04', stage: '9 guardrail promotion evidence', behavior: 'ambient provider variables cannot replace the published credential reference', scenario: 'credential_reference_worker' },
@@ -305,7 +301,7 @@ function unavailableOptionalInfrastructure(scenario: Scenario): string | undefin
   // | I1 | T | T | any | run and count only on success |
   // | I2 | T | F | F | run/fail strict |
   // | I3 | T | F | T | explicit uncovered gap; continue |
-  const engine = scenario.id === 'container_docker'
+  const engine = scenario.id === 'container_docker' || scenario.id === 'remote_worker_resources'
     ? 'docker'
     : scenario.id === 'container_podman'
       ? 'podman'

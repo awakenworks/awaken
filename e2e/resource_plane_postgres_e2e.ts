@@ -531,10 +531,12 @@ async function main(): Promise<void> {
       })).status,
       409,
     );
+    const validStaleSha = '0'.repeat(64);
+    assert.notEqual(validStaleSha, initialSha, 'the stale probe is a distinct valid digest');
     assert.equal(
       (await json('POST', scoped(WORKSPACE, `memory_stores/${memoryId}/memories/${memoryEntryId}`), {
         content: 'must not win',
-        precondition: { type: 'content_sha256', content_sha256: 'stale' },
+        precondition: { type: 'content_sha256', content_sha256: validStaleSha },
       })).status,
       409,
     );

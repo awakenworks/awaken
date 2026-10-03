@@ -375,7 +375,10 @@ test("Quickstart publishes, starts a durable Session, and hands its exact SDK co
   // message, and navigates to the exact durable Session; R3 blank draft id + selected Starter
   // fills the Starter id but an authored replacement remains authoritative; R4
   // post-Quickstart provenance exposes exact Agent/Environment SDK coordinates
-  // and dismissal removes guidance only. This browser scenario owns R2-R4; the
+  // and dismissal removes guidance only; R5 the scoped workspace path is
+  // resolved from the existing workspace-context owner, so its response header
+  // names that same scope even when the UI route uses the "default" label.
+  // This browser scenario owns R2-R5; the
   // runtime-host FMECA tests own the fail-closed R1 edge.
   const stamp = Date.now();
   const id = `quickstart-${stamp}`;
@@ -398,10 +401,11 @@ test("Quickstart publishes, starts a durable Session, and hands its exact SDK co
   const environment = JSON.parse(environmentBody);
 
   await page.reload();
-  const browserWorkspace = await page.evaluate(async () => {
-    const response = await fetch("/v1/workspaces/default/config/workspace-context");
+  const contextPath = await workspaceApiPath(request, "/v1/config/workspace-context");
+  const browserWorkspace = await page.evaluate(async (path) => {
+    const response = await fetch(path);
     return response.headers.get("anthropic-workspace-id");
-  });
+  }, contextPath);
   expect(browserWorkspace).toBe(configuredWorkspace);
   await expect(page.locator(".template-card[data-selected=true]")).toHaveCount(0);
   await page.getByRole("button", { name: /Repository change/ }).click();

@@ -1,11 +1,11 @@
 // Durable dispatch pool on Postgres with the cross-node pg_notify wake (B-P2),
 // end to end over the real server binary.
 //
-// Proves the served durable path when the backend is Postgres AND
-// AWAKEN_DISPATCH_WAKE=pg-notify: the process pool is spawned with a PgNotifyWake
+// Proves the served durable path when the dispatch backend is Postgres AND
+// SESSION_DEPLOYMENT_WAKE=pg-notify: the process pool is spawned with a PgNotifyWake
 // (not the in-process LocalWakeSignal), a background-submitted run is driven
 // autonomously by the pool over the shared Postgres queue, its result is committed,
-// and the history survives a process restart against the same database. The
+// and the history survives a process restart against the same local commit store. The
 // migrations (incl. V0011 `sandbox`) apply on connect. The cross-node wake LATENCY
 // guarantee (a peer's enqueue nudges a blocked pool) is proven deterministically by
 // the Rust component test crates/agents/awaken-dispatch/tests/pg_notify_wake.rs;
@@ -32,14 +32,15 @@ if (!DB_URL) {
 }
 
 // Durable ingress with the dispatch QUEUE on Postgres (+ cross-node pg_notify wake).
-// The run commit history uses SESSION_DEPLOYMENT_STORAGE_DIR (the commit store), kept on a
-// persistent dir so it — like the Postgres queue — survives a process restart.
+// The run commit history uses SESSION_DEPLOYMENT_STORAGE_DIR (the local commit
+// store), kept on one persistent dir across restarts. durable_pg_commit_e2e.mjs
+// separately proves Postgres-owned transcript history with a fresh local dir.
 const ENV = {
   SESSION_DEPLOYMENT_INGRESS: 'durable',
   SESSION_DEPLOYMENT_DISPATCH_BACKEND: 'postgres',
   SESSION_DEPLOYMENT_DATABASE_URL: DB_URL,
-  AWAKEN_DISPATCH_WAKE: 'pg-notify',
-  AWAKEN_DISPATCH_WAKE_CHANNEL: 'awaken_dispatch_wake',
+  SESSION_DEPLOYMENT_WAKE: 'pg-notify',
+  SESSION_DEPLOYMENT_WAKE_CHANNEL: 'awaken_dispatch_wake',
   SESSION_DEPLOYMENT_STORAGE_DIR: mkdtempSync(path.join(tmpdir(), 'awaken-pg-wake-')),
 };
 
@@ -98,7 +99,7 @@ async function main() {
   } finally {
     await stopServer(server);
   }
-  pass('first process stopped — the run and its result live only in the Postgres store');
+  pass('first process stopped — Dispatch lives in Postgres and history in the retained local commit store');
 
   // 2. Restart against the SAME database: committed history survives, and the
   //    pg-notify-wired pool keeps draining a fresh submission.
@@ -109,7 +110,7 @@ async function main() {
     if (!survived.some((m) => m.role === 'Assistant' && (m.text ?? '').length > 0)) {
       throw new Error(`durable history did not survive the restart: ${JSON.stringify(survived)}`);
     }
-    pass('committed history survived the process restart (Postgres store)');
+    pass('committed history survived the process restart (retained local commit store)');
 
     await submitBackground('after restart');
     const { assistants } = await waitForAssistant(2);

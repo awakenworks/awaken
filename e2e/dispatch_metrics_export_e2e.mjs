@@ -5,9 +5,8 @@
 //   - claim / settle counters and drive duration,
 //   - exact queue depth and process in-flight work,
 //   - applied/fenced/error commit count and commit duration.
-// Recovery and fenced-only counters require fault scenarios; recovery is asserted
-// by durable_child_sandbox_recovery_e2e.ts, while fenced commit emission remains an
-// explicitly reported E2E gap in stage_change_coverage_e2e.ts.
+// Recovery and fenced-only counters require fault scenarios; both are asserted
+// by dispatch_fenced_metrics_e2e.ts; this scenario owns ordinary-path metrics.
 //
 // This test boots a DURABLE server (SESSION_DEPLOYMENT_INGRESS=durable) pointed at a fake
 // OTLP/HTTP collector, drives several real runs through the enqueue→claim→worker→

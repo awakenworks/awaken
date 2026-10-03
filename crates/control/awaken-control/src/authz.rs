@@ -156,8 +156,8 @@ use credentials::{
     authorization_bearer_token, bearer_token, is_legacy_tunnel_route, is_tunnel_route,
     query_workspace_id,
 };
-pub(crate) use managed_context::fixed_workspace_header_guard;
 use managed_context::memory_actor;
+pub(crate) use managed_context::with_composed_workspace;
 use route_policy::ROUTE_POLICIES;
 mod remote;
 use remote::{RemoteAuthenticationFailure, authenticate_off_event_loop};

@@ -102,7 +102,7 @@ function binding(storage: string, sessionId: string): Binding {
     path.join(storage, 'sessions.db'),
     `SELECT aggregate_json FROM managed_session WHERE session_id = '${escaped}'`,
   )));
-  assert.equal(aggregate.format, 'awaken.session.v1');
+  assert.equal(aggregate.format, 'awaken.session.v2');
   const environment = aggregate.aggregate.environment;
   assert.equal(environment?.phase, 'resident', `Session ${sessionId} is durably resident`);
   assert.ok(environment.binding, `Session ${sessionId} has a durable environment binding`);

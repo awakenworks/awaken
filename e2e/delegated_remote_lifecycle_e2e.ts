@@ -43,6 +43,7 @@ async function within<T>(promise: Promise<T>, label: string, timeoutMs = 30_000)
 
 type PeerState = {
   freshMessages: number;
+  failedSends: number;
   polls: string[];
   cancels: string[];
   resumes: Array<{ contextId?: string; text: string }>;
@@ -82,7 +83,7 @@ function json(response: ServerResponse, status: number, value?: unknown): void {
 }
 
 async function startPeer(): Promise<{ endpoint: string; state: PeerState; close: () => Promise<void> }> {
-  const state: PeerState = { freshMessages: 0, polls: [], cancels: [], resumes: [] };
+  const state: PeerState = { freshMessages: 0, failedSends: 0, polls: [], cancels: [], resumes: [] };
   const sequenceByContext = new Map<string, number>();
   const server = http.createServer(async (request, response) => {
     const route = request.url ?? '';
@@ -117,6 +118,7 @@ async function startPeer(): Promise<{ endpoint: string; state: PeerState; close:
         return;
       }
       if (text.includes('delegate lifecycle: unavailable')) {
+        state.failedSends += 1;
         json(response, 503, { error: { message: 'delegated peer unavailable' } });
         return;
       }
@@ -397,16 +399,14 @@ async function main(): Promise<void> {
     pass('parent interrupt cancels the pinned remote child task exactly once');
 
     // Failure decision rules: C1 a committed working task's poll returns 5xx;
-    // C2 the initial send returns 5xx; C3 the remote task itself terminates
-    // failed/rejected; C4 it terminates canceled. Effects: E1 C1 keeps the
-    // Session running and the exact task eligible for durable reattachment; E2
-    // C2/C3 commits the exact public error; E3 no rule fabricates REMOTE-CHILD
-    // success; E4 C4 settles the child idle without manufacturing an error or
-    // report. The SDK error shape owns a human-readable message, not the neutral
-    // internal failure code.
-    // Constraint: ADR-0057 makes poll/cancel delivery failure retryable, while a
-    // task terminal or a rejected initial send is a completed attempt boundary.
-    // R1 C1=>E1+E3; R2 C2=>E2+E3; R3 C3=>E2+E3; R4 C4=>E3+E4. Cold
+    // C2 the initial send returns 5xx without an Accepted task; C3 the remote
+    // task itself terminates failed/rejected; C4 it terminates canceled.
+    // Effects: E1 C1 keeps the Session running and the exact task eligible for
+    // reattachment; E2 C2 retains an unconfirmed Prepared effect; E3 C3 commits
+    // the exact public error; E4 no rule fabricates REMOTE-CHILD success; E5 C4
+    // settles child idle without manufacturing an error or report. Constraint:
+    // task terminal truth and transport uncertainty are distinct.
+    // R1 C1=>E1+E4; R2 C2=>E2+E4; R3 C3=>E3+E4; R4 C4=>E4+E5. Cold
     // reattachment of R1's exact task id is owned by remote_attempt_lifecycle_e2e.ts.
     const pollFailed = await createSession(client);
     await sendText(client, pollFailed.id, 'delegate lifecycle: poll failure');
@@ -423,17 +423,16 @@ async function main(): Promise<void> {
         && observed.polls.includes('delegated-poll-failure'),
       'retryable remote poll failure',
     );
-    const pollFailureProjection = JSON.stringify(retryablePoll.events);
     assert.equal(retryablePoll.session.status, 'running', 'R1/E1');
     assert.ok(
       retryablePoll.polls.includes('delegated-poll-failure'),
       'R1 retains and polls the exact committed task id',
     );
-    assert.ok(
-      !pollFailureProjection.includes('503'),
-      `R1 must not turn a retryable poll delivery failure into terminal truth: ${pollFailureProjection}`,
-    );
-    assert.ok(!pollFailureProjection.includes('REMOTE-CHILD-'), 'R1/E3');
+    assert.ok(!retryablePoll.events.some((event: any) =>
+      event.type === 'session.error' || event.type === 'session.status_terminated'),
+    'R1 does not project a retryable poll failure as terminal truth');
+    assert.ok(!retryablePoll.events.some((event: any) => event.type === 'agent.message'
+      && JSON.stringify(event.content).includes('REMOTE-CHILD-')), 'R1/E4');
     pass('remote coordinated child poll 5xx remains durably retryable without fabricated output');
 
     for (const [prompt, message] of [
@@ -494,21 +493,29 @@ async function main(): Promise<void> {
       sendFailed.id,
       'delegate lifecycle: unavailable',
     )).data[0];
-    // Send-failure rule S1: C1 exact command receipt plus stable-id retries
-    // exhausted; E1 processed receipt and public 503 diagnostic; K1 older errors
-    // are excluded. Decision S1=C1=>E1.
+    // Send-failure rule S1: C1 exact parent Event receipt and delegated child;
+    // C2 the peer receives one message:send but replies 503 without an Accepted
+    // task. C1+C2 => the parent receipt is processed, while the child remains
+    // unconfirmed and no child result, terminal Session error, or retry send is
+    // fabricated. The Prepared operation is the same authority exercised by
+    // remote_attempt F1; this case proves its coordinated child projection.
     const sendFailureProjection = JSON.stringify((await waitForSessionEventReceipt(
       client,
       sendFailed.id,
       sendFailedReceipt.id,
       BETAS,
-      ({ delta }: { delta: any[] }) => JSON.stringify(delta).includes('503'),
-      'remote send failure projection',
+      ({ delta }: { delta: any[] }) => delta.some((event) => event.type === 'session.thread_created'),
+      'remote child admission before an unconfirmed send',
       { timeoutMs: 30_000 },
     )).delta);
-    assert.ok(sendFailureProjection.includes('503'), sendFailureProjection);
+    await waitForValue(() => peer.state.failedSends,
+      (count: number) => count === 1,
+      'one failed remote send with no task receipt',
+      { timeoutMs: 10_000, pollMs: 25 });
+    assert.ok(!sendFailureProjection.includes('session.error'), sendFailureProjection);
+    assert.ok(!sendFailureProjection.includes('session.status_idle'), sendFailureProjection);
     assert.ok(!sendFailureProjection.includes('REMOTE-CHILD-'));
-    pass('remote coordinated child send 5xx fails closed after stable-id retries');
+    pass('remote coordinated child send 5xx retains unconfirmed effect without a fabricated terminal');
 
     console.log('DELEGATED REMOTE LIFECYCLE TS API E2E PASS.');
   } finally {

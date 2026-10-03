@@ -544,11 +544,11 @@ pub struct DeploymentConfig {
     pub store: StoreKind,
     /// The dispatch-queue backend (`DeploymentConfig::dispatch_backend`).
     pub dispatch_backend: DispatchBackend,
-    /// The cross-node wake (`AWAKEN_DISPATCH_WAKE`).
+    /// The cross-node wake selected by this typed deployment.
     pub wake: Wake,
-    /// The wake channel/subject (`AWAKEN_DISPATCH_WAKE_CHANNEL`).
+    /// The selected wake channel or subject.
     pub wake_channel: String,
-    /// The NATS broker url for `Wake::Nats` (`AWAKEN_NATS_URL`).
+    /// The NATS broker URL for `Wake::Nats`.
     pub nats_url: Option<String>,
     /// The shared database url for Postgres backends (`DeploymentConfig::database_url`).
     pub database_url: Option<String>,

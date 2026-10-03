@@ -53,7 +53,7 @@ function sessionAggregate(root: string, sessionId: string): Aggregate {
   ).trim();
   assert.ok(json, `durable aggregate exists for ${sessionId}`);
   const envelope = JSON.parse(json) as { format: string; aggregate: Aggregate };
-  assert.equal(envelope.format, 'awaken.session.v1');
+  assert.equal(envelope.format, 'awaken.session.v2');
   return envelope.aggregate;
 }
 
