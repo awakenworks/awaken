@@ -55,6 +55,23 @@ pub(super) async fn prepare_runtime_routers(
     let content_capture_ceiling = process.content_capture_ceiling;
     let namespace_hand_path = process.namespace_hand_path;
     let deployment = process.deployment;
+    #[cfg(any(test, feature = "test-support"))]
+    let runtime_authority = match runtime_authority {
+        Some(authority) => Some(authority),
+        None => {
+            // Scenario/test startup selects one complete reference authority
+            // before either Host or SessionApplication can observe Dispatch.
+            // A Host-only fallback would give them different authority views.
+            let selected = deployment
+                .clone()
+                .unwrap_or_else(awaken_session_executor::DeploymentConfig::ephemeral);
+            Some(
+                awaken_coordinator::init_scenario_runtime(&selected, stores.clock.clone())
+                    .await
+                    .map_err(|error| error.to_string())?,
+            )
+        }
+    };
     let session_execution_placement = if deployment
         .as_ref()
         .is_some_and(|deployment| deployment.disable_local_pool)
@@ -522,8 +539,6 @@ pub(super) async fn prepare_runtime_routers(
     // Resource Registry the capability inventory reads, so a skill or memory store the
     // host serves is exactly what the assistant enumerates, and identity survives a
     // restart.
-    #[cfg(any(test, feature = "test-support"))]
-    let needs_reference_authority = deployment.is_none() && runtime_authority.is_none();
     let mut host_builder = match deployment {
         Some(deployment) => SharedHost::new_with_runtime_resources_and_deployment(
             model_wiring.executor,
@@ -549,13 +564,6 @@ pub(super) async fn prepare_runtime_routers(
         None => unreachable!("product runtime process requires a resolved deployment"),
     }
     .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes());
-    #[cfg(any(test, feature = "test-support"))]
-    if needs_reference_authority {
-        // Cause/effect fixture rule: C1 no typed Deployment; C2 no authority
-        // already selected. R1 C1+C2 -> install exactly one reference authority
-        // at this composition root; R2 !C1 or !C2 -> retain the selected owner.
-        host_builder = awaken_runtime_host_testkit::with_volatile_runtime_authority(host_builder);
-    }
     let local_dispatch = runtime_authority
         .as_ref()
         .map(|authority| authority.dispatch_store());
