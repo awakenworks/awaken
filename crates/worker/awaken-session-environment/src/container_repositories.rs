@@ -357,7 +357,7 @@ fn repository_push_command(
                 "credential_helper=\"!$helper git-credential --socket $socket\"; ",
                 "git check-ref-format --branch \"$branch\" >/dev/null 2>&1 || exit 43; ",
                 "test \"$(git -C \"$repo\" symbolic-ref --quiet --short HEAD)\" = \"$branch\" || exit 43; ",
-                "local_commit=$(git -C \"$repo\" rev-parse HEAD 2>/dev/null) || exit 43; ",
+                "local_commit=$(git -C \"$repo\" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || exit 43; ",
                 "test \"${#local_commit}\" -eq 40 || exit 43; ",
                 "case \"$local_commit\" in *[!0123456789abcdef]*) exit 43 ;; esac; ",
                 "if test \"$local_commit\" != \"$commit\"; then printf 'LOCAL:%s\\n' \"$local_commit\"; exit 42; fi; ",
