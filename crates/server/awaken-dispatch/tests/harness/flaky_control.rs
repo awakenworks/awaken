@@ -125,7 +125,9 @@ impl awaken_dispatch::ControlDispatchQueue for FlakyDispatchStore {
             .await
     }
 
-    async fn runnable_depth(&self) -> Result<Option<u64>, awaken_dispatch::DispatchError> {
+    async fn dispatch_depths(
+        &self,
+    ) -> Result<Option<awaken_dispatch::DispatchDepths>, awaken_dispatch::DispatchError> {
         self.depth_reads.fetch_add(1, Ordering::SeqCst);
         if let Some(entered) = &self.depth_entered {
             entered.notify_one();
@@ -137,7 +139,7 @@ impl awaken_dispatch::ControlDispatchQueue for FlakyDispatchStore {
                 .expect("depth sample release")
                 .forget();
         }
-        self.inner.runnable_depth().await
+        self.inner.dispatch_depths().await
     }
     async fn scan_dispatch_ids(
         &self,
