@@ -1129,6 +1129,7 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
     // | Rule | status | channel | result |
     // | R6 | 42 | canonical conflicting ref | Rejected(RemoteRefChanged) |
     // | R7 | 19 | empty | Unavailable (asserted above) |
+    // | R8 | 42 | canonical different local HEAD | Rejected(LocalCommitMismatch) |
     let third = "3".repeat(40);
     {
         let mut state = shared.lock().unwrap();
@@ -1152,6 +1153,29 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
         rejected,
         pc::RepositoryPublicationError::Rejected(
             pc::RepositoryPublicationRejection::RemoteRefChanged { observed_commit }
+        ) if observed_commit == third
+    ));
+    {
+        let mut state = shared.lock().unwrap();
+        state.insert(
+            "__repository_export_observation".into(),
+            format!("LOCAL:{third}\n").into_bytes(),
+        );
+    }
+    let rejected = container_repositories::push(
+        &container,
+        "/opt/custom/awaken-sandbox",
+        &plan,
+        &expectation,
+        None,
+        &awaken_lease_contract::system_clock(),
+    )
+    .await
+    .expect_err("R8 exact local HEAD conflict is durable rejection evidence");
+    assert!(matches!(
+        rejected,
+        pc::RepositoryPublicationError::Rejected(
+            pc::RepositoryPublicationRejection::LocalCommitMismatch { observed_commit }
         ) if observed_commit == third
     ));
 }

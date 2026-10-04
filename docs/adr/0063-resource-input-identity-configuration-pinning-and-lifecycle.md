@@ -8,6 +8,7 @@
 - Amended: 2026-08-27 — profiled creation, File item fencing, and Session-owned Repository adoption
 - Amended: 2026-08-28 — explicit terminal Repository publication
 - Amended: 2026-08-31 — expected-prior Repository CAS and durable rejection
+- Amended: 2026-10-05 — exact local HEAD rejection before Repository transport
 - Builds on: [ADR-0038](0038-managed-resource-injection-and-store-organization.md)
   (resource injection and provisioning descriptors),
   [ADR-0041](0041-sandbox-execution-environment-provider.md) (sandbox lifecycle),
@@ -733,3 +734,30 @@ means replayed success, unchanged means retryable, changed means verified
 rejection. This changes no aggregate, route, queue, Git writer, or cleanup
 ordering. A deployment must still keep the Session/Worker contract floor
 aligned before running the effect.
+
+### 2026-10-05 amendment: local HEAD mismatch is an exact pre-I/O rejection
+
+The same container command still checked the symbolic branch and local HEAD
+before its first remote observation, but exited with the remote-conflict code
+without a remote observation when the local commit differed from the frozen
+expectation. The Host correctly refused to manufacture `RemoteRefChanged` from
+an empty channel; that left a provable local mismatch retrying as transport
+uncertainty and held the Session's terminal publication fence indefinitely.
+
+The existing `RepositoryPublicationRejection` now also admits
+`LocalCommitMismatch { observed_commit }`. The sole Git adapter may emit it
+only after reading a canonical lowercase full local HEAD under the current
+Sandbox/Worker authority and proving it differs from the immutable desired
+commit, before `ls-remote` or push. Container execution sends only the bounded
+`LOCAL:<oid>` marker over its existing process channel; the Host verifies the
+marker against the frozen expectation. The local Sandbox adapter returns the
+same typed rejection. A missing/noncanonical HEAD, invalid local branch,
+untrusted output, remote transport failure, or ambiguous post-push observation
+remains unavailable. No local observation is ever relabeled as a remote ref.
+
+The existing Session-root CAS records this command-bound rejection before Flow
+may write back Attention; no second Repository writer, queue, credential holder,
+or cleanup state is added. New rejection bytes require the Session application,
+Runtime Host, Worker, and ingress/control roles to run one aligned contract
+revision before this effect is admitted during rollout. The previous remote
+absent/third-ref CAS rules and success replay remain unchanged.

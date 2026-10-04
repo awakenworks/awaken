@@ -314,6 +314,19 @@ fn decode_publication_rejection(
 ) -> Result<pc::RepositoryPublicationRejection, pc::SandboxError> {
     let rejection = match observation {
         "ABSENT\n" => pc::RepositoryPublicationRejection::RemoteRefAbsent,
+        value if value.starts_with("LOCAL:") => {
+            pc::RepositoryPublicationRejection::LocalCommitMismatch {
+                observed_commit: value
+                    .strip_prefix("LOCAL:")
+                    .and_then(|value| value.strip_suffix('\n'))
+                    .ok_or_else(|| {
+                        pc::SandboxError::invalid(
+                            "container Repository local mismatch has no exact HEAD observation",
+                        )
+                    })?
+                    .to_owned(),
+            }
+        }
         value => pc::RepositoryPublicationRejection::RemoteRefChanged {
             observed_commit: value
                 .strip_prefix("REF:")
@@ -342,9 +355,12 @@ fn repository_push_command(
             concat!(
                 "set -eu; export GIT_TERMINAL_PROMPT=0; repo=$1; remote=$2; branch=$3; commit=$4; prior=$5; helper=$6; socket=$7; ",
                 "credential_helper=\"!$helper git-credential --socket $socket\"; ",
-                "git check-ref-format --branch \"$branch\" >/dev/null 2>&1 || exit 42; ",
-                "test \"$(git -C \"$repo\" symbolic-ref --quiet --short HEAD)\" = \"$branch\" || exit 42; ",
-                "test \"$(git -C \"$repo\" rev-parse HEAD)\" = \"$commit\" || exit 42; ",
+                "git check-ref-format --branch \"$branch\" >/dev/null 2>&1 || exit 43; ",
+                "test \"$(git -C \"$repo\" symbolic-ref --quiet --short HEAD)\" = \"$branch\" || exit 43; ",
+                "local_commit=$(git -C \"$repo\" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || exit 43; ",
+                "test \"${#local_commit}\" -eq 40 || exit 43; ",
+                "case \"$local_commit\" in *[!0123456789abcdef]*) exit 43 ;; esac; ",
+                "if test \"$local_commit\" != \"$commit\"; then printf 'LOCAL:%s\\n' \"$local_commit\"; exit 42; fi; ",
                 "observe_remote() { remote_refs=; for attempt in 1 2 3; do ",
                 "if remote_refs=$(git -c credential.useHttpPath=true -c \"credential.helper=$credential_helper\" ls-remote --refs \"$remote\" \"refs/heads/$branch\" 2>/dev/null); then break; fi; ",
                 "if test \"$attempt\" = 3; then return 1; fi; sleep 1; done; ",
@@ -467,6 +483,11 @@ mod tests {
         assert!(script.contains("exit 42"));
         assert_eq!(command.stdio, pc::Stdio::Piped);
         assert!(script.contains("printf 'REF:%s"));
+        assert!(script.contains("printf 'LOCAL:%s"));
+        assert!(
+            script.find("printf 'LOCAL:%s").unwrap() < script.find("ls-remote").unwrap(),
+            "local mismatch must be proven before the first remote operation"
+        );
         assert!(script.contains("push --porcelain"));
         assert!(script.contains(">/dev/null 2>&1"));
         assert_eq!(command.argv[9], "/opt/custom/awaken-sandbox");
@@ -474,15 +495,17 @@ mod tests {
     }
 
     #[test]
-    fn container_conflict_channel_accepts_only_verified_remote_ref_evidence() {
-        // Causes: C1 exact 40-hex third ref, C2 absent ref with update prior,
-        // C3 desired/prior/malformed or untrusted channel text. Effects: E1/E2
-        // reuse the existing permanent rejection contract; E3 remains
-        // unavailable and can never close the terminal Session as rejected.
+    fn container_conflict_channel_accepts_only_verified_source_evidence() {
+        // Causes: C1 exact local HEAD differs from desired, C2 exact 40-hex
+        // third remote ref, C3 absent ref with update prior, C4 desired/prior/
+        // malformed or untrusted channel text. Effects: E1-E3 use the one
+        // permanent rejection contract; E4 remains unavailable and can never
+        // close the terminal Session as rejected.
         // | Rule | observation | expectation | effect |
-        // | P1 | third ref | create/update | E1 |
-        // | P2 | absent | update | E2 |
-        // | P3 | desired/prior/invalid | any | E3 |
+        // | P1 | LOCAL:other | any | E1 local mismatch |
+        // | P2 | REF:third | create/update | E2 remote change |
+        // | P3 | ABSENT | update | E3 remote absence |
+        // | P4 | desired/prior/malformed/empty | any | E4 unavailable |
         let desired = "1".repeat(40);
         let prior = "2".repeat(40);
         let third = "3".repeat(40);
@@ -495,6 +518,13 @@ mod tests {
             expected_prior_commit: Some(prior.clone()),
             ..create.clone()
         };
+        assert_eq!(
+            decode_publication_rejection(&format!("LOCAL:{prior}\n"), &create).unwrap(),
+            pc::RepositoryPublicationRejection::LocalCommitMismatch {
+                observed_commit: prior.clone()
+            },
+            "P1"
+        );
         assert_eq!(
             decode_publication_rejection(&format!("REF:{third}\n"), &create).unwrap(),
             pc::RepositoryPublicationRejection::RemoteRefChanged {
@@ -513,6 +543,9 @@ mod tests {
             ("ABSENT\n".into(), &create),
             ("REF:short\n".into(), &update),
             ("REF:3\nBearer token".into(), &update),
+            (format!("LOCAL:{desired}\n"), &create),
+            ("LOCAL:short\n".into(), &create),
+            ("LOCAL:3\nBearer token".into(), &create),
             (String::new(), &update),
         ] {
             assert!(
@@ -534,7 +567,9 @@ mod tests {
         // loss success; R7 failed push then third -> exact rejection evidence;
         // R8 failed push with unchanged prior -> unavailable; R9 absent update
         // prior -> typed absent evidence; R10 malformed OID and R11 multiple
-        // ref lines -> unavailable.
+        // ref lines -> unavailable; R12 exact different local HEAD -> typed
+        // rejection before any remote read, R13 malformed local HEAD ->
+        // unavailable before any remote read.
         // Git diagnostic output is suppressed; only the bounded observation
         // marker may cross the Sandbox channel.
         let root = tempfile::tempdir().unwrap();
@@ -669,6 +704,8 @@ exit 99
                 false,
                 1,
             ),
+            ("R12", 0, "", "", None, 0, 42, false, 0),
+            ("R13", 0, "", "", None, 0, 43, false, 0),
         ] {
             let count_file = root.path().join(format!("{rule}-count"));
             let push_file = root.path().join(format!("{rule}-push"));
@@ -688,7 +725,14 @@ exit 99
                         std::env::var("PATH").unwrap_or_default()
                     ),
                 )
-                .env("FAKE_LOCAL_COMMIT", &desired)
+                .env(
+                    "FAKE_LOCAL_COMMIT",
+                    match rule {
+                        "R12" => prior.as_str(),
+                        "R13" => malformed.as_str(),
+                        _ => desired.as_str(),
+                    },
+                )
                 .env("FAKE_REMOTE_SHA", remote)
                 .env("FAKE_AFTER_SHA", after)
                 .env("FAKE_PUSH_CODE", push_code.to_string())
@@ -701,6 +745,7 @@ exit 99
             let expected_output = match rule {
                 "R3" | "R7" => format!("REF:{third}\n"),
                 "R9" => "ABSENT\n".to_owned(),
+                "R12" => format!("LOCAL:{prior}\n"),
                 _ => String::new(),
             };
             assert_eq!(
@@ -709,11 +754,15 @@ exit 99
                 "{rule}: safe wire"
             );
             assert_eq!(push_file.exists(), pushes, "{rule}");
-            assert_eq!(
-                std::fs::read_to_string(count_file).unwrap().trim(),
-                reads.to_string(),
-                "{rule}"
-            );
+            if reads == 0 {
+                assert!(!count_file.exists(), "{rule}: no remote request");
+            } else {
+                assert_eq!(
+                    std::fs::read_to_string(count_file).unwrap().trim(),
+                    reads.to_string(),
+                    "{rule}"
+                );
+            }
         }
     }
 

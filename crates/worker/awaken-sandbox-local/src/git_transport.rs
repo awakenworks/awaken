@@ -299,15 +299,15 @@ fn repository_publish_source(
     root: &IsolatedRoot,
     destination: &Path,
     expectation: &awaken_provisioning_contract::RepositoryPublicationExpectation,
-) -> Result<RepositoryPublishSource, SandboxError> {
+) -> Result<RepositoryPublishSource, pc::RepositoryPublicationError> {
     expectation.validate()?;
     run_git(None, &["check-ref-format", "--branch", &expectation.branch])?;
     let destination_metadata = std::fs::symlink_metadata(destination)
         .map_err(|error| SandboxError::backend("repository_publish_source", error))?;
     if destination_metadata.file_type().is_symlink() || !destination_metadata.is_dir() {
-        return Err(SandboxError::invalid(
-            "repository destination is not an in-jail directory",
-        ));
+        return Err(
+            SandboxError::invalid("repository destination is not an in-jail directory").into(),
+        );
     }
     let canonical_root = root
         .root()
@@ -317,17 +317,17 @@ fn repository_publish_source(
         .canonicalize()
         .map_err(|error| SandboxError::backend("repository_publish_source", error))?;
     if !canonical_destination.starts_with(&canonical_root) {
-        return Err(SandboxError::invalid(
-            "repository destination escapes the sandbox root",
-        ));
+        return Err(
+            SandboxError::invalid("repository destination escapes the sandbox root").into(),
+        );
     }
     let git_dir = destination.join(".git");
     let git_metadata = std::fs::symlink_metadata(&git_dir)
         .map_err(|error| SandboxError::backend("repository_publish_source", error))?;
     if git_metadata.file_type().is_symlink() || !git_metadata.is_dir() {
-        return Err(SandboxError::invalid(
-            "repository Git directory is not an in-tree directory",
-        ));
+        return Err(
+            SandboxError::invalid("repository Git directory is not an in-tree directory").into(),
+        );
     }
     let git_dir = git_dir
         .canonicalize()
@@ -338,7 +338,8 @@ fn repository_publish_source(
     if object_metadata.file_type().is_symlink() || !object_metadata.is_dir() {
         return Err(SandboxError::invalid(
             "repository object directory is not an in-tree directory",
-        ));
+        )
+        .into());
     }
     let objects = objects
         .canonicalize()
@@ -346,13 +347,15 @@ fn repository_publish_source(
     if !git_dir.starts_with(&canonical_destination) || !objects.starts_with(&git_dir) {
         return Err(SandboxError::invalid(
             "repository Git object directory escapes the working tree",
-        ));
+        )
+        .into());
     }
     for alternate in ["info/alternates", "info/http-alternates"] {
         if std::fs::symlink_metadata(objects.join(alternate)).is_ok() {
             return Err(SandboxError::unsupported(
                 "repository object alternates are not publishable",
-            ));
+            )
+            .into());
         }
     }
 
@@ -363,31 +366,36 @@ fn repository_publish_source(
     .map_err(|_| SandboxError::conflict("cannot push a repository with detached HEAD"))?;
     let branch = branch.trim();
     if branch.is_empty() || branch == "HEAD" {
-        return Err(SandboxError::conflict(
-            "cannot push a repository with detached HEAD",
-        ));
+        return Err(SandboxError::conflict("cannot push a repository with detached HEAD").into());
     }
     if branch != expectation.branch {
         return Err(SandboxError::conflict(format!(
             "repository current branch `{branch}` does not match expected branch `{}`",
             expectation.branch
-        )));
+        ))
+        .into());
     }
     let commit = git_stdout(
         Some(destination),
         &["rev-parse", "--verify", "HEAD^{commit}"],
     )?;
     let commit = commit.trim();
-    if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if commit.len() != 40
+        || !commit
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
         return Err(SandboxError::invalid(
-            "repository HEAD did not resolve to a full 40-hex object identifier",
-        ));
+            "repository HEAD did not resolve to a canonical lowercase full object identifier",
+        )
+        .into());
     }
     if commit != expectation.commit {
-        return Err(SandboxError::conflict(format!(
-            "repository HEAD `{commit}` does not match expected commit `{}`",
-            expectation.commit
-        )));
+        let rejection = pc::RepositoryPublicationRejection::LocalCommitMismatch {
+            observed_commit: commit.to_owned(),
+        };
+        rejection.verify(expectation)?;
+        return Err(pc::RepositoryPublicationError::Rejected(rejection));
     }
 
     Ok(RepositoryPublishSource { objects })
@@ -550,7 +558,7 @@ pub(crate) fn push_repo_to_at(
         ));
     }
     let dest = jailed_at(root, logical).map_err(unavailable)?;
-    let source = repository_publish_source(root, &dest, expectation).map_err(unavailable)?;
+    let source = repository_publish_source(root, &dest, expectation)?;
     let remote_ref = format!("refs/heads/{}", expectation.branch);
     let observed =
         observe_remote_commit(&plan.transport_url, &remote_ref, credential).map_err(unavailable)?;
@@ -1582,8 +1590,9 @@ mod tests {
     /// Effects: E1 fail before network/effect; E2 create only under an absent-ref
     /// lease; E3 update only under the caller's exact prior-commit lease; E4 replay
     /// returns the identical receipt; E5 stale observations are typed permanent
-    /// rejection and never overwritten; E6 no credential value appears in errors.
-    /// Rules: P1 !C1=>E1; P2 C1+!C2=>E1; P3 C1+C2+!C3=>E1;
+    /// rejection and never overwritten; E6 no credential value appears in errors;
+    /// E7 different local HEAD is a typed permanent rejection without remote I/O.
+    /// Rules: P1 !C1=>E1; P2 C1+!C2=>E1; P3 C1+C2+!C3=>E7;
     /// P4 C1+C2+C3+!C4=>E1+E6; P5 None+absent=>E2; P6 current=>E4;
     /// P7 Some(P)+remote=P=>E3; P8 absent/third-value mismatch=>E5.
     #[test]
@@ -1680,12 +1689,15 @@ mod tests {
         };
         let error = push_repo_to_at(&root, "repo", &plan, &wrong_commit, None)
             .expect_err("P3 wrong local commit fails before transport");
-        assert!(matches!(
-            error,
-            awaken_provisioning_contract::RepositoryPublicationError::Unavailable(
-                pc::SandboxError::Conflict(_)
-            )
-        ));
+        assert!(
+            matches!(
+                error,
+                awaken_provisioning_contract::RepositoryPublicationError::Rejected(
+                    pc::RepositoryPublicationRejection::LocalCommitMismatch { observed_commit }
+                ) if observed_commit == expected_commit
+            ),
+            "P3/E7 local evidence is source-typed before remote I/O"
+        );
 
         let rejected_transport = awaken_provisioning_contract::RepositoryRealizationPlan {
             transport_url: "ssh://attacker.invalid/repo".into(),
