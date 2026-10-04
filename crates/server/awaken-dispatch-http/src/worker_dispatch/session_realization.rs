@@ -30,6 +30,68 @@ pub(super) struct SessionCleanupClaimNextReq {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SessionPreparationClaimNextReq {
+    identity: WorkerIdentity,
+    target: awaken_session_realization_contract::SessionRealizationTarget,
+}
+
+pub(super) async fn session_preparation_claim_next(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<SessionPreparationClaimNextReq>,
+) -> (StatusCode, Json<Value>) {
+    let result: Result<Value, RealizationHttpError> = async {
+        verify_worker_identity(&worker, &request.identity)
+            .map_err(HostError::bad_request)
+            .map_err(RealizationHttpError::from)?;
+        let authority = claim_authority(&service, &worker, Some(&request.identity), false)
+            .await
+            .map_err(RealizationHttpError::from)?;
+        let snapshot = terminal_cleanup_snapshot(&authority)?;
+        if snapshot.state != awaken_dispatch::WorkerState::Ready
+            || request.target.reassign_existing_lease
+            || request.target.owner != request.identity.worker_id
+            || request.target.runtime_incarnation != request.identity.lease_owner()
+            || !awaken_session_realization_contract::realization_lease_is_live_at(
+                request.target.lease_expires_at_unix_ms,
+                authority.now_ms,
+            )
+        {
+            return Err(RealizationHttpError::from(HostError::bad_request(
+                "Session preparation requires one live Ready Worker without reassignment",
+            )));
+        }
+        let mut target = request.target;
+        target.lease_expires_at_unix_ms = narrowed_to_registry(
+            target.lease_expires_at_unix_ms,
+            snapshot.expires_at_ms,
+            authority.now_ms,
+        )
+        .ok_or_else(|| {
+            RealizationHttpError::from(HostError::bad_request(
+                "Session preparation claim outlives Worker authority",
+            ))
+        })?;
+        let control = service
+            .session_preparation_control
+            .as_ref()
+            .ok_or_else(|| {
+                RealizationHttpError::from(HostError::internal(
+                    "Session preparation control is not configured",
+                ))
+            })?;
+        let assignment = control
+            .claim_next_session_preparation(target)
+            .await
+            .map_err(RealizationHttpError::from)?;
+        Ok(json!({ "assignment": assignment }))
+    }
+    .await;
+    respond_realization(result)
+}
+
+#[derive(Deserialize)]
 pub(super) struct SessionCleanupPreparationRecordReq {
     identity: WorkerIdentity,
     lease: awaken_session_resource_contract::SessionRealizationLease,

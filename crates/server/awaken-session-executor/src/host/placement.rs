@@ -211,27 +211,53 @@ pub fn remote_worker_placement(
             .into_iter()
             .filter(|mode| *mode != awaken_runtime_contract::tool::ToolRecoveryMode::NeverReplay)
             .collect();
+    let requires_local_environment = requires_local_environment(models);
+    let requires_opaque_process = crate::provisioning::model_candidates_require_opaque_process(
+        std::iter::once(&models.model_binding).chain(models.model_candidates.iter()),
+    );
+    apply_session_physical_placement(
+        &mut placement,
+        environment,
+        resources.map(|manifest| &manifest.resources),
+        requires_local_environment,
+        requires_opaque_process,
+    );
+    for candidate in std::iter::once(&models.model_binding).chain(models.model_candidates.iter()) {
+        placement.required_capabilities.insert(
+            awaken_runtime_contract::execution::execution_capability(
+                candidate.binding().identity().2,
+            ),
+        );
+        if let Some(capability) = model_realization_capability(candidate) {
+            placement
+                .required_capabilities
+                .insert(capability.to_string());
+        }
+    }
+    placement
+}
+
+/// The one physical Environment/Resource capability compiler shared by Run
+/// placement and Run-free initial Session preparation. Model and ACP demands
+/// are layered only by the Run caller above.
+fn apply_session_physical_placement(
+    placement: &mut PlacementRequirements,
+    environment: Option<&awaken_session_configuration_contract::EnvironmentSnapshot>,
+    resources: Option<&awaken_session_resource_contract::ResolvedSessionResources>,
+    requires_local_environment: bool,
+    requires_opaque_process: bool,
+) {
     let resource_facts = resources
-        .map(|manifest| manifest.resources.compatibility_facts())
+        .map(|value| value.compatibility_facts())
         .unwrap_or_default();
     let has_repository = resource_facts.has_repository();
-    let has_readonly_input = resource_facts.has_readonly_input();
-    let has_credentialed_repository = resource_facts.has_credentialed_repository();
-    let requires_local_environment = requires_local_environment(models);
     let requires_trusted_host = requires_local_environment
         && environment.is_some_and(|environment| {
             environment.sandbox.host_access
                 == awaken_provisioning_contract::HostAccessPolicy::TrustedHost
         });
-    let requires_opaque_process = crate::provisioning::model_candidates_require_opaque_process(
-        std::iter::once(&models.model_binding).chain(models.model_candidates.iter()),
-    );
     if requires_local_environment {
         placement.sandbox = if requires_trusted_host {
-            // TrustedHost is an exact Worker backend, not a weaker isolation
-            // floor. Its Workdir does not claim path/read-only/network/limit
-            // guarantees; the backend id below prevents a stronger isolated
-            // provider from being substituted and losing host identity.
             awaken_provisioning_contract::SandboxRequirements {
                 process_tree_supervision: environment
                     .is_some_and(|environment| environment.sandbox.process_tree_supervision),
@@ -264,34 +290,64 @@ pub fn remote_worker_placement(
             placement.resources = crate::provisioning::sandbox_resource_requests(environment);
         }
     }
-    for candidate in std::iter::once(&models.model_binding).chain(models.model_candidates.iter()) {
-        placement.required_capabilities.insert(
-            awaken_runtime_contract::execution::execution_capability(
-                candidate.binding().identity().2,
-            ),
-        );
-        if let Some(capability) = model_realization_capability(candidate) {
-            placement
-                .required_capabilities
-                .insert(capability.to_string());
-        }
-    }
     if resources.is_some() {
-        // Read-only remains an access intent inside TrustedHost, but cannot be
-        // advertised as an enforced Worker guarantee.
+        // TrustedHost is an exact backend; its read-only intent is not an
+        // enforceable isolation claim.
         if !requires_trusted_host {
-            placement.sandbox.enforced_readonly |= has_readonly_input;
+            placement.sandbox.enforced_readonly |= resource_facts.has_readonly_input();
         }
         placement
             .required_capabilities
             .insert(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY.to_string());
-        if has_credentialed_repository {
+        if resource_facts.has_credentialed_repository() {
             placement
                 .required_capabilities
                 .insert(awaken_dispatch_contract::REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
         }
     }
+}
+
+/// Run-free Session preparation uses the same physical capability projection,
+/// without inheriting a model, inference credential, ACP, or Run-tool demand.
+#[must_use]
+pub fn session_preparation_placement(
+    environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
+    resources: &awaken_session_resource_contract::ResolvedSessionResources,
+    requires_opaque_process: bool,
+) -> PlacementRequirements {
+    let mut placement = PlacementRequirements::remote_required();
+    apply_session_physical_placement(
+        &mut placement,
+        Some(environment),
+        Some(resources),
+        true,
+        requires_opaque_process,
+    );
     placement
+}
+
+impl awaken_session_realization_contract::SessionPreparationPlacement for super::SharedHost {
+    fn requirements(
+        &self,
+        session: &awaken_session_state_contract::PersistedSession,
+    ) -> Result<
+        PlacementRequirements,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
+    > {
+        let baseline = session.frozen_baseline().ok_or(
+            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
+        )?;
+        let requires_opaque_process = session
+            .mcp
+            .attachments
+            .iter()
+            .any(|attachment| attachment.target.sandbox_stdio_target().is_some());
+        Ok(session_preparation_placement(
+            &baseline.environment,
+            session.resources.active_generation().1,
+            requires_opaque_process,
+        ))
+    }
 }
 
 /// Bind the immutable inherited-input format before a root can author children.
@@ -319,5 +375,67 @@ pub(super) fn bind_root_tool_configuration_format(
         ))
     } else {
         activation
+    }
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+
+    #[test]
+    fn run_free_preparation_uses_the_same_physical_projection_as_run_placement() {
+        // Causes: C1 isolated versus TrustedHost Environment, C2 opaque stdio
+        // MCP need, C3 an exact (possibly empty) Resource projection. Effects:
+        // E1 Sandbox requirements equal the canonical provisioning compiler;
+        // E2 TrustedHost selects only its exact backend/supervision contract;
+        // E3 no model/ACP/credential demand is introduced; E4 Session Resource
+        // transport remains required. Rules P1=isolated+C2/C3=>E1+E3+E4,
+        // P2=TrustedHost+C2/C3=>E2+E3+E4. The Run compiler above calls the
+        // same `apply_session_physical_placement` function as this subject.
+        let mut environment = awaken_session_configuration_contract::EnvironmentSnapshot {
+            environment_id: "env".into(),
+            revision: awaken_environment_contract::EnvironmentRevision(1),
+            self_hosted: false,
+            config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
+                "env-1".into(),
+            ),
+            sandbox: Default::default(),
+            sandbox_provisioning: Default::default(),
+            idle_retention: Default::default(),
+            packages: Default::default(),
+            prepared_image: None,
+            network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
+            credential_realization:
+                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
+        };
+        let resources = awaken_session_resource_contract::ResolvedSessionResources::default();
+        for opaque in [false, true] {
+            let required = session_preparation_placement(&environment, &resources, opaque);
+            assert_eq!(
+                required.sandbox,
+                crate::provisioning::sandbox_requirements(&environment, false, opaque),
+                "P1/E1"
+            );
+            assert!(required.required_credentials.is_empty(), "P1/E3");
+            assert!(required.required_acp_capabilities.is_empty(), "P1/E3");
+            assert!(required.required_sandbox_tool_recovery.is_empty(), "P1/E3");
+            assert!(
+                required
+                    .required_capabilities
+                    .contains(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY,),
+                "P1/E4"
+            );
+        }
+        environment.sandbox.host_access =
+            awaken_provisioning_contract::HostAccessPolicy::TrustedHost;
+        environment.sandbox.process_tree_supervision = true;
+        let trusted = session_preparation_placement(&environment, &resources, true);
+        assert_eq!(
+            trusted.sandbox_backend.as_deref(),
+            Some(awaken_dispatch_contract::TRUSTED_HOST_SANDBOX_BACKEND),
+            "P2/E2"
+        );
+        assert!(trusted.sandbox.process_tree_supervision, "P2/E2");
+        assert!(trusted.required_credentials.is_empty(), "P2/E3");
     }
 }

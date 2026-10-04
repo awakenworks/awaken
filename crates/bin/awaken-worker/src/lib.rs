@@ -43,7 +43,8 @@ mod relay_hand;
 use credential_liveness::WorkerObservationCache;
 use lifecycle::{
     WorkerSupervisor, grace_window, new_incarnation_id, spawn_environment_warmup_reconciliation,
-    spawn_heartbeat, spawn_session_realization_reconciliation,
+    spawn_heartbeat, spawn_session_preparation_reconciliation,
+    spawn_session_realization_reconciliation,
 };
 use manifest::{
     CredentialMaterializerSupport, ManifestSelection, ManifestSource, ResourceManifestSupport,
@@ -79,6 +80,16 @@ use awaken_session_executor::SharedHost;
 use awaken_worker_contract::{RegistryMutation, WorkerManifest};
 use awaken_coordinator_client::WorkerControlClient;
 use awaken_worker_transport_security::WorkerUpstream;
+
+/// Completion of the one Worker preparation lane. A timeout or task failure
+/// never asserts quiescence; the caller must abort admission and run the
+/// existing exact-owner revocation before closing the Worker transport.
+async fn preparation_drained_before(
+    task: &mut tokio::task::JoinHandle<()>,
+    budget: std::time::Duration,
+) -> bool {
+    matches!(tokio::time::timeout(budget, task).await, Ok(Ok(())))
+}
 
 struct WorkerProcessConfig {
     /// The embedded Worker process's one wall clock.
@@ -214,7 +225,9 @@ fn worker_realization_scope_source_is_total_and_exact() {
 /// persisted Workspace marker. Worker and process incarnation remain
 /// lease/effect-fence facts; including either here would make an exact object
 /// impossible to adopt after reassignment.
-fn worker_realization_namespace(
+/// Downstream process roots reuse this same installation projection when they
+/// decorate the canonical container provider; it grants no execution authority.
+pub fn worker_realization_namespace(
     deployment: &awaken_session_executor::DeploymentConfig,
 ) -> Result<awaken_sandbox_container::ContainerRealizationNamespace, WorkerNodeBuildError> {
     let installation_scope = match worker_realization_scope_source(deployment.sandbox_tier) {
@@ -1607,6 +1620,8 @@ impl WorkerNode {
         let environment_warmups = spawn_environment_warmup_reconciliation(lifecycle.clone());
         let session_realizations =
             spawn_session_realization_reconciliation(lifecycle.clone(), heartbeat_timing);
+        let mut session_preparations =
+            spawn_session_preparation_reconciliation(lifecycle.clone(), heartbeat_timing);
         let mut heartbeat = spawn_heartbeat(
             lifecycle.clone(),
             2,
@@ -1701,12 +1716,37 @@ impl WorkerNode {
                 "awaken-worker draining: finishing in-flight runs (≤{}s)",
                 grace.as_secs()
             );
-            if !host.drain_runtime(grace).await {
+            let (runs_drained, preparation_drained) = tokio::join!(
+                host.drain_runtime(grace),
+                preparation_drained_before(&mut session_preparations, grace),
+            );
+            if !runs_drained || !preparation_drained {
                 // A drained admission gate does not stop an in-flight inference
-                // or tool. Reuse the authority-loss cancellation/return observer
-                // before shutting down transport; otherwise an ordinary SIGTERM
-                // discards the only owner able to acknowledge physical return.
-                // Unknown external effects still retain their Dispatch slot.
+                // or Session preparation effect. Stop the preparation future
+                // before revoking its exact local Session projection; a timer
+                // does not certify physical quiescence or create an ACK.
+                session_preparations.abort();
+                let deadline =
+                    awaken_lease_contract::mono::now() + lifecycle::WORKER_REVOCATION_BUDGET;
+                cleanup = Box::pin(lifecycle::revoke_worker_session_authority_before(
+                    &lifecycle,
+                    deadline,
+                ))
+                .await;
+                cleanup_deadline = Some(deadline);
+            }
+        } else if !authority_lost {
+            // Prompt stop has no Run grace, but still gives an idle preparation
+            // loop one tick to observe the absorbing drain. An occupied or
+            // unresponsive preparation is revoked through the existing bounded
+            // Session owner cleanup, never abandoned as a successful effect.
+            if !preparation_drained_before(
+                &mut session_preparations,
+                std::time::Duration::from_millis(100),
+            )
+            .await
+            {
+                session_preparations.abort();
                 let deadline =
                     awaken_lease_contract::mono::now() + lifecycle::WORKER_REVOCATION_BUDGET;
                 cleanup = Box::pin(lifecycle::revoke_worker_session_authority_before(
@@ -1722,6 +1762,7 @@ impl WorkerNode {
         credential_probe.abort();
         environment_warmups.abort();
         session_realizations.abort();
+        session_preparations.abort();
         if let Some(admin_task) = admin_task {
             admin_task.abort();
         }

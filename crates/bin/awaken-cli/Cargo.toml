@@ -38,6 +38,7 @@ kube = { version = "1", default-features = false, features = ["client", "rustls-
 awaken-protocol-mcp.workspace = true
 awaken-service-lifecycle.workspace = true
 awaken-api-contract = { workspace = true }
+awaken-ui-artifact.workspace = true
 # The Control and Coordinator services started by this product process.
 awaken-control = { workspace = true }
 awaken-coordinator = { workspace = true }
@@ -179,10 +180,13 @@ container-podman = ["awaken-execution-composition/podman"]
 container-k8s = ["awaken-coordinator/container-k8s", "awaken-execution-composition/k8s", "awaken-worker/container-k8s", "awaken-worker-transport-security/kubernetes", "dep:kube"]
 
 [build-dependencies]
+awaken-ui-artifact.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 
 [dev-dependencies]
 awaken-container-contract.workspace = true
+sha2 = "0.10"
 awaken-ext-goal.workspace = true
 k8s-openapi = { version = "0.25", features = ["v1_30"] }
 awaken-dispatch-http.workspace = true
