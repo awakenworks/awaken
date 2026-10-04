@@ -12,12 +12,15 @@ pub trait WorkerEvidenceRelease: Send + Sync {
     fn owns_worker_evidence(&self, identity: &WorkerIdentity) -> bool;
 
     /// Retire only the original closed-idle domain after the exact physical slot
-    /// scan; unavailable or unprovable closure remains retryable. No exit receipt
-    /// or attempt-settlement authority crosses this port.
+    /// scan. The Host supplies its trusted clock so Ingress honors the original
+    /// Registry lease deadline before stopping a still-active Worker. Unknown
+    /// closure remains retryable; no exit receipt or attempt-settlement authority
+    /// crosses this port.
     async fn release_closed_idle_worker_evidence(
         &self,
         dispatch: &dyn ControlDispatchQueue,
         directory: &dyn WorkerDirectory,
         identity: &WorkerIdentity,
+        now_ms: u64,
     ) -> Result<(), ApplicationError>;
 }

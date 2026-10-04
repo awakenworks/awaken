@@ -113,7 +113,7 @@ pub use sandbox_control::{
 pub use crate::k8s_package_image::K8sPackageImageProvisioner;
 pub use create_ledger::{
     CreateTicket, CreateTicketRequest, K8sLedgerBinding, K8sWorkerCreateLedger, RequestJoin,
-    TicketAdmission, TicketResult, WorkerCreateLedgerState,
+    TicketAdmission, TicketResult, TicketStatus, WorkerCreateLedgerState,
 };
 pub(crate) use create_transport::brokered_client;
 pub use create_transport::{K8sCreateRequest, K8sCreateResponse, K8sCreateTransport};
@@ -579,6 +579,7 @@ pub struct K8sRuntime {
     continuation_volume: Option<crate::K8sContinuationVolume>,
     image_prewarm: Option<crate::K8sImagePrewarm>,
     create_transport: Option<Arc<dyn K8sCreateTransport>>,
+    create_mode_frozen: AtomicBool,
     creation_attempts:
         Mutex<std::collections::HashMap<K8sCreationAttemptKey, Arc<K8sCreationAttemptGate>>>,
     /// The composing process's wall clock: Sandbox effect fences are judged on
@@ -669,6 +670,7 @@ impl K8sRuntime {
             continuation_volume: None,
             image_prewarm: None,
             create_transport: None,
+            create_mode_frozen: AtomicBool::new(false),
             creation_attempts: Mutex::new(Default::default()),
             clock: None,
         };
@@ -768,6 +770,7 @@ impl K8sRuntime {
             continuation_volume: None,
             image_prewarm: None,
             create_transport: None,
+            create_mode_frozen: AtomicBool::new(false),
             creation_attempts: Mutex::new(Default::default()),
             clock: Some(awaken_time::system_clock()),
         }

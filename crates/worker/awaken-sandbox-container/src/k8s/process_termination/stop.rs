@@ -41,6 +41,31 @@ impl PodProcessStopper {
         self.release_closed_idle_pod_evidence(name, uid).await
     }
 
+    /// A graceful Quiesced Worker may still be returning its deregistration
+    /// RPC. Observe the exact running process without issuing DELETE; a Dead
+    /// Worker uses the normal stop operation below instead.
+    pub async fn exact_process_is_running(
+        &self,
+        binding: &PodProcessBinding,
+    ) -> Result<bool, RuntimeError> {
+        if binding.namespace != self.observer.namespace {
+            return Err(backend("Pod process binding belongs to another namespace"));
+        }
+        let pod = self
+            .observer
+            .pods
+            .get(&binding.name)
+            .await
+            .map_err(backend)?;
+        if pod.metadata.uid.as_deref() != Some(binding.uid.as_str()) {
+            return Err(backend("Pod process was replaced"));
+        }
+        Ok(
+            bind(&self.observer.namespace, &binding.name, &binding.uid, &pod)
+                .is_ok_and(|current| current == *binding),
+        )
+    }
+
     /// Drop retention metadata only after the trusted Coordinator has closed
     /// this incarnation and proved its Dispatch slots empty. No process binding
     /// or exit receipt is constructed, and a replacement UID is never touched.

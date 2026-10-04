@@ -473,6 +473,34 @@ ticket is joined, and the provider has verified/disposed the exact Pod, PVC,
 ConfigMap, Secret and any controller-owned participant before the existing
 Session cleanup owner commits its receipt.
 
+The next closure slice retains a Worker process binding before Registry insert in the
+same provider evidence authority: the Kubernetes control ConfigMap holds the
+exact Pod binding, while the existing systemd evidence directory holds an
+immutable unit binding. The post-registration retention read is idempotent and
+checks the same coordinates before Ready. A closed idle Worker with no Dispatch slot receives an
+exit receipt only after the independent stop source observes that original
+process. Ingress persists and reads back the receipt in the existing Worker
+Registry before provider evidence can be released. A graceful Quiesced Worker
+that is still returning its deregistration request is observed again later;
+only after the original Registry lease deadline may an active closed Worker be
+stopped by the same exact provider operation. Both HTTP and Host maintenance
+pass their existing trusted clock to this decision.
+This closes the evidence-release ordering gap for newly registered independent
+Workers; missing legacy bindings remain Unknown.
+
+For the deliberately narrow handle-free, zero-participant Kubernetes shape,
+the provider now requires a complete sealed request join in which every
+admitted Create was definitively refused without effect. Any successful Create,
+even if the canonical Pod/PVC later returns 404, means the attempt may have
+materialized and must use handle-bound cleanup or remain Unknown. The request
+ledger is grouped conservatively by the entire Worker incarnation, so an
+unrelated successful Create can also keep this narrow proof Unknown; a future
+per-effect refinement must preserve that safety ordering and avoid a second
+ticket authority. In brokered mode the runtime does not enter the historical
+process-local Create gate, and a runtime that has already admitted a direct
+effect cannot switch transport modes. The gate remains only for direct-mode
+compatibility with its original process-lifetime proof boundary.
+
 ## Amendment 2026-10-05: unfinished terminal cleanup remains Worker demand
 
 A Hosted Run can settle its Dispatch lease after the Session root has recorded

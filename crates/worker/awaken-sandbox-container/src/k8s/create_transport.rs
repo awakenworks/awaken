@@ -18,8 +18,8 @@ use kube::client::Body;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::K8sRuntime;
-use crate::RuntimeError;
+use super::{K8sRuntime, RequestJoin};
+use crate::{ContainerEffectFence, RuntimeError};
 
 /// Ephemeral wire payload. Object bytes may contain credential material and
 /// must never enter the durable ticket ledger, debug logs or error rendering.
@@ -40,6 +40,11 @@ pub struct K8sCreateResponse {
 #[async_trait]
 pub trait K8sCreateTransport: Send + Sync {
     async fn create(&self, request: K8sCreateRequest) -> Result<K8sCreateResponse, RuntimeError>;
+    async fn seal_predecessor(
+        &self,
+        scope: &str,
+        predecessor: &ContainerEffectFence,
+    ) -> Result<RequestJoin, RuntimeError>;
 }
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -99,9 +104,13 @@ impl K8sRuntime {
         mut self,
         transport: Arc<dyn K8sCreateTransport>,
     ) -> Result<Self, RuntimeError> {
-        if self.create_transport.is_some() {
+        if self.create_transport.is_some()
+            || self
+                .create_mode_frozen
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
             return Err(RuntimeError::Backend(
-                "Kubernetes Create transport was already selected".into(),
+                "Kubernetes Create transport cannot replace an active admission mode".into(),
             ));
         }
         self.clients.control = brokered_client(self.clients.control.clone(), transport.clone());
@@ -120,9 +129,80 @@ mod tests {
     use kube::api::PostParams;
     use serde_json::json;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct RecordingBroker {
         requests: Mutex<Vec<(String, String)>>,
+        join: RequestJoin,
+    }
+
+    #[tokio::test]
+    async fn create_admission_modes_cannot_overlap_or_switch_after_first_direct_effect() {
+        // Causes: C1 direct runtime has entered an effect; C2 broker selection
+        // occurs before/after C1; C3 brokered effect is admitted. Effects:
+        // E1 C1+C2(after) rejects a mid-flight authority switch; E2 C2(before)
+        // +C3 does not create a second process-local gate. C4 a direct entry
+        // has no fence and therefore no local gate. Rules A1=C1+late
+        // broker->E1, A2=early broker+C3->E2, A3=C4+late broker->E1.
+        // The provider ticket remains the
+        // only brokered Create admission and close authority.
+        let fence =
+            ContainerEffectFence::new("old-effect", "worker", "worker-boot", 1, u64::MAX).unwrap();
+        let fingerprint = serde_json::from_value(json!("fingerprint")).unwrap();
+        let intent = crate::ContainerRealizationIntent::Create;
+        let attempt = crate::fresh_create_attempt();
+        let context = crate::ContainerRealizationContext::new(
+            "scope",
+            &fingerprint,
+            Some(&fence),
+            &intent,
+            &attempt,
+        );
+        let plan = super::super::ephemeral_plan();
+        let direct = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
+        let guard = direct
+            .admit_observed_creation_attempt(&context, &plan)
+            .await
+            .unwrap()
+            .expect("A1 direct gate exists");
+        let broker = || {
+            Arc::new(RecordingBroker {
+                requests: Mutex::new(Vec::new()),
+                join: RequestJoin::Unknown,
+            })
+        };
+        assert!(direct.with_create_transport(broker()).is_err(), "A1");
+        drop(guard);
+        let unfenced =
+            crate::ContainerRealizationContext::new("scope", &fingerprint, None, &intent, &attempt);
+        let direct_unfenced = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
+        assert!(
+            direct_unfenced
+                .admit_observed_creation_attempt(&unfenced, &plan)
+                .await
+                .unwrap()
+                .is_none(),
+            "A3 no process-local proof gate"
+        );
+        assert!(
+            direct_unfenced.with_create_transport(broker()).is_err(),
+            "A3 even an ungated direct effect freezes the transport mode"
+        );
+        let brokered = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap())
+            .with_create_transport(broker())
+            .unwrap();
+        assert!(
+            brokered
+                .admit_observed_creation_attempt(&context, &plan)
+                .await
+                .unwrap()
+                .is_none(),
+            "A2 provider ledger owns admission"
+        );
+        assert!(
+            brokered.creation_attempts.lock().unwrap().is_empty(),
+            "A2 no parallel gate"
+        );
     }
 
     #[async_trait]
@@ -147,6 +227,14 @@ mod tests {
                     "data":{}
                 }),
             })
+        }
+
+        async fn seal_predecessor(
+            &self,
+            _scope: &str,
+            _predecessor: &ContainerEffectFence,
+        ) -> Result<RequestJoin, RuntimeError> {
+            Ok(self.join.clone())
         }
     }
 
@@ -183,6 +271,7 @@ mod tests {
         let direct_configuration = runtime.realization_configuration().unwrap();
         let broker = Arc::new(RecordingBroker {
             requests: Mutex::new(Vec::new()),
+            join: RequestJoin::Unknown,
         });
         let runtime = runtime.with_create_transport(broker.clone()).unwrap();
         let brokered_configuration = runtime.realization_configuration().unwrap();
@@ -271,5 +360,127 @@ mod tests {
             "E3 no direct POST"
         );
         assert!(runtime.with_create_transport(broker).is_err(), "E4");
+    }
+
+    #[tokio::test]
+    async fn handle_free_absence_needs_independent_join_before_api_404() {
+        // Causes: C1 one brokered Worker effect has no durable handle and a
+        // zero-participant plan; C2 old Create lifetime is Unknown/Complete;
+        // C3 the canonical Pod and claim both answer 404; C4 the joined
+        // ticket set is empty, definitively refused, Created, or InFlight.
+        // Effects: E1 Unknown never reads absence; E2 Complete+empty/refused
+        // plus C3 permits narrow absence; E3 Created/InFlight refuses even
+        // after both 404s. Decision rows: H1=Unknown->E1;
+        // H2=Complete+(empty|RejectedNoEffect)+C3->E2;
+        // H3=Complete+(Created|InFlight)+C3->E3.
+        let reads = Arc::new(AtomicUsize::new(0));
+        let service = tower::service_fn({
+            let reads = reads.clone();
+            move |request: Request<Body>| {
+                let reads = reads.clone();
+                async move {
+                    assert_eq!(request.method(), Method::GET, "no direct Create");
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, std::io::Error>(
+                        Response::builder()
+                            .status(404)
+                            .body(Body::from(
+                                serde_json::to_vec(&json!({
+                                    "apiVersion":"v1", "kind":"Status", "status":"Failure",
+                                    "code":404, "reason":"NotFound"
+                                }))
+                                .unwrap(),
+                            ))
+                            .unwrap(),
+                    )
+                }
+            }
+        });
+        let direct = Client::new(service, "default");
+        let runtime = |joined| {
+            let mut runtime = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
+            runtime.clients.control = direct.clone();
+            runtime
+                .with_create_transport(Arc::new(RecordingBroker {
+                    requests: Mutex::new(Vec::new()),
+                    join: joined,
+                }))
+                .unwrap()
+        };
+        let fence =
+            ContainerEffectFence::new("old-effect", "worker", "worker-boot", 1, u64::MAX).unwrap();
+        assert!(
+            !runtime(RequestJoin::Unknown)
+                .prove_unmaterialized_absence(
+                    "scope",
+                    &super::super::ephemeral_plan(),
+                    Some(&fence)
+                )
+                .await
+                .unwrap(),
+            "E1"
+        );
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            0,
+            "E1 no 404 used before join"
+        );
+        assert!(
+            runtime(RequestJoin::Complete(Vec::new()))
+                .prove_unmaterialized_absence(
+                    "scope",
+                    &super::super::ephemeral_plan(),
+                    Some(&fence)
+                )
+                .await
+                .unwrap(),
+            "E2"
+        );
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            2,
+            "E2 exact Pod and claim reobserved"
+        );
+        let request = super::super::CreateTicketRequest::new(
+            "old-group",
+            "pods",
+            "default",
+            "old-pod",
+            "a".repeat(64),
+        )
+        .unwrap();
+        let ticket = |status| super::super::CreateTicket {
+            request: request.clone(),
+            status,
+        };
+        assert!(
+            runtime(RequestJoin::Complete(vec![ticket(
+                super::super::TicketStatus::Finished(
+                    super::super::TicketResult::RejectedNoEffect { code: 403 },
+                )
+            )]))
+            .prove_unmaterialized_absence("scope", &super::super::ephemeral_plan(), Some(&fence))
+            .await
+            .unwrap(),
+            "H2 definitive refusal"
+        );
+        for status in [
+            super::super::TicketStatus::Finished(super::super::TicketResult::Created {
+                uid: "old-uid".into(),
+            }),
+            super::super::TicketStatus::InFlight,
+        ] {
+            assert!(
+                !runtime(RequestJoin::Complete(vec![ticket(status)]))
+                    .prove_unmaterialized_absence(
+                        "scope",
+                        &super::super::ephemeral_plan(),
+                        Some(&fence)
+                    )
+                    .await
+                    .unwrap(),
+                "H3 a 404 cannot erase a materialized or unresolved Create"
+            );
+        }
     }
 }

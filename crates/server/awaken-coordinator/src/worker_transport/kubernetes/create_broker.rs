@@ -18,9 +18,10 @@ use awaken_lease_contract::{WallClock, WallClockExt};
 use awaken_run_ingress::{
     ApplicationError, WorkerCreateLedger, WorkerDirectory, WorkerIdentity, WorkerState,
 };
+use awaken_sandbox_container::ContainerEffectFence;
 use awaken_sandbox_container::k8s::{
     CreateTicketRequest, K8sCreateRequest, K8sCreateResponse, K8sLedgerBinding,
-    K8sWorkerCreateLedger, TicketAdmission, TicketResult,
+    K8sWorkerCreateLedger, PodProcessBinding, RequestJoin, TicketAdmission, TicketResult,
 };
 use awaken_worker_transport_security::kubernetes::KubernetesPodIdentity;
 use awaken_worker_transport_security::{
@@ -37,6 +38,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 const PATH: &str = "/v1/worker/k8s/create";
+const SEAL_PATH: &str = "/v1/worker/k8s/create/seal";
 const REALIZATION_DIGEST: &str = "awaken.dev/realization-digest";
 
 #[derive(Clone)]
@@ -65,6 +67,14 @@ struct CreateState {
 struct CreateWire {
     identity: WorkerIdentity,
     create: K8sCreateRequest,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SealWire {
+    identity: WorkerIdentity,
+    scope: String,
+    predecessor: ContainerEffectFence,
 }
 
 fn status_response(code: u16, reason: &str) -> K8sCreateResponse {
@@ -205,6 +215,23 @@ fn binding<'a>(
     })
 }
 
+async fn verify_request(
+    state: &CreateState,
+    worker: &VerifiedWorkerContext,
+    identity: &WorkerIdentity,
+) -> Result<(), ApplicationError> {
+    verify_current_worker_identity(
+        state.directory.as_ref(),
+        worker,
+        identity,
+        state.clock.now_ms(),
+        true,
+    )
+    .await
+    .map_err(|_| ApplicationError::invalid("Worker Create identity is not current and Ready"))?;
+    Ok(())
+}
+
 impl K8sCreateBroker {
     pub(super) fn new(
         api_client: Client,
@@ -232,17 +259,7 @@ impl K8sCreateBroker {
             Json(request): Json<CreateWire>,
         ) -> (StatusCode, Json<Value>) {
             let result = async {
-                verify_current_worker_identity(
-                    state.directory.as_ref(),
-                    &worker,
-                    &request.identity,
-                    state.clock.now_ms(),
-                    true,
-                )
-                .await
-                .map_err(|_| {
-                    ApplicationError::invalid("Worker Create identity is not current and Ready")
-                })?;
+                verify_request(&state, &worker, &request.identity).await?;
                 let response = state
                     .broker
                     .create(
@@ -260,6 +277,29 @@ impl K8sCreateBroker {
             awaken_run_ingress_http::worker_transport_response(result)
         }
 
+        async fn seal(
+            State(state): State<CreateState>,
+            Extension(worker): Extension<VerifiedWorkerContext>,
+            Json(request): Json<SealWire>,
+        ) -> (StatusCode, Json<Value>) {
+            let result = async {
+                verify_request(&state, &worker, &request.identity).await?;
+                let joined = state
+                    .broker
+                    .seal_predecessor(
+                        state.directory.clone(),
+                        &request.scope,
+                        &request.predecessor,
+                    )
+                    .await?;
+                serde_json::to_value(joined).map_err(|_| {
+                    ApplicationError::internal("Worker Create join response encoding failed")
+                })
+            }
+            .await;
+            awaken_run_ingress_http::worker_transport_response(result)
+        }
+
         let state = CreateState {
             broker: self,
             directory,
@@ -267,6 +307,7 @@ impl K8sCreateBroker {
         };
         Router::new()
             .route(PATH, post(create))
+            .route(SEAL_PATH, post(seal))
             .route_layer(axum::middleware::from_fn_with_state(
                 authenticator,
                 authenticate_worker_request,
@@ -344,6 +385,69 @@ impl K8sCreateBroker {
                 "Worker Create request group is sealed",
             )),
         }
+    }
+
+    /// Reuse the Registry's already-committed exact process-exit receipt. A
+    /// Worker that is merely expired, a missing historical record or a Pod
+    /// coordinate that cannot be decoded never authorizes ledger closure.
+    async fn seal_predecessor(
+        &self,
+        directory: Arc<dyn WorkerDirectory>,
+        scope: &str,
+        predecessor: &ContainerEffectFence,
+    ) -> Result<RequestJoin, ApplicationError> {
+        if scope.trim().is_empty() || scope.trim() != scope || scope.len() > 256 {
+            return Err(ApplicationError::invalid("Sandbox Create scope is invalid"));
+        }
+        let Some(identity) = WorkerIdentity::from_lease_owner(
+            predecessor.owner(),
+            predecessor.runtime_incarnation(),
+        ) else {
+            return Ok(RequestJoin::Unknown);
+        };
+        let pod = KubernetesPodIdentity::from_worker_id(&identity.worker_id)
+            .map_err(ApplicationError::invalid)?;
+        if pod.namespace() != self.sandbox_namespace || !pod.matches_worker(&identity) {
+            return Ok(RequestJoin::Unknown);
+        }
+        let Some(record) = directory.incarnation(&identity).await.map_err(|_| {
+            ApplicationError::unavailable("historical Worker Create Registry read unavailable")
+        })?
+        else {
+            return Ok(RequestJoin::Unknown);
+        };
+        if !matches!(
+            record.snapshot.state,
+            WorkerState::Quiesced | WorkerState::Dead
+        ) {
+            return Ok(RequestJoin::Unknown);
+        }
+        let Some(exit) = record.process_exit else {
+            return Ok(RequestJoin::Unknown);
+        };
+        let process: PodProcessBinding =
+            serde_json::from_str(exit.execution_ref()).map_err(|_| {
+                ApplicationError::unavailable("historical Worker process binding is undecodable")
+            })?;
+        if exit.provider_id() != self.provider_id
+            || !process.matches_pod(pod.namespace(), pod.name(), pod.uid())
+            || !process.worker_evidence_was_retained()
+        {
+            return Ok(RequestJoin::Unknown);
+        }
+        let Some(anchor) = record.create_ledger else {
+            return Ok(RequestJoin::Unknown);
+        };
+        let exact = binding(&self.ledger, &anchor, &pod, &self.provider_id)?;
+        self.ledger.seal_worker(exact).await.map_err(|_| {
+            ApplicationError::unavailable("old Worker Create ledger could not be sealed")
+        })?;
+        self.ledger
+            .seal_group_and_join(exact, &group_for(&identity))
+            .await
+            .map_err(|_| {
+                ApplicationError::unavailable("old Worker Create requests remain unjoined")
+            })
     }
 
     async fn forward_and_record(
@@ -533,7 +637,9 @@ mod tests {
         // Create only, E2 early retry stays InFlight, E3 detached completion
         // survives C3, E4 late retry returns conflict for typed GET/verify.
         // Rules R1=C1+C2=>E1, R2=R1+C4(before)=>E2,
-        // R3=R1+C3+API success=>E3, R4=R3+C4(after)=>E4.
+        // R3=R1+C3+API success=>E3, R4=R3+C4(after)=>E4. C5 a
+        // Registry-persisted exact Pod exit arrives; E5 only C5 plus settled
+        // tickets can seal and join, never an expired lease alone.
         let stored = Arc::new(Mutex::new(None::<Value>));
         let pod_posts = Arc::new(AtomicUsize::new(0));
         let started = Arc::new(Notify::new());
@@ -727,7 +833,7 @@ mod tests {
             .await
             .unwrap();
         let replay = broker
-            .create(directory, clock, identity, create)
+            .create(directory.clone(), clock, identity.clone(), create)
             .await
             .unwrap();
         assert_eq!(
@@ -738,6 +844,46 @@ mod tests {
             pod_posts.load(Ordering::SeqCst),
             1,
             "R3 independent executor made exactly one API call"
+        );
+        let predecessor = ContainerEffectFence::new(
+            "effect-a",
+            &identity.worker_id,
+            identity.lease_owner(),
+            1,
+            u64::MAX,
+        )
+        .unwrap();
+        assert_eq!(
+            broker
+                .seal_predecessor(directory.clone(), "scope", &predecessor)
+                .await
+                .unwrap(),
+            RequestJoin::Unknown,
+            "E5 a live Worker is not closed by a completed Create alone"
+        );
+        directory.deregister(&identity).await.unwrap();
+        let process = json!({
+            "namespace":"sandbox-ns", "name":"worker", "uid":"pod-uid",
+            "node":"node-a", "containers":[], "retained":true
+        });
+        directory
+            .record_process_exit(
+                &identity,
+                awaken_run_ingress::WorkerProcessExit::new(
+                    "provider-a",
+                    process.to_string(),
+                    "resource-version-7",
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                broker.seal_predecessor(directory, "scope", &predecessor).await.unwrap(),
+                RequestJoin::Complete(tickets) if tickets.len() == 1
+            ),
+            "E5 exact persisted exit plus one finished ticket joins"
         );
     }
 

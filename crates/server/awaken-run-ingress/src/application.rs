@@ -24,11 +24,11 @@ use awaken_dispatch_execution::validate_commit_dispatch_binding;
 /// Lookup is read-only and retryable: it must not launch or stop execution.
 #[async_trait::async_trait]
 pub trait WorkerExecutionBindingSource: Send + Sync {
-    /// Prepare provider-owned Create request evidence before the Registry's
-    /// first insert. The caller atomically freezes this exact UID with the
-    /// incarnation; a retry may only return the same value. Unbound providers
-    /// retain no Create-ledger capability.
-    async fn prepare_registration_create_ledger(
+    /// Prepare provider-owned physical evidence before the Registry's first
+    /// insert. The caller atomically freezes a Create ledger UID when present;
+    /// the process binding must already be durable before any registration
+    /// could become Ready. A retry may only return the same evidence.
+    async fn prepare_registration_physical_evidence(
         &self,
         _registration: &crate::WorkerRegistration,
     ) -> Result<Option<crate::WorkerCreateLedger>, ApplicationError> {
@@ -39,6 +39,7 @@ pub trait WorkerExecutionBindingSource: Send + Sync {
     async fn retain_registered_worker_evidence(
         &self,
         _worker: &crate::WorkerIdentity,
+        _create_ledger: Option<&crate::WorkerCreateLedger>,
     ) -> Result<(), ApplicationError> {
         Ok(())
     }
@@ -237,6 +238,18 @@ pub trait WorkerExecutionStopSource: Send + Sync {
     fn owns_worker_evidence(&self, _identity: &crate::WorkerIdentity) -> bool {
         false
     }
+    /// Observe and stop one closed Worker with no Dispatch physical slot,
+    /// using provider-retained pre-exit coordinates. The application persists
+    /// the exact receipt before releasing that evidence; unsupported providers
+    /// remain Unknown and cannot manufacture a process-exit fact.
+    async fn observe_closed_idle_worker(
+        &self,
+        _identity: &crate::WorkerIdentity,
+        _may_stop_active: bool,
+        _create_ledger: Option<&crate::WorkerCreateLedger>,
+    ) -> Result<Option<crate::WorkerProcessExit>, ApplicationError> {
+        Ok(None)
+    }
     /// Retire an exact closed-idle provider domain and release its retention only
     /// after Coordinator proves no physical slots remain. This is not exit
     /// evidence and cannot settle an attempt or authorize Session replay.
@@ -299,9 +312,16 @@ impl awaken_dispatch_execution::WorkerEvidenceRelease for WorkerEvidenceReleaseA
         dispatch: &dyn ControlDispatchQueue,
         directory: &dyn crate::WorkerDirectory,
         identity: &crate::WorkerIdentity,
+        now_ms: u64,
     ) -> Result<(), ApplicationError> {
-        release_closed_idle_worker_evidence(dispatch, directory, self.source.as_ref(), identity)
-            .await
+        release_closed_idle_worker_evidence(
+            dispatch,
+            directory,
+            self.source.as_ref(),
+            identity,
+            now_ms,
+        )
+        .await
     }
 }
 
@@ -313,6 +333,7 @@ pub async fn release_closed_idle_worker_evidence(
     directory: &dyn crate::WorkerDirectory,
     source: &dyn WorkerExecutionStopSource,
     identity: &crate::WorkerIdentity,
+    now_ms: u64,
 ) -> Result<(), ApplicationError> {
     let Some(record) = directory
         .incarnation(identity)
@@ -329,6 +350,42 @@ pub async fn release_closed_idle_worker_evidence(
     }
     if has_active_physical_attempt_for_owner(dispatch, &identity.lease_owner()).await? {
         return Ok(());
+    }
+    if record.process_exit.is_none() {
+        // Deregistration marks Dead while the Worker's own response may still
+        // be in flight. The existing Registry lease is the grace boundary:
+        // until expiry only natural exit is observed; afterward the provider
+        // may stop a stale active process.
+        let may_stop_active = record.snapshot.expires_at_ms <= now_ms;
+        let Some(receipt) = source
+            .observe_closed_idle_worker(identity, may_stop_active, record.create_ledger.as_ref())
+            .await?
+        else {
+            return Ok(());
+        };
+        receipt
+            .validate()
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
+        if directory
+            .record_process_exit(identity, receipt.clone())
+            .await
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+            != crate::RegistryMutation::Applied
+        {
+            return Err(ApplicationError::unavailable(
+                "idle Worker process exit could not be committed",
+            ));
+        }
+        let committed = directory
+            .incarnation(identity)
+            .await
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+            .and_then(|record| record.process_exit);
+        if committed.as_ref() != Some(&receipt) {
+            return Err(ApplicationError::unavailable(
+                "idle Worker process exit readback does not match",
+            ));
+        }
     }
     source.release_closed_idle_worker_evidence(identity).await
 }

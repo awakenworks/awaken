@@ -132,7 +132,8 @@ pub enum TicketAdmission {
 
 /// Complete means only that no earlier admitted Create request can still
 /// materialize. Participant absence/disposal remains a separate provider fact.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub enum RequestJoin {
     Unknown,
     Complete(Vec<CreateTicket>),

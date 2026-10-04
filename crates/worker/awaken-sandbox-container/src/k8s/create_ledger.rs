@@ -6,7 +6,7 @@
 
 mod state;
 pub use state::{
-    CreateTicket, CreateTicketRequest, RequestJoin, TicketAdmission, TicketResult,
+    CreateTicket, CreateTicketRequest, RequestJoin, TicketAdmission, TicketResult, TicketStatus,
     WorkerCreateLedgerState,
 };
 
@@ -17,6 +17,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::PostParams;
 use kube::{Api, Client, ResourceExt};
 
+use super::PodProcessBinding;
 use super::error::{api_conflict, backend};
 use crate::RuntimeError;
 
@@ -256,16 +257,19 @@ impl K8sWorkerCreateLedger {
     /// Read, decide and replace one exact ConfigMap under Kubernetes
     /// resourceVersion CAS. Exhausted conflicts are Unknown, never proof of
     /// absence or permission to resend an already admitted Create.
-    async fn mutate<R>(
+    async fn cas_object<R>(
         &self,
         binding: K8sLedgerBinding<'_>,
-        transition: impl Fn(&mut WorkerCreateLedgerState) -> Result<(R, bool), RuntimeError>,
+        transition: impl Fn(
+            &mut ConfigMap,
+            &mut WorkerCreateLedgerState,
+        ) -> Result<(R, bool), RuntimeError>,
     ) -> Result<R, RuntimeError> {
         let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.control_namespace);
         let desired = self.expected(binding)?;
         for _ in 0..CAS_ATTEMPTS {
             let (mut object, mut state) = self.load_exact(binding).await?;
-            let (result, changed) = transition(&mut state)?;
+            let (result, changed) = transition(&mut object, &mut state)?;
             if !changed {
                 return Ok(result);
             }
@@ -288,6 +292,77 @@ impl K8sWorkerCreateLedger {
             }
         }
         Err(backend("Kubernetes Create ledger CAS did not converge"))
+    }
+
+    async fn mutate<R>(
+        &self,
+        binding: K8sLedgerBinding<'_>,
+        transition: impl Fn(&mut WorkerCreateLedgerState) -> Result<(R, bool), RuntimeError>,
+    ) -> Result<R, RuntimeError> {
+        self.cas_object(binding, |_, state| transition(state)).await
+    }
+
+    /// Retain the original running Pod/container coordinates in the same
+    /// externally anchored ledger before Worker Ready. A later registration
+    /// retry may replay identical bytes but cannot attach a replacement body.
+    pub async fn retain_process_binding(
+        &self,
+        binding: K8sLedgerBinding<'_>,
+        process: &PodProcessBinding,
+    ) -> Result<(), RuntimeError> {
+        if !process.matches_pod(
+            binding.worker_namespace,
+            binding.worker_name,
+            binding.worker_uid,
+        ) || !process.worker_evidence_was_retained()
+        {
+            return Err(backend(
+                "Worker Create ledger received an unretained or foreign Pod binding",
+            ));
+        }
+        let encoded = serde_json::to_string(process).map_err(backend)?;
+        self.cas_object(binding, |object, _| {
+            let data = object.data.get_or_insert_with(Default::default);
+            match data.get("worker_process_binding") {
+                Some(existing) if existing == &encoded => Ok(((), false)),
+                Some(_) => Err(backend(
+                    "Worker Create ledger cannot replace its process binding",
+                )),
+                None => {
+                    data.insert("worker_process_binding".into(), encoded.clone());
+                    Ok(((), true))
+                }
+            }
+        })
+        .await
+    }
+
+    /// A missing or tampered process binding remains Unknown. The enclosing
+    /// Registry UID and provider configuration were rechecked by `load_exact`.
+    pub async fn read_process_binding(
+        &self,
+        binding: K8sLedgerBinding<'_>,
+    ) -> Result<Option<PodProcessBinding>, RuntimeError> {
+        let (object, _) = self.load_exact(binding).await?;
+        let Some(encoded) = object
+            .data
+            .as_ref()
+            .and_then(|data| data.get("worker_process_binding"))
+        else {
+            return Ok(None);
+        };
+        let process: PodProcessBinding = serde_json::from_str(encoded).map_err(backend)?;
+        if !process.matches_pod(
+            binding.worker_namespace,
+            binding.worker_name,
+            binding.worker_uid,
+        ) || !process.worker_evidence_was_retained()
+        {
+            return Err(backend(
+                "Worker Create ledger process binding no longer matches its Pod",
+            ));
+        }
+        Ok(Some(process))
     }
 
     /// Only `Forward` means this exact request won durable admission; the
@@ -663,6 +738,92 @@ mod tests {
                 .count(),
             writes,
             "T5 no foreign mutation"
+        );
+    }
+
+    #[tokio::test]
+    async fn registered_process_binding_is_one_immutable_ledger_participant() {
+        // Causes: P1 exact retained Worker Pod process is observed before
+        // Ready; P2 a retry presents identical or changed bytes; P3 a foreign
+        // Pod UID is presented. Effects: E1 P1 persists once under the same
+        // resourceVersion CAS as Create tickets; E2 an exact replay stutters;
+        // E3 changed/foreign coordinates never replace the original. A later
+        // process may read the original only through the Registry-frozen UID.
+        let Fixture { ledger, calls, .. } = fixture(false);
+        let (name, uid) = ledger
+            .initialize("awaken-system", "worker", "pod-uid")
+            .await
+            .unwrap();
+        let binding = K8sLedgerBinding {
+            worker_namespace: "awaken-system",
+            worker_name: "worker",
+            worker_uid: "pod-uid",
+            ledger_name: &name,
+            ledger_uid: &uid,
+            configuration_fingerprint: ledger.configuration_fingerprint(),
+        };
+        let process: PodProcessBinding = serde_json::from_value(json!({
+            "namespace":"awaken-system", "name":"worker", "uid":"pod-uid",
+            "node":"node-a", "containers":[], "retained":true
+        }))
+        .unwrap();
+        ledger
+            .retain_process_binding(binding, &process)
+            .await
+            .unwrap();
+        assert_eq!(
+            ledger.read_process_binding(binding).await.unwrap(),
+            Some(process.clone()),
+            "E1"
+        );
+        let writes = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|method| *method == "PUT")
+            .count();
+        ledger
+            .retain_process_binding(binding, &process)
+            .await
+            .unwrap();
+        assert_eq!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|method| *method == "PUT")
+                .count(),
+            writes,
+            "E2"
+        );
+        let changed: PodProcessBinding = serde_json::from_value(json!({
+            "namespace":"awaken-system", "name":"worker", "uid":"pod-uid",
+            "node":"node-b", "containers":[], "retained":true
+        }))
+        .unwrap();
+        assert!(
+            ledger
+                .retain_process_binding(binding, &changed)
+                .await
+                .is_err(),
+            "E3 changed node"
+        );
+        let foreign: PodProcessBinding = serde_json::from_value(json!({
+            "namespace":"awaken-system", "name":"worker", "uid":"foreign-uid",
+            "node":"node-a", "containers":[], "retained":true
+        }))
+        .unwrap();
+        assert!(
+            ledger
+                .retain_process_binding(binding, &foreign)
+                .await
+                .is_err(),
+            "E3 foreign UID"
+        );
+        assert_eq!(
+            ledger.read_process_binding(binding).await.unwrap(),
+            Some(process),
+            "E3 original persists"
         );
     }
 }

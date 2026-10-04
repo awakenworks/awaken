@@ -8,12 +8,16 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use awaken_run_ingress_contract::WorkerIdentity;
-use awaken_sandbox_container::RuntimeError;
-use awaken_sandbox_container::k8s::{K8sCreateRequest, K8sCreateResponse, K8sCreateTransport};
+use awaken_sandbox_container::k8s::{
+    K8sCreateRequest, K8sCreateResponse, K8sCreateTransport, RequestJoin,
+};
+use awaken_sandbox_container::{ContainerEffectFence, RuntimeError};
 use awaken_worker_transport_security::WorkerUpstream;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 const PATH: &str = "/v1/worker/k8s/create";
+const SEAL_PATH: &str = "/v1/worker/k8s/create/seal";
 
 /// The exact Registry identity is installed once from the registration
 /// receipt, after the provider has been assembled but before Worker Ready.
@@ -50,6 +54,47 @@ impl WorkerK8sCreateClient {
             .set(identity)
             .map_err(|_| "Kubernetes Create client identity was concurrently bound".into())
     }
+
+    fn identity(&self) -> Result<&WorkerIdentity, RuntimeError> {
+        self.identity.get().ok_or_else(|| {
+            RuntimeError::Backend(
+                "Kubernetes Create control used before Worker registration".into(),
+            )
+        })
+    }
+
+    async fn post<T: Serialize, R: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &T,
+    ) -> Result<R, RuntimeError> {
+        let upstream = self
+            .upstream
+            .clone()
+            .with_worker_identity(self.identity()?.clone());
+        let builder = upstream
+            .client()
+            .post(format!("{}{}", upstream.base_url(), path));
+        let builder = upstream
+            .authorize_request("POST", path, builder)
+            .map_err(RuntimeError::Backend)?;
+        let response = builder.json(body).send().await.map_err(|error| {
+            RuntimeError::MayHaveCommitted(format!(
+                "Kubernetes broker response unavailable: {error}"
+            ))
+        })?;
+        if !response.status().is_success() {
+            return Err(RuntimeError::MayHaveCommitted(format!(
+                "Kubernetes broker refused or retained uncertainty: {}",
+                response.status()
+            )));
+        }
+        response.json().await.map_err(|error| {
+            RuntimeError::MayHaveCommitted(format!(
+                "Kubernetes broker response could not be decoded: {error}"
+            ))
+        })
+    }
 }
 
 #[derive(Serialize)]
@@ -58,42 +103,40 @@ struct CreateWire<'a> {
     create: K8sCreateRequest,
 }
 
+#[derive(Serialize)]
+struct SealWire<'a> {
+    identity: &'a WorkerIdentity,
+    scope: &'a str,
+    predecessor: &'a ContainerEffectFence,
+}
+
 #[async_trait]
 impl K8sCreateTransport for WorkerK8sCreateClient {
     async fn create(&self, request: K8sCreateRequest) -> Result<K8sCreateResponse, RuntimeError> {
-        let identity = self.identity.get().ok_or_else(|| {
-            RuntimeError::Backend("Kubernetes Create attempted before Worker registration".into())
-        })?;
-        let upstream = self.upstream.clone().with_worker_identity(identity.clone());
-        let builder = upstream
-            .client()
-            .post(format!("{}{}", upstream.base_url(), PATH));
-        let builder = upstream
-            .authorize_request("POST", PATH, builder)
-            .map_err(RuntimeError::Backend)?;
-        let response = builder
-            .json(&CreateWire {
-                identity,
+        self.post(
+            PATH,
+            &CreateWire {
+                identity: self.identity()?,
                 create: request,
-            })
-            .send()
-            .await
-            .map_err(|error| {
-                RuntimeError::MayHaveCommitted(format!(
-                    "Kubernetes Create broker response unavailable: {error}"
-                ))
-            })?;
-        if !response.status().is_success() {
-            return Err(RuntimeError::MayHaveCommitted(format!(
-                "Kubernetes Create broker refused or retained uncertainty: {}",
-                response.status()
-            )));
-        }
-        response.json().await.map_err(|error| {
-            RuntimeError::MayHaveCommitted(format!(
-                "Kubernetes Create broker response could not be decoded: {error}"
-            ))
-        })
+            },
+        )
+        .await
+    }
+
+    async fn seal_predecessor(
+        &self,
+        scope: &str,
+        predecessor: &ContainerEffectFence,
+    ) -> Result<RequestJoin, RuntimeError> {
+        self.post(
+            SEAL_PATH,
+            &SealWire {
+                identity: self.identity()?,
+                scope,
+                predecessor,
+            },
+        )
+        .await
     }
 }
 
@@ -138,33 +181,56 @@ mod tests {
         // WorkerUpstream authorizer supplies its bound identity header, E2
         // payload identity/path/object are unchanged, E3 the typed API result
         // returns without a second Worker credential or endpoint authority.
+        // E4 the predecessor seal uses the same bound transport identity.
         let calls = Arc::new(AtomicUsize::new(0));
-        let router = Router::new().route(
-            PATH,
-            post({
-                let calls = calls.clone();
-                move |headers: axum::http::HeaderMap, Json(body): Json<serde_json::Value>| {
+        let router = Router::new()
+            .route(
+                PATH,
+                post({
                     let calls = calls.clone();
-                    async move {
-                        calls.fetch_add(1, Ordering::SeqCst);
-                        assert_eq!(
-                            headers.get("x-awaken-worker-id").unwrap(),
-                            "awaken-worker",
-                            "E1"
-                        );
-                        assert_eq!(body["identity"]["incarnation_id"], "boot", "E2");
-                        assert_eq!(body["create"]["path"], "/api/v1/namespaces/ns/pods", "E2");
-                        assert_eq!(body["create"]["object"]["metadata"]["name"], "pod", "E2");
-                        Json(serde_json::json!({
-                            "status":201,
-                            "object":{"apiVersion":"v1","kind":"Pod","metadata":{
-                                "name":"pod","namespace":"ns","uid":"pod-uid"
-                            }}
-                        }))
+                    move |headers: axum::http::HeaderMap, Json(body): Json<serde_json::Value>| {
+                        let calls = calls.clone();
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            assert_eq!(
+                                headers.get("x-awaken-worker-id").unwrap(),
+                                "awaken-worker",
+                                "E1"
+                            );
+                            assert_eq!(body["identity"]["incarnation_id"], "boot", "E2");
+                            assert_eq!(body["create"]["path"], "/api/v1/namespaces/ns/pods", "E2");
+                            assert_eq!(body["create"]["object"]["metadata"]["name"], "pod", "E2");
+                            Json(serde_json::json!({
+                                "status":201,
+                                "object":{"apiVersion":"v1","kind":"Pod","metadata":{
+                                    "name":"pod","namespace":"ns","uid":"pod-uid"
+                                }}
+                            }))
+                        }
                     }
-                }
-            }),
-        );
+                }),
+            )
+            .route(
+                SEAL_PATH,
+                post({
+                    let calls = calls.clone();
+                    move |headers: axum::http::HeaderMap, Json(body): Json<serde_json::Value>| {
+                        let calls = calls.clone();
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            assert_eq!(
+                                headers.get("x-awaken-worker-id").unwrap(),
+                                "awaken-worker",
+                                "E4"
+                            );
+                            assert_eq!(body["identity"]["incarnation_id"], "boot", "E4");
+                            assert_eq!(body["scope"], "scope", "E4");
+                            assert_eq!(body["predecessor"]["operation_id"], "old-effect", "E4");
+                            Json(serde_json::json!("unknown"))
+                        }
+                    }
+                }),
+            );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -181,7 +247,21 @@ mod tests {
             .unwrap();
         assert_eq!(response.status, 201, "E3");
         assert_eq!(response.object["metadata"]["uid"], "pod-uid", "E3");
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "one signed request");
+        let predecessor =
+            ContainerEffectFence::new("old-effect", "old-worker", "old-boot", 1, u64::MAX).unwrap();
+        assert_eq!(
+            client
+                .seal_predecessor("scope", &predecessor)
+                .await
+                .unwrap(),
+            RequestJoin::Unknown,
+            "E4"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "one Create and one signed seal"
+        );
         server.abort();
     }
 }

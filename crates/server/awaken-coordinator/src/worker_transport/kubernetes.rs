@@ -11,8 +11,8 @@ use awaken_run_ingress::{
 };
 use awaken_run_ingress::{NativeAttemptFootprint, NativeAttemptTermination};
 use awaken_sandbox_container::k8s::{
-    K8sWorkerCreateLedger, PodProcessBinding, PodProcessObserver, PodProcessStopper,
-    PodProcessTermination,
+    K8sLedgerBinding, K8sWorkerCreateLedger, PodProcessBinding, PodProcessObserver,
+    PodProcessStopper, PodProcessTermination,
 };
 use awaken_worker_transport_security::kubernetes::{
     KubernetesPodIdentity, KubernetesWorkerAuthenticator,
@@ -56,7 +56,7 @@ pub(super) fn assemble(
     );
     let binding_source = Arc::new(KubernetesWorkerBindings {
         observer,
-        create_ledger,
+        create_ledger: create_ledger.clone(),
         namespace: namespace.to_owned(),
         provider_id: provider_id.to_owned(),
     });
@@ -65,6 +65,7 @@ pub(super) fn assemble(
         bindings: Some(binding_source.clone()),
         stops: Some(Arc::new(KubernetesWorkerStops {
             stopper,
+            create_ledger,
             namespace: namespace.to_owned(),
             provider_id: provider_id.to_owned(),
         })),
@@ -82,7 +83,7 @@ struct KubernetesWorkerBindings {
 
 #[async_trait::async_trait]
 impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
-    async fn prepare_registration_create_ledger(
+    async fn prepare_registration_physical_evidence(
         &self,
         registration: &WorkerRegistration,
     ) -> Result<Option<WorkerCreateLedger>, ApplicationError> {
@@ -96,28 +97,32 @@ impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
                 "Create ledger registration names another Worker Pod",
             ));
         }
-        self.observer
-            .bind_pod_process(pod.name(), pod.uid())
-            .await
-            .map_err(|_| ApplicationError::unavailable("exact Worker Pod is unavailable"))?;
         let (name, uid) = self
             .create_ledger
             .initialize(pod.namespace(), pod.name(), pod.uid())
             .await
             .map_err(|_| ApplicationError::unavailable("Worker Create ledger unavailable"))?;
-        WorkerCreateLedger::new(
+        let anchor = WorkerCreateLedger::new(
             &self.provider_id,
             self.create_ledger.control_namespace(),
             name,
             uid,
             self.create_ledger.configuration_fingerprint(),
         )
-        .map(Some)
-        .map_err(|error| ApplicationError::internal(error.to_string()))
+        .map_err(|error| ApplicationError::internal(error.to_string()))?;
+        // Retain the original process before Registry can accept the Worker.
+        // A crash after provider retention but before registration leaves no
+        // Ready authority; a retry rejoins the immutable ledger and binding.
+        let provisional =
+            WorkerIdentity::new(&registration.worker_id, &registration.incarnation_id, 1);
+        self.retain_registered_worker_evidence(&provisional, Some(&anchor))
+            .await?;
+        Ok(Some(anchor))
     }
     async fn retain_registered_worker_evidence(
         &self,
         worker: &WorkerIdentity,
+        create_ledger: Option<&WorkerCreateLedger>,
     ) -> Result<(), ApplicationError> {
         let pod = KubernetesPodIdentity::from_worker_id(&worker.worker_id)
             .map_err(ApplicationError::invalid)?;
@@ -126,10 +131,48 @@ impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
                 "Worker retention domain mismatch",
             ));
         }
+        let anchor = create_ledger.ok_or_else(|| {
+            ApplicationError::unavailable(
+                "registered Kubernetes Worker has no frozen Create ledger",
+            )
+        })?;
+        let exact = K8sLedgerBinding {
+            worker_namespace: pod.namespace(),
+            worker_name: pod.name(),
+            worker_uid: pod.uid(),
+            ledger_name: anchor.name(),
+            ledger_uid: anchor.uid(),
+            configuration_fingerprint: anchor.configuration_fingerprint(),
+        };
+        if anchor.provider_id() != self.provider_id
+            || anchor.namespace() != self.create_ledger.control_namespace()
+        {
+            return Err(ApplicationError::unavailable(
+                "registered Kubernetes Worker Create ledger provider changed",
+            ));
+        }
         self.observer
             .retain_pod_process_evidence(pod.name(), pod.uid())
             .await
-            .map_err(|_| ApplicationError::unavailable("exact Worker retention unavailable"))
+            .map_err(|_| ApplicationError::unavailable("exact Worker retention unavailable"))?;
+        let process = self
+            .observer
+            .bind_pod_process(pod.name(), pod.uid())
+            .await
+            .map_err(|_| {
+                ApplicationError::unavailable("retained Worker process binding unavailable")
+            })?;
+        if !process.worker_evidence_was_retained() {
+            return Err(ApplicationError::unavailable(
+                "Worker process evidence was not retained",
+            ));
+        }
+        self.create_ledger
+            .retain_process_binding(exact, &process)
+            .await
+            .map_err(|_| {
+                ApplicationError::unavailable("Worker process binding could not be retained")
+            })
     }
     async fn binding_for(
         &self,
@@ -183,6 +226,7 @@ impl WorkerRelayTargetObserver for KubernetesWorkerBindings {
 
 struct KubernetesWorkerStops {
     stopper: PodProcessStopper,
+    create_ledger: K8sWorkerCreateLedger,
     namespace: String,
     provider_id: String,
 }
@@ -215,6 +259,70 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
     fn owns_worker_evidence(&self, worker: &WorkerIdentity) -> bool {
         KubernetesPodIdentity::from_worker_id(&worker.worker_id)
             .is_ok_and(|pod| pod.namespace() == self.namespace && pod.matches_worker(worker))
+    }
+    async fn observe_closed_idle_worker(
+        &self,
+        worker: &WorkerIdentity,
+        may_stop_active: bool,
+        create_ledger: Option<&WorkerCreateLedger>,
+    ) -> Result<Option<awaken_run_ingress::WorkerProcessExit>, ApplicationError> {
+        let pod = KubernetesPodIdentity::from_worker_id(&worker.worker_id)
+            .map_err(ApplicationError::invalid)?;
+        if pod.namespace() != self.namespace || !pod.matches_worker(worker) {
+            return Ok(None);
+        }
+        let Some(anchor) = create_ledger else {
+            return Ok(None);
+        };
+        if anchor.provider_id() != self.provider_id
+            || anchor.namespace() != self.create_ledger.control_namespace()
+        {
+            return Ok(None);
+        }
+        let binding = K8sLedgerBinding {
+            worker_namespace: pod.namespace(),
+            worker_name: pod.name(),
+            worker_uid: pod.uid(),
+            ledger_name: anchor.name(),
+            ledger_uid: anchor.uid(),
+            configuration_fingerprint: anchor.configuration_fingerprint(),
+        };
+        let Some(process) = self
+            .create_ledger
+            .read_process_binding(binding)
+            .await
+            .map_err(|_| {
+                ApplicationError::unavailable("idle Worker process binding unavailable")
+            })?
+        else {
+            return Ok(None);
+        };
+        if !may_stop_active
+            && self
+                .stopper
+                .exact_process_is_running(&process)
+                .await
+                .map_err(|_| {
+                    ApplicationError::unavailable("graceful Worker process observation unavailable")
+                })?
+        {
+            return Ok(None);
+        }
+        let observed = self.stopper.request_stop(&process).await.map_err(|_| {
+            ApplicationError::unavailable("idle Worker stop observation unavailable")
+        })?;
+        let PodProcessTermination::Observed(receipt) = observed else {
+            return Ok(None);
+        };
+        let reference = serde_json::to_string(&process)
+            .map_err(|_| ApplicationError::internal("idle Worker process encoding failed"))?;
+        awaken_run_ingress::WorkerProcessExit::new(
+            &self.provider_id,
+            reference,
+            receipt.resource_version(),
+        )
+        .map(Some)
+        .map_err(|error| ApplicationError::internal(error.to_string()))
     }
     async fn release_closed_idle_worker_evidence(
         &self,

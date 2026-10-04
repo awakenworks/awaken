@@ -18,11 +18,20 @@ fn unmaterialized_absence_shape_is_closed(
 }
 
 impl K8sRuntime {
-    async fn admit_observed_creation_attempt(
+    pub(super) async fn admit_observed_creation_attempt(
         &self,
         context: &ContainerRealizationContext<'_>,
         plan: &ContainerPlan,
     ) -> Result<Option<tokio::sync::OwnedRwLockReadGuard<()>>, RuntimeError> {
+        // Even a rich or unfenced direct plan cannot switch to the broker
+        // after its first runtime admission. This is a mode freeze, not an
+        // additional physical completion witness.
+        self.create_mode_frozen.store(true, Ordering::Release);
+        if self.create_transport.is_some() {
+            // Brokered admission and close are owned by one durable provider
+            // ledger. Do not maintain a parallel process-local attempt gate.
+            return Ok(None);
+        }
         let Some(fence) = context.effect_fence else {
             return Ok(None);
         };
@@ -302,14 +311,44 @@ impl ContainerRuntime for K8sRuntime {
         let Some(expected_effect_fence) = expected_effect_fence else {
             return Ok(false);
         };
-        let Some(_closed_attempt) = self
-            .close_observed_creation_attempt(scope, expected_effect_fence)
-            .await
-        else {
-            // A replacement process cannot infer closure of a request it never
-            // joined. Keep recovery pending until a durable primitive exists.
-            return Ok(false);
-        };
+        if let Some(transport) = &self.create_transport {
+            let joined = transport
+                .seal_predecessor(scope, expected_effect_fence)
+                .await?;
+            let RequestJoin::Complete(tickets) = joined else {
+                return Ok(false);
+            };
+            // A successful Create of any kind means a participant was
+            // materialized. Its later 404 does not prove it never ran or
+            // emitted effects. This handle-free *unmaterialized* proof only
+            // accepts definitively refused requests; created participants
+            // require the existing handle-bound cleanup and exact evidence.
+            if tickets.iter().any(|ticket| {
+                !matches!(
+                    ticket.request.resource.as_str(),
+                    "pods"
+                        | "persistentvolumeclaims"
+                        | "configmaps"
+                        | "secrets"
+                        | "jobs"
+                        | "daemonsets"
+                ) || !matches!(
+                    &ticket.status,
+                    TicketStatus::Finished(TicketResult::RejectedNoEffect { .. })
+                )
+            }) {
+                return Ok(false);
+            }
+        } else {
+            let Some(_closed_attempt) = self
+                .close_observed_creation_attempt(scope, expected_effect_fence)
+                .await
+            else {
+                // A direct-mode replacement cannot infer closure of a request
+                // it never joined. It never borrows the brokered proof path.
+                return Ok(false);
+            };
+        }
         self.admit_plan(plan).await?;
         let runtime_id = self.realization_runtime_id(scope)?;
         let runtime_pod_name = pod_name(&runtime_id);
