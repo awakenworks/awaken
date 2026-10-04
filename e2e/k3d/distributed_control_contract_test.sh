@@ -58,6 +58,19 @@ grep -Fq 'CLUSTER_CREATED=1' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
   | grep -Eq '^[[:space:]]*kubectl '
 grep -Fq 'k3d_diagnostic_kubectl "$CLUSTER"' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+# Context-isolation decision table: C1 another worktree changes kubectl's
+# default context during this run; C2 the exact cluster has its own kubeconfig;
+# C3 normal cleanup or explicit failed-cluster retention. R1=C1+C2 keeps every
+# unqualified fault-injection command on this cluster; R2=C2+C3 removes only
+# this run's config after cluster deletion; R3=C2+retention keeps both for
+# diagnosis. The live eleven-stage run proves the command behavior; this
+# contract rejects a return to shared-context orchestration before that run.
+grep -Fq 'KUBECONFIG_FILE=$(mktemp)' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'export KUBECONFIG="$KUBECONFIG_FILE"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'k3d kubeconfig get "$CLUSTER" > "$KUBECONFIG_FILE"' \
+  "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq '"$KUBECONFIG_FILE" || return "$?"' \
+  "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 RENDERED="$(mktemp)"
 trap 'rm -f "$RENDERED"' EXIT
 kubectl kustomize "$REPO_ROOT/deploy/k3d/distributed-control" >"$RENDERED"

@@ -140,12 +140,6 @@ const obligations: Obligation[] = [
   { id: 'D4-09', stage: '4 credential injection', behavior: 'the production composition projects endpoint and credential use once into the per-thread ACP sandbox', scenario: 'acp_projected_local' },
   { id: 'D4-10', stage: '4 credential injection', behavior: 'Codex rejects an incompatible bearer-only publication without restoring its removed environment credential path', scenario: 'acp_projected_local' },
   { id: 'D4-11', stage: '4 credential injection', behavior: 'the production container projection carries model access, MCP metadata, and a File input into one frozen run', scenario: 'acp_projected_container' },
-  { id: 'D4-E01', stage: '4 credential injection', behavior: 'a recipient-bound envelope with a mismatched payload fingerprint fails before provider I/O', scenario: 'credential_materialization_worker' },
-  { id: 'D4-E02', stage: '4 credential injection', behavior: 'an exact envelope cannot be replayed for a different endpoint binding', scenario: 'credential_materialization_worker' },
-  { id: 'D4-E03', stage: '4 credential injection', behavior: 'an expired envelope fails closed before material resolution', scenario: 'credential_materialization_worker' },
-  { id: 'D4-E04', stage: '4 credential injection', behavior: 'an envelope addressed to another Worker trust domain fails closed', scenario: 'credential_materialization_worker' },
-  { id: 'D4-E05', stage: '4 credential injection', behavior: 'the exact recipient, target, use, payload and claim epoch resolve once and commit one provider reply', scenario: 'credential_materialization_worker' },
-
 
   { id: 'D5-01', stage: '5 durable child lifecycle', behavior: 'child has a first-class stable run identity', scenario: 'child_recovery' },
   { id: 'D5-02', stage: '5 durable child lifecycle', behavior: 'hard process crash leaves the in-flight child provider attempt physically fenced', scenario: 'child_recovery' },
@@ -272,10 +266,12 @@ const obligations: Obligation[] = [
   { id: 'G42-P07', stage: '9 guardrail promotion evidence', behavior: 'full replacement publishes only the exact realized MCP generation while replay, conflict, removal and failed stage preserve durable truth', scenario: 'managed_mcp_hot_swap' },
   { id: 'G42-P08', stage: '9 guardrail promotion evidence', behavior: 'process replacement recovers the exact active MCP generation and never resurrects a removed generation', scenario: 'managed_mcp_recovery' },
   { id: 'G43-P01', stage: '9 guardrail promotion evidence', behavior: 'credential materialization binds exact source, recipient, target, usage, payload and claim epoch', scenario: 'credential_materialization_worker' },
-  // The concrete credential_files.rs resolver matrix proves these negative
-  // partitions. The one-process materialization E2E proves only the positive
-  // exact pin; counting its formerly synthetic Run refusals here was false E2E
-  // coverage, so both rows remain visible as explicit cross-process gaps.
+  // The former D4-E01..E05 rows repeated these G43 obligations and falsely
+  // counted the negative partitions as E2E evidence. D4-08 keeps the distinct
+  // database-less Worker-to-provider proof. The concrete credential_files.rs
+  // resolver matrix proves the negative partitions, while the one-process
+  // materialization E2E proves only the positive exact pin. Keep the two
+  // cross-process gaps visible until a real Worker rejects those envelopes.
   { id: 'G43-P02', stage: '9 guardrail promotion evidence', behavior: 'mismatched payload or target cannot replay an envelope' },
   { id: 'G43-P03', stage: '9 guardrail promotion evidence', behavior: 'expired or wrong-recipient material fails before provider I/O' },
   { id: 'G43-P04', stage: '9 guardrail promotion evidence', behavior: 'ambient provider variables cannot replace the published credential reference', scenario: 'credential_reference_worker' },
