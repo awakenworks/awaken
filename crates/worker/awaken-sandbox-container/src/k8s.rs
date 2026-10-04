@@ -110,7 +110,10 @@ pub use sandbox_control::{
 };
 
 pub use crate::k8s_package_image::K8sPackageImageProvisioner;
-pub use create_ledger::K8sWorkerCreateLedger;
+pub use create_ledger::{
+    CreateTicket, CreateTicketRequest, K8sLedgerBinding, K8sWorkerCreateLedger, RequestJoin,
+    TicketAdmission, TicketResult, WorkerCreateLedgerState,
+};
 
 #[cfg(test)]
 pub(crate) type PodSpecMutation = (&'static str, fn(&mut k8s_openapi::api::core::v1::PodSpec));

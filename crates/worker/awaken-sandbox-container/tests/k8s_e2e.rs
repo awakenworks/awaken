@@ -1811,3 +1811,6 @@ async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() 
         .expect("H5/E5 channel establishment owns a finite bound");
     assert!(unavailable.is_err(), "H5/E5 deleted Pod is unavailable");
 }
+
+#[path = "k8s_e2e/create_ledger_live.rs"]
+mod create_ledger_live;

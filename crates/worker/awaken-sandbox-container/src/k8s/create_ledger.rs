@@ -4,6 +4,12 @@
 //! namespace. The Registry freezes the returned UID before Worker Ready; a
 //! replacement process must never initialize a missing ledger to claim proof.
 
+mod state;
+pub use state::{
+    CreateTicket, CreateTicketRequest, RequestJoin, TicketAdmission, TicketResult,
+    WorkerCreateLedgerState,
+};
+
 use std::collections::BTreeMap;
 
 use k8s_openapi::api::core::v1::ConfigMap;
@@ -22,6 +28,20 @@ const WORKER_NAME: &str = "awaken.dev/create-ledger-worker-name";
 const WORKER_UID: &str = "awaken.dev/create-ledger-worker-uid";
 const CONFIGURATION: &str = "awaken.dev/create-ledger-configuration";
 const VERSION: &str = "v1";
+const CAS_ATTEMPTS: usize = 8;
+
+/// Registry-frozen witness plus the exact retained Worker Pod identity. The
+/// provider verifies both before every ticket CAS; a stable ConfigMap name is
+/// never accepted in place of the original UID.
+#[derive(Clone, Copy)]
+pub struct K8sLedgerBinding<'a> {
+    pub worker_namespace: &'a str,
+    pub worker_name: &'a str,
+    pub worker_uid: &'a str,
+    pub ledger_name: &'a str,
+    pub ledger_uid: &'a str,
+    pub configuration_fingerprint: &'a str,
+}
 
 /// One Kubernetes physical effect store, scoped by a retained Worker Pod UID.
 pub struct K8sWorkerCreateLedger {
@@ -110,7 +130,9 @@ impl K8sWorkerCreateLedger {
             },
             data: Some(BTreeMap::from([(
                 "ledger".into(),
-                r#"{"version":1,"phase":"open","tickets":{}}"#.into(),
+                WorkerCreateLedgerState::default()
+                    .encode()
+                    .expect("initial Create ledger state is valid"),
             )])),
             ..Default::default()
         }
@@ -179,6 +201,140 @@ impl K8sWorkerCreateLedger {
         let uid = self.verify(&desired, &observed)?;
         Ok((name, uid))
     }
+
+    fn expected(&self, binding: K8sLedgerBinding<'_>) -> Result<ConfigMap, RuntimeError> {
+        if binding.worker_namespace != self.sandbox_namespace
+            || binding.configuration_fingerprint != self.configuration_fingerprint
+            || binding.ledger_uid.trim().is_empty()
+            || binding.ledger_uid.trim() != binding.ledger_uid
+        {
+            return Err(backend(
+                "Kubernetes Create ledger differs from the frozen Worker binding",
+            ));
+        }
+        let desired = self.desired(
+            binding.worker_namespace,
+            binding.worker_name,
+            binding.worker_uid,
+        );
+        if desired.name_any() != binding.ledger_name {
+            return Err(backend(
+                "Kubernetes Create ledger has another Worker Pod coordinate",
+            ));
+        }
+        Ok(desired)
+    }
+
+    async fn load_exact(
+        &self,
+        binding: K8sLedgerBinding<'_>,
+    ) -> Result<(ConfigMap, WorkerCreateLedgerState), RuntimeError> {
+        let desired = self.expected(binding)?;
+        let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.control_namespace);
+        let observed = api.get(binding.ledger_name).await.map_err(backend)?;
+        if self.verify(&desired, &observed)? != binding.ledger_uid
+            || observed
+                .metadata
+                .resource_version
+                .as_deref()
+                .is_none_or(|version| version.trim().is_empty())
+        {
+            return Err(backend(
+                "Kubernetes Create ledger UID or resourceVersion changed",
+            ));
+        }
+        let encoded = observed
+            .data
+            .as_ref()
+            .and_then(|data| data.get("ledger"))
+            .ok_or_else(|| backend("Kubernetes Create ledger state is missing"))?;
+        let state = WorkerCreateLedgerState::decode(encoded)?;
+        Ok((observed, state))
+    }
+
+    /// Read, decide and replace one exact ConfigMap under Kubernetes
+    /// resourceVersion CAS. Exhausted conflicts are Unknown, never proof of
+    /// absence or permission to resend an already admitted Create.
+    async fn mutate<R>(
+        &self,
+        binding: K8sLedgerBinding<'_>,
+        transition: impl Fn(&mut WorkerCreateLedgerState) -> Result<(R, bool), RuntimeError>,
+    ) -> Result<R, RuntimeError> {
+        let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.control_namespace);
+        let desired = self.expected(binding)?;
+        for _ in 0..CAS_ATTEMPTS {
+            let (mut object, mut state) = self.load_exact(binding).await?;
+            let (result, changed) = transition(&mut state)?;
+            if !changed {
+                return Ok(result);
+            }
+            object
+                .data
+                .get_or_insert_with(Default::default)
+                .insert("ledger".into(), state.encode()?);
+            match api
+                .replace(binding.ledger_name, &PostParams::default(), &object)
+                .await
+            {
+                Ok(updated) => {
+                    if self.verify(&desired, &updated)? != binding.ledger_uid {
+                        return Err(backend("Kubernetes Create ledger replacement changed UID"));
+                    }
+                    return Ok(result);
+                }
+                Err(error) if api_conflict(&error) => continue,
+                Err(error) => return Err(backend(error)),
+            }
+        }
+        Err(backend("Kubernetes Create ledger CAS did not converge"))
+    }
+
+    /// Only `Forward` means this exact request won durable admission; the
+    /// caller must then own an independent API request lifetime.
+    pub async fn admit_request(
+        &self,
+        binding: K8sLedgerBinding<'_>,
+        request: &CreateTicketRequest,
+    ) -> Result<TicketAdmission, RuntimeError> {
+        self.mutate(binding, |state| {
+            let admission = state.admit(request)?;
+            let changed = admission == TicketAdmission::Forward;
+            Ok((admission, changed))
+        })
+        .await
+    }
+
+    pub async fn finish_request(
+        &self,
+        binding: K8sLedgerBinding<'_>,
+        request: &CreateTicketRequest,
+        result: &TicketResult,
+    ) -> Result<(), RuntimeError> {
+        self.mutate(binding, |state| {
+            let changed = state.finish(request, result.clone())?;
+            Ok(((), changed))
+        })
+        .await
+    }
+
+    pub async fn seal_group_and_join(
+        &self,
+        binding: K8sLedgerBinding<'_>,
+        group: &str,
+    ) -> Result<RequestJoin, RuntimeError> {
+        self.mutate(binding, |state| {
+            let changed = state.seal_group(group)?;
+            Ok(((), changed))
+        })
+        .await?;
+        let (_, state) = self.load_exact(binding).await?;
+        Ok(state.join_group(group))
+    }
+
+    pub async fn seal_worker(&self, binding: K8sLedgerBinding<'_>) -> Result<(), RuntimeError> {
+        self.mutate(binding, |state| Ok(((), state.seal_worker())))
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -187,33 +343,51 @@ mod tests {
     use http::{Request, Response};
     use kube::client::Body;
     use serde_json::{Value, json};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
-    fn fixture(
-        lose_first_response: bool,
-    ) -> (
-        K8sWorkerCreateLedger,
-        Arc<Mutex<Option<Value>>>,
-        Arc<Mutex<Vec<String>>>,
-    ) {
+    struct Fixture {
+        ledger: K8sWorkerCreateLedger,
+        stored: Arc<Mutex<Option<Value>>>,
+        calls: Arc<Mutex<Vec<String>>>,
+        conflict: Arc<AtomicBool>,
+    }
+
+    fn fixture(lose_first_response: bool) -> Fixture {
         let stored = Arc::new(Mutex::new(None::<Value>));
         let calls = Arc::new(Mutex::new(Vec::new()));
         let lost = Arc::new(Mutex::new(false));
+        let conflict = Arc::new(AtomicBool::new(false));
         let service = tower::service_fn({
-            let (stored, calls, lost) = (stored.clone(), calls.clone(), lost.clone());
+            let (stored, calls, lost, conflict) = (
+                stored.clone(),
+                calls.clone(),
+                lost.clone(),
+                conflict.clone(),
+            );
             move |request: Request<Body>| {
-                let (stored, calls, lost) = (stored.clone(), calls.clone(), lost.clone());
+                let (stored, calls, lost, conflict) = (
+                    stored.clone(),
+                    calls.clone(),
+                    lost.clone(),
+                    conflict.clone(),
+                );
                 async move {
                     let path = request.uri().path().to_owned();
                     assert!(path.starts_with("/api/v1/namespaces/awaken-control/configmaps"));
                     let method = request.method().as_str().to_owned();
                     calls.lock().unwrap().push(method.clone());
                     let bytes = request.into_body().collect_bytes().await.unwrap();
+                    let request_body: Value = if bytes.is_empty() {
+                        Value::Null
+                    } else {
+                        serde_json::from_slice(&bytes).unwrap()
+                    };
                     let (status, body) = match method.as_str() {
                         "POST" => {
                             let mut guard = stored.lock().unwrap();
                             if guard.is_none() {
-                                let mut value: Value = serde_json::from_slice(&bytes).unwrap();
+                                let mut value = request_body;
                                 value["apiVersion"] = json!("v1");
                                 value["kind"] = json!("ConfigMap");
                                 value["metadata"]["uid"] = json!("uid-original");
@@ -235,6 +409,28 @@ mod tests {
                             || (404, json!({"apiVersion":"v1","kind":"Status","status":"Failure","code":404,"reason":"NotFound"})),
                             |value| (200, value),
                         ),
+                        "PUT" => {
+                            let mut current = stored.lock().unwrap();
+                            let existing = current.as_mut().expect("PUT follows GET");
+                            if conflict.swap(false, Ordering::SeqCst) {
+                                existing["metadata"]["resourceVersion"] = json!("2");
+                                (409, json!({"apiVersion":"v1","kind":"Status","status":"Failure","code":409,"reason":"Conflict"}))
+                            } else if request_body["metadata"]["uid"] != existing["metadata"]["uid"]
+                                || request_body["metadata"]["resourceVersion"] != existing["metadata"]["resourceVersion"]
+                            {
+                                (409, json!({"apiVersion":"v1","kind":"Status","status":"Failure","code":409,"reason":"Conflict"}))
+                            } else {
+                                let mut value = request_body;
+                                let next = existing["metadata"]["resourceVersion"]
+                                    .as_str()
+                                    .unwrap()
+                                    .parse::<u64>()
+                                    .unwrap() + 1;
+                                value["metadata"]["resourceVersion"] = json!(next.to_string());
+                                *existing = value.clone();
+                                (200, value)
+                            }
+                        }
                         _ => panic!("unexpected ledger method {method}"),
                     };
                     Ok::<_, std::io::Error>(
@@ -246,8 +442,8 @@ mod tests {
                 }
             }
         });
-        (
-            K8sWorkerCreateLedger::new(
+        Fixture {
+            ledger: K8sWorkerCreateLedger::new(
                 Client::new(service, "awaken-control"),
                 "awaken-control",
                 "awaken-system",
@@ -256,7 +452,8 @@ mod tests {
             .unwrap(),
             stored,
             calls,
-        )
+            conflict,
+        }
     }
 
     #[tokio::test]
@@ -268,7 +465,12 @@ mod tests {
         // different UID for Registry rejection, E4 malformed/foreign object
         // never becomes an anchor. Rules J1=C1 success=>E1, J2=lost+exact=>E2,
         // J3=replaced=>E3, J4=foreign/missing=>E4.
-        let (ledger, stored, calls) = fixture(true);
+        let Fixture {
+            ledger,
+            stored,
+            calls,
+            ..
+        } = fixture(true);
         assert!(
             ledger
                 .initialize("awaken-system", "worker", "pod-uid")
@@ -330,7 +532,7 @@ mod tests {
         // before I/O; C2 Worker Pod names another Sandbox namespace -> no
         // Create request. Both effects keep the control ledger off the Worker
         // ServiceAccount's Sandbox mutation domain.
-        let (ledger, _, calls) = fixture(false);
+        let Fixture { ledger, calls, .. } = fixture(false);
         assert!(
             ledger
                 .initialize("foreign", "worker", "pod-uid")
@@ -346,6 +548,120 @@ mod tests {
                 "provider-a"
             )
             .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn ticket_admission_and_close_share_the_real_configmap_cas() {
+        // Causes: C1 exact Registry-frozen UID; C2 an unrelated writer wins
+        // the first resourceVersion CAS; C3 this request is new/replayed;
+        // C4 close wins after admission; C5 independent executor records the
+        // API UID; C6 same-name ledger is replaced. Effects: E1 only the
+        // retried successful CAS grants Forward, E2 replay never forwards,
+        // E3 close waits on InFlight, E4 durable completion joins, E5 a foreign
+        // ledger UID rejects before mutation. Rules T1=C1+C2+C3=>E1,
+        // T2=T1+replay=>E2, T3=T1+C4+!C5=>E3, T4=T3+C5=>E4,
+        // T5=C6=>E5. No mock cleanup receipt is returned.
+        let Fixture {
+            ledger,
+            stored,
+            calls,
+            conflict,
+        } = fixture(false);
+        let (name, uid) = ledger
+            .initialize("awaken-system", "worker", "pod-uid")
+            .await
+            .unwrap();
+        let binding = K8sLedgerBinding {
+            worker_namespace: "awaken-system",
+            worker_name: "worker",
+            worker_uid: "pod-uid",
+            ledger_name: &name,
+            ledger_uid: &uid,
+            configuration_fingerprint: ledger.configuration_fingerprint(),
+        };
+        let request = CreateTicketRequest::new(
+            "effect-a",
+            "pods",
+            "awaken-system",
+            "sandbox-pod",
+            "a".repeat(64),
+        )
+        .unwrap();
+        conflict.store(true, Ordering::SeqCst);
+        assert_eq!(
+            ledger.admit_request(binding, &request).await.unwrap(),
+            TicketAdmission::Forward,
+            "T1"
+        );
+        let writes = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|method| *method == "PUT")
+            .count();
+        assert_eq!(writes, 2, "T1 one conflicted CAS and one winner");
+        assert_eq!(
+            ledger.admit_request(binding, &request).await.unwrap(),
+            TicketAdmission::InFlight,
+            "T2"
+        );
+        assert_eq!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|method| *method == "PUT")
+                .count(),
+            writes,
+            "T2 retry does not mutate or forward"
+        );
+        assert_eq!(
+            ledger
+                .seal_group_and_join(binding, "effect-a")
+                .await
+                .unwrap(),
+            RequestJoin::Unknown,
+            "T3"
+        );
+        ledger
+            .finish_request(
+                binding,
+                &request,
+                &TicketResult::Created {
+                    uid: "sandbox-uid".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(ledger.seal_group_and_join(binding, "effect-a").await.unwrap(), RequestJoin::Complete(tickets) if tickets.len() == 1),
+            "T4"
+        );
+
+        stored.lock().unwrap().as_mut().unwrap()["metadata"]["uid"] = json!("replacement-uid");
+        let writes = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|method| *method == "PUT")
+            .count();
+        assert!(
+            ledger
+                .seal_group_and_join(binding, "effect-a")
+                .await
+                .is_err(),
+            "T5"
+        );
+        assert_eq!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|method| *method == "PUT")
+                .count(),
+            writes,
+            "T5 no foreign mutation"
         );
     }
 }
