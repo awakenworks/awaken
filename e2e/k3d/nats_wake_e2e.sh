@@ -148,8 +148,7 @@ main() {
   RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/awaken-nats.XXXXXX")
   CLUSTER="awaken-nats-$(printf '%s' "$RUN_DIR" | sha256sum | cut -c1-20)"
   IMAGE="$CLUSTER:local"
-  export KUBECONFIG="$RUN_DIR/kubeconfig"
-  touch "$KUBECONFIG"
+  k3d_use_private_kubeconfig "$RUN_DIR/kubeconfig"
   k3d_install_exit_cleanup cleanup
 
   log 'build current scenario host with the production NATS adapter'
@@ -162,7 +161,7 @@ main() {
   k3d_ensure_images "$IMAGE" postgres:16 nats:2
   CLUSTER_ATTEMPTED=1
   k3d_create_cluster "$CLUSTER" 0 "" "" "$IMAGE" postgres:16 nats:2
-  k3d kubeconfig get "$CLUSTER" > "$KUBECONFIG"
+  k3d_bind_private_kubeconfig "$CLUSTER"
   k3d_import_images "$CLUSTER" "$IMAGE" postgres:16 nats:2
   kubectl create namespace "$NS" >/dev/null
   render_overlay

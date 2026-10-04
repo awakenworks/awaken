@@ -204,7 +204,7 @@ k3d_admit_or_exit "ADR-0071 distributed E2E"
 # cluster. Keep every unqualified fault-injection command on this run's exact
 # cluster without adding a second Kubernetes observer or changing production.
 KUBECONFIG_FILE=$(mktemp)
-export KUBECONFIG="$KUBECONFIG_FILE"
+k3d_use_private_kubeconfig "$KUBECONFIG_FILE"
 k3d_install_exit_cleanup cleanup
 
 # The public driver intentionally uses the repository-pinned official SDK.
@@ -458,7 +458,7 @@ k3d_ensure_images "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine
 CONTINUATION_VOLUME=$(docker volume create --label "awaken.e2e.cluster=$CLUSTER")
 k3d_create_cluster "$CLUSTER" 3 "" "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine
 CLUSTER_CREATED=1
-k3d kubeconfig get "$CLUSTER" > "$KUBECONFIG_FILE"
+k3d_bind_private_kubeconfig "$CLUSTER"
 # The installed local-path provisioner owns PVC/PV lifecycle. Its shared-filesystem
 # mode removes node affinity because this exact Docker volume is mounted on every
 # node. This is a node-crash fixture, not a proof of production storage durability.

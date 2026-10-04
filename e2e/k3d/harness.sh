@@ -143,6 +143,25 @@ k3d_validate_name() {
   [[ ${#1} -le 32 && "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]]
 }
 
+# Every scenario with unqualified kubectl calls uses this one private-context
+# lifecycle. Install the caller-owned file before cluster creation, so k3d can
+# never move the host's shared default context; bind its exact cluster after
+# creation. The scenario still owns removal or explicit failed-run retention.
+k3d_use_private_kubeconfig() {
+  local path="${1:-}"
+  [[ -n "$path" && "$path" != -* && ! -L "$path" ]] || return 2
+  [[ ! -e "$path" || ( -f "$path" && ! -s "$path" ) ]] || return 2
+  (umask 077; : > "$path") || return "$?"
+  export KUBECONFIG="$path"
+}
+
+k3d_bind_private_kubeconfig() {
+  local cluster="${1:-}"
+  k3d_validate_name "$cluster" || return 2
+  [[ -n "${KUBECONFIG:-}" && -f "$KUBECONFIG" && ! -L "$KUBECONFIG" ]] || return 2
+  k3d kubeconfig get "$cluster" > "$KUBECONFIG"
+}
+
 # Validate that one exact Docker container is an ordinary server/agent node of
 # the requested k3d cluster. Fault drivers must never accept a free-form Docker
 # target: a typo or option-shaped value must stop before any network/lifecycle
@@ -822,6 +841,33 @@ resolve_cargo_executable() {
 k3d_harness_selftest() (
   python3 "$(dirname "${BASH_SOURCE[0]}")/capacity.py" --self-test
   python3 "$(dirname "${BASH_SOURCE[0]}")/test_image_archive.py"
+  # Private-context decision table: P1 valid caller-owned path before create
+  # -> KUBECONFIG points at an empty private file; P2 valid exact cluster after
+  # create -> only its kubeconfig is installed; P3 invalid cluster, missing
+  # file, nonempty existing file, or option-shaped path -> no k3d call, no
+  # overwrite and no ambient context fallback.
+  (
+    local private_file calls=0
+    private_file=$(mktemp)
+    trap 'rm -f -- "$private_file"' EXIT
+    k3d() {
+      calls=$((calls + 1))
+      [[ "$*" = 'kubeconfig get awaken-test' ]] || return 99
+      printf 'cluster: awaken-test\n'
+    }
+    ! k3d_use_private_kubeconfig --all
+    k3d_use_private_kubeconfig "$private_file"
+    [[ "$KUBECONFIG" = "$private_file" && ! -s "$private_file" ]]
+    ! k3d_bind_private_kubeconfig --all
+    [[ "$calls" = 0 ]]
+    k3d_bind_private_kubeconfig awaken-test
+    [[ "$calls" = 1 && "$(cat "$private_file")" = 'cluster: awaken-test' ]]
+    ! k3d_use_private_kubeconfig "$private_file"
+    [[ "$(cat "$private_file")" = 'cluster: awaken-test' ]]
+    rm -f -- "$private_file"
+    ! k3d_bind_private_kubeconfig awaken-test
+    [[ "$calls" = 1 ]]
+  )
   # Static-volume fixture table V1 invalid name/count => no Docker/Kubernetes;
   # V2 existing directory => stop before formatting; V3 formatter failure =>
   # no node eligibility; V4 fresh owned Node => one formatter then eligibility.
