@@ -21,6 +21,7 @@
 //! matching over the whole message remains only for failures that carry no
 //! status at all.
 use std::borrow::Cow;
+use std::error::Error as _;
 use std::time::Duration;
 
 use awaken_runtime_contract::llm::Error;
@@ -64,6 +65,17 @@ impl WireFailure<'static> {
     /// A failure the transport itself reported; a connect-phase failure
     /// carried no request byte.
     pub(crate) fn transport(error: &reqwest::Error) -> Self {
+        let diagnostic = TransportDiagnostic::of(error);
+        // Closed fields only: reqwest's Display omits its nested cause, while
+        // an arbitrary source string may include an endpoint, body or secret.
+        tracing::warn!(
+            transport_kind = diagnostic.kind,
+            io_kind = ?diagnostic.io_kind,
+            raw_os_error = diagnostic.raw_os_error,
+            source_depth = diagnostic.source_depth,
+            http_status = ?error.status().map(|status| status.as_u16()),
+            "model transport failed"
+        );
         Self {
             status: error.status(),
             headers: None,
@@ -71,6 +83,52 @@ impl WireFailure<'static> {
             complete: false,
             unsent: error.is_connect(),
         }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TransportDiagnostic {
+    kind: &'static str,
+    io_kind: Option<std::io::ErrorKind>,
+    raw_os_error: Option<i32>,
+    source_depth: usize,
+}
+
+impl TransportDiagnostic {
+    fn of(error: &reqwest::Error) -> Self {
+        let kind = if error.is_connect() {
+            "connect"
+        } else if error.is_timeout() {
+            "timeout"
+        } else if error.is_decode() {
+            "response_body"
+        } else if error.is_body() {
+            "request_or_response_body"
+        } else if error.is_request() {
+            "request"
+        } else {
+            "other"
+        };
+        let mut diagnostic = Self {
+            kind,
+            io_kind: None,
+            raw_os_error: None,
+            source_depth: 0,
+        };
+        let mut source = error.source();
+        // The HTTP stack's source chain is bounded in practice; cap the scan
+        // so a foreign cyclic Error implementation cannot occupy this path.
+        for _ in 0..8 {
+            let Some(current) = source else { break };
+            diagnostic.source_depth += 1;
+            if let Some(io) = current.downcast_ref::<std::io::Error>() {
+                diagnostic.io_kind = Some(io.kind());
+                diagnostic.raw_os_error = io.raw_os_error();
+                break;
+            }
+            source = current.source();
+        }
+        diagnostic
     }
 }
 
@@ -369,12 +427,105 @@ mod tests {
     use std::time::Duration;
 
     use awaken_runtime_contract::model_operation::{
-        ModelExecutionEvidence, ResponseEnvelope, TerminalReceipt,
+        ModelExecutionEvidence, NoDispatchProof, ResponseEnvelope, TerminalReceipt,
     };
     use reqwest::StatusCode;
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
-    use super::{WireFailure, classify_error, classify_genai_error, classify_wire_failure};
+    use super::{
+        TransportDiagnostic, WireFailure, classify_error, classify_genai_error,
+        classify_wire_failure,
+    };
+
+    #[tokio::test]
+    async fn transport_diagnostic_is_structured_and_does_not_change_connect_evidence() {
+        // Causes: C1 connect refusal before any request byte; C2 an SDK error
+        // contains an arbitrary URL/source chain. Effects: E1 log projection
+        // exposes only fixed kind, I/O category/code and depth; E2 the
+        // existing classifier still grants only NotDispatched(TransportConnect).
+        // R1=C1+C2 => E1+E2. The neighboring SSE table owns the contrasting
+        // truncated-body => Unknown rule.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let error = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/private-context"))
+            .send()
+            .await
+            .expect_err("the bound listener has closed");
+        let diagnostic = TransportDiagnostic::of(&error);
+        assert_eq!(diagnostic.kind, "connect");
+        assert!(diagnostic.source_depth > 0);
+        assert!(!format!("{diagnostic:?}").contains("private-context"));
+        let failure = WireFailure::transport(&error);
+        assert_eq!(
+            classify_wire_failure(failure).execution_evidence(),
+            ModelExecutionEvidence::NotDispatched(NoDispatchProof::transport_connect())
+        );
+    }
+
+    #[tokio::test]
+    async fn truncated_success_body_exposes_decode_without_inventing_termination() {
+        // Causes: C1 HTTP success headers and an initial SSE frame arrive;
+        // C2 the declared body is longer than the bytes sent; C3 the socket
+        // closes before any protocol terminal. R2=C1+C2+C3 => reqwest Decode,
+        // fixed response_body diagnostic, and Unknown execution evidence.
+        // This reproduces the observed error class without claiming which
+        // live provider or network hop caused the October incident.
+        use futures::StreamExt as _;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 128\r\nconnection: close\r\n\r\ndata: {}\n\n",
+                )
+                .await
+                .unwrap();
+            socket.shutdown().await.unwrap();
+        });
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/chat/completions"))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        let mut stream = response.bytes_stream();
+        let mut saw_body = false;
+        let error = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                match stream.next().await {
+                    Some(Ok(bytes)) => saw_body |= !bytes.is_empty(),
+                    Some(Err(error)) => break error,
+                    None => panic!("truncated body must fail its declared length"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        server.await.unwrap();
+        assert!(saw_body, "the SSE body began before the transport failure");
+        assert!(error.is_decode());
+        assert_eq!(error.to_string(), "error decoding response body");
+        let diagnostic = TransportDiagnostic::of(&error);
+        assert_eq!(diagnostic.kind, "response_body");
+        assert!(diagnostic.source_depth > 0);
+        assert_eq!(
+            classify_wire_failure(WireFailure::transport(&error)).execution_evidence(),
+            ModelExecutionEvidence::Unknown
+        );
+    }
 
     fn headers(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
         pairs
