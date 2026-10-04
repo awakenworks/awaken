@@ -414,9 +414,17 @@ that wins first must be joined, even if its Worker has died or a stale response
 arrives. An executor crash between forwarding and durable completion leaves
 InFlight/Unknown; no response timeout, retry count or 404 may retire it. An
 active-active Coordinator must use the same CAS, not a process-local mutex, for
-this admission order. The ledger ConfigMap UID and provider configuration are
-retained with the ticket, so deleting and recreating its stable name cannot
-manufacture a closed witness.
+this admission order. The ledger's own UID cannot serve as its only identity
+anchor: a deleted and recreated ConfigMap can report its new UID while hiding
+the old ledger and an admitted late Create. Before the first Create is forwarded,
+the original durable effect owner must freeze the ledger UID and provider
+configuration outside that ledger. Managed Session effects use the existing
+Session root CAS; ordinary Run effects use their existing Dispatch attempt
+CAS. These are two existing admission owners for different effects, not two
+Create executors or cleanup queues. A replacement process may only reobserve
+the frozen UID. If the anchor is absent after an effect could have started, or
+the ledger has a different UID, closure remains Unknown. An unanchored legacy
+effect must never be upgraded by creating a fresh ledger under the same name.
 
 Once all admitted tickets are Complete, the same provider close checks the
 exact plan's full participant set, uses UID-fenced preparation/disposal, and
