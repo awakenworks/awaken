@@ -308,15 +308,16 @@ async fn cancelled_connections_before_http_acceptance_leave_cleanup_available() 
         )
         .await
         .unwrap();
-    let state = state.lock().unwrap();
-    assert_eq!(
-        state.calls.len(),
-        18,
-        "R1/R2 only complete HTTP requests count"
-    );
-    assert_eq!(state.writes.len(), 8, "R2 exact cleanup effects");
-    assert!(state.pod.is_none() && state.claim.is_none() && state.projected.is_empty());
-    drop(state);
+    {
+        let state = state.lock().unwrap();
+        assert_eq!(
+            state.calls.len(),
+            18,
+            "R1/R2 only complete HTTP requests count"
+        );
+        assert_eq!(state.writes.len(), 8, "R2 exact cleanup effects");
+        assert!(state.pod.is_none() && state.claim.is_none() && state.projected.is_empty());
+    }
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
 }
