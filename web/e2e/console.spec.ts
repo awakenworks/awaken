@@ -375,9 +375,10 @@ test("Quickstart publishes, starts a durable Session, and hands its exact SDK co
   // message, and navigates to the exact durable Session; R3 blank draft id + selected Starter
   // fills the Starter id but an authored replacement remains authoritative; R4
   // post-Quickstart provenance exposes exact Agent/Environment SDK coordinates
-  // and dismissal removes guidance only; R5 the scoped workspace path is
-  // resolved from the existing workspace-context owner, so its response header
-  // names that same scope even when the UI route uses the "default" label.
+  // and dismissal removes guidance only; R5 the UI route has the presentation
+  // label "default" while the server owns a concrete Workspace, so the actual
+  // browser context request must carry the concrete response coordinate and
+  // must not send the presentation label as an explicit Workspace path.
   // This browser scenario owns R2-R5; the
   // runtime-host FMECA tests own the fail-closed R1 edge.
   const stamp = Date.now();
@@ -400,13 +401,14 @@ test("Quickstart publishes, starts a durable Session, and hands its exact SDK co
   expect(environmentResponse.ok(), environmentBody).toBe(true);
   const environment = JSON.parse(environmentBody);
 
+  const contextResponse = page.waitForResponse((response) =>
+    isApiRequest(response.url(), "/v1/config/workspace-context"));
   await page.reload();
-  const contextPath = await workspaceApiPath(request, "/v1/config/workspace-context");
-  const browserWorkspace = await page.evaluate(async (path) => {
-    const response = await fetch(path);
-    return response.headers.get("anthropic-workspace-id");
-  }, contextPath);
-  expect(browserWorkspace).toBe(configuredWorkspace);
+  const browserContext = await contextResponse;
+  expect(browserContext.ok()).toBe(true);
+  expect(new URL(browserContext.url()).pathname).not.toContain("/v1/workspaces/default/");
+  expect(browserContext.headers()["anthropic-workspace-id"]).toBe(configuredWorkspace);
+  expect((await browserContext.json()).workspace_id).toBe(configuredWorkspace);
   await expect(page.locator(".template-card[data-selected=true]")).toHaveCount(0);
   await page.getByRole("button", { name: /Repository change/ }).click();
   await expect(page.getByPlaceholder("coding-agent")).toHaveValue("repository-change");
