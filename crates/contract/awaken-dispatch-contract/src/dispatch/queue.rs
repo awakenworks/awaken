@@ -433,6 +433,20 @@ pub trait ClaimedCredentialDeliveryTransport: Send + Sync {
     ) -> Result<Option<awaken_runtime_contract::AttemptCredentialDelivery>, DispatchError>;
 }
 
+/// One operational observation from the canonical Dispatch store.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DispatchDepths {
+    pub runnable: u64,
+    pub leased: u64,
+}
+
+impl DispatchDepths {
+    #[must_use]
+    pub const fn worker_demand(self) -> u64 {
+        self.runnable.saturating_add(self.leased)
+    }
+}
+
 /// Control-side dispatch operations that only the Coordinator's own store
 /// performs: Session Run reservations and their epoch lock, Session child
 /// admission, placement-aware and terminal-recovery claims, physical attempt
@@ -573,11 +587,19 @@ pub trait ControlDispatchQueue: DispatchQueue {
         limit: usize,
     ) -> Result<Vec<DispatchCompletion>, DispatchError>;
 
-    /// Current number of dispatches that are claimable at `now_ms`. Native stores
-    /// return an exact value; composed/remote backends may return `None` until they
-    /// expose an efficient server-side count. This is an operations query only and
-    /// never participates in scheduling correctness.
-    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError>;
+    /// One store-time observation of claimable and currently leased Dispatch
+    /// rows. The two classes are disjoint: an expired lease is runnable, while
+    /// a live reservation/execution lease still needs its Worker. Native stores
+    /// return exact counts; composed/remote backends may return `None` until
+    /// they expose an efficient server-side read. This is operational evidence,
+    /// never claim or settlement authority.
+    async fn dispatch_depths(&self) -> Result<Option<DispatchDepths>, DispatchError>;
+
+    /// Preserve the exact backlog observation for existing queue consumers.
+    /// The same store query owns both numbers, avoiding a second classification.
+    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
+        Ok(self.dispatch_depths().await?.map(|depths| depths.runnable))
+    }
 
     /// Bounded keyset read of current Dispatch identities, in ascending Run-id
     /// order strictly after `after`. A zero limit reads nothing. No lifecycle

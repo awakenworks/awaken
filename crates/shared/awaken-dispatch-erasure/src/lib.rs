@@ -28,10 +28,11 @@ use awaken_runtime_contract::resume::ResumeResult;
 use awaken_dispatch_contract::RunDispatch;
 use awaken_dispatch_contract::{
     AttemptCredentialBinding, CandidateFingerprint, CasOutcome, Claimed, CommitEpochGuard,
-    CredentialRealizationReceipt, Dispatch, DispatchCompletion, DispatchError, DispatchOutcome,
-    DispatchQueue, DispatchSummary, DurableDispatch, Inbox, LeaseRenewalOutcome, Outbox,
-    PendingInput, PendingRecord, RunClaim, SessionChildAdmission, SessionRunReservationActivation,
-    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
+    CredentialRealizationReceipt, Dispatch, DispatchCompletion, DispatchDepths, DispatchError,
+    DispatchOutcome, DispatchQueue, DispatchSummary, DurableDispatch, Inbox, LeaseRenewalOutcome,
+    Outbox, PendingInput, PendingRecord, RunClaim, SessionChildAdmission,
+    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
+    SettleOutcome, SubmitOptions,
 };
 use awaken_dispatch_contract::{DispatchCursor, DispatchOperationalFeed, DispatchPage};
 
@@ -495,8 +496,8 @@ impl ControlDispatchQueue for AnyDispatchStore {
         delegate_control!(self, completion_events_after(after_sequence, limit))
     }
 
-    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
-        delegate_control!(self, runnable_depth())
+    async fn dispatch_depths(&self) -> Result<Option<DispatchDepths>, DispatchError> {
+        delegate_control!(self, dispatch_depths())
     }
 
     async fn scan_dispatch_ids(

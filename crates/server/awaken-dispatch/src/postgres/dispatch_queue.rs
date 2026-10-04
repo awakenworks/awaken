@@ -1685,12 +1685,12 @@ impl ControlDispatchQueue for PostgresDispatchStore {
         Ok(claimed)
     }
 
-    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
+    async fn dispatch_depths(&self) -> Result<Option<DispatchDepths>, DispatchError> {
         let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
         let p = NS;
         let thread_available = thread_available_for_claim(p);
-        let depth: i64 = sqlx::query_scalar(&format!(
-            "SELECT COUNT(*) FROM {p}_dispatch d WHERE (\
+        let (runnable, leased): (i64, i64) = sqlx::query_as(&format!(
+            "SELECT (SELECT COUNT(*) FROM {p}_dispatch d WHERE (\
              (d.status IN ('reserved', 'reservation_running') \
                AND d.lease_until IS NOT NULL AND d.lease_until <= $1 AND {}) OR \
              (d.status = 'pending' AND {thread_available}) OR \
@@ -1700,14 +1700,20 @@ impl ControlDispatchQueue for PostgresDispatchStore {
                AND (i.available_at IS NULL OR i.available_at <= $1)\
              )) AND {thread_available})) \
              AND (d.retry_not_before IS NULL \
-                  OR d.retry_not_before <= $1)",
+                  OR d.retry_not_before <= $1)), \
+             (SELECT COUNT(*) FROM {p}_dispatch d \
+              WHERE d.status IN ('reservation_running', 'running') \
+                AND d.lease_until > $1)",
             no_running_peer(p)
         ))
         .bind(crate::clock::db_millis(now_ms))
         .fetch_one(&self.pool)
         .await
         .map_err(store_error)?;
-        Ok(Some(durable_u64("runnable dispatch depth", depth)?))
+        Ok(Some(DispatchDepths {
+            runnable: durable_u64("runnable dispatch depth", runnable)?,
+            leased: durable_u64("leased dispatch depth", leased)?,
+        }))
     }
 
     async fn load_physical_attempt(

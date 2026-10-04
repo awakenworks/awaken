@@ -66,10 +66,10 @@
     },
     "awaken-dispatch-contract": {
       "depth": 7,
-      "production_lines": 2440,
+      "production_lines": 2454,
       "catch_all_errors": 3,
       "growth_reasons": {
-        "production_lines": "Native Run observation adds one data-only dispatch page to the existing Run ingress contract, and physical Worker admission adds one required ControlDispatchQueue method. Both reuse the canonical Dispatch and Registry authorities; the existing canonical Epoch decoder still rejects zero grants. No parallel transport or default capability is added.",
+        "production_lines": "Native Run observation adds one data-only dispatch page to the existing Run ingress contract, and physical Worker admission adds one required ControlDispatchQueue method. Both reuse the canonical Dispatch and Registry authorities; the existing canonical Epoch decoder still rejects zero grants. No parallel transport or default capability is added. One canonical Dispatch depth snapshot preserves runnable backlog and live Worker lease demand for hosted scaling without a second queue query owner.",
         "depth": "Removing the compatibility facade exposes direct domain-owner dependencies; retaining explicit state, realization, runtime, and ingress boundaries avoids a replacement aggregator."
       }
     },

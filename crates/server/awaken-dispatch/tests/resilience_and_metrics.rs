@@ -13,6 +13,7 @@ use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
     ControlDispatchQueue, DispatchQueue, DispatchService, DispatchServiceConfig, DispatchWorker,
     MemoryDispatchStore, RunDispatch,
@@ -34,6 +35,50 @@ async fn wait_for(cond: impl Fn() -> bool) -> bool {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     cond()
+}
+
+#[tokio::test]
+async fn worker_demand_keeps_a_live_lease_and_reclassifies_expiry() {
+    // Cause/effect table: Q1 fresh pending -> (runnable=1, leased=0);
+    // Q2 valid claim before expiry -> (0, 1); Q3 the same claim at its exact
+    // expiry -> (1, 0). Every row has demand=1, so a long executing Run
+    // cannot make the only Worker disappear, while expiry never double-counts
+    // the same Dispatch. This is observation only; the claim epoch is unchanged.
+    let clock = Arc::new(ManualClock::new(0));
+    let store = MemoryDispatchStore::new(clock.clone());
+    store
+        .enqueue(RunDispatch::new(activation("worker-demand-expiry")))
+        .await
+        .unwrap();
+    let depths = store.dispatch_depths().await.unwrap().unwrap();
+    assert_eq!(
+        (depths.runnable, depths.leased, depths.worker_demand()),
+        (1, 0, 1),
+        "Q1"
+    );
+    store
+        .claim_run(
+            &RunId("worker-demand-expiry".into()),
+            "worker",
+            1_000,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .expect("Q2 claim");
+    let depths = store.dispatch_depths().await.unwrap().unwrap();
+    assert_eq!(
+        (depths.runnable, depths.leased, depths.worker_demand()),
+        (0, 1, 1),
+        "Q2"
+    );
+    clock.set(1_000);
+    let depths = store.dispatch_depths().await.unwrap().unwrap();
+    assert_eq!(
+        (depths.runnable, depths.leased, depths.worker_demand()),
+        (1, 0, 1),
+        "Q3"
+    );
 }
 
 // --- 10. A transient store error is swallowed and the daemon recovers -------
@@ -314,6 +359,16 @@ async fn held_worker_drives_count_only_current_executions_not_queued_runs() {
         .unwrap();
     assert_eq!(metrics.in_flight.load(Ordering::SeqCst), 4, "A2/E1");
     assert_eq!(store.runnable_depth().await.unwrap(), Some(1), "A2/E2");
+    // C1 four live leased Runs; C2 one independent queued Run; C3 all four
+    // settle. D1(C1+C2) -> runnable=1, leased=4, Worker demand=5.
+    // D2(C2+C3) -> runnable=1, leased=0, demand=1. This is the exact
+    // scale-down boundary that a runnable-only gauge previously missed.
+    let depths = store.dispatch_depths().await.unwrap().unwrap();
+    assert_eq!(
+        (depths.runnable, depths.leased, depths.worker_demand()),
+        (1, 4, 5),
+        "D1"
+    );
     release.add_permits(4);
     let mut winners = std::collections::HashSet::new();
     while let Some(result) = tokio::time::timeout(Duration::from_secs(10), drives.join_next())
@@ -330,6 +385,12 @@ async fn held_worker_drives_count_only_current_executions_not_queued_runs() {
     assert_eq!(winners.len(), 4, "A3/E3");
     assert_eq!(metrics.in_flight.load(Ordering::SeqCst), 0, "A3/E3");
     assert_eq!(store.runnable_depth().await.unwrap(), Some(1), "A3/E2");
+    let depths = store.dispatch_depths().await.unwrap().unwrap();
+    assert_eq!(
+        (depths.runnable, depths.leased, depths.worker_demand()),
+        (1, 0, 1),
+        "D2"
+    );
 }
 
 #[tokio::test]

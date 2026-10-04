@@ -682,6 +682,14 @@ async fn exact_claim_recovery_and_fencing(
         .await
         .expect("exact claim succeeds")
         .expect("target is runnable");
+    // Dispatch demand decision table: two fresh claimable rows -> (2, 0);
+    // one valid claim plus one queued peer -> (1, 1), total demand 2.
+    // An active Run must not disappear from autoscaling merely because its
+    // lease is healthy; neither count changes claim or settlement authority.
+    if let Some(depths) = store.dispatch_depths().await.expect("read dispatch demand") {
+        assert_eq!((depths.runnable, depths.leased), (1, 1), "D1/D2");
+        assert_eq!(depths.worker_demand(), 2, "D2 keeps the active Worker");
+    }
     assert_eq!(first.request, frozen, "R1/E1 exact frozen request");
     assert_eq!(first.lease.owner, "conformance-a");
     assert!(!first.recovered, "a fresh exact claim is not recovery");

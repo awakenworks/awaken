@@ -6,14 +6,14 @@
 // @formal reason: introduced. Evidence: shared dispatch query conformance and process sampler tests; this
 // @formal reason: is a product-requirement classification, not a direct formal-proof claim.
 impl SqliteDispatchStore {
-    async fn query_runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
+    async fn query_dispatch_depths(&self) -> Result<Option<DispatchDepths>, DispatchError> {
         let now_ms = self.clock.now_ms();
         self.with_conn(move |conn, p| {
             let thread_available = thread_available_for_claim(p);
-            let depth: i64 = conn
+            let (runnable, leased): (i64, i64) = conn
                 .query_row(
                     &format!(
-                        "SELECT COUNT(*) FROM {p}_dispatch d WHERE (\
+                        "SELECT (SELECT COUNT(*) FROM {p}_dispatch d WHERE (\
                          (d.status IN ('reserved', 'reservation_running') \
                            AND d.lease_until IS NOT NULL AND d.lease_until <= ?1 AND {}) OR \
                          (d.status = 'pending' AND {thread_available}) OR \
@@ -23,14 +23,20 @@ impl SqliteDispatchStore {
                            AND (i.available_at IS NULL OR i.available_at <= ?1)\
                          )) AND {thread_available})) \
                          AND (d.retry_not_before IS NULL \
-                              OR d.retry_not_before <= ?1)",
+                              OR d.retry_not_before <= ?1)), \
+                         (SELECT COUNT(*) FROM {p}_dispatch d \
+                          WHERE d.status IN ('reservation_running', 'running') \
+                            AND d.lease_until > ?1)",
                         no_running_peer(p)
                     ),
                     params![crate::clock::db_millis(now_ms)],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(store_error)?;
-            Ok(Some(durable_u64("runnable dispatch depth", depth)?))
+            Ok(Some(DispatchDepths {
+                runnable: durable_u64("runnable dispatch depth", runnable)?,
+                leased: durable_u64("leased dispatch depth", leased)?,
+            }))
         })
         .await
     }
