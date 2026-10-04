@@ -1401,6 +1401,19 @@ pub trait PackageImageProvisioner: Send + Sync {
     }
 }
 
+/// The sole provider answer when a Session lost its durable container handle.
+/// `ExactIncarnation` is not a cleanup receipt: the provider must still validate
+/// the frozen spec/effect and use its ordinary handle-bound terminal path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MissingHandleTerminalEvidence {
+    Unknown,
+    Unmaterialized,
+    ExactIncarnation {
+        container_id: String,
+        runtime_handle: crate::ContainerContinuationHandle,
+    },
+}
+
 /// Runtime seam driven by the provider and implemented by Docker, Podman, K8s,
 /// or the test fake. It owns no Session or application policy.
 #[async_trait]
@@ -1579,17 +1592,17 @@ pub trait ContainerRuntime: Send + Sync {
         }
     }
 
-    /// Prove that an interrupted creation published no runtime object or
-    /// independently governed participant. The fail-closed default prevents a
-    /// provider from treating a missing durable handle as absence merely
-    /// because the current process remembers no object.
-    async fn prove_unmaterialized_absence(
+    /// Classify an interrupted creation only from provider-owned, independently
+    /// joined physical evidence. A missing handle or an object 404 alone never
+    /// grants terminal cleanup. The default retains the original fail-closed
+    /// behavior for every backend without such a witness.
+    async fn missing_handle_terminal_evidence(
         &self,
         _scope: &str,
         _plan: &ContainerPlan,
         _expected_effect_fence: Option<&crate::ContainerEffectFence>,
-    ) -> Result<bool, RuntimeError> {
-        Ok(false)
+    ) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
+        Ok(MissingHandleTerminalEvidence::Unknown)
     }
 
     /// Legacy unfenced runtime seam retained for source compatibility. Managed

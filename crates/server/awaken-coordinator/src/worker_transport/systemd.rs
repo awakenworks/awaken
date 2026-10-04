@@ -16,11 +16,11 @@ use std::time::Duration;
 use awaken_dispatch::{
     ApplicationError, AttemptExecutionBinding, AttemptStopStatus, ClosedAttemptExecution,
     ClosedWorkerExecution, NativeAttemptFootprint, NativeAttemptTermination,
-    WorkerExecutionBindingSource, WorkerExecutionStopSource, WorkerIdentity,
+    WorkerExecutionBindingSource, WorkerExecutionStopSource, WorkerIdentity, WorkerProcessExit,
     WorkerProcessStopStatus,
 };
 use awaken_worker_contract::is_local_process_incarnation as incarnation;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 const UNIT_PREFIX: &str = "awaken-agent-worker-";
 const UNIT_SUFFIX: &str = ".service";
@@ -371,29 +371,127 @@ impl SystemdWorkerEvidence {
         self.evidence_dir.join(format!("{}.json", binding.unit))
     }
 
-    fn read_receipt(
+    fn binding_path(&self, unit: &str) -> PathBuf {
+        self.evidence_dir.join(format!("{unit}.binding.json"))
+    }
+
+    fn read_evidence<T: DeserializeOwned>(
         &self,
-        binding: &ProcessBinding,
-    ) -> Result<Option<ExitReceipt>, ApplicationError> {
-        let path = self.receipt_path(binding);
-        let metadata = match fs::symlink_metadata(&path) {
+        path: &Path,
+    ) -> Result<Option<T>, ApplicationError> {
+        let metadata = match fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(_) => {
                 return Err(ApplicationError::unavailable(
-                    "systemd exit evidence cannot be inspected",
+                    "systemd evidence cannot be inspected",
                 ));
             }
         };
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             return Err(ApplicationError::unavailable(
-                "systemd exit evidence is not a regular file",
+                "systemd evidence is not a regular file",
             ));
         }
         let bytes = fs::read(path)
-            .map_err(|_| ApplicationError::unavailable("systemd exit evidence cannot be read"))?;
-        let receipt: ExitReceipt = serde_json::from_slice(&bytes)
-            .map_err(|_| ApplicationError::unavailable("systemd exit evidence is invalid"))?;
+            .map_err(|_| ApplicationError::unavailable("systemd evidence cannot be read"))?;
+        let value = serde_json::from_slice(&bytes)
+            .map_err(|_| ApplicationError::unavailable("systemd evidence is invalid"))?;
+        // A response-lost writer may have linked its synced file immediately
+        // before a process crash. Sync the directory before trusting the link.
+        awaken_fs_durability::sync_directory(&self.evidence_dir).map_err(|_| {
+            ApplicationError::unavailable("systemd evidence directory cannot be synced")
+        })?;
+        Ok(Some(value))
+    }
+
+    fn write_new_evidence<T: Serialize>(
+        &self,
+        path: &Path,
+        value: &T,
+    ) -> Result<(), ApplicationError> {
+        let temporary = self.evidence_dir.join(format!(
+            ".{}.{}.tmp",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| ApplicationError::internal("systemd evidence path is invalid"))?,
+            uuid::Uuid::now_v7()
+        ));
+        let bytes = serde_json::to_vec(value)
+            .map_err(|_| ApplicationError::internal("systemd evidence encoding failed"))?;
+        let write = (|| -> io::Result<()> {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            fs::hard_link(&temporary, path)?;
+            awaken_fs_durability::sync_directory(&self.evidence_dir)?;
+            fs::remove_file(&temporary)?;
+            awaken_fs_durability::sync_directory(&self.evidence_dir)
+        })();
+        if let Err(error) = write {
+            let _ = fs::remove_file(&temporary);
+            return Err(ApplicationError::unavailable(format!(
+                "systemd evidence could not be persisted: {error}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn read_binding(
+        &self,
+        worker: &WorkerIdentity,
+    ) -> Result<Option<ProcessBinding>, ApplicationError> {
+        let unit = unit_name(worker)?;
+        let binding: Option<ProcessBinding> = self.read_evidence(&self.binding_path(&unit))?;
+        if binding.as_ref().is_some_and(|binding| {
+            binding.unit != unit
+                || !incarnation(&binding.invocation_id)
+                || uuid::Uuid::parse_str(&binding.boot_id).is_err()
+                || binding.main_pid == 0
+                || !binding.control_group.ends_with(&format!("/{unit}"))
+        }) {
+            return Err(ApplicationError::unavailable(
+                "retained systemd Worker binding is invalid",
+            ));
+        }
+        Ok(binding)
+    }
+
+    fn retain_binding(
+        &self,
+        worker: &WorkerIdentity,
+        binding: &ProcessBinding,
+    ) -> Result<(), ApplicationError> {
+        let path = self.binding_path(&binding.unit);
+        if let Some(existing) = self.read_binding(worker)? {
+            return if existing == *binding {
+                Ok(())
+            } else {
+                Err(ApplicationError::unavailable(
+                    "systemd Worker process binding changed",
+                ))
+            };
+        }
+        if let Err(error) = self.write_new_evidence(&path, binding) {
+            if self.read_binding(worker)?.as_ref() == Some(binding) {
+                return Ok(());
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn read_receipt(
+        &self,
+        binding: &ProcessBinding,
+    ) -> Result<Option<ExitReceipt>, ApplicationError> {
+        let Some(receipt): Option<ExitReceipt> = self.read_evidence(&self.receipt_path(binding))?
+        else {
+            return Ok(None);
+        };
         if receipt.binding != *binding
             || !matches!(
                 receipt.observed_state.as_str(),
@@ -404,12 +502,6 @@ impl SystemdWorkerEvidence {
                 "systemd exit evidence names another process or outcome",
             ));
         }
-        // A response-lost writer may have linked its already-synced file but
-        // crashed before syncing the directory. Make that link durable before
-        // allowing the Registry to store a provider exit observation.
-        awaken_fs_durability::sync_directory(&self.evidence_dir).map_err(|_| {
-            ApplicationError::unavailable("systemd exit evidence directory cannot be synced")
-        })?;
         Ok(Some(receipt))
     }
 
@@ -420,36 +512,11 @@ impl SystemdWorkerEvidence {
             // identifies the one physical exit receipt.
             return Ok(());
         }
-        let path = self.receipt_path(&receipt.binding);
-        let temporary = self.evidence_dir.join(format!(
-            ".{}.{}.tmp",
-            receipt.binding.unit,
-            uuid::Uuid::now_v7()
-        ));
-        let bytes = serde_json::to_vec(receipt)
-            .map_err(|_| ApplicationError::internal("systemd exit evidence encoding failed"))?;
-        let write = (|| -> io::Result<()> {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            fs::hard_link(&temporary, &path)?;
-            awaken_fs_durability::sync_directory(&self.evidence_dir)?;
-            fs::remove_file(&temporary)?;
-            awaken_fs_durability::sync_directory(&self.evidence_dir)
-        })();
-        if let Err(error) = write {
-            let _ = fs::remove_file(&temporary);
-            if error.kind() == io::ErrorKind::AlreadyExists
-                && self.read_receipt(&receipt.binding)?.is_some()
-            {
+        if let Err(error) = self.write_new_evidence(&self.receipt_path(&receipt.binding), receipt) {
+            if self.read_receipt(&receipt.binding)?.is_some() {
                 return Ok(());
             }
-            return Err(ApplicationError::unavailable(format!(
-                "systemd exit evidence could not be persisted: {error}"
-            )));
+            return Err(error);
         }
         Ok(())
     }
@@ -543,6 +610,41 @@ impl SystemdWorkerEvidence {
 
 #[async_trait::async_trait]
 impl WorkerExecutionBindingSource for SystemdWorkerEvidence {
+    async fn prepare_registration_physical_evidence(
+        &self,
+        registration: &awaken_dispatch::WorkerRegistration,
+    ) -> Result<Option<awaken_dispatch::WorkerCreateLedger>, ApplicationError> {
+        // The unit coordinate depends on the launcher incarnation, not on the
+        // Registry-assigned generation. Retain before the first insert so a
+        // crash between registration and Ready cannot erase the only binding.
+        let provisional =
+            WorkerIdentity::new(&registration.worker_id, &registration.incarnation_id, 1);
+        self.retain_registered_worker_evidence(&provisional, None)
+            .await?;
+        Ok(None)
+    }
+
+    async fn retain_registered_worker_evidence(
+        &self,
+        worker: &WorkerIdentity,
+        _create_ledger: Option<&awaken_dispatch::WorkerCreateLedger>,
+    ) -> Result<(), ApplicationError> {
+        let unit = unit_name(worker)?;
+        let observation = self.show(&unit).await?;
+        if let Some(binding) = observation.bind(&unit, &self.boot_id) {
+            self.retain_binding(worker, &binding)
+        } else if self.read_binding(worker)?.is_some() {
+            // Registration may have lost its reply after the immutable file
+            // was linked. The application rereads Registry closure before
+            // allowing Ready, so a completed old retention is replayable.
+            Ok(())
+        } else {
+            Err(ApplicationError::unavailable(
+                "exact systemd Worker process cannot be retained",
+            ))
+        }
+    }
+
     async fn binding_for(
         &self,
         worker: &WorkerIdentity,
@@ -552,6 +654,11 @@ impl WorkerExecutionBindingSource for SystemdWorkerEvidence {
         let process = observation.bind(&unit, &self.boot_id).ok_or_else(|| {
             ApplicationError::unavailable("exact systemd Worker process is unavailable")
         })?;
+        if self.read_binding(worker)?.as_ref() != Some(&process) {
+            return Err(ApplicationError::unavailable(
+                "systemd Worker process differs from its retained registration binding",
+            ));
+        }
         let reference = serde_json::to_string(&process)
             .map_err(|_| ApplicationError::internal("systemd Worker binding encoding failed"))?;
         AttemptExecutionBinding::new(worker.clone(), &self.provider_id, reference)
@@ -565,37 +672,65 @@ impl WorkerExecutionStopSource for SystemdWorkerEvidence {
         unit_name(worker).is_ok()
     }
 
+    async fn observe_closed_idle_worker(
+        &self,
+        worker: &WorkerIdentity,
+        may_stop_active: bool,
+        _create_ledger: Option<&awaken_dispatch::WorkerCreateLedger>,
+    ) -> Result<Option<WorkerProcessExit>, ApplicationError> {
+        let Some(binding) = self.read_binding(worker)? else {
+            return Ok(None);
+        };
+        if !may_stop_active
+            && self
+                .show(&binding.unit)
+                .await?
+                .bind(&binding.unit, &self.boot_id)
+                .as_ref()
+                == Some(&binding)
+        {
+            // A graceful Worker can close admission while still returning its
+            // own RPC. Maintenance observes it again after it exits.
+            return Ok(None);
+        }
+        let Some(evidence_ref) = self.stop_binding(&binding).await? else {
+            return Ok(None);
+        };
+        let reference = serde_json::to_string(&binding)
+            .map_err(|_| ApplicationError::internal("systemd Worker binding encoding failed"))?;
+        WorkerProcessExit::new(&self.provider_id, reference, evidence_ref)
+            .map(Some)
+            .map_err(|error| ApplicationError::internal(error.to_string()))
+    }
+
     async fn release_closed_idle_worker_evidence(
         &self,
         worker: &WorkerIdentity,
     ) -> Result<(), ApplicationError> {
-        // The caller has already checked closed Registry state and zero
-        // physical Dispatch slots. This edge releases only the old unit's
-        // retention metadata; it never fabricates a process-exit receipt.
         let unit = unit_name(worker)?;
         let observed = self.show(&unit).await?;
-        if observed.retired_after_receipt(&unit) {
-            return Ok(());
-        }
-        if observed.bind(&unit, &self.boot_id).is_some() {
-            // A graceful Worker sends deregistration while its own main
-            // process is still running. Do not block that RPC or kill it here;
-            // the existing maintenance tick revisits this closed idle record
-            // after the Worker has actually exited.
-            return Ok(());
-        }
-        if !observed.exact_quiescent(&unit) {
+        if !observed.retired_after_receipt(&unit) {
             return Err(ApplicationError::unavailable(
-                "idle systemd Worker process is not exactly quiescent",
+                "idle systemd Worker unit has not retired after its exit receipt",
             ));
         }
-        if self.retire_loaded_unit(&unit).await? {
-            Ok(())
-        } else {
-            Err(ApplicationError::unavailable(
-                "idle systemd Worker unit retirement is pending",
-            ))
+        let Some(binding) = self.read_binding(worker)? else {
+            return Ok(());
+        };
+        if self.read_receipt(&binding)?.is_some() {
+            fs::remove_file(self.receipt_path(&binding)).map_err(|_| {
+                ApplicationError::unavailable("idle systemd exit evidence could not be released")
+            })?;
+            awaken_fs_durability::sync_directory(&self.evidence_dir).map_err(|_| {
+                ApplicationError::unavailable("idle systemd exit evidence release was not durable")
+            })?;
         }
+        fs::remove_file(self.binding_path(&unit)).map_err(|_| {
+            ApplicationError::unavailable("idle systemd binding could not be released")
+        })?;
+        awaken_fs_durability::sync_directory(&self.evidence_dir).map_err(|_| {
+            ApplicationError::unavailable("idle systemd binding release was not durable")
+        })
     }
 
     async fn stop_closed_worker(

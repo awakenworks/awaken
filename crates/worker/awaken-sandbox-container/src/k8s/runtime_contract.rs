@@ -6,7 +6,7 @@
 //! port projection and its attached-agent transport sequence.
 
 use super::*;
-use crate::PreparedContainer;
+use crate::{MissingHandleTerminalEvidence, PreparedContainer};
 
 fn unmaterialized_absence_shape_is_closed(
     has_packages: bool,
@@ -18,11 +18,20 @@ fn unmaterialized_absence_shape_is_closed(
 }
 
 impl K8sRuntime {
-    async fn admit_observed_creation_attempt(
+    pub(super) async fn admit_observed_creation_attempt(
         &self,
         context: &ContainerRealizationContext<'_>,
         plan: &ContainerPlan,
     ) -> Result<Option<tokio::sync::OwnedRwLockReadGuard<()>>, RuntimeError> {
+        // Even a rich or unfenced direct plan cannot switch to the broker
+        // after its first runtime admission. This is a mode freeze, not an
+        // additional physical completion witness.
+        self.create_mode_frozen.store(true, Ordering::Release);
+        if self.create_transport.is_some() {
+            // Brokered admission and close are owned by one durable provider
+            // ledger. Do not maintain a parallel process-local attempt gate.
+            return Ok(None);
+        }
         let Some(fence) = context.effect_fence else {
             return Ok(None);
         };
@@ -167,7 +176,7 @@ impl ContainerRuntime for K8sRuntime {
             },
             |port| format!("pod_channel:{port}"),
         );
-        Ok(std::collections::BTreeMap::from([
+        let mut configuration = std::collections::BTreeMap::from([
             ("backend".into(), "kubernetes".into()),
             (
                 "execution_uid".into(),
@@ -190,7 +199,13 @@ impl ContainerRuntime for K8sRuntime {
             // version binds the immutable Pod to policy semantics, not to one
             // mutable apiserver observation.
             ("network_policy_contract".into(), "v1".into()),
-        ]))
+        ]);
+        if self.create_transport.is_some() {
+            // Existing direct-created Pods retain their exact old fingerprint;
+            // brokered Pods name the stricter Create authority explicitly.
+            configuration.insert("create_request_transport".into(), "brokered-v1".into());
+        }
+        Ok(configuration)
     }
 
     fn enforces_network_none(&self) -> bool {
@@ -274,12 +289,12 @@ impl ContainerRuntime for K8sRuntime {
             .map(drop)
     }
 
-    async fn prove_unmaterialized_absence(
+    async fn missing_handle_terminal_evidence(
         &self,
         scope: &str,
         plan: &ContainerPlan,
         expected_effect_fence: Option<&ContainerEffectFence>,
-    ) -> Result<bool, RuntimeError> {
+    ) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
         // Kubernetes creates the Pod before ConfigMaps, Secrets, Memory
         // projection, or control sidecars. For this deliberately narrow shape,
         // therefore, absence of the canonical Pod and PVC proves that no
@@ -291,36 +306,113 @@ impl ContainerRuntime for K8sRuntime {
             !plan.memory_mounts.is_empty(),
             continuation::claim_required(plan, self.continuation_volume.is_some()),
         ) {
-            return Ok(false);
+            return Ok(MissingHandleTerminalEvidence::Unknown);
         }
         let Some(expected_effect_fence) = expected_effect_fence else {
-            return Ok(false);
+            return Ok(MissingHandleTerminalEvidence::Unknown);
         };
-        let Some(_closed_attempt) = self
-            .close_observed_creation_attempt(scope, expected_effect_fence)
-            .await
-        else {
-            // A replacement process cannot infer closure of a request it never
-            // joined. Keep recovery pending until a durable primitive exists.
-            return Ok(false);
-        };
-        self.admit_plan(plan).await?;
         let runtime_id = self.realization_runtime_id(scope)?;
         let runtime_pod_name = pod_name(&runtime_id);
+        let mut created_pod_uid = None;
+        if let Some(transport) = &self.create_transport {
+            let joined = transport
+                .seal_predecessor(scope, expected_effect_fence)
+                .await?;
+            let RequestJoin::Complete(tickets) = joined else {
+                return Ok(MissingHandleTerminalEvidence::Unknown);
+            };
+            // The join covers every ticket of this Worker incarnation. One
+            // exact successful Pod may be reconstructed through the ordinary
+            // handle path; another successful/unknown participant remains
+            // Unknown, even if an API read currently returns 404.
+            for ticket in tickets {
+                if !matches!(
+                    ticket.request.resource.as_str(),
+                    "pods"
+                        | "persistentvolumeclaims"
+                        | "configmaps"
+                        | "secrets"
+                        | "jobs"
+                        | "daemonsets"
+                ) {
+                    return Ok(MissingHandleTerminalEvidence::Unknown);
+                }
+                match ticket.status {
+                    TicketStatus::Finished(TicketResult::RejectedNoEffect { .. }) => {}
+                    TicketStatus::Finished(TicketResult::Created { uid })
+                        if ticket.request.resource == "pods"
+                            && ticket.request.namespace == self.namespace
+                            && ticket.request.name == runtime_pod_name
+                            && created_pod_uid.is_none() =>
+                    {
+                        created_pod_uid = Some(uid);
+                    }
+                    _ => return Ok(MissingHandleTerminalEvidence::Unknown),
+                }
+            }
+        } else {
+            let Some(_closed_attempt) = self
+                .close_observed_creation_attempt(scope, expected_effect_fence)
+                .await
+            else {
+                // A direct-mode replacement cannot infer closure of a request
+                // it never joined. It never borrows the brokered proof path.
+                return Ok(MissingHandleTerminalEvidence::Unknown);
+            };
+        }
+        self.admit_plan(plan).await?;
         let pod = self
             .pods()
             .get_opt(&runtime_pod_name)
             .await
             .map_err(backend)?;
+        if let Some(pod_uid) = created_pod_uid {
+            let Some(pod) = pod else {
+                return Ok(MissingHandleTerminalEvidence::Unknown);
+            };
+            if pod.metadata.uid.as_deref() != Some(pod_uid.as_str())
+                || pod.metadata.deletion_timestamp.is_some()
+                || continuation::bound_claim_uid(&pod).is_some()
+                || creation::verify_interrupted_pod_projection(
+                    self,
+                    scope,
+                    plan,
+                    expected_effect_fence,
+                    &pod,
+                )
+                .is_err()
+            {
+                return Ok(MissingHandleTerminalEvidence::Unknown);
+            }
+            let claim = self
+                .persistent_volume_claims()
+                .get_opt(&continuation_claim_for_pod(&runtime_pod_name)?)
+                .await
+                .map_err(backend)?;
+            if claim.is_some() {
+                return Ok(MissingHandleTerminalEvidence::Unknown);
+            }
+            return Ok(MissingHandleTerminalEvidence::ExactIncarnation {
+                container_id: runtime_pod_name,
+                runtime_handle: crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+                    pod_uid,
+                    claim_uid: None,
+                },
+            });
+        }
         if pod.is_some() {
-            return Ok(false);
+            return Ok(MissingHandleTerminalEvidence::Unknown);
         }
         let claim = self
             .persistent_volume_claims()
             .get_opt(&continuation_claim_for_pod(&runtime_pod_name)?)
             .await
             .map_err(backend)?;
-        Ok(claim.is_none())
+        Ok(if claim.is_none() {
+            MissingHandleTerminalEvidence::Unmaterialized
+        } else {
+            MissingHandleTerminalEvidence::Unknown
+        })
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {

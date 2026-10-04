@@ -816,6 +816,7 @@ pub async fn mount_with_managed_and_application_access_and_models(
             worker_placement_policy: None,
             worker_execution_bindings: None,
             worker_execution_stops: None,
+            worker_create_broker_router: None,
             credential_deliveries: None,
             repository_transport_authorizer: None,
             worker_directory: test_worker_directory(),
@@ -847,6 +848,7 @@ pub struct ManagedRoutingExtensions {
     pub worker_execution_bindings:
         Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub worker_execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
+    pub worker_create_broker_router: Option<Router>,
     pub credential_deliveries:
         Option<Arc<dyn awaken_runtime_contract::AttemptCredentialDeliverySource>>,
     pub repository_transport_authorizer:
@@ -1241,6 +1243,7 @@ async fn mount_with_managed_over(
                 worker_placement_policy: None,
                 worker_execution_bindings: None,
                 worker_execution_stops: None,
+                worker_create_broker_router: None,
                 credential_deliveries: None,
                 repository_transport_authorizer: None,
                 worker_directory: test_worker_directory(),
@@ -1302,6 +1305,7 @@ async fn mount_with_managed_over_and_models(
         worker_placement_policy,
         worker_execution_bindings,
         worker_execution_stops,
+        worker_create_broker_router,
         credential_deliveries,
         repository_transport_authorizer,
         worker_directory,
@@ -1653,6 +1657,10 @@ async fn mount_with_managed_over_and_models(
             commit,
         )
         .merge(environment_warmups);
+    let worker_transport = match worker_create_broker_router {
+        Some(broker) => worker_transport.merge(broker),
+        None => worker_transport,
+    };
     // The Models API (`/v1/models`) over the deployment's model directory.
     let models = model_inventory.map_or_else(
         || models_router(std::sync::Arc::new(Vec::new())),

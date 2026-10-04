@@ -712,7 +712,7 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .with_state(service)
 }
 
-fn respond(result: Result<Value, HostError>) -> (StatusCode, Json<Value>) {
+pub fn respond(result: Result<Value, HostError>) -> (StatusCode, Json<Value>) {
     match result {
         Ok(value) => (StatusCode::OK, Json(value)),
         Err(error) => {
@@ -1253,6 +1253,14 @@ async fn register_worker(
             }
             request.registration.incarnation_id = incarnation.into();
         }
+        if let Some(source) = &service.execution_bindings {
+            request.registration.create_ledger = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                source.prepare_registration_physical_evidence(&request.registration),
+            )
+            .await
+            .map_err(|_| HostError::unavailable("Worker physical evidence preparation timed out"))??;
+        }
         let record = match directory(&service)?
             .register(
                 request.registration,
@@ -1276,7 +1284,10 @@ async fn register_worker(
             && let Some(source) = &service.execution_bindings
         {
             tokio::time::timeout(std::time::Duration::from_secs(5),
-                source.retain_registered_worker_evidence(&record.snapshot.identity))
+                source.retain_registered_worker_evidence(
+                    &record.snapshot.identity,
+                    record.create_ledger.as_ref(),
+                ))
                 .await.map_err(|_| HostError::unavailable("Worker evidence retention timed out"))??;
             // Provider I/O can outlive closure. Re-read durable truth before
             // replying, then converge retention if admission closed meanwhile.
@@ -1442,6 +1453,7 @@ async fn release_closed_idle_worker_evidence(
             directory(service)?.as_ref(),
             source.as_ref(),
             identity,
+            service.clock.now_ms(),
         ),
     )
     .await

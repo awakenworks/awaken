@@ -71,6 +71,9 @@ pub struct CoordinatorDependencies {
         Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub worker_execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
     pub worker_relay_targets: Option<Arc<dyn crate::WorkerRelayTargetObserver>>,
+    /// The signed provider Create executor is mounted only on the private
+    /// Worker router; Session and Dispatch retain their existing owners.
+    pub worker_create_broker_router: Option<Router>,
     pub credential_deliveries:
         Option<Arc<dyn awaken_runtime_contract::AttemptCredentialDeliverySource>>,
     pub repository_transport_authorizer:
@@ -276,6 +279,7 @@ pub async fn build_coordinator_component(
         worker_execution_bindings,
         worker_execution_stops,
         worker_relay_targets,
+        worker_create_broker_router,
         credential_deliveries,
         repository_transport_authorizer,
         worker_directory,
@@ -336,6 +340,7 @@ pub async fn build_coordinator_component(
                 worker_placement_policy,
                 worker_execution_bindings,
                 worker_execution_stops,
+                worker_create_broker_router,
                 credential_deliveries,
                 repository_transport_authorizer,
                 worker_directory,

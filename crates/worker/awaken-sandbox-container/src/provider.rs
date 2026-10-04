@@ -1151,20 +1151,65 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         let admit =
             || pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| Ok(()));
         admit()?;
-        let Some(handle) = handle else {
-            let (plan, _) = self.adoption_plan(spec)?;
-            let absent = self
-                .runtime
-                .prove_unmaterialized_absence(&spec.scope, &plan, expected_effect_fence)
-                .await
-                .map_err(pc::SandboxError::from)?;
-            admit()?;
-            if absent {
-                return Ok(None);
+        let recovered_handle;
+        let handle = match handle {
+            Some(handle) => handle,
+            None => {
+                let (plan, adoption_fingerprint) = self.adoption_plan(spec)?;
+                let evidence = self
+                    .runtime
+                    .missing_handle_terminal_evidence(&spec.scope, &plan, expected_effect_fence)
+                    .await
+                    .map_err(pc::SandboxError::from)?;
+                admit()?;
+                match evidence {
+                    MissingHandleTerminalEvidence::Unmaterialized => return Ok(None),
+                    MissingHandleTerminalEvidence::Unknown => {
+                        return Err(pc::SandboxError::invalid(
+                            "container provider cannot dispose an in-flight restore without a durable handle",
+                        ));
+                    }
+                    MissingHandleTerminalEvidence::ExactIncarnation {
+                        container_id,
+                        runtime_handle,
+                    } => {
+                        // This is only a temporary typed input to the existing
+                        // terminal adoption/disposal path. A mount or control
+                        // participant needs evidence that the missing handle
+                        // would have retained and must stay Unknown here.
+                        if !spec.mounts.is_empty() || !spec.control_services.is_empty() {
+                            return Err(pc::SandboxError::invalid(
+                                "materialized container has unretained terminal participants",
+                            ));
+                        }
+                        recovered_handle = pc::SandboxHandle::container_v2(
+                            &spec.scope,
+                            ContainerSandboxHandleV2 {
+                                previous: ContainerSandboxHandleV1 {
+                                    container_id,
+                                    outputs_path: spec.outputs_path.clone(),
+                                    base_env: spec.env.clone(),
+                                    live_input_projection: self
+                                        .runtime
+                                        .supports_live_input_projection(),
+                                    continuation_excluded_paths: Vec::new(),
+                                    runtime_handle: Some(runtime_handle),
+                                    sandbox_control_incarnation: None,
+                                    control_services: Default::default(),
+                                },
+                                adoption_fingerprint: adoption_fingerprint.clone(),
+                                realization_fingerprint: container_realization_fingerprint(
+                                    spec,
+                                    &adoption_fingerprint,
+                                    &plan.image,
+                                ),
+                                owned_paths: Vec::new(),
+                            },
+                        );
+                        &recovered_handle
+                    }
+                }
             }
-            return Err(pc::SandboxError::invalid(
-                "container provider cannot dispose an in-flight restore without a durable handle",
-            ));
         };
         if handle.restoration().is_some() {
             return Err(pc::SandboxError::invalid(

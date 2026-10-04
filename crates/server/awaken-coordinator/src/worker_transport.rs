@@ -34,6 +34,8 @@ pub struct WorkerTransport {
     bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
     relay_targets: Option<Arc<dyn WorkerRelayTargetObserver>>,
+    #[cfg(feature = "container-k8s")]
+    create_broker: Option<Arc<kubernetes::K8sCreateBroker>>,
 }
 
 impl WorkerTransport {
@@ -45,6 +47,8 @@ impl WorkerTransport {
             bindings: None,
             stops: None,
             relay_targets: None,
+            #[cfg(feature = "container-k8s")]
+            create_broker: None,
         }
     }
 
@@ -66,6 +70,23 @@ impl WorkerTransport {
 
     pub fn relay_target_source(&self) -> Option<Arc<dyn WorkerRelayTargetObserver>> {
         self.relay_targets.clone()
+    }
+}
+
+#[cfg(feature = "container-k8s")]
+impl WorkerTransport {
+    /// Add the provider-owned Create executor to the same authenticated Worker
+    /// plane. No public route or second Worker registry is constructed.
+    pub fn create_broker_router(
+        &self,
+        directory: Arc<dyn awaken_dispatch::WorkerDirectory>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Option<axum::Router> {
+        self.create_broker.as_ref().map(|broker| {
+            broker
+                .clone()
+                .router(directory, self.authenticator.clone(), clock)
+        })
     }
 }
 
@@ -119,6 +140,9 @@ impl WorkerTransport {
             authenticator,
             bindings: Some(adapter.clone()),
             stops: Some(adapter),
+            relay_targets: None,
+            #[cfg(feature = "container-k8s")]
+            create_broker: None,
         })
     }
 }
@@ -150,9 +174,17 @@ impl WorkerTransport {
         service_account: &str,
         audience: &str,
         provider_id: &str,
+        create_control_namespace: &str,
     ) -> Result<Self, String> {
         Self::validate_kubernetes_policy(namespace, service_account, audience, provider_id)?;
-        kubernetes::assemble(client, namespace, service_account, audience, provider_id)
+        kubernetes::assemble(
+            client,
+            namespace,
+            service_account,
+            audience,
+            provider_id,
+            create_control_namespace,
+        )
     }
 }
 

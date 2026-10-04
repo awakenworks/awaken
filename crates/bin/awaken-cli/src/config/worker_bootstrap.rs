@@ -12,6 +12,7 @@ pub struct KubernetesWorkerTransport {
     pub service_account: String,
     pub audience: String,
     pub provider_id: String,
+    pub create_control_namespace: String,
 }
 
 impl KubernetesWorkerTransport {
@@ -25,6 +26,12 @@ impl KubernetesWorkerTransport {
             || (role == Role::AllInOne && mode == super::OperatingMode::Local);
         if !owns_coordinator || has_signing_trust {
             return Err("worker_kubernetes requires a server-mode Coordinator or local AllInOne and cannot be mixed with worker_trust_credentials_file".into());
+        }
+        if self.create_control_namespace.trim().is_empty()
+            || self.create_control_namespace.trim() != self.create_control_namespace
+            || self.create_control_namespace == self.namespace
+        {
+            return Err("worker_kubernetes requires a separate Create control namespace".into());
         }
         #[cfg(feature = "container-k8s")]
         return awaken_coordinator::WorkerTransport::validate_kubernetes_policy(
@@ -198,6 +205,7 @@ mod tests {
             service_account: "executor".into(),
             audience: "awaken-worker".into(),
             provider_id: "cluster-a".into(),
+            create_control_namespace: "create-control".into(),
         };
         for role in [
             Role::Coordinator,
@@ -244,6 +252,21 @@ mod tests {
                 )
                 .is_err(),
                 "K4 {field}"
+            );
+        }
+        // K5 control namespace absent, padded or identical to the Sandbox
+        // namespace => refuse startup before any provider Create can occur.
+        for value in ["", " create-control", "workers"] {
+            let mut bad = policy.clone();
+            bad.create_control_namespace = value.into();
+            assert!(
+                bad.validate(
+                    Role::Coordinator,
+                    super::super::OperatingMode::Server,
+                    false
+                )
+                .is_err(),
+                "K5 {value:?}"
             );
         }
     }

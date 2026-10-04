@@ -27,6 +27,7 @@ awaken-session-types.workspace = true
 awaken-session-work-contract.workspace = true
 awaken-outbound-http = { workspace = true }
 awaken-worker-transport-security.workspace = true
+awaken-sandbox-container = { workspace = true, features = ["k8s"], optional = true }
 async-trait.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde.workspace = true
@@ -35,6 +36,9 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing = "0.1"
+
+[features]
+container-k8s = ["dep:awaken-sandbox-container"]
 
 [dev-dependencies]
 awaken-store-inmem.workspace = true

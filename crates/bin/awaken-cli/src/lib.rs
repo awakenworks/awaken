@@ -1185,6 +1185,7 @@ mod process_role_surface_tests {
                     worker_id: "domain-test".into(),
                     incarnation_id: "domain-boot".into(),
                     manifest: domain_manifest,
+                    create_ledger: None,
                 },
                 100,
                 10_000,

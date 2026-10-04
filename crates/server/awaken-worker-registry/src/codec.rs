@@ -2,7 +2,8 @@
 // @formal reason: The canonical Registry codec validates and persists the exact non-secret Worker
 // @formal reason: process-exit receipt consumed before provider evidence release.
 use awaken_worker_contract::{
-    RegisteredWorker, RegistryError, WorkerIdentity, WorkerProcessExit, WorkerSnapshot,
+    RegisteredWorker, RegistryError, WorkerCreateLedger, WorkerIdentity, WorkerProcessExit,
+    WorkerSnapshot,
 };
 
 use crate::transition;
@@ -11,7 +12,7 @@ pub(crate) const WORKER_COLUMNS: &str = "worker_id, incarnation_id, generation, 
     manifest_json, capability_fingerprint, in_flight, warm_environment_shapes_json, \
     credential_observations_json, acp_capability_observations_json, expires_at_ms, \
     heartbeat_sequence, observation_sequence, registered_at_ms, heartbeat_at_ms, \
-    drain_deadline_ms, process_exit_json";
+    drain_deadline_ms, process_exit_json, create_ledger_json";
 
 pub(crate) fn current_workers_query() -> String {
     format!(
@@ -39,6 +40,7 @@ pub(crate) struct EncodedWorkerRow {
     pub heartbeat_at_ms: i64,
     pub drain_deadline_ms: Option<i64>,
     pub process_exit_json: Option<String>,
+    pub create_ledger_json: Option<String>,
 }
 
 fn persistence(message: impl Into<String>) -> RegistryError {
@@ -81,6 +83,14 @@ pub(crate) fn decode(row: EncodedWorkerRow) -> Result<RegisteredWorker, Registry
     if let Some(receipt) = &process_exit {
         receipt.validate()?;
     }
+    let create_ledger = row
+        .create_ledger_json
+        .as_deref()
+        .map(|value| decode_json::<WorkerCreateLedger>("create_ledger_json", value))
+        .transpose()?;
+    if let Some(ledger) = &create_ledger {
+        ledger.validate()?;
+    }
     Ok(RegisteredWorker {
         snapshot: WorkerSnapshot {
             identity: WorkerIdentity::new(
@@ -115,5 +125,6 @@ pub(crate) fn decode(row: EncodedWorkerRow) -> Result<RegisteredWorker, Registry
             .map(|value| unsigned("drain_deadline_ms", value))
             .transpose()?,
         process_exit,
+        create_ledger,
     })
 }

@@ -10,15 +10,21 @@ use awaken_dispatch::{
     WorkerHeartbeat,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_sandbox_container::k8s::{
+    K8sCreateRequest, K8sCreateTransport, K8sLedgerBinding, K8sWorkerCreateLedger,
+    PodProcessObserver, RequestJoin,
+};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_time::WallClockExt;
 use awaken_worker_registry::SqliteWorkerDirectory;
-use awaken_coordinator_client::{WorkerControlClient, dispatch_transport_with_upstream};
+use awaken_coordinator_client::{
+    WorkerControlClient, WorkerK8sCreateClient, dispatch_transport_with_upstream,
+};
 use awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer;
 use awaken_worker_transport_security::{FixedWorkerLeasePolicy, WorkerUpstream};
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::authentication::v1::TokenRequest;
-use k8s_openapi::api::core::v1::{Namespace, Pod, ServiceAccount};
+use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Pod, ServiceAccount};
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use std::time::Duration;
 
@@ -140,6 +146,7 @@ async fn coordinator(
             .await
             .unwrap(),
     );
+    let create_broker = transport.create_broker_router(directory.clone(), clock.clone());
     let recovery = Arc::new(
         SqliteCommitCoordinator::open(files.join("runtime.sqlite").to_str().unwrap())
             .await
@@ -158,6 +165,10 @@ async fn coordinator(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = format!("http://{}", listener.local_addr().unwrap());
     let router = dispatch_transport_router_with_service(Arc::new(service));
+    let router = match create_broker {
+        Some(broker) => router.merge(broker),
+        None => router,
+    };
     let (shutdown, stopped) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -213,6 +224,17 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         .await
         .unwrap();
     let name = namespace.metadata.name.as_deref().unwrap();
+    let control_namespace = namespaces
+        .create(
+            &PostParams::default(),
+            &serde_json::from_value(json!({
+                "metadata":{"generateName":"worker-create-control-"}
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let control_name = control_namespace.metadata.name.as_deref().unwrap();
     let accounts: kube::Api<ServiceAccount> = kube::Api::namespaced(client.clone(), name);
     accounts
         .create(
@@ -227,7 +249,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     let pods: kube::Api<Pod> = kube::Api::namespaced(client.clone(), name);
     let image = std::env::var("AWAKEN_K8S_FIXTURE_IMAGE").unwrap_or_else(|_| "awaken-bb:1".into());
     let mut created = Vec::new();
-    for pod_name in ["old", "next"] {
+    for pod_name in ["old", "next", "idle"] {
         let pod = pods
             .create(
                 &PostParams::default(),
@@ -247,8 +269,15 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         created.push(pod);
     }
     let audience = "awaken-worker";
-    let transport =
-        WorkerTransport::kubernetes(client.clone(), name, "executor", audience, &cluster).unwrap();
+    let transport = WorkerTransport::kubernetes(
+        client.clone(),
+        name,
+        "executor",
+        audience,
+        &cluster,
+        control_name,
+    )
+    .unwrap();
     let bindings = transport.binding_source().unwrap();
     // Readiness uses the actual admissible process shape, not Pod phase alone.
     for pod in &created {
@@ -277,6 +306,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     let files = tempfile::tempdir().unwrap();
     let old_token = files.path().join("old-token");
     let next_token = files.path().join("next-token");
+    let idle_token = files.path().join("idle-token");
     let clock = Arc::new(ManualClock::new(100));
     let (address, store, server) = coordinator(files.path(), &transport, clock.clone()).await;
     std::fs::write(
@@ -309,6 +339,32 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         worker.snapshot.identity.incarnation_id,
         *created[0].metadata.uid.as_ref().unwrap()
     );
+    // L1a actual Pod UID + successful provider Create -> the Registry freezes
+    // one ledger UID before Ready. L3a Coordinator restart and old Pod loss ->
+    // that same historical UID remains reobservable in both owners; a stable
+    // ConfigMap name alone would not satisfy either comparison.
+    let ledger = worker
+        .create_ledger
+        .clone()
+        .expect("Kubernetes registration ledger");
+    assert_eq!(
+        ledger.namespace(),
+        control_name,
+        "L1a separate control domain"
+    );
+    assert_eq!(ledger.provider_id(), cluster, "L1a exact provider");
+    let ledgers: kube::Api<ConfigMap> = kube::Api::namespaced(client.clone(), control_name);
+    assert_eq!(
+        ledgers
+            .get(ledger.name())
+            .await
+            .unwrap()
+            .metadata
+            .uid
+            .as_deref(),
+        Some(ledger.uid()),
+        "L1a exact API UID"
+    );
     let old_upstream = old_upstream.with_worker_identity(worker.snapshot.identity.clone());
     ready(
         &WorkerControlClient::new(old_upstream.clone()),
@@ -316,6 +372,84 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         1,
     )
     .await;
+    // C7 the executor ServiceAccount cannot Create directly, but its exact
+    // registered, signed Worker request reaches the independent broker. E7
+    // the first API UID is retained and a response-loss replay becomes 409 for
+    // the existing typed GET verifier, with no second Kubernetes object.
+    let denied = std::process::Command::new("kubectl")
+        .args([
+            "auth",
+            "can-i",
+            "create",
+            "configmaps",
+            "--as",
+            &format!("system:serviceaccount:{name}:executor"),
+            "-n",
+            name,
+            "--quiet",
+        ])
+        .status()
+        .unwrap();
+    assert!(
+        !denied.success(),
+        "C7 Worker Pod has no direct ConfigMap Create"
+    );
+    let create_client = WorkerK8sCreateClient::new(old_upstream.clone());
+    create_client
+        .bind_identity(worker.snapshot.identity.clone())
+        .unwrap();
+    let request = K8sCreateRequest {
+        path: format!("/api/v1/namespaces/{name}/configmaps"),
+        object: json!({
+            "apiVersion":"v1", "kind":"ConfigMap",
+            "metadata":{
+                "name":"broker-probe", "namespace":name,
+                "annotations":{"awaken.dev/realization-digest":"a".repeat(64)}
+            },
+            "data":{"probe":"ok"}
+        }),
+    };
+    let first_create = create_client.create(request.clone()).await.unwrap();
+    assert_eq!(
+        first_create.status, 201,
+        "E7 independent API Create succeeded"
+    );
+    let first_uid = first_create.object["metadata"]["uid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let cms: kube::Api<ConfigMap> = kube::Api::namespaced(client.clone(), name);
+    assert_eq!(
+        cms.get("broker-probe")
+            .await
+            .unwrap()
+            .metadata
+            .uid
+            .as_deref(),
+        Some(first_uid.as_str()),
+        "E7 exact API readback"
+    );
+    let replay = create_client.create(request).await.unwrap();
+    assert_eq!(replay.status, 409, "E7 one Create response-loss replay");
+    assert_eq!(
+        cms.get("broker-probe")
+            .await
+            .unwrap()
+            .metadata
+            .uid
+            .as_deref(),
+        Some(first_uid.as_str()),
+        "E7 no replacement UID"
+    );
+    cms.delete(
+        "broker-probe",
+        &DeleteParams::default().preconditions(kube::api::Preconditions {
+            uid: Some(first_uid),
+            resource_version: None,
+        }),
+    )
+    .await
+    .unwrap();
     // Copying a genuine token does not grant another Pod's coordinate.
     let impostor = WorkerControlClient::new(upstream(&address, &created[1], &old_token));
     assert!(
@@ -368,6 +502,21 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     );
     commit_actual_model_only_result(recovery.clone(), model_activation).await;
     drop(recovery);
+    // C10 a second Worker never owns a Dispatch slot. Register it just before
+    // the old Worker's deadline, so the old attempt expires during restart
+    // while this independent idle registration retains its original lease.
+    // Its process binding is retained by the old Coordinator before Ready;
+    // only the reopened Coordinator may observe and commit its later exit.
+    clock.set(100 + TTL - 1);
+    std::fs::write(&idle_token, token(&accounts, &created[2], audience).await).unwrap();
+    let idle_upstream = upstream(&address, &created[2], &idle_token);
+    let idle_identity = WorkerControlClient::new(idle_upstream)
+        .register_classified("idle-boot", manifest())
+        .await
+        .unwrap()
+        .worker
+        .snapshot
+        .identity;
     // L3 must drop the old authority, not just its listening task while pooled
     // HTTP connections retain the old service/store. Drain connections first.
     server.stop().await;
@@ -391,9 +540,21 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         "executor",
         audience,
         &cluster,
+        control_name,
     )
     .unwrap();
     let (address, store, server) = coordinator(files.path(), &transport, clock.clone()).await;
+    let reopened = SqliteWorkerDirectory::open(files.path().join("registry.sqlite")).unwrap();
+    assert_eq!(
+        reopened
+            .incarnation(&worker.snapshot.identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .create_ledger,
+        Some(ledger.clone()),
+        "L3a historical Registry anchor survives Coordinator restart"
+    );
     assert_eq!(
         store
             .load_physical_attempt(&old_claim.run_id)
@@ -493,6 +654,62 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         "L5"
     );
     assert_eq!(
+        ledgers
+            .get(ledger.name())
+            .await
+            .unwrap()
+            .metadata
+            .uid
+            .as_deref(),
+        Some(ledger.uid()),
+        "L3a old Pod deletion cannot garbage-collect the independent ledger"
+    );
+    let process_ledger =
+        K8sWorkerCreateLedger::new(client.clone(), control_name, name, &cluster).unwrap();
+    let retained_process = process_ledger
+        .read_process_binding(K8sLedgerBinding {
+            worker_namespace: name,
+            worker_name: created[0].metadata.name.as_deref().unwrap(),
+            worker_uid: created[0].metadata.uid.as_deref().unwrap(),
+            ledger_name: ledger.name(),
+            ledger_uid: ledger.uid(),
+            configuration_fingerprint: ledger.configuration_fingerprint(),
+        })
+        .await
+        .unwrap()
+        .expect("original process coordinates survive Pod deletion");
+    assert!(
+        retained_process.matches_pod(
+            name,
+            created[0].metadata.name.as_deref().unwrap(),
+            created[0].metadata.uid.as_deref().unwrap(),
+        ) && retained_process.worker_evidence_was_retained(),
+        "L3a provider process binding remains exact"
+    );
+    // C8 successor is a different registered Pod after Coordinator restart;
+    // C9 the old exact process-exit receipt and one completed Create ticket
+    // survive. E8 successor seals the old Worker ledger and joins that request
+    // without recreating its ConfigMap or borrowing the successor's UID. This
+    // is request closure only, not a Session terminal cleanup receipt.
+    let successor_create = WorkerK8sCreateClient::new(next_upstream.clone());
+    successor_create.bind_identity(successor.clone()).unwrap();
+    let old_effect = awaken_provisioning_contract::SandboxEffectFence::new(
+        "old-create-effect",
+        &worker.snapshot.identity.worker_id,
+        worker.snapshot.identity.lease_owner(),
+        1,
+        u64::MAX,
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            successor_create.seal_predecessor("old-session", &old_effect).await.unwrap(),
+            RequestJoin::Complete(tickets)
+                if tickets.len() == 1 && tickets[0].request.resource == "configmaps"
+        ),
+        "E8 exact old Create request joined across both process boundaries"
+    );
+    assert_eq!(
         next_dispatch.begin_attempt(&next, None).await.unwrap(),
         AttemptAdmission::Applied,
         "L6"
@@ -505,6 +722,107 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
             .deletion_timestamp
             .is_none(),
         "L4 never stop successor"
+    );
+    // E10 observes a retained, independently stopped idle Pod. L7 below
+    // separately proves Deployment UID replacement after idle retirement.
+    std::fs::write(&idle_token, token(&accounts, &created[2], audience).await).unwrap();
+    let idle_control = WorkerControlClient::new(
+        upstream(&address, &created[2], &idle_token).with_worker_identity(idle_identity.clone()),
+    );
+    ready(&idle_control, &idle_identity, 1).await;
+    let idle_record = directory
+        .incarnation(&idle_identity)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        idle_record.snapshot.expires_at_ms > clock.now_ms(),
+        "E10 graceful idle Worker still has original Registry lease time"
+    );
+    let idle_anchor = idle_record.create_ledger.unwrap();
+    let idle_process = process_ledger
+        .read_process_binding(K8sLedgerBinding {
+            worker_namespace: name,
+            worker_name: "idle",
+            worker_uid: created[2].metadata.uid.as_deref().unwrap(),
+            ledger_name: idle_anchor.name(),
+            ledger_uid: idle_anchor.uid(),
+            configuration_fingerprint: idle_anchor.configuration_fingerprint(),
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    let running = PodProcessObserver::new(client.clone(), name)
+        .unwrap()
+        .bind_pod_process("idle", created[2].metadata.uid.as_deref().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        idle_process, running,
+        "E10 registered process binding still names the running Pod"
+    );
+    assert_eq!(
+        idle_control.deregister(&idle_identity).await.unwrap(),
+        awaken_dispatch::RegistryMutation::Applied,
+        "E10 close exact idle Registry admission after Coordinator restart"
+    );
+    assert!(
+        directory
+            .incarnation(&idle_identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .process_exit
+            .is_none(),
+        "E10 a running Quiesced Worker has no premature exit receipt"
+    );
+    assert!(
+        pods.get("idle")
+            .await
+            .unwrap()
+            .metadata
+            .deletion_timestamp
+            .is_none(),
+        "E10 graceful deregistration did not delete the running Pod"
+    );
+    pods.delete("idle", &DeleteParams::default()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            awaken_dispatch::release_closed_idle_worker_evidence(
+                store.as_ref(),
+                &directory,
+                stop.as_ref(),
+                &idle_identity,
+                clock.now_ms(),
+            )
+            .await
+            .unwrap();
+            if directory
+                .incarnation(&idle_identity)
+                .await
+                .unwrap()
+                .unwrap()
+                .process_exit
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("E10 retained process exits and Registry commits exact receipt");
+    assert_eq!(
+        directory
+            .incarnation(&idle_identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .process_exit
+            .unwrap()
+            .provider_id(),
+        cluster,
+        "E10 provider-backed receipt before release"
     );
     // Cause/effect extension: L7 real Always Deployment + real Pod-bound
     // registration + exact idle withdrawal -> close/delete OLD UID and let the
@@ -616,7 +934,11 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     // cluster harness is also the cleanup authority if any assertion panics.
     for pod in created.into_iter().skip(1) {
         let pod_name = pod.metadata.name.unwrap();
-        let current = pods.get(&pod_name).await.unwrap();
+        let current = match pods.get(&pod_name).await {
+            Ok(pod) => pod,
+            Err(kube::Error::Api(error)) if error.code == 404 => continue,
+            Err(error) => panic!("test-owned Pod read failed: {error}"),
+        };
         assert_eq!(current.metadata.uid, pod.metadata.uid);
         let retained: Vec<_> = current
             .metadata
@@ -640,6 +962,16 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
             name,
             &DeleteParams::default().preconditions(kube::api::Preconditions {
                 uid: namespace.metadata.uid,
+                resource_version: None,
+            }),
+        )
+        .await
+        .unwrap();
+    namespaces
+        .delete(
+            control_name,
+            &DeleteParams::default().preconditions(kube::api::Preconditions {
+                uid: control_namespace.metadata.uid,
                 resource_version: None,
             }),
         )

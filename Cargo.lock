@@ -855,6 +855,7 @@ dependencies = [
  "awaken-lease-testkit",
  "awaken-outbound-http",
  "awaken-runtime-contract",
+ "awaken-sandbox-container",
  "awaken-session-configuration-contract",
  "awaken-session-execution-contract",
  "awaken-session-realization-contract",

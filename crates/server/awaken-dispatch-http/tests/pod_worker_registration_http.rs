@@ -218,6 +218,7 @@ async fn assert_immutable_registration(directory: Arc<dyn WorkerDirectory>, back
                     worker_id: id.clone(),
                     incarnation_id: "historical-boot".into(),
                     manifest: manifest(),
+                    create_ledger: None,
                 },
                 100,
                 50,

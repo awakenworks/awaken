@@ -18,7 +18,7 @@ use awaken_session_environment_contract::ContainerHandResidency;
 /// hosted Repository Gateway trust. Standalone configuration leaves these
 /// absent; a downstream composition that owns them sets them here.
 /// Consumer: [`build_container_environment_for_realization`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct ContainerTierPolicy {
     /// Capability-authenticated proxy used only when the container runtime has
     /// independently attested a no-bypass allowlist network boundary.
@@ -30,6 +30,24 @@ pub struct ContainerTierPolicy {
     /// Public CA and exact host alias for the hosted private Repository Gateway.
     /// This is transport trust, not a credential or Repository authority.
     pub repository_gateway_trust: Option<awaken_sandbox_container::K8sRepositoryGatewayTrust>,
+    /// One signed, independent Create executor selected by the Worker before
+    /// provider construction and bound to its Registry identity before Ready.
+    #[cfg(feature = "k8s")]
+    pub k8s_create_transport: Option<Arc<dyn awaken_sandbox_container::k8s::K8sCreateTransport>>,
+}
+
+impl std::fmt::Debug for ContainerTierPolicy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("ContainerTierPolicy");
+        debug.field("allowlist_proxy", &self.allowlist_proxy.is_some());
+        debug.field(
+            "repository_gateway_trust",
+            &self.repository_gateway_trust.is_some(),
+        );
+        #[cfg(feature = "k8s")]
+        debug.field("k8s_create_transport", &self.k8s_create_transport.is_some());
+        debug.finish()
+    }
 }
 
 /// The image a container tier requires, or a fail-closed error naming the config var.
@@ -248,6 +266,7 @@ fn podman_runtime_for_realization(
 #[cfg(feature = "k8s")]
 async fn k8s_package_provisioner(
     settings: &awaken_session_executor::SandboxSettings,
+    create_transport: Option<Arc<dyn awaken_sandbox_container::k8s::K8sCreateTransport>>,
 ) -> Result<Option<Arc<dyn awaken_sandbox_container::PackageImageProvisioner>>, String> {
     let Some(builder) = settings.package_image_builder else {
         return Ok(None);
@@ -274,11 +293,12 @@ async fn k8s_package_provisioner(
         }
         awaken_session_executor::PackageImageBuilder::Kubernetes => {
             let mut provisioner =
-                awaken_sandbox_container::k8s::K8sPackageImageProvisioner::connect(
+                awaken_sandbox_container::k8s::K8sPackageImageProvisioner::connect_with_create_transport(
                     settings.k8s_namespace.clone(),
                     registry,
                     settings.k8s_image_pull_secrets.clone(),
                     settings.package_registry_insecure,
+                    create_transport,
                 )
                 .await
                 .map_err(|error| format!("Kubernetes package builder: {error}"))?
@@ -312,7 +332,7 @@ pub async fn package_image_provisioner(
         #[cfg(feature = "podman")]
         SandboxTier::Podman => Ok(Some(Arc::new(podman_runtime(&deployment.sandbox)?))),
         #[cfg(feature = "k8s")]
-        SandboxTier::K8s => k8s_package_provisioner(&deployment.sandbox).await,
+        SandboxTier::K8s => k8s_package_provisioner(&deployment.sandbox, None).await,
         SandboxTier::Local | SandboxTier::Namespace => Ok(None),
         #[cfg(not(feature = "docker"))]
         SandboxTier::Docker => Ok(None),
@@ -411,8 +431,14 @@ pub async fn build_container_environment_for_realization(
             if settings.container_hand_residency == ContainerHandResidency::Resident {
                 runtime = runtime.with_pod_channel_port(RESIDENT_HAND_PORT);
             }
+            if let Some(transport) = &policy.k8s_create_transport {
+                runtime = runtime
+                    .with_create_transport(transport.clone())
+                    .map_err(|error| format!("k8s Create transport: {error}"))?;
+            }
             let runtime = Arc::new(runtime);
-            let package_provisioner = k8s_package_provisioner(settings).await?;
+            let package_provisioner =
+                k8s_package_provisioner(settings, policy.k8s_create_transport.clone()).await?;
             finish(runtime, image, settings, policy, package_provisioner, clock).await?
         }
         SandboxTier::Local | SandboxTier::Namespace => {

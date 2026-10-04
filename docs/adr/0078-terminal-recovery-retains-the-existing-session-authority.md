@@ -375,7 +375,7 @@ replacement process may claim closure. That witness must cover PVC, Pod,
 ConfigMap, Secret and other participants admitted by the frozen plan; an
 unknown broker lifetime or result remains Unknown. The existing provider
 `preflight_create_for_effect`, `prepare_for_effect`, `activate_for_effect`,
-`prove_unmaterialized_absence`, exact UID deletion and Session cleanup receipt
+`missing_handle_terminal_evidence`, exact UID deletion and Session cleanup receipt
 remain the only execution and cleanup path. The implementation must extend
 those ports rather than introduce a Flow cleanup queue or infer closure from
 Worker expiry. Until a provider-backed request join is implemented and tested
@@ -414,9 +414,31 @@ that wins first must be joined, even if its Worker has died or a stale response
 arrives. An executor crash between forwarding and durable completion leaves
 InFlight/Unknown; no response timeout, retry count or 404 may retire it. An
 active-active Coordinator must use the same CAS, not a process-local mutex, for
-this admission order. The ledger ConfigMap UID and provider configuration are
-retained with the ticket, so deleting and recreating its stable name cannot
-manufacture a closed witness.
+this admission order. The ledger's own UID cannot serve as its only identity
+anchor: a deleted and recreated ConfigMap can report its new UID while hiding
+the old ledger and an admitted late Create. Before the first Create is forwarded,
+the Coordinator initializes the ledger and the existing Worker Registry first
+registration atomically freezes its UID and provider configuration with the
+exact Worker incarnation. This is one physical anchor for both Managed Session
+effects (whose realization lease names that Worker incarnation) and ordinary
+Run effects (whose Dispatch physical binding names it); neither business owner
+acquires a duplicate ledger field. Per-effect ticket groups can close while the
+Worker remains active. A replacement process reads the retained historical
+Registry record and may only reobserve the frozen UID. If the anchor is absent
+after an effect could have started, or the ledger has a different UID, closure
+remains Unknown. An unanchored legacy incarnation must never be upgraded by
+creating a fresh ledger under the same name.
+
+The Create authority includes indirect Pod creators. The pre-broker Worker Role
+permitted Job and DaemonSet Create, while the separate package-image provisioner
+creates ConfigMaps and Jobs and image prewarm creates DaemonSets. Their
+controllers may create Pods after the Worker's own Pod has stopped. Removing
+only direct Pod/PVC/ConfigMap/Secret Create from the Worker Role would therefore
+leave a bypass. The independent executor must cover these Create paths under
+their existing package-build or warmup owners, or the Worker must have no
+authority to invoke them in the brokered topology. A Session cleanup proof
+must classify their independence from that Session or join their exact
+controller-owned participants; an unclassified Job/DaemonSet remains Unknown.
 
 Once all admitted tickets are Complete, the same provider close checks the
 exact plan's full participant set, uses UID-fenced preparation/disposal, and
@@ -435,6 +457,62 @@ cuts. The corresponding test comments own the cause/effect table. The safety
 result is zero early receipts/successors whenever any ticket or participant is
 Unknown; conditional progress requires one exact terminal receipt and one
 successor after all independent physical results have been retained.
+
+The 2026-10-04 implementation checkpoint freezes the exact ConfigMap UID in
+the existing Worker Registry before Ready, admits Create tickets through one
+provider-owned resourceVersion CAS state machine, and forwards Worker control
+POSTs through the existing signed transport to an independent Coordinator
+task. The product K8s overlay gives Worker only read/disposal and bounded
+exec/port-forward authority; Coordinator alone holds Create for Pod, PVC,
+ConfigMap, Secret, Job and DaemonSet collections. The real k3d checks cover
+UID persistence, same-name replacement refusal, CAS ordering, signed Create
+and the six direct-Create RBAC denials. This is **request-lifetime evidence**,
+not a complete handle-free cleanup receipt. The replacement process still
+returns Unknown until the original Worker execution domain is stopped, every
+ticket is joined, and the provider has verified/disposed the exact Pod, PVC,
+ConfigMap, Secret and any controller-owned participant before the existing
+Session cleanup owner commits its receipt.
+
+The next closure slice retains a Worker process binding before Registry insert in the
+same provider evidence authority: the Kubernetes control ConfigMap holds the
+exact Pod binding, while the existing systemd evidence directory holds an
+immutable unit binding. The post-registration retention read is idempotent and
+checks the same coordinates before Ready. A closed idle Worker with no Dispatch slot receives an
+exit receipt only after the independent stop source observes that original
+process. Ingress persists and reads back the receipt in the existing Worker
+Registry before provider evidence can be released. A graceful Quiesced Worker
+that is still returning its deregistration request is observed again later;
+only after the original Registry lease deadline may an active closed Worker be
+stopped by the same exact provider operation. Both HTTP and Host maintenance
+pass their existing trusted clock to this decision.
+This closes the evidence-release ordering gap for newly registered independent
+Workers; missing legacy bindings remain Unknown.
+
+For the deliberately narrow handle-free, zero-participant Kubernetes shape,
+the provider requires a complete sealed request join. All definitively refused
+Creates plus exact Pod/PVC absence prove no materialization. A single successful
+canonical Pod Create can instead be joined to its still-live original UID and
+effect fence, provided its complete normalized Pod security projection matches,
+no PVC or other successful participant exists, and the frozen spec has no mount
+or control-service owner. The ordinary first-Create path uses the same complete
+Pod verifier, so copying a digest annotation onto a changed executable or
+security spec cannot authorize either creation replay or terminal recovery.
+The provider constructs a
+temporary typed V2 handle and runs the existing terminal observation,
+preparation and UID-fenced disposal; it does not issue a cleanup receipt from
+the ticket alone. A Created Pod that has already disappeared, a terminating or
+foreign Pod, an orphan claim, another Created kind, or an InFlight ticket remains
+Unknown. In particular, a Coordinator hard exit after forwarding the API POST
+but before retaining its outcome is still unresolved; no later 404 converts
+that ticket into a joined result.
+
+The request ledger is grouped conservatively by the entire Worker incarnation,
+so an unrelated successful Create can also keep this narrow proof Unknown; a
+future per-effect refinement must preserve that safety ordering and avoid a
+second ticket authority. In brokered mode the runtime does not enter the
+historical process-local Create gate, and a runtime that has already admitted a
+direct effect cannot switch transport modes. The gate remains only for
+direct-mode compatibility with its original process-lifetime proof boundary.
 
 ## Amendment 2026-10-05: unfinished terminal cleanup remains Worker demand
 
