@@ -1926,3 +1926,7 @@ mod shred_tests;
 #[cfg(test)]
 #[path = "provider/workdir_helper_tests.rs"]
 pub(crate) mod workdir_helper_tests;
+
+#[cfg(all(test, windows))]
+#[path = "provider/workdir_windows_tests.rs"]
+mod workdir_windows_tests;

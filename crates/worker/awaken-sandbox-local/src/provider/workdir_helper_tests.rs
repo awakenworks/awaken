@@ -41,38 +41,6 @@ fn git(cwd: &std::path::Path, args: &[&str]) {
     assert!(ok, "git {args:?}");
 }
 
-#[cfg(windows)]
-#[tokio::test]
-async fn windows_workdir_probe_requires_a_plain_local_ntfs_ancestor() {
-    // C1 base absent below a plain fixed-NTFS ancestor versus a junction;
-    // E1 the prospective base is ready without probe-side creation; E2 a
-    // junction refuses readiness before any sandbox directory is created.
-    let temp = tempfile::tempdir().unwrap();
-    let prospective = temp.path().join("future").join("sandboxes");
-    let provider = LocalProvider::new(&prospective);
-    pc::SandboxProvider::probe_ready(&provider)
-        .await
-        .expect("E1");
-    assert!(!prospective.exists(), "E1 read-only probe");
-
-    let outside = temp.path().join("outside");
-    std::fs::create_dir(&outside).unwrap();
-    let junction = temp.path().join("junction");
-    let status = std::process::Command::new("cmd.exe")
-        .args(["/C", "mklink", "/J"])
-        .arg(&junction)
-        .arg(&outside)
-        .status()
-        .unwrap();
-    assert!(status.success(), "E2 fixture");
-    assert!(
-        pc::SandboxProvider::probe_ready(&LocalProvider::new(&junction))
-            .await
-            .is_err(),
-        "E2"
-    );
-}
-
 #[tokio::test]
 async fn trusted_host_realizes_readonly_resource_as_advisory_access() {
     // Cause/effect graph: C1 provider={ordinary Workdir,trusted host}; C2 one
