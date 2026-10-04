@@ -2,7 +2,8 @@
 // @formal reason: Static owner: secret-free coordinate and closed outcome vocabulary for the existing
 // @formal reason: RepositoryRealizer port. Dynamic path: the exact desired and optional prior commits
 // @formal reason: validate before transport, canonical receipts bind the frozen realization plan, and only
-// @formal reason: a proven absent update lease or third commit is admissible as permanent rejection; this
+// @formal reason: a proven local HEAD mismatch, absent update lease, or third remote commit is
+// @formal reason: admissible as permanent rejection; this
 // @formal reason: extraction adds no realizer, writer, queue, or state machine. Evidence:
 // @formal reason: resource.files.resource_lifecycle, G48, and the adjacent contract decision table; this
 // @formal reason: is a product-requirement classification, not a direct formal-proof claim.
@@ -70,14 +71,17 @@ impl RepositoryPublicationExpectation {
 
 /// Closed, secret-free cause for a permanent Repository publication rejection.
 ///
-/// Only exact remote-ref compare-and-swap failures cross this boundary. Git
+/// An exact local HEAD mismatch proved before any remote request, or an exact
+/// remote-ref compare-and-swap failure, may cross this boundary. Git
 /// transport/authentication/I/O failures remain [`RepositoryPublicationError::Unavailable`]
-/// because the adapter cannot prove a permanent stale coordinate from those
-/// failures. The expected and desired commits remain in the immutable command;
-/// this evidence records only the conflicting remote observation.
+/// because the adapter cannot prove a permanent coordinate conflict from those
+/// failures. The desired commit remains in the immutable command; observations
+/// carry only their own explicitly named local or remote source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RepositoryPublicationRejection {
+    #[error("repository local HEAD is {observed_commit}, not the desired commit")]
+    LocalCommitMismatch { observed_commit: String },
     #[error("repository remote branch is absent but an expected prior commit was required")]
     RemoteRefAbsent,
     #[error("repository remote branch is bound to stale commit {observed_commit}")]
@@ -85,30 +89,27 @@ pub enum RepositoryPublicationRejection {
 }
 
 impl RepositoryPublicationRejection {
-    /// Verify that the observation is a genuine conflict with this exact
-    /// publication expectation. A desired or expected-prior commit is never
-    /// admissible as permanent rejection evidence.
+    /// Verify that the source-specific observation conflicts with this exact
+    /// publication expectation. A desired local commit or a desired/expected-
+    /// prior remote commit is never permanent rejection evidence.
     pub fn verify(
         &self,
         expectation: &RepositoryPublicationExpectation,
     ) -> Result<(), SandboxError> {
         expectation.validate()?;
         match self {
-            Self::RemoteRefAbsent if expectation.expected_prior_commit.is_some() => Ok(()),
-            Self::RemoteRefAbsent => Err(SandboxError::invalid(
-                "an absent remote ref is not stale for create-only publication",
-            )),
-            Self::RemoteRefChanged { observed_commit }
-                if is_canonical_git_oid(observed_commit)
-                    && observed_commit != &expectation.commit
-                    && expectation.expected_prior_commit.as_ref() != Some(observed_commit) =>
-            {
-                Ok(())
+            Self::LocalCommitMismatch { observed_commit } => {
+                is_canonical_git_oid(observed_commit) && observed_commit != &expectation.commit
             }
-            Self::RemoteRefChanged { .. } => Err(SandboxError::invalid(
-                "repository publication rejection does not prove a stale remote ref",
-            )),
+            Self::RemoteRefAbsent => expectation.expected_prior_commit.is_some(),
+            Self::RemoteRefChanged { observed_commit } => {
+                is_canonical_git_oid(observed_commit)
+                    && observed_commit != &expectation.commit
+                    && expectation.expected_prior_commit.as_ref() != Some(observed_commit)
+            }
         }
+        .then_some(())
+        .ok_or_else(|| SandboxError::invalid("repository publication rejection is not proven"))
     }
 }
 
@@ -171,6 +172,41 @@ impl RepositoryPublicationReceipt {
 mod tests {
     use super::*;
     use crate::MountAccess;
+
+    #[test]
+    fn local_commit_mismatch_requires_exact_pre_io_evidence() {
+        // C1 observed local HEAD is canonical lowercase full SHA; C2 it differs
+        // from the frozen desired commit. R1 C1+C2 -> permanent local rejection;
+        // R2 !C1 or !C2 -> invalid evidence, never a remote-ref claim or
+        // terminal rejection. A matching prior commit is still a valid local
+        // mismatch because the prior is a distinct remote CAS coordinate.
+        let expectation = RepositoryPublicationExpectation {
+            branch: "awf/work".into(),
+            commit: "1".repeat(40),
+            expected_prior_commit: Some("2".repeat(40)),
+        };
+        let valid = RepositoryPublicationRejection::LocalCommitMismatch {
+            observed_commit: "2".repeat(40),
+        };
+        valid.verify(&expectation).expect("R1");
+        assert_eq!(
+            serde_json::to_value(&valid).unwrap(),
+            serde_json::json!({"reason":"local_commit_mismatch","observed_commit":"2".repeat(40)}),
+            "R1 source-specific wire"
+        );
+        for observed_commit in [
+            expectation.commit.clone(),
+            "short".into(),
+            "ABCDEF0123456789abcdef0123456789abcdef01".into(),
+        ] {
+            assert!(
+                RepositoryPublicationRejection::LocalCommitMismatch { observed_commit }
+                    .verify(&expectation)
+                    .is_err(),
+                "R2"
+            );
+        }
+    }
 
     #[test]
     fn repository_publication_coordinate_and_receipt_are_canonical() {

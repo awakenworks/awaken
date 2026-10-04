@@ -1049,6 +1049,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn local_head_conflict_replays_through_the_existing_terminal_sidecar() {
+        // Causes: L1 canonical local HEAD differs from the frozen output;
+        // L2 identical command/rejection is replayed; L3 evidence changes to
+        // the promised commit. Effects: E1 one Session-root negative outcome,
+        // E2 no second mutation, E3 invalid evidence refused. The local
+        // observation makes no claim about the remote branch or prior push.
+        let session_id = crate::SessionId::from("local-head-conflict");
+        let (mut state, command) = pending(session_id.as_str());
+        let rejection = SessionRepositoryPublicationRejection::new(
+            &command,
+            RepositoryPublicationRejection::LocalCommitMismatch {
+                observed_commit: "2".repeat(40),
+            },
+        )
+        .expect("L1 exact local observation");
+        let wire = serde_json::to_value(&rejection).unwrap();
+        assert_eq!(
+            serde_json::from_value::<SessionRepositoryPublicationRejection>(wire).unwrap(),
+            rejection,
+            "L1 stable sidecar wire"
+        );
+        assert!(
+            state
+                .record_repository_publication_rejection(&session_id, rejection.clone())
+                .unwrap(),
+            "E1 first root effect"
+        );
+        assert!(
+            !state
+                .record_repository_publication_rejection(&session_id, rejection.clone())
+                .unwrap(),
+            "E2 exact replay"
+        );
+        assert_eq!(
+            state.repository_publication_rejection(&session_id).unwrap(),
+            Some(&rejection),
+            "E1 one retained negative outcome"
+        );
+        let mut tampered = rejection;
+        tampered.effect_rejection = SessionRepositoryPublicationRejectionReason::CompareAndSwap(
+            RepositoryPublicationRejection::LocalCommitMismatch {
+                observed_commit: command.intent.expectation.commit.clone(),
+            },
+        );
+        assert!(tampered.verify(&command).is_err(), "E3");
+    }
+
     fn complete(mut state: SessionCleanupOperation, session_id: &str) -> SessionCleanupOperation {
         let root = state
             .command_for(&crate::SessionId::from(session_id), session_id)
