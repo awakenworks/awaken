@@ -40,6 +40,7 @@ pub(super) async fn select(
                 &policy.service_account,
                 &policy.audience,
                 &policy.provider_id,
+                &policy.create_control_namespace,
             );
         }
         #[cfg(not(feature = "container-k8s"))]
@@ -140,6 +141,7 @@ mod tests {
             service_account: "executor".into(),
             audience: "awaken-worker".into(),
             provider_id: "cluster".into(),
+            create_control_namespace: "create-control".into(),
         });
         assert!(
             select(&deployment, injected(), awaken_time::system_clock())

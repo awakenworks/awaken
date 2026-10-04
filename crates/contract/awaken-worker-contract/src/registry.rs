@@ -65,6 +65,25 @@ impl WorkerIdentity {
             self.worker_id, self.generation, self.incarnation_id
         )
     }
+
+    /// Recover an exact historical identity from a Session realization lease
+    /// without splitting a Kubernetes Worker id on its own colons. Round-trip
+    /// equality rejects noncanonical generations; the caller must still read
+    /// this exact identity from Registry to reject an invented boot value.
+    #[must_use]
+    pub fn from_lease_owner(worker_id: &str, lease_owner: &str) -> Option<Self> {
+        if worker_id.trim().is_empty() || worker_id.trim() != worker_id {
+            return None;
+        }
+        let suffix = lease_owner.strip_prefix(worker_id)?.strip_prefix(':')?;
+        let (generation, incarnation_id) = suffix.split_once(':')?;
+        let generation = generation.parse::<u64>().ok().filter(|value| *value > 0)?;
+        if incarnation_id.trim().is_empty() || incarnation_id.trim() != incarnation_id {
+            return None;
+        }
+        let identity = Self::new(worker_id, incarnation_id, generation);
+        (identity.lease_owner() == lease_owner).then_some(identity)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,6 +235,77 @@ pub struct RegisteredWorker {
     /// fact so every blocked attempt can reuse it after Pod evidence release.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_exit: Option<WorkerProcessExit>,
+    /// The one provider-owned Create request ledger frozen with this exact
+    /// incarnation before registration can admit any execution. Historical
+    /// rows without it cannot acquire a replacement ledger after effects may
+    /// have started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_ledger: Option<WorkerCreateLedger>,
+}
+
+/// Secret-free provider identity of the independent Create request ledger.
+/// The Registry binds it to the enclosing Worker incarnation; the provider
+/// must reobserve this exact UID before using any ticket as closure evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerCreateLedger {
+    provider_id: String,
+    namespace: String,
+    name: String,
+    uid: String,
+    configuration_fingerprint: String,
+}
+
+impl WorkerCreateLedger {
+    pub fn new(
+        provider_id: impl Into<String>,
+        namespace: impl Into<String>,
+        name: impl Into<String>,
+        uid: impl Into<String>,
+        configuration_fingerprint: impl Into<String>,
+    ) -> Result<Self, RegistryError> {
+        let ledger = Self {
+            provider_id: provider_id.into(),
+            namespace: namespace.into(),
+            name: name.into(),
+            uid: uid.into(),
+            configuration_fingerprint: configuration_fingerprint.into(),
+        };
+        ledger.validate()?;
+        Ok(ledger)
+    }
+
+    pub fn validate(&self) -> Result<(), RegistryError> {
+        if [
+            self.provider_id.as_str(),
+            self.namespace.as_str(),
+            self.name.as_str(),
+            self.uid.as_str(),
+            self.configuration_fingerprint.as_str(),
+        ]
+        .into_iter()
+        .any(|part| part.trim().is_empty() || part.trim() != part)
+        {
+            return Err(RegistryError::InvalidCreateLedger);
+        }
+        Ok(())
+    }
+
+    pub fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn uid(&self) -> &str {
+        &self.uid
+    }
+    pub fn configuration_fingerprint(&self) -> &str {
+        &self.configuration_fingerprint
+    }
 }
 
 /// Durable, non-secret exit evidence for one exact Worker incarnation.
@@ -276,6 +366,10 @@ pub struct WorkerRegistration {
     pub worker_id: String,
     pub incarnation_id: String,
     pub manifest: WorkerManifest,
+    /// Set only by the trusted Coordinator adapter after provider I/O. A
+    /// Worker request cannot supply or replace its own physical witness.
+    #[serde(skip)]
+    pub create_ledger: Option<WorkerCreateLedger>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -504,6 +598,10 @@ pub enum RegistryError {
         "worker process exit receipt requires non-empty provider, execution and evidence references"
     )]
     InvalidProcessExit,
+    #[error("worker Create ledger requires complete exact provider coordinates")]
+    InvalidCreateLedger,
+    #[error("a Worker incarnation cannot replace or backfill its Create ledger")]
+    CreateLedgerChanged,
 }
 
 /// Secret-free read projection of the current Worker authority.
@@ -714,6 +812,62 @@ impl WorkerSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_registration_wire_cannot_assert_a_create_ledger() {
+        // Causes: C1 Coordinator has an exact non-secret ledger anchor; C2 a
+        // Worker supplies a forged field in JSON; C3 any provider coordinate
+        // is blank or padded. Effects: E1 the wire omits C1, E2 decoding C2
+        // still yields no anchor, E3 C3 cannot be constructed. Only the
+        // trusted registration adapter may fill this field before Registry CAS.
+        let ledger = WorkerCreateLedger::new(
+            "kubernetes",
+            "awaken-control",
+            "ledger",
+            "uid-a",
+            "config-a",
+        )
+        .unwrap();
+        let registration = WorkerRegistration {
+            worker_id: "worker".into(),
+            incarnation_id: "boot".into(),
+            manifest: WorkerManifest::default(),
+            create_ledger: Some(ledger.clone()),
+        };
+        let mut wire = serde_json::to_value(&registration).unwrap();
+        assert!(wire.get("create_ledger").is_none(), "E1");
+        wire["create_ledger"] = serde_json::to_value(&ledger).unwrap();
+        let decoded: WorkerRegistration = serde_json::from_value(wire).unwrap();
+        assert!(decoded.create_ledger.is_none(), "E2");
+        assert!(
+            WorkerCreateLedger::new("kubernetes", "awaken-control", "ledger", " ", "config-a")
+                .is_err(),
+            "E3"
+        );
+    }
+
+    #[test]
+    fn exact_worker_lease_owner_round_trips_across_generation_and_colons() {
+        // Causes: C1 full Worker id has Kubernetes colons; C2 generation is
+        // positive/canonical; C3 boot suffix is exact. Only C1+C2+C3 yields
+        // the historical identity used to read its Registry ledger; changing
+        // any coordinate cannot produce that identity or a current fallback.
+        let worker = WorkerIdentity::new("k8s:ns:pod:uid", "uid", 7);
+        assert_eq!(
+            WorkerIdentity::from_lease_owner(&worker.worker_id, &worker.lease_owner()),
+            Some(worker.clone())
+        );
+        for foreign in [
+            "k8s:ns:pod:uid:0:uid",
+            "k8s:ns:pod:uid:07:uid",
+            "k8s:ns:pod:uid:7:",
+            "k8s:ns:pod:uid:7:other",
+            "other:7:uid",
+        ] {
+            let parsed = WorkerIdentity::from_lease_owner(&worker.worker_id, foreign);
+            assert!(parsed.as_ref() != Some(&worker), "foreign {foreign}");
+        }
+    }
 
     #[test]
     fn local_process_incarnation_format_is_one_shared_launch_contract() {

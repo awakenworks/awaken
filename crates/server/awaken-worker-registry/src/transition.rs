@@ -31,6 +31,9 @@ pub(crate) fn register(
     if registration.worker_id.trim().is_empty() || registration.incarnation_id.trim().is_empty() {
         return Err(RegistryError::InvalidIdentity);
     }
+    if let Some(ledger) = &registration.create_ledger {
+        ledger.validate()?;
+    }
     let fingerprint = registration.manifest.fingerprint().map_err(|error| {
         RegistryError::Persistence(format!("manifest fingerprint failed: {error}"))
     })?;
@@ -38,6 +41,9 @@ pub(crate) fn register(
         if current.snapshot.identity.incarnation_id == registration.incarnation_id {
             if current.capability_fingerprint() != fingerprint {
                 return Err(RegistryError::ManifestChanged);
+            }
+            if current.create_ledger != registration.create_ledger {
+                return Err(RegistryError::CreateLedgerChanged);
             }
             return Ok((current.clone(), false));
         }
@@ -104,6 +110,7 @@ pub(crate) fn register(
             heartbeat_at_ms: now_ms,
             drain_deadline_ms: None,
             process_exit: None,
+            create_ledger: registration.create_ledger,
         },
         true,
     ))
@@ -333,6 +340,7 @@ mod tests {
             worker_id: "worker-a".to_string(),
             incarnation_id: incarnation.to_string(),
             manifest: WorkerManifest::default(),
+            create_ledger: None,
         }
     }
 

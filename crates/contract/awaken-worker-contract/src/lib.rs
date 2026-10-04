@@ -47,8 +47,8 @@ pub use placement::{
 };
 pub use registry::{
     AssignmentRejection, DynamicEvidenceProbeState, RegisteredWorker, RegistryError,
-    RegistryMutation, WorkerAssignment, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
-    WorkerIncarnationGuard, WorkerObservationPublicationAdmission,
+    RegistryMutation, WorkerAssignment, WorkerCreateLedger, WorkerDirectory, WorkerHeartbeat,
+    WorkerIdentity, WorkerIncarnationGuard, WorkerObservationPublicationAdmission,
     WorkerObservationPublicationCompletion, WorkerObservationPublicationFence,
     WorkerObservationSource, WorkerProcessExit, WorkerRegistration,
     WorkerRegistrationHistoryAdmission, WorkerSnapshot, WorkerState, assignment_recovery_rejection,
@@ -975,6 +975,7 @@ mod tests {
                     heartbeat_at_ms: 100,
                     drain_deadline_ms: None,
                     process_exit: None,
+                    create_ledger: None,
                 }
             };
 

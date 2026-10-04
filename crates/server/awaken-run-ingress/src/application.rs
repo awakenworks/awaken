@@ -24,6 +24,16 @@ use awaken_dispatch_execution::validate_commit_dispatch_binding;
 /// Lookup is read-only and retryable: it must not launch or stop execution.
 #[async_trait::async_trait]
 pub trait WorkerExecutionBindingSource: Send + Sync {
+    /// Prepare provider-owned Create request evidence before the Registry's
+    /// first insert. The caller atomically freezes this exact UID with the
+    /// incarnation; a retry may only return the same value. Unbound providers
+    /// retain no Create-ledger capability.
+    async fn prepare_registration_create_ledger(
+        &self,
+        _registration: &crate::WorkerRegistration,
+    ) -> Result<Option<crate::WorkerCreateLedger>, ApplicationError> {
+        Ok(None)
+    }
     /// Retain process metadata after durable registration and before Ready.
     /// It does not bind an attempt or grant execution authority.
     async fn retain_registered_worker_evidence(

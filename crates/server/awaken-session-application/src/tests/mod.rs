@@ -4566,6 +4566,7 @@ fn terminal_cleanup_worker(
         heartbeat_at_ms: 1,
         drain_deadline_ms: None,
         process_exit: None,
+        create_ledger: None,
     }
 }
 

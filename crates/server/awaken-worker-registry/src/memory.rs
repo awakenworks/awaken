@@ -291,6 +291,7 @@ mod loom_tests {
             worker_id: "worker".to_string(),
             incarnation_id: incarnation.to_string(),
             manifest: WorkerManifest::default(),
+            create_ledger: None,
         }
     }
 

@@ -23,7 +23,7 @@ data:
     no_browser = true
     identity_mode = "self-managed"
     credential_envelope_keys_file = "/etc/awaken-credential-envelope/keys.json"
-    worker_kubernetes = { namespace = "awaken-system", service_account = "awaken-worker", audience = "awaken-worker", provider_id = "k3d-awaken-product" }
+    worker_kubernetes = { namespace = "awaken-system", service_account = "awaken-worker", audience = "awaken-worker", provider_id = "k3d-awaken-product", create_control_namespace = "awaken-create-control" }
     sandbox_tier = "k8s"
     sandbox_dir = "/var/lib/awaken/sandboxes"
     k8s_namespace = "awaken-system"

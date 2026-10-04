@@ -55,6 +55,7 @@ mod channel;
 mod checkpoint;
 mod client;
 mod continuation;
+mod create_ledger;
 mod creation;
 mod error;
 mod finalizer;
@@ -109,6 +110,7 @@ pub use sandbox_control::{
 };
 
 pub use crate::k8s_package_image::K8sPackageImageProvisioner;
+pub use create_ledger::K8sWorkerCreateLedger;
 
 #[cfg(test)]
 pub(crate) type PodSpecMutation = (&'static str, fn(&mut k8s_openapi::api::core::v1::PodSpec));

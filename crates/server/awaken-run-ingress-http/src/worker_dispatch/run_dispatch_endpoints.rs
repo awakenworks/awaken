@@ -588,6 +588,7 @@ mod admission_cancellation_tests {
                     worker_id: "cancelled-admission".into(),
                     incarnation_id: "boot".into(),
                     manifest: Default::default(),
+                    create_ledger: None,
                 },
                 100,
                 50,

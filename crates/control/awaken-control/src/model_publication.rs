@@ -435,6 +435,7 @@ mod tests {
                     worker_id: format!("worker-{backend_ref}"),
                     incarnation_id: "boot-1".into(),
                     manifest: WorkerManifest::default(),
+                    create_ledger: None,
                 },
                 now,
                 60_000,

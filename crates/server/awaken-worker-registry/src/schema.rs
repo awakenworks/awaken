@@ -133,6 +133,11 @@ pub(crate) fn converged_registry_bundle() -> Result<MigrationBundle, MigrationEr
                 "retain exact worker process exit evidence before provider history release",
                 include_str!("migrations/V0003__retain_worker_process_exit.sql").trim(),
             )?,
+            Migration::new(
+                4,
+                "freeze the provider Create ledger UID with the worker incarnation",
+                include_str!("migrations/V0004__retain_worker_create_ledger.sql").trim(),
+            )?,
         ],
     )
 }

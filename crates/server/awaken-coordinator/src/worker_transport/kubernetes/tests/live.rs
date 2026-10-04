@@ -18,7 +18,7 @@ use awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthori
 use awaken_worker_transport_security::{FixedWorkerLeasePolicy, WorkerUpstream};
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::authentication::v1::TokenRequest;
-use k8s_openapi::api::core::v1::{Namespace, Pod, ServiceAccount};
+use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Pod, ServiceAccount};
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use std::time::Duration;
 
@@ -213,6 +213,17 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         .await
         .unwrap();
     let name = namespace.metadata.name.as_deref().unwrap();
+    let control_namespace = namespaces
+        .create(
+            &PostParams::default(),
+            &serde_json::from_value(json!({
+                "metadata":{"generateName":"worker-create-control-"}
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let control_name = control_namespace.metadata.name.as_deref().unwrap();
     let accounts: kube::Api<ServiceAccount> = kube::Api::namespaced(client.clone(), name);
     accounts
         .create(
@@ -247,8 +258,15 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         created.push(pod);
     }
     let audience = "awaken-worker";
-    let transport =
-        WorkerTransport::kubernetes(client.clone(), name, "executor", audience, &cluster).unwrap();
+    let transport = WorkerTransport::kubernetes(
+        client.clone(),
+        name,
+        "executor",
+        audience,
+        &cluster,
+        control_name,
+    )
+    .unwrap();
     let bindings = transport.binding_source().unwrap();
     // Readiness uses the actual admissible process shape, not Pod phase alone.
     for pod in &created {
@@ -308,6 +326,32 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     assert_eq!(
         worker.snapshot.identity.incarnation_id,
         *created[0].metadata.uid.as_ref().unwrap()
+    );
+    // L1a actual Pod UID + successful provider Create -> the Registry freezes
+    // one ledger UID before Ready. L3a Coordinator restart and old Pod loss ->
+    // that same historical UID remains reobservable in both owners; a stable
+    // ConfigMap name alone would not satisfy either comparison.
+    let ledger = worker
+        .create_ledger
+        .clone()
+        .expect("Kubernetes registration ledger");
+    assert_eq!(
+        ledger.namespace(),
+        control_name,
+        "L1a separate control domain"
+    );
+    assert_eq!(ledger.provider_id(), cluster, "L1a exact provider");
+    let ledgers: kube::Api<ConfigMap> = kube::Api::namespaced(client.clone(), control_name);
+    assert_eq!(
+        ledgers
+            .get(ledger.name())
+            .await
+            .unwrap()
+            .metadata
+            .uid
+            .as_deref(),
+        Some(ledger.uid()),
+        "L1a exact API UID"
     );
     let old_upstream = old_upstream.with_worker_identity(worker.snapshot.identity.clone());
     ready(
@@ -391,9 +435,21 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         "executor",
         audience,
         &cluster,
+        control_name,
     )
     .unwrap();
     let (address, store, server) = coordinator(files.path(), &transport, clock.clone()).await;
+    let reopened = SqliteWorkerDirectory::open(files.path().join("registry.sqlite")).unwrap();
+    assert_eq!(
+        reopened
+            .incarnation(&worker.snapshot.identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .create_ledger,
+        Some(ledger.clone()),
+        "L3a historical Registry anchor survives Coordinator restart"
+    );
     assert_eq!(
         store
             .load_physical_attempt(&old_claim.run_id)
@@ -491,6 +547,17 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
             .unwrap(),
         None,
         "L5"
+    );
+    assert_eq!(
+        ledgers
+            .get(ledger.name())
+            .await
+            .unwrap()
+            .metadata
+            .uid
+            .as_deref(),
+        Some(ledger.uid()),
+        "L3a old Pod deletion cannot garbage-collect the independent ledger"
     );
     assert_eq!(
         next_dispatch.begin_attempt(&next, None).await.unwrap(),
@@ -640,6 +707,16 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
             name,
             &DeleteParams::default().preconditions(kube::api::Preconditions {
                 uid: namespace.metadata.uid,
+                resource_version: None,
+            }),
+        )
+        .await
+        .unwrap();
+    namespaces
+        .delete(
+            control_name,
+            &DeleteParams::default().preconditions(kube::api::Preconditions {
+                uid: control_namespace.metadata.uid,
                 resource_version: None,
             }),
         )

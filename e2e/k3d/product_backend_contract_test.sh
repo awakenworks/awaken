@@ -13,7 +13,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OVERLAY="$REPO_ROOT/deploy/k3d/product-backend"
 source "$REPO_ROOT/e2e/k3d/harness.sh"
 RENDERED="$(mktemp)"
-trap 'rm -f "$RENDERED"' EXIT
+CONTROL_RENDERED="$(mktemp)"
+trap 'rm -f "$RENDERED" "$CONTROL_RENDERED"' EXIT
 
 # Internal-product topology cause/effect decision table.
 # Causes: C1 the product overlay renders; C2 the Awaken Service is ClusterIP and
@@ -44,6 +45,19 @@ trap 'rm -f "$RENDERED"' EXIT
 # authority beyond the Session namespace; E6 reject the deployment contract before a
 # cluster mutation. Rules: K1 C1+C2+C3+C4+C5+C6+!C7=>E1+E2+E3+E4+E5;
 # K2 !C1|!C2|!C3|!C4|!C5|!C6|C7=>E6.
+# C8 the Create ledger has a distinct namespace and only the product
+# ServiceAccount can create/get/update its ConfigMaps; the Worker has no
+# binding there and neither principal may delete the retained ledger.
+# K3 C8=>the topology permits an independently retained ledger; the live
+# Worker transport test owns UID reobservation after Pod loss.
+# K4 !C8=>reject the topology before calling it brokered recovery.
+kubectl kustomize "$OVERLAY/create-control" > "$CONTROL_RENDERED"
+grep -q 'name: awaken-create-control' "$CONTROL_RENDERED"
+[[ "$(grep -c 'namespace: awaken-create-control' "$CONTROL_RENDERED")" -eq 2 ]]
+grep -q 'name: awaken-product' "$CONTROL_RENDERED"
+grep -q 'namespace: awaken-system' "$CONTROL_RENDERED"
+! grep -q 'name: awaken-worker' "$CONTROL_RENDERED"
+! grep -q '  - delete' "$CONTROL_RENDERED"
 SANDBOX_IMAGE="registry.test/awaken-sandbox@sha256:$(printf 'c%.0s' {1..64})"
 [[ "$(grep -o '__AWAKEN_SANDBOX_IMAGE__' "$OVERLAY/resources.yaml" | wc -l)" -eq 2 ]]
 ! grep -q 'container_image = "awaken-sandbox:local"' "$OVERLAY/resources.yaml"
@@ -74,7 +88,7 @@ grep -q 'worker_max_concurrent = 10' "$RENDERED"
 grep -q 'no_browser = true' "$RENDERED"
 grep -q 'identity_mode = "self-managed"' "$RENDERED"
 grep -q 'worker_kubernetes_identity_directory = "/var/run/awaken-worker-identity"' "$RENDERED"
-grep -q 'worker_kubernetes = { namespace = "awaken-system", service_account = "awaken-worker", audience = "awaken-worker", provider_id = "k3d-awaken-product" }' "$RENDERED"
+grep -q 'worker_kubernetes = { namespace = "awaken-system", service_account = "awaken-worker", audience = "awaken-worker", provider_id = "k3d-awaken-product", create_control_namespace = "awaken-create-control" }' "$RENDERED"
 ! grep -q 'worker_trust_credentials_file' "$RENDERED"
 ! grep -q 'worker_request_credential_file' "$RENDERED"
 grep -q 'sandbox_tier = "k8s"' "$RENDERED"

@@ -23,6 +23,7 @@ async fn memory_registry_conforms() {
     // fitness owns R1; this conformance case owns R2.
     let directory = Arc::new(MemoryWorkerDirectory::new());
     assert_registry(directory.clone(), "dwr-memory").await;
+    assert_create_ledger_anchor(directory.clone(), directory.clone(), "memory").await;
     let _ = assert_process_exit_receipt(directory.clone(), "memory").await;
     assert_registration_history(directory.clone(), directory.clone(), "memory").await;
     assert_expiry_race(directory.clone(), directory, "memory").await;
@@ -106,6 +107,12 @@ async fn sqlite_registry_conforms_and_reopens() {
     let path = path.to_str().unwrap();
     let store = Arc::new(SqliteWorkerDirectory::open(path).await.unwrap());
     assert_registry(store.clone(), "dwr-sqlite").await;
+    assert_create_ledger_anchor(
+        store.clone(),
+        Arc::new(SqliteWorkerDirectory::open(path).unwrap()),
+        "sqlite",
+    )
+    .await;
     let process_identity = assert_process_exit_receipt(store, "sqlite").await;
     let reopened = SqliteWorkerDirectory::open(path).await.unwrap();
     let record: RegisteredWorker = reopened
@@ -186,7 +193,25 @@ async fn postgres_registry_conforms_when_configured() {
         .execute(&store.pool())
         .await
         .unwrap();
+    sqlx::query("DELETE FROM worker_registry_worker WHERE worker_id IN ('ledger-postgres', 'ledger-legacy-postgres', 'ledger-race-postgres')")
+        .execute(&store.pool())
+        .await
+        .unwrap();
     assert_registry(store.clone(), "dwr-postgres").await;
+    assert_create_ledger_anchor(
+        store.clone(),
+        Arc::new(
+            PostgresWorkerDirectory::connect_existing(&url, 5)
+                .await
+                .unwrap(),
+        ),
+        "postgres",
+    )
+    .await;
+    sqlx::query("DELETE FROM worker_registry_worker WHERE worker_id IN ('ledger-postgres', 'ledger-legacy-postgres', 'ledger-race-postgres')")
+        .execute(&store.pool())
+        .await
+        .unwrap();
     let process_identity = assert_process_exit_receipt(store.clone(), "postgres").await;
     assert_eq!(
         PostgresWorkerDirectory::connect_existing(&url, 5)

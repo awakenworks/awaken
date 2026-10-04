@@ -417,14 +417,17 @@ active-active Coordinator must use the same CAS, not a process-local mutex, for
 this admission order. The ledger's own UID cannot serve as its only identity
 anchor: a deleted and recreated ConfigMap can report its new UID while hiding
 the old ledger and an admitted late Create. Before the first Create is forwarded,
-the original durable effect owner must freeze the ledger UID and provider
-configuration outside that ledger. Managed Session effects use the existing
-Session root CAS; ordinary Run effects use their existing Dispatch attempt
-CAS. These are two existing admission owners for different effects, not two
-Create executors or cleanup queues. A replacement process may only reobserve
-the frozen UID. If the anchor is absent after an effect could have started, or
-the ledger has a different UID, closure remains Unknown. An unanchored legacy
-effect must never be upgraded by creating a fresh ledger under the same name.
+the Coordinator initializes the ledger and the existing Worker Registry first
+registration atomically freezes its UID and provider configuration with the
+exact Worker incarnation. This is one physical anchor for both Managed Session
+effects (whose realization lease names that Worker incarnation) and ordinary
+Run effects (whose Dispatch physical binding names it); neither business owner
+acquires a duplicate ledger field. Per-effect ticket groups can close while the
+Worker remains active. A replacement process reads the retained historical
+Registry record and may only reobserve the frozen UID. If the anchor is absent
+after an effect could have started, or the ledger has a different UID, closure
+remains Unknown. An unanchored legacy incarnation must never be upgraded by
+creating a fresh ledger under the same name.
 
 The Create authority includes indirect Pod creators. Today the Worker Role
 permits Job and DaemonSet Create, while the separate package-image provisioner

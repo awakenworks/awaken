@@ -177,6 +177,7 @@ deploy/images/sandbox/build.sh awaken-sandbox:local
 . e2e/k3d/harness.sh
 SANDBOX_IMAGE=$(k3d_image_digest awaken-sandbox:local)
 k3d_import_images awaken-product "$SANDBOX_IMAGE"
+kubectl apply -k deploy/k3d/product-backend/create-control
 k3d_render_sandbox_image deploy/k3d/product-backend "$SANDBOX_IMAGE" 2 \
   | kubectl apply -f -
 ```

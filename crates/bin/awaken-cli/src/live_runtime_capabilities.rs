@@ -339,6 +339,7 @@ mod tests {
             heartbeat_at_ms: now,
             drain_deadline_ms: None,
             process_exit: None,
+            create_ledger: None,
         }
     }
 

@@ -150,9 +150,17 @@ impl WorkerTransport {
         service_account: &str,
         audience: &str,
         provider_id: &str,
+        create_control_namespace: &str,
     ) -> Result<Self, String> {
         Self::validate_kubernetes_policy(namespace, service_account, audience, provider_id)?;
-        kubernetes::assemble(client, namespace, service_account, audience, provider_id)
+        kubernetes::assemble(
+            client,
+            namespace,
+            service_account,
+            audience,
+            provider_id,
+            create_control_namespace,
+        )
     }
 }
 

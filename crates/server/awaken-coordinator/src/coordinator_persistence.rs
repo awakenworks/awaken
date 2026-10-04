@@ -362,6 +362,7 @@ mod tests {
                     worker_id: "worker-a".into(),
                     incarnation_id: "boot-a".into(),
                     manifest: WorkerManifest::default(),
+                    create_ledger: None,
                 },
                 10,
                 100,

@@ -147,6 +147,7 @@ pub mod worker_http {
             heartbeat_at_ms: 0,
             drain_deadline_ms: None,
             process_exit: None,
+            create_ledger: None,
         };
         (Arc::new(CurrentWorkerDirectory(registered)), identity)
     }

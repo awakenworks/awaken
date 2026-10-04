@@ -97,6 +97,7 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
                     worker_id: "clock-cleanup-worker".into(),
                     incarnation_id: "boot".into(),
                     manifest,
+                    create_ledger: None,
                 },
                 heartbeat_at,
                 ttl,

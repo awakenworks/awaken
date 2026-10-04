@@ -12,8 +12,8 @@
 //! contract.
 
 use awaken_worker_contract::{
-    RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat, WorkerManifest,
-    WorkerProcessExit, WorkerRegistration, WorkerState,
+    RegistryError, RegistryMutation, WorkerCreateLedger, WorkerDirectory, WorkerHeartbeat,
+    WorkerManifest, WorkerProcessExit, WorkerRegistration, WorkerState,
 };
 use std::sync::Arc;
 
@@ -25,7 +25,152 @@ pub fn registration(worker: &str, incarnation: &str) -> WorkerRegistration {
             build_digest: "sha256:image-a".to_string(),
             ..WorkerManifest::default()
         },
+        create_ledger: None,
     }
+}
+
+pub async fn assert_create_ledger_anchor(
+    first: Arc<dyn WorkerDirectory>,
+    second: Arc<dyn WorkerDirectory>,
+    backend: &str,
+) {
+    // Causes: C1 first registration or exact retry; C2 ledger absent, exact or
+    // same-name/replaced UID; C3 current or historical incarnation. Effects:
+    // E1 first registration atomically freezes the UID, E2 exact replay does
+    // not replace it, E3 changed/backfilled UID is rejected, E4 replacement
+    // generation cannot erase the old witness. Rules L1=first+exact=>E1/E2,
+    // L2=retry+changed/absent=>E3, L3=legacy+backfill=>E3,
+    // L4=new generation=>E4, L5=two first registrations with different UIDs
+    // => exactly one wins the database transaction. Independent stores must
+    // see the same result.
+    let worker = format!("ledger-{backend}");
+    let ledger = |uid| {
+        WorkerCreateLedger::new(
+            "kubernetes",
+            "awaken-control",
+            "worker-ledger",
+            uid,
+            "config-a",
+        )
+        .unwrap()
+    };
+    let original = ledger("uid-original");
+    let mut first_registration = registration(&worker, "first");
+    first_registration.create_ledger = Some(original.clone());
+    let old = first
+        .register(first_registration.clone(), 100, 50)
+        .await
+        .unwrap();
+    assert_eq!(old.create_ledger, Some(original.clone()), "L1/E1");
+    assert_eq!(
+        second
+            .register(first_registration.clone(), 101, 50)
+            .await
+            .unwrap(),
+        old,
+        "L1/E2 exact response-loss replay"
+    );
+    let mut changed = first_registration.clone();
+    changed.create_ledger = Some(ledger("uid-replaced"));
+    assert!(
+        matches!(
+            second.register(changed, 102, 50).await,
+            Err(RegistryError::CreateLedgerChanged)
+        ),
+        "L2/E3 same-name replacement"
+    );
+    let mut absent = first_registration;
+    absent.create_ledger = None;
+    assert!(
+        matches!(
+            second.register(absent, 103, 50).await,
+            Err(RegistryError::CreateLedgerChanged)
+        ),
+        "L2/E3 missing ledger"
+    );
+    assert_eq!(
+        second
+            .incarnation(&old.snapshot.identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .create_ledger,
+        Some(original.clone()),
+        "L2/E1 original UID remains frozen"
+    );
+
+    let legacy_worker = format!("ledger-legacy-{backend}");
+    let legacy = first
+        .register(registration(&legacy_worker, "first"), 100, 50)
+        .await
+        .unwrap();
+    let mut backfill = registration(&legacy_worker, "first");
+    backfill.create_ledger = Some(ledger("uid-new"));
+    assert!(
+        matches!(
+            second.register(backfill, 101, 50).await,
+            Err(RegistryError::CreateLedgerChanged)
+        ),
+        "L3/E3 historical unbound execution cannot gain proof"
+    );
+    assert!(
+        second
+            .incarnation(&legacy.snapshot.identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .create_ledger
+            .is_none()
+    );
+
+    first.deregister(&old.snapshot.identity).await.unwrap();
+    let mut replacement = registration(&worker, "second");
+    replacement.create_ledger = Some(ledger("uid-successor"));
+    let newer = second.register(replacement, 200, 50).await.unwrap();
+    assert_eq!(
+        newer.snapshot.identity.generation,
+        old.snapshot.identity.generation + 1
+    );
+    assert_eq!(newer.create_ledger, Some(ledger("uid-successor")), "L4/E4");
+    assert_eq!(
+        first
+            .incarnation(&old.snapshot.identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .create_ledger,
+        Some(original),
+        "L4/E4 old UID remains independently readable"
+    );
+
+    let race_worker = format!("ledger-race-{backend}");
+    let mut left = registration(&race_worker, "same-boot");
+    left.create_ledger = Some(ledger("race-a"));
+    let mut right = registration(&race_worker, "same-boot");
+    right.create_ledger = Some(ledger("race-b"));
+    let (left_result, right_result) = tokio::join!(
+        first.register(left, 300, 50),
+        second.register(right, 300, 50),
+    );
+    assert_eq!(
+        left_result.is_ok() as u8 + right_result.is_ok() as u8,
+        1,
+        "L5 one UID wins"
+    );
+    assert!(
+        left_result
+            .as_ref()
+            .err()
+            .or(right_result.as_ref().err())
+            .is_some_and(|error| matches!(error, RegistryError::CreateLedgerChanged)),
+        "L5 conflicting UID is rejected"
+    );
+    let winner = first.current(&race_worker).await.unwrap().unwrap();
+    assert!(
+        winner.create_ledger == Some(ledger("race-a"))
+            || winner.create_ledger == Some(ledger("race-b")),
+        "L5 durable exact winner"
+    );
 }
 
 pub async fn assert_registry(directory: Arc<dyn WorkerDirectory>, worker_id: &str) {

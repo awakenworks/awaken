@@ -1253,6 +1253,14 @@ async fn register_worker(
             }
             request.registration.incarnation_id = incarnation.into();
         }
+        if let Some(source) = &service.execution_bindings {
+            request.registration.create_ledger = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                source.prepare_registration_create_ledger(&request.registration),
+            )
+            .await
+            .map_err(|_| HostError::unavailable("Worker Create ledger preparation timed out"))??;
+        }
         let record = match directory(&service)?
             .register(
                 request.registration,
