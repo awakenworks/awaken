@@ -18,6 +18,9 @@ use awaken_worker_transport_security::kubernetes::{
     KubernetesPodIdentity, KubernetesWorkerAuthenticator,
 };
 
+mod create_broker;
+pub(super) use create_broker::K8sCreateBroker;
+
 pub(super) fn assemble(
     client: kube::Client,
     namespace: &str,
@@ -42,6 +45,12 @@ pub(super) fn assemble(
         provider_id,
     )
     .map_err(|error| error.to_string())?;
+    let create_broker = Arc::new(K8sCreateBroker::new(
+        client.clone(),
+        create_ledger.clone(),
+        namespace,
+        provider_id,
+    ));
     let stopper = PodProcessStopper::new(
         PodProcessObserver::new(client, namespace).map_err(|error| error.to_string())?,
     );
@@ -60,6 +69,7 @@ pub(super) fn assemble(
             provider_id: provider_id.to_owned(),
         })),
         relay_targets: Some(binding_source),
+        create_broker: Some(create_broker),
     })
 }
 

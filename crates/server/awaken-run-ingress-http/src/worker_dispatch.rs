@@ -712,7 +712,7 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .with_state(service)
 }
 
-fn respond(result: Result<Value, HostError>) -> (StatusCode, Json<Value>) {
+pub fn respond(result: Result<Value, HostError>) -> (StatusCode, Json<Value>) {
     match result {
         Ok(value) => (StatusCode::OK, Json(value)),
         Err(error) => {

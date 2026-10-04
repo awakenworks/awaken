@@ -3648,6 +3648,7 @@ dependencies = [
  "awaken-run-ingress",
  "awaken-run-ingress-contract",
  "awaken-runtime-contract",
+ "awaken-sandbox-container",
  "awaken-session-configuration-contract",
  "awaken-session-realization-contract",
  "awaken-session-resource-contract",

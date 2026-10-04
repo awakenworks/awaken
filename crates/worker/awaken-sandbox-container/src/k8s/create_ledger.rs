@@ -44,6 +44,7 @@ pub struct K8sLedgerBinding<'a> {
 }
 
 /// One Kubernetes physical effect store, scoped by a retained Worker Pod UID.
+#[derive(Clone)]
 pub struct K8sWorkerCreateLedger {
     client: Client,
     control_namespace: String,

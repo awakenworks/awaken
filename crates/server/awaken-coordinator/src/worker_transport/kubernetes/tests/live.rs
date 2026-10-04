@@ -10,10 +10,13 @@ use awaken_run_ingress::{
     WorkerHeartbeat,
 };
 use awaken_run_ingress_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_sandbox_container::k8s::{K8sCreateRequest, K8sCreateTransport};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_time::WallClockExt;
 use awaken_worker_registry::SqliteWorkerDirectory;
-use awaken_worker_runtime::{WorkerControlClient, dispatch_transport_with_upstream};
+use awaken_worker_runtime::{
+    WorkerControlClient, WorkerK8sCreateClient, dispatch_transport_with_upstream,
+};
 use awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer;
 use awaken_worker_transport_security::{FixedWorkerLeasePolicy, WorkerUpstream};
 use k8s_openapi::api::apps::v1::Deployment;
@@ -140,6 +143,7 @@ async fn coordinator(
             .await
             .unwrap(),
     );
+    let create_broker = transport.create_broker_router(directory.clone(), clock.clone());
     let recovery = Arc::new(
         SqliteCommitCoordinator::open(files.join("runtime.sqlite").to_str().unwrap())
             .await
@@ -158,6 +162,10 @@ async fn coordinator(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = format!("http://{}", listener.local_addr().unwrap());
     let router = dispatch_transport_router_with_service(Arc::new(service));
+    let router = match create_broker {
+        Some(broker) => router.merge(broker),
+        None => router,
+    };
     let (shutdown, stopped) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -360,6 +368,84 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         1,
     )
     .await;
+    // C7 the executor ServiceAccount cannot Create directly, but its exact
+    // registered, signed Worker request reaches the independent broker. E7
+    // the first API UID is retained and a response-loss replay becomes 409 for
+    // the existing typed GET verifier, with no second Kubernetes object.
+    let denied = std::process::Command::new("kubectl")
+        .args([
+            "auth",
+            "can-i",
+            "create",
+            "configmaps",
+            "--as",
+            &format!("system:serviceaccount:{name}:executor"),
+            "-n",
+            name,
+            "--quiet",
+        ])
+        .status()
+        .unwrap();
+    assert!(
+        !denied.success(),
+        "C7 Worker Pod has no direct ConfigMap Create"
+    );
+    let create_client = WorkerK8sCreateClient::new(old_upstream.clone());
+    create_client
+        .bind_identity(worker.snapshot.identity.clone())
+        .unwrap();
+    let request = K8sCreateRequest {
+        path: format!("/api/v1/namespaces/{name}/configmaps"),
+        object: json!({
+            "apiVersion":"v1", "kind":"ConfigMap",
+            "metadata":{
+                "name":"broker-probe", "namespace":name,
+                "annotations":{"awaken.dev/realization-digest":"a".repeat(64)}
+            },
+            "data":{"probe":"ok"}
+        }),
+    };
+    let first_create = create_client.create(request.clone()).await.unwrap();
+    assert_eq!(
+        first_create.status, 201,
+        "E7 independent API Create succeeded"
+    );
+    let first_uid = first_create.object["metadata"]["uid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let cms: kube::Api<ConfigMap> = kube::Api::namespaced(client.clone(), name);
+    assert_eq!(
+        cms.get("broker-probe")
+            .await
+            .unwrap()
+            .metadata
+            .uid
+            .as_deref(),
+        Some(first_uid.as_str()),
+        "E7 exact API readback"
+    );
+    let replay = create_client.create(request).await.unwrap();
+    assert_eq!(replay.status, 409, "E7 one Create response-loss replay");
+    assert_eq!(
+        cms.get("broker-probe")
+            .await
+            .unwrap()
+            .metadata
+            .uid
+            .as_deref(),
+        Some(first_uid.as_str()),
+        "E7 no replacement UID"
+    );
+    cms.delete(
+        "broker-probe",
+        &DeleteParams::default().preconditions(kube::api::Preconditions {
+            uid: Some(first_uid),
+            resource_version: None,
+        }),
+    )
+    .await
+    .unwrap();
     // Copying a genuine token does not grant another Pod's coordinate.
     let impostor = WorkerControlClient::new(upstream(&address, &created[1], &old_token));
     assert!(

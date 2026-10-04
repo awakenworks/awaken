@@ -429,8 +429,8 @@ after an effect could have started, or the ledger has a different UID, closure
 remains Unknown. An unanchored legacy incarnation must never be upgraded by
 creating a fresh ledger under the same name.
 
-The Create authority includes indirect Pod creators. Today the Worker Role
-permits Job and DaemonSet Create, while the separate package-image provisioner
+The Create authority includes indirect Pod creators. The pre-broker Worker Role
+permitted Job and DaemonSet Create, while the separate package-image provisioner
 creates ConfigMaps and Jobs and image prewarm creates DaemonSets. Their
 controllers may create Pods after the Worker's own Pod has stopped. Removing
 only direct Pod/PVC/ConfigMap/Secret Create from the Worker Role would therefore
@@ -457,6 +457,21 @@ cuts. The corresponding test comments own the cause/effect table. The safety
 result is zero early receipts/successors whenever any ticket or participant is
 Unknown; conditional progress requires one exact terminal receipt and one
 successor after all independent physical results have been retained.
+
+The 2026-10-04 implementation checkpoint freezes the exact ConfigMap UID in
+the existing Worker Registry before Ready, admits Create tickets through one
+provider-owned resourceVersion CAS state machine, and forwards Worker control
+POSTs through the existing signed transport to an independent Coordinator
+task. The product K8s overlay gives Worker only read/disposal and bounded
+exec/port-forward authority; Coordinator alone holds Create for Pod, PVC,
+ConfigMap, Secret, Job and DaemonSet collections. The real k3d checks cover
+UID persistence, same-name replacement refusal, CAS ordering, signed Create
+and the six direct-Create RBAC denials. This is **request-lifetime evidence**,
+not a complete handle-free cleanup receipt. The replacement process still
+returns Unknown until the original Worker execution domain is stopped, every
+ticket is joined, and the provider has verified/disposed the exact Pod, PVC,
+ConfigMap, Secret and any controller-owned participant before the existing
+Session cleanup owner commits its receipt.
 
 ## Amendment 2026-10-05: unfinished terminal cleanup remains Worker demand
 

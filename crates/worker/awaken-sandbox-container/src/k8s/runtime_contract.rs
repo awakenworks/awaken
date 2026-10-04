@@ -167,7 +167,7 @@ impl ContainerRuntime for K8sRuntime {
             },
             |port| format!("pod_channel:{port}"),
         );
-        Ok(std::collections::BTreeMap::from([
+        let mut configuration = std::collections::BTreeMap::from([
             ("backend".into(), "kubernetes".into()),
             (
                 "execution_uid".into(),
@@ -190,7 +190,13 @@ impl ContainerRuntime for K8sRuntime {
             // version binds the immutable Pod to policy semantics, not to one
             // mutable apiserver observation.
             ("network_policy_contract".into(), "v1".into()),
-        ]))
+        ]);
+        if self.create_transport.is_some() {
+            // Existing direct-created Pods retain their exact old fingerprint;
+            // brokered Pods name the stricter Create authority explicitly.
+            configuration.insert("create_request_transport".into(), "brokered-v1".into());
+        }
+        Ok(configuration)
     }
 
     fn enforces_network_none(&self) -> bool {
