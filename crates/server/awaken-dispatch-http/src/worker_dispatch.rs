@@ -81,7 +81,8 @@ use session_realization::{
     authorize_session_terminal_cleanup_preparation, fail_session_realization,
     persist_session_environment_receipt, record_session_terminal_cleanup_disposal,
     record_session_terminal_cleanup_preparation, renew_session_realization,
-    session_cleanup_claim_next, session_cleanup_poll, session_resume,
+    session_cleanup_claim_next, session_cleanup_poll, session_preparation_claim_next,
+    session_resume,
 };
 use terminal_repository_publication::{
     session_repository_publication_complete, session_repository_publication_poll,
@@ -164,6 +165,8 @@ pub struct WorkerDispatchService {
     stream_sink: Option<Arc<dyn StreamSink>>,
     session_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionRealizationControl>>,
+    session_preparation_control:
+        Option<Arc<dyn awaken_session_realization_contract::SessionPreparationControl>>,
     terminal_cleanup_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>>,
     session_environment_bindings:
@@ -201,6 +204,7 @@ impl WorkerDispatchService {
             terminal_observer: None,
             stream_sink: None,
             session_control: None,
+            session_preparation_control: None,
             terminal_cleanup_control: None,
             session_environment_bindings: None,
             session_coordination: None,
@@ -276,6 +280,15 @@ impl WorkerDispatchService {
         control: Arc<dyn awaken_session_realization_contract::SessionRealizationControl>,
     ) -> Self {
         self.session_control = Some(control);
+        self
+    }
+
+    #[must_use]
+    pub fn with_session_preparation_control(
+        mut self,
+        control: Arc<dyn awaken_session_realization_contract::SessionPreparationControl>,
+    ) -> Self {
+        self.session_preparation_control = Some(control);
         self
     }
 
@@ -475,6 +488,8 @@ pub struct RegisteredDispatchDependencies {
     pub directory: Arc<dyn WorkerDirectory>,
     pub policy: Arc<dyn PlacementPolicy>,
     pub sessions: Arc<dyn awaken_session_realization_contract::WorkerSessionRealizationControl>,
+    pub session_preparation:
+        Arc<dyn awaken_session_realization_contract::SessionPreparationControl>,
     pub session_environment_bindings:
         Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     pub coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
@@ -500,6 +515,7 @@ pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) 
         directory,
         policy,
         sessions,
+        session_preparation,
         session_environment_bindings,
         coordination,
         session_work,
@@ -525,6 +541,7 @@ pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) 
     .with_terminal_observer(terminal_observer)
     .with_stream_sink(stream_sink)
     .with_session_control(sessions.clone())
+    .with_session_preparation_control(session_preparation)
     .with_terminal_cleanup_control(sessions)
     .with_session_environment_bindings(session_environment_bindings)
     .with_session_coordination(coordination)
@@ -610,6 +627,10 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route("/v1/worker/checkpoint/delete", post(delete_checkpoint))
         .route("/v1/worker/recovery/snapshot", post(recovery_snapshot))
         .route("/v1/worker/session/resume", post(session_resume))
+        .route(
+            "/v1/worker/session/preparation/claim-next",
+            post(session_preparation_claim_next),
+        )
         .route(
             "/v1/worker/session/environment/authorize",
             post(authorize_session_environment_effect),

@@ -213,6 +213,13 @@ self_test() {
     echo "Postgres gate omits exact CLI installation-binding continuity" >&2
     return 1
   }
+  # P15 an ignored process-pool test exists + this runner supplies a live URL
+  # => execute that exact test under the existing deadline/first-failure owner.
+  # Without --ignored the default CLI suite can pass without measuring cap2.
+  grep -Fqx 'pg_test cargo test -p awaken-cli --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling -- --ignored --test-threads=1 --exact || record_failure "$?"' "$0" || {
+    echo "Postgres gate omits live process-pool cardinality and closure" >&2
+    return 1
+  }
   grep -Fqx 'pg_test cargo test -p awaken-coordinator application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact || record_failure "$?"' "$0" || {
     echo "Postgres gate omits fail-closed ApplicationAccess durability conformance" >&2
     return 1
@@ -532,6 +539,10 @@ pg_test cargo test -p awaken-session-store --features test-support --test sessio
 pg_test cargo test -p awaken-session-store --features test-support --lib postgres_ -- --test-threads=1 \
   || record_failure "$?"
 pg_test cargo test -p awaken-cli --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy -- --test-threads=1 --exact || record_failure "$?"
+# P15 live fixture + explicit ignored selector => measure the canonical shared
+# cap and closed-pool rejection, never a no-database/default-suite passing skip.
+# The Rust case owns adapter assertions; this runner owns fixture and deadlines.
+pg_test cargo test -p awaken-cli --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling -- --ignored --test-threads=1 --exact || record_failure "$?"
 pg_test cargo test -p awaken-coordinator application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact || record_failure "$?"
 pg_test cargo test -p awaken-config-store --features test-support --test postgres || record_failure "$?"
 pg_test cargo test -p awaken-admin-config-api --features postgres --test postgres_store || record_failure "$?"

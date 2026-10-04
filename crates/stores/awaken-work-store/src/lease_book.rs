@@ -327,6 +327,25 @@ mod tests {
     }
 
     #[test]
+    fn reference_snapshot_follows_the_reference_backend_gate() {
+        // T1 default product -> snapshot type/method absent and default --lib
+        // Clippy is clean. T2 test/test-support -> canonical release_session
+        // consumes the SAME coherent snapshot; port conformance owns execution.
+        // Reuse the volatile_queue_is_opt_in_and_its_export_is_feature_gated
+        // boundary, not another feature, snapshot, or compatibility wrapper.
+        let source = include_str!("lease_book.rs");
+        let gate = "#[cfg(any(test, feature = \"test-support\"))]";
+        assert!(
+            source.contains(&format!("{gate}\npub(crate) struct LeaseAuthoritySnapshot")),
+            "T1/T2 type gate"
+        );
+        assert!(
+            source.contains(&format!("{gate}\n    pub(crate) fn snapshot(")),
+            "T1/T2 method gate"
+        );
+    }
+
+    #[test]
     fn exhausted_epoch_cannot_install_an_owner() {
         // Cause C1: the canonical epoch reached u64::MAX; effect E1: a new
         // claim fails and no owner is installed. This is the in-memory half of

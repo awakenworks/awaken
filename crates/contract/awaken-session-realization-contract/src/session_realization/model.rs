@@ -307,6 +307,15 @@ pub struct SessionRealizationDirective {
     pub action: SessionRealizationAction,
 }
 
+/// One root-owned initial-preparation obligation assigned to a registered
+/// Worker. The directive carries the existing exact realization lease; this
+/// value is only a transport envelope, never a second persisted work item.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SessionPreparationAssignment {
+    pub session_id: crate::SessionId,
+    pub directive: SessionRealizationDirective,
+}
+
 impl SessionRealizationDirective {
     /// Relative time is observation metadata, not phase progress.
     #[must_use]

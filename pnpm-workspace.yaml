@@ -3,6 +3,7 @@ packages:
   - packages/*
 allowBuilds:
   esbuild: true
+  "@awaken/ui@https://codeload.github.com/AwakenWorks/awaken-ui/tar.gz/15ab31ef4943042ac4795c27f0e82c78586a214e": true
 minimumReleaseAge: 1440
 minimumReleaseAgeExclude:
   - '@ai-sdk/gateway@4.0.27'

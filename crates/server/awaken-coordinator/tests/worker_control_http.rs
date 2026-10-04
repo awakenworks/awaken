@@ -2,6 +2,7 @@
 use awaken_dispatch::ClaimedCheckpointTransport as _;
 use awaken_dispatch::ControlDispatchQueue;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -39,6 +40,127 @@ fn current_manifest() -> WorkerManifest {
         ),
         ..Default::default()
     }
+}
+
+#[derive(Default)]
+struct RecordingSessionPreparation {
+    claims: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_realization_contract::SessionPreparationControl
+    for RecordingSessionPreparation
+{
+    async fn claim_next_session_preparation(
+        &self,
+        _target: awaken_session_realization_contract::SessionRealizationTarget,
+    ) -> Result<
+        Option<awaken_session_realization_contract::SessionPreparationAssignment>,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
+    > {
+        self.claims.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn initial_session_preparation_requires_exact_ready_worker_authority() {
+    // Causes: C1 authenticated identity matches the request, C2 current
+    // Registry incarnation is Ready, C3 the target owner/incarnation matches
+    // it, C4 target has a live non-reassigning lease inside Registry expiry.
+    // Effects: E1 call the one Session-root selector; E2 reject before that
+    // selector, with no Session or model operation. The closed rules are:
+    // R1=all C true=>E1; R2=any C false=>E2. Starting, spoofed owner,
+    // reassignment and valid Ready cover independent boundaries.
+    let clock = Arc::new(ManualClock::new(100));
+    let directory = Arc::new(MemoryWorkerDirectory::new());
+    let preparation = Arc::new(RecordingSessionPreparation::default());
+    let service = WorkerDispatchService::new(
+        Arc::new(MemoryDispatchStore::new(
+            awaken_lease_contract::system_clock(),
+        )) as Arc<dyn ControlDispatchQueue>,
+        Arc::new(HeaderWorkerAuthenticator),
+        clock.clone(),
+        Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+    )
+    .with_worker_directory(directory, 30)
+    .with_session_preparation_control(preparation.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            dispatch_transport_router_with_service(Arc::new(service)),
+        )
+        .await
+        .unwrap();
+    });
+    let client = WorkerControlClient::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_id("worker-prepare"),
+    );
+    let registered = client
+        .register_classified("boot-prepare", current_manifest())
+        .await
+        .unwrap();
+    let identity = registered.worker.snapshot.identity;
+    let target = awaken_session_realization_contract::SessionRealizationTarget {
+        owner: identity.worker_id.clone(),
+        runtime_incarnation: identity.lease_owner(),
+        lease_expires_at_unix_ms: 120,
+        reassign_existing_lease: false,
+    };
+    assert!(
+        client
+            .claim_next_session_preparation(&identity, target.clone())
+            .await
+            .is_err(),
+        "R2 Starting"
+    );
+    assert_eq!(preparation.claims.load(Ordering::SeqCst), 0, "R2/E2");
+
+    clock.set(105);
+    client
+        .heartbeat(
+            &identity,
+            WorkerHeartbeat {
+                sequence: 1,
+                ready: true,
+                in_flight: 0,
+                warm_environment_shapes: Default::default(),
+                credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let mut spoofed = target.clone();
+    spoofed.owner = "another-worker".into();
+    assert!(
+        client
+            .claim_next_session_preparation(&identity, spoofed)
+            .await
+            .is_err(),
+        "R2 owner"
+    );
+    let mut reassigning = target.clone();
+    reassigning.reassign_existing_lease = true;
+    assert!(
+        client
+            .claim_next_session_preparation(&identity, reassigning)
+            .await
+            .is_err(),
+        "R2 reassign"
+    );
+    assert_eq!(preparation.claims.load(Ordering::SeqCst), 0, "R2/E2");
+    assert!(
+        client
+            .claim_next_session_preparation(&identity, target)
+            .await
+            .unwrap()
+            .is_none(),
+        "R1/E1"
+    );
+    assert_eq!(preparation.claims.load(Ordering::SeqCst), 1, "R1/E1");
 }
 
 #[tokio::test]

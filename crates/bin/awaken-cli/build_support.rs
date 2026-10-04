@@ -1,3 +1,4 @@
+use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
@@ -144,6 +145,55 @@ fn collect_export_inputs(root: &Path, value: &serde_json::Value, inputs: &mut BT
     }
 }
 
+pub(crate) fn write_console_manifest(workspace: &Path, dist: &Path) {
+    let web = workspace.join("web");
+    let manifest_relative =
+        awaken_ui_artifact::CONSOLE_ARTIFACT_MANIFEST_PATH.trim_start_matches('/');
+    let manifest_path = dist.join(manifest_relative);
+    let _ = fs::remove_file(&manifest_path);
+    let mut files = Vec::new();
+    collect_files(dist, dist, &mut files);
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    let owned = files
+        .iter()
+        .filter(|(path, _)| path != manifest_relative)
+        .map(|(path, file)| (path.clone(), fs::read(file).expect("read Console asset")))
+        .collect::<Vec<_>>();
+    let asset_sha256 = awaken_ui_artifact::console_asset_sha256(
+        owned
+            .iter()
+            .map(|(path, bytes)| (path.as_str(), bytes.as_slice())),
+    )
+    .expect("hash canonical Console assets");
+    let manifest = awaken_ui_artifact::ConsoleArtifactManifest {
+        contract_version: awaken_ui_artifact::CONSOLE_ARTIFACT_CONTRACT_VERSION,
+        product: "agents".into(),
+        profiles: vec!["agents".into()],
+        asset_sha256,
+        api_contract_sha256: file_sha256(&web.join("src/lib/api/types.ts")),
+    };
+    manifest
+        .validate()
+        .expect("validate Console artifact manifest");
+    fs::create_dir_all(manifest_path.parent().expect("manifest has parent"))
+        .expect("create Console manifest directory");
+    fs::write(
+        manifest_path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&manifest).expect("serialize Console manifest")
+        ),
+    )
+    .expect("write Console artifact manifest");
+}
+
+fn file_sha256(path: &Path) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(fs::read(path).expect("read digest input"))
+    )
+}
+
 pub(crate) fn generate_embedded_assets(dist: &Path, out_dir: &Path) {
     assert!(
         dist.join("index.html").is_file(),
@@ -170,10 +220,16 @@ pub(crate) fn generate_embedded_assets(dist: &Path, out_dir: &Path) {
 
 fn collect_files(root: &Path, dir: &Path, files: &mut Vec<(String, PathBuf)>) {
     for entry in fs::read_dir(dir).expect("read frontend distribution") {
-        let path = entry.expect("read frontend distribution entry").path();
-        if path.is_dir() {
+        let entry = entry.expect("read frontend distribution entry");
+        let kind = entry.file_type().expect("read frontend distribution type");
+        let path = entry.path();
+        assert!(
+            kind.is_dir() || kind.is_file(),
+            "Console assets must be regular files or directories"
+        );
+        if kind.is_dir() {
             collect_files(root, &path, files);
-        } else if path.is_file() {
+        } else {
             files.push((
                 path.strip_prefix(root)
                     .expect("asset under dist")
@@ -223,6 +279,42 @@ mod tests {
             assert_eq!(graph.program, program);
             assert_eq!(graph.current_dir, workspace);
         }
+    }
+
+    #[test]
+    fn console_manifest_binds_exact_assets_and_product_api_without_provenance() {
+        // R1 same build -> valid v2 manifest; R2 changed asset or API -> only
+        // that digest changes; R3 manifest output is excluded on repeat builds.
+        let temp = tempfile::tempdir().unwrap();
+        let web = temp.path().join("web");
+        let dist = temp.path().join("dist");
+        fs::create_dir_all(web.join("src/lib/api")).unwrap();
+        fs::create_dir_all(dist.join("assets")).unwrap();
+        fs::write(web.join("src/lib/api/types.ts"), "api").unwrap();
+        fs::write(dist.join("index.html"), "index").unwrap();
+        fs::write(dist.join("assets/app.js"), "app").unwrap();
+        write_console_manifest(temp.path(), &dist);
+        let first = awaken_ui_artifact::read_console_artifact(&dist).unwrap();
+        assert_eq!(first.product, "agents");
+        assert_eq!(first.profiles, ["agents"]);
+        write_console_manifest(temp.path(), &dist);
+        assert_eq!(
+            awaken_ui_artifact::read_console_artifact(&dist).unwrap(),
+            first
+        );
+        fs::write(dist.join("assets/app.js"), "changed").unwrap();
+        write_console_manifest(temp.path(), &dist);
+        let changed_asset = awaken_ui_artifact::read_console_artifact(&dist).unwrap();
+        assert_ne!(first.asset_sha256, changed_asset.asset_sha256);
+        assert_eq!(first.api_contract_sha256, changed_asset.api_contract_sha256);
+        fs::write(web.join("src/lib/api/types.ts"), "changed api").unwrap();
+        write_console_manifest(temp.path(), &dist);
+        let changed_api = awaken_ui_artifact::read_console_artifact(&dist).unwrap();
+        assert_eq!(changed_asset.asset_sha256, changed_api.asset_sha256);
+        assert_ne!(
+            changed_asset.api_contract_sha256,
+            changed_api.api_contract_sha256
+        );
     }
 
     #[test]

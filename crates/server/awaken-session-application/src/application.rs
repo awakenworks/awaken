@@ -166,6 +166,8 @@ pub struct SessionApplication {
     /// Read side of the existing dispatch authority, bound once at composition.
     /// It grants no execution, claim, resume or persistence authority.
     dispatch_observations: OnceLock<Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed>>,
+    session_preparation_placement:
+        OnceLock<Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement>>,
     local_realization_owner: String,
     runtime_incarnation: String,
     mutation_sequence: AtomicU64,
@@ -265,6 +267,7 @@ impl SessionApplication {
             lifecycle_notifier: OnceLock::new(),
             worker_observations: OnceLock::new(),
             dispatch_observations: OnceLock::new(),
+            session_preparation_placement: OnceLock::new(),
             local_realization_owner,
             runtime_incarnation: format!(
                 "session:{}:{started_at}:{}",
@@ -660,6 +663,24 @@ impl SessionApplication {
         &self,
     ) -> Option<&dyn awaken_worker_contract::WorkerObservationSource> {
         self.worker_observations.get().map(Arc::as_ref)
+    }
+
+    /// Bind the Runtime Host's one Sandbox/Resource capability compiler. A
+    /// missing compiler disables no-Run Worker claims rather than guessing a
+    /// weaker placement vector in the Session application.
+    pub fn set_session_preparation_placement(
+        &self,
+        placement: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement>,
+    ) -> Result<(), &'static str> {
+        self.session_preparation_placement
+            .set(placement)
+            .map_err(|_| "Session preparation placement is already installed")
+    }
+
+    pub(crate) fn session_preparation_placement(
+        &self,
+    ) -> Option<&dyn awaken_session_realization_contract::SessionPreparationPlacement> {
+        self.session_preparation_placement.get().map(Arc::as_ref)
     }
 
     /// Bind the one executable-projection reconciliation operation used by
