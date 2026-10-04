@@ -426,6 +426,17 @@ the frozen UID. If the anchor is absent after an effect could have started, or
 the ledger has a different UID, closure remains Unknown. An unanchored legacy
 effect must never be upgraded by creating a fresh ledger under the same name.
 
+The Create authority includes indirect Pod creators. Today the Worker Role
+permits Job and DaemonSet Create, while the separate package-image provisioner
+creates ConfigMaps and Jobs and image prewarm creates DaemonSets. Their
+controllers may create Pods after the Worker's own Pod has stopped. Removing
+only direct Pod/PVC/ConfigMap/Secret Create from the Worker Role would therefore
+leave a bypass. The independent executor must cover these Create paths under
+their existing package-build or warmup owners, or the Worker must have no
+authority to invoke them in the brokered topology. A Session cleanup proof
+must classify their independence from that Session or join their exact
+controller-owned participants; an unclassified Job/DaemonSet remains Unknown.
+
 Once all admitted tickets are Complete, the same provider close checks the
 exact plan's full participant set, uses UID-fenced preparation/disposal, and
 retains the closed witness until the original Session cleanup owner commits
