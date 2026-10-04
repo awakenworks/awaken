@@ -13,7 +13,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OVERLAY="$REPO_ROOT/deploy/k3d/product-backend"
 source "$REPO_ROOT/e2e/k3d/harness.sh"
 RENDERED="$(mktemp)"
-trap 'rm -f "$RENDERED"' EXIT
+CONTROL_RENDERED="$(mktemp)"
+trap 'rm -f "$RENDERED" "$CONTROL_RENDERED"' EXIT
 
 # Internal-product topology cause/effect decision table.
 # Causes: C1 the product overlay renders; C2 the Awaken Service is ClusterIP and
@@ -44,6 +45,19 @@ trap 'rm -f "$RENDERED"' EXIT
 # authority beyond the Session namespace; E6 reject the deployment contract before a
 # cluster mutation. Rules: K1 C1+C2+C3+C4+C5+C6+!C7=>E1+E2+E3+E4+E5;
 # K2 !C1|!C2|!C3|!C4|!C5|!C6|C7=>E6.
+# C8 the Create ledger has a distinct namespace and only the product
+# ServiceAccount can create/get/update its ConfigMaps; the Worker has no
+# binding there and neither principal may delete the retained ledger.
+# K3 C8=>the topology permits an independently retained ledger; the live
+# Worker transport test owns UID reobservation after Pod loss.
+# K4 !C8=>reject the topology before calling it brokered recovery.
+kubectl kustomize "$OVERLAY/create-control" > "$CONTROL_RENDERED"
+grep -q 'name: awaken-create-control' "$CONTROL_RENDERED"
+[[ "$(grep -c 'namespace: awaken-create-control' "$CONTROL_RENDERED")" -eq 2 ]]
+grep -q 'name: awaken-product' "$CONTROL_RENDERED"
+grep -q 'namespace: awaken-system' "$CONTROL_RENDERED"
+! grep -q 'name: awaken-worker' "$CONTROL_RENDERED"
+! grep -q '  - delete' "$CONTROL_RENDERED"
 SANDBOX_IMAGE="registry.test/awaken-sandbox@sha256:$(printf 'c%.0s' {1..64})"
 [[ "$(grep -o '__AWAKEN_SANDBOX_IMAGE__' "$OVERLAY/resources.yaml" | wc -l)" -eq 2 ]]
 ! grep -q 'container_image = "awaken-sandbox:local"' "$OVERLAY/resources.yaml"
@@ -58,8 +72,8 @@ grep -q 'name: awaken-product-ingress' "$RENDERED"
 grep -q 'name: awaken-sandbox-default-deny' "$RENDERED"
 grep -q 'name: awaken-sandbox-open-egress' "$RENDERED"
 [[ "$(grep -c '^kind: ServiceAccount$' "$RENDERED")" -eq 2 ]]
-[[ "$(grep -c '^kind: Role$' "$RENDERED")" -eq 1 ]]
-[[ "$(grep -c '^kind: RoleBinding$' "$RENDERED")" -eq 2 ]]
+[[ "$(grep -c '^kind: Role$' "$RENDERED")" -eq 2 ]]
+[[ "$(grep -c '^kind: RoleBinding$' "$RENDERED")" -eq 3 ]]
 [[ "$(grep -c '^kind: ClusterRole$' "$RENDERED")" -eq 1 ]]
 [[ "$(grep -c '^kind: ClusterRoleBinding$' "$RENDERED")" -eq 1 ]]
 grep -q 'type: ClusterIP' "$RENDERED"
@@ -74,7 +88,7 @@ grep -q 'worker_max_concurrent = 10' "$RENDERED"
 grep -q 'no_browser = true' "$RENDERED"
 grep -q 'identity_mode = "self-managed"' "$RENDERED"
 grep -q 'worker_kubernetes_identity_directory = "/var/run/awaken-worker-identity"' "$RENDERED"
-grep -q 'worker_kubernetes = { namespace = "awaken-system", service_account = "awaken-worker", audience = "awaken-worker", provider_id = "k3d-awaken-product" }' "$RENDERED"
+grep -q 'worker_kubernetes = { namespace = "awaken-system", service_account = "awaken-worker", audience = "awaken-worker", provider_id = "k3d-awaken-product", create_control_namespace = "awaken-create-control" }' "$RENDERED"
 ! grep -q 'worker_trust_credentials_file' "$RENDERED"
 ! grep -q 'worker_request_credential_file' "$RENDERED"
 grep -q 'sandbox_tier = "k8s"' "$RENDERED"
@@ -110,17 +124,50 @@ grep -q 'name: awaken-worker-upstream-ca' "$RENDERED"
 grep -q -- '- jobs' "$RENDERED"
 grep -q -- '- pods/exec' "$RENDERED"
 grep -q -- '- pods/portforward' "$RENDERED"
-PRODUCT_PVC_RULE="$(grep -A4 -- '- persistentvolumeclaims' "$RENDERED")"
-grep -q -- '- create' <<<"$PRODUCT_PVC_RULE"
-grep -q -- '- get' <<<"$PRODUCT_PVC_RULE"
-grep -q -- '- delete' <<<"$PRODUCT_PVC_RULE"
-! grep -q -- '- list' <<<"$PRODUCT_PVC_RULE"
-! grep -q -- '- watch' <<<"$PRODUCT_PVC_RULE"
-! grep -q -- '- update' <<<"$PRODUCT_PVC_RULE"
-PRODUCT_OBJECT_RULE="$(grep -A12 -- '- pods' "$RENDERED" | head -13)"
-grep -q -- '- create' <<<"$PRODUCT_OBJECT_RULE"
-grep -q -- '- update' <<<"$PRODUCT_OBJECT_RULE"
-grep -q -- '- delete' <<<"$PRODUCT_OBJECT_RULE"
+# RBAC cause/effect table: B1 Worker receives only the shared read/dispose
+# Role -> zero direct collection Create across Pod/PVC/CM/Secret/Job/DaemonSet;
+# B2 product receives that same Role plus the exact Create-only Role -> broker
+# can forward all six kinds. B3 the Worker retains exec/port-forward subresource
+# Create for its existing bounded channel; this must not grant collection
+# Create. Check rendered documents rather than trusting YAML source ordering.
+python3 - "$RENDERED" <<'PY'
+from pathlib import Path
+import sys
+
+documents = Path(sys.argv[1]).read_text().split('\n---\n')
+def document(kind, name):
+    matches = [part for part in documents if f'\nkind: {kind}\n' in '\n' + part and f'\nmetadata:\n  name: {name}\n' in '\n' + part]
+    assert len(matches) == 1, (kind, name, len(matches))
+    return matches[0]
+def rules(body):
+    found = []
+    section = None
+    for line in body.splitlines():
+        if line == '- apiGroups:':
+            found.append({'resources': set(), 'verbs': set()})
+            section = None
+        elif line == '  resources:':
+            section = 'resources'
+        elif line == '  verbs:':
+            section = 'verbs'
+        elif line.startswith('  - ') and section and found:
+            found[-1][section].add(line[4:].strip('"'))
+    return found
+
+direct = {'pods', 'persistentvolumeclaims', 'configmaps', 'secrets', 'jobs', 'daemonsets'}
+base = rules(document('Role', 'awaken-runtime-read-dispose'))
+assert base and all('create' not in rule['verbs'] for rule in base if rule['resources'] & direct), 'B1'
+assert any({'pods/exec', 'pods/portforward'} <= rule['resources'] and 'create' in rule['verbs'] for rule in base), 'B3'
+creation = rules(document('Role', 'awaken-create-executor'))
+assert creation and all(rule['verbs'] == {'create'} for rule in creation), 'B2 only Create'
+assert set().union(*(rule['resources'] for rule in creation)) == direct, 'B2 six exact kinds'
+worker = document('RoleBinding', 'awaken-coordinator-client')
+assert 'name: awaken-runtime-read-dispose' in worker and 'name: awaken-worker' in worker and 'name: awaken-product' not in worker, 'B1 binding'
+product = document('RoleBinding', 'awaken-runtime-read-dispose')
+assert 'name: awaken-product' in product, 'B2 shared base'
+product_create = document('RoleBinding', 'awaken-product-create')
+assert 'name: awaken-create-executor' in product_create and 'name: awaken-product' in product_create and 'name: awaken-worker' not in product_create, 'B2 Create owner'
+PY
 grep -q 'persistentVolumeClaim:' "$RENDERED"
 grep -q 'mountPath: /var/run/awaken-worker-identity' "$RENDERED"
 grep -q 'audience: awaken-worker' "$RENDERED"

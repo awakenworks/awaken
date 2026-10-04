@@ -244,6 +244,7 @@ mod tests {
                     worker_id: "worker-aba".into(),
                     incarnation_id: "boot-a".into(),
                     manifest: WorkerManifest::default(),
+                    create_ledger: None,
                 },
                 1,
                 100,

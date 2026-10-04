@@ -214,6 +214,7 @@ impl WorkerControlClient {
                         worker_id: self.upstream.worker_id().to_string(),
                         incarnation_id: incarnation_id.into(),
                         manifest,
+                        create_ledger: None,
                     }
                 }),
             )

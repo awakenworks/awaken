@@ -7,6 +7,15 @@ fn running(unit: &str, invocation_id: &str) -> String {
     )
 }
 
+fn registration(worker: &WorkerIdentity) -> awaken_dispatch::WorkerRegistration {
+    awaken_dispatch::WorkerRegistration {
+        worker_id: worker.worker_id.clone(),
+        incarnation_id: worker.incarnation_id.clone(),
+        manifest: Default::default(),
+        create_ledger: None,
+    }
+}
+
 #[test]
 fn local_worker_launch_environment_admits_only_safe_single_line_inputs() {
     // Causes: C1 a process-placement key is in the closed allowlist; C2 its
@@ -120,10 +129,15 @@ fn systemd_binding_and_exit_decision_table_rejects_replacements_and_incomplete_p
 
 #[test]
 fn systemd_exit_receipt_is_durable_and_exact_after_adapter_reopen() {
-    // C1 valid process binding; C2 independent exit observation has already
-    // completed; C3 the adapter process restarts; C4 a foreign invocation is
-    // queried. R1=C1+C2+C3 => same durable receipt; R2=C4 => reject instead of
-    // treating another incarnation's bytes as local exit evidence.
+    // Causes: C1 exact registered incarnation and process binding; C2 a
+    // durable exit observation; C3 adapter restart; C4 foreign invocation;
+    // C5 duplicate same binding; C6 conflicting binding or symlink.
+    // Effects: E1 original binding and exit survive restart, E2 exact replay
+    // is idempotent, E3 foreign or untrusted evidence fails closed.
+    // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
+    // | D1   | Y  | Y  | Y  | N  | -  | N  | E1     |
+    // | D2   | Y  | -  | -  | N  | Y  | N  | E2     |
+    // | D3   | -  | -  | -  | Y  | -  | Y  | E3     |
     let root = tempfile::tempdir().unwrap();
     let evidence_dir = root.path().join("evidence");
     let adapter = SystemdWorkerEvidence::new("systemd-user", &evidence_dir).unwrap();
@@ -136,6 +150,9 @@ fn systemd_exit_receipt_is_durable_and_exact_after_adapter_reopen() {
                 .into(),
         main_pid: 42,
     };
+    let worker = WorkerIdentity::new("systemd-probe", "0123456789abcdef0123456789abcdef", 1);
+    adapter.retain_binding(&worker, &binding).unwrap();
+    adapter.retain_binding(&worker, &binding).unwrap();
     let receipt = ExitReceipt {
         binding: binding.clone(),
         observed_state: "failed:failed".into(),
@@ -143,6 +160,11 @@ fn systemd_exit_receipt_is_durable_and_exact_after_adapter_reopen() {
     adapter.write_receipt(&receipt).unwrap();
     drop(adapter);
     let reopened = SystemdWorkerEvidence::new("systemd-user", &evidence_dir).unwrap();
+    assert_eq!(
+        reopened.read_binding(&worker).unwrap(),
+        Some(binding.clone()),
+        "D1"
+    );
     assert_eq!(
         reopened.read_receipt(&binding).unwrap(),
         Some(receipt),
@@ -153,6 +175,18 @@ fn systemd_exit_receipt_is_durable_and_exact_after_adapter_reopen() {
         ..binding
     };
     assert!(reopened.read_receipt(&foreign).is_err(), "R2");
+    assert!(
+        reopened.retain_binding(&worker, &foreign).is_err(),
+        "D3 conflicting binding"
+    );
+    let foreign_worker =
+        WorkerIdentity::new("systemd-probe", "fedcba9876543210fedcba9876543210", 1);
+    let link = reopened.binding_path(&unit_name(&foreign_worker).unwrap());
+    std::os::unix::fs::symlink(reopened.binding_path(&unit_name(&worker).unwrap()), &link).unwrap();
+    assert!(
+        reopened.read_binding(&foreign_worker).is_err(),
+        "D3 symlink"
+    );
 }
 
 #[test]
@@ -192,8 +226,8 @@ fn boot_replacement_needs_a_changed_kernel_boot_and_no_reused_unit() {
 #[tokio::test]
 async fn live_systemd_unit_stop_survives_adapter_reopen() {
     // C0 the manager and trusted launcher executable are available; C1 actual
-    // systemd user manager starts one unique, no-restart unit; C2
-    // Coordinator binds before the process effect; C3 stop kills its cgroup;
+    // systemd user manager starts one unique, no-restart unit; C2 provider
+    // retention precedes Registry insert and later attempt binding; C3 stop kills its cgroup;
     // C4 the adapter reopens from disk after systemd drops InvocationID; C5
     // process crash after durable receipt but before StopUnit; C6 the existing
     // Flow placement monitor requests graceful drain without writing a stop
@@ -201,7 +235,8 @@ async fn live_systemd_unit_stop_survives_adapter_reopen() {
     // its original unit still running or exactly exited. L1=C1..C4 =>
     // exact retained exit; L2=C1+C2+C3+C5 => replay finishes the same stop;
     // L3=C7+running => preserve the unit without blocking deregistration;
-    // L4=C7+exited => unload it without creating a physical exit receipt.
+    // L4=C7+exited+retained binding => persist exact exit, commit via Registry,
+    // then unload/release. L5=C7 without binding => Unknown, no false exit.
     // Replacement or unavailable manager stays Unknown. Provider I/O is real.
     if std::env::var("AWAKEN_SYSTEMD_WORKER_E2E").as_deref() != Ok("1") {
         eprintln!("skipping live systemd Worker: AWAKEN_SYSTEMD_WORKER_E2E=1 is required");
@@ -249,6 +284,18 @@ async fn live_systemd_unit_stop_survives_adapter_reopen() {
         let root = tempfile::tempdir().unwrap();
         let evidence_dir = root.path().join("evidence");
         let adapter = SystemdWorkerEvidence::new("systemd-user", &evidence_dir).unwrap();
+        assert!(
+            adapter
+                .prepare_registration_physical_evidence(&registration(&worker))
+                .await
+                .unwrap()
+                .is_none(),
+            "C2 pre-registration retention"
+        );
+        adapter
+            .retain_registered_worker_evidence(&worker, None)
+            .await
+            .unwrap();
         let binding = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if let Ok(attempt) = adapter.binding_for(&worker).await {
@@ -339,13 +386,29 @@ async fn live_systemd_unit_stop_survives_adapter_reopen() {
     let adapter =
         SystemdWorkerEvidence::new("systemd-user", &root.path().join("evidence")).unwrap();
     assert!(
+        adapter
+            .prepare_registration_physical_evidence(&registration(&idle_worker))
+            .await
+            .unwrap()
+            .is_none(),
+        "C7 idle pre-registration retention"
+    );
+    adapter
+        .retain_registered_worker_evidence(&idle_worker, None)
+        .await
+        .unwrap();
+    assert!(
         adapter.owns_worker_evidence(&idle_worker),
         "L3 provider owns the unit"
     );
-    adapter
-        .release_closed_idle_worker_evidence(&idle_worker)
-        .await
-        .expect("L3 normal deregistration does not wait for its own main process");
+    assert!(
+        adapter
+            .observe_closed_idle_worker(&idle_worker, false, None)
+            .await
+            .unwrap()
+            .is_none(),
+        "L3 graceful deregistration does not stop the process"
+    );
     assert!(
         WorkerTransport::systemd_user_unit_running(&incarnation_id)
             .await
@@ -366,10 +429,21 @@ async fn live_systemd_unit_stop_survives_adapter_reopen() {
     })
     .await
     .expect("L4 exact idle process exited");
+    let retained = adapter
+        .observe_closed_idle_worker(&idle_worker, false, None)
+        .await
+        .unwrap()
+        .expect("L4 exact exit evidence");
+    assert_eq!(retained.provider_id(), "systemd-user");
+    let old_binding = adapter.read_binding(&idle_worker).unwrap().unwrap();
+    assert!(
+        adapter.read_receipt(&old_binding).unwrap().is_some(),
+        "L4 durable before Registry"
+    );
     adapter
         .release_closed_idle_worker_evidence(&idle_worker)
         .await
-        .expect("L4 exact closed idle unit retires");
+        .expect("L4 simulated Registry readback permits release");
     assert!(
         adapter
             .show(&unit)
@@ -383,7 +457,11 @@ async fn live_systemd_unit_stop_survives_adapter_reopen() {
             .join("evidence")
             .join(format!("{unit}.json"))
             .exists(),
-        "L4 idle metadata release never fabricates a physical exit receipt"
+        "L4 provider receipt released after Registry readback"
+    );
+    assert!(
+        adapter.read_binding(&idle_worker).unwrap().is_none(),
+        "L4 binding released"
     );
     adapter
         .release_closed_idle_worker_evidence(&idle_worker)

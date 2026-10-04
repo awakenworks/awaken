@@ -15,6 +15,7 @@ use std::sync::{
 use tokio::io::AsyncWriteExt;
 
 mod memory_reservation;
+mod terminal_missing_handle;
 mod terminal_preparation;
 
 pub(crate) fn disposal_authorization(
@@ -2235,62 +2236,6 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
 }
 
 #[tokio::test]
-async fn handle_free_terminal_cleanup_accepts_only_runtime_proven_total_absence() {
-    /* HU1 cause/effect table. C1 no durable handle; C2 the frozen plan has no
-     * bind, Memory, package, or retained-filesystem participant; C3 the runtime
-     * proves the canonical realization and participant set absent. C1+C2+C3
-     * => E1 cleanup closes as absent. Without C3 => E2 fail closed. Rich plans
-     * remain covered by CN1 E4 and cannot enter this proof seam. */
-    for (proven, has_expected_fence, succeeds) in [
-        (false, true, false),
-        (true, false, false),
-        (true, true, true),
-    ] {
-        let runtime = Arc::new(FakeRuntime::default());
-        runtime.st.lock().unwrap().prove_unmaterialized_absence = proven;
-        let provider = provider_without_broker(runtime.clone());
-        let mut requested = spec("handle-free-terminal");
-        requested.mounts.clear();
-        requested.env.clear();
-        requested.filesystem_continuity = pc::FilesystemContinuity::Ephemeral;
-        let create = pc::SandboxEffectFence::new(
-            "create-handle-free",
-            "worker-owner",
-            "worker-incarnation",
-            1,
-            u64::MAX,
-        )
-        .unwrap();
-        let terminal = pc::SandboxEffectFence::new(
-            "terminal-handle-free",
-            "worker-owner",
-            "worker-incarnation",
-            2,
-            u64::MAX,
-        )
-        .unwrap();
-        let outcome = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
-            &provider,
-            &requested,
-            None,
-            has_expected_fence.then_some(&create),
-            &terminal,
-            &pc::test_support::EffectAuthority::new(&terminal),
-        )
-        .await;
-        assert_eq!(outcome.is_ok(), succeeds);
-        if let Ok(environment) = outcome {
-            assert!(environment.is_none(), "E1 proven absence has no owner");
-        }
-        assert_eq!(
-            runtime.st.lock().unwrap().unmaterialized_absence_checks,
-            1,
-            "the runtime owns the sole physical absence observation"
-        );
-    }
-}
-
-#[tokio::test]
 async fn cold_host_bind_terminal_preparation_fails_before_observation_or_removal() {
     /* Cold host-bind cause/effect table. C1 the durable V2 handle names a
      * Docker/Podman-style realization whose File/Secret/Memory participants are
@@ -2957,7 +2902,8 @@ struct FakeState {
     observation_purposes: Vec<ContainerObservationPurpose>,
     retained_observation_attempts: Vec<Option<String>>,
     observation: Option<pc::SandboxObservation>,
-    prove_unmaterialized_absence: bool,
+    unmaterialized_absence_proven: bool,
+    recovered_created_pod: Option<(String, String)>,
     unmaterialized_absence_checks: usize,
     configuration: Option<std::collections::BTreeMap<String, String>>,
     historical_configuration: Option<std::collections::BTreeMap<String, String>>,
@@ -3244,20 +3190,38 @@ impl ContainerRuntime for FakeRuntime {
     ) -> Result<Option<std::collections::BTreeMap<String, String>>, RuntimeError> {
         Ok(self.st.lock().unwrap().historical_configuration.clone())
     }
-    async fn prove_unmaterialized_absence(
+    async fn missing_handle_terminal_evidence(
         &self,
         _scope: &str,
         plan: &ContainerPlan,
         expected_effect_fence: Option<&ContainerEffectFence>,
-    ) -> Result<bool, RuntimeError> {
+    ) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
         let mut state = self.st.lock().unwrap();
         state.unmaterialized_absence_checks += 1;
-        Ok(expected_effect_fence.is_some()
-            && state.prove_unmaterialized_absence
-            && plan.packages.is_empty()
-            && plan.binds.is_empty()
-            && plan.memory_mounts.is_empty()
-            && plan.filesystem_continuity == pc::FilesystemContinuity::Ephemeral)
+        if expected_effect_fence.is_some()
+            && let Some((container_id, pod_uid)) = &state.recovered_created_pod
+        {
+            return Ok(MissingHandleTerminalEvidence::ExactIncarnation {
+                container_id: container_id.clone(),
+                runtime_handle: crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+                    pod_uid: pod_uid.clone(),
+                    claim_uid: None,
+                },
+            });
+        }
+        Ok(
+            if expected_effect_fence.is_some()
+                && state.unmaterialized_absence_proven
+                && plan.packages.is_empty()
+                && plan.binds.is_empty()
+                && plan.memory_mounts.is_empty()
+                && plan.filesystem_continuity == pc::FilesystemContinuity::Ephemeral
+            {
+                MissingHandleTerminalEvidence::Unmaterialized
+            } else {
+                MissingHandleTerminalEvidence::Unknown
+            },
+        )
     }
 
     async fn checkpoint_upload(

@@ -189,6 +189,7 @@ fn fixture() -> (WorkerTransport, Arc<Facts>) {
         "executor",
         "awaken-worker",
         "test-cluster",
+        "create-control",
     )
     .unwrap();
     (transport, facts)
@@ -565,6 +566,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
                     worker_id: "k8s:workers:worker-a:uid-a".into(),
                     incarnation_id: "uid-a".into(),
                     manifest,
+                    create_ledger: None,
                 },
                 100,
                 50,

@@ -109,8 +109,9 @@ pub(crate) use runtime::{
     CONTAINER_REALIZATION_RECONCILER, MANAGED_SANDBOX_LABEL, runtime_owner_id,
 };
 pub use runtime::{
-    ContainerRuntime, ContainerState, K8sContinuationVolume, MemoryMount, PackageImageProvisioner,
-    RuntimeAgentProcess, RuntimeError, RuntimeRestoreTarget, SandboxControlBindingRequest,
+    ContainerRuntime, ContainerState, K8sContinuationVolume, MemoryMount,
+    MissingHandleTerminalEvidence, PackageImageProvisioner, RuntimeAgentProcess, RuntimeError,
+    RuntimeRestoreTarget, SandboxControlBindingRequest,
 };
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) use runtime::{

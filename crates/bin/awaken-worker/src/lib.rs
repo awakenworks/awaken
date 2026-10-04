@@ -157,6 +157,8 @@ pub struct WorkerNodeBuilder {
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     enclosing_sandbox_boundary: Option<InstalledSandboxBoundary>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
+    #[cfg(feature = "container-k8s")]
+    k8s_create_client: Option<Arc<awaken_coordinator_client::WorkerK8sCreateClient>>,
     prepared_local_sandbox: Option<(
         awaken_provisioning_contract::SandboxCapabilities,
         &'static str,
@@ -169,6 +171,17 @@ pub struct WorkerNodeBuilder {
     graceful_drain: std::time::Duration,
     credential_probe_interval: std::time::Duration,
     credential_observation_ttl: std::time::Duration,
+}
+
+#[cfg(feature = "container-k8s")]
+fn policy_with_k8s_create_client(
+    mut policy: awaken_execution_composition::ContainerTierPolicy,
+    client: Option<&Arc<awaken_coordinator_client::WorkerK8sCreateClient>>,
+) -> awaken_execution_composition::ContainerTierPolicy {
+    if let Some(client) = client {
+        policy.k8s_create_transport = Some(client.clone());
+    }
+    policy
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -279,6 +292,8 @@ impl WorkerNodeBuilder {
             acp_capability_observation_source: None,
             enclosing_sandbox_boundary: None,
             session_container_provider: None,
+            #[cfg(feature = "container-k8s")]
+            k8s_create_client: None,
             prepared_local_sandbox: None,
             mcp_attachment_realizer: None,
             memory_mounter_factory: None,
@@ -667,14 +682,25 @@ impl WorkerNodeBuilder {
         {
             return Ok(self);
         }
+        #[cfg(feature = "container-k8s")]
+        if self.deployment.sandbox_tier == awaken_session_executor::SandboxTier::K8s
+            && self.k8s_create_client.is_none()
+        {
+            self.k8s_create_client = Some(Arc::new(
+                awaken_coordinator_client::WorkerK8sCreateClient::new(self.upstream.clone()),
+            ));
+        }
         let backend = self.deployment.sandbox_support().1;
         let realization_namespace = worker_realization_namespace(&self.deployment)?;
+        let policy = awaken_execution_composition::ContainerTierPolicy::default();
+        #[cfg(feature = "container-k8s")]
+        let policy = policy_with_k8s_create_client(policy, self.k8s_create_client.as_ref());
         let components = awaken_execution_composition::build_container_environment_for_realization(
             realization_namespace,
             self.deployment.sandbox_tier,
             self.deployment.container_image.as_deref(),
             &self.deployment.sandbox,
-            &awaken_execution_composition::ContainerTierPolicy::default(),
+            &policy,
             self.clock.clone(),
         )
         .await
@@ -929,6 +955,8 @@ impl WorkerNodeBuilder {
             credential_observation_resolver,
             acp_capability_observation_source: self.acp_capability_observation_source,
             session_container_provider: self.session_container_provider,
+            #[cfg(feature = "container-k8s")]
+            k8s_create_client: self.k8s_create_client,
             prepared_local_sandbox: self.prepared_local_sandbox,
             mcp_attachment_realizer: self.mcp_attachment_realizer,
             memory_mounter_factory: self.memory_mounter_factory,
@@ -1028,6 +1056,8 @@ pub struct WorkerNode {
     acp_capability_observation_source:
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
+    #[cfg(feature = "container-k8s")]
+    k8s_create_client: Option<Arc<awaken_coordinator_client::WorkerK8sCreateClient>>,
     prepared_local_sandbox: Option<(
         awaken_provisioning_contract::SandboxCapabilities,
         &'static str,
@@ -1284,6 +1314,21 @@ impl WorkerNode {
             >,
     {
         let mut deployment = self.deployment.clone();
+        #[cfg(feature = "container-k8s")]
+        if deployment.sandbox_tier == awaken_session_executor::SandboxTier::K8s
+            && self.k8s_create_client.is_none()
+        {
+            return Err(std::io::Error::other(
+                "Kubernetes Worker requires its brokered Create provider before registration",
+            )
+            .into());
+        }
+        let container_policy = awaken_execution_composition::ContainerTierPolicy::default();
+        #[cfg(feature = "container-k8s")]
+        let container_policy =
+            policy_with_k8s_create_client(container_policy, self.k8s_create_client.as_ref());
+        #[cfg(feature = "container-k8s")]
+        let k8s_create_client = self.k8s_create_client.clone();
         let upstream_url = self.upstream.base_url().to_string();
         let upstream = self.upstream;
         let bootstrap_control = WorkerControlClient::new(upstream.clone());
@@ -1332,6 +1377,12 @@ impl WorkerNode {
         deployment.dispatch_owner = registration.snapshot.identity.lease_owner();
         let control = WorkerControlClient::new(upstream.clone());
         let identity = registration.snapshot.identity.clone();
+        #[cfg(feature = "container-k8s")]
+        if let Some(client) = &k8s_create_client {
+            client
+                .bind_identity(identity.clone())
+                .map_err(std::io::Error::other)?;
+        }
         // Registration has one exit owner. All startup errors, cooperative
         // cancellation and ordinary shutdown reach the same bounded withdrawal;
         // no early-return branch maintains a second deregistration policy.
@@ -1509,7 +1560,7 @@ impl WorkerNode {
         deps = awaken_execution_composition::with_session_environment_from_deployment(
             deps,
             self.hand_executor_factory,
-            &awaken_execution_composition::ContainerTierPolicy::default(),
+            &container_policy,
         )
         .await
         .map_err(std::io::Error::other)?;

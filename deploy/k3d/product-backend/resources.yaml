@@ -23,7 +23,7 @@ data:
     no_browser = true
     identity_mode = "self-managed"
     credential_envelope_keys_file = "/etc/awaken-credential-envelope/keys.json"
-    worker_kubernetes = { namespace = "awaken-system", service_account = "awaken-worker", audience = "awaken-worker", provider_id = "k3d-awaken-product" }
+    worker_kubernetes = { namespace = "awaken-system", service_account = "awaken-worker", audience = "awaken-worker", provider_id = "k3d-awaken-product", create_control_namespace = "awaken-create-control" }
     sandbox_tier = "k8s"
     sandbox_dir = "/var/lib/awaken/sandboxes"
     k8s_namespace = "awaken-system"
@@ -106,30 +106,30 @@ automountServiceAccountToken: true
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: awaken-product-runtime
+  name: awaken-runtime-read-dispose
 rules:
-  # Product Sessions use the canonical retained continuation PVC. The runtime
-  # needs exactly create/get/delete for allocation, UID-fenced rebuild, and
-  # terminal disposal; it receives no list/watch/update authority over claims.
+  # Worker and product share one read/UID-fenced disposal policy. The Worker
+  # cannot create a Sandbox resource: every collection POST must cross the
+  # signed Coordinator broker and its independently retained Create ticket.
   - apiGroups: [""]
     resources: ["pods", "configmaps"]
-    verbs: ["create", "get", "list", "update", "delete", "deletecollection"]
+    verbs: ["get", "list", "update", "delete", "deletecollection"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
-    verbs: ["create", "get", "delete"]
+    verbs: ["get", "delete"]
   - apiGroups: [""]
     resources: ["pods/exec", "pods/portforward"]
     verbs: ["create", "get"]
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create", "get", "list", "delete", "deletecollection"]
+    verbs: ["get", "list", "delete", "deletecollection"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["create", "get", "list", "delete"]
+    verbs: ["get", "list", "delete"]
   # Optional node-image preparation: the native DaemonSet controller owns Pods.
   - apiGroups: ["apps"]
     resources: ["daemonsets"]
-    verbs: ["create", "get", "list", "delete"]
+    verbs: ["get", "list", "delete"]
   # Read-only evidence for the canonical K8sRuntime policy attestor. Mutation
   # remains outside the runtime ServiceAccount's authority.
   - apiGroups: ["networking.k8s.io"]
@@ -137,16 +137,31 @@ rules:
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: awaken-create-executor
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "configmaps", "persistentvolumeclaims", "secrets"]
+    verbs: ["create"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: awaken-product-runtime
+  name: awaken-runtime-read-dispose
 subjects:
   - kind: ServiceAccount
     name: awaken-product
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: awaken-product-runtime
+  name: awaken-runtime-read-dispose
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -158,7 +173,19 @@ subjects:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: awaken-product-runtime
+  name: awaken-runtime-read-dispose
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: awaken-product-create
+subjects:
+  - kind: ServiceAccount
+    name: awaken-product
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: awaken-create-executor
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole

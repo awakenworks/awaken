@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: awaken-create-control
+  labels:
+    awaken.runtime/internal: "true"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: awaken-create-ledger
+  namespace: awaken-create-control
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: awaken-create-ledger
+  namespace: awaken-create-control
+subjects:
+  - kind: ServiceAccount
+    name: awaken-product
+    namespace: awaken-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: awaken-create-ledger

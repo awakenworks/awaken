@@ -4,6 +4,7 @@
 //! Kubernetes-native realization of immutable Environment package images.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
@@ -18,8 +19,8 @@ use kube::api::{DeleteParams, ListParams, Preconditions};
 use kube::{Api, Client};
 
 use crate::k8s::{
-    backend, create_or_verify_exact, install_rustls_crypto_provider, sandbox_network_labels,
-    stamp_realization,
+    K8sCreateTransport, backend, brokered_client, create_or_verify_exact,
+    install_rustls_crypto_provider, sandbox_network_labels, stamp_realization,
 };
 use crate::k8s_package_realization::{
     PACKAGE_BUILD_JOB_KIND, PACKAGE_IMAGE_CHECK_JOB_KIND, bind_package_job_to_config,
@@ -232,8 +233,32 @@ impl K8sPackageImageProvisioner {
         image_pull_secrets: Vec<String>,
         registry_insecure: bool,
     ) -> Result<Self, RuntimeError> {
+        Self::connect_with_create_transport(
+            namespace.into(),
+            registry.into(),
+            image_pull_secrets,
+            registry_insecure,
+            None,
+        )
+        .await
+    }
+
+    /// Worker-owned package/image-check Jobs use the same signed Create port
+    /// as Session Pods. The Coordinator's separate build-loop adapter calls
+    /// `connect` and retains its existing durable build-row authority.
+    pub async fn connect_with_create_transport(
+        namespace: impl Into<String>,
+        registry: impl Into<String>,
+        image_pull_secrets: Vec<String>,
+        registry_insecure: bool,
+        transport: Option<Arc<dyn K8sCreateTransport>>,
+    ) -> Result<Self, RuntimeError> {
         install_rustls_crypto_provider();
         let client = Client::try_default().await.map_err(backend)?;
+        let client = match transport {
+            Some(broker) => brokered_client(client, broker),
+            None => client,
+        };
         Self::new(
             client,
             namespace,

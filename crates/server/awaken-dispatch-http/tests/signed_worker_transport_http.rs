@@ -736,6 +736,7 @@ impl WorkerDirectory for TestWorkerDirectory {
             heartbeat_at_ms: now_ms,
             drain_deadline_ms: None,
             process_exit: None,
+            create_ledger: None,
         };
         *self.0.lock().unwrap() = Some(record.clone());
         Ok(record)
@@ -2876,6 +2877,7 @@ async fn protocol_admission_precedes_registration_and_heartbeat_mutation() {
             worker_id: "protocol-worker".into(),
             incarnation_id: "protocol-boot".into(),
             manifest,
+            create_ledger: None,
         };
         let response = client
             .post(format!("http://{address}/v1/worker/register"))
@@ -2975,6 +2977,7 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
         heartbeat_at_ms: 0,
         drain_deadline_ms: None,
         process_exit: None,
+        create_ledger: None,
     });
     let session_control = Arc::new(RecordingSessionControl::default());
     // A real queued v1 request must remain pending after every denial; an

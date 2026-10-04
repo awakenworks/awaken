@@ -145,6 +145,7 @@ impl SharedHost {
                     dispatch.as_ref(),
                     directory.as_ref(),
                     identity,
+                    now,
                 ),
             )
             .await;
@@ -468,6 +469,24 @@ mod tests {
         fn owns_worker_evidence(&self, _: &awaken_dispatch_contract::WorkerIdentity) -> bool {
             true
         }
+        async fn observe_closed_idle_worker(
+            &self,
+            identity: &awaken_dispatch_contract::WorkerIdentity,
+            _: bool,
+            _: Option<&awaken_dispatch::WorkerCreateLedger>,
+        ) -> Result<
+            Option<awaken_dispatch::WorkerProcessExit>,
+            awaken_run_ingress_application_contract::ApplicationError,
+        > {
+            Ok(Some(
+                awaken_dispatch::WorkerProcessExit::new(
+                    "fixture-process",
+                    identity.lease_owner(),
+                    "durable-exit",
+                )
+                .unwrap(),
+            ))
+        }
         async fn release_closed_idle_worker_evidence(
             &self,
             identity: &awaken_dispatch_contract::WorkerIdentity,
@@ -496,11 +515,17 @@ mod tests {
     #[tokio::test]
     async fn idle_retention_retries_expired_originals_without_starving_later_workers() {
         // M0 one injected Ingress release adapter owns the provider action;
-        // M1 expired exact registrations + empty original Dispatch -> close and
-        // release metadata, no physical-stop receipt. M2 first provider failure
-        // -> retain and advance scheduling; M3 next tick handles later Worker;
-        // M4 cursor wraps -> original retry succeeds. The cursor is scheduling
-        // only; Registry closure and physical-slot authority are re-read.
+        // Causes: C1 expired exact registration; C2 no Dispatch slot; C3
+        // independent process exit; C4 first provider release fails; C5 later
+        // Worker waits; C6 retry after Registry already stored exit.
+        // Effects: E1 exact exit is durable before release, E2 failed release
+        // retains that exit, E3 later Worker progresses, E4 retry does not
+        // create another exit and releases exactly once.
+        // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
+        // | M1   | Y  | Y  | Y  | Y  | -  | N  | E1+E2  |
+        // | M2   | Y  | Y  | Y  | N  | Y  | N  | E1+E3  |
+        // | M3   | Y  | Y  | Y  | N  | -  | Y  | E4     |
+        // The cursor is scheduling only; Registry and Dispatch are re-read.
         use awaken_dispatch_contract::WorkerDirectory as _;
         let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
         let mut identities = Vec::new();
@@ -512,6 +537,7 @@ mod tests {
                             worker_id: id.into(),
                             incarnation_id: "boot".into(),
                             manifest: Default::default(),
+                            create_ledger: None,
                         },
                         0,
                         1,
@@ -545,9 +571,19 @@ mod tests {
             )),
         )
         .unwrap();
-        for _ in 0..3 {
-            host.reconcile_worker_evidence().await.unwrap();
-        }
+        host.reconcile_worker_evidence().await.unwrap();
+        assert!(
+            directory
+                .incarnation(&identities[0])
+                .await
+                .unwrap()
+                .unwrap()
+                .process_exit
+                .is_some(),
+            "M1 exit was committed before failed release"
+        );
+        host.reconcile_worker_evidence().await.unwrap();
+        host.reconcile_worker_evidence().await.unwrap();
         assert_eq!(
             *source.released.lock().unwrap(),
             [identities[1].clone(), identities[0].clone()]
@@ -558,14 +594,220 @@ mod tests {
                 record.snapshot.state,
                 awaken_dispatch_contract::WorkerState::Dead
             );
-            assert!(
-                record.process_exit.is_none(),
-                "M1 metadata release does not mint exit"
+            assert_eq!(
+                record.process_exit.unwrap().provider_id(),
+                "fixture-process",
+                "M1-M3"
             );
         }
     }
 
     struct TerminalProjectionView(Option<RunRecord>);
+
+    struct LeaseDeadlineEvidence {
+        observed: std::sync::Mutex<Vec<bool>>,
+        released: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl awaken_dispatch::WorkerExecutionStopSource for LeaseDeadlineEvidence {
+        async fn observe_closed_idle_worker(
+            &self,
+            identity: &awaken_dispatch_contract::WorkerIdentity,
+            may_stop_active: bool,
+            _: Option<&awaken_dispatch::WorkerCreateLedger>,
+        ) -> Result<
+            Option<awaken_dispatch::WorkerProcessExit>,
+            awaken_run_ingress_application_contract::ApplicationError,
+        > {
+            self.observed.lock().unwrap().push(may_stop_active);
+            Ok(may_stop_active.then(|| {
+                awaken_dispatch::WorkerProcessExit::new(
+                    "fixture-process",
+                    identity.lease_owner(),
+                    "observed-stop",
+                )
+                .unwrap()
+            }))
+        }
+        async fn release_closed_idle_worker_evidence(
+            &self,
+            _: &awaken_dispatch_contract::WorkerIdentity,
+        ) -> Result<(), awaken_run_ingress_application_contract::ApplicationError> {
+            self.released.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn stop_closed_worker(
+            &self,
+            _: &awaken_dispatch::ClosedWorkerExecution,
+        ) -> Result<
+            awaken_dispatch::WorkerProcessStopStatus,
+            awaken_run_ingress_application_contract::ApplicationError,
+        > {
+            panic!("no Dispatch slot exists")
+        }
+    }
+
+    #[tokio::test]
+    async fn graceful_closed_idle_worker_waits_until_original_lease_deadline_to_stop_live_process()
+    {
+        // Causes: C1 exact Worker deregisters while still active; C2 the
+        // original Registry lease deadline is in the future/equal/past; C3
+        // empty Dispatch; C4 independent provider stops only when allowed.
+        // Effects: E1 C1+C3+future => no stop, receipt or release;
+        // E2 C1+C3+equal/past+C4 => exact durable exit and one release;
+        // E3 replay after receipt => no second stop observation.
+        // | Rule | C1 | C2       | C3 | C4 | Effect |
+        // | G1   | Y  | future   | Y  | -  | E1     |
+        // | G2   | Y  | equal    | Y  | Y  | E2     |
+        // | G3   | Y  | past     | Y  | -  | E3     |
+        use awaken_dispatch_contract::WorkerDirectory as _;
+        let directory = awaken_worker_registry::MemoryWorkerDirectory::new();
+        let identity = directory
+            .register(
+                awaken_dispatch_contract::WorkerRegistration {
+                    worker_id: "graceful-idle".into(),
+                    incarnation_id: "boot".into(),
+                    manifest: Default::default(),
+                    create_ledger: None,
+                },
+                100,
+                1000,
+            )
+            .await
+            .unwrap()
+            .snapshot
+            .identity;
+        directory.deregister(&identity).await.unwrap();
+        let dispatch = awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
+            awaken_lease_testkit::ManualClock::new(100),
+        ))
+        .unwrap();
+        let source = LeaseDeadlineEvidence {
+            observed: Default::default(),
+            released: AtomicUsize::new(0),
+        };
+        awaken_dispatch::release_closed_idle_worker_evidence(
+            &dispatch, &directory, &source, &identity, 1099,
+        )
+        .await
+        .unwrap();
+        assert_eq!(*source.observed.lock().unwrap(), [false], "G1");
+        assert!(
+            directory
+                .incarnation(&identity)
+                .await
+                .unwrap()
+                .unwrap()
+                .process_exit
+                .is_none(),
+            "G1"
+        );
+        assert_eq!(source.released.load(Ordering::SeqCst), 0, "G1");
+        awaken_dispatch::release_closed_idle_worker_evidence(
+            &dispatch, &directory, &source, &identity, 1100,
+        )
+        .await
+        .unwrap();
+        assert_eq!(*source.observed.lock().unwrap(), [false, true], "G2");
+        assert!(
+            directory
+                .incarnation(&identity)
+                .await
+                .unwrap()
+                .unwrap()
+                .process_exit
+                .is_some(),
+            "G2"
+        );
+        assert_eq!(source.released.load(Ordering::SeqCst), 1, "G2");
+        awaken_dispatch::release_closed_idle_worker_evidence(
+            &dispatch, &directory, &source, &identity, 1200,
+        )
+        .await
+        .unwrap();
+        assert_eq!(*source.observed.lock().unwrap(), [false, true], "G3");
+        assert_eq!(
+            source.released.load(Ordering::SeqCst),
+            2,
+            "G3 idempotent release replay"
+        );
+    }
+
+    struct UnknownIdleEvidence;
+
+    #[async_trait]
+    impl awaken_dispatch::WorkerExecutionStopSource for UnknownIdleEvidence {
+        fn owns_worker_evidence(&self, _: &awaken_dispatch_contract::WorkerIdentity) -> bool {
+            true
+        }
+        async fn release_closed_idle_worker_evidence(
+            &self,
+            _: &awaken_dispatch_contract::WorkerIdentity,
+        ) -> Result<(), awaken_run_ingress_application_contract::ApplicationError> {
+            panic!("Unknown physical exit cannot release provider evidence")
+        }
+        async fn stop_closed_worker(
+            &self,
+            _: &awaken_dispatch::ClosedWorkerExecution,
+        ) -> Result<
+            awaken_dispatch::WorkerProcessStopStatus,
+            awaken_run_ingress_application_contract::ApplicationError,
+        > {
+            panic!("idle maintenance has no Dispatch attempt")
+        }
+    }
+
+    #[tokio::test]
+    async fn closed_idle_worker_without_process_evidence_keeps_provider_retention() {
+        // Causes: C1 exact Registry lease expires; C2 Dispatch has no physical
+        // slot; C3 selected independent provider returns Unknown exit.
+        // Effects: E1 Registry closes admission, E2 no process-exit receipt,
+        // E3 provider retention remains. Rule U1=C1+C2+C3=>E1+E2+E3;
+        // empty Dispatch alone cannot become a physical proof.
+        use awaken_dispatch_contract::WorkerDirectory as _;
+        let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
+        let identity = directory
+            .register(
+                awaken_dispatch_contract::WorkerRegistration {
+                    worker_id: "unknown-idle".into(),
+                    incarnation_id: "boot".into(),
+                    manifest: Default::default(),
+                    create_ledger: None,
+                },
+                0,
+                1,
+            )
+            .await
+            .unwrap()
+            .snapshot
+            .identity;
+        let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "fixture")
+            .with_dispatch_store(Arc::new(
+                awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
+                    awaken_lease_testkit::ManualClock::new(0),
+                ))
+                .unwrap(),
+            ));
+        host.bind_worker_evidence_reconciliation(
+            directory.clone(),
+            Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
+                Arc::new(UnknownIdleEvidence),
+            )),
+        )
+        .unwrap();
+        host.reconcile_worker_evidence().await.unwrap();
+        let record = directory.incarnation(&identity).await.unwrap().unwrap();
+        assert_eq!(
+            record.snapshot.state,
+            awaken_dispatch_contract::WorkerState::Dead,
+            "U1/E1"
+        );
+        assert!(
+            record.process_exit.is_none(),
+            "U1/E2, and release would panic"
+        );
+    }
 
     struct UnownedEvidence;
 
@@ -611,6 +853,7 @@ mod tests {
                             worker_id: id.into(),
                             incarnation_id: "boot".into(),
                             manifest: Default::default(),
+                            create_ledger: None,
                         },
                         0,
                         ttl,

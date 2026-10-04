@@ -14,15 +14,28 @@ struct BindingSource {
     calls: AtomicUsize,
     entered: Notify,
     release: Semaphore,
+    preparation: Mutex<Result<(), String>>,
     retention: Mutex<Result<(), String>>,
     retained: Mutex<Vec<WorkerIdentity>>,
 }
 
 #[async_trait::async_trait]
 impl WorkerExecutionBindingSource for BindingSource {
+    async fn prepare_registration_physical_evidence(
+        &self,
+        _: &awaken_dispatch::WorkerRegistration,
+    ) -> Result<Option<awaken_dispatch::WorkerCreateLedger>, ApplicationError> {
+        self.preparation
+            .lock()
+            .unwrap()
+            .clone()
+            .map_err(ApplicationError::unavailable)?;
+        Ok(None)
+    }
     async fn retain_registered_worker_evidence(
         &self,
         worker: &WorkerIdentity,
+        _create_ledger: Option<&awaken_dispatch::WorkerCreateLedger>,
     ) -> Result<(), ApplicationError> {
         self.retained.lock().unwrap().push(worker.clone());
         self.retention
@@ -117,6 +130,7 @@ impl Fixture {
                     worker_id: "binding-http".into(),
                     incarnation_id: "binding-http-boot".into(),
                     manifest,
+                    create_ledger: None,
                 },
                 10_000,
                 30_000,
@@ -169,6 +183,7 @@ impl Fixture {
             calls: AtomicUsize::new(0),
             entered: Notify::new(),
             release: Semaphore::new(0),
+            preparation: Mutex::new(Ok(())),
             retention: Mutex::new(Ok(())),
             retained: Mutex::new(Vec::new()),
         });
@@ -264,11 +279,13 @@ impl Fixture {
 
 #[tokio::test]
 async fn registration_retention_failure_retries_the_same_durable_identity_before_receipt() {
-    // R1 retention error after durable registration -> retryable server error,
-    // original Starting record survives and no physical binding is looked up.
-    // R2 provider recovery + same registration -> same generation/identity,
-    // retained metadata completes before receipt. R3 already closed replay
-    // cannot reinstall metadata. This uses actual signed HTTP and Registry.
+    // Causes: C1 pre-registration physical preparation fails; C2 it succeeds
+    // but the post-registration readback fails; C3 both succeed on retry; C4
+    // the original incarnation is then closed. Effects: E1 C1 => no new
+    // Registry generation; E2 C2 => one Starting identity and retryable error;
+    // E3 C3 => same identity returned after retention; E4 C4 => no reinstall.
+    // Rules R0=C1->E1, R1=!C1+C2->E2, R2=!C1+!C2+C3->E3,
+    // R3=R2+C4->E4. Actual signed HTTP and Registry own the observations.
     let f = Fixture::new(true, 5_000).await;
     let bootstrap = f.upstream.clone();
     // A bootstrap has the same signer and no incarnation header.
@@ -293,6 +310,25 @@ async fn registration_retention_failure_retries_the_same_durable_identity_before
         .deregister(f.upstream.worker_identity().unwrap())
         .await
         .unwrap();
+    let predecessor = f.directory.current("binding-http").await.unwrap().unwrap();
+    *f.source.preparation.lock().unwrap() = Err("provider unavailable".into());
+    assert!(
+        matches!(
+            control
+                .register_classified("retention-boot", manifest.clone())
+                .await,
+            Err(awaken_coordinator_client::WorkerRegistrationError::Unavailable(
+                _
+            ))
+        ),
+        "R0 preparation failure is retryable"
+    );
+    assert_eq!(
+        f.directory.current("binding-http").await.unwrap().unwrap(),
+        predecessor,
+        "R0 no new Registry incarnation before provider binding"
+    );
+    *f.source.preparation.lock().unwrap() = Ok(());
     *f.source.retention.lock().unwrap() = Err("API unavailable".into());
     assert!(
         matches!(
@@ -592,6 +628,7 @@ async fn provider_wait_cannot_refresh_stale_authority_or_downgrade_failure() {
                                 worker_id: "binding-http".into(),
                                 incarnation_id: "replacement".into(),
                                 manifest: record.snapshot.manifest,
+                                create_ledger: None,
                             },
                             10_000,
                             30_000,

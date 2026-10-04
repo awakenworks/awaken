@@ -769,6 +769,11 @@ pub(super) async fn prepare_runtime_routers(
             purge: resource_application.purge_scheduler(),
             clock: resource_authorities.clock(),
         });
+    #[cfg(feature = "container-k8s")]
+    let worker_create_broker_router =
+        worker_transport.create_broker_router(worker_directory.clone(), clock.clone());
+    #[cfg(not(feature = "container-k8s"))]
+    let worker_create_broker_router = None;
     let coordinator = awaken_coordinator::build_coordinator_component(
         awaken_coordinator::CoordinatorDependencies {
             service_lifecycle: process.service_lifecycle.clone(),
@@ -790,6 +795,7 @@ pub(super) async fn prepare_runtime_routers(
             worker_execution_bindings,
             worker_execution_stops,
             worker_relay_targets,
+            worker_create_broker_router,
             credential_deliveries: attempt_credential_deliveries,
             repository_transport_authorizer: process.repository_transport_authorizer,
             worker_directory: worker_directory.clone(),

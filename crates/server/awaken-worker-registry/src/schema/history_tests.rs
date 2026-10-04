@@ -29,6 +29,7 @@ fn expected(generation: u64) -> RegisteredWorker {
         heartbeat_at_ms: 101,
         drain_deadline_ms: Some(120),
         process_exit: None,
+        create_ledger: None,
     }
 }
 
@@ -71,6 +72,7 @@ async fn assert_migrated(directory: &dyn WorkerDirectory, generation: u64) {
         worker_id: worker.into(),
         incarnation_id: incarnation.into(),
         manifest: WorkerManifest::default(),
+        create_ledger: None,
     };
     assert_eq!(
         directory
