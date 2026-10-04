@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use crate::authz::with_composed_workspace;
 use async_trait::async_trait;
 use awaken_admin_assistant::{
     ADMIN_ASSISTANT_AGENT_ID, CapabilityReader, DraftStore, DraftValidator, InputSpec,
@@ -74,7 +75,7 @@ struct AdminAssistantLifecycleState {
 /// The execution Workspace the trusted edge already resolved. Absence is
 /// refused here so the handler below owns no `None` arm; an explicit
 /// local/no-login composition supplies its Workspace through the one
-/// [`with_composed_workspace`] layer on this router instead.
+/// [`with_composed_workspace`] layer at the management edge instead.
 struct RequiredExecutionWorkspace(String);
 
 impl<S> axum::extract::FromRequestParts<S> for RequiredExecutionWorkspace
@@ -104,32 +105,6 @@ where
             )),
         }
     }
-}
-
-/// Stamp the composition-supplied Workspace on any request the ingress edge did
-/// not already scope. This is the single place an explicit local/no-login
-/// composition resolves its tenant for this router; no handler defaults.
-pub(crate) fn with_composed_workspace(router: Router, workspace: Option<String>) -> Router {
-    let Some(workspace) = workspace.filter(|value| !value.trim().is_empty()) else {
-        return router;
-    };
-    router.layer(axum::middleware::from_fn(
-        move |mut request: axum::extract::Request, next: axum::middleware::Next| {
-            let workspace = workspace.clone();
-            async move {
-                if request
-                    .extensions()
-                    .get::<awaken_tenancy::WorkspaceScope>()
-                    .is_none()
-                {
-                    request
-                        .extensions_mut()
-                        .insert(awaken_tenancy::WorkspaceScope(workspace));
-                }
-                next.run(request).await
-            }
-        },
-    ))
 }
 
 /// Idempotent operator-facing recovery for the reserved Assistant publication.

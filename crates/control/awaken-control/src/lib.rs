@@ -514,11 +514,8 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // The config authoring plane (`/v1/config/agents/*`): the console authors the
     // rich `AgentConfig` here and `publish` compiles + installs it so sessions run it.
     let audit_plane = plane.management_audit_plane();
-    let assistant_lifecycle = crate::admin_assistant_lifecycle_router(
-        plane.clone(),
-        remote_iam.is_none().then(|| platform_workspace.clone()),
-        assistant_model_selection,
-    );
+    let assistant_lifecycle =
+        crate::admin_assistant_lifecycle_router(plane.clone(), None, assistant_model_selection);
     let config_plane = config_router(plane);
     // `/v1/agents` projects the config plane it hosts: an agent published via
     // `/v1/config/agents` is retrievable as a managed-wire projection of that single
@@ -537,42 +534,38 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // installable plugins (with config schema) so the console authors data-driven.
     let capabilities =
         awaken_config_service::capabilities_router_with_source(global_tools, plugins, runtimes);
-    let fallback_workspace = platform_workspace.clone();
     let presentation_identity_mode = identity_mode;
     // The presentation route reads the Workspace the edge resolved. The
     // installation's own Workspace is filled in by ONE layer below, never by
     // the handler, so this projection can never invent a tenant name.
-    let workspace_context = crate::admin_assistant::with_composed_workspace(
-        Router::new().route(
-            "/v1/config/workspace-context",
-            get(
-                move |Extension(scope): Extension<awaken_tenancy::WorkspaceScope>,
-                      principal: Option<Extension<crate::authz::AuthedPrincipal>>| {
-                    let organization_id = presentation_org.clone();
-                    async move {
-                        let workspace_id = scope.0;
-                        let user_display_name = principal_display_name(
-                            principal.as_ref().map(|Extension(principal)| &principal.0),
-                            presentation_identity_mode,
-                        );
-                        let workspace_name = workspace_display_name(&workspace_id);
-                        let organization_name = if presentation_identity_mode == "no-login" {
-                            "Local Organization".into()
-                        } else {
-                            organization_display_name(&organization_id)
-                        };
-                        Json(serde_json::json!({
-                            "workspace_id": workspace_id,
-                            "workspace_display_name": workspace_name,
-                            "organization_id": organization_id,
-                            "organization_display_name": organization_name,
-                            "user_display_name": user_display_name,
-                        }))
-                    }
-                },
-            ),
+    let workspace_context = Router::new().route(
+        "/v1/config/workspace-context",
+        get(
+            move |Extension(scope): Extension<awaken_tenancy::WorkspaceScope>,
+                  principal: Option<Extension<crate::authz::AuthedPrincipal>>| {
+                let organization_id = presentation_org.clone();
+                async move {
+                    let workspace_id = scope.0;
+                    let user_display_name = principal_display_name(
+                        principal.as_ref().map(|Extension(principal)| &principal.0),
+                        presentation_identity_mode,
+                    );
+                    let workspace_name = workspace_display_name(&workspace_id);
+                    let organization_name = if presentation_identity_mode == "no-login" {
+                        "Local Organization".into()
+                    } else {
+                        organization_display_name(&organization_id)
+                    };
+                    Json(serde_json::json!({
+                        "workspace_id": workspace_id,
+                        "workspace_display_name": workspace_name,
+                        "organization_id": organization_id,
+                        "organization_display_name": organization_name,
+                        "user_display_name": user_display_name,
+                    }))
+                }
+            },
         ),
-        Some(fallback_workspace),
     );
 
     // The IAM guard (when enabled) wraps the admin + vault routers only. An
@@ -598,12 +591,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     if let Some(iam) = iam.as_ref() {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
     }
-    if iam.is_none() && remote_iam.is_none() {
-        mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
-            platform_workspace,
-            crate::authz::fixed_workspace_header_guard,
-        ));
-    }
+    let no_login = iam.is_none() && remote_iam.is_none();
     mgmt = awaken_protocol_managed::with_managed_response_context(protect_management_router(
         mgmt,
         audit_plane,
@@ -611,6 +599,9 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         remote_iam,
         managed_request_limiter,
     ));
+    if no_login {
+        mgmt = crate::authz::with_composed_workspace(mgmt, Some(platform_workspace));
+    }
     if let Some(local_browser_auth) = local_browser_auth {
         mgmt = mgmt.merge(awaken_iam_host::local_browser_router(local_browser_auth));
     }

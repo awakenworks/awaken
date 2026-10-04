@@ -232,8 +232,11 @@ self_test() {
     echo "Postgres gate omits Environment image-build concurrency and restart fencing" >&2
     return 1
   }
-  grep -Fq "cargo test -p awaken-credential-store --features postgres,test-support,sealed-aead" "$0" || {
-    echo "Postgres gate omits the authoritative sealed credential store" >&2
+  # C1 independent schema fixtures share one finite PostgreSQL connection
+  # budget; C2 each test's explicit race witnesses must remain concurrent.
+  # R1 serialize only outer test cases; R2 preserve concurrency inside each.
+  grep -Fqx 'pg_test cargo test -p awaken-credential-store --features postgres,test-support,sealed-aead --test repo_conformance -- --test-threads=1 || record_failure "$?"' "$0" || {
+    echo "Postgres gate omits serialized sealed credential store conformance" >&2
     return 1
   }
   grep -Fq "cargo test -p awaken-data-subject-store --features postgres,test-support" "$0" || {
@@ -548,7 +551,9 @@ pg_test cargo test -p awaken-config-store --features test-support --test postgre
 pg_test cargo test -p awaken-admin-config-api --features postgres --test postgres_store || record_failure "$?"
 pg_test cargo test -p awaken-store-postgres --test postgres_live || record_failure "$?"
 pg_test cargo test -p awaken-model-catalog-store --features postgres,test-support --test repo_conformance || record_failure "$?"
-pg_test cargo test -p awaken-credential-store --features postgres,test-support,sealed-aead --test repo_conformance || record_failure "$?"
+# Independent schema fixtures share the finite database connection budget;
+# serialize outer tests while their internal writer races remain concurrent.
+pg_test cargo test -p awaken-credential-store --features postgres,test-support,sealed-aead --test repo_conformance -- --test-threads=1 || record_failure "$?"
 pg_test cargo test -p awaken-data-subject-store --features postgres,test-support --test repo_conformance || record_failure "$?"
 pg_test cargo test -p awaken-captured-content-store --features postgres,test-support --test repo_conformance || record_failure "$?"
 pg_test cargo test -p awaken-env-store --features test-support --tests || record_failure "$?"

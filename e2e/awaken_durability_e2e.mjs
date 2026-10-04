@@ -32,7 +32,6 @@ const BASE_PORT = Number(process.env.E2E_PORT ?? 38441);
 const BETAS = ['managed-agents-2026-04-01'];
 const FAKE_KEY = 'sk-awaken-durability-fake-key'; // awaken-allow: secret
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
-const WORKSPACE = 'wrkspc_default';
 const AGENT = 'durable-agent';
 const MODEL = 'fake-haiku';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -80,10 +79,10 @@ async function req(base, method, uri, body) {
 
 // Connect the provider atomically and publish the agent bound to the discovered
 // model. Both catalog and credential state survive the restart.
-async function authorModel(base, upstream) {
+async function authorModel(base, upstream, workspace) {
   let r = await req(base, 'POST', '/v1/config/provider-connections', {
     idempotency_key: 'awaken-durability-provider-connection',
-    workspace_id: WORKSPACE,
+    workspace_id: workspace,
     provider_id: 'anthropic',
     display_name: 'Anthropic',
     dialect: 'anthropic_messages',
@@ -133,12 +132,21 @@ async function main() {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-durable-'));
 
   let sessionId;
+  let workspace;
   // ── Boot 1: author the model, run one turn, and stream one turn ───────────────
   const first = startAwaken(BASE_PORT, dataDir);
   try {
     await waitForPort(BASE_PORT, 180_000, first.server);
     await ready(first.baseUrl);
-    await authorModel(first.baseUrl, upstream);
+    // Causes: C1 no-login composition has one installed Workspace; C2 the
+    // provider claim matches that trusted scope; C3 restart reuses the same
+    // installation. Effects: E1 authoring succeeds without a guessed tenant;
+    // E2 the restarted process reports the same Workspace and pinned model.
+    const context = await req(first.baseUrl, 'GET', '/v1/config/workspace-context');
+    assert.equal(context.status, 200, `trusted Workspace context: ${JSON.stringify(context.json)}`);
+    workspace = context.json?.workspace_id;
+    assert.ok(typeof workspace === 'string' && workspace.length > 0);
+    await authorModel(first.baseUrl, upstream, workspace);
     console.log('ok: awaken booted (durable) + authored the DB-configured model');
 
     const sdk = client(first.baseUrl);
@@ -204,6 +212,9 @@ async function main() {
   try {
     await waitForPort(BASE_PORT + 1, 180_000, second.server);
     await ready(second.baseUrl);
+    const restartedContext = await req(second.baseUrl, 'GET', '/v1/config/workspace-context');
+    assert.equal(restartedContext.status, 200);
+    assert.equal(restartedContext.json?.workspace_id, workspace);
     const sdk = client(second.baseUrl);
     // (a) Config durability: a NEW session for the same agent resolves the
     //     DB-configured model (`FAKE:`), proving the installed catalog was

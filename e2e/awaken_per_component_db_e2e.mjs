@@ -24,7 +24,6 @@ const PORT = Number(process.env.E2E_PORT ?? 38421);
 const BETAS = ['managed-agents-2026-04-01'];
 const FAKE_KEY = 'sk-awaken-percomp-fake-key'; // awaken-allow: secret
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
-const WORKSPACE = 'wrkspc_default';
 const AGENT = 'db-model-agent';
 const MODEL = 'fake-haiku';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -82,10 +81,19 @@ async function main() {
     await ready(base);
     console.log('ok: awaken booted with typed per-component database configuration');
 
+    // Cause/effect rule: the no-login composition owns the installed Workspace;
+    // redirected component stores do not choose another tenant. Read the
+    // trusted edge projection before authoring, then require the same scope to
+    // reach Provider connection and the split-store Run below.
+    const context = await req(base, 'GET', '/v1/config/workspace-context');
+    assert.equal(context.status, 200, `trusted Workspace context: ${JSON.stringify(context.json)}`);
+    const workspace = context.json?.workspace_id;
+    assert.ok(typeof workspace === 'string' && workspace.length > 0);
+
     // The single connection command atomically authors the catalog and vault.
-  let r = await req(base, 'POST', '/v1/config/provider-connections', {
-    idempotency_key: 'per-component-db-provider-connection',
-    workspace_id: WORKSPACE,
+    let r = await req(base, 'POST', '/v1/config/provider-connections', {
+      idempotency_key: 'per-component-db-provider-connection',
+      workspace_id: workspace,
       provider_id: 'anthropic',
       display_name: 'Anthropic',
       dialect: 'anthropic_messages',
