@@ -1293,6 +1293,13 @@ fn mount_with_managed_over_and_models(
                 "bind Session Worker observation source: {error}"
             ))
         })?;
+    session_application
+        .set_session_preparation_placement(host.clone())
+        .map_err(|error| {
+            WorkerTransportBuildError::Dispatch(format!(
+                "bind Session preparation placement compiler: {error}"
+            ))
+        })?;
     let weak_session_application = Arc::downgrade(&session_application);
     host.install_committed_progress_wakeup(Arc::new(move || {
         if let Some(application) = weak_session_application.upgrade() {
@@ -1539,6 +1546,7 @@ fn mount_with_managed_over_and_models(
             policy: worker_placement_policy
                 .unwrap_or_else(|| worker_placement::shared_worker_placement_policy()),
             sessions: session_application.clone(),
+            session_preparation: session_application.clone(),
             session_environment_bindings: session_application.environment_binding_sink(),
             coordination: session_application.clone(),
             session_work: session_application.clone(),

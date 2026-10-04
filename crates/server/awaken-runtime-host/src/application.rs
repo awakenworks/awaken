@@ -414,6 +414,30 @@ impl crate::SharedHost {
         }
     }
 
+    /// Drive an initial Worker-assigned Session through the same phase driver
+    /// used by claimed Runs, but without opening a Run or model operation.
+    pub async fn prepare_session_without_run(
+        &self,
+        assignment: &awaken_session_realization_contract::SessionPreparationAssignment,
+    ) -> Result<(), crate::HostError> {
+        let control = self.worker.session_control.as_ref().ok_or_else(|| {
+            crate::HostError::internal("Worker has no Session realization Control client")
+        })?;
+        crate::host::HostWorkerResolver::realize_session(
+            self,
+            control.as_ref(),
+            &assignment.session_id,
+            assignment.directive.clone(),
+            None,
+            None,
+            false,
+        )
+        .await
+        .map_err(|error| {
+            crate::HostError::internal(format!("Session preparation remained pending: {error}"))
+        })
+    }
+
     /// Claim every currently discoverable terminal assignment and drive
     /// at most four independent Sessions at a time. A completed slot admits
     /// the next claim without waiting for a slow sibling. The driver alone

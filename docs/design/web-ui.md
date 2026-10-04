@@ -200,6 +200,10 @@ Repository 是可变资源，只 pin 它们的配置版本，不 pin 内部内�
   Cloud 域名、不读取 sibling 产品拓扑，也不复制 Cloud 的 Products/Billing 页面。
   直接访问的当前 URL 只通过 Foundation 生成的规则作为 opaque continuation
   交回 Hub；Awaken 不校验或持久化它，也不据此构造 OAuth/Workspace 路由。
+- Console 产物格式由前端仓库拥有。CLI 使用同一 UI 提交发布的
+  `awaken-ui-artifact` Rust 读取器，绑定 `agents` profile、生成的 API 契约
+  和完整静态资源，在同一次构建中嵌入 manifest 与资源；来源提交由发布
+  记录证明，而不是另建 Foundation 或浏览器端的 manifest 权威。
 
 ## 8. 验收条件
 

@@ -9,6 +9,7 @@
 - Amended: 2026-08-31 — registered Workers record terminal publication rejection
 - Amended: 2026-09-06 — committed terminal Dispatch settlement survives Work retirement
 - Amended: 2026-09-11 — recovery and realization bind the exact Session Work epoch
+- Amended: 2026-10-01 — registered Worker preparation of a complete Session needs no model Run
 - Supersedes: the late Worker-authored Session-input path in ADR-0063,
   ADR-0065, and ADR-0066
 - Preserves: ADR-0065 claim recovery and attempt execution; ADR-0066 Session
@@ -1148,3 +1149,32 @@ Cause/effect rules remain attached to the tests: Runtime confirmation→resume�
 physical-tool identity and finite Run ceiling; recorded source warm/cold and
 conflict cases; Host published-result/publication-gap recovery of the original
 child. No protocol route or second execution/relationship registry is added.
+
+## Amendment (2026-10-01): initial preparation without a model Run
+
+An externally placed, complete `Preparing` Session can have MCP and Environment
+effects that must finish before a product can validate its published Agent. The
+registered Worker previously entered the realization driver only after a Run
+claim. Starting a synthetic model Run to prepare the Session would duplicate
+execution truth, while letting the Coordinator Host realize it would install a
+second physical owner. The durable Session root already indexes the initial
+realization obligation; a separate job table or Flow-specific status is not
+needed.
+
+An explicit, idempotent Session-root command retains the typed
+`run_free_initial_preparation` request inside existing realization progress.
+Historical and ordinary Run-driven Sessions default to false; a caller may
+request preparation of an exact pre-upgrade `Preparing` Session without
+recreating it. The registered Worker may claim an
+initial-preparation directive only for such a root-owned obligation, under its
+authenticated Ready incarnation and an exact
+Session realization lease. The Coordinator checks the frozen Environment,
+Resources and required Sandbox capabilities through the same physical
+placement compiler used for Runs. The Worker drives the existing projection
+synchronizer and realization phase protocol without a Run claim or inference
+call. An already-live foreign lease is never stolen. Self-hosted Environment
+placement continues to require the existing WorkQueue lease and is excluded
+from this no-Run claim; its ownership protocol is not bypassed. The result is
+observed from the ordinary Session root. An unavailable Worker leaves
+`Preparing` retryable, while a durable failed phase remains a failure rather
+than a fabricated ready result.

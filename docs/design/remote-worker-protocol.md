@@ -79,6 +79,24 @@ Worker registers and becomes ready
   -> settles terminal attempt and records completion
 ```
 
+### Run-free initial Session preparation
+
+An externally placed, complete `Preparing` Session has an initial-realization
+obligation in the Session repository's reconciliation index. Only a Session
+whose caller has committed the idempotent `run_free_initial_preparation`
+request in that root is offered to the registered Worker's authenticated endpoint;
+ordinary interactive and WorkUnit Sessions keep their Run-claimed path.
+Control re-reads that root, checks the Worker's exact incarnation and the
+Runtime Host's canonical physical Sandbox/Resource capability vector, and
+assigns the existing realization lease through the ordinary root CAS. The
+Worker uses the same phase driver and MCP effect adapter as claimed execution,
+but supplies no Run claim and starts no model inference. Flow and other
+products observe the committed Session Environment/MCP facts; they do not
+install a second provider or maintain a preparation queue. Self-hosted
+Sessions remain on their Environment WorkQueue and are not admitted through
+this no-Run path. Another live owner's lease is not reassigned; outage keeps
+the root retryable and a phase failure retains its ordinary durable result.
+
 A retry-exhausted claim bypasses execution placement and materialization. The
 Worker uses the same claim-fenced commit transport to append
 `Ended(Indeterminate)` and attempts the same `Done` settlement/tombstone.

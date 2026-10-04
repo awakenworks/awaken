@@ -24,6 +24,7 @@ awaken-session-mcp-contract.workspace = true
 awaken-session-resource-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true
+awaken-worker-contract.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

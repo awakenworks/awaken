@@ -65,8 +65,8 @@ importers:
         specifier: workspace:*
         version: link:../packages/managed-session-projection
       '@awaken/ui':
-        specifier: file:vendor/awaken-ui-0.8.2.tgz
-        version: file:web/vendor/awaken-ui-0.8.2.tgz(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+        specifier: git+https://github.com/AwakenWorks/awaken-ui.git#15ab31ef4943042ac4795c27f0e82c78586a214e
+        version: https://codeload.github.com/AwakenWorks/awaken-ui/tar.gz/15ab31ef4943042ac4795c27f0e82c78586a214e(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@tanstack/react-query':
         specifier: ^5.62.0
         version: 5.101.2(react@19.2.7)
@@ -196,9 +196,9 @@ packages:
     resolution: {integrity: sha512-60vepv88RwcJtSHrD6MjIL6Ta3SOYbgfnkHb+ppAVK+o9mXprRtulx7VlRl3lN3bbvysAfCS7WMVfhUYemB0IQ==}
     engines: {node: '>= 16'}
 
-  '@awaken/ui@file:web/vendor/awaken-ui-0.8.2.tgz':
-    resolution: {integrity: sha512-v7WCwhHGLYyKHi+av1DPKYkOc9osF6M+Vv2mXQ1LtsUrpo8hSYSjSEvKebQhyekpV/zhCuOldOJBhmi57a1bhQ==, tarball: file:web/vendor/awaken-ui-0.8.2.tgz}
-    version: 0.8.2
+  '@awaken/ui@https://codeload.github.com/AwakenWorks/awaken-ui/tar.gz/15ab31ef4943042ac4795c27f0e82c78586a214e':
+    resolution: {gitHosted: true, tarball: https://codeload.github.com/AwakenWorks/awaken-ui/tar.gz/15ab31ef4943042ac4795c27f0e82c78586a214e}
+    version: 0.14.0
     engines: {node: '>=22', pnpm: '>=11'}
     peerDependencies:
       react: ^19.0.0
@@ -1075,8 +1075,8 @@ packages:
     resolution: {integrity: sha512-HNe9WslTbXmFK8o8cmwgAeJFSBvt1bPdHCVKtaaV+WlAN36mpT4hcRpwbf3fY56ar2oIXzsBpOAiIRHAdY0OlQ==}
     engines: {node: '>=0.10.0'}
 
-  reselect@5.2.0:
-    resolution: {integrity: sha512-AgZ3UOZm3YndfrJ4OYjgrT7bmCm/1iqkjvEfH/oYjzh6PD2qw4QuT3jjnXIrpdt4MTpMXclMT3lXbmRY+XRakw==}
+  reselect@5.3.0:
+    resolution: {integrity: sha512-XGoLeRAVzUTcJ1qkxPQhDJyIZ5d6zzZD9nT7AEZOaaU9UbWclhycElmhO+VD5bFeLuzhPBaOV2oXC8uG35ZSpg==}
 
   resolve-pkg-maps@1.0.0:
     resolution: {integrity: sha512-seS2Tj26TBVOC2NIc2rOe2y2ZO7efxITtLZcGSOnHHNOQ7CkiUBfw0Iw2ck6xkIhPwLhKNLS8BO+hEpngQlqzw==}
@@ -1187,6 +1187,11 @@ packages:
 
   use-sync-external-store@1.6.0:
     resolution: {integrity: sha512-Pp6GSwGP/NrPIrxVFAIkOQeyw8lFenOHijQWkUTrDvrF4ALqylP2C/KCkeS9dpUM3KvYRQhna5vt7IL95+ZQ9w==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
+  use-sync-external-store@1.7.0:
+    resolution: {integrity: sha512-6L+EeigHMQhdaIPNIFUKwfWJSwWFQ8gJbJ2DLOs5sDIegTwR9fRxvnM3uciHKjIZhFz+KAv2emhWMRvDmMcY8A==}
     peerDependencies:
       react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
@@ -1422,7 +1427,7 @@ snapshots:
       '@types/json-schema': 7.0.15
       js-yaml: 4.3.1
 
-  '@awaken/ui@file:web/vendor/awaken-ui-0.8.2.tgz(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
+  '@awaken/ui@https://codeload.github.com/AwakenWorks/awaken-ui/tar.gz/15ab31ef4943042ac4795c27f0e82c78586a214e(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
     dependencies:
       '@base-ui/react': 1.6.0(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       dompurify: 3.3.0
@@ -1562,7 +1567,7 @@ snapshots:
       '@floating-ui/utils': 0.2.12
       react: 19.2.7
       react-dom: 19.2.7(react@19.2.7)
-      use-sync-external-store: 1.6.0(react@19.2.7)
+      use-sync-external-store: 1.7.0(react@19.2.7)
     optionalDependencies:
       '@types/react': 19.2.17
 
@@ -1572,8 +1577,8 @@ snapshots:
       '@floating-ui/utils': 0.2.12
       react: 19.2.7
       react-dom: 19.2.7(react@19.2.7)
-      reselect: 5.2.0
-      use-sync-external-store: 1.6.0(react@19.2.7)
+      reselect: 5.3.0
+      use-sync-external-store: 1.7.0(react@19.2.7)
     optionalDependencies:
       '@types/react': 19.2.17
 
@@ -2170,7 +2175,7 @@ snapshots:
 
   react@19.2.7: {}
 
-  reselect@5.2.0: {}
+  reselect@5.3.0: {}
 
   resolve-pkg-maps@1.0.0:
     optional: true
@@ -2285,6 +2290,10 @@ snapshots:
       picocolors: 1.1.1
 
   use-sync-external-store@1.6.0(react@19.2.7):
+    dependencies:
+      react: 19.2.7
+
+  use-sync-external-store@1.7.0(react@19.2.7):
     dependencies:
       react: 19.2.7
 

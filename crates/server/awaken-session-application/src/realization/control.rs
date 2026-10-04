@@ -25,6 +25,67 @@ impl TerminalCleanupWorkerRevalidation {
 }
 
 impl SessionApplication {
+    /// Monotonic, idempotent demand on the one Session root. Product callers
+    /// can request Worker preparation after creation or after an upgrade; the
+    /// Worker polls only this retained intent and never receives a model Run.
+    pub async fn request_run_free_initial_preparation(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<PersistedSession, SessionRealizationControlFailure> {
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            let owner_scope = self.owner(session_id).await.map_err(mutation_control)?;
+            let mut session = self
+                .session_repository()
+                .get(session_id)
+                .await
+                .map_err(repository_control)?;
+            if session.realization_progress.run_free_initial_preparation {
+                return Ok(session);
+            }
+            let external = self.requires_external_realization(&session)
+                && session
+                    .frozen_baseline()
+                    .is_some_and(|baseline| !baseline.environment.self_hosted);
+            if !external {
+                return Err(SessionRealizationControlFailure::Invalid(
+                    "run-free preparation requires a non-self-hosted registered Worker Session"
+                        .into(),
+                ));
+            }
+            if session.is_terminal() || session.has_active_activities() {
+                return Err(SessionRealizationControlFailure::NotReady);
+            }
+            if !session.needs_initial_realization_recovery() {
+                // An already-completed historical Session needs no new work;
+                // the caller must assess its actual Environment/MCP facts.
+                return Ok(session);
+            }
+            session.realization_progress.run_free_initial_preparation = true;
+            match self
+                .commit_session_snapshot_with_outcome(
+                    &owner_scope,
+                    session,
+                    "request-run-free-initial-preparation",
+                    Vec::new(),
+                )
+                .await
+            {
+                Ok(commit) => {
+                    self.wake_lifecycle_supervisor();
+                    return Ok(commit.into_session());
+                }
+                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                    continue;
+                }
+                Err(SessionMutationError::Conflict) => {
+                    return Err(SessionRealizationControlFailure::Conflict);
+                }
+                Err(error) => return Err(unavailable(error)),
+            }
+        }
+        Err(SessionRealizationControlFailure::Conflict)
+    }
+
     #[cfg(feature = "test-support")]
     async fn observe_realization_root(
         &self,
@@ -1640,6 +1701,122 @@ impl SessionRealizationControl for SessionApplication {
         command: FailSessionRealization,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.fail_session_realization_after_refresh(command).await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_realization_contract::SessionPreparationControl for SessionApplication {
+    async fn claim_next_session_preparation(
+        &self,
+        target: awaken_session_realization_contract::SessionRealizationTarget,
+    ) -> Result<
+        Option<awaken_session_realization_contract::SessionPreparationAssignment>,
+        SessionRealizationControlFailure,
+    > {
+        validate_realization_target(&target, self.clock.now_ms())?;
+        if target.reassign_existing_lease {
+            return Err(SessionRealizationControlFailure::Invalid(
+                "initial Session preparation cannot reassign a live lease".into(),
+            ));
+        }
+        let admission = self
+            .refresh_executable_projections()
+            .await
+            .map_err(unavailable)?;
+        admission
+            .enter(|| async {
+                let Some(worker) = self.terminal_cleanup_worker_for_target(&target).await? else {
+                    return Ok(None);
+                };
+                if worker.state != awaken_worker_contract::WorkerState::Ready {
+                    return Ok(None);
+                }
+                let scan = crate::scan_all_reconcilable_sessions(self.session_repository())
+                    .await
+                    .map_err(repository_control)?;
+                for scoped in scan.sessions {
+                    let session_id = scoped.session.session_id;
+                    // The scan is a wake hint only. Eligibility and the
+                    // directive are both re-derived from the current root.
+                    let current = match self.session_repository().get(&session_id).await {
+                        Ok(session) => session,
+                        Err(SessionRepositoryError::NotFound) => continue,
+                        Err(error) => return Err(repository_control(error)),
+                    };
+                    if !current.realization_progress.run_free_initial_preparation
+                        || !current.needs_initial_realization_recovery()
+                        || !self.requires_external_realization(&current)
+                        || current
+                            .frozen_baseline()
+                            .is_none_or(|baseline| baseline.environment.self_hosted)
+                    {
+                        continue;
+                    }
+                    let compiler = self.session_preparation_placement().ok_or_else(|| {
+                        SessionRealizationControlFailure::Unavailable(
+                            "Session preparation placement compiler is not installed".into(),
+                        )
+                    })?;
+                    let requirements = compiler.requirements(&current)?;
+                    if awaken_worker_contract::can_claim(&worker.manifest, &requirements).is_err() {
+                        continue;
+                    }
+                    let directive = match self
+                        .begin_session_realization_after_refresh(BeginSessionRealization {
+                            session_id: session_id.clone(),
+                            target: target.clone(),
+                            expected_resources: None,
+                        })
+                        .await
+                    {
+                        Ok(directive) => directive,
+                        Err(
+                            SessionRealizationControlFailure::StaleOwnership
+                            | SessionRealizationControlFailure::NotReady
+                            | SessionRealizationControlFailure::Conflict,
+                        ) => continue,
+                        Err(error) => return Err(error),
+                    };
+                    // A withdrawn Worker cannot start physical effects from
+                    // a lease minted just before its Registry transition.
+                    let Some(current_worker) =
+                        self.terminal_cleanup_worker_for_target(&target).await?
+                    else {
+                        return Ok(None);
+                    };
+                    let current_root = self
+                        .session_repository()
+                        .get(&session_id)
+                        .await
+                        .map_err(repository_control)?;
+                    if current_worker.state != awaken_worker_contract::WorkerState::Ready
+                        || current_root.revision != directive.projection.revision
+                        || !current_root
+                            .realization_progress
+                            .run_free_initial_preparation
+                        || !current_root.needs_initial_realization_recovery()
+                        || !self.requires_external_realization(&current_root)
+                        || current_root
+                            .frozen_baseline()
+                            .is_none_or(|baseline| baseline.environment.self_hosted)
+                        || awaken_worker_contract::can_claim(
+                            &current_worker.manifest,
+                            &compiler.requirements(&current_root)?,
+                        )
+                        .is_err()
+                    {
+                        return Ok(None);
+                    }
+                    return Ok(Some(
+                        awaken_session_realization_contract::SessionPreparationAssignment {
+                            session_id,
+                            directive,
+                        },
+                    ));
+                }
+                Ok(None)
+            })
+            .await
     }
 }
 

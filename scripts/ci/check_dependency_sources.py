@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 FULL_GIT_REV = re.compile(r"[0-9a-f]{40}")
 ALLOWED_GIT_REPOSITORIES = {
+    "https://github.com/awakenworks/awaken-ui",
     "https://github.com/awakenworks/awaken-foundation",
     "https://github.com/awakenworks/awaken-iam",
     "https://github.com/awakenworks/rust-genai",

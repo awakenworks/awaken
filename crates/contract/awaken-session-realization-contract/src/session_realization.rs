@@ -257,6 +257,27 @@ pub trait SessionRealizationControl: Send + Sync {
     ) -> Result<(), SessionRealizationControlFailure>;
 }
 
+/// Registered-Worker selector over the Session repository's existing
+/// `Preparing` reconciliation index. Assignment uses the same root CAS and
+/// realization lease as a claimed Run, but executes no Run or model request.
+#[async_trait]
+pub trait SessionPreparationControl: Send + Sync {
+    async fn claim_next_session_preparation(
+        &self,
+        target: SessionRealizationTarget,
+    ) -> Result<Option<SessionPreparationAssignment>, SessionRealizationControlFailure>;
+}
+
+/// The Runtime Host's canonical physical placement compiler, injected into
+/// the Session application so its root-CAS selector never reimplements
+/// Sandbox requirements. This pure read port has no effect or authority store.
+pub trait SessionPreparationPlacement: Send + Sync {
+    fn requirements(
+        &self,
+        session: &awaken_session_state_contract::PersistedSession,
+    ) -> Result<awaken_worker_contract::PlacementRequirements, SessionRealizationControlFailure>;
+}
+
 /// Re-derive the Workspace for one exact pending Resource target under the
 /// current realization lease. This authorizes only Resource staging; it is
 /// neither a Run claim nor a second realization queue.

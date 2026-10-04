@@ -11,8 +11,40 @@ use super::{
     validate_worker_manifest, worker_realization_namespace,
 };
 
+#[tokio::test]
+async fn preparation_drain_requires_an_actual_return_before_shutdown() {
+    // Causes: C1 preparation task returned, C2 its budget expired before
+    // return, C3 the task was cancelled. Effect E1 only C1 permits ordinary
+    // shutdown; E2 C2/C3 require exact-owner revocation, never an invented
+    // physical ACK. Rules D1=C1=>E1, D2=C2=>E2, D3=C3=>E2.
+    let mut finished = tokio::spawn(async {});
+    assert!(
+        super::preparation_drained_before(&mut finished, std::time::Duration::from_secs(1)).await,
+        "D1/E1"
+    );
+    let mut pending = tokio::spawn(std::future::pending::<()>());
+    assert!(
+        !super::preparation_drained_before(&mut pending, std::time::Duration::ZERO).await,
+        "D2/E2"
+    );
+    assert!(
+        !pending.is_finished(),
+        "D2 timeout cannot cancel or acknowledge the effect"
+    );
+    pending.abort();
+    let mut cancelled = tokio::spawn(std::future::pending::<()>());
+    cancelled.abort();
+    assert!(
+        !super::preparation_drained_before(&mut cancelled, std::time::Duration::from_secs(1)).await,
+        "D3/E2"
+    );
+}
+
 #[test]
 fn container_realization_namespace_is_installation_wide() {
+    // The same public projection now supplies downstream decorated providers;
+    // no new decision is introduced. The external consumer's compile check
+    // owns export availability; this table retains every identity/refusal row.
     // Cause/effect decision table. Causes: C1 backend is Kubernetes/host-local;
     // C2 physical Kubernetes namespace or persisted local Workspace is
     // equal/different; C3 the replacement has a different Worker/process

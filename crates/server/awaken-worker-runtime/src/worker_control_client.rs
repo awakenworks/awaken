@@ -396,6 +396,34 @@ impl WorkerControlClient {
             })
     }
 
+    /// Claim one complete, externally placed `Preparing` Session without
+    /// creating a Run. The returned directive uses the ordinary root lease.
+    pub async fn claim_next_session_preparation(
+        &self,
+        identity: &WorkerIdentity,
+        target: awaken_session_realization_contract::SessionRealizationTarget,
+    ) -> Result<
+        Option<awaken_session_realization_contract::SessionPreparationAssignment>,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
+    > {
+        let body = self
+            .realization_response(
+                "/v1/worker/session/preparation/claim-next",
+                json!({ "identity": identity, "target": target }),
+            )
+            .await?;
+        body.get("assignment")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| {
+                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                    format!("Session preparation assignment decode: {error}"),
+                )
+            })
+    }
+
     /// Poll one Coordinator-derived terminal-work projection for this exact
     /// realization generation. `Some(work)` with no commands is a terminal
     /// fence that is not yet ready to execute and must retain the exact frozen

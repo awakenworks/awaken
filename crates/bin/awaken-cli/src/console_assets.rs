@@ -1,6 +1,7 @@
 //! Embedded Management console mounted over the canonical API router.
 
 use awaken_api_contract::{SUITE_NAVIGATION_PATH, SuiteNavigation};
+use awaken_ui_artifact::CONSOLE_ARTIFACT_MANIFEST_PATH;
 use axum::body::Body;
 use axum::extract::Path;
 use axum::http::{StatusCode, header};
@@ -20,6 +21,7 @@ pub fn mount_with_navigation(app: Router, navigation: SuiteNavigation) -> Router
         .route("/", get(index))
         .route("/w/{*path}", get(index))
         .route("/assets/{*path}", get(asset))
+        .route(CONSOLE_ARTIFACT_MANIFEST_PATH, get(console_artifact))
         .route(
             SUITE_NAVIGATION_PATH,
             get(move || {
@@ -36,6 +38,13 @@ async fn index() -> Response {
 
 async fn asset(Path(path): Path<String>) -> Response {
     response(&format!("assets/{path}"), true)
+}
+
+async fn console_artifact() -> Response {
+    response(
+        CONSOLE_ARTIFACT_MANIFEST_PATH.trim_start_matches('/'),
+        false,
+    )
 }
 
 fn response(path: &str, immutable: bool) -> Response {
@@ -59,6 +68,9 @@ fn response(path: &str, immutable: bool) -> Response {
 }
 
 fn content_type(path: &str) -> &'static str {
+    if path == CONSOLE_ARTIFACT_MANIFEST_PATH.trim_start_matches('/') {
+        return "application/json";
+    }
     match path.rsplit_once('.').map(|(_, extension)| extension) {
         Some("css") => "text/css; charset=utf-8",
         Some("js") | Some("mjs") => "text/javascript; charset=utf-8",
@@ -122,6 +134,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(api.status(), StatusCode::CREATED);
+        let manifest = mount(Router::new())
+            .oneshot(
+                Request::get(CONSOLE_ARTIFACT_MANIFEST_PATH)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(manifest.status(), StatusCode::OK);
+        assert_eq!(
+            manifest.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
     }
 
     /// Cause graph: configured hub -> exact projection; absent hub -> explicit

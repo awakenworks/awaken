@@ -9,7 +9,6 @@
 use super::*;
 
 impl HostWorkerResolver {
-    #[cfg(test)]
     pub(crate) async fn realize_session(
         host: &SharedHost,
         control: &dyn awaken_session_realization_contract::SessionRealizationControl,

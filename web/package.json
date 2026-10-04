@@ -23,7 +23,7 @@
     "@ai-sdk/react": "^4.0.39",
     "@awaken/managed-sdk-oracle": "workspace:*",
     "@awaken/managed-session-projection": "workspace:*",
-    "@awaken/ui": "file:vendor/awaken-ui-0.8.2.tgz",
+    "@awaken/ui": "git+https://github.com/AwakenWorks/awaken-ui.git#15ab31ef4943042ac4795c27f0e82c78586a214e",
     "@tanstack/react-query": "^5.62.0",
     "ai": "^7.0.36",
     "eventsource": "3.0.7",

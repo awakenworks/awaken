@@ -38,6 +38,7 @@ fn main() {
         workspace.join("package.json").display()
     );
     build_console(workspace, &dist);
+    build_support::write_console_manifest(workspace, &dist);
     build_support::generate_embedded_assets(&dist, &out_dir);
 }
 

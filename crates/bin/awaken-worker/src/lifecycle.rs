@@ -732,6 +732,67 @@ pub(crate) fn spawn_session_realization_reconciliation(
     })
 }
 
+/// The complete Session root is the only queue for initial preparation. The
+/// Worker claims one obligation at a time over its registered Control channel
+/// and drives the existing phase protocol without manufacturing a model Run.
+pub(crate) fn spawn_session_preparation_reconciliation(
+    lifecycle: Arc<WorkerSupervisor>,
+    registry_timing: AuthorityLeaseTiming,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            // The same absorbing pool drain that stops Run claims also stops
+            // new preparation claims. Temporary heartbeat suspension skips a
+            // tick but can resume; it never turns into terminal drain.
+            if !lifecycle.host.pool_can_resume_work().await {
+                break;
+            }
+            if !lifecycle.host.pool_accepting_work().await {
+                continue;
+            }
+            let now_at = lifecycle.host.clock().now();
+            let Some(claim_expiry) = awaken_lease_contract::Expiry::child_within(
+                awaken_lease_contract::Expiry::after(now_at, lifecycle.authority.remaining()),
+                now_at,
+                std::time::Duration::from_millis(cold_cleanup_lease_ttl_ms(registry_timing)),
+            ) else {
+                continue;
+            };
+            let target = awaken_session_realization_contract::SessionRealizationTarget {
+                owner: lifecycle.identity.worker_id.clone(),
+                runtime_incarnation: lifecycle.identity.lease_owner(),
+                lease_expires_at_unix_ms: claim_expiry.to_epoch_ms(),
+                reassign_existing_lease: false,
+            };
+            match lifecycle
+                .control
+                .claim_next_session_preparation(&lifecycle.identity, target)
+                .await
+            {
+                Ok(Some(assignment)) => {
+                    if let Err(error) = lifecycle
+                        .host
+                        .prepare_session_without_run(&assignment)
+                        .await
+                    {
+                        eprintln!(
+                            "Worker Session preparation remained pending for {}: {error}",
+                            assignment.session_id
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("Worker Session preparation claim remained pending: {error}");
+                }
+            }
+        }
+    })
+}
+
 pub(crate) fn spawn_environment_warmup_reconciliation(
     lifecycle: Arc<WorkerSupervisor>,
 ) -> tokio::task::JoinHandle<()> {
