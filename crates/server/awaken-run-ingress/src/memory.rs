@@ -43,18 +43,19 @@ use crate::dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CasOutcome,
     ClaimCredentialOperation, Claimed, CommitEpochGuard, ContinuationAdmission,
     CredentialRealizationPersistenceDecision, CredentialRealizationReceipt, DispatchCompletion,
-    DispatchError, DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode,
-    Inbox, Lease, LeaseRenewalOutcome, Outbox, PendingInput, PendingInputSettlementPlan,
-    PendingRecord, PhysicalAttempt, RunClaim, RunIdentityDecision, SessionChildAdmission,
-    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
-    SettleOutcome, StoredRunIdentity, SubmitOptions, can_admit_claim_credentials,
-    claim_credential_operation, claim_with_frozen, classify_completed_session_run_reservation,
-    classify_exact_claim_mode, classify_live_session_run_reservation,
-    classify_session_run_reservation_activation, compile_claim_credential_bindings,
-    credential_realization_persistence_decision, decide_lease_renewal, decide_run_identity,
-    ensure_session_child_capacity, installed_worker_credential_capabilities,
-    normalize_pending_millis, pending_input_settlement_plan, session_child_parent,
-    session_child_thread, validate_executable_dispatch_admission, validate_outbox_continuation,
+    DispatchDepths, DispatchError, DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary,
+    ExactClaimMode, Inbox, Lease, LeaseRenewalOutcome, Outbox, PendingInput,
+    PendingInputSettlementPlan, PendingRecord, PhysicalAttempt, RunClaim, RunIdentityDecision,
+    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
+    SessionRunReservationResolution, SettleOutcome, StoredRunIdentity, SubmitOptions,
+    can_admit_claim_credentials, claim_credential_operation, claim_with_frozen,
+    classify_completed_session_run_reservation, classify_exact_claim_mode,
+    classify_live_session_run_reservation, classify_session_run_reservation_activation,
+    compile_claim_credential_bindings, credential_realization_persistence_decision,
+    decide_lease_renewal, decide_run_identity, ensure_session_child_capacity,
+    installed_worker_credential_capabilities, normalize_pending_millis,
+    pending_input_settlement_plan, session_child_parent, session_child_thread,
+    validate_executable_dispatch_admission, validate_outbox_continuation,
     validate_session_resume_activity_transition, validate_session_resume_evidence,
     validate_session_resume_target, validate_session_run_replacement_candidates,
     validate_session_run_reservation_request, validate_session_run_reservation_resolution,
@@ -1807,15 +1808,28 @@ impl ControlDispatchQueue for MemoryDispatchStore {
         )
     }
 
-    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
+    async fn dispatch_depths(&self) -> Result<Option<DispatchDepths>, DispatchError> {
         let now_ms = self.clock.now_ms();
         let state = lock(&self.state)?;
-        let depth = state
-            .rows
-            .keys()
-            .filter(|run_id| runnable(&state, run_id, now_ms).is_some())
-            .count() as u64;
-        Ok(Some(depth))
+        let mut depths = DispatchDepths {
+            runnable: 0,
+            leased: 0,
+        };
+        for (run_id, row) in &state.rows {
+            if runnable(&state, run_id, now_ms).is_some() {
+                depths.runnable += 1;
+            } else if matches!(
+                row.state,
+                DispatchState::ReservationLeased | DispatchState::Leased
+            ) && row
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.expires_ms > now_ms)
+            {
+                depths.leased += 1;
+            }
+        }
+        Ok(Some(depths))
     }
 
     async fn load_physical_attempt(

@@ -440,8 +440,8 @@ impl ControlDispatchQueue for SqliteDispatchStore {
         .await
     }
 
-    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
-        self.query_runnable_depth().await
+    async fn dispatch_depths(&self) -> Result<Option<DispatchDepths>, DispatchError> {
+        self.query_dispatch_depths().await
     }
 
     async fn load_physical_attempt(
