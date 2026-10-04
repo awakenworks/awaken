@@ -149,12 +149,16 @@ impl ApiState {
     }
 }
 
-async fn request(stream: &mut TcpStream) -> (String, String, Value) {
+async fn request(stream: &mut TcpStream) -> Option<(String, String, Value)> {
     let mut bytes = Vec::new();
     let (header, start) = loop {
         let mut buf = [0; 4096];
         let read = stream.read(&mut buf).await.unwrap();
-        assert!(read > 0);
+        // A cancelled kube request may close after TCP connect but before the
+        // API receives a complete HTTP request. It has no cleanup effect.
+        if read == 0 {
+            return None;
+        }
         bytes.extend_from_slice(&buf[..read]);
         if let Some(end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
             break (String::from_utf8(bytes[..end].to_vec()).unwrap(), end + 4);
@@ -168,7 +172,9 @@ async fn request(stream: &mut TcpStream) -> (String, String, Value) {
     while bytes.len() < start + length {
         let mut buf = [0; 4096];
         let read = stream.read(&mut buf).await.unwrap();
-        assert!(read > 0);
+        if read == 0 {
+            return None;
+        }
         bytes.extend_from_slice(&buf[..read]);
     }
     let mut parts = header.lines().next().unwrap().split_whitespace();
@@ -179,7 +185,7 @@ async fn request(stream: &mut TcpStream) -> (String, String, Value) {
     } else {
         serde_json::from_slice(&bytes[start..start + length]).unwrap()
     };
-    (method, path, body)
+    Some((method, path, body))
 }
 
 async fn fixture(
@@ -242,7 +248,9 @@ async fn fixture_with_cut(
     let server = tokio::spawn(async move {
         loop {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let (method, path, body) = request(&mut stream).await;
+            let Some((method, path, body)) = request(&mut stream).await else {
+                continue;
+            };
             if pause_before_effect && serving.lock().unwrap().calls.len() + 1 == cut {
                 notify.notify_one();
                 let _permit = resume.acquire().await.unwrap();
@@ -265,6 +273,53 @@ async fn fixture_with_cut(
         }
     });
     (runtime, state, reached, release, server)
+}
+
+#[tokio::test]
+async fn cancelled_connections_before_http_acceptance_leave_cleanup_available() {
+    // Cause/effect table: C1 TCP closes before headers, during headers, or
+    // during a declared body; C2 a later exact cleanup has live authority.
+    // R1=C1 => no API call or mutation is accepted; R2=C1+C2 => the same
+    // fixture serves the complete Pod/PVC/projected-resource cleanup. The
+    // cancelled transport is not a Kubernetes response or an effect receipt.
+    let (runtime, state, _, _, server) = fixture(0, false).await;
+    let address = state.lock().unwrap().server_addr;
+    for partial in [
+        &b""[..],
+        &b"GET /api HTTP/1.1\r\n"[..],
+        &b"POST /api HTTP/1.1\r\nContent-Length: 2\r\n\r\n{"[..],
+    ] {
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream.write_all(partial).await.unwrap();
+        stream.shutdown().await.unwrap();
+    }
+
+    let authorization = crate::tests::disposal_authorization(
+        &pc::SandboxEffectFence::new("cleanup", "owner", "boot", 1, u64::MAX - 1).unwrap(),
+    );
+    let authority = EffectAuthority::new(authorization.effect_fence());
+    let handle = continuation::handle_extra(state.lock().unwrap().pod.as_ref().unwrap()).unwrap();
+    runtime
+        .remove_exact_incarnation(
+            "awaken-cleanup",
+            handle.as_ref(),
+            &authorization,
+            &authority,
+        )
+        .await
+        .unwrap();
+    {
+        let state = state.lock().unwrap();
+        assert_eq!(
+            state.calls.len(),
+            18,
+            "R1/R2 only complete HTTP requests count"
+        );
+        assert_eq!(state.writes.len(), 8, "R2 exact cleanup effects");
+        assert!(state.pod.is_none() && state.claim.is_none() && state.projected.is_empty());
+    }
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
 }
 
 #[tokio::test]
