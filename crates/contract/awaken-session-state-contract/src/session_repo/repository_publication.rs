@@ -61,6 +61,14 @@ impl PersistedSession {
         Ok(&self.terminal_cleanup)
     }
 
+    /// Whether this terminal root still requires its assigned Worker to finish
+    /// cleanup. This is an operational demand projection, never permission to
+    /// reassign a lost physical owner or to synthesize an exit receipt.
+    pub fn needs_terminal_cleanup_worker(&self) -> Result<bool, crate::SessionCleanupError> {
+        let cleanup = self.verified_terminal_cleanup()?;
+        Ok(self.is_terminal() && !cleanup.is_not_requested() && !cleanup.is_completed())
+    }
+
     pub(super) fn has_verified_completed_cleanup(&self) -> bool {
         self.verified_terminal_cleanup()
             .is_ok_and(crate::SessionCleanupOperation::is_completed)
@@ -129,6 +137,28 @@ mod tests {
     use super::*;
     use crate::session_repo::mutation_tests::session;
     use crate::{SessionExecutionState, SessionRevision};
+
+    #[test]
+    fn worker_demand_requires_terminal_requested_verified_cleanup() {
+        // Causes: C1 live/terminal execution; C2 unrequested/requested/in-progress
+        // cleanup. R1 live or unrequested -> no demand; R2 terminal with
+        // requested or in-progress cleanup -> demand. Completion is exercised
+        // through the real Session application/store in worker_affinity.rs;
+        // malformed publication sidecars are rejected by the existing root
+        // verifier tests.
+        let mut root = session("terminal-worker-demand", SessionRevision(1));
+        assert!(!root.needs_terminal_cleanup_worker().unwrap(), "R1");
+        let id = root.session_id.clone();
+        assert!(root.terminal_cleanup.request(&id));
+        assert!(!root.needs_terminal_cleanup_worker().unwrap(), "R1 live");
+        root.archive("2026-10-05T00:00:00Z", 1).unwrap();
+        assert!(root.needs_terminal_cleanup_worker().unwrap(), "R2");
+        root.freeze_terminal_cleanup_targets([], 0, 0).unwrap();
+        assert!(
+            root.needs_terminal_cleanup_worker().unwrap(),
+            "R2 in progress"
+        );
+    }
 
     fn repository_publication_intent() -> crate::SessionRepositoryPublicationIntent {
         serde_json::from_value(serde_json::json!({

@@ -5,6 +5,7 @@
 use super::*;
 use crate::{ManagedLifecycleFact, SessionId};
 use async_trait::async_trait;
+use std::collections::HashSet;
 
 /// Outbound persistence port of the Session aggregate.
 ///
@@ -118,6 +119,74 @@ pub trait SessionRepository: Send + Sync {
         &self,
         phase: crate::SessionEnvironmentPhase,
     ) -> Result<u64, SessionRepositoryError>;
+}
+
+/// Read one operational capacity projection from the canonical Session roots.
+/// Multiple unfinished Sessions bound to the same logical Worker need one
+/// retained Pod; any unbound, never-materialized terminal work needs one
+/// additional first-placement Pod. This read grants no claim or recovery.
+pub async fn terminal_cleanup_worker_owners(
+    repository: &dyn SessionRepository,
+) -> Result<u64, SessionRepositoryError> {
+    let mut cursor: Option<SessionScanCursor> = None;
+    let mut owners = HashSet::new();
+    let mut unbound = false;
+    loop {
+        let scan = repository
+            .scan(SessionScanQuery::Reconcilable {
+                after: cursor.as_ref(),
+            })
+            .await?;
+        if !scan.quarantined.is_empty() {
+            return Err(SessionRepositoryError::Corrupt(
+                "Session reconciliation scan contains quarantined roots".into(),
+            ));
+        }
+        for scoped in scan.sessions {
+            let session = scoped.session;
+            if !session
+                .needs_terminal_cleanup_worker()
+                .map_err(|error| SessionRepositoryError::Corrupt(error.to_string()))?
+            {
+                continue;
+            }
+            if let Some(lease) = session.realization.as_ref() {
+                if lease.owner.trim().is_empty() {
+                    return Err(SessionRepositoryError::Corrupt(
+                        "terminal Session has an empty Worker owner".into(),
+                    ));
+                }
+                owners.insert(lease.owner.clone());
+            } else if matches!(session.environment, SessionEnvironmentState::Unmaterialized) {
+                unbound = true;
+            } else {
+                return Err(SessionRepositoryError::Corrupt(
+                    "terminal Session has physical state without a Worker owner".into(),
+                ));
+            }
+        }
+        let Some(next) = scan.next_cursor else {
+            let count = u64::try_from(owners.len()).map_err(|_| {
+                SessionRepositoryError::AuthorityUnavailable(
+                    "terminal Worker owner count overflow".into(),
+                )
+            })?;
+            return count.checked_add(u64::from(unbound)).ok_or_else(|| {
+                SessionRepositoryError::AuthorityUnavailable(
+                    "terminal Worker owner count overflow".into(),
+                )
+            });
+        };
+        if cursor
+            .as_ref()
+            .is_some_and(|previous| next.session_id() <= previous.session_id())
+        {
+            return Err(SessionRepositoryError::Corrupt(
+                "Session reconciliation cursor did not advance".into(),
+            ));
+        }
+        cursor = Some(next);
+    }
 }
 
 // Durable adapters (SQLite and Postgres) live outward in `awaken-session-store`;

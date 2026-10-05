@@ -6,4 +6,4 @@ mod repository_port;
 pub(crate) use awaken_session_state_contract::*;
 pub(crate) use awaken_session_types::SessionId;
 pub use lifecycle_outbox::{LifecycleOutbox, SessionStore};
-pub use repository_port::SessionRepository;
+pub use repository_port::{SessionRepository, terminal_cleanup_worker_owners};
