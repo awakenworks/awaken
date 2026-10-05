@@ -2,7 +2,7 @@
 
 use awaken_agent_contract::audit::model_request::TokenUsage;
 
-use crate::{FactKey, RunFault, StopFact};
+use crate::{EventIdentity, RunFault, StopFact};
 
 /// One fact the timeline publishes: its identity and its content.
 ///
@@ -10,15 +10,15 @@ use crate::{FactKey, RunFault, StopFact};
 /// encodes `kind` on its wire and appends the result to its event log. The
 /// fact's canonical order is resolved from `key` by [`crate::OrderIndex`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TimelineFact {
-    pub key: FactKey,
-    pub kind: FactKind,
+pub struct DerivedSessionEvent {
+    pub key: EventIdentity,
+    pub kind: SessionEventKind,
 }
 
 /// The content of one timeline fact. A Thread fact concerns the Thread named
 /// by its key; the Session id names the primary Thread.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FactKind {
+pub enum SessionEventKind {
     /// A coordinated child Thread was created by its link.
     ThreadCreated,
     ThreadRunning,
@@ -45,7 +45,7 @@ pub enum FactKind {
     ContextCompacted,
     ModelRequestStart,
     ModelRequestEnd {
-        start: FactKey,
+        start: EventIdentity,
         is_error: bool,
         usage: TokenUsage,
     },
@@ -63,9 +63,9 @@ pub enum FactKind {
     },
 }
 
-impl TimelineFact {
+impl DerivedSessionEvent {
     #[must_use]
-    pub fn new(key: FactKey, kind: FactKind) -> Self {
+    pub fn new(key: EventIdentity, kind: SessionEventKind) -> Self {
         Self { key, kind }
     }
 }

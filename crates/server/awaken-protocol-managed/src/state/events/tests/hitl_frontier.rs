@@ -1,7 +1,9 @@
 //! The root lifecycle owns primary Thread Running across Session intervals.
 
 use super::*;
-use awaken_managed_session_events::{AggregateStop, FactProvenance, FactRole, plan_aggregate};
+use awaken_managed_session_events::{
+    AggregateStop, FactProvenance, ManagedEventType, plan_aggregate,
+};
 
 #[test]
 fn aggregate_fallback_and_interval_close_require_one_prefix_plan() {
@@ -11,7 +13,7 @@ fn aggregate_fallback_and_interval_close_require_one_prefix_plan() {
     // aggregate opening3 and one Usage/Idle pair keyed by lifecycle-prefix7;
     // E2 A2 retains the same opening while the interval owns the one close
     // pair; E3 neither history duplicates its close. Rules R1=A1=>E1;
-    // R2=A2=>E2+E3. These frozen FactKey roles/provenances are inputs hashed
+    // R2=A2=>E2+E3. These frozen EventIdentity roles/provenances are inputs hashed
     // into public IDs. This fixture does not claim an interval may be added
     // retroactively after the legacy fallback close has been published.
     // The old interval-only planner cannot satisfy R1: it returns no fallback
@@ -48,7 +50,7 @@ fn aggregate_fallback_and_interval_close_require_one_prefix_plan() {
     assert_eq!(plan.fallback_openings.len(), 1, "R1/E1 one opening");
     assert_eq!(
         plan.fallback_openings[0].role,
-        FactRole::AggregateStatusRunning
+        ManagedEventType::AggregateStatusRunning
     );
     assert_eq!(
         plan.fallback_openings[0].provenance,
@@ -59,8 +61,8 @@ fn aggregate_fallback_and_interval_close_require_one_prefix_plan() {
     );
     assert_eq!(plan.fallback_closes.len(), 1, "R1/E1 one close");
     let fallback = &plan.fallback_closes[0];
-    assert_eq!(fallback.usage.role, FactRole::AggregateUsage);
-    assert_eq!(fallback.idle.role, FactRole::AggregateStatusIdle);
+    assert_eq!(fallback.usage.role, ManagedEventType::AggregateUsage);
+    assert_eq!(fallback.idle.role, ManagedEventType::AggregateStatusIdle);
     assert_eq!(
         fallback.usage.provenance,
         FactProvenance::LifecyclePrefix {
@@ -297,10 +299,11 @@ fn hitl_interval_close_cannot_insert_running_before_an_issued_tool_use() {
             client_executed: false,
         },
     )]);
-    let opening = awaken_managed_session_events::root_lifecycle_opening_facts(session_id, &accepted);
+    let opening =
+        awaken_managed_session_events::root_lifecycle_opening_facts(session_id, &accepted);
     assert_eq!(
         opening.iter().map(|fact| fact.key.role).collect::<Vec<_>>(),
-        [FactRole::RootLifecycleStatusRunning],
+        [ManagedEventType::RootLifecycleStatusRunning],
         "R1/E1 real Running3 owns the Thread"
     );
     let plan = plan_aggregate(&persisted, &accepted, &pending, &[]).unwrap();
@@ -312,10 +315,10 @@ fn hitl_interval_close_cannot_insert_running_before_an_issued_tool_use() {
         !plan
             .fallback_openings
             .iter()
-            .any(|key| key.role == FactRole::RootTerminalStatusRunning)
+            .any(|key| key.role == ManagedEventType::RootTerminalStatusRunning)
             && plan.interval_closes.iter().all(|close| {
-                close.usage.key.role != FactRole::RootTerminalStatusRunning
-                    && close.idle.key.role != FactRole::RootTerminalStatusRunning
+                close.usage.key.role != ManagedEventType::RootTerminalStatusRunning
+                    && close.idle.key.role != ManagedEventType::RootTerminalStatusRunning
             }),
         "R1/E2-E3 no phase-20 Running7 may be inserted before ToolUse7"
     );

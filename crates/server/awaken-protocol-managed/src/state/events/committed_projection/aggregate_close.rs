@@ -8,7 +8,9 @@
 use super::candidate_evidence::CandidateEvidence;
 use super::root_projection::RootProjection;
 use super::*;
-use awaken_managed_session_events::{FactKey, FactKind, FactProvenance, FactRole, TimelineFact};
+use awaken_managed_session_events::{
+    DerivedSessionEvent, EventIdentity, FactProvenance, ManagedEventType, SessionEventKind,
+};
 
 impl ManagedState {
     pub(super) fn close_aggregate(
@@ -30,9 +32,9 @@ impl ManagedState {
             event.thread_id.0 == session_id
                 && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(event.kind)
         }) {
-            let idle_key = FactKey::new(
+            let idle_key = EventIdentity::new(
                 record.session.id.clone(),
-                FactRole::RootLifecycleStatusIdle,
+                ManagedEventType::RootLifecycleStatusIdle,
                 FactProvenance::Lifecycle {
                     cursor: terminal.cursor.0,
                 },
@@ -57,7 +59,7 @@ impl ManagedState {
                 false,
             );
             record.publish_fact_once(
-                &TimelineFact::new(idle_key, FactKind::ThreadIdle(stop)),
+                &DerivedSessionEvent::new(idle_key, SessionEventKind::ThreadIdle(stop)),
                 None,
             )?;
             record
@@ -74,17 +76,18 @@ impl ManagedState {
         // answerable-wait history. A later Running Session, pending call or
         // child Archive cannot erase a previously issued budget pair.
         for (generation, usage, budget) in projected_budget_reach.iter().cloned() {
-            let at =
-                |role| FactKey::new(session_id, role, FactProvenance::BudgetReach { generation });
+            let at = |role| {
+                EventIdentity::new(session_id, role, FactProvenance::BudgetReach { generation })
+            };
             record.push_fact(
-                at(FactRole::BudgetReachUsage),
+                at(ManagedEventType::BudgetReachUsage),
                 OutboundKind::SessionUsage {
                     usage,
                     budget: Some(budget),
                 },
             );
             record.push_fact(
-                at(FactRole::BudgetReachStatusIdle),
+                at(ManagedEventType::BudgetReachStatusIdle),
                 OutboundKind::SessionStatusIdle {
                     stop_reason: StopReason::BudgetReached,
                     stop_details: None,

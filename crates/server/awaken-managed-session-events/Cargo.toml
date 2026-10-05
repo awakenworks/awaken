@@ -3,14 +3,14 @@ name = "awaken-managed-session-events"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Pure Session timeline projection: fact identity, canonical order and interval selection over committed evidence"
+description = "Pure derivation of Managed Session events from committed Session facts: event identity, position and interval selection"
 
 [package.metadata.awaken]
 context = "coordinator"
 product = "platform"
 bounded_context = "protocols"
 layer = "domain"
-authority = "session-projection"
+authority = "managed-session-events"
 
 [dependencies]
 awaken-agent-contract.workspace = true

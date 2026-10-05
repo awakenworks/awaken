@@ -45,8 +45,8 @@ fn durable_history(events: &[Event]) -> Vec<DurableEvent> {
 fn describe_divergence(
     warm: &[DurableEvent],
     cold: &[DurableEvent],
-    warm_keys: &HashMap<String, awaken_managed_session_events::FactKey>,
-    cold_keys: &HashMap<String, awaken_managed_session_events::FactKey>,
+    warm_keys: &HashMap<String, awaken_managed_session_events::EventIdentity>,
+    cold_keys: &HashMap<String, awaken_managed_session_events::EventIdentity>,
 ) -> String {
     let line = |(id, kind, _): &DurableEvent, keys: &HashMap<_, _>| {
         format!(

@@ -9,7 +9,9 @@
 //! Consumers: every Managed projector that publishes a timeline fact.
 
 use super::*;
-use awaken_managed_session_events::{FactKind, FactRole, RunFault, StopFact, TimelineFact};
+use awaken_managed_session_events::{
+    DerivedSessionEvent, ManagedEventType, RunFault, SessionEventKind, StopFact,
+};
 
 /// Resolve a stop fact to the Managed stop reason, naming each answerable
 /// call by the public tool event that `owner_thread_id`'s stream published.
@@ -66,64 +68,64 @@ fn child_name(record: &SessionRecord, thread_id: &str) -> Result<String, StateEr
 /// Encode one timeline fact as the Managed event kind it becomes.
 pub(super) fn encode_fact(
     record: &SessionRecord,
-    fact: &TimelineFact,
+    fact: &DerivedSessionEvent,
     price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
 ) -> Result<OutboundKind, StateError> {
     let thread_id = fact.key.thread.as_str();
     let primary = thread_id == record.session.id;
     Ok(match &fact.kind {
-        FactKind::ThreadCreated => OutboundKind::SessionThreadCreated {
+        SessionEventKind::ThreadCreated => OutboundKind::SessionThreadCreated {
             session_thread_id: thread_id.to_string(),
             agent_name: child_name(record, thread_id)?,
         },
-        FactKind::ThreadRunning if primary => {
+        SessionEventKind::ThreadRunning if primary => {
             primary_thread_status_kind(record, PrimaryThreadStatusProjection::Running)
         }
-        FactKind::ThreadRunning => OutboundKind::SessionThreadStatusRunning {
+        SessionEventKind::ThreadRunning => OutboundKind::SessionThreadStatusRunning {
             session_thread_id: thread_id.to_string(),
             agent_name: child_name(record, thread_id)?,
         },
-        FactKind::ThreadRescheduled if primary => {
+        SessionEventKind::ThreadRescheduled if primary => {
             primary_thread_status_kind(record, PrimaryThreadStatusProjection::Rescheduled)
         }
-        FactKind::ThreadRescheduled => OutboundKind::SessionThreadStatusRescheduled {
+        SessionEventKind::ThreadRescheduled => OutboundKind::SessionThreadStatusRescheduled {
             session_thread_id: thread_id.to_string(),
             agent_name: child_name(record, thread_id)?,
         },
-        FactKind::ThreadIdle(stop) if primary => primary_thread_status_kind(
+        SessionEventKind::ThreadIdle(stop) if primary => primary_thread_status_kind(
             record,
             PrimaryThreadStatusProjection::Idle {
                 stop_reason: resolve_stop(record, None, stop)?,
             },
         ),
-        FactKind::ThreadIdle(stop) => OutboundKind::SessionThreadStatusIdle {
+        SessionEventKind::ThreadIdle(stop) => OutboundKind::SessionThreadStatusIdle {
             session_thread_id: thread_id.to_string(),
             agent_name: child_name(record, thread_id)?,
             stop_reason: resolve_stop(record, Some(thread_id), stop)?,
             stop_details: None,
         },
-        FactKind::ThreadTerminated if primary => {
+        SessionEventKind::ThreadTerminated if primary => {
             primary_thread_status_kind(record, PrimaryThreadStatusProjection::Terminated)
         }
-        FactKind::ThreadTerminated => OutboundKind::SessionThreadStatusTerminated {
+        SessionEventKind::ThreadTerminated => OutboundKind::SessionThreadStatusTerminated {
             session_thread_id: thread_id.to_string(),
             agent_name: child_name(record, thread_id)?,
         },
-        FactKind::RunError { fault, advisor } => OutboundKind::SessionError {
+        SessionEventKind::RunError { fault, advisor } => OutboundKind::SessionError {
             error: if *advisor {
                 SessionError::classify("advisor_consultation_failed", ADVISOR_FAILURE_NOTICE)
             } else {
                 fault_error(fault)
             },
         },
-        FactKind::SessionRunning => OutboundKind::SessionStatusRunning {},
-        FactKind::SessionRescheduled => OutboundKind::SessionStatusRescheduled {},
-        FactKind::SessionIdle { stop, calls_owner } => OutboundKind::SessionStatusIdle {
+        SessionEventKind::SessionRunning => OutboundKind::SessionStatusRunning {},
+        SessionEventKind::SessionRescheduled => OutboundKind::SessionStatusRescheduled {},
+        SessionEventKind::SessionIdle { stop, calls_owner } => OutboundKind::SessionStatusIdle {
             stop_reason: resolve_stop(record, owner(record, calls_owner).as_deref(), stop)?,
             stop_details: None,
         },
-        FactKind::SessionTerminated => OutboundKind::SessionStatusTerminated {},
-        FactKind::IntervalUsage(interval) => {
+        SessionEventKind::SessionTerminated => OutboundKind::SessionStatusTerminated {},
+        SessionEventKind::IntervalUsage(interval) => {
             let mut usage = session_usage_value(interval.usage.clone(), price_snapshot)
                 .map_err(StateError::Run)?;
             let budget = interval.max_list_cost_minor.map(|amount| {
@@ -141,9 +143,9 @@ pub(super) fn encode_fact(
             });
             OutboundKind::SessionUsage { usage, budget }
         }
-        FactKind::ContextCompacted => OutboundKind::ThreadContextCompacted {},
-        FactKind::ModelRequestStart => OutboundKind::SpanModelRequestStart {},
-        FactKind::ModelRequestEnd {
+        SessionEventKind::ContextCompacted => OutboundKind::ThreadContextCompacted {},
+        SessionEventKind::ModelRequestStart => OutboundKind::SpanModelRequestStart {},
+        SessionEventKind::ModelRequestEnd {
             start,
             is_error,
             usage,
@@ -152,17 +154,17 @@ pub(super) fn encode_fact(
             is_error: Some(*is_error),
             model_usage: SpanModelUsage::from(*usage),
         },
-        FactKind::MessageSent { message } => OutboundKind::AgentThreadMessageSent {
+        SessionEventKind::MessageSent { message } => OutboundKind::AgentThreadMessageSent {
             to_session_thread_id: thread_id.to_string(),
             to_agent_name: Some(child_name(record, thread_id)?),
             content: vec![ContentBlock::text(message.clone())],
         },
-        FactKind::ReportReceived { text } => OutboundKind::AgentThreadMessageReceived {
+        SessionEventKind::ReportReceived { text } => OutboundKind::AgentThreadMessageReceived {
             from_session_thread_id: thread_id.to_string(),
             from_agent_name: Some(child_name(record, thread_id)?),
             content: vec![ContentBlock::text(text.clone())],
         },
-        FactKind::ActivationFailed { message } => OutboundKind::SessionError {
+        SessionEventKind::ActivationFailed { message } => OutboundKind::SessionError {
             error: SessionError::classify(
                 awaken_session_state_contract::SessionExecutionState::ActivationFailed.as_str(),
                 message.clone(),
@@ -172,7 +174,7 @@ pub(super) fn encode_fact(
 }
 
 /// How publishing a fact updates the disposable coordinated Thread record.
-fn apply_thread_effect(record: &mut SessionRecord, fact: &TimelineFact) {
+fn apply_thread_effect(record: &mut SessionRecord, fact: &DerivedSessionEvent) {
     let archived_at = record.session.archived_at.clone();
     let Some(child) = record
         .child_threads
@@ -183,39 +185,39 @@ fn apply_thread_effect(record: &mut SessionRecord, fact: &TimelineFact) {
     };
     let unrecorded = || LEGACY_UNRECORDED_AT.to_string();
     match fact.key.role {
-        FactRole::LifecycleStatusRunning => {
+        ManagedEventType::LifecycleStatusRunning => {
             child.status = SessionThreadStatus::Running;
             child.updated_at = unrecorded();
         }
-        FactRole::LifecycleStatusRescheduled => {
+        ManagedEventType::LifecycleStatusRescheduled => {
             child.status = SessionThreadStatus::Rescheduling;
             child.updated_at = unrecorded();
         }
-        FactRole::RescheduledLifecycleStatusRunning => {
+        ManagedEventType::RescheduledLifecycleStatusRunning => {
             child.status = SessionThreadStatus::Running;
         }
-        FactRole::CoordinationStatusRunning => {
+        ManagedEventType::CoordinationStatusRunning => {
             child.status = SessionThreadStatus::Running;
             child.updated_at = unrecorded();
         }
-        FactRole::LifecycleStatusIdle => {
+        ManagedEventType::LifecycleStatusIdle => {
             child.status = SessionThreadStatus::Idle;
             child.updated_at = unrecorded();
         }
-        FactRole::FailedLifecycleStatusTerminated => {
+        ManagedEventType::FailedLifecycleStatusTerminated => {
             child.status = SessionThreadStatus::Terminated;
             child.updated_at = unrecorded();
         }
-        FactRole::AdvisorLifecycleStatusTerminated => {
+        ManagedEventType::AdvisorLifecycleStatusTerminated => {
             child.status = SessionThreadStatus::Terminated;
             child.archived_at = Some(unrecorded());
         }
-        FactRole::ArchivedStatusTerminated => {
+        ManagedEventType::ArchivedStatusTerminated => {
             child.status = SessionThreadStatus::Terminated;
             child.archived_at = Some(unrecorded());
             child.updated_at = unrecorded();
         }
-        FactRole::ParentTerminalChildStatusTerminated => {
+        ManagedEventType::ParentTerminalChildStatusTerminated => {
             child.status = SessionThreadStatus::Terminated;
             child.updated_at = archived_at.clone().unwrap_or_else(unrecorded);
             child.archived_at = archived_at;
@@ -225,13 +227,13 @@ fn apply_thread_effect(record: &mut SessionRecord, fact: &TimelineFact) {
 }
 
 /// Facts shown only on their own child Thread's stream.
-fn child_stream_only(role: FactRole) -> bool {
+fn child_stream_only(role: ManagedEventType) -> bool {
     matches!(
         role,
-        FactRole::LifecycleError
-            | FactRole::RunContextCompacted
-            | FactRole::ModelRequestStart
-            | FactRole::ModelRequestEnd
+        ManagedEventType::LifecycleError
+            | ManagedEventType::RunContextCompacted
+            | ManagedEventType::ModelRequestStart
+            | ManagedEventType::ModelRequestEnd
     )
 }
 
@@ -239,7 +241,7 @@ impl SessionRecord {
     /// Encode and append one timeline fact, then apply its Thread effect.
     pub(super) fn publish_fact(
         &mut self,
-        fact: &TimelineFact,
+        fact: &DerivedSessionEvent,
         price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
     ) -> Result<(), StateError> {
         let kind = encode_fact(self, fact, price_snapshot)?;
@@ -257,7 +259,7 @@ impl SessionRecord {
     /// Encode and append one timeline fact unless its id is already published.
     pub(super) fn publish_fact_once(
         &mut self,
-        fact: &TimelineFact,
+        fact: &DerivedSessionEvent,
         price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
     ) -> Result<bool, StateError> {
         if self.has_event_id(&self.fact_id(&fact.key)) {

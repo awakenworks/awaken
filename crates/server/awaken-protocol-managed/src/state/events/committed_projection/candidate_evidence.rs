@@ -56,7 +56,7 @@ impl CandidateEvidence {
         // read-only projection port, in the order that keeps it one prefix:
         // the root snapshot before terminal Outcome queries,
         // its coordinated links and children, then their merged lifecycle.
-        let awaken_session_application::SessionProjectionEvidence {
+        let awaken_session_application::CommittedSessionFacts {
             outcome_terminals,
             outcome_query_incomplete,
             root,
@@ -172,14 +172,15 @@ impl CandidateEvidence {
         // before and after its ticket is consumed. A pause whose target no
         // client answers (a scheduled action, a delegation) is still
         // classified by it; only a pause that left no target blocks.
-        let targets = awaken_managed_session_events::audited_await_targets(&lifecycle, |thread_id| {
-            if thread_id == session_id {
-                root.as_ref()
-            } else {
-                children.get(thread_id)
-            }
-        })
-        .map_err(projection_error)?;
+        let targets =
+            awaken_managed_session_events::audited_await_targets(&lifecycle, |thread_id| {
+                if thread_id == session_id {
+                    root.as_ref()
+                } else {
+                    children.get(thread_id)
+                }
+            })
+            .map_err(projection_error)?;
         // Health and fact admission consume the same exact-cursor audit map.
         // A later repeated Awaiting audit cannot authorize an older wait.
         for snapshot in root.iter().chain(children.values()) {

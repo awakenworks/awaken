@@ -6,15 +6,15 @@ use super::*;
 use crate::types::{EvaluatedPermission, RecordedPermission, SpanModelUsage};
 use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
+#[cfg(test)]
+use awaken_managed_session_events::SEND_MESSAGE_TOOL_ID as SEND_MESSAGE;
+use awaken_managed_session_events::{EventIdentity, FactProvenance, ManagedEventType};
 use awaken_runtime_contract::resolved::ADVISOR_FAILURE_NOTICE;
 use awaken_session_application_contract::Pending;
 use awaken_session_event_contract::{
     SessionEventCommand, SessionEventInput, SessionEventInterrupt, SessionEventToolReply,
     SessionEventToolReplyKind, SessionOutcomeRubric,
 };
-#[cfg(test)]
-use awaken_managed_session_events::SEND_MESSAGE_TOOL_ID as SEND_MESSAGE;
-use awaken_managed_session_events::{FactKey, FactProvenance, FactRole};
 #[cfg(test)]
 use awaken_session_execution_contract::SessionThreadToolReply;
 use awaken_session_execution_contract::{
@@ -300,7 +300,11 @@ impl DurableOutcomeProjection {
         let awaken_managed_session_events::OutcomeAnchor {
             terminal_commit_cursor,
             evaluation_commit_cursors,
-        } = awaken_managed_session_events::anchor_outcome(&self.outcome_id, &self.terminal, snapshot)?;
+        } = awaken_managed_session_events::anchor_outcome(
+            &self.outcome_id,
+            &self.terminal,
+            snapshot,
+        )?;
         Some(AnchoredOutcomeProjection {
             outcome_id: self.outcome_id,
             terminal: self.terminal,
@@ -378,7 +382,7 @@ fn append_durable_outcome_projections(
             CommittedOutcomeProjection::Completed(report) => {
                 for iteration in &report.iterations {
                     let evaluation = |role| {
-                        FactKey::new(
+                        EventIdentity::new(
                             &session_id,
                             role,
                             FactProvenance::OutcomeEvaluation {
@@ -387,24 +391,25 @@ fn append_durable_outcome_projections(
                             },
                         )
                     };
-                    let start_id = record.fact_id(&evaluation(FactRole::OutcomeEvaluationStart));
+                    let start_id =
+                        record.fact_id(&evaluation(ManagedEventType::OutcomeEvaluationStart));
                     for (role, kind) in [
                         (
-                            FactRole::OutcomeEvaluationStart,
+                            ManagedEventType::OutcomeEvaluationStart,
                             OutboundKind::SpanOutcomeEvaluationStart {
                                 outcome_id: projection.outcome_id.clone(),
                                 iteration: iteration.iteration,
                             },
                         ),
                         (
-                            FactRole::OutcomeEvaluationOngoing,
+                            ManagedEventType::OutcomeEvaluationOngoing,
                             OutboundKind::SpanOutcomeEvaluationOngoing {
                                 outcome_id: projection.outcome_id.clone(),
                                 iteration: iteration.iteration,
                             },
                         ),
                         (
-                            FactRole::OutcomeEvaluationEnd,
+                            ManagedEventType::OutcomeEvaluationEnd,
                             OutboundKind::SpanOutcomeEvaluationEnd {
                                 outcome_id: projection.outcome_id.clone(),
                                 outcome_evaluation_start_id: start_id.clone(),
@@ -436,9 +441,9 @@ fn append_durable_outcome_projections(
             }
             CommittedOutcomeProjection::Errored(failure) => {
                 record.append_fact_once(
-                    FactKey::new(
+                    EventIdentity::new(
                         &session_id,
-                        FactRole::OutcomeError,
+                        ManagedEventType::OutcomeError,
                         FactProvenance::Outcome {
                             outcome_id: projection.outcome_id.clone(),
                         },
@@ -528,7 +533,10 @@ pub(crate) fn managed_assistant_event_id(
 }
 
 /// The public id of one timeline fact of `session_id`.
-pub(super) fn fact_event_id(session_id: &str, key: &awaken_managed_session_events::FactKey) -> String {
+pub(super) fn fact_event_id(
+    session_id: &str,
+    key: &awaken_managed_session_events::EventIdentity,
+) -> String {
     managed_multiagent_event_id(
         session_id,
         &key.thread,

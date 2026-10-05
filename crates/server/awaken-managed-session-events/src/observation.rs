@@ -8,7 +8,10 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_runtime_contract::compaction::RunCompactionMarker;
 use awaken_runtime_contract::llm::ModelRequestObservation;
 
-use crate::{FactKey, FactKind, FactProvenance, FactRole, ProjectionError, TimelineFact};
+use crate::{
+    DerivedSessionEvent, EventIdentity, FactProvenance, ManagedEventType, ProjectionError,
+    SessionEventKind,
+};
 
 /// The observation facts of one committed Thread prefix. Publication progress
 /// does not enter this domain decision; the Managed adapter deduplicates the
@@ -16,21 +19,24 @@ use crate::{FactKey, FactKind, FactProvenance, FactRole, ProjectionError, Timeli
 pub fn run_observation_facts(
     thread_id: &str,
     snapshot: &RunRecoverySnapshot,
-) -> Result<Vec<TimelineFact>, ProjectionError> {
-    let at = |role, provenance| FactKey::new(thread_id, role, provenance);
+) -> Result<Vec<DerivedSessionEvent>, ProjectionError> {
+    let at = |role, provenance| EventIdentity::new(thread_id, role, provenance);
     let mut facts = Vec::new();
     // A repeated audit row in the same committed prefix emits one fact.
     let mut emitted = std::collections::HashSet::new();
     for run in &snapshot.runs {
         if RunCompactionMarker::is_recorded(&snapshot.state, &run.id.0) {
             let key = at(
-                FactRole::RunContextCompacted,
+                ManagedEventType::RunContextCompacted,
                 FactProvenance::RunState {
                     run_id: run.id.0.clone(),
                 },
             );
             if emitted.insert(key.clone()) {
-                facts.push(TimelineFact::new(key, FactKind::ContextCompacted));
+                facts.push(DerivedSessionEvent::new(
+                    key,
+                    SessionEventKind::ContextCompacted,
+                ));
             }
         }
         for audit in snapshot
@@ -51,18 +57,18 @@ pub fn run_observation_facts(
                 run_id: run.id.0.clone(),
                 sequence: audit.sequence,
             };
-            let start = at(FactRole::ModelRequestStart, provenance());
-            let end = at(FactRole::ModelRequestEnd, provenance());
+            let start = at(ManagedEventType::ModelRequestStart, provenance());
+            let end = at(ManagedEventType::ModelRequestEnd, provenance());
             if !emitted.insert(end.clone()) {
                 continue;
             }
-            facts.push(TimelineFact::new(
+            facts.push(DerivedSessionEvent::new(
                 start.clone(),
-                FactKind::ModelRequestStart,
+                SessionEventKind::ModelRequestStart,
             ));
-            facts.push(TimelineFact::new(
+            facts.push(DerivedSessionEvent::new(
                 end,
-                FactKind::ModelRequestEnd {
+                SessionEventKind::ModelRequestEnd {
                     start,
                     is_error: observation.is_error,
                     usage: observation.usage,
@@ -146,11 +152,11 @@ mod tests {
         assert_eq!(
             first,
             vec![
-                (FactRole::RunContextCompacted, compaction.clone()),
-                (FactRole::ModelRequestStart, audit(2)),
-                (FactRole::ModelRequestEnd, audit(2)),
-                (FactRole::ModelRequestStart, audit(3)),
-                (FactRole::ModelRequestEnd, audit(3)),
+                (ManagedEventType::RunContextCompacted, compaction.clone()),
+                (ManagedEventType::ModelRequestStart, audit(2)),
+                (ManagedEventType::ModelRequestEnd, audit(2)),
+                (ManagedEventType::ModelRequestStart, audit(3)),
+                (ManagedEventType::ModelRequestEnd, audit(3)),
             ],
             "E1+E2+E3"
         );

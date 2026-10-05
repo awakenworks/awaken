@@ -1,68 +1,77 @@
 //! The wire-stability pin of the role coordinates hashed into Managed
 //! multi-agent event ids.
 //!
-//! The roles themselves are [`FactRole`] in the timeline domain, which owns
+//! The roles themselves are [`ManagedEventType`] in the timeline domain, which owns
 //! both the wire string and the canonical phase of each. This test-only module
 //! keeps the literal ids those strings produced before they moved: a changed
 //! row is a public-id break. Consumer: `managed_event_role_ids_are_wire_stable`.
 
-use awaken_managed_session_events::FactRole;
+use awaken_managed_session_events::ManagedEventType;
 
-pub(crate) const ACTIVATION_FAILED_ERROR: &str = FactRole::ActivationFailedError.as_wire_role();
+pub(crate) const ACTIVATION_FAILED_ERROR: &str =
+    ManagedEventType::ActivationFailedError.as_wire_role();
 pub(crate) const ADVISOR_LIFECYCLE_STATUS_TERMINATED: &str =
-    FactRole::AdvisorLifecycleStatusTerminated.as_wire_role();
-pub(crate) const ADVISOR_MESSAGE_RECEIVED: &str = FactRole::AdvisorMessageReceived.as_wire_role();
-pub(crate) const AGGREGATE_STATUS_IDLE: &str = FactRole::AggregateStatusIdle.as_wire_role();
-pub(crate) const AGGREGATE_STATUS_RUNNING: &str = FactRole::AggregateStatusRunning.as_wire_role();
+    ManagedEventType::AdvisorLifecycleStatusTerminated.as_wire_role();
+pub(crate) const ADVISOR_MESSAGE_RECEIVED: &str =
+    ManagedEventType::AdvisorMessageReceived.as_wire_role();
+pub(crate) const AGGREGATE_STATUS_IDLE: &str = ManagedEventType::AggregateStatusIdle.as_wire_role();
+pub(crate) const AGGREGATE_STATUS_RUNNING: &str =
+    ManagedEventType::AggregateStatusRunning.as_wire_role();
 pub(crate) const AGGREGATE_TERMINAL_STATUS_RUNNING: &str =
-    FactRole::AggregateTerminalStatusRunning.as_wire_role();
-pub(crate) const AGGREGATE_USAGE: &str = FactRole::AggregateUsage.as_wire_role();
+    ManagedEventType::AggregateTerminalStatusRunning.as_wire_role();
+pub(crate) const AGGREGATE_USAGE: &str = ManagedEventType::AggregateUsage.as_wire_role();
 pub(crate) const ARCHIVED_STATUS_TERMINATED: &str =
-    FactRole::ArchivedStatusTerminated.as_wire_role();
-pub(crate) const BUDGET_REACH_STATUS_IDLE: &str = FactRole::BudgetReachStatusIdle.as_wire_role();
-pub(crate) const BUDGET_REACH_USAGE: &str = FactRole::BudgetReachUsage.as_wire_role();
-pub(crate) const CHILD_MESSAGE_RECEIVED: &str = FactRole::ChildMessageReceived.as_wire_role();
-pub(crate) const COORDINATION_MESSAGE_SENT: &str = FactRole::CoordinationMessageSent.as_wire_role();
+    ManagedEventType::ArchivedStatusTerminated.as_wire_role();
+pub(crate) const BUDGET_REACH_STATUS_IDLE: &str =
+    ManagedEventType::BudgetReachStatusIdle.as_wire_role();
+pub(crate) const BUDGET_REACH_USAGE: &str = ManagedEventType::BudgetReachUsage.as_wire_role();
+pub(crate) const CHILD_MESSAGE_RECEIVED: &str =
+    ManagedEventType::ChildMessageReceived.as_wire_role();
+pub(crate) const COORDINATION_MESSAGE_SENT: &str =
+    ManagedEventType::CoordinationMessageSent.as_wire_role();
 pub(crate) const COORDINATION_STATUS_RUNNING: &str =
-    FactRole::CoordinationStatusRunning.as_wire_role();
+    ManagedEventType::CoordinationStatusRunning.as_wire_role();
 pub(crate) const FAILED_LIFECYCLE_STATUS_TERMINATED: &str =
-    FactRole::FailedLifecycleStatusTerminated.as_wire_role();
-pub(crate) const LIFECYCLE_ERROR: &str = FactRole::LifecycleError.as_wire_role();
-pub(crate) const LIFECYCLE_STATUS_IDLE: &str = FactRole::LifecycleStatusIdle.as_wire_role();
+    ManagedEventType::FailedLifecycleStatusTerminated.as_wire_role();
+pub(crate) const LIFECYCLE_ERROR: &str = ManagedEventType::LifecycleError.as_wire_role();
+pub(crate) const LIFECYCLE_STATUS_IDLE: &str = ManagedEventType::LifecycleStatusIdle.as_wire_role();
 pub(crate) const LIFECYCLE_STATUS_RESCHEDULED: &str =
-    FactRole::LifecycleStatusRescheduled.as_wire_role();
-pub(crate) const LIFECYCLE_STATUS_RUNNING: &str = FactRole::LifecycleStatusRunning.as_wire_role();
-pub(crate) const LINK_STATUS_RUNNING: &str = FactRole::LinkStatusRunning.as_wire_role();
-pub(crate) const LINK_THREAD_CREATED: &str = FactRole::LinkThreadCreated.as_wire_role();
-pub(crate) const MODEL_REQUEST_END: &str = FactRole::ModelRequestEnd.as_wire_role();
-pub(crate) const MODEL_REQUEST_START: &str = FactRole::ModelRequestStart.as_wire_role();
-pub(crate) const OUTCOME_ERROR: &str = FactRole::OutcomeError.as_wire_role();
-pub(crate) const OUTCOME_EVALUATION_END: &str = FactRole::OutcomeEvaluationEnd.as_wire_role();
+    ManagedEventType::LifecycleStatusRescheduled.as_wire_role();
+pub(crate) const LIFECYCLE_STATUS_RUNNING: &str =
+    ManagedEventType::LifecycleStatusRunning.as_wire_role();
+pub(crate) const LINK_STATUS_RUNNING: &str = ManagedEventType::LinkStatusRunning.as_wire_role();
+pub(crate) const LINK_THREAD_CREATED: &str = ManagedEventType::LinkThreadCreated.as_wire_role();
+pub(crate) const MODEL_REQUEST_END: &str = ManagedEventType::ModelRequestEnd.as_wire_role();
+pub(crate) const MODEL_REQUEST_START: &str = ManagedEventType::ModelRequestStart.as_wire_role();
+pub(crate) const OUTCOME_ERROR: &str = ManagedEventType::OutcomeError.as_wire_role();
+pub(crate) const OUTCOME_EVALUATION_END: &str =
+    ManagedEventType::OutcomeEvaluationEnd.as_wire_role();
 pub(crate) const OUTCOME_EVALUATION_ONGOING: &str =
-    FactRole::OutcomeEvaluationOngoing.as_wire_role();
-pub(crate) const OUTCOME_EVALUATION_START: &str = FactRole::OutcomeEvaluationStart.as_wire_role();
+    ManagedEventType::OutcomeEvaluationOngoing.as_wire_role();
+pub(crate) const OUTCOME_EVALUATION_START: &str =
+    ManagedEventType::OutcomeEvaluationStart.as_wire_role();
 pub(crate) const PARENT_TERMINAL_CHILD_STATUS_TERMINATED: &str =
-    FactRole::ParentTerminalChildStatusTerminated.as_wire_role();
+    ManagedEventType::ParentTerminalChildStatusTerminated.as_wire_role();
 pub(crate) const PARENT_TERMINAL_PRIMARY_STATUS_TERMINATED: &str =
-    FactRole::ParentTerminalPrimaryStatusTerminated.as_wire_role();
+    ManagedEventType::ParentTerminalPrimaryStatusTerminated.as_wire_role();
 pub(crate) const PARENT_TERMINAL_SESSION_STATUS_TERMINATED: &str =
-    FactRole::ParentTerminalSessionStatusTerminated.as_wire_role();
+    ManagedEventType::ParentTerminalSessionStatusTerminated.as_wire_role();
 pub(crate) const RESCHEDULED_LIFECYCLE_STATUS_RUNNING: &str =
-    FactRole::RescheduledLifecycleStatusRunning.as_wire_role();
-pub(crate) const ROOT_LIFECYCLE_ERROR: &str = FactRole::RootLifecycleError.as_wire_role();
+    ManagedEventType::RescheduledLifecycleStatusRunning.as_wire_role();
+pub(crate) const ROOT_LIFECYCLE_ERROR: &str = ManagedEventType::RootLifecycleError.as_wire_role();
 pub(crate) const ROOT_LIFECYCLE_SESSION_STATUS_RESCHEDULED: &str =
-    FactRole::RootLifecycleSessionStatusRescheduled.as_wire_role();
+    ManagedEventType::RootLifecycleSessionStatusRescheduled.as_wire_role();
 pub(crate) const ROOT_LIFECYCLE_STATUS_IDLE: &str =
-    FactRole::RootLifecycleStatusIdle.as_wire_role();
+    ManagedEventType::RootLifecycleStatusIdle.as_wire_role();
 pub(crate) const ROOT_LIFECYCLE_STATUS_RESCHEDULED: &str =
-    FactRole::RootLifecycleStatusRescheduled.as_wire_role();
+    ManagedEventType::RootLifecycleStatusRescheduled.as_wire_role();
 pub(crate) const ROOT_LIFECYCLE_STATUS_RUNNING: &str =
-    FactRole::RootLifecycleStatusRunning.as_wire_role();
+    ManagedEventType::RootLifecycleStatusRunning.as_wire_role();
 pub(crate) const ROOT_RESCHEDULED_LIFECYCLE_STATUS_RUNNING: &str =
-    FactRole::RootRescheduledLifecycleStatusRunning.as_wire_role();
+    ManagedEventType::RootRescheduledLifecycleStatusRunning.as_wire_role();
 pub(crate) const ROOT_TERMINAL_STATUS_RUNNING: &str =
-    FactRole::RootTerminalStatusRunning.as_wire_role();
-pub(crate) const RUN_CONTEXT_COMPACTED: &str = FactRole::RunContextCompacted.as_wire_role();
+    ManagedEventType::RootTerminalStatusRunning.as_wire_role();
+pub(crate) const RUN_CONTEXT_COMPACTED: &str = ManagedEventType::RunContextCompacted.as_wire_role();
 
 /// Every fixed role, for the wire-stability pin.
 pub(crate) const ALL: &[&str] = &[
@@ -271,8 +280,8 @@ mod tests {
         // public ids no test freezes. The pin list is exactly the domain list.
         assert_eq!(
             super::ALL.to_vec(),
-            super::FactRole::FIXED
-                .map(super::FactRole::as_wire_role)
+            super::ManagedEventType::FIXED
+                .map(super::ManagedEventType::as_wire_role)
                 .to_vec()
         );
     }

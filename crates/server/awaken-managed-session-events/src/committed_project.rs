@@ -14,8 +14,8 @@ use awaken_session_application_contract::Pending;
 use awaken_session_execution_contract::CoordinatedThreadLink;
 
 use crate::{
-    CanonicalOrder, FactKey, IssuedToolEvent, OrderIndex, TimelineFact, coordination_orders,
-    cross_posts, is_coordination_send, plan_folds,
+    DerivedSessionEvent, EventIdentity, EventPosition, IssuedToolEvent, OrderIndex,
+    coordination_orders, cross_posts, is_coordination_send, plan_folds,
 };
 
 /// Borrowed committed evidence used to select one coordination plan.
@@ -32,8 +32,8 @@ pub struct CommittedPrefix<'a> {
 
 /// One immutable plan reused by child activity and final canonical ordering.
 pub struct CommittedProjection {
-    pub cross_posts: Vec<TimelineFact>,
-    pub coordination_orders: HashMap<FactKey, CanonicalOrder>,
+    pub cross_posts: Vec<DerivedSessionEvent>,
+    pub coordination_orders: HashMap<EventIdentity, EventPosition>,
 }
 
 enum SourceEvent {

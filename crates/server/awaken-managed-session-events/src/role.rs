@@ -14,12 +14,12 @@
 //! dropped the fact out of the order. One enum now carries both.
 //!
 //! Consumers: the protocol adapters that mint public event ids from
-//! [`FactRole::as_wire_role`] and the canonical order, which reads
-//! [`FactRole::phase`].
+//! [`ManagedEventType::as_wire_role`] and the canonical order, which reads
+//! [`ManagedEventType::phase`].
 
 /// One fixed timeline role, or the wire type of a transcript-derived fact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum FactRole {
+pub enum ManagedEventType {
     ActivationFailedError,
     AdvisorLifecycleStatusTerminated,
     AdvisorMessageReceived,
@@ -109,7 +109,7 @@ pub mod phase {
     pub const INBOUND_ADMISSION: u16 = 120;
 }
 
-impl FactRole {
+impl ManagedEventType {
     /// Every fixed (non-transcript) role, in wire-role order.
     pub const FIXED: [Self; 38] = [
         Self::ActivationFailedError,
@@ -313,7 +313,7 @@ mod tests {
         // and in the published order; E2 every phase equals the value the
         // retired order table assigned; E3 transcript folds share the
         // transcript phase and round-trip their wire type.
-        let wire = FactRole::FIXED.map(FactRole::as_wire_role);
+        let wire = ManagedEventType::FIXED.map(ManagedEventType::as_wire_role);
         let mut sorted = wire.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
@@ -359,7 +359,7 @@ mod tests {
             ("run-context-compacted", 42),
         ];
         assert_eq!(
-            FactRole::FIXED
+            ManagedEventType::FIXED
                 .map(|role| (role.as_wire_role(), role.phase()))
                 .to_vec(),
             table.to_vec(),
@@ -373,7 +373,11 @@ mod tests {
             TranscriptRole::AgentToolResult,
             TranscriptRole::AgentMcpToolResult,
         ] {
-            assert_eq!(FactRole::Transcript(role).phase(), phase::TRANSCRIPT, "E3");
+            assert_eq!(
+                ManagedEventType::Transcript(role).phase(),
+                phase::TRANSCRIPT,
+                "E3"
+            );
             assert_eq!(
                 TranscriptRole::from_wire_type(role.as_wire_type()),
                 Some(role),

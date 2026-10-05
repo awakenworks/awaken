@@ -34,7 +34,9 @@ use crate::role::{TranscriptRole, phase};
 use crate::transcript::{
     CommittedTranscriptEvidence, assistant_response_coordinates, committed_transcript_evidence,
 };
-use crate::{AnchoredOutcome, CanonicalOrder, FactKey, FactProvenance, FactRole, Ordinal};
+use crate::{
+    AnchoredOutcome, EventIdentity, EventPosition, FactProvenance, ManagedEventType, Ordinal,
+};
 
 /// The committed evidence one candidate is ordered over, all borrowed.
 ///
@@ -165,9 +167,9 @@ impl<'a> ThreadIndex<'a> {
 
     /// A Message's facts sit at its index in the Thread, then at their own
     /// position inside the Message's fold.
-    fn message_order(&self, index: usize, ordinal: usize) -> Option<CanonicalOrder> {
+    fn message_order(&self, index: usize, ordinal: usize) -> Option<EventPosition> {
         let cursor = *self.snapshot.message_commit_cursors.get(index)?;
-        Some(CanonicalOrder {
+        Some(EventPosition {
             processed_at_unix_ms: self.snapshot.commit_timestamps.get(&cursor).copied(),
             source_commit_cursor: cursor,
             phase: phase::TRANSCRIPT,
@@ -218,7 +220,7 @@ pub struct OrderIndex<'a> {
     lifecycle_by_cursor: HashMap<RunLifecycleCursor, &'a RunLifecycleEvent>,
     threads: HashMap<&'a str, ThreadIndex<'a>>,
     /// Answerable pause events keyed by (Thread, Run, call).
-    pending_orders: HashMap<(String, String, String), CanonicalOrder>,
+    pending_orders: HashMap<(String, String, String), EventPosition>,
 }
 
 impl<'a> OrderIndex<'a> {
@@ -262,9 +264,9 @@ impl<'a> OrderIndex<'a> {
     }
 
     fn retain_earliest<K: std::hash::Hash + Eq>(
-        orders: &mut HashMap<K, CanonicalOrder>,
+        orders: &mut HashMap<K, EventPosition>,
         key: K,
-        order: CanonicalOrder,
+        order: EventPosition,
     ) {
         orders
             .entry(key)
@@ -278,7 +280,7 @@ impl<'a> OrderIndex<'a> {
     // at that Awaiting fact. A later transcript-owned occurrence has a
     // message-qualified id and keeps its own Message cursor. A current ticket
     // cannot re-anchor a historical call to an earlier unaudited wait.
-    fn index_pending_orders(&self) -> HashMap<(String, String, String), CanonicalOrder> {
+    fn index_pending_orders(&self) -> HashMap<(String, String, String), EventPosition> {
         let lifecycle = self.evidence.lifecycle;
         let mut orders = HashMap::new();
         for (cursor, pending) in self.evidence.historical_pending {
@@ -319,7 +321,7 @@ impl<'a> OrderIndex<'a> {
     /// Every accepted inbound command, at its immutable admission fence.
     /// Admission order within the retained batches breaks ties; an entry
     /// without a fence is not public yet.
-    pub fn inbound_orders(&self) -> impl Iterator<Item = (&'a str, CanonicalOrder)> + '_ {
+    pub fn inbound_orders(&self) -> impl Iterator<Item = (&'a str, EventPosition)> + '_ {
         self.evidence
             .batches
             .iter()
@@ -334,7 +336,7 @@ impl<'a> OrderIndex<'a> {
                         .map(move |(ordinal, entry)| {
                             (
                                 entry.event.operation_id(),
-                                CanonicalOrder {
+                                EventPosition {
                                     processed_at_unix_ms: entry.processed_at_unix_ms,
                                     source_commit_cursor: anchor.source_commit_cursor,
                                     phase: phase::INBOUND_ADMISSION,
@@ -355,7 +357,7 @@ impl<'a> OrderIndex<'a> {
         thread_id: &str,
         message_id: &str,
         call_id: &str,
-    ) -> Option<CanonicalOrder> {
+    ) -> Option<EventPosition> {
         let thread = self.threads.get(thread_id)?;
         if !thread.aligned {
             return None;
@@ -425,7 +427,7 @@ impl<'a> OrderIndex<'a> {
         thread_id: &str,
         source_id: &str,
         call_id: &str,
-    ) -> Option<CanonicalOrder> {
+    ) -> Option<EventPosition> {
         let from_message = self.message_call_order(thread_id, source_id, call_id);
         let from_pause = self
             .pending_orders
@@ -467,7 +469,7 @@ impl<'a> OrderIndex<'a> {
 
     /// Order of every committed Advisor consultation call, by its operation.
     #[must_use]
-    pub fn advisor_operation_orders(&self) -> HashMap<String, CanonicalOrder> {
+    pub fn advisor_operation_orders(&self) -> HashMap<String, EventPosition> {
         let mut orders = HashMap::new();
         for (thread_id, thread) in &self.threads {
             if !thread.aligned {
@@ -497,7 +499,7 @@ impl<'a> OrderIndex<'a> {
                     Self::retain_earliest(
                         &mut orders,
                         operation_id,
-                        CanonicalOrder {
+                        EventPosition {
                             processed_at_unix_ms: snapshot
                                 .commit_timestamps
                                 .get(&source_commit_cursor)
@@ -516,20 +518,20 @@ impl<'a> OrderIndex<'a> {
     /// Where the report of one coordinated Run's terminal becomes public: the
     /// later of its report Messages' commit and the terminal commit.
     #[must_use]
-    pub fn report_order(&self, terminal: &RunLifecycleEvent) -> Option<CanonicalOrder> {
+    pub fn report_order(&self, terminal: &RunLifecycleEvent) -> Option<EventPosition> {
         let snapshot = self.evidence.children.get(&terminal.thread_id.0)?;
         let report = report_commit_cursor(snapshot, &terminal.run_id)?;
-        Some(CanonicalOrder {
+        Some(EventPosition {
             processed_at_unix_ms: self
                 .time_for(&terminal.thread_id.0, terminal.source_commit_cursor),
             source_commit_cursor: report.max(terminal.source_commit_cursor),
-            phase: FactRole::ChildMessageReceived.phase(),
+            phase: ManagedEventType::ChildMessageReceived.phase(),
             ordinal: Ordinal::FIRST,
         })
     }
 
-    fn lifecycle_order(&self, event: &RunLifecycleEvent, role: FactRole) -> CanonicalOrder {
-        CanonicalOrder {
+    fn lifecycle_order(&self, event: &RunLifecycleEvent, role: ManagedEventType) -> EventPosition {
+        EventPosition {
             source_commit_cursor: event.source_commit_cursor,
             processed_at_unix_ms: self.time_for(&event.thread_id.0, event.source_commit_cursor),
             phase: role.phase(),
@@ -542,21 +544,23 @@ impl<'a> OrderIndex<'a> {
     /// terminal facts (see [`Self::parent_terminal_order`]). `None` means the
     /// evidence does not anchor the fact, so the candidate must fail closed.
     #[must_use]
-    pub fn fact_order(&self, key: &FactKey) -> Option<CanonicalOrder> {
+    pub fn fact_order(&self, key: &EventIdentity) -> Option<EventPosition> {
         let session_id = self.evidence.session_id;
         match (&key.provenance, key.role) {
-            (FactProvenance::Lifecycle { cursor }, FactRole::AggregateStatusRunning) => {
+            (FactProvenance::Lifecycle { cursor }, ManagedEventType::AggregateStatusRunning) => {
                 let event = self.lifecycle_by_cursor.get(&RunLifecycleCursor(*cursor))?;
                 (key.thread == session_id && is_opening(event.kind))
                     .then(|| self.lifecycle_order(event, key.role))
             }
-            (FactProvenance::Lifecycle { cursor }, role) if FactRole::LIFECYCLE.contains(&role) => {
+            (FactProvenance::Lifecycle { cursor }, role)
+                if ManagedEventType::LIFECYCLE.contains(&role) =>
+            {
                 let event = self.lifecycle_by_cursor.get(&RunLifecycleCursor(*cursor))?;
                 (event.thread_id.0 == key.thread).then(|| self.lifecycle_order(event, role))
             }
             (
                 FactProvenance::LifecyclePrefix { cursor },
-                FactRole::AggregateTerminalStatusRunning,
+                ManagedEventType::AggregateTerminalStatusRunning,
             ) => {
                 let event = self.lifecycle_by_cursor.get(&RunLifecycleCursor(*cursor))?;
                 (key.thread == session_id
@@ -566,14 +570,14 @@ impl<'a> OrderIndex<'a> {
             }
             (
                 FactProvenance::LifecyclePrefix { cursor },
-                FactRole::AggregateUsage | FactRole::AggregateStatusIdle,
+                ManagedEventType::AggregateUsage | ManagedEventType::AggregateStatusIdle,
             ) => {
                 let event = self.lifecycle_by_cursor.get(&RunLifecycleCursor(*cursor))?;
                 (key.thread == session_id).then(|| self.lifecycle_order(event, key.role))
             }
             (
                 FactProvenance::RuntimeInterval { interval_id },
-                FactRole::AggregateUsage | FactRole::AggregateStatusIdle,
+                ManagedEventType::AggregateUsage | ManagedEventType::AggregateStatusIdle,
             ) => {
                 if key.thread != session_id {
                     return None;
@@ -583,7 +587,7 @@ impl<'a> OrderIndex<'a> {
                     .iter()
                     .filter(|interval| &interval.interval_id == interval_id)
                     .filter_map(|interval| {
-                        Some(CanonicalOrder {
+                        Some(EventPosition {
                             processed_at_unix_ms: Some(interval.ended_at_unix_ms),
                             source_commit_cursor: interval_close_cursor(interval)?,
                             phase: key.role.phase(),
@@ -594,7 +598,7 @@ impl<'a> OrderIndex<'a> {
             }
             (
                 FactProvenance::Audit { run_id, sequence },
-                FactRole::ModelRequestStart | FactRole::ModelRequestEnd,
+                ManagedEventType::ModelRequestStart | ManagedEventType::ModelRequestEnd,
             ) => {
                 let snapshot = self.threads.get(key.thread.as_str())?.snapshot;
                 snapshot
@@ -607,7 +611,7 @@ impl<'a> OrderIndex<'a> {
                                 *sequence,
                             ))
                             .0;
-                        CanonicalOrder {
+                        EventPosition {
                             processed_at_unix_ms: snapshot
                                 .commit_timestamps
                                 .get(&source_commit_cursor)
@@ -618,7 +622,7 @@ impl<'a> OrderIndex<'a> {
                         }
                     })
             }
-            (FactProvenance::RunState { run_id }, FactRole::RunContextCompacted) => {
+            (FactProvenance::RunState { run_id }, ManagedEventType::RunContextCompacted) => {
                 let snapshot = self.threads.get(key.thread.as_str())?.snapshot;
                 if !snapshot.runs.iter().any(|run| run.id.0 == *run_id) {
                     return None;
@@ -629,7 +633,7 @@ impl<'a> OrderIndex<'a> {
                         &snapshot.state_commit_cursors,
                         run_id,
                     )?;
-                Some(CanonicalOrder {
+                Some(EventPosition {
                     processed_at_unix_ms: snapshot
                         .commit_timestamps
                         .get(&source_commit_cursor)
@@ -639,13 +643,13 @@ impl<'a> OrderIndex<'a> {
                     ordinal: Ordinal::FIRST,
                 })
             }
-            (FactProvenance::ArchivedDisposition, FactRole::ArchivedStatusTerminated) => {
+            (FactProvenance::ArchivedDisposition, ManagedEventType::ArchivedStatusTerminated) => {
                 let snapshot = self.threads.get(key.thread.as_str())?.snapshot;
                 let source_commit_cursor = awaken_agent_contract::archived_thread_commit_cursor(
                     &snapshot.state,
                     &snapshot.state_commit_cursors,
                 )?;
-                Some(CanonicalOrder {
+                Some(EventPosition {
                     processed_at_unix_ms: snapshot
                         .commit_timestamps
                         .get(&source_commit_cursor)
@@ -660,9 +664,9 @@ impl<'a> OrderIndex<'a> {
                     outcome_id,
                     iteration,
                 },
-                FactRole::OutcomeEvaluationStart
-                | FactRole::OutcomeEvaluationOngoing
-                | FactRole::OutcomeEvaluationEnd,
+                ManagedEventType::OutcomeEvaluationStart
+                | ManagedEventType::OutcomeEvaluationOngoing
+                | ManagedEventType::OutcomeEvaluationEnd,
             ) => {
                 if key.thread != session_id {
                     return None;
@@ -683,13 +687,13 @@ impl<'a> OrderIndex<'a> {
                         let evaluation_cursor = outcome.evaluation_commit_cursor(*iteration)?;
                         (evaluation_cursor <= outcome.terminal_commit_cursor).then_some(())?;
                         let role_offset = match key.role {
-                            FactRole::OutcomeEvaluationStart => 0,
-                            FactRole::OutcomeEvaluationOngoing => 1,
-                            FactRole::OutcomeEvaluationEnd => 2,
+                            ManagedEventType::OutcomeEvaluationStart => 0,
+                            ManagedEventType::OutcomeEvaluationOngoing => 1,
+                            ManagedEventType::OutcomeEvaluationEnd => 2,
                             _ => return None,
                         };
                         let within = iteration_index.checked_mul(3)?.checked_add(role_offset)?;
-                        Some(CanonicalOrder {
+                        Some(EventPosition {
                             processed_at_unix_ms: self.time_for(session_id, evaluation_cursor),
                             // The Completed report is required to materialize
                             // this trio. Sorting at an earlier evaluation
@@ -701,7 +705,7 @@ impl<'a> OrderIndex<'a> {
                     })
                     .min()
             }
-            (FactProvenance::Outcome { outcome_id }, FactRole::OutcomeError) => {
+            (FactProvenance::Outcome { outcome_id }, ManagedEventType::OutcomeError) => {
                 if key.thread != session_id {
                     return None;
                 }
@@ -713,7 +717,7 @@ impl<'a> OrderIndex<'a> {
                         outcome.outcome_id == outcome_id
                             && matches!(outcome.terminal, CommittedOutcomeProjection::Errored(_))
                     })
-                    .map(|(batch_index, outcome)| CanonicalOrder {
+                    .map(|(batch_index, outcome)| EventPosition {
                         processed_at_unix_ms: self
                             .time_for(session_id, outcome.terminal_commit_cursor),
                         source_commit_cursor: outcome.terminal_commit_cursor,
@@ -724,7 +728,7 @@ impl<'a> OrderIndex<'a> {
             }
             (
                 FactProvenance::BudgetReach { generation },
-                FactRole::BudgetReachUsage | FactRole::BudgetReachStatusIdle,
+                ManagedEventType::BudgetReachUsage | ManagedEventType::BudgetReachStatusIdle,
             ) => {
                 if key.thread != session_id {
                     return None;
@@ -736,7 +740,7 @@ impl<'a> OrderIndex<'a> {
                     .filter(|(_, anchor)| anchor.generation == *generation)
                     .filter_map(|(index, anchor)| {
                         let source_commit_cursor = anchor.close_cursor?;
-                        Some(CanonicalOrder {
+                        Some(EventPosition {
                             processed_at_unix_ms: self.time_for(session_id, source_commit_cursor),
                             source_commit_cursor,
                             phase: key.role.phase(),
@@ -750,7 +754,7 @@ impl<'a> OrderIndex<'a> {
                     message_id,
                     ordinal,
                 },
-                FactRole::Transcript(_),
+                ManagedEventType::Transcript(_),
             ) => {
                 let thread = self.threads.get(key.thread.as_str())?;
                 if !thread.aligned {
@@ -773,7 +777,7 @@ impl<'a> OrderIndex<'a> {
                     step,
                     response,
                 },
-                FactRole::Transcript(role),
+                ManagedEventType::Transcript(role),
             ) => {
                 let thread = self.threads.get(key.thread.as_str())?;
                 if !thread.aligned {
@@ -904,26 +908,26 @@ impl<'a> OrderIndex<'a> {
     #[must_use]
     pub fn parent_terminal_order(
         &self,
-        key: &FactKey,
+        key: &EventIdentity,
         terminal_source: u64,
-    ) -> Option<CanonicalOrder> {
+    ) -> Option<EventPosition> {
         let session_id = self.evidence.session_id;
         let terminal = self.evidence.parent_terminal;
         if key.provenance != FactProvenance::ParentTerminal {
             return None;
         }
         match key.role {
-            FactRole::ActivationFailedError
+            ManagedEventType::ActivationFailedError
                 if key.thread == session_id && terminal.activation_failed =>
             {
-                Some(CanonicalOrder {
+                Some(EventPosition {
                     processed_at_unix_ms: terminal.failed_at_unix_ms,
                     source_commit_cursor: terminal_source,
                     phase: key.role.phase(),
                     ordinal: Ordinal::FIRST,
                 })
             }
-            FactRole::ParentTerminalChildStatusTerminated
+            ManagedEventType::ParentTerminalChildStatusTerminated
                 if self
                     .evidence
                     .links
@@ -932,8 +936,8 @@ impl<'a> OrderIndex<'a> {
             {
                 Some(self.parent_terminal_status_order(key.role, terminal_source))
             }
-            FactRole::ParentTerminalPrimaryStatusTerminated
-            | FactRole::ParentTerminalSessionStatusTerminated
+            ManagedEventType::ParentTerminalPrimaryStatusTerminated
+            | ManagedEventType::ParentTerminalSessionStatusTerminated
                 if key.thread == session_id =>
             {
                 Some(self.parent_terminal_status_order(key.role, terminal_source))
@@ -942,8 +946,12 @@ impl<'a> OrderIndex<'a> {
         }
     }
 
-    fn parent_terminal_status_order(&self, role: FactRole, terminal_source: u64) -> CanonicalOrder {
-        CanonicalOrder {
+    fn parent_terminal_status_order(
+        &self,
+        role: ManagedEventType,
+        terminal_source: u64,
+    ) -> EventPosition {
+        EventPosition {
             processed_at_unix_ms: self
                 .evidence
                 .parent_terminal
@@ -993,13 +1001,13 @@ mod tests {
         }
     }
 
-    fn key(thread: &str, role: FactRole, provenance: FactProvenance) -> FactKey {
-        FactKey::new(thread, role, provenance)
+    fn key(thread: &str, role: ManagedEventType, provenance: FactProvenance) -> EventIdentity {
+        EventIdentity::new(thread, role, provenance)
     }
 
     type Coordinate = (u64, u16, (usize, usize), Option<u64>);
 
-    fn order(order: Option<CanonicalOrder>) -> Option<Coordinate> {
+    fn order(order: Option<EventPosition>) -> Option<Coordinate> {
         order.map(|order| {
             (
                 order.source_commit_cursor,
@@ -1059,9 +1067,9 @@ mod tests {
         let index = OrderIndex::new(evidence(&outcomes));
         for (iteration, first) in [(0, 0), (1, 3)] {
             for (role, offset) in [
-                (FactRole::OutcomeEvaluationStart, 0),
-                (FactRole::OutcomeEvaluationOngoing, 1),
-                (FactRole::OutcomeEvaluationEnd, 2),
+                (ManagedEventType::OutcomeEvaluationStart, 0),
+                (ManagedEventType::OutcomeEvaluationOngoing, 1),
+                (ManagedEventType::OutcomeEvaluationEnd, 2),
             ] {
                 assert_eq!(
                     order(index.fact_order(&key(
@@ -1086,7 +1094,7 @@ mod tests {
         assert_eq!(
             order(index.fact_order(&key(
                 SESSION,
-                FactRole::OutcomeEvaluationStart,
+                ManagedEventType::OutcomeEvaluationStart,
                 FactProvenance::OutcomeEvaluation {
                     outcome_id: "outcome".into(),
                     iteration: 0,
@@ -1235,54 +1243,62 @@ mod tests {
         let rows = [
             (
                 "L1 root role at its commit",
-                key(SESSION, FactRole::RootLifecycleStatusRunning, at(1)),
+                key(SESSION, ManagedEventType::RootLifecycleStatusRunning, at(1)),
                 Some((1, 20, (0, 0), None)),
             ),
             (
                 "L2 role on another Thread",
-                key("child", FactRole::RootLifecycleStatusRunning, at(1)),
+                key("child", ManagedEventType::RootLifecycleStatusRunning, at(1)),
                 None,
             ),
             (
                 "L3 aggregate opening",
-                key(SESSION, FactRole::AggregateStatusRunning, at(1)),
+                key(SESSION, ManagedEventType::AggregateStatusRunning, at(1)),
                 Some((1, 10, (0, 0), None)),
             ),
             (
                 "L4 child opening opens the aggregate",
-                key(SESSION, FactRole::AggregateStatusRunning, at(2)),
+                key(SESSION, ManagedEventType::AggregateStatusRunning, at(2)),
                 Some((2, 10, (0, 0), None)),
             ),
             (
                 "L5 a terminal is no opening",
-                key(SESSION, FactRole::AggregateStatusRunning, at(6)),
+                key(SESSION, ManagedEventType::AggregateStatusRunning, at(6)),
                 None,
             ),
             (
                 "L6 aggregate owned by the root",
-                key("child", FactRole::AggregateStatusRunning, at(1)),
+                key("child", ManagedEventType::AggregateStatusRunning, at(1)),
                 None,
             ),
             (
                 "L7 terminal-prefix opening",
-                key(SESSION, FactRole::AggregateTerminalStatusRunning, prefix(6)),
+                key(
+                    SESSION,
+                    ManagedEventType::AggregateTerminalStatusRunning,
+                    prefix(6),
+                ),
                 Some((6, 10, (0, 0), None)),
             ),
             (
                 "L8 terminal prefix needs a boundary",
-                key(SESSION, FactRole::AggregateTerminalStatusRunning, prefix(1)),
+                key(
+                    SESSION,
+                    ManagedEventType::AggregateTerminalStatusRunning,
+                    prefix(1),
+                ),
                 None,
             ),
             (
                 "L9 aggregate usage at any commit",
-                key(SESSION, FactRole::AggregateUsage, prefix(2)),
+                key(SESSION, ManagedEventType::AggregateUsage, prefix(2)),
                 Some((2, 90, (0, 0), None)),
             ),
             (
                 "I1 interval close",
                 key(
                     SESSION,
-                    FactRole::AggregateStatusIdle,
+                    ManagedEventType::AggregateStatusIdle,
                     FactProvenance::RuntimeInterval {
                         interval_id: "interval".into(),
                     },
@@ -1293,7 +1309,7 @@ mod tests {
                 "I2 unknown interval",
                 key(
                     SESSION,
-                    FactRole::AggregateStatusIdle,
+                    ManagedEventType::AggregateStatusIdle,
                     FactProvenance::RuntimeInterval {
                         interval_id: "other".into(),
                     },
@@ -1304,7 +1320,7 @@ mod tests {
                 "B1 closed budget reach",
                 key(
                     SESSION,
-                    FactRole::BudgetReachUsage,
+                    ManagedEventType::BudgetReachUsage,
                     FactProvenance::BudgetReach { generation: 1 },
                 ),
                 Some((6, 90, (0, 0), None)),
@@ -1313,7 +1329,7 @@ mod tests {
                 "B2 open budget reach",
                 key(
                     SESSION,
-                    FactRole::BudgetReachStatusIdle,
+                    ManagedEventType::BudgetReachStatusIdle,
                     FactProvenance::BudgetReach { generation: 2 },
                 ),
                 None,
@@ -1322,7 +1338,7 @@ mod tests {
                 "M1 Message fold",
                 key(
                     SESSION,
-                    FactRole::Transcript(TranscriptRole::AgentMessage),
+                    ManagedEventType::Transcript(TranscriptRole::AgentMessage),
                     FactProvenance::Message {
                         message_id: "user".into(),
                         ordinal: 1,
@@ -1334,7 +1350,7 @@ mod tests {
                 "M2 fold beyond the Message bound",
                 key(
                     SESSION,
-                    FactRole::Transcript(TranscriptRole::AgentMessage),
+                    ManagedEventType::Transcript(TranscriptRole::AgentMessage),
                     FactProvenance::Message {
                         message_id: "user".into(),
                         ordinal: 3,
@@ -1346,7 +1362,7 @@ mod tests {
                 "M3 visible message follows thinking",
                 key(
                     SESSION,
-                    FactRole::Transcript(TranscriptRole::AgentMessage),
+                    ManagedEventType::Transcript(TranscriptRole::AgentMessage),
                     FactProvenance::AssistantResponse {
                         run_id: "run".into(),
                         step: 0,
@@ -1359,7 +1375,7 @@ mod tests {
                 "M4 thinking marker first",
                 key(
                     SESSION,
-                    FactRole::Transcript(TranscriptRole::AgentThinking),
+                    ManagedEventType::Transcript(TranscriptRole::AgentThinking),
                     FactProvenance::AssistantResponse {
                         run_id: "run".into(),
                         step: 0,
@@ -1372,7 +1388,7 @@ mod tests {
                 "A1 model request",
                 key(
                     SESSION,
-                    FactRole::ModelRequestStart,
+                    ManagedEventType::ModelRequestStart,
                     FactProvenance::Audit {
                         run_id: "run".into(),
                         sequence: audit_sequence,
@@ -1384,7 +1400,7 @@ mod tests {
                 "A2 unknown audit row",
                 key(
                     SESSION,
-                    FactRole::ModelRequestEnd,
+                    ManagedEventType::ModelRequestEnd,
                     FactProvenance::Audit {
                         run_id: "other".into(),
                         sequence: audit_sequence,
@@ -1394,7 +1410,7 @@ mod tests {
             ),
             (
                 "X1 role/provenance mismatch",
-                key(SESSION, FactRole::OutcomeError, at(1)),
+                key(SESSION, ManagedEventType::OutcomeError, at(1)),
                 None,
             ),
         ];
@@ -1433,25 +1449,25 @@ mod tests {
             (
                 "P2 session terminal",
                 SESSION,
-                FactRole::ParentTerminalSessionStatusTerminated,
+                ManagedEventType::ParentTerminalSessionStatusTerminated,
                 true,
             ),
             (
                 "P3 linked child terminal",
                 "child",
-                FactRole::ParentTerminalChildStatusTerminated,
+                ManagedEventType::ParentTerminalChildStatusTerminated,
                 true,
             ),
             (
                 "P4 unlinked child",
                 "stray",
-                FactRole::ParentTerminalChildStatusTerminated,
+                ManagedEventType::ParentTerminalChildStatusTerminated,
                 false,
             ),
             (
                 "P5 no activation failure",
                 SESSION,
-                FactRole::ActivationFailedError,
+                ManagedEventType::ActivationFailedError,
                 false,
             ),
         ] {
@@ -1671,7 +1687,7 @@ mod tests {
         let index = index_over!(&small);
         let after = key(
             SESSION,
-            FactRole::Transcript(TranscriptRole::AgentMessage),
+            ManagedEventType::Transcript(TranscriptRole::AgentMessage),
             FactProvenance::Message {
                 message_id: "after".into(),
                 ordinal: 0,
