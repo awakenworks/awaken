@@ -41,7 +41,7 @@ pub trait AcpWrapperInstaller: Send + Sync {
     -> Result<Option<Vec<String>>, String>;
 }
 
-/// Production acquisition adapter for pinned npm wrappers.
+/// Production acquisition adapter for direct host executables and pinned npm wrappers.
 pub struct NpmWrapperInstaller;
 
 #[async_trait]
@@ -51,18 +51,27 @@ impl AcpWrapperInstaller for NpmWrapperInstaller {
         cli: &AcpCli,
         root: &Path,
     ) -> Result<Option<Vec<String>>, String> {
-        let crate::AcpAcquisition::PinnedNpmWrapper {
-            installer,
-            package,
-            bin,
-        } = cli.acquisition
-        else {
-            return Ok(None);
+        let (installer, package, bin) = match cli.acquisition {
+            crate::AcpAcquisition::Direct { executable, args } => {
+                // Discovery and the capability handshake saw this host PATH.
+                // Freeze its executable into the Worker profile now: the
+                // sandbox's restricted PATH is not an acquisition authority.
+                let executable = capability_probe::executable_on_path(
+                    executable,
+                    std::env::var_os("PATH").as_deref(),
+                );
+                return canonical_launch_argv(&executable, args).map(Some);
+            }
+            crate::AcpAcquisition::PinnedNpmWrapper {
+                installer,
+                package,
+                bin,
+            } => (installer, package, bin),
         };
         let prefix = root.join(cli.id);
         let executable = prefix.join("node_modules").join(".bin").join(bin);
         if executable.is_file() && installed_wrapper_matches(&prefix, package) {
-            return canonical_wrapper_argv(&executable).map(Some);
+            return canonical_launch_argv(&executable, &[]).map(Some);
         }
         std::fs::create_dir_all(&prefix).map_err(|error| {
             format!("create ACP wrapper directory {}: {error}", prefix.display())
@@ -106,7 +115,7 @@ impl AcpWrapperInstaller for NpmWrapperInstaller {
                 cli.id
             ));
         }
-        canonical_wrapper_argv(&executable).map(Some)
+        canonical_launch_argv(&executable, &[]).map(Some)
     }
 }
 
@@ -130,14 +139,16 @@ fn installed_wrapper_matches(prefix: &Path, package: &str) -> bool {
         == Some(version)
 }
 
-fn canonical_wrapper_argv(executable: &Path) -> Result<Vec<String>, String> {
+fn canonical_launch_argv(executable: &Path, args: &[&str]) -> Result<Vec<String>, String> {
     let executable = executable.canonicalize().map_err(|error| {
         format!(
-            "installed ACP wrapper {} is unavailable: {error}",
+            "local ACP executable {} is unavailable: {error}",
             executable.display()
         )
     })?;
-    Ok(vec![executable.to_string_lossy().into_owned()])
+    Ok(std::iter::once(executable.to_string_lossy().into_owned())
+        .chain(args.iter().map(|arg| (*arg).to_string()))
+        .collect())
 }
 
 /// Worker-owned inputs for discovery/acquisition, without any authoring store.
