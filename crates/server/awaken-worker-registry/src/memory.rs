@@ -302,29 +302,46 @@ mod loom_tests {
         // all three physical identities remain in the same Registry history.
         // This uses the production Memory transaction and reducer, not a model
         // of the lock. SQL independent-connection races live in conformance.
+        const STACK_BYTES: usize = 1024 * 1024;
         loom::model(|| {
-            let directory = Arc::new(MemoryWorkerDirectory::new());
-            directory.register_sync(registration("A"), 0, 10).unwrap();
-            directory.register_sync(registration("B"), 10, 10).unwrap();
-            let first = directory.clone();
-            let old = thread::spawn(move || first.register_sync(registration("A"), 20, 10));
-            let second = directory.clone();
-            let fresh = thread::spawn(move || second.register_sync(registration("C"), 20, 10));
-            assert!(matches!(
-                old.join().unwrap(),
-                Err(RegistryError::HistoricalIncarnation { .. })
-            ));
-            let fresh = fresh.join().unwrap().unwrap();
-            assert_eq!(fresh.snapshot.identity.incarnation_id, "C");
-            assert_eq!(fresh.snapshot.identity.generation, 3);
-            let workers = directory.workers.lock().unwrap();
-            let records = workers.get("worker").unwrap();
-            assert_eq!(records.len(), 3);
-            assert_eq!(
-                records.get(&1).unwrap().snapshot.identity.incarnation_id,
-                "A"
-            );
-            assert_eq!(records.last_key_value().unwrap().1, &fresh);
+            // A full RegisteredWorker snapshot/fingerprint exceeds generator's
+            // small default coroutine stack on this host. Give every actor a
+            // larger stack without bounding preemptions or permutations: the
+            // two original mutex acquisition orders remain exhaustive.
+            let scenario = thread::Builder::new()
+                .stack_size(STACK_BYTES)
+                .spawn(|| {
+                    let directory = Arc::new(MemoryWorkerDirectory::new());
+                    directory.register_sync(registration("A"), 0, 10).unwrap();
+                    directory.register_sync(registration("B"), 10, 10).unwrap();
+                    let first = directory.clone();
+                    let old = thread::Builder::new()
+                        .stack_size(STACK_BYTES)
+                        .spawn(move || first.register_sync(registration("A"), 20, 10))
+                        .unwrap();
+                    let second = directory.clone();
+                    let fresh = thread::Builder::new()
+                        .stack_size(STACK_BYTES)
+                        .spawn(move || second.register_sync(registration("C"), 20, 10))
+                        .unwrap();
+                    assert!(matches!(
+                        old.join().unwrap(),
+                        Err(RegistryError::HistoricalIncarnation { .. })
+                    ));
+                    let fresh = fresh.join().unwrap().unwrap();
+                    assert_eq!(fresh.snapshot.identity.incarnation_id, "C");
+                    assert_eq!(fresh.snapshot.identity.generation, 3);
+                    let workers = directory.workers.lock().unwrap();
+                    let records = workers.get("worker").unwrap();
+                    assert_eq!(records.len(), 3);
+                    assert_eq!(
+                        records.get(&1).unwrap().snapshot.identity.incarnation_id,
+                        "A"
+                    );
+                    assert_eq!(records.last_key_value().unwrap().1, &fresh);
+                })
+                .unwrap();
+            scenario.join().unwrap();
         });
     }
 
