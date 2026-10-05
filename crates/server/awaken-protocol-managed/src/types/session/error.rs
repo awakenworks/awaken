@@ -161,6 +161,7 @@ impl SessionError {
                 RetryStatus::Terminal,
             ),
             "rate_limited" => ("model_rate_limited_error", RetryStatus::Exhausted),
+            "overloaded" => ("model_overloaded_error", RetryStatus::Exhausted),
             // These are model-owned, non-retryable failures. In particular,
             // billing exhaustion must not lose its model origin or look like
             // ordinary retry exhaustion at the Managed boundary.
@@ -193,10 +194,11 @@ fn code_message_server_name(code: &str, message: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// The two mcp variants are the only committed errors with a required field
-    /// this adapter has to derive, and it derives it from the fault's prose. A
-    /// message without the marker therefore cannot satisfy the variant its code
-    /// selects, so the kind and the field are produced together or not at all.
+    /// Causes: the committed neutral code and, for MCP faults, presence of the
+    /// server marker in the message. Effects: the SDK kind, required server
+    /// field and recovery status are selected together. Missing MCP identity
+    /// cannot claim an MCP variant; distinct model rate, overload and hard
+    /// usage causes cannot collapse into one wire kind.
     ///
     /// | Rule | code                      | marker in message | kind                           | mcp_server_name | retry_status |
     /// | R1   | mcp_authentication_failed | yes               | mcp_authentication_failed_error | the name        | terminal     |
@@ -204,8 +206,13 @@ mod tests {
     /// | R3   | mcp_connection_failed     | yes               | mcp_connection_failed_error     | the name        | retrying     |
     /// | R4   | mcp_connection_failed     | no                | unknown_error                   | absent          | retrying     |
     /// | R5   | rate_limited              | irrelevant        | model_rate_limited_error        | absent          | exhausted    |
+    /// | R6   | overloaded                | irrelevant        | model_overloaded_error          | absent          | exhausted    |
+    /// | R7   | usage_limit               | irrelevant        | model_request_failed_error      | absent          | terminal     |
+    /// R5-R7 distinguish rate, overload and hard usage causes at the existing
+    /// classifier. All three have no MCP server field; a terminal Run with an
+    /// exhausted retry budget must not be advertised as retrying.
     #[test]
-    fn an_mcp_variant_is_claimed_only_with_the_server_name_it_requires() {
+    fn classified_faults_select_only_sdk_variants_their_fields_can_satisfy() {
         let cases = [
             (
                 "R1",
@@ -246,6 +253,22 @@ mod tests {
                 "model_rate_limited_error",
                 None,
                 RetryStatus::Exhausted,
+            ),
+            (
+                "R6",
+                "overloaded",
+                "provider capacity exhausted",
+                "model_overloaded_error",
+                None,
+                RetryStatus::Exhausted,
+            ),
+            (
+                "R7",
+                "usage_limit",
+                "hard usage limit reached",
+                "model_request_failed_error",
+                None,
+                RetryStatus::Terminal,
             ),
         ];
         for (rule, code, message, kind, server, retry_status) in cases {

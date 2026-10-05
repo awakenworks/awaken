@@ -22,6 +22,7 @@
     "direct_deployment_poll_interval_has_one_validated_projection": "execution_axes_project_into_one_validated_topology",
     "resolve_sandbox_tier_passes_non_namespace_tiers_through_unprobed": "resolve_sandbox_tier_probes_local_tiers_and_passes_container_tiers_through",
     "default_commit_operation_rejects_overflow_before_durable_commit": "plain_guard_rejects_operations_before_lock_or_append_and_keeps_plain_commit",
-    "plain_claimed_commit_rejects_operations_without_plain_effects": "plain_guard_rejects_operations_before_lock_or_append_and_keeps_plain_commit"
+    "plain_claimed_commit_rejects_operations_without_plain_effects": "plain_guard_rejects_operations_before_lock_or_append_and_keeps_plain_commit",
+    "an_mcp_variant_is_claimed_only_with_the_server_name_it_requires": "classified_faults_select_only_sdk_variants_their_fields_can_satisfy"
   }
 }

@@ -189,12 +189,15 @@ and its executed evidence or states the remaining qualification boundary.
   intersections, mixed allow/block rules, disjoint lists, scalar precedence,
   malformed input and a monotonicity property. The Web tool test witnesses
   provider calls and zero-effect refusals; the child attempt test uses a real
-  loopback HTTP request both before and after activation serialization. Session
-  coordination tests freeze current settings on the next child admission while
-  retaining the previous dispatch. Root/child activations use a closed format
-  marker: an old decoder that ignores unknown fields still rejects the marker,
-  and an old registered Worker lacks the exact required capability. A selected
-  legacy child Web tool without reconstructable caller evidence fails closed.
+  loopback HTTP request both before and after activation serialization, including
+  the Host-configured allow and block cases. The durable SQLite claim test
+  preserves the exact inherited source through enqueue and claim; the claimed
+  Runtime cache test rebuilds when that source changes and reuses an identical
+  replay. Session coordination tests freeze current settings on the next child
+  admission while retaining the previous dispatch. Root/child activations use a
+  closed format marker: an old decoder that ignores unknown fields still rejects
+  the marker, and an old registered Worker lacks the exact required capability.
+  A selected legacy child Web tool without reconstructable caller evidence fails closed.
   ACP and remote child executions that select Web tools remain explicitly
   unavailable until those adapters can enforce the same inherited policy;
   capability selection cannot silently drop it.
@@ -311,7 +314,9 @@ unreachable: one decision costs one reason instead of a cascade of unreachable
 children - naming `billing_error` unreachable should not also demand three
 entries for the `retry_status` nobody will ever read inside it.
 
-Two of the named gaps are structural rather than missing match arms.
+The existing neutral `overloaded` fault now projects as the SDK's distinct
+`model_overloaded_error`; it does not change the hard-usage or billing decision.
+Two of the remaining named gaps are structural rather than missing match arms.
 `credential_host_unreachable_error` requires `credential_id` and `vault_id`, and
 every `repository_*` variant requires `repository_url`; `SessionError` carries
 none of those fields, so the gap is a projection that does not exist, and the

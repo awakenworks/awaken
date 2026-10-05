@@ -79,11 +79,6 @@ fn unreachable_variants() -> BTreeMap<&'static str, &'static str> {
             "`SessionError` carries neither `credential_id` nor `vault_id`, which \
              this variant requires, and no fault code reaches it.",
         ),
-        (
-            "error[model_overloaded_error]",
-            "`SessionError::classify` maps no neutral fault code here; an \
-             overloaded model arrives as the retryable `rate_limited`.",
-        ),
         ("error[repository_authentication_error]", repository),
         ("error[repository_checkout_error]", repository),
         ("error[repository_clone_error]", repository),
@@ -490,6 +485,14 @@ fn variant_samples() -> Vec<Event> {
         }),
         event(OutboundKind::SessionError {
             error: SessionError::classify("rate_limited", "429 from the model"),
+        }),
+        // Cause: a committed model overload fault carries the stable neutral
+        // `overloaded` code. Effect: the SDK's distinct overload variant is
+        // reachable with its required retry status; ordinary rate limits keep
+        // their separate sample above. Decision rule E6: overload, not rate or
+        // billing, selects model_overloaded_error without an MCP-only field.
+        event(OutboundKind::SessionError {
+            error: SessionError::classify("overloaded", "provider capacity exhausted"),
         }),
         event(OutboundKind::SessionError {
             error: SessionError::classify("context_overflow", "the prompt exceeds the window"),
