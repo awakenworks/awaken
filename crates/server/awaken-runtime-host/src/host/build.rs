@@ -65,7 +65,8 @@ impl SharedHost {
         deployment: crate::DeploymentConfig,
     ) -> Self {
         // A test or Scenario fixture is its own composition: it chooses the
-        // host clock here.
+        // host clock and installs the volatile Runtime authority here.
+        let clock = awaken_time::system_clock();
         Self::build(
             llm,
             model_ref.into(),
@@ -78,10 +79,11 @@ impl SharedHost {
             HostProcess {
                 local_workspace: Self::mint_local_workspace(),
                 deployment,
-                clock: awaken_time::system_clock(),
+                clock: clock.clone(),
             },
             HostAuthorityRole::StoreOwning,
         )
+        .with_runtime_authority(Arc::new(crate::EphemeralRuntimeAuthority::new(clock)))
     }
 
     /// Test-support replacement of a volatile fixture's deployment value.
@@ -314,18 +316,9 @@ impl SharedHost {
             store_dir,
             authority_role,
             deployment,
-            authority: {
-                #[cfg(test)]
-                {
-                    Some(Arc::new(crate::EphemeralRuntimeAuthority::new(
-                        clock.clone(),
-                    )))
-                }
-                #[cfg(not(test))]
-                {
-                    None
-                }
-            },
+            // Every composition, tests included, installs its durable authority
+            // explicitly through `with_runtime_authority`.
+            authority: None,
             clock,
             background_supervisor,
             completion: Arc::new(CompletionRegistry::new(hub)),
