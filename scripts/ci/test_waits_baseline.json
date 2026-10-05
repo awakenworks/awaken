@@ -99,7 +99,6 @@
       "e2e/codex_acp_live_e2e.mjs": 1,
       "e2e/control_plane_postgres_e2e.ts": 1,
       "e2e/coordinator_authority_parity_e2e.ts": 3,
-      "e2e/credential_materialization_worker_e2e.ts": 1,
       "e2e/credential_reference_worker_e2e.ts": 3,
       "e2e/dispatch_fenced_metrics_e2e.ts": 1,
       "e2e/durable_crossthread_e2e.mjs": 2,

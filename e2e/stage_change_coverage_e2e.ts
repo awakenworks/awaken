@@ -266,14 +266,12 @@ const obligations: Obligation[] = [
   { id: 'G42-P07', stage: '9 guardrail promotion evidence', behavior: 'full replacement publishes only the exact realized MCP generation while replay, conflict, removal and failed stage preserve durable truth', scenario: 'managed_mcp_hot_swap' },
   { id: 'G42-P08', stage: '9 guardrail promotion evidence', behavior: 'process replacement recovers the exact active MCP generation and never resurrects a removed generation', scenario: 'managed_mcp_recovery' },
   { id: 'G43-P01', stage: '9 guardrail promotion evidence', behavior: 'credential materialization binds exact source, recipient, target, usage, payload and claim epoch', scenario: 'credential_materialization_worker' },
-  // The former D4-E01..E05 rows repeated these G43 obligations and falsely
-  // counted the negative partitions as E2E evidence. D4-08 keeps the distinct
-  // database-less Worker-to-provider proof. The concrete credential_files.rs
-  // resolver matrix proves the negative partitions, while the one-process
-  // materialization E2E proves only the positive exact pin. Keep the two
-  // cross-process gaps visible until a real Worker rejects those envelopes.
-  { id: 'G43-P02', stage: '9 guardrail promotion evidence', behavior: 'mismatched payload or target cannot replay an envelope' },
-  { id: 'G43-P03', stage: '9 guardrail promotion evidence', behavior: 'expired or wrong-recipient material fails before provider I/O' },
+  // The former D4-E01..E05 rows repeated these G43 obligations. D4-08 keeps
+  // the distinct database-less Worker-to-provider proof. The existing concrete
+  // resolver owns the full decision table; the same real-Worker process E2E
+  // observes P02's terminal rejection and P03's no-attempt boundary.
+  { id: 'G43-P02', stage: '9 guardrail promotion evidence', behavior: 'mismatched payload or target cannot replay an envelope', scenario: 'credential_materialization_worker' },
+  { id: 'G43-P03', stage: '9 guardrail promotion evidence', behavior: 'expired or wrong-recipient material starts no physical attempt and never reaches provider I/O', scenario: 'credential_materialization_worker' },
   { id: 'G43-P04', stage: '9 guardrail promotion evidence', behavior: 'ambient provider variables cannot replace the published credential reference', scenario: 'credential_reference_worker' },
   { id: 'G43-P05', stage: '9 guardrail promotion evidence', behavior: 'revoked worker-local material fails exact use-time validation before launch', scenario: 'credential_reference_worker' },
   { id: 'G43-P06', stage: '9 guardrail promotion evidence', behavior: 'ACP receives the publication-pinned endpoint, model, credential revision and isolated config home', scenario: 'acp_projected_local' },
