@@ -26,7 +26,7 @@ macro_rules! neutral_role {
             fn observe_realization_request(
                 &self,
             ) -> Result<
-                awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+                awaken_lease_contract::authority::AuthorityProofStarted,
                 $crate::__macro_support::RunError,
             > {
                 Err($crate::__macro_support::RunError::unavailable(
@@ -42,7 +42,7 @@ macro_rules! neutral_role {
                 _control: &dyn $crate::__macro_support::SessionRealizationControl,
                 _owner: &str,
                 _runtime_incarnation: &str,
-                _timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+                _timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
             ) -> Result<usize, $crate::__macro_support::RunError> {
                 Err($crate::__macro_support::RunError::unavailable(
                     "runtime does not reconcile realization time proofs",

@@ -203,7 +203,7 @@ awaken_session_execution_contract::neutral_role!(CapabilityRuntime for QueueFake
 impl awaken_session_execution_contract::RealizationRuntime for QueueFake {
     fn observe_realization_request(
         &self,
-    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+    ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
         // Creation requires explicit request-relative execution-clock evidence;
         // the canonical test clock supplies that prerequisite for wire tests.
         awaken_protocol_managed::test_support::observe_realization_request()
@@ -219,7 +219,7 @@ impl awaken_session_execution_contract::RealizationRuntime for QueueFake {
         control: &dyn awaken_session_realization_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
-        timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+        timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
     ) -> Result<usize, awaken_session_error_contract::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
@@ -1005,8 +1005,7 @@ fn app_with_session_application(
     impl awaken_session_execution_contract::RealizationRuntime for Shared {
         fn observe_realization_request(
             &self,
-        ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError>
-        {
+        ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
             self.0.observe_realization_request()
         }
 
@@ -1020,7 +1019,7 @@ fn app_with_session_application(
             control: &dyn awaken_session_realization_contract::SessionRealizationControl,
             owner: &str,
             runtime_incarnation: &str,
-            timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+            timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
         ) -> Result<usize, awaken_session_error_contract::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_projections(control, owner, runtime_incarnation, timing)

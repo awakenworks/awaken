@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
+use awaken_lease_contract::authority::AuthorityLeaseTiming;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProbeObservation {

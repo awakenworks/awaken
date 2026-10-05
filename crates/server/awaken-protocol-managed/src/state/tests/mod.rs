@@ -117,7 +117,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EndSessionRecorde
     fn observe_realization_request(
         &self,
     ) -> Result<
-        awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        awaken_lease_contract::authority::AuthorityProofStarted,
         awaken_session_error_contract::RunError,
     > {
         crate::test_support::observe_realization_request()
@@ -133,7 +133,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EndSessionRecorde
         control: &dyn awaken_session_realization_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
-        timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+        timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
     ) -> Result<usize, awaken_session_error_contract::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)

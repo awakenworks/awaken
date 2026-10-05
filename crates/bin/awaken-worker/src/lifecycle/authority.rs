@@ -4,10 +4,10 @@
 //! Session admission consult this same projection; neither keeps a second lease.
 
 pub(crate) use awaken_authority_clock::authority_proof_started;
-use awaken_provisioning_contract::CurrentExecutionAuthority;
-use awaken_runtime_contract::authority_lease::{
+use awaken_lease_contract::authority::{
     AuthorityLeaseTiming, AuthorityProofStarted as ProofStarted,
 };
+use awaken_provisioning_contract::CurrentExecutionAuthority;
 use std::{io, sync::Mutex, time::Duration};
 
 #[derive(Clone, Copy)]

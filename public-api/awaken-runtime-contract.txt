@@ -240,23 +240,6 @@ pub type awaken_runtime_contract::attempt_termination::ActiveNativeAttemptCovera
 pub const awaken_runtime_contract::attempt_termination::ActiveNativeAttemptCoverage::KEY: &'static str
 pub const awaken_runtime_contract::attempt_termination::ActiveNativeAttemptCoverage::MERGE: awaken_agent_contract::agent::state::MergePolicy
 pub const awaken_runtime_contract::attempt_termination::ActiveNativeAttemptCoverage::SCOPE: awaken_agent_contract::agent::state::Scope
-pub mod awaken_runtime_contract::authority_lease
-pub struct awaken_runtime_contract::authority_lease::AuthorityLeaseTiming
-impl awaken_runtime_contract::authority_lease::AuthorityLeaseTiming
-pub fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(u64) -> Self
-pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::lease_ttl(self) -> core::time::Duration
-pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::proof_window(self) -> core::time::Duration
-pub fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::remaining_proof_after(self, core::time::Duration) -> core::time::Duration
-pub fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::remaining_proof_at(self, awaken_runtime_contract::authority_lease::AuthorityProofStarted, awaken_runtime_contract::authority_lease::AuthorityProofStarted) -> core::option::Option<core::time::Duration>
-pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::renew_interval(self) -> core::time::Duration
-pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::request_timeout(self) -> core::time::Duration
-pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::retry_delay(self) -> core::time::Duration
-pub struct awaken_runtime_contract::authority_lease::AuthorityProofStarted
-impl awaken_runtime_contract::authority_lease::AuthorityProofStarted
-pub fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::elapsed_at(self, Self) -> core::option::Option<core::time::Duration>
-pub const fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::elapsed_clock(self) -> core::time::Duration
-pub const fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(tokio::time::instant::Instant, core::time::Duration) -> Self
-pub const fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::scheduled(self) -> tokio::time::instant::Instant
 pub mod awaken_runtime_contract::boundary
 pub enum awaken_runtime_contract::boundary::BoundaryOutcome
 pub awaken_runtime_contract::boundary::BoundaryOutcome::Await

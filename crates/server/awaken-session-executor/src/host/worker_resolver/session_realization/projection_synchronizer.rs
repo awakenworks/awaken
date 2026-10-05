@@ -101,7 +101,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
     fn observe_realization_request(
         &self,
     ) -> Result<
-        awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        awaken_lease_contract::authority::AuthorityProofStarted,
         awaken_session_error_contract::RunError,
     > {
         awaken_authority_clock::authority_proof_started().map_err(|error| {

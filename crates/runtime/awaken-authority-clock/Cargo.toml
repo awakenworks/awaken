@@ -17,7 +17,7 @@ authority = "authority-clock"
 
 [dependencies]
 awaken-time.workspace = true
-awaken-runtime-contract.workspace = true
+awaken-lease-contract.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { version = "1", features = ["time"] }

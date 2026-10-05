@@ -573,7 +573,7 @@ mod tests {
         installed:
             Mutex<Vec<awaken_session_realization_contract::SessionTerminalCleanupAssignment>>,
         fail_install: AtomicBool,
-        observation: Mutex<Option<awaken_runtime_contract::authority_lease::AuthorityProofStarted>>,
+        observation: Mutex<Option<awaken_lease_contract::authority::AuthorityProofStarted>>,
         installed_remaining_us: AtomicU64,
     }
 
@@ -678,8 +678,7 @@ mod tests {
     impl awaken_session_execution_contract::RealizationRuntime for RecordingTerminalProjectionRuntime {
         fn observe_realization_request(
             &self,
-        ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError>
-        {
+        ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
             match *self.observation.lock().unwrap() {
                 Some(observation) => Ok(observation),
                 None => crate::tests::test_realization_request_started(),
@@ -696,7 +695,7 @@ mod tests {
             control: &dyn awaken_session_realization_contract::SessionRealizationControl,
             owner: &str,
             runtime_incarnation: &str,
-            timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+            timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
         ) -> Result<usize, awaken_session_error_contract::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
@@ -1022,7 +1021,7 @@ mod tests {
         // The renewal fake changes observation DURING I/O. Capturing a request
         // anchor after the response would incorrectly admit T2/T3/T4. These
         // are deterministic adapter-order tests, not OS clock qualification.
-        use awaken_runtime_contract::authority_lease::AuthorityProofStarted;
+        use awaken_lease_contract::authority::AuthorityProofStarted;
         for (rule, response_us, admitted) in [
             ("T1", 1_019_999, true),
             ("T2", 1_020_000, false),

@@ -54,7 +54,7 @@ async fn next_work<R: awaken_session_execution_contract::RealizationRuntime + ?S
 ) -> Result<
     Option<(
         SessionTerminalCleanupWork,
-        awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        awaken_lease_contract::authority::AuthorityProofStarted,
     )>,
     SessionRealizationDriveError,
 > {
@@ -688,12 +688,11 @@ mod tests {
     impl awaken_session_execution_contract::RealizationRuntime for RecordingRuntime {
         fn observe_realization_request(
             &self,
-        ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError>
-        {
+        ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
             // The ordering fixture uses a fixed model clock; elapsed-time
             // decisions and real OS sampling have separate executable tests.
             Ok(
-                awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(
+                awaken_lease_contract::authority::AuthorityProofStarted::from_clock_sample(
                     awaken_time::mono::now(),
                     std::time::Duration::ZERO,
                 ),
@@ -710,7 +709,7 @@ mod tests {
             control: &dyn awaken_session_realization_contract::SessionRealizationControl,
             owner: &str,
             runtime_incarnation: &str,
-            timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+            timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
         ) -> Result<usize, awaken_session_error_contract::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_projections(control, owner, runtime_incarnation, timing)

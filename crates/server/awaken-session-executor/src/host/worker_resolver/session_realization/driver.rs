@@ -50,7 +50,7 @@ impl HostWorkerResolver {
         session_id: &awaken_session_types::SessionId,
         directive: awaken_session_realization_contract::SessionRealizationDirective,
         claimed: Option<&awaken_dispatch_contract::Claimed>,
-        request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        request_started: awaken_lease_contract::authority::AuthorityProofStarted,
         realization: &crate::session_slot::SessionRealizationPermit,
     ) -> Result<(), awaken_dispatch_execution::Error> {
         let claim =
@@ -79,7 +79,7 @@ impl HostWorkerResolver {
         control: &dyn awaken_session_realization_contract::SessionRealizationControl,
         directive: awaken_session_realization_contract::SessionRealizationDirective,
         synchronizer: WorkerProjectionSynchronizer<'_>,
-        request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        request_started: awaken_lease_contract::authority::AuthorityProofStarted,
         realization: &crate::session_slot::SessionRealizationPermit,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationDriveError> {
         let host = synchronizer.host;

@@ -8,7 +8,7 @@
 //! PersistedSession continues to store only SessionRealizationLease.
 
 use super::{SessionRealizationControlFailure, SessionRealizationLease};
-use awaken_runtime_contract::authority_lease::{AuthorityLeaseTiming, AuthorityProofStarted};
+use awaken_lease_contract::authority::{AuthorityLeaseTiming, AuthorityProofStarted};
 use std::{num::NonZeroU64, time::Duration};
 
 /// A Control-clock horizon, never a Worker wall-clock expiry calculation.
