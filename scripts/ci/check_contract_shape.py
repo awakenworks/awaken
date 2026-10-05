@@ -492,7 +492,10 @@ def render_baseline(
             if before is not None and entry[rule] > before:
                 growth.append(f"{name}.{rule}: {before} -> {entry[rule]}")
                 if reason:
-                    reasons[rule] = reason
+                    # Each growth keeps the reasons recorded for earlier growth:
+                    # the baseline is the history of why a number may be this high.
+                    earlier = reasons.get(rule)
+                    reasons[rule] = reason if not earlier or reason in earlier else f"{earlier}; then: {reason}"
         if reasons:
             entry["growth_reasons"] = reasons
         crates[name] = entry
@@ -693,6 +696,9 @@ def self_test() -> None:
     assert growth == ["k.catch_all_errors: 1 -> 2"], f"W1 {growth}"
     document, growth = render_baseline({"k": counted}, previous, "typed split pending")
     assert document["crates"]["k"]["growth_reasons"] == {"catch_all_errors": "typed split pending"}, "W2"
+    grown = {"crates": {"k": {"depth": 0, "catch_all_errors": 2, "growth_reasons": {"catch_all_errors": "first"}}}}
+    document, _ = render_baseline({"k": Measurement(depth=0, catch_all_errors=["x", "y", "z"])}, grown, "second")
+    assert document["crates"]["k"]["growth_reasons"] == {"catch_all_errors": "first; then: second"}, "W3 keeps history"
     lowered, growth = render_baseline({"k": Measurement(depth=0)}, previous, None)
     assert not growth and lowered["crates"]["k"] == {"depth": 0}, "W lowering needs no reason"
     print("check_contract_shape self-test: the decision table holds")

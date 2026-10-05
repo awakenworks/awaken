@@ -119,6 +119,15 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_test_waits.py
 
+    # 3b. Dependency direction and ownership rules. It also runs inside the
+    #     rust gate; as its own hook it still runs on commits that skip that gate.
+    crate-boundaries:
+      # >>> generated glob from check_crate_boundaries.py INPUT_GLOBS — do not edit
+      # no glob: check_crate_boundaries.py reads every staged file, so this command
+      # must keep the whole staged set as its trigger.
+      # <<< generated glob
+      run: python3 scripts/ci/check_crate_boundaries.py
+
     # 3b. No Rust test disappears silently. Moving a test between crates or
     #     rewriting its fixtures keeps it (identity is the function name); a
     #     rename or deletion is recorded in the ledger in the same commit.
