@@ -13,7 +13,7 @@ fn native_manifest_admission_uses_installed_materializer_evidence() {
     // after the real manifest codec must reject every unsupported tuple;
     // an allowed policy cannot manufacture a different adapter capability.
     // This covers evidence projection, not concrete file resolver fidelity.
-    use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
+    use crate::InferenceExecutorMaterializer;
     let worker = selected_holder();
     let resolver = Arc::new(ExactExternalResolver {
         expected_binding: CredentialMaterialBinding::for_target(

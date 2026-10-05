@@ -13,6 +13,7 @@ authority = "protocol-mcp"
 description = "MCP protocol adapter (server side): exposes awaken runtime tools to external MCP clients"
 
 [dependencies]
+awaken-session-environment-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-agent-channel.workspace = true
 awaken-runtime-contract.workspace = true

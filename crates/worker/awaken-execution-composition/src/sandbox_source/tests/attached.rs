@@ -1,7 +1,7 @@
 //! Lifecycle decision rows through the existing production channel source.
 
 use super::*;
-use awaken_runtime_contract::tool_export::{AcpToolExport, AcpToolExporter};
+use awaken_session_environment_contract::tool_export::{AcpToolExport, AcpToolExporter};
 use pc::ProcessHandle as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -175,13 +175,14 @@ impl AcpToolExporter for Exporter {
 
     fn attached_channels(
         &self,
-    ) -> Option<&dyn awaken_runtime_contract::tool_export::AttachedChannelToolExporter> {
+    ) -> Option<&dyn awaken_session_environment_contract::tool_export::AttachedChannelToolExporter>
+    {
         Some(self)
     }
 }
 
 #[async_trait]
-impl awaken_runtime_contract::tool_export::AttachedChannelToolExporter for Exporter {
+impl awaken_session_environment_contract::tool_export::AttachedChannelToolExporter for Exporter {
     async fn export_channel_set(
         &self,
         server: awaken_runtime_contract::resolved::AcpMcpServer,
@@ -211,7 +212,7 @@ fn source(sandbox: Arc<Sandbox>, fail: bool) -> (BoundLocalChannelSource, Arc<Ex
         fail,
     });
     let tools = Arc::new(
-        awaken_runtime_contract::tool_export::AttachedToolSet::new(
+        awaken_session_environment_contract::tool_export::AttachedToolSet::new(
             exporter.clone(),
             vec![],
             vec![],
@@ -380,7 +381,7 @@ async fn unsupported_environment_adapter_and_exporter_fail_closed() {
     // falls back to an inaccessible Worker HTTP URL.
     let exporter = Arc::new(HttpOnlyExporter::default());
     let tools = Arc::new(
-        awaken_runtime_contract::tool_export::AttachedToolSet::new(
+        awaken_session_environment_contract::tool_export::AttachedToolSet::new(
             exporter.clone(),
             vec![],
             vec![],

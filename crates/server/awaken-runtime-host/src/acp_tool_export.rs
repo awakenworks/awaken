@@ -11,7 +11,7 @@ use awaken_runtime_contract::tool::{
     RawTool, ToolCall, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput,
 };
 
-use awaken_runtime_contract::tool_export::{AcpToolExport, AcpToolExporter};
+use awaken_session_environment_contract::tool_export::{AcpToolExport, AcpToolExporter};
 
 /// Bind the selected Hand descriptors to one Environment executor without
 /// rebuilding a host-side RawTool registry for Namespace or Container tiers.
@@ -359,7 +359,7 @@ pub(crate) async fn export_tools(
     String,
 > {
     let (paired_descriptors, paired_executors) =
-        awaken_runtime_contract::tool_export::pair_tools(descriptors, executors)?;
+        awaken_session_environment_contract::tool_export::pair_tools(descriptors, executors)?;
     let export = exporter
         .export_set(namespace, paired_descriptors, paired_executors)
         .await?;

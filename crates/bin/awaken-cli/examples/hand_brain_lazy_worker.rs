@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
-use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
+use awaken_credential_materializer::InferenceExecutorMaterializer;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult, ToolCall,
 };

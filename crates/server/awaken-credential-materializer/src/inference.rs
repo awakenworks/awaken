@@ -11,8 +11,8 @@
 
 use std::sync::Arc;
 
+use crate::InferenceExecutorMaterializer;
 use async_trait::async_trait;
-use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
 use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
 };

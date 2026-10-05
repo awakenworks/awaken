@@ -16,7 +16,7 @@ pub(crate) struct AgentExecution {
     /// [`InferenceExecutorMaterializer`]. Once a materializer is installed, a rejected
     /// publication pin fails closed instead of falling back to this executor.
     ///
-    /// [`InferenceExecutorMaterializer`]: awaken_runtime_contract::inference::InferenceExecutorMaterializer
+    /// [`InferenceExecutorMaterializer`]: awaken_credential_materializer::InferenceExecutorMaterializer
     pub(crate) llm: Arc<dyn LlmExecutor>,
     pub(crate) model_ref: String,
     /// Per-thread model→executor routing (R1/R2). See [`crate::inference_routing`].
@@ -98,7 +98,7 @@ impl SharedHost {
     /// without a configuration resolver because admission already pinned access.
     pub fn with_inference_materializer(
         mut self,
-        materializer: Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>,
+        materializer: Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>,
     ) -> Self {
         self.resources
             .memory

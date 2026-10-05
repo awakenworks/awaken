@@ -23,6 +23,11 @@ awaken-agent-channel.workspace = true
 awaken-acp-contract.workspace = true
 awaken-runtime-contract.workspace = true
 async-trait.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+# The tool-export decision table derives a JSON schema for its fixture arguments.
+schemars = "1"
 
 [lints]
 workspace = true

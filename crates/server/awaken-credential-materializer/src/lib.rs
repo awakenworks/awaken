@@ -11,6 +11,9 @@
 //! sealed bytes. Native provider execution, optional brokered inference, and
 //! ACP provisioning share this adapter so candidate routing cannot drift.
 
+mod inference_executor;
+pub use inference_executor::InferenceExecutorMaterializer;
+
 #[cfg(feature = "brokered")]
 pub mod brokered_inference;
 mod credential_artifact;

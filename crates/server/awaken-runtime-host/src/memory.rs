@@ -54,7 +54,7 @@ use captured_writes::{CapturedMemoryWrites, writes_from_committed_agent};
 pub struct MemoryRuntime {
     llm: Arc<dyn LlmExecutor>,
     inference_materializer:
-        RwLock<Option<Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>>>,
+        RwLock<Option<Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>>>,
     /// Fresh sandboxes for extraction/selection Runs; the process composition
     /// replaces the construction default through
     /// `SharedHost::with_auxiliary_sandboxes`.
@@ -272,7 +272,7 @@ impl MemoryRuntime {
 
     pub(crate) fn set_inference_materializer(
         &self,
-        materializer: Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>,
+        materializer: Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>,
     ) {
         *self
             .inference_materializer

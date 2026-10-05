@@ -12,7 +12,6 @@ pub mod credential;
 pub mod data_subject;
 pub mod delegation;
 pub mod execution;
-pub mod inference;
 pub mod live_inbox;
 pub mod llm;
 pub mod metrics;
@@ -33,7 +32,6 @@ pub mod terminal;
 // The tool vocabulary lives in `awaken-tool-contract`; these module paths are
 // kept as a facade so existing `awaken_runtime_contract::tool*` imports resolve.
 pub use awaken_tool_contract::{tool, tool_batch, tool_discovery};
-pub mod tool_export;
 
 pub use activation::RunActivation;
 pub use boundary::{BoundaryOutcome, evaluate_boundary};
@@ -79,7 +77,6 @@ pub use execution::{
     AttemptRecoveryMode, Cancellation, ExecutorCapabilities, NATIVE_RUNTIME_CAPABILITY,
     RunAttemptExecutor, RunExecutor, Wait, execution_capability,
 };
-pub use inference::InferenceExecutorMaterializer;
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
 pub use llm::{ChatRequest, ChatResponse, LlmExecutor, ModelContentMaterializer};
 pub use pause::PauseSignal;
