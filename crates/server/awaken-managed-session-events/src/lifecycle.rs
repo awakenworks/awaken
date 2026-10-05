@@ -17,7 +17,10 @@ use awaken_session_execution_contract::CoordinatedThreadLink;
 
 use crate::fault::run_fault;
 use crate::stop::terminal_stop;
-use crate::{FactKey, FactKind, FactProvenance, FactRole, ProjectionError, TimelineFact};
+use crate::{
+    DerivedSessionEvent, EventIdentity, FactProvenance, ManagedEventType, ProjectionError,
+    SessionEventKind,
+};
 
 /// The published status of one coordinated Thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +60,7 @@ pub fn initial_coordinated_threads(links: &[CoordinatedThreadLink]) -> Vec<Coord
 /// consumed.
 #[derive(Debug, Default)]
 pub struct ChildLifecycle {
-    pub facts: Vec<TimelineFact>,
+    pub facts: Vec<DerivedSessionEvent>,
     /// Every Run boundary projected as a Thread terminal.
     pub terminal_cursors: Vec<RunLifecycleCursor>,
 }
@@ -73,7 +76,7 @@ pub struct ChildLifecycle {
 pub fn root_lifecycle_opening_facts(
     session_id: &str,
     lifecycle: &[RunLifecycleEvent],
-) -> Vec<TimelineFact> {
+) -> Vec<DerivedSessionEvent> {
     let mut facts = Vec::new();
     let mut open = false;
     for event in lifecycle
@@ -81,8 +84,8 @@ pub fn root_lifecycle_opening_facts(
         .filter(|event| event.thread_id.0 == session_id)
     {
         let at = |role, kind| {
-            TimelineFact::new(
-                FactKey::new(
+            DerivedSessionEvent::new(
+                EventIdentity::new(
                     session_id,
                     role,
                     FactProvenance::Lifecycle {
@@ -96,8 +99,8 @@ pub fn root_lifecycle_opening_facts(
             if SessionAgentRunBoundary::is_boundary(event.kind) {
                 if !open {
                     facts.push(at(
-                        FactRole::RootTerminalStatusRunning,
-                        FactKind::ThreadRunning,
+                        ManagedEventType::RootTerminalStatusRunning,
+                        SessionEventKind::ThreadRunning,
                     ));
                 }
                 open = false;
@@ -107,23 +110,23 @@ pub fn root_lifecycle_opening_facts(
         match event.kind {
             RunLifecycleEventKind::Running | RunLifecycleEventKind::Resumed => {
                 facts.push(at(
-                    FactRole::RootLifecycleStatusRunning,
-                    FactKind::ThreadRunning,
+                    ManagedEventType::RootLifecycleStatusRunning,
+                    SessionEventKind::ThreadRunning,
                 ));
                 open = true;
             }
             RunLifecycleEventKind::Rescheduled => {
                 facts.push(at(
-                    FactRole::RootLifecycleSessionStatusRescheduled,
-                    FactKind::SessionRescheduled,
+                    ManagedEventType::RootLifecycleSessionStatusRescheduled,
+                    SessionEventKind::SessionRescheduled,
                 ));
                 facts.push(at(
-                    FactRole::RootLifecycleStatusRescheduled,
-                    FactKind::ThreadRescheduled,
+                    ManagedEventType::RootLifecycleStatusRescheduled,
+                    SessionEventKind::ThreadRescheduled,
                 ));
                 facts.push(at(
-                    FactRole::RootRescheduledLifecycleStatusRunning,
-                    FactKind::ThreadRunning,
+                    ManagedEventType::RootRescheduledLifecycleStatusRunning,
+                    SessionEventKind::ThreadRunning,
                 ));
                 open = true;
             }
@@ -166,8 +169,8 @@ pub fn project_child_lifecycle(
             continue;
         }
         let fact = |role, kind| {
-            TimelineFact::new(
-                FactKey::new(
+            DerivedSessionEvent::new(
+                EventIdentity::new(
                     thread_id,
                     role,
                     FactProvenance::Lifecycle {
@@ -186,8 +189,8 @@ pub fn project_child_lifecycle(
                 if child.status != ThreadStatus::Running {
                     child.status = ThreadStatus::Running;
                     projection.facts.push(fact(
-                        FactRole::LifecycleStatusRunning,
-                        FactKind::ThreadRunning,
+                        ManagedEventType::LifecycleStatusRunning,
+                        SessionEventKind::ThreadRunning,
                     ));
                 }
             }
@@ -199,12 +202,12 @@ pub fn project_child_lifecycle(
                 // without a protocol-owned retry registry.
                 child.status = ThreadStatus::Running;
                 projection.facts.push(fact(
-                    FactRole::LifecycleStatusRescheduled,
-                    FactKind::ThreadRescheduled,
+                    ManagedEventType::LifecycleStatusRescheduled,
+                    SessionEventKind::ThreadRescheduled,
                 ));
                 projection.facts.push(fact(
-                    FactRole::RescheduledLifecycleStatusRunning,
-                    FactKind::ThreadRunning,
+                    ManagedEventType::RescheduledLifecycleStatusRunning,
+                    SessionEventKind::ThreadRunning,
                 ));
             }
             Some(_) => {
@@ -228,8 +231,8 @@ pub fn project_child_lifecycle(
                 );
                 if let Some(fault) = run_fault(event, snapshots.get(thread_id))? {
                     projection.facts.push(fact(
-                        FactRole::LifecycleError,
-                        FactKind::RunError {
+                        ManagedEventType::LifecycleError,
+                        SessionEventKind::RunError {
                             fault,
                             advisor: child.advisor,
                         },
@@ -242,23 +245,23 @@ pub fn project_child_lifecycle(
                     // follow-up input the Runtime must reject.
                     child.status = ThreadStatus::Terminated;
                     projection.facts.push(fact(
-                        FactRole::FailedLifecycleStatusTerminated,
-                        FactKind::ThreadTerminated,
+                        ManagedEventType::FailedLifecycleStatusTerminated,
+                        SessionEventKind::ThreadTerminated,
                     ));
                     continue;
                 }
                 child.status = ThreadStatus::Idle;
                 projection.facts.push(fact(
-                    FactRole::LifecycleStatusIdle,
-                    FactKind::ThreadIdle(stop),
+                    ManagedEventType::LifecycleStatusIdle,
+                    SessionEventKind::ThreadIdle(stop),
                 ));
                 if run_terminates_thread {
                     // Each consultation owns one Thread and self-terminates
                     // after its one ordinary Run.
                     child.status = ThreadStatus::Terminated;
                     projection.facts.push(fact(
-                        FactRole::AdvisorLifecycleStatusTerminated,
-                        FactKind::ThreadTerminated,
+                        ManagedEventType::AdvisorLifecycleStatusTerminated,
+                        SessionEventKind::ThreadTerminated,
                     ));
                 }
             }
@@ -272,7 +275,7 @@ pub fn project_child_lifecycle(
 pub fn archive_children(
     threads: &mut [CoordinatedThread],
     dispositions: &HashMap<String, awaken_agent_contract::ThreadDisposition>,
-) -> Vec<TimelineFact> {
+) -> Vec<DerivedSessionEvent> {
     threads
         .iter_mut()
         .filter(|child| {
@@ -282,13 +285,13 @@ pub fn archive_children(
         })
         .map(|child| {
             child.status = ThreadStatus::Terminated;
-            TimelineFact::new(
-                FactKey::new(
+            DerivedSessionEvent::new(
+                EventIdentity::new(
                     child.thread.clone(),
-                    FactRole::ArchivedStatusTerminated,
+                    ManagedEventType::ArchivedStatusTerminated,
                     FactProvenance::ArchivedDisposition,
                 ),
-                FactKind::ThreadTerminated,
+                SessionEventKind::ThreadTerminated,
             )
         })
         .collect()
@@ -302,29 +305,39 @@ pub fn terminate_session(
     threads: &mut [CoordinatedThread],
     primary_terminated_published: bool,
     session_terminated_published: bool,
-) -> Vec<TimelineFact> {
-    let parent = |thread: &str, role| FactKey::new(thread, role, FactProvenance::ParentTerminal);
+) -> Vec<DerivedSessionEvent> {
+    let parent =
+        |thread: &str, role| EventIdentity::new(thread, role, FactProvenance::ParentTerminal);
     let mut facts = threads
         .iter_mut()
         .filter(|child| child.status != ThreadStatus::Terminated)
         .map(|child| {
             child.status = ThreadStatus::Terminated;
-            TimelineFact::new(
-                parent(&child.thread, FactRole::ParentTerminalChildStatusTerminated),
-                FactKind::ThreadTerminated,
+            DerivedSessionEvent::new(
+                parent(
+                    &child.thread,
+                    ManagedEventType::ParentTerminalChildStatusTerminated,
+                ),
+                SessionEventKind::ThreadTerminated,
             )
         })
         .collect::<Vec<_>>();
     if !primary_terminated_published {
-        facts.push(TimelineFact::new(
-            parent(session_id, FactRole::ParentTerminalPrimaryStatusTerminated),
-            FactKind::ThreadTerminated,
+        facts.push(DerivedSessionEvent::new(
+            parent(
+                session_id,
+                ManagedEventType::ParentTerminalPrimaryStatusTerminated,
+            ),
+            SessionEventKind::ThreadTerminated,
         ));
     }
     if !session_terminated_published {
-        facts.push(TimelineFact::new(
-            parent(session_id, FactRole::ParentTerminalSessionStatusTerminated),
-            FactKind::SessionTerminated,
+        facts.push(DerivedSessionEvent::new(
+            parent(
+                session_id,
+                ManagedEventType::ParentTerminalSessionStatusTerminated,
+            ),
+            SessionEventKind::SessionTerminated,
         ));
     }
     facts
@@ -421,9 +434,9 @@ mod tests {
                 .map(|fact| fact.key.role)
                 .collect::<Vec<_>>(),
             vec![
-                FactRole::ParentTerminalChildStatusTerminated,
-                FactRole::ParentTerminalPrimaryStatusTerminated,
-                FactRole::ParentTerminalSessionStatusTerminated,
+                ManagedEventType::ParentTerminalChildStatusTerminated,
+                ManagedEventType::ParentTerminalPrimaryStatusTerminated,
+                ManagedEventType::ParentTerminalSessionStatusTerminated,
             ],
             "R3/E3"
         );
@@ -436,7 +449,7 @@ mod tests {
         );
     }
 
-    fn roles(facts: &[TimelineFact]) -> Vec<(FactRole, FactKind)> {
+    fn roles(facts: &[DerivedSessionEvent]) -> Vec<(ManagedEventType, SessionEventKind)> {
         facts
             .iter()
             .map(|fact| (fact.key.role, fact.kind.clone()))
@@ -474,9 +487,9 @@ mod tests {
                     e(3, "root", Cancelled),
                 ],
                 vec![
-                    (FactRole::RootTerminalStatusRunning, 1),
-                    (FactRole::RootTerminalStatusRunning, 2),
-                    (FactRole::RootTerminalStatusRunning, 3),
+                    (ManagedEventType::RootTerminalStatusRunning, 1),
+                    (ManagedEventType::RootTerminalStatusRunning, 2),
+                    (ManagedEventType::RootTerminalStatusRunning, 3),
                 ],
             ),
             (
@@ -488,8 +501,8 @@ mod tests {
                     e(4, "root", Completed),
                 ],
                 vec![
-                    (FactRole::RootLifecycleStatusRunning, 1),
-                    (FactRole::RootLifecycleStatusRunning, 3),
+                    (ManagedEventType::RootLifecycleStatusRunning, 1),
+                    (ManagedEventType::RootLifecycleStatusRunning, 3),
                 ],
             ),
             (
@@ -500,10 +513,10 @@ mod tests {
                     e(3, "root", Awaiting),
                 ],
                 vec![
-                    (FactRole::RootLifecycleStatusRunning, 1),
-                    (FactRole::RootLifecycleSessionStatusRescheduled, 2),
-                    (FactRole::RootLifecycleStatusRescheduled, 2),
-                    (FactRole::RootRescheduledLifecycleStatusRunning, 2),
+                    (ManagedEventType::RootLifecycleStatusRunning, 1),
+                    (ManagedEventType::RootLifecycleSessionStatusRescheduled, 2),
+                    (ManagedEventType::RootLifecycleStatusRescheduled, 2),
+                    (ManagedEventType::RootRescheduledLifecycleStatusRunning, 2),
                 ],
             ),
             (
@@ -515,8 +528,8 @@ mod tests {
                     e(4, "root", Cancelled),
                 ],
                 vec![
-                    (FactRole::RootTerminalStatusRunning, 2),
-                    (FactRole::RootTerminalStatusRunning, 4),
+                    (ManagedEventType::RootTerminalStatusRunning, 2),
+                    (ManagedEventType::RootTerminalStatusRunning, 4),
                 ],
             ),
         ];
@@ -579,7 +592,10 @@ mod tests {
                 false,
                 event(1, "c", Running, RunState::Running),
                 false,
-                vec![(FactRole::LifecycleStatusRunning, FactKind::ThreadRunning)],
+                vec![(
+                    ManagedEventType::LifecycleStatusRunning,
+                    SessionEventKind::ThreadRunning,
+                )],
                 ThreadStatus::Running,
             ),
             (
@@ -599,12 +615,12 @@ mod tests {
                 false,
                 vec![
                     (
-                        FactRole::LifecycleStatusRescheduled,
-                        FactKind::ThreadRescheduled,
+                        ManagedEventType::LifecycleStatusRescheduled,
+                        SessionEventKind::ThreadRescheduled,
                     ),
                     (
-                        FactRole::RescheduledLifecycleStatusRunning,
-                        FactKind::ThreadRunning,
+                        ManagedEventType::RescheduledLifecycleStatusRunning,
+                        SessionEventKind::ThreadRunning,
                     ),
                 ],
                 ThreadStatus::Running,
@@ -616,8 +632,8 @@ mod tests {
                 event(2, "c", Completed, natural.clone()),
                 false,
                 vec![(
-                    FactRole::LifecycleStatusIdle,
-                    FactKind::ThreadIdle(StopFact::EndTurn),
+                    ManagedEventType::LifecycleStatusIdle,
+                    SessionEventKind::ThreadIdle(StopFact::EndTurn),
                 )],
                 ThreadStatus::Idle,
             ),
@@ -629,8 +645,8 @@ mod tests {
                 false,
                 vec![
                     (
-                        FactRole::LifecycleError,
-                        FactKind::RunError {
+                        ManagedEventType::LifecycleError,
+                        SessionEventKind::RunError {
                             fault: RunFault::Failed {
                                 code: Failure::StateConflict.code().into(),
                                 message: Failure::StateConflict.message(),
@@ -639,8 +655,8 @@ mod tests {
                         },
                     ),
                     (
-                        FactRole::FailedLifecycleStatusTerminated,
-                        FactKind::ThreadTerminated,
+                        ManagedEventType::FailedLifecycleStatusTerminated,
+                        SessionEventKind::ThreadTerminated,
                     ),
                 ],
                 ThreadStatus::Terminated,
@@ -653,12 +669,12 @@ mod tests {
                 false,
                 vec![
                     (
-                        FactRole::LifecycleStatusIdle,
-                        FactKind::ThreadIdle(StopFact::EndTurn),
+                        ManagedEventType::LifecycleStatusIdle,
+                        SessionEventKind::ThreadIdle(StopFact::EndTurn),
                     ),
                     (
-                        FactRole::AdvisorLifecycleStatusTerminated,
-                        FactKind::ThreadTerminated,
+                        ManagedEventType::AdvisorLifecycleStatusTerminated,
+                        SessionEventKind::ThreadTerminated,
                     ),
                 ],
                 ThreadStatus::Terminated,
@@ -670,8 +686,8 @@ mod tests {
                 event(2, "c", Awaiting, RunState::Awaiting),
                 true,
                 vec![(
-                    FactRole::LifecycleStatusIdle,
-                    FactKind::ThreadIdle(StopFact::RequiresAction {
+                    ManagedEventType::LifecycleStatusIdle,
+                    SessionEventKind::ThreadIdle(StopFact::RequiresAction {
                         calls: vec!["call".into()],
                     }),
                 )],
@@ -764,9 +780,9 @@ mod tests {
                 false,
                 false,
                 vec![
-                    FactRole::ParentTerminalChildStatusTerminated,
-                    FactRole::ParentTerminalPrimaryStatusTerminated,
-                    FactRole::ParentTerminalSessionStatusTerminated,
+                    ManagedEventType::ParentTerminalChildStatusTerminated,
+                    ManagedEventType::ParentTerminalPrimaryStatusTerminated,
+                    ManagedEventType::ParentTerminalSessionStatusTerminated,
                 ],
             ),
             (true, true, vec![]),

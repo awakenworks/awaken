@@ -14,12 +14,12 @@
 //! links and terminal Outcomes, never an execution context or Environment.
 
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
-use awaken_session_error_contract::RunError;
-use awaken_session_event_contract::{SessionEventBatch, SessionEventCommand};
 use awaken_managed_session_events::{
-    ProjectionThreadSnapshots, SessionProjectionEvidence, SessionProjectionReadTimings,
+    CommittedSessionFacts, ProjectionThreadSnapshots, SessionProjectionReadTimings,
     committed_lifecycle_prefix,
 };
+use awaken_session_error_contract::RunError;
+use awaken_session_event_contract::{SessionEventBatch, SessionEventCommand};
 use awaken_session_execution_contract::{CoordinatedThreadLink, SessionProjectionSource};
 use awaken_session_state_contract::PersistedSession;
 
@@ -92,7 +92,7 @@ impl SessionApplication {
         &self,
         persisted: &PersistedSession,
         started: awaken_time::mono::Stopwatch,
-    ) -> Result<SessionProjectionEvidence, RunError> {
+    ) -> Result<CommittedSessionFacts, RunError> {
         let session_id = &persisted.session_id;
         // Read the root Thread first. A terminal Outcome query from before a
         // concurrent commit must never be paired with a newer root prefix that
@@ -110,8 +110,11 @@ impl SessionApplication {
             let root_terminal = root
                 .as_ref()
                 .map(|snapshot| {
-                    awaken_managed_session_events::outcome_terminal_commit_cursor(&outcome_id, snapshot)
-                        .map_err(|error| RunError::internal(error.to_string()))
+                    awaken_managed_session_events::outcome_terminal_commit_cursor(
+                        &outcome_id,
+                        snapshot,
+                    )
+                    .map_err(|error| RunError::internal(error.to_string()))
                 })
                 .transpose()?
                 .flatten()
@@ -139,7 +142,7 @@ impl SessionApplication {
         // global feed would scan unrelated Sessions and add an unfenced read.
         let lifecycle = committed_lifecycle_prefix(root.iter().chain(children.values()))
             .map_err(|error| RunError::internal(error.to_string()))?;
-        Ok(SessionProjectionEvidence {
+        Ok(CommittedSessionFacts {
             outcome_terminals,
             outcome_query_incomplete,
             root,

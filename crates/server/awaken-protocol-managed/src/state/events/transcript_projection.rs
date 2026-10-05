@@ -2,8 +2,8 @@
 
 use super::*;
 use awaken_managed_session_events::{
-    ChildTranscriptPlan, ChildTranscriptStep, FactKey, FactKind, FactProvenance, FactRole,
-    TimelineFact,
+    ChildTranscriptPlan, ChildTranscriptStep, DerivedSessionEvent, EventIdentity, FactProvenance,
+    ManagedEventType, SessionEventKind,
 };
 
 /// The display name of one coordinated child record.
@@ -64,9 +64,9 @@ impl ManagedState {
                         &report_content,
                     );
                     if !content.is_empty() {
-                        let key = FactKey::new(
+                        let key = EventIdentity::new(
                             thread_id,
-                            FactRole::AdvisorMessageReceived,
+                            ManagedEventType::AdvisorMessageReceived,
                             FactProvenance::AgentReport { run_id: run_id.0 },
                         );
                         let id = record.fact_id(&key);
@@ -108,13 +108,13 @@ impl ManagedState {
                 } => {
                     if let Some(text) = text {
                         record.publish_fact(
-                            &TimelineFact::new(
-                                FactKey::new(
+                            &DerivedSessionEvent::new(
+                                EventIdentity::new(
                                     thread_id,
-                                    FactRole::ChildMessageReceived,
+                                    ManagedEventType::ChildMessageReceived,
                                     FactProvenance::AgentReport { run_id },
                                 ),
-                                FactKind::ReportReceived { text },
+                                SessionEventKind::ReportReceived { text },
                             ),
                             None,
                         )?;

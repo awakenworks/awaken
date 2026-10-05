@@ -273,7 +273,8 @@ impl ManagedState {
             Item = &'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
         >,
     ) -> Result<Vec<RunLifecycleEvent>, StateError> {
-        awaken_managed_session_events::committed_lifecycle_prefix(snapshots).map_err(projection_error)
+        awaken_managed_session_events::committed_lifecycle_prefix(snapshots)
+            .map_err(projection_error)
     }
 
     pub(super) fn pending_ticket_from_recovery_snapshot(

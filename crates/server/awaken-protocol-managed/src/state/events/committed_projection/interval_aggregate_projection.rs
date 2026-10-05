@@ -3,10 +3,10 @@
 //! selected by the sole [`awaken_managed_session_events::plan_aggregate`].
 
 use super::*;
-use awaken_managed_session_events::{AggregatePlan, FactKey};
+use awaken_managed_session_events::{AggregatePlan, EventIdentity};
 
 impl ManagedState {
-    pub(super) fn append_aggregate_running_once(record: &mut SessionRecord, key: FactKey) {
+    pub(super) fn append_aggregate_running_once(record: &mut SessionRecord, key: EventIdentity) {
         record.append_fact_once(key, OutboundKind::SessionStatusRunning {});
     }
 

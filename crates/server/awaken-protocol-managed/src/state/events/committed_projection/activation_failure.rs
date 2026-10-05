@@ -11,8 +11,9 @@ impl ManagedState {
         record: &mut SessionRecord,
         projection: &awaken_managed_session_events::ActivationFailureProjection,
     ) -> Result<(), StateError> {
-        if let awaken_managed_session_events::ActivationFailureProjection::Ready { error: Some(fact) } =
-            projection
+        if let awaken_managed_session_events::ActivationFailureProjection::Ready {
+            error: Some(fact),
+        } = projection
         {
             record.publish_fact_once(fact, None)?;
         }

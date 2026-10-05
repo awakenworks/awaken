@@ -243,7 +243,7 @@ mod outcome_reconciliation;
 mod projection;
 mod projection_evidence;
 pub use awaken_managed_session_events::{
-    ProjectionThreadSnapshots, SessionProjectionEvidence, SessionProjectionReadTimings,
+    CommittedSessionFacts, ProjectionThreadSnapshots, SessionProjectionReadTimings,
 };
 pub use credentials::SessionPreparationError;
 mod mcp;

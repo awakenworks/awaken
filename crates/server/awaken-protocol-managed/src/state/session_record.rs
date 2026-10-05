@@ -69,7 +69,7 @@ pub(super) struct ManagedProjectionProgress {
     /// The timeline fact behind every issued multiagent event id. Its public
     /// id is a one-way hash of this key, so canonical ordering resolves the
     /// key itself instead of rebuilding every candidate id from the evidence.
-    pub(super) fact_keys: HashMap<String, awaken_managed_session_events::FactKey>,
+    pub(super) fact_keys: HashMap<String, awaken_managed_session_events::EventIdentity>,
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -395,7 +395,7 @@ impl SessionRecord {
     }
 
     /// The public id of one timeline fact of this Session.
-    pub(super) fn fact_id(&self, key: &awaken_managed_session_events::FactKey) -> String {
+    pub(super) fn fact_id(&self, key: &awaken_managed_session_events::EventIdentity) -> String {
         super::events::fact_event_id(&self.session.id, key)
     }
 
@@ -403,7 +403,7 @@ impl SessionRecord {
     /// its id. Returns the id.
     pub(super) fn push_fact(
         &mut self,
-        key: awaken_managed_session_events::FactKey,
+        key: awaken_managed_session_events::EventIdentity,
         kind: OutboundKind,
     ) -> String {
         let id = self.fact_id(&key);
@@ -419,7 +419,7 @@ impl SessionRecord {
     /// Append one timeline fact unless its id is already present.
     pub(super) fn append_fact_once(
         &mut self,
-        key: awaken_managed_session_events::FactKey,
+        key: awaken_managed_session_events::EventIdentity,
         kind: OutboundKind,
     ) -> bool {
         let id = self.fact_id(&key);

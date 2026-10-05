@@ -25,8 +25,8 @@ use awaken_session_execution_contract::{CoordinatedThreadLink, CoordinatedThread
 
 use crate::lifecycle::{ChildLifecycle, CoordinatedThread, ThreadStatus, project_child_lifecycle};
 use crate::{
-    CanonicalOrder, FactKey, FactKind, FactProvenance, FactRole, OrderIndex, ProjectionError,
-    TimelineFact,
+    DerivedSessionEvent, EventIdentity, EventPosition, FactProvenance, ManagedEventType,
+    OrderIndex, ProjectionError, SessionEventKind,
 };
 
 /// One committed tool event, seen neutrally.
@@ -146,9 +146,9 @@ impl CoordinationReceipts {
 
 /// The creation and opening of every newly linked child.
 #[must_use]
-pub fn link_facts(link: &CoordinatedThreadLink) -> [TimelineFact; 2] {
+pub fn link_facts(link: &CoordinatedThreadLink) -> [DerivedSessionEvent; 2] {
     let at = |role| {
-        FactKey::new(
+        EventIdentity::new(
             link.thread_id.0.as_str(),
             role,
             FactProvenance::LinkOperation {
@@ -157,8 +157,14 @@ pub fn link_facts(link: &CoordinatedThreadLink) -> [TimelineFact; 2] {
         )
     };
     [
-        TimelineFact::new(at(FactRole::LinkThreadCreated), FactKind::ThreadCreated),
-        TimelineFact::new(at(FactRole::LinkStatusRunning), FactKind::ThreadRunning),
+        DerivedSessionEvent::new(
+            at(ManagedEventType::LinkThreadCreated),
+            SessionEventKind::ThreadCreated,
+        ),
+        DerivedSessionEvent::new(
+            at(ManagedEventType::LinkStatusRunning),
+            SessionEventKind::ThreadRunning,
+        ),
     ]
 }
 
@@ -171,7 +177,7 @@ pub fn link_facts(link: &CoordinatedThreadLink) -> [TimelineFact; 2] {
 pub fn cross_posts(
     events: &[IssuedToolEvent<'_>],
     links: &[CoordinatedThreadLink],
-) -> Vec<TimelineFact> {
+) -> Vec<DerivedSessionEvent> {
     if links.is_empty() {
         return Vec::new();
     }
@@ -240,7 +246,7 @@ pub fn cross_posts(
     let mut emitted = HashSet::new();
     for (event_id, thread_id, message) in calls {
         let at = |role| {
-            FactKey::new(
+            EventIdentity::new(
                 thread_id,
                 role,
                 FactProvenance::CoordinationCall {
@@ -248,13 +254,16 @@ pub fn cross_posts(
                 },
             )
         };
-        let sent = at(FactRole::CoordinationMessageSent);
+        let sent = at(ManagedEventType::CoordinationMessageSent);
         // The deterministic public fact is the sole projection receipt.
         if emitted.contains(&sent) {
             continue;
         }
         emitted.insert(sent.clone());
-        facts.push(TimelineFact::new(sent, FactKind::MessageSent { message }));
+        facts.push(DerivedSessionEvent::new(
+            sent,
+            SessionEventKind::MessageSent { message },
+        ));
     }
     facts
 }
@@ -267,14 +276,14 @@ pub fn cross_posts(
 /// of Run boundary/error semantics.
 pub fn project_child_activity(
     threads: &mut [CoordinatedThread],
-    cross_posts: &[TimelineFact],
-    orders: &HashMap<FactKey, CanonicalOrder>,
+    cross_posts: &[DerivedSessionEvent],
+    orders: &HashMap<EventIdentity, EventPosition>,
     lifecycle: &[RunLifecycleEvent],
     historical_pending: &HashMap<RunLifecycleCursor, Pending>,
     snapshots: &HashMap<String, RunRecoverySnapshot>,
 ) -> Result<ChildLifecycle, ProjectionError> {
     enum Trigger<'a> {
-        Send(&'a TimelineFact),
+        Send(&'a DerivedSessionEvent),
         Lifecycle(&'a RunLifecycleEvent),
     }
     let mut triggers = Vec::new();
@@ -299,7 +308,7 @@ pub fn project_child_activity(
             _ => crate::role::phase::THREAD_TERMINAL,
         };
         triggers.push((
-            CanonicalOrder {
+            EventPosition {
                 source_commit_cursor: event.source_commit_cursor,
                 phase,
                 ordinal: crate::Ordinal::at(event.cursor.0 as usize),
@@ -324,13 +333,13 @@ pub fn project_child_activity(
                 }
                 if child.status != ThreadStatus::Running {
                     child.status = ThreadStatus::Running;
-                    projection.facts.push(TimelineFact::new(
-                        FactKey::new(
+                    projection.facts.push(DerivedSessionEvent::new(
+                        EventIdentity::new(
                             &sent.key.thread,
-                            FactRole::CoordinationStatusRunning,
+                            ManagedEventType::CoordinationStatusRunning,
                             sent.key.provenance.clone(),
                         ),
-                        FactKind::ThreadRunning,
+                        SessionEventKind::ThreadRunning,
                     ));
                 }
                 projection.facts.push(sent.clone());
@@ -352,11 +361,11 @@ pub fn project_child_activity(
 
 fn accepted_order(
     receipts: &CoordinationReceipts,
-    results: &HashMap<&str, CanonicalOrder>,
-    orders: &HashMap<&str, CanonicalOrder>,
+    results: &HashMap<&str, EventPosition>,
+    orders: &HashMap<&str, EventPosition>,
     source: &str,
     thread: &str,
-) -> Option<CanonicalOrder> {
+) -> Option<EventPosition> {
     if receipts.get(source) != Some(thread) {
         return None;
     }
@@ -364,9 +373,9 @@ fn accepted_order(
 }
 
 fn retain_earliest(
-    orders: &mut HashMap<FactKey, CanonicalOrder>,
-    key: FactKey,
-    order: CanonicalOrder,
+    orders: &mut HashMap<EventIdentity, EventPosition>,
+    key: EventIdentity,
+    order: EventPosition,
 ) {
     orders
         .entry(key)
@@ -383,8 +392,8 @@ pub fn coordination_orders(
     index: &OrderIndex<'_>,
     events: &[IssuedToolEvent<'_>],
     links: &[CoordinatedThreadLink],
-    orders: &HashMap<&str, CanonicalOrder>,
-) -> HashMap<FactKey, CanonicalOrder> {
+    orders: &HashMap<&str, EventPosition>,
+) -> HashMap<EventIdentity, EventPosition> {
     let mut candidates = HashMap::new();
     if links.is_empty() {
         return candidates;
@@ -466,17 +475,20 @@ pub fn coordination_orders(
                 .copied(),
         };
         if let Some(source_order) = source_order {
-            for role in [FactRole::LinkThreadCreated, FactRole::LinkStatusRunning] {
+            for role in [
+                ManagedEventType::LinkThreadCreated,
+                ManagedEventType::LinkStatusRunning,
+            ] {
                 retain_earliest(
                     &mut candidates,
-                    FactKey::new(
+                    EventIdentity::new(
                         thread,
                         role,
                         FactProvenance::LinkOperation {
                             operation_id: link.created_by_operation_id.clone(),
                         },
                     ),
-                    CanonicalOrder {
+                    EventPosition {
                         phase: role.phase(),
                         ..source_order
                     },
@@ -490,19 +502,19 @@ pub fn coordination_orders(
                 continue;
             };
             for role in [
-                FactRole::CoordinationStatusRunning,
-                FactRole::CoordinationMessageSent,
+                ManagedEventType::CoordinationStatusRunning,
+                ManagedEventType::CoordinationMessageSent,
             ] {
                 retain_earliest(
                     &mut candidates,
-                    FactKey::new(
+                    EventIdentity::new(
                         thread,
                         role,
                         FactProvenance::CoordinationCall {
                             event_id: source.to_string(),
                         },
                     ),
-                    CanonicalOrder {
+                    EventPosition {
                         phase: role.phase(),
                         ..source_order
                     },
@@ -514,12 +526,12 @@ pub fn coordination_orders(
                 continue;
             };
             for role in [
-                FactRole::ChildMessageReceived,
-                FactRole::AdvisorMessageReceived,
+                ManagedEventType::ChildMessageReceived,
+                ManagedEventType::AdvisorMessageReceived,
             ] {
                 retain_earliest(
                     &mut candidates,
-                    FactKey::new(
+                    EventIdentity::new(
                         thread,
                         role,
                         FactProvenance::AgentReport {
@@ -543,7 +555,7 @@ mod tests {
         // Causes: C1 the link's previous Run closed at cursor 3; C2 an accepted
         // follow-up send is listable at cursor 5; C3 the next child Running
         // commits at cursor 6; C4 a cold replica sees C1-C3 together. Effects:
-        // E1 C1+C2 opens once under the coordination FactKey before MessageSent;
+        // E1 C1+C2 opens once under the coordination EventIdentity before MessageSent;
         // E2 C3 appends no second Running or changes an issued key; E3 C4 yields
         // the same full facts; E4 an already-Running child gets no reopening.
         // Decision rows R1=C1+C2=>E1; R2=R1+C3=>E1+E2; R3=C1+C2+C3+C4=>E3;
@@ -571,21 +583,21 @@ mod tests {
             RunState::Ended(EndCause::NaturalEnd),
         );
         let running = lifecycle(6, RunLifecycleEventKind::Running, RunState::Running);
-        let sent = TimelineFact::new(
-            FactKey::new(
+        let sent = DerivedSessionEvent::new(
+            EventIdentity::new(
                 "child",
-                FactRole::CoordinationMessageSent,
+                ManagedEventType::CoordinationMessageSent,
                 FactProvenance::CoordinationCall {
                     event_id: "tool-follow".into(),
                 },
             ),
-            FactKind::MessageSent {
+            SessionEventKind::MessageSent {
                 message: "follow up".into(),
             },
         );
         let orders = HashMap::from([(
             sent.key.clone(),
-            CanonicalOrder {
+            EventPosition {
                 source_commit_cursor: 5,
                 phase: crate::role::phase::COORDINATION_MESSAGE,
                 ordinal: crate::Ordinal::FIRST,
@@ -608,9 +620,9 @@ mod tests {
         assert_eq!(
             prefix.iter().map(|fact| fact.key.role).collect::<Vec<_>>(),
             vec![
-                FactRole::LifecycleStatusIdle,
-                FactRole::CoordinationStatusRunning,
-                FactRole::CoordinationMessageSent,
+                ManagedEventType::LifecycleStatusIdle,
+                ManagedEventType::CoordinationStatusRunning,
+                ManagedEventType::CoordinationMessageSent,
             ],
             "R1/E1"
         );
@@ -622,7 +634,7 @@ mod tests {
                 .iter()
                 .map(|fact| fact.key.role)
                 .collect::<Vec<_>>(),
-            vec![FactRole::CoordinationMessageSent],
+            vec![ManagedEventType::CoordinationMessageSent],
             "R4/E4"
         );
     }
@@ -694,13 +706,13 @@ mod tests {
         )];
         let events = [result("result", "source", &content, false, false)];
         let receipts = CoordinationReceipts::for_calls(&events, &HashSet::from(["source"]));
-        let source_order = CanonicalOrder {
+        let source_order = EventPosition {
             source_commit_cursor: 2,
             phase: 50,
             ordinal: crate::Ordinal::FIRST,
             processed_at_unix_ms: Some(200),
         };
-        let result_order = CanonicalOrder {
+        let result_order = EventPosition {
             source_commit_cursor: 7,
             phase: 50,
             ordinal: crate::Ordinal::at(1),

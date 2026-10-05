@@ -5,13 +5,13 @@
 //! Canonical ordering and time projection for the disposable Managed event vector.
 //!
 //! Every durable event is ordered by the timeline fact behind it: the recorded
-//! [`awaken_managed_session_events::FactKey`] of a multiagent event, the reversible
+//! [`awaken_managed_session_events::EventIdentity`] of a multiagent event, the reversible
 //! identity of a tool use, or the admission of an inbound command, resolved by
 //! [`OrderIndex`] over the candidate's committed prefix. This module owns only
 //! the Managed concerns around that order: live overlays and DTO timestamps.
 
 use super::*;
-use awaken_managed_session_events::{CanonicalOrder, FactProvenance, FactRole, OrderIndex};
+use awaken_managed_session_events::{EventPosition, FactProvenance, ManagedEventType, OrderIndex};
 use std::collections::HashMap;
 
 pub(super) struct CanonicalizationEvidence<'a> {
@@ -21,9 +21,9 @@ pub(super) struct CanonicalizationEvidence<'a> {
 }
 
 fn retain_earliest<K: std::hash::Hash + Eq>(
-    orders: &mut HashMap<K, CanonicalOrder>,
+    orders: &mut HashMap<K, EventPosition>,
     key: K,
-    order: CanonicalOrder,
+    order: EventPosition,
 ) {
     orders
         .entry(key)
@@ -39,17 +39,17 @@ fn keyed_event_order(
     index: &OrderIndex<'_>,
     event: &Event,
     present_types: &std::collections::HashSet<&str>,
-) -> Option<CanonicalOrder> {
+) -> Option<EventPosition> {
     if let Some(tool) = decode_managed_tool_event_id(&event.id) {
         let thread_id = internal_thread_id(&record.session.id, tool.thread_id);
         return index.tool_order(&thread_id, tool.source_id, tool.call_id);
     }
     let key = record.checkpoint.progress.fact_keys.get(&event.id)?;
     let authenticated = match (&key.role, &key.provenance) {
-        (FactRole::Transcript(role), FactProvenance::AssistantResponse { .. }) => {
+        (ManagedEventType::Transcript(role), FactProvenance::AssistantResponse { .. }) => {
             event.kind.type_str() == role.as_wire_type()
         }
-        (FactRole::Transcript(role), _) => present_types.contains(role.as_wire_type()),
+        (ManagedEventType::Transcript(role), _) => present_types.contains(role.as_wire_type()),
         _ => true,
     };
     authenticated.then(|| index.fact_order(key)).flatten()
@@ -145,7 +145,7 @@ impl ManagedState {
             .iter()
             .map(|event| event.kind.type_str())
             .collect::<std::collections::HashSet<_>>();
-        let mut orders = HashMap::<String, CanonicalOrder>::new();
+        let mut orders = HashMap::<String, EventPosition>::new();
         let mut coordination_facts = Vec::new();
         let mut parent_terminal_facts = Vec::new();
         for event in &record.events {

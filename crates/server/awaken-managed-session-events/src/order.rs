@@ -46,7 +46,7 @@ impl Ordinal {
 
 /// One immutable timeline coordinate.
 #[derive(Clone, Copy, Debug)]
-pub struct CanonicalOrder {
+pub struct EventPosition {
     pub source_commit_cursor: u64,
     pub phase: u16,
     pub ordinal: Ordinal,
@@ -55,18 +55,18 @@ pub struct CanonicalOrder {
 }
 
 // Wall time is evidence, never ordering/identity; clock rollback cannot move events.
-impl PartialEq for CanonicalOrder {
+impl PartialEq for EventPosition {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other).is_eq()
     }
 }
-impl Eq for CanonicalOrder {}
-impl PartialOrd for CanonicalOrder {
+impl Eq for EventPosition {}
+impl PartialOrd for EventPosition {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
-impl Ord for CanonicalOrder {
+impl Ord for EventPosition {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         (self.source_commit_cursor, self.phase, self.ordinal).cmp(&(
             other.source_commit_cursor,
@@ -85,13 +85,13 @@ pub fn historical_pending_projection_order(
     awaiting_source_commit_cursor: u64,
     next_terminal_source_commit_cursor: Option<u64>,
     processed_at_unix_ms: Option<u64>,
-) -> Option<CanonicalOrder> {
+) -> Option<EventPosition> {
     if next_terminal_source_commit_cursor
         .is_some_and(|terminal| terminal < awaiting_source_commit_cursor)
     {
         return None;
     }
-    Some(CanonicalOrder {
+    Some(EventPosition {
         source_commit_cursor: awaiting_source_commit_cursor,
         phase: phase::TRANSCRIPT,
         ordinal: Ordinal::FIRST,
@@ -109,13 +109,13 @@ fn canonical_event_order_never_depends_on_wall_time() {
     // O1 all order-key axes and optional wall-time observations are arbitrary.
     // O2 same key/different time remains equal. Production Ord/Eq are invoked
     // directly; evidence timestamps cannot reorder or split an identity.
-    let left = CanonicalOrder {
+    let left = EventPosition {
         source_commit_cursor: kani::any(),
         phase: kani::any(),
         ordinal: kani::any(),
         processed_at_unix_ms: kani::any::<bool>().then(kani::any::<u64>),
     };
-    let right = CanonicalOrder {
+    let right = EventPosition {
         source_commit_cursor: kani::any(),
         phase: kani::any(),
         ordinal: kani::any(),
@@ -131,7 +131,7 @@ fn canonical_event_order_never_depends_on_wall_time() {
     );
     assert_eq!(
         left,
-        CanonicalOrder {
+        EventPosition {
             processed_at_unix_ms: right.processed_at_unix_ms,
             ..left
         }
@@ -162,7 +162,7 @@ fn historical_pending_order_precedes_every_admitted_terminal() {
 
     assert_eq!(planned.is_some(), !has_terminal || terminal >= awaiting);
     if let (Some(pending), true) = (planned, has_terminal) {
-        let terminal = CanonicalOrder {
+        let terminal = EventPosition {
             source_commit_cursor: terminal,
             phase: phase::THREAD_TERMINAL,
             ordinal: Ordinal::FIRST,
@@ -185,13 +185,13 @@ mod tests {
             for right_key in [(0, 0, 0), (1, 0, 0), (1, 1, 0), (1, 1, 1)] {
                 for left_time in [None, Some(0), Some(u64::MAX)] {
                     for right_time in [None, Some(0), Some(u64::MAX)] {
-                        let left = CanonicalOrder {
+                        let left = EventPosition {
                             source_commit_cursor: left_key.0,
                             phase: left_key.1,
                             ordinal: Ordinal::at(left_key.2),
                             processed_at_unix_ms: left_time,
                         };
-                        let right = CanonicalOrder {
+                        let right = EventPosition {
                             source_commit_cursor: right_key.0,
                             phase: right_key.1,
                             ordinal: Ordinal::at(right_key.2),
@@ -220,7 +220,7 @@ mod tests {
             let planned = historical_pending_projection_order(10, terminal, Some(u64::MAX));
             assert_eq!(planned.is_some(), expected, "{rule}");
             if let (Some(pending), Some(terminal)) = (planned, terminal) {
-                let terminal = CanonicalOrder {
+                let terminal = EventPosition {
                     source_commit_cursor: terminal,
                     phase: phase::THREAD_TERMINAL,
                     ordinal: Ordinal::FIRST,

@@ -64,9 +64,9 @@ impl ManagedState {
             return Ok(());
         }
         let session_id = record.session.id.clone();
-        let primary = awaken_managed_session_events::FactKey::new(
+        let primary = awaken_managed_session_events::EventIdentity::new(
             session_id.as_str(),
-            awaken_managed_session_events::FactRole::ParentTerminalPrimaryStatusTerminated,
+            awaken_managed_session_events::ManagedEventType::ParentTerminalPrimaryStatusTerminated,
             awaken_managed_session_events::FactProvenance::ParentTerminal,
         );
         let primary_published = record.has_event_id(&record.fact_id(&primary));
@@ -157,8 +157,8 @@ impl ManagedState {
         for fact in activity.facts.iter().filter(|fact| {
             matches!(
                 fact.key.role,
-                awaken_managed_session_events::FactRole::CoordinationStatusRunning
-                    | awaken_managed_session_events::FactRole::CoordinationMessageSent
+                awaken_managed_session_events::ManagedEventType::CoordinationStatusRunning
+                    | awaken_managed_session_events::ManagedEventType::CoordinationMessageSent
             )
         }) {
             record.publish_fact(fact, None)?;
@@ -214,8 +214,8 @@ impl ManagedState {
         for fact in activity.facts.iter().filter(|fact| {
             !matches!(
                 fact.key.role,
-                awaken_managed_session_events::FactRole::CoordinationStatusRunning
-                    | awaken_managed_session_events::FactRole::CoordinationMessageSent
+                awaken_managed_session_events::ManagedEventType::CoordinationStatusRunning
+                    | awaken_managed_session_events::ManagedEventType::CoordinationMessageSent
             )
         }) {
             record.publish_fact(fact, None)?;

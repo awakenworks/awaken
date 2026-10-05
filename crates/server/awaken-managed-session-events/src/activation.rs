@@ -4,7 +4,10 @@ use awaken_agent_contract::RunLifecycleEvent;
 use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_session_state_contract::{PersistedSession, SessionExecutionState};
 
-use crate::{FactKey, FactKind, FactProvenance, FactRole, ProjectionError, TimelineFact};
+use crate::{
+    DerivedSessionEvent, EventIdentity, FactProvenance, ManagedEventType, ProjectionError,
+    SessionEventKind,
+};
 
 /// One ownership decision for both the activation error and parent terminal.
 /// A sourced failure cannot become a public prefix until that Run has a
@@ -15,7 +18,7 @@ use crate::{FactKey, FactKind, FactProvenance, FactRole, ProjectionError, Timeli
 pub enum ActivationFailureProjection {
     NotFailed,
     AwaitingSourceRun,
-    Ready { error: Option<TimelineFact> },
+    Ready { error: Option<DerivedSessionEvent> },
 }
 
 /// Derive the terminal projection from one durable Session root and accepted
@@ -60,13 +63,13 @@ pub fn activation_failure_projection(
             )
         })?;
     Ok(ActivationFailureProjection::Ready {
-        error: Some(TimelineFact::new(
-            FactKey::new(
+        error: Some(DerivedSessionEvent::new(
+            EventIdentity::new(
                 persisted.session_id.as_str(),
-                FactRole::ActivationFailedError,
+                ManagedEventType::ActivationFailedError,
                 FactProvenance::ParentTerminal,
             ),
-            FactKind::ActivationFailed {
+            SessionEventKind::ActivationFailed {
                 message: message.to_string(),
             },
         )),

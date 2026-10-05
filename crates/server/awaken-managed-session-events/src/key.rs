@@ -7,9 +7,9 @@
 //!
 //! Consumers: the protocol adapter hashes a key into its public event id (the
 //! serialized provenance is part of that hash, so its shape is wire-frozen),
-//! and the canonical order resolves a key to its [`crate::CanonicalOrder`].
+//! and the canonical order resolves a key to its [`crate::EventPosition`].
 
-use crate::FactRole;
+use crate::ManagedEventType;
 
 /// The committed source a fact was derived from.
 ///
@@ -56,16 +56,20 @@ pub enum FactProvenance {
 
 /// The identity of one timeline fact: owning logical Thread, role, provenance.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct FactKey {
+pub struct EventIdentity {
     /// The logical (internal) Thread id; the Session id names the root.
     pub thread: String,
-    pub role: FactRole,
+    pub role: ManagedEventType,
     pub provenance: FactProvenance,
 }
 
-impl FactKey {
+impl EventIdentity {
     #[must_use]
-    pub fn new(thread: impl Into<String>, role: FactRole, provenance: FactProvenance) -> Self {
+    pub fn new(
+        thread: impl Into<String>,
+        role: ManagedEventType,
+        provenance: FactProvenance,
+    ) -> Self {
         Self {
             thread: thread.into(),
             role,

@@ -21,13 +21,16 @@ use crate::interval::{
     running_interval_lifecycle_open_event,
 };
 use crate::stop::terminal_stop;
-use crate::{FactKey, FactKind, FactProvenance, FactRole, ProjectionError, StopFact, TimelineFact};
+use crate::{
+    DerivedSessionEvent, EventIdentity, FactProvenance, ManagedEventType, ProjectionError,
+    SessionEventKind, StopFact,
+};
 
 /// One admitted interval's two closing facts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AggregateIntervalClose {
-    pub usage: TimelineFact,
-    pub idle: TimelineFact,
+    pub usage: DerivedSessionEvent,
+    pub idle: DerivedSessionEvent,
 }
 
 /// A fallback close for a period no admitted interval owns. Public usage is
@@ -36,8 +39,8 @@ pub struct AggregateIntervalClose {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AggregateFallbackClose {
     pub source_commit_cursor: u64,
-    pub usage: FactKey,
-    pub idle: FactKey,
+    pub usage: EventIdentity,
+    pub idle: EventIdentity,
     pub stop: AggregateStop,
 }
 
@@ -53,7 +56,7 @@ pub enum AggregateStop {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AggregatePlan {
     pub interval_closes: Vec<AggregateIntervalClose>,
-    pub fallback_openings: Vec<FactKey>,
+    pub fallback_openings: Vec<EventIdentity>,
     pub fallback_closes: Vec<AggregateFallbackClose>,
 }
 
@@ -81,7 +84,7 @@ pub fn plan_aggregate(
     links: &[CoordinatedThreadLink],
 ) -> Result<AggregatePlan, ProjectionError> {
     let session_id = persisted.session_id.as_str();
-    let aggregate = |role, provenance| FactKey::new(session_id, role, provenance);
+    let aggregate = |role, provenance| EventIdentity::new(session_id, role, provenance);
     let interval_fact = |role, interval_id: &str| {
         aggregate(
             role,
@@ -149,16 +152,16 @@ pub fn plan_aggregate(
             continue;
         }
         plan.interval_closes.push(AggregateIntervalClose {
-            usage: TimelineFact::new(
-                interval_fact(FactRole::AggregateUsage, &interval.interval_id),
-                FactKind::IntervalUsage(IntervalUsage {
+            usage: DerivedSessionEvent::new(
+                interval_fact(ManagedEventType::AggregateUsage, &interval.interval_id),
+                SessionEventKind::IntervalUsage(IntervalUsage {
                     usage,
                     max_list_cost_minor: interval.max_list_cost_minor,
                 }),
             ),
-            idle: TimelineFact::new(
-                interval_fact(FactRole::AggregateStatusIdle, &interval.interval_id),
-                FactKind::SessionIdle { stop, calls_owner },
+            idle: DerivedSessionEvent::new(
+                interval_fact(ManagedEventType::AggregateStatusIdle, &interval.interval_id),
+                SessionEventKind::SessionIdle { stop, calls_owner },
             ),
         });
     }
@@ -202,9 +205,9 @@ fn plan_fallback_aggregate(
         }
         if crate::interval::is_opening(event.kind) {
             if !aggregate_open {
-                plan.fallback_openings.push(FactKey::new(
+                plan.fallback_openings.push(EventIdentity::new(
                     session_id,
-                    FactRole::AggregateStatusRunning,
+                    ManagedEventType::AggregateStatusRunning,
                     FactProvenance::Lifecycle {
                         cursor: event.cursor.0,
                     },
@@ -225,9 +228,9 @@ fn plan_fallback_aggregate(
         if is_root && !aggregate_open {
             // A fast Run may first become visible at its boundary. Keep the
             // frozen lifecycle-prefix identity and its phase ordering.
-            plan.fallback_openings.push(FactKey::new(
+            plan.fallback_openings.push(EventIdentity::new(
                 session_id,
-                FactRole::AggregateTerminalStatusRunning,
+                ManagedEventType::AggregateTerminalStatusRunning,
                 FactProvenance::LifecyclePrefix {
                     cursor: event.cursor.0,
                 },
@@ -340,7 +343,7 @@ fn plan_fallback_aggregate(
             continue;
         }
         let at = |role| {
-            FactKey::new(
+            EventIdentity::new(
                 session_id,
                 role,
                 FactProvenance::LifecyclePrefix {
@@ -350,8 +353,8 @@ fn plan_fallback_aggregate(
         };
         plan.fallback_closes.push(AggregateFallbackClose {
             source_commit_cursor: event.source_commit_cursor,
-            usage: at(FactRole::AggregateUsage),
-            idle: at(FactRole::AggregateStatusIdle),
+            usage: at(ManagedEventType::AggregateUsage),
+            idle: at(ManagedEventType::AggregateStatusIdle),
             stop,
         });
     }
