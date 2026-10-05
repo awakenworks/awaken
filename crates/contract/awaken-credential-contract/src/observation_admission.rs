@@ -75,29 +75,135 @@ pub fn require_exact_available_worker_reference(
 }
 
 #[cfg(kani)]
-/// @obligation worker_credential.exact_revision_and_current_epoch_required
-/// @obligation worker_credential.expired_observation_never_executes
-/// @proof-input-debt free_symbol worker_reference_revalidation_disposition reference_matches
-#[kani::proof]
-fn worker_reference_revalidation_accepts_only_exact_available_state() {
-    let reference_matches = kani::any::<bool>();
-    let tag = kani::any::<u8>();
+fn proof_observation(
+    credential: CredentialRef,
+    state: CredentialObservationState,
+) -> CredentialObservation {
+    CredentialObservation {
+        credential,
+        state,
+        observed_at_ms: 10,
+        reason_code: None,
+    }
+}
+
+#[cfg(kani)]
+fn proof_observation_state() -> CredentialObservationState {
+    let tag: u8 = kani::any();
     kani::assume(tag < 6);
-    let state = match tag {
+    match tag {
         0 => CredentialObservationState::Available,
         1 => CredentialObservationState::LoginRequired,
         2 => CredentialObservationState::Expired,
         3 => CredentialObservationState::Invalid,
         4 => CredentialObservationState::Disabled,
         _ => CredentialObservationState::ProbeFailed,
-    };
-    let admitted = worker_reference_revalidation_disposition(reference_matches, state)
-        == WorkerReferenceRevalidationDisposition::Available;
+    }
+}
 
-    assert_eq!(
-        admitted,
-        reference_matches && state == CredentialObservationState::Available
+#[cfg(kani)]
+/// @obligation worker_credential.exact_revision_and_current_epoch_required
+#[kani::proof]
+fn worker_reference_id_is_derived_from_real_refs() {
+    // Causes: C1 id exact/foreign; C2 revision is the same boundary value, 0
+    // or MAX; C3 state Available. Effects: R1 C1 exact succeeds; R2 foreign
+    // id returns RevisionMismatch. The one-byte IDs bound String comparison
+    // cost; the production door still computes CredentialRef equality from
+    // the constructed references, not from the symbolic selector.
+    let revision = if kani::any::<bool>() { 0 } else { u64::MAX };
+    let expected = CredentialRef {
+        id: "a".into(),
+        revision,
+    };
+    let same_id: bool = kani::any();
+    let observed = CredentialRef {
+        id: if same_id {
+            expected.id.clone()
+        } else {
+            "b".into()
+        },
+        revision,
+    };
+    let result = require_exact_available_worker_reference(
+        &expected,
+        proof_observation(observed, CredentialObservationState::Available),
     );
+    if same_id {
+        assert!(result.is_ok());
+    } else {
+        assert!(matches!(
+            result,
+            Err(CredentialMaterialError::RevisionMismatch)
+        ));
+    }
+}
+
+#[cfg(kani)]
+/// @obligation worker_credential.exact_revision_and_current_epoch_required
+#[kani::proof]
+fn worker_reference_revision_comparison_is_full_width() {
+    // Causes: C1 expected and observed revisions are independent full-width
+    // u64 values; C2 id is exact; C3 state Available. Effects: R1 C1 equal
+    // succeeds; R2 any changed revision rejects before effects.
+    let expected_revision: u64 = kani::any();
+    let observed_revision: u64 = kani::any();
+    let expected = CredentialRef {
+        id: "a".into(),
+        revision: expected_revision,
+    };
+    let observation = proof_observation(
+        CredentialRef {
+            id: expected.id.clone(),
+            revision: observed_revision,
+        },
+        CredentialObservationState::Available,
+    );
+    let result = require_exact_available_worker_reference(&expected, observation);
+    if expected_revision == observed_revision {
+        assert!(result.is_ok());
+    } else {
+        assert!(matches!(
+            result,
+            Err(CredentialMaterialError::RevisionMismatch)
+        ));
+    }
+}
+
+#[cfg(kani)]
+/// @obligation worker_credential.expired_observation_never_executes
+#[kani::proof]
+fn exact_worker_reference_maps_every_observation_state() {
+    // Causes: C1 one exact id+revision; C2 each of six states. Effects: R1
+    // Available succeeds; R2 every negative state returns its
+    // own typed error, with no successful materialization decision.
+    let expected = CredentialRef {
+        id: "a".into(),
+        revision: 7,
+    };
+    let state = proof_observation_state();
+    let observation = proof_observation(expected.clone(), state);
+    let result = require_exact_available_worker_reference(&expected, observation);
+    match state {
+        CredentialObservationState::Available => assert!(result.is_ok()),
+        CredentialObservationState::LoginRequired => {
+            assert!(matches!(
+                result,
+                Err(CredentialMaterialError::LoginRequired)
+            ));
+        }
+        CredentialObservationState::Expired => {
+            assert!(matches!(result, Err(CredentialMaterialError::Expired)));
+        }
+        CredentialObservationState::Invalid => {
+            assert!(matches!(result, Err(CredentialMaterialError::Invalid)));
+        }
+        CredentialObservationState::Disabled => {
+            assert!(matches!(result, Err(CredentialMaterialError::Disabled)));
+        }
+        CredentialObservationState::ProbeFailed => {
+            assert!(matches!(result, Err(CredentialMaterialError::ProbeFailed)));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -141,14 +247,23 @@ mod tests {
                 revision: 6,
             },
         ] {
-            assert_eq!(
-                require_exact_available_worker_reference(
-                    &expected,
-                    observation(other, CredentialObservationState::Available),
-                ),
-                Err(CredentialMaterialError::RevisionMismatch),
-                "R2"
-            );
+            for state in [
+                CredentialObservationState::Available,
+                CredentialObservationState::LoginRequired,
+                CredentialObservationState::Expired,
+                CredentialObservationState::Invalid,
+                CredentialObservationState::Disabled,
+                CredentialObservationState::ProbeFailed,
+            ] {
+                assert_eq!(
+                    require_exact_available_worker_reference(
+                        &expected,
+                        observation(other.clone(), state),
+                    ),
+                    Err(CredentialMaterialError::RevisionMismatch),
+                    "R2"
+                );
+            }
         }
         for (state, error) in [
             (
