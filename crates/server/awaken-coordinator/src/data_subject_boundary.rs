@@ -251,7 +251,7 @@ mod tests {
         // query-bearing, or empty-token client configuration -> fail before a
         // request. The Coordinator factory is the only fanout owner.
         let store = Arc::new(InMemoryCapturedContentStore::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ));
         store.insert(
             DataSubjectId("dsub_a".into()),

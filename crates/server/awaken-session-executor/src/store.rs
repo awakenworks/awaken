@@ -454,7 +454,7 @@ mod child_projection_tests {
 
         let local = Arc::new(HostCommit::Local(Arc::new(
             crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )),
         )));
         assert!(Arc::ptr_eq(&local, &local.for_independent_child()), "R2");

@@ -9,8 +9,8 @@
 use super::{
     CredentialAccess, McpAttachmentDraft, McpAttachmentId, McpAttachmentOrigin, McpTarget,
 };
-use awaken_lease_contract::Expiry;
 use awaken_lease_contract::fence::{Epoch, FenceSuccession, Lease, Tenure, TenureScope, ZeroEpoch};
+use awaken_time::Expiry;
 use serde::{Deserialize, Serialize};
 
 /// The digest of one attachment generation's exact desired content.

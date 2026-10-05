@@ -52,9 +52,9 @@ use crate::service::{
 };
 use crate::wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 use crate::worker::{DispatchWorker, renew_claim_while_active};
-use awaken_lease_contract::WallClock;
-use awaken_lease_contract::WallClockExt;
 use awaken_dispatch_contract::RunDispatch;
+use awaken_time::WallClock;
+use awaken_time::WallClockExt;
 
 /// Resolves the worker that owns a thread's runtime. The pool claims from the one
 /// shared queue, then asks the resolver for the session worker carrying the
@@ -391,7 +391,7 @@ impl DrainErrorGate {
                 let retry_not_before = state
                     .retry_not_before
                     .expect("an error state owns a retry deadline");
-                let now = awaken_lease_contract::mono::now();
+                let now = awaken_time::mono::now();
                 if state.admit_cycle(now >= retry_not_before) {
                     return Some(DrainCycle::Probe(
                         state
@@ -448,7 +448,7 @@ impl DrainErrorGate {
         let mut state = self.state.lock().await;
         state.consecutive_errors = state.consecutive_errors.saturating_add(1);
         let delay = drain_error_backoff(state.consecutive_errors);
-        state.retry_not_before = Some(awaken_lease_contract::mono::now() + delay);
+        state.retry_not_before = Some(awaken_time::mono::now() + delay);
         state.probe_in_flight = None;
         let consecutive_errors = state.consecutive_errors;
         drop(state);
@@ -1296,7 +1296,7 @@ async fn reconciliation_loop<S: ControlDispatch + 'static>(context: Reconciliati
     } = context;
     let mut next_terminal_reconciliation = maintenance
         .reconciles_terminals()
-        .then(awaken_lease_contract::mono::now);
+        .then(awaken_time::mono::now);
     loop {
         if shutdown.is_cancelled() {
             break;
@@ -1330,7 +1330,7 @@ async fn reconciliation_loop<S: ControlDispatch + 'static>(context: Reconciliati
             break;
         }
         if let Some(deadline) = next_terminal_reconciliation
-            && awaken_lease_contract::mono::now() >= deadline
+            && awaken_time::mono::now() >= deadline
         {
             match tokio::time::timeout(Duration::from_secs(5), resolver.reconcile_worker_evidence())
                 .await
@@ -1358,7 +1358,7 @@ async fn reconciliation_loop<S: ControlDispatch + 'static>(context: Reconciliati
             let interval = config
                 .terminal_reconciliation_interval
                 .expect("the maintenance schedule retained its scan interval");
-            next_terminal_reconciliation = Some(awaken_lease_contract::mono::now() + interval);
+            next_terminal_reconciliation = Some(awaken_time::mono::now() + interval);
         }
         tokio::select! {
             _ = shutdown.cancelled() => break,

@@ -14,12 +14,12 @@ use awaken_environment_contract::{
     EnvironmentRegistrationIntentFilter, EnvironmentRegistrationOperation, EnvironmentRevision,
     EnvironmentSandboxPolicyRef, EnvironmentStoreError,
 };
-use awaken_lease_contract::WallClock;
-use awaken_lease_contract::WallClockExt;
-#[cfg(test)]
-use awaken_lease_contract::system_clock;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_sqlite_pool::{SharedSqliteConnection, SqliteConnectionFactory};
+use awaken_time::WallClock;
+use awaken_time::WallClockExt;
+#[cfg(test)]
+use awaken_time::system_clock;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
@@ -876,7 +876,7 @@ mod tests {
             for (created, updated) in stamps {
                 assert_eq!(created, updated, "M4 {table} backfill is one reading");
                 assert!(
-                    awaken_lease_contract::utc::rfc3339_to_epoch_millis(&created)
+                    awaken_time::utc::rfc3339_to_epoch_millis(&created)
                         .is_some_and(|millis| millis > 0),
                     "M4 {table} backfilled a real instant, got {created:?}"
                 );
@@ -1218,10 +1218,8 @@ mod tests {
         // | O3   | archive  | no  | Pending | v1 + v3 Withdraw (E2,E3) |
         // | O4   | all      | any | All     | v1,v2,v3 retained (E4) |
         registration_outbox_conformance(&r()).await;
-        registration_outbox_conformance(&InMemoryEnvRegistry::new(
-            awaken_lease_contract::system_clock(),
-        ))
-        .await;
+        registration_outbox_conformance(&InMemoryEnvRegistry::new(awaken_time::system_clock()))
+            .await;
     }
 
     #[tokio::test]
@@ -1301,8 +1299,8 @@ mod tests {
         // only `updated_at`; archive -> `archived_at` == `updated_at`), and it
         // must persist them rather than recompute on read.
         {
-            use awaken_lease_contract::utc::epoch_millis_to_rfc3339;
             use awaken_lease_testkit::ManualClock;
+            use awaken_time::utc::epoch_millis_to_rfc3339;
 
             const CREATED: u64 = 1_700_000_000_000;
             const UPDATED: u64 = CREATED + 4_000;

@@ -248,7 +248,7 @@ pub(crate) fn a_restarted_worker_reclaims_only_expired_never_checked_out_capacit
         let pool = WarmContainerPool::new(
             Arc::new(
                 ContainerProvider::new(Arc::new(make_runtime(namespace.clone())), tag.clone())
-                    .with_clock(awaken_lease_contract::system_clock()),
+                    .with_clock(awaken_time::system_clock()),
             ),
             2,
         )
@@ -294,7 +294,7 @@ pub(crate) fn a_restarted_worker_reclaims_only_expired_never_checked_out_capacit
         let pool = WarmContainerPool::new(
             Arc::new(
                 ContainerProvider::new(Arc::new(make_runtime(namespace.clone())), tag.clone())
-                    .with_clock(awaken_lease_contract::system_clock()),
+                    .with_clock(awaken_time::system_clock()),
             ),
             2,
         )

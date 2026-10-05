@@ -22,7 +22,7 @@ fn embedded_agents_workspace_has_one_idempotent_iam_directory_placement() {
         data.path(),
         "org-directory",
         "workspace_directory",
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let first_directory = DirectoryApi::new(first.store.clone());
     let policy_version = PolicyAdminApi::new(first.store.clone())
@@ -110,7 +110,7 @@ fn embedded_agents_workspace_has_one_idempotent_iam_directory_placement() {
         data.path(),
         "org-directory",
         "workspace_directory",
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let restarted_directory = DirectoryApi::new(restarted.store.clone());
     assert_eq!(

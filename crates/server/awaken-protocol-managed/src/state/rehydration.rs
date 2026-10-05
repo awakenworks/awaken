@@ -413,10 +413,9 @@ mod tests {
         let restored_runtimes = runtime.restored_runtimes.clone();
         let restored_inputs = runtime.restored.clone();
         let runtime = Arc::new(runtime);
-        let environments = awaken_protocol_managed_testkit::environment_fixture(
-            awaken_lease_contract::system_clock(),
-        )
-        .execution;
+        let environments =
+            awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock())
+                .execution;
         let application = awaken_session_application::SessionApplication::new_with_configuration(
             runtime.clone(),
             runtime,
@@ -427,7 +426,7 @@ mod tests {
                     awaken_session_application::SessionExecutionPlacement::RegisteredWorker,
                 ..Default::default()
             },
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let restarted = ManagedState::from_application(Arc::new(application), environments);
 

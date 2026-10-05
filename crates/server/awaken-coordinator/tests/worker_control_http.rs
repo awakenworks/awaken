@@ -76,9 +76,8 @@ async fn initial_session_preparation_requires_exact_ready_worker_authority() {
     let directory = Arc::new(MemoryWorkerDirectory::new());
     let preparation = Arc::new(RecordingSessionPreparation::default());
     let service = WorkerDispatchService::new(
-        Arc::new(MemoryDispatchStore::new(
-            awaken_lease_contract::system_clock(),
-        )) as Arc<dyn ControlDispatchQueue>,
+        Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()))
+            as Arc<dyn ControlDispatchQueue>,
         Arc::new(HeaderWorkerAuthenticator),
         clock.clone(),
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -168,9 +167,8 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
     let clock = Arc::new(ManualClock::new(100));
     let directory = Arc::new(MemoryWorkerDirectory::new());
     let service = WorkerDispatchService::new(
-        Arc::new(MemoryDispatchStore::new(
-            awaken_lease_contract::system_clock(),
-        )) as Arc<dyn ControlDispatchQueue>,
+        Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()))
+            as Arc<dyn ControlDispatchQueue>,
         Arc::new(HeaderWorkerAuthenticator),
         clock.clone(),
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -300,9 +298,8 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
 async fn authenticated_header_cannot_register_a_different_worker_id() {
     let directory = Arc::new(MemoryWorkerDirectory::new());
     let service = WorkerDispatchService::new(
-        Arc::new(MemoryDispatchStore::new(
-            awaken_lease_contract::system_clock(),
-        )) as Arc<dyn ControlDispatchQueue>,
+        Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()))
+            as Arc<dyn ControlDispatchQueue>,
         Arc::new(HeaderWorkerAuthenticator),
         Arc::new(ManualClock::new(0)),
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),

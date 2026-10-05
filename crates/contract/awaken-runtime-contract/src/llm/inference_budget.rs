@@ -11,10 +11,10 @@
 
 use super::Error;
 use crate::model_operation::{ModelExecutionEvidence, NoDispatchProof};
-use awaken_lease_contract::mono::{Instant, MonoDeadline};
+use awaken_time::mono::{Instant, MonoDeadline};
 use std::time::Duration;
 
-// Inference policy reads the one monotonic point, `awaken_lease_contract::mono`:
+// Inference policy reads the one monotonic point, `awaken_time::mono`:
 // tokio's controlled clock, so a paused test runtime names elapsed policy time.
 // UTC observation and suspend-aware Worker authority keep their own owners.
 
@@ -239,11 +239,9 @@ mod tests {
         // durable operation identity. S2 an explicit nested identity-only None
         // scope masks both outer facts. S3 return restores/removes exactly the
         // original scope. The one task-local remains the sole invocation owner.
-        let timing = ModelAttemptTiming::standalone(
-            awaken_lease_contract::mono::now(),
-            ModelInferenceBudget::DEFAULT,
-        )
-        .unwrap();
+        let timing =
+            ModelAttemptTiming::standalone(awaken_time::mono::now(), ModelInferenceBudget::DEFAULT)
+                .unwrap();
         assert!(current_model_attempt_timing().is_none(), "S3 outside");
         with_model_invocation_context(None, timing, async {
             assert!(
@@ -337,7 +335,7 @@ mod tests {
         // response deadline = min(S + A, L); watchdog = response + R; idle is
         // the budget's; an unrepresentable instant is a typed refusal, never a
         // clock panic.
-        let start = awaken_lease_contract::mono::now();
+        let start = awaken_time::mono::now();
         let budget = ModelInferenceBudget::new(100 * MS, 10 * MS, 5 * MS, 2 * MS).unwrap();
         for (row, logical, response) in [
             ("attempt window first", 100, 10),

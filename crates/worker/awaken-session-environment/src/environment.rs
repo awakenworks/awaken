@@ -31,7 +31,7 @@ pub enum SandboxEnvironment {
         skills: Arc<ContainerSkillCache>,
         capabilities: pc::SandboxCapabilities,
         /// The Host's process clock Repository credentials are stamped on.
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     },
 }
 
@@ -197,7 +197,7 @@ impl SandboxEnvironment {
         hand_idle_after: std::time::Duration,
         hand_residency: awaken_session_environment_contract::ContainerHandResidency,
         capabilities: pc::SandboxCapabilities,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, pc::SandboxError> {
         let skills = Arc::new(ContainerSkillCache::default());
         let hand = Arc::new(SessionHandExecutor::container(

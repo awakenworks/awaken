@@ -19,6 +19,7 @@ awaken-runtime-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-runtime.workspace = true
 awaken-observability.workspace = true
+awaken-time.workspace = true
 awaken-lease-contract.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true

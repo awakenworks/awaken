@@ -199,10 +199,7 @@ fn subject_flag(rest: &[String]) -> Option<String> {
 
 /// Bind and serve the executor channel until the process is torn down. Each accepted
 /// connection is served concurrently over a fresh [`HandSession`].
-pub async fn serve(
-    bind: HandBind,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
-) -> Result<(), String> {
+pub async fn serve(bind: HandBind, clock: Arc<dyn awaken_time::WallClock>) -> Result<(), String> {
     let ledger = open_operation_ledger()?;
     serve_with_operation_ledger(bind, ledger, clock).await
 }
@@ -212,7 +209,7 @@ pub async fn serve(
 pub async fn serve_with_operation_ledger(
     bind: HandBind,
     ledger: Arc<dyn HandOperationLedger>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), String> {
     match bind {
         HandBind::Stdio {
@@ -336,7 +333,7 @@ async fn run_nats(
     url: &str,
     subject: &str,
     ledger: Arc<dyn HandOperationLedger>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), String> {
     use awaken_tool_relay::wire::HandRequest;
     use futures::StreamExt;
@@ -512,7 +509,7 @@ mod tests {
                 &serve_url,
                 &serve_subject,
                 Arc::new(awaken_tool_relay::InMemoryOperationLedger::default()),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .await
         });

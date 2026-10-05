@@ -7,8 +7,8 @@
 // @formal entrypoint memory.stale_conditional_delete_never_removes_live_head
 //! SQLite [`MemoryRepository`] over the crate's `memory_store` migration scope.
 
-use awaken_lease_contract::WallClock;
 use awaken_sql_storage::StoredU64;
+use awaken_time::WallClock;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::sync::Arc;
 
@@ -1163,7 +1163,7 @@ mod migration_seam_tests {
     async fn over_does_not_migrate_but_ensure_schema_does() {
         let fs = SqliteMemoryRepository::over(
             Connection::open_in_memory().unwrap(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         assert!(fs.create("s", "/a.md", "alpha").await.is_err());
         fs.ensure_schema().unwrap();
@@ -1185,7 +1185,7 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn sqlite_memory_repository_conforms() {
         crate::conformance::conformance(
-            &SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
         )
         .await;
     }
@@ -1196,7 +1196,7 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn sqlite_memory_repository_extended_conformance() {
         crate::conformance::extended_conformance(
-            &SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
         )
         .await;
     }
@@ -1204,7 +1204,7 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn sqlite_head_update_is_one_atomic_transaction() {
         crate::conformance::atomic_head_update_conformance(
-            &SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
         )
         .await;
     }
@@ -1215,7 +1215,7 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn sqlite_rename_replace_orphans_destination_id() {
         crate::conformance::rename_replace_orphans_the_destination_id(
-            &SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
         )
         .await;
     }
@@ -1225,7 +1225,7 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn durable_ids_remain_monotonic_after_delete() {
         crate::conformance::ids_stay_monotonic_across_delete(
-            &SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
         )
         .await;
     }
@@ -1242,8 +1242,7 @@ mod memory_repository_tests {
         let path_str = path.to_str().unwrap();
         let version_id;
         {
-            let fs = SqliteMemoryRepository::open(path_str, awaken_lease_contract::system_clock())
-                .unwrap();
+            let fs = SqliteMemoryRepository::open(path_str, awaken_time::system_clock()).unwrap();
             let api_actor = MemoryActor::ApiActor {
                 api_key_id: "api_durable".into(),
             };
@@ -1269,8 +1268,7 @@ mod memory_repository_tests {
                 .unwrap()
                 .unwrap();
         }
-        let fs =
-            SqliteMemoryRepository::open(path_str, awaken_lease_contract::system_clock()).unwrap();
+        let fs = SqliteMemoryRepository::open(path_str, awaken_time::system_clock()).unwrap();
         assert_eq!(
             fs.get_by_path("s", "/keep.md")
                 .await
@@ -1311,8 +1309,7 @@ mod memory_repository_tests {
     /// then assert both memories are intact.
     #[tokio::test]
     async fn rename_replace_is_crash_atomic() {
-        let fs =
-            SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap();
+        let fs = SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap();
         fs.create("s", "/from.md", "src").await.unwrap();
         fs.create("s", "/to.md", "dst").await.unwrap();
 
@@ -1355,7 +1352,7 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn sqlite_store_enforces_the_shared_capacity_contract() {
         crate::repository::tests::capacity_conformance(
-            &SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
         )
         .await;
     }

@@ -134,9 +134,7 @@ async fn gated_tool_run_commits_ordered_audited_terminal_events() {
         .with_tool(Arc::new(EchoTool))
         .with_gate(Arc::new(AllowGate));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));

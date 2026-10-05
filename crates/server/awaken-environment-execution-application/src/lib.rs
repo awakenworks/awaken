@@ -833,7 +833,7 @@ mod tests {
         EnvironmentExecutionApplication,
     ) {
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
-        let work = Arc::new(InMemoryWorkQueue::new(awaken_lease_contract::system_clock()));
+        let work = Arc::new(InMemoryWorkQueue::new(awaken_time::system_clock()));
         let registrar = CoordinatorEnvironmentRegistrar::new(
             Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
             work.clone(),
@@ -919,7 +919,7 @@ mod tests {
             .unwrap();
         let readiness = Arc::new(ToggleImageReadiness(AtomicBool::new(false)));
         let application = EnvironmentExecutionApplication::new(
-            Arc::new(InMemoryWorkQueue::new(awaken_lease_contract::system_clock())),
+            Arc::new(InMemoryWorkQueue::new(awaken_time::system_clock())),
             catalog,
         )
         .with_image_readiness(readiness.clone());
@@ -1550,7 +1550,7 @@ mod tests {
         // | C4 | replay withdraw | healthy | AlreadyWithdrawn | empty |
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let work = Arc::new(FailingConvergenceQueue {
-            inner: InMemoryWorkQueue::new(awaken_lease_contract::system_clock()),
+            inner: InMemoryWorkQueue::new(awaken_time::system_clock()),
             fail_ensure: AtomicBool::new(true),
             fail_list: AtomicBool::new(false),
             fail_remove: AtomicBool::new(false),
@@ -1642,7 +1642,7 @@ mod tests {
         // classification and list -> typed catalog error; D2 C3 -> typed queue
         // error. Definitive absence is covered by W1 in the work-command table.
         let catalog_failure = EnvironmentExecutionApplication::new(
-            Arc::new(InMemoryWorkQueue::new(awaken_lease_contract::system_clock())),
+            Arc::new(InMemoryWorkQueue::new(awaken_time::system_clock())),
             Arc::new(FailingRegistrationSource),
         );
         assert!(
@@ -1664,7 +1664,7 @@ mod tests {
 
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let work = Arc::new(FailingConvergenceQueue {
-            inner: InMemoryWorkQueue::new(awaken_lease_contract::system_clock()),
+            inner: InMemoryWorkQueue::new(awaken_time::system_clock()),
             fail_ensure: AtomicBool::new(false),
             fail_list: AtomicBool::new(false),
             fail_remove: AtomicBool::new(false),

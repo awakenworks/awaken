@@ -683,9 +683,7 @@ async fn delegation_done_folds_delegate_usage_and_feeds_the_reply_back() {
         Step::Fail("unused".to_string()),
     ));
     let runtime = configured_runtime(executor.clone());
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let state = runtime.execute(activation(), context).await.expect("runs");
@@ -730,9 +728,7 @@ async fn delegation_start_requires_live_parent_attempt_authority() {
         Step::Fail("unused".into()),
     ));
     let current_runtime = configured_runtime(current_service.clone());
-    let current_commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let current_commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let current_context = RuntimeRunContext::new()
         .with_commit(current_commit)
         .with_ownership(Arc::new(ScriptedOwnership::new([
@@ -761,7 +757,7 @@ async fn delegation_start_requires_live_parent_attempt_authority() {
         let runtime = configured_runtime(service.clone());
         let context = RuntimeRunContext::new()
             .with_commit(Arc::new(MemoryCommitCoordinator::new(
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )))
             .with_ownership(Arc::new(ScriptedOwnership::new([
                 OwnershipDecision::Current,
@@ -789,9 +785,7 @@ async fn multiple_terminal_child_agents_execute_concurrently_with_distinct_run_i
             calls: AtomicUsize::new(0),
             children: 8,
         }));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         runtime.execute(
@@ -844,9 +838,7 @@ async fn terminal_child_agents_without_parallel_capability_execute_serially() {
             calls: AtomicUsize::new(0),
             children: 2,
         }));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let outcome = runtime
         .execute(
             activation(),
@@ -881,9 +873,7 @@ async fn mixed_delegation_and_regular_tool_batch_executes_serially() {
             concurrency: ToolConcurrency::Serial,
             output_bytes: 0,
         }));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let outcome = runtime
         .execute(
             activation_with_regular_tool(),
@@ -962,9 +952,7 @@ async fn interrupted_or_awaiting_parallel_child_preserves_returned_regular_sibli
                 concurrency: ToolConcurrency::Parallel,
                 output_bytes: 0,
             }));
-        let commit = Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         let result = runtime
             .execute(
                 activation_with_regular_tool(),
@@ -1032,9 +1020,7 @@ async fn large_tool_results_and_parallel_children_share_one_bounded_execution_wa
             concurrency: ToolConcurrency::Parallel,
             output_bytes: 100 * 1024,
         }));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         runtime.execute(
@@ -1086,9 +1072,7 @@ async fn permission_wait_prevents_parallel_delegation_start() {
             children: 2,
         }))
         .with_gate(Arc::new(SuspendGate));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let outcome = runtime
         .execute(activation(), RuntimeRunContext::new().with_commit(commit))
         .await
@@ -1106,9 +1090,7 @@ async fn approved_agent_run_reenters_the_delegation_router() {
         Step::Fail("unused".to_string()),
     ));
     let runtime = configured_runtime(executor.clone()).with_gate(Arc::new(SuspendGate));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
 
     let state = runtime
         .execute(
@@ -1148,9 +1130,7 @@ async fn a_child_run_delegates_with_the_next_depth_and_ordinary_runtime_path() {
         Step::Fail("unused".to_string()),
     ));
     let runtime = configured_runtime(executor.clone());
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let parent_origin = DelegationOrigin::root(RunId("root-run".into()), "root-call");
     let context = RuntimeRunContext::new().with_commit(commit);
     let mut activation = activation();
@@ -1177,9 +1157,7 @@ async fn delegation_awaiting_awaits_the_parent_on_a_delegation_ticket() {
         Step::Fail("unused".to_string()),
     ));
     let runtime = configured_runtime(executor);
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let state = runtime.execute(activation(), context).await.expect("runs");
@@ -1212,9 +1190,7 @@ async fn cancelling_an_awaiting_parent_atomically_persists_child_cancel_intent()
         Step::Fail("unused".to_string()),
     ));
     let runtime = configured_runtime(executor.clone());
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(commit.clone());
@@ -1380,9 +1356,7 @@ async fn child_result_arriving_after_parent_end_is_rejected() {
         release: tokio::sync::Notify::new(),
     });
     let runtime = Arc::new(configured_runtime(executor.clone()));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(commit.clone());
@@ -1434,9 +1408,7 @@ async fn retryable_child_crash_recovers_under_the_same_child_run_identity() {
         starts: AtomicUsize::new(0),
     });
     let runtime = configured_runtime(executor.clone());
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(commit.clone());
@@ -1495,9 +1467,7 @@ async fn delegation_error_feeds_a_model_visible_error_result() {
         Step::Fail("unused".to_string()),
     ));
     let runtime = configured_runtime(executor);
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let state = runtime.execute(activation(), context).await.expect("runs");
@@ -1520,9 +1490,7 @@ async fn await_on_delegation(
     executor: Arc<MockRunDelegationService>,
 ) -> (Runtime, Arc<MemoryCommitCoordinator>) {
     let runtime = configured_runtime(executor);
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime
         .execute(activation(), context)

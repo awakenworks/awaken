@@ -235,7 +235,7 @@ impl LlmExecutor for GenaiExecutor {
             // extended-thinking folds into a `Thinking` block (→ `agent.thinking`).
             .with_capture_reasoning_content(true);
 
-        let started = awaken_lease_contract::mono::now();
+        let started = awaken_time::mono::now();
         let stream_response = tokio::time::timeout_at(
             deadline,
             self.client
@@ -263,7 +263,7 @@ impl LlmExecutor for GenaiExecutor {
             // actual text, reasoning, tool progress, or a terminal event. This
             // prevents provider heartbeats and empty choices from occupying the
             // full reasoning budget while retaining one stream parser/authority.
-            let observed_at = awaken_lease_contract::mono::now();
+            let observed_at = awaken_time::mono::now();
             let remaining = deadline.saturating_duration_since(observed_at);
             if remaining.is_zero() {
                 break Err(Error::Timeout(
@@ -298,7 +298,7 @@ impl LlmExecutor for GenaiExecutor {
                     ));
                 }
                 Err(_) => {
-                    let after_wait = awaken_lease_contract::mono::now();
+                    let after_wait = awaken_time::mono::now();
                     if after_wait >= deadline {
                         break Err(Error::Timeout(
                             "model stream exceeded total timeout".to_string(),
@@ -314,7 +314,7 @@ impl LlmExecutor for GenaiExecutor {
                     continue;
                 }
             };
-            let event_at = awaken_lease_contract::mono::now();
+            let event_at = awaken_time::mono::now();
             let mut made_progress = false;
             match event {
                 // Live text: forward each chunk as it arrives (valid UTF-8 by type).
@@ -558,7 +558,7 @@ pub async fn probe_credential(
     )
     .and_then(|budget| {
         awaken_runtime_contract::llm::ModelAttemptTiming::standalone(
-            awaken_lease_contract::mono::now(),
+            awaken_time::mono::now(),
             budget,
         )
     }) else {

@@ -31,7 +31,7 @@ impl ManagedState {
     pub fn new(
         runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
     ) -> Self {
-        let clock = awaken_lease_contract::system_clock();
+        let clock = awaken_time::system_clock();
         Self::from_fixture_parts(
             Arc::new(runtime),
             None,
@@ -52,7 +52,7 @@ impl ManagedState {
             + 'static,
     {
         let runtime = Arc::new(runtime);
-        let clock = awaken_lease_contract::system_clock();
+        let clock = awaken_time::system_clock();
         Self::from_fixture_parts(
             runtime.clone(),
             Some(runtime),
@@ -187,7 +187,7 @@ impl ManagedState {
         environments: Arc<
             awaken_environment_execution_application::EnvironmentExecutionApplication,
         >,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self::from_application(
             Arc::new(SessionApplication::new(

@@ -14,7 +14,7 @@ authority = "captured-content"
 [dependencies]
 awaken-runtime-contract.workspace = true
 # The one wall-clock port: capture and erasure-fence stamps.
-awaken-lease-contract.workspace = true
+awaken-time.workspace = true
 awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 awaken-scoped-migration-sqlite.workspace = true
 awaken-sqlite-pool.workspace = true

@@ -39,17 +39,14 @@ pub struct MemoryStoreMounter {
     /// host namespace; Namespace binds that host projection into bwrap. A copy
     /// projection carries the store's own times, so it needs no clock.
     #[cfg(all(feature = "fuse", target_os = "linux"))]
-    fuse_clock: Option<Arc<dyn awaken_lease_contract::WallClock>>,
+    fuse_clock: Option<Arc<dyn awaken_time::WallClock>>,
 }
 
 impl MemoryStoreMounter {
     /// Wrap `durable` (the resources-plane store) with the invalidation bus, FUSE
     /// where available. For the Workdir tier (host mount namespace).
     #[must_use]
-    pub fn new(
-        durable: Arc<dyn MemoryRepository>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
-    ) -> Self {
+    pub fn new(durable: Arc<dyn MemoryRepository>, clock: Arc<dyn awaken_time::WallClock>) -> Self {
         Self::with_fuse(durable, Some(clock))
     }
 
@@ -64,7 +61,7 @@ impl MemoryStoreMounter {
 
     fn with_fuse(
         durable: Arc<dyn MemoryRepository>,
-        fuse_clock: Option<Arc<dyn awaken_lease_contract::WallClock>>,
+        fuse_clock: Option<Arc<dyn awaken_time::WallClock>>,
     ) -> Self {
         #[cfg(not(all(feature = "fuse", target_os = "linux")))]
         let _ = fuse_clock;
@@ -400,12 +397,9 @@ mod tests {
         // Force the copy path by pointing at a store with content and a host dir; on a
         // host with FUSE the mounter would pick FUSE, so we drive the copy guard
         // directly to assert the harvest-on-teardown contract deterministically.
-        let durable = Arc::new(VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let durable = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
         durable.create("s", "/note.md", "v1").await.unwrap();
-        let mounter =
-            MemoryStoreMounter::new(durable.clone(), awaken_lease_contract::system_clock());
+        let mounter = MemoryStoreMounter::new(durable.clone(), awaken_time::system_clock());
         let dir = temp("copy");
 
         let snapshot = copy::materialize(&*mounter.fs, "s", &dir).await.unwrap();
@@ -446,9 +440,7 @@ mod tests {
         // edits B authorizes the same CAS harvest as a live CopyMount; no fresh
         // snapshot may replace A at recovery time, and successful writes become
         // the only durable heads before the Sandbox can be removed.
-        let durable = Arc::new(VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let durable = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
         let original = durable.create("s", "/note.md", "before").await.unwrap();
         let mounter = MemoryStoreMounter::copy_only(durable.clone());
         let evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
@@ -547,12 +539,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_read_only_copy_mount_does_not_harvest() {
-        let durable = Arc::new(VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let durable = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
         durable.create("s", "/note.md", "v1").await.unwrap();
-        let mounter =
-            MemoryStoreMounter::new(durable.clone(), awaken_lease_contract::system_clock());
+        let mounter = MemoryStoreMounter::new(durable.clone(), awaken_time::system_clock());
         let dir = temp("ro");
         let snapshot = copy::materialize(&*mounter.fs, "s", &dir).await.unwrap();
 
@@ -591,9 +580,7 @@ mod tests {
         // written to store `alpha` must be INVISIBLE through store `beta`, even though
         // both realize over the same shared durable fs. `store_id` is a hard content
         // boundary — a peer store cannot see, or materialize, another's bytes.
-        let durable = Arc::new(VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let durable = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
         durable
             .create("alpha", "/secret.md", "alpha-only")
             .await
@@ -660,9 +647,7 @@ mod tests {
         // this deterministically exercises the PUBLIC `mount()` → copy branch (not the
         // CopyMount constructor the other tests drive) — the exact path the
         // namespace/no-FUSE tier uses.
-        let durable = Arc::new(VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let durable = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
         durable.create("s", "/note.md", "v1").await.unwrap();
         let mounter = MemoryStoreMounter::copy_only(durable.clone());
         let dir = temp("copyonly");
@@ -697,12 +682,9 @@ mod tests {
     async fn default_mount_degrades_to_copy_and_harvests_off_linux() {
         use awaken_provisioning_contract::{MemoryMounter, MountAccess};
 
-        let durable = Arc::new(VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let durable = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
         durable.create("s", "/note.md", "v1").await.unwrap();
-        let mounter =
-            MemoryStoreMounter::new(durable.clone(), awaken_lease_contract::system_clock());
+        let mounter = MemoryStoreMounter::new(durable.clone(), awaken_time::system_clock());
         let dir = temp("platform-copy-fallback");
 
         let guard = mounter
@@ -731,9 +713,7 @@ mod tests {
     async fn remount_starts_from_store_truth_and_drops_stale_projection_bytes() {
         use awaken_provisioning_contract::{MemoryMounter, MountAccess};
 
-        let durable = Arc::new(VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let durable = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
         durable.create("s", "/live.md", "truth").await.unwrap();
         let mounter = MemoryStoreMounter::copy_only(durable);
         let dir = temp("fresh-projection");

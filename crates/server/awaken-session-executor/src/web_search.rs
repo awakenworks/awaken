@@ -726,7 +726,7 @@ mod tests {
             ),
             secrets.as_ref(),
             repo.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -734,9 +734,9 @@ mod tests {
             Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
                 repo.clone(),
                 secrets,
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let exact = CredentialRef {
             id: source.id.0.clone(),

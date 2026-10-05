@@ -2,9 +2,9 @@
 // @formal reason: Application integration for proved budget arithmetic.
 //! Session-root list-cost admission and cumulative usage settlement.
 
-use awaken_lease_contract::WallClockExt as _;
 use awaken_session_budget_contract::{ManagedBudgetUsageCursor, SessionUsage};
 use awaken_session_state_contract::{ManagedLifecycleFact, PersistedSession};
+use awaken_time::WallClockExt as _;
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
 

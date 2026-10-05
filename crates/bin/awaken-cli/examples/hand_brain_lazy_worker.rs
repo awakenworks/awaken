@@ -118,7 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Ok(worker_id) = std::env::var("AWAKEN_WORKER_ID") {
         upstream = upstream.with_worker_id(worker_id);
     }
-    awaken_worker::WorkerNodeBuilder::new(upstream, awaken_lease_contract::system_clock())
+    awaken_worker::WorkerNodeBuilder::new(upstream, awaken_time::system_clock())
         .with_inference_materializer(Arc::new(HostMaterializer))
         .with_deployment_config(deployment)
         // Reuse the production CLI's one container Hand relay boundary. Container

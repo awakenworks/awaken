@@ -215,9 +215,7 @@ async fn bare_runtime_assembles_memory_and_skills_from_public_parts() {
             RecallBounds::default(),
         )));
 
-    let commit = std::sync::Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = std::sync::Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime
         .run(&combo_config(true), "Set things up.", ctx)
@@ -310,7 +308,7 @@ async fn memory_plugin_is_inert_without_its_plugin_id() {
         )));
 
     let ctx = RuntimeRunContext::new().with_commit(std::sync::Arc::new(
-        MemoryCommitCoordinator::new(awaken_lease_contract::system_clock()),
+        MemoryCommitCoordinator::new(awaken_time::system_clock()),
     ));
     let state = runtime
         .run(&combo_config(false), "Set things up.", ctx)

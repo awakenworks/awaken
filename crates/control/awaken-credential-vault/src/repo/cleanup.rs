@@ -596,7 +596,7 @@ pub(super) mod tests {
                     recover_credential_mutations(
                         &store,
                         &repo,
-                        awaken_lease_contract::system_clock().as_ref()
+                        awaken_time::system_clock().as_ref()
                     )
                     .await
                     .is_err(),
@@ -616,7 +616,7 @@ pub(super) mod tests {
                     recover_credential_mutations(
                         &store,
                         &repo,
-                        awaken_lease_contract::system_clock().as_ref()
+                        awaken_time::system_clock().as_ref()
                     )
                     .await
                     .unwrap(),
@@ -627,7 +627,7 @@ pub(super) mod tests {
                     recover_credential_mutations(
                         &store,
                         &repo,
-                        awaken_lease_contract::system_clock().as_ref()
+                        awaken_time::system_clock().as_ref()
                     )
                     .await
                     .unwrap(),

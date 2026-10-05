@@ -911,7 +911,7 @@ async fn distinct_replacement_recovery_is_directional(repo: &dyn CredentialRepo)
         .expect("XR1 expired Writing claim");
     repo.abort_mutation(&claimed).await.unwrap();
     assert_eq!(
-        recover_credential_mutations(&store, repo, awaken_lease_contract::system_clock().as_ref())
+        recover_credential_mutations(&store, repo, awaken_time::system_clock().as_ref())
             .await
             .unwrap(),
         1,
@@ -971,7 +971,7 @@ async fn distinct_replacement_recovery_is_directional(repo: &dyn CredentialRepo)
     let committed_ready = repo.mark_mutation_ready(&committed).await.unwrap();
     repo.apply_mutation(&committed_ready).await.unwrap();
     assert_eq!(
-        recover_credential_mutations(&store, repo, awaken_lease_contract::system_clock().as_ref())
+        recover_credential_mutations(&store, repo, awaken_time::system_clock().as_ref())
             .await
             .unwrap(),
         1,
@@ -1038,12 +1038,7 @@ async fn distinct_replacement_recovery_is_directional(repo: &dyn CredentialRepo)
     repo.put(foreign_row.clone()).await.unwrap();
 
     assert!(matches!(
-        recover_credential_mutations(
-            &guarded,
-            repo,
-            awaken_lease_contract::system_clock().as_ref()
-        )
-        .await,
+        recover_credential_mutations(&guarded, repo, awaken_time::system_clock().as_ref()).await,
         Err(CredentialError::MutationConflict(_))
     ));
     assert_eq!(guarded.deletes.load(Ordering::SeqCst), 0, "XR3");
@@ -2161,22 +2156,14 @@ async fn sqlite_recovery_scans_reject_mismatched_durable_keys_before_secret_io()
 
     let store = DeleteCountingStore::default();
     assert!(
-        recover_credential_mutations(
-            &store,
-            &repo,
-            awaken_lease_contract::system_clock().as_ref()
-        )
-        .await
-        .is_err()
+        recover_credential_mutations(&store, &repo, awaken_time::system_clock().as_ref())
+            .await
+            .is_err()
     );
     assert!(
-        recover_managed_credential_mutations(
-            &store,
-            &repo,
-            awaken_lease_contract::system_clock().as_ref()
-        )
-        .await
-        .is_err()
+        recover_managed_credential_mutations(&store, &repo, awaken_time::system_clock().as_ref())
+            .await
+            .is_err()
     );
     assert_eq!(store.reads.load(Ordering::SeqCst), 0);
     assert_eq!(store.deletes.load(Ordering::SeqCst), 0);
@@ -2551,19 +2538,15 @@ mod postgres {
 
         let store = DeleteCountingStore::default();
         assert!(
-            recover_credential_mutations(
-                &store,
-                &repo,
-                awaken_lease_contract::system_clock().as_ref()
-            )
-            .await
-            .is_err()
+            recover_credential_mutations(&store, &repo, awaken_time::system_clock().as_ref())
+                .await
+                .is_err()
         );
         assert!(
             recover_managed_credential_mutations(
                 &store,
                 &repo,
-                awaken_lease_contract::system_clock().as_ref()
+                awaken_time::system_clock().as_ref()
             )
             .await
             .is_err()
@@ -2637,19 +2620,15 @@ mod postgres {
 
         let store = DeleteCountingStore::default();
         assert!(
-            recover_credential_mutations(
-                &store,
-                &repo,
-                awaken_lease_contract::system_clock().as_ref()
-            )
-            .await
-            .is_err()
+            recover_credential_mutations(&store, &repo, awaken_time::system_clock().as_ref())
+                .await
+                .is_err()
         );
         assert!(
             recover_managed_credential_mutations(
                 &store,
                 &repo,
-                awaken_lease_contract::system_clock().as_ref()
+                awaken_time::system_clock().as_ref()
             )
             .await
             .is_err()
@@ -2831,7 +2810,7 @@ mod postgres {
             "2026-09-17T00:00:01Z".into(),
             &InMemorySecretStore::new(),
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();

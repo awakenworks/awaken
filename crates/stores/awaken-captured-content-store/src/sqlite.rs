@@ -38,15 +38,12 @@ pub struct SqliteCapturedContentStore {
     conn: SharedSqliteConnection,
     seq: AtomicU64,
     /// The wall clock capture records and erasure fences are stamped with.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl SqliteCapturedContentStore {
     /// Open (or create) a database file and apply the migrations.
-    pub fn open(
-        path: &str,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
-    ) -> Result<Self, StoreError> {
+    pub fn open(path: &str, clock: Arc<dyn awaken_time::WallClock>) -> Result<Self, StoreError> {
         let conn = SqliteConnectionFactory::file(path)
             .open()
             .map_err(|e| StoreError::Open(e.to_string()))?;
@@ -59,9 +56,7 @@ impl SqliteCapturedContentStore {
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory(
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
-    ) -> Result<Self, StoreError> {
+    pub fn open_in_memory(clock: Arc<dyn awaken_time::WallClock>) -> Result<Self, StoreError> {
         let conn = SqliteConnectionFactory::memory()
             .open()
             .map_err(|e| StoreError::Open(e.to_string()))?;
@@ -268,8 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn erase_and_ttl_over_sqlite() {
-        let s = SqliteCapturedContentStore::open_in_memory(awaken_lease_contract::system_clock())
-            .unwrap();
+        let s = SqliteCapturedContentStore::open_in_memory(awaken_time::system_clock()).unwrap();
         s.insert(
             &DataSubjectId("a".into()),
             Purpose::TelemetryContent,
@@ -315,8 +309,7 @@ mod tests {
 
     #[tokio::test]
     async fn restricted_rows_survive_erasure_and_ttl_over_sqlite() {
-        let s = SqliteCapturedContentStore::open_in_memory(awaken_lease_contract::system_clock())
-            .unwrap();
+        let s = SqliteCapturedContentStore::open_in_memory(awaken_time::system_clock()).unwrap();
         s.insert(
             &DataSubjectId("a".into()),
             Purpose::TelemetryContent,
@@ -356,8 +349,7 @@ mod tests {
         // unaffected. Immediate transactions serialize write/erase without a
         // check-then-insert race.
         let store =
-            SqliteCapturedContentStore::open_in_memory(awaken_lease_contract::system_clock())
-                .unwrap();
+            SqliteCapturedContentStore::open_in_memory(awaken_time::system_clock()).unwrap();
         let erased = DataSubjectId("erased".into());
         store.insert(&erased, Purpose::TelemetryContent, "old", 1);
         assert_eq!(store.erase_subject(&erased).await.unwrap(), 1, "R1");

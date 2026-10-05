@@ -54,9 +54,7 @@ async fn write_through_required_rejects_copy_before_agent_launch() {
     // write-through-required + FUSE -> admitted; write-through-required + copy ->
     // rejected before launch with no writable sandbox. This test owns the third
     // rule deterministically by injecting the copy-only realization.
-    let fs = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let fs = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     fs.create("strict", "/note.md", "v1").await.unwrap();
     let mounter = Arc::new(MemoryStoreMounter::copy_only(fs.clone()));
     let tmp = tempfile::tempdir().unwrap();
@@ -105,13 +103,11 @@ fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
 
 #[tokio::test]
 async fn memory_store_mount_realizes_and_persists_an_edit() {
-    let fs = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let fs = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     fs.create("s", "/note.md", "v1").await.unwrap();
     let mounter = Arc::new(MemoryStoreMounter::new(
         fs.clone(),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
 
     let tmp = tempfile::tempdir().unwrap();
@@ -158,9 +154,7 @@ async fn workdir_rejects_read_only_memory_before_materialization() {
     // Decision rule RO1: C1+C2+C3 => E1+E2+E3.
     // Constraint: provider capability admission is the single authority; the
     // Memory mounter must not simulate a weaker read-only mode behind it.
-    let fs = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let fs = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     fs.create("readonly", "/note.md", "v1").await.unwrap();
     let mounter = Arc::new(MemoryStoreMounter::copy_only(fs.clone()));
     let tmp = tempfile::tempdir().unwrap();

@@ -15,16 +15,16 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_lease_contract::WallClock;
 use awaken_session_work_contract::{
     HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, SessionAccessDigest,
     SessionWorkLease, SessionWorkReleaseAdmission, WorkClaim, WorkItem, WorkLeaseMutationAdmission,
     WorkMutationResult, WorkPayload, WorkQueue, WorkQueueError, WorkSessionAccess, WorkState,
     session_work_release_admission, work_lease_mutation_admission,
 };
+use awaken_time::WallClock;
 
 use super::{LEASE_TTL_MS, LeaseBook, heartbeat_at};
-use awaken_lease_contract::WallClockExt;
+use awaken_time::WallClockExt;
 
 /// The lease TTL a heartbeat reports (seconds).
 const HEARTBEAT_TTL_SECONDS: u64 = 60;
@@ -216,7 +216,7 @@ impl InMemoryWorkQueue {
             .map_err(|error| WorkQueueError::Storage(error.into()))?;
         let work = works.get_mut(&wid).expect("just found");
         work.state = WorkState::Active;
-        work.started_at = Some(awaken_lease_contract::utc::epoch_millis_to_rfc3339(now_ms));
+        work.started_at = Some(awaken_time::utc::epoch_millis_to_rfc3339(now_ms));
         work.latest_heartbeat_at = None;
         let session_access = session_access
             .filter(|_| matches!(work.data, WorkPayload::Session { .. }))
@@ -774,7 +774,7 @@ impl WorkQueue for InMemoryWorkQueue {
             book.claim_for(&work_id, worker_owner, now_ms, LEASE_TTL_MS)
                 .map_err(|error| WorkQueueError::Storage(error.into()))?;
             work.state = WorkState::Active;
-            work.started_at = Some(awaken_lease_contract::utc::epoch_millis_to_rfc3339(now_ms));
+            work.started_at = Some(awaken_time::utc::epoch_millis_to_rfc3339(now_ms));
             work.latest_heartbeat_at = None;
         }
         Ok(authority.current_session_lease(env_id, session_id, now_ms))
@@ -882,7 +882,7 @@ mod tests {
     use crate::{LEASE_TTL_MS, POLLER_WINDOW_MS, test_session_access_digest};
 
     fn q() -> InMemoryWorkQueue {
-        InMemoryWorkQueue::new(awaken_lease_contract::system_clock())
+        InMemoryWorkQueue::new(awaken_time::system_clock())
     }
 
     // Pin the Anthropic wire vocabulary each `WorkState` renders to. This is the

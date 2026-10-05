@@ -725,7 +725,7 @@ async fn run_one(
     input: String,
     case_id: &str,
 ) -> BenchmarkObservation {
-    let started = awaken_lease_contract::mono::Stopwatch::start();
+    let started = awaken_time::mono::Stopwatch::start();
     let result = tokio::time::timeout(
         TIMEOUT,
         runner.run(namespace, sequence, instructions, input, 2),

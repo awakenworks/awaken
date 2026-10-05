@@ -50,7 +50,7 @@ async fn application_protocols_use_one_application_authentication_edge() {
     ));
 
     let dir = tempfile::tempdir().unwrap();
-    let iam = embedded_iam(dir.path(), awaken_lease_contract::system_clock());
+    let iam = embedded_iam(dir.path(), awaken_time::system_clock());
     let service_token = std::fs::read_to_string(dir.path().join(ADMIN_TOKEN_FILE)).unwrap();
     let app = crate::protect_runtime_protocol_routers(
         Router::new().route("/v1/sessions", axum::routing::get(ok)),

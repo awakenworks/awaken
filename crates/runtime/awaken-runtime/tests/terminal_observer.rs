@@ -126,9 +126,7 @@ fn activation() -> RunActivation {
 #[tokio::test]
 async fn terminal_observer_runs_only_after_a_successful_terminal_commit() {
     let observer = Arc::new(RecordingObserver::default());
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let token = CancellationToken::new();
     token.cancel();
     let context = RuntimeRunContext::new()
@@ -159,7 +157,7 @@ async fn awaiting_is_not_delivered_to_terminal_observers() {
     pause.request();
     let context = RuntimeRunContext::new()
         .with_commit(Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )))
         .with_terminal_observer(observer.clone())
         .with_pause(pause);
@@ -226,7 +224,7 @@ async fn observer_failure_cannot_change_the_committed_run_result() {
     token.cancel();
     let context = RuntimeRunContext::new()
         .with_commit(Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )))
         .with_terminal_observer(observer.clone())
         .with_cancellation(token);
@@ -243,9 +241,7 @@ async fn observer_failure_cannot_change_the_committed_run_result() {
 #[tokio::test]
 async fn stable_id_reentry_redelivers_without_reexecuting_inference() {
     let observer = Arc::new(RecordingObserver::default());
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let llm = Arc::new(TextLlm {
         calls: AtomicUsize::new(0),
     });

@@ -494,7 +494,7 @@ fn credential_support() -> CredentialMaterializerSupport {
     CredentialMaterializerSupport::from(
         &awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
             Arc::new(ExternalCredentialResolver),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ),
     )
 }
@@ -509,7 +509,7 @@ fn worker_uses_the_injected_web_search_registry_as_its_only_catalog() {
     let registry = awaken_ext_builtin_tools::WebSearchProviderRegistry::default();
     let worker = WorkerNodeBuilder::new(
         awaken_worker_transport_security::WorkerUpstream::new("https://control.test"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_standard_manifest(Default::default())
     .with_web_search_provider_registry(registry)
@@ -685,7 +685,7 @@ async fn namespace_fallback_manifest_participant() {
     let make = || {
         WorkerNodeBuilder::new(
             awaken_worker_transport_security::WorkerUpstream::new("http://control"),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_deployment_config(deployment.clone())
     };
@@ -758,7 +758,7 @@ async fn namespace_fallback_manifest_participant() {
 fn standard_builder_derives_from_its_installed_materializer() {
     let worker = WorkerNodeBuilder::new(
         awaken_worker_transport_security::WorkerUpstream::new("http://control"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_inference_materializer(Arc::new(SchemeMaterializer))
     .with_standard_manifest(Default::default())
@@ -780,7 +780,7 @@ fn worker_builder_rejects_scoped_execution_without_platform_or_host_consent() {
             deployment.sandbox.trusted_host_scoped_execution = scoped;
             let result = WorkerNodeBuilder::new(
                 awaken_worker_transport_security::WorkerUpstream::new("http://control"),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .with_deployment_config(deployment)
             .with_standard_manifest(Default::default())
@@ -920,7 +920,7 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
     let base = || {
         WorkerNodeBuilder::new(
             awaken_worker_transport_security::WorkerUpstream::new("https://control.test"),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_session_container_provider("hosted", Arc::new(CheckpointContainerProvider))
         .with_hand_executor_factory(crate::relay_hand_executor_factory())
@@ -949,7 +949,7 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
 
     let worker = WorkerNodeBuilder::new(
         awaken_worker_transport_security::WorkerUpstream::new("https://control.test"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_session_container_environment_components(
         "hosted",
@@ -1003,7 +1003,7 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
     };
     let worker = WorkerNodeBuilder::new(
         awaken_worker_transport_security::WorkerUpstream::new("https://control.test"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_enclosing_sandbox_boundary("kubernetes-pod", capabilities.clone())
     .with_standard_manifest(Default::default())
@@ -1017,7 +1017,7 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
 
     let error = WorkerNodeBuilder::new(
         awaken_worker_transport_security::WorkerUpstream::new("https://control.test"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_enclosing_sandbox_boundary(" ", worker.manifest().sandbox.clone())
     .with_standard_manifest(Default::default())
@@ -1031,7 +1031,7 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
 
     let error = WorkerNodeBuilder::new(
         awaken_worker_transport_security::WorkerUpstream::new("https://control.test"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_enclosing_sandbox_boundary("kubernetes-pod", worker.manifest().sandbox.clone())
     .with_session_container_provider("per-session", Arc::new(UnusedContainerProvider))
@@ -1058,12 +1058,12 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
 fn external_credential_resolver_has_one_canonical_resolution_path() {
     let worker = WorkerNodeBuilder::new(
         awaken_worker_transport_security::WorkerUpstream::new("http://control"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_credential_materializer(
         awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
             Arc::new(ExternalCredentialResolver),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ),
     )
     .with_worker_local_credential_resolver(Arc::new(ExternalCredentialResolver))
@@ -1770,7 +1770,7 @@ fn resource_capability_follows_the_canonical_registered_remote_projection() {
     let builder = || {
         WorkerNodeBuilder::new(
             awaken_worker_transport_security::WorkerUpstream::new("http://control"),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_standard_manifest(Default::default())
     };

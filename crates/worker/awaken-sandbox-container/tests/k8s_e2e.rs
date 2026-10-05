@@ -481,7 +481,7 @@ async fn gated_k8s_marker_readiness_and_first_real_helper_roundtrip() {
             .expect("GKC1 digest-pinned forwarder"),
         );
     let provider = ContainerProvider::new(Arc::new(runtime), image.clone())
-        .with_clock(awaken_lease_contract::system_clock());
+        .with_clock(awaken_time::system_clock());
     let scope = format!("k8s-control-{}", std::process::id());
     let mut demanded = spec(&scope, image);
     demanded
@@ -570,7 +570,7 @@ async fn k8s_warm_capacity_reaches_ready_hands_out_and_drains_without_killing_se
     let image = fixture_image();
     let provider = Arc::new(
         ContainerProvider::new(runtime.clone(), image.clone())
-            .with_clock(awaken_lease_contract::system_clock()),
+            .with_clock(awaken_time::system_clock()),
     );
     let pool = WarmContainerPool::new(provider, 1);
     let mut session_spec = spec(&format!("k8s-warm-capacity-{}", std::process::id()), image);
@@ -635,7 +635,7 @@ async fn a_k8s_pod_rotates_and_persists_a_native_credential_file() {
         .await
         .expect("connect to the cluster");
     let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
-        .with_clock(awaken_lease_contract::system_clock())
+        .with_clock(awaken_time::system_clock())
         .with_secret_broker(broker.clone());
     let spec = credential_spec(&scope, refreshed);
     let sandbox = provider
@@ -718,7 +718,7 @@ async fn live_credential_failures_preserve_the_k8s_environment_for_retry() {
         .await
         .expect("connect to the cluster");
     let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
-        .with_clock(awaken_lease_contract::system_clock())
+        .with_clock(awaken_time::system_clock())
         .with_secret_broker(read_broker.clone());
     let sandbox = provider
         .create_container(&credential_spec(&read_scope, refreshed))
@@ -767,7 +767,7 @@ async fn live_credential_failures_preserve_the_k8s_environment_for_retry() {
         .await
         .expect("connect to the cluster");
     let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
-        .with_clock(awaken_lease_contract::system_clock())
+        .with_clock(awaken_time::system_clock())
         .with_secret_broker(write_broker.clone());
     let sandbox = provider
         .create_container(&credential_spec(&write_scope, refreshed))
@@ -818,7 +818,7 @@ async fn a_pod_agent_speaks_the_wire_over_the_exec_channel() {
     let runtime = Arc::new(runtime);
     let image = fixture_image();
     let provider = ContainerProvider::new(runtime.clone(), image.clone())
-        .with_clock(awaken_lease_contract::system_clock());
+        .with_clock(awaken_time::system_clock());
 
     let sandbox = provider
         .create_container(&spec(&scope, image))
@@ -877,7 +877,7 @@ async fn a_live_managed_file_is_replaceable_by_the_runtime_and_read_only_to_the_
         .expect("connect to the cluster");
     let image = fixture_image();
     let provider = ContainerProvider::new(Arc::new(runtime), image.clone())
-        .with_clock(awaken_lease_contract::system_clock());
+        .with_clock(awaken_time::system_clock());
     let sandbox = provider
         .create_container(&spec(&scope, image))
         .await
@@ -986,7 +986,7 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
         .await
         .expect("connect to the cluster");
     let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
-        .with_clock(awaken_lease_contract::system_clock());
+        .with_clock(awaken_time::system_clock());
 
     let first_spec = managed_input_spec(&scope, path_a, "generation-a");
     let next_spec = managed_input_spec(&scope, path_b, "generation-b");
@@ -1083,7 +1083,7 @@ async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
         .await
         .expect("connect to the cluster");
     let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
-        .with_clock(awaken_lease_contract::system_clock());
+        .with_clock(awaken_time::system_clock());
 
     let sandbox = provider
         .create_container(&inline_spec(&scope, marker))
@@ -1153,9 +1153,7 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
     if !require_live_cluster() {
         return;
     }
-    let memory = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let memory = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     memory
         .create("k8s-rw", "/note.md", "rw-seed")
         .await
@@ -1171,7 +1169,7 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
         .expect("connect to the cluster");
     let image = session_image();
     let provider = ContainerProvider::new(Arc::new(runtime), image.clone())
-        .with_clock(awaken_lease_contract::system_clock());
+        .with_clock(awaken_time::system_clock());
     let terminal_mounter = Arc::new(MemoryStoreMounter::copy_only(memory.clone()));
     provider.install_memory_mounter(terminal_mounter.clone());
 
@@ -1339,7 +1337,7 @@ async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
     // The provider resolves the `File` id `blob-k8s` from its seeded BlobSource, then the
     // k8s tier projects the resolved bytes as a ConfigMap — the by-reference content path.
     let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
-        .with_clock(awaken_lease_contract::system_clock())
+        .with_clock(awaken_time::system_clock())
         .with_blob("blob-k8s", marker);
 
     let sandbox = provider
@@ -1400,7 +1398,7 @@ async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
     let mut bytes = vec![0xffu8, 0xfe];
     bytes.extend_from_slice(b"binary-marker-ok");
     let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
-        .with_clock(awaken_lease_contract::system_clock())
+        .with_clock(awaken_time::system_clock())
         .with_blob("blob-bin", bytes);
 
     let sandbox = provider
@@ -1467,7 +1465,7 @@ async fn an_expired_hand_exec_is_indeterminate_but_a_later_call_uses_the_same_se
         .await
         .expect("connect to Kubernetes");
     let provider = ContainerProvider::new(Arc::new(runtime), image.clone())
-        .with_clock(awaken_lease_contract::system_clock());
+        .with_clock(awaken_time::system_clock());
     let sandbox_spec = spec(&scope, image);
     let sandbox = provider
         .create_container(&sandbox_spec)
@@ -1589,7 +1587,7 @@ async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() 
         .expect("connect Worker A provider")
         .with_pod_channel_port(7777);
     let provider_a = ContainerProvider::new(Arc::new(runtime_a), image.clone())
-        .with_clock(awaken_lease_contract::system_clock())
+        .with_clock(awaken_time::system_clock())
         .with_resident_hand(
             ResidentHandConfig::new("/usr/local/bin/awaken-sandbox", 7777).unwrap(),
         );
@@ -1663,7 +1661,7 @@ async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() 
         .expect("connect Worker B provider")
         .with_pod_channel_port(7777);
     let provider_b = ContainerProvider::new(Arc::new(runtime_b), "unused-on-adopt")
-        .with_clock(awaken_lease_contract::system_clock())
+        .with_clock(awaken_time::system_clock())
         .with_resident_hand(
             ResidentHandConfig::new("/usr/local/bin/awaken-sandbox", 7777).unwrap(),
         );

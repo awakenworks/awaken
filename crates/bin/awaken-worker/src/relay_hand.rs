@@ -68,7 +68,7 @@ mod tests {
             hand,
             awaken_tool_relay::HandSession::in_memory(
                 [Arc::new(Echo) as Arc<dyn RawTool>],
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ),
         ));
         let executor = relay_hand_executor_factory().bind(
@@ -141,7 +141,7 @@ mod tests {
                 hand,
                 awaken_tool_relay::HandSession::in_memory(
                     [tool.clone() as Arc<dyn RawTool>],
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 ),
             ));
             let factory = relay_hand_executor_factory();
@@ -202,7 +202,7 @@ mod tests {
                 hand,
                 awaken_tool_relay::HandSession::in_memory(
                     [tool as Arc<dyn RawTool>],
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 ),
             ));
             let replacement = factory.bind(Box::new(brain), "session", recovery);

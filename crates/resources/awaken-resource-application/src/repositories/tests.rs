@@ -27,10 +27,10 @@ fn application() -> RepositoryApplication {
     RepositoryApplication::new(
         Arc::new(crate::RegistryApplication::new(
             storage,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )),
         Arc::new(Credentials),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
 }
 

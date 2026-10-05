@@ -1,10 +1,10 @@
 // @formal entrypoint session_resources.external_io_requires_durable_prepared_state
 //! Session-root authorization for ordinary Resource materialization.
 
-use awaken_lease_contract::WallClockExt as _;
 use awaken_session_realization_contract::{
     SessionRealizationControlFailure, SessionResourceMaterializationIntent,
 };
+use awaken_time::WallClockExt as _;
 
 use crate::{SessionApplication, realization::repository_control};
 

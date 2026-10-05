@@ -47,7 +47,7 @@ pub struct PgCapturedContentStore {
     pool: PgPool,
     seq: AtomicU64,
     /// The wall clock capture records and erasure fences are stamped with.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl PgCapturedContentStore {
@@ -55,7 +55,7 @@ impl PgCapturedContentStore {
     /// `coordinator_data_capture` namespace.
     pub async fn connect(
         url: &str,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, PgStoreError> {
         Ok(Self {
             pool: connect_migrated(url).await?,
@@ -67,7 +67,7 @@ impl PgCapturedContentStore {
     /// Build from an existing pool: apply the Coordinator capture migration.
     pub async fn with_pool(
         pool: PgPool,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, PgStoreError> {
         Ok(Self {
             pool: pool_migrated(pool).await?,
@@ -79,7 +79,7 @@ impl PgCapturedContentStore {
     /// Connect to a schema owned by the deployment migration command.
     pub async fn connect_existing(
         url: &str,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, PgStoreError> {
         let pool = PgPool::connect(url)
             .await
@@ -90,7 +90,7 @@ impl PgCapturedContentStore {
     /// Verify the existing scoped ledger over the composition-owned pool.
     pub async fn with_existing_pool(
         pool: PgPool,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, PgStoreError> {
         let bundle = coordinator_data_capture_bundle()
             .map_err(|error| PgStoreError::Schema(error.to_string()))?;

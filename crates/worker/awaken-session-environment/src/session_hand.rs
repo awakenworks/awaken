@@ -401,7 +401,7 @@ async fn stop_hand_binding(
         // never terminate that workload.
         return Ok(HandStopProof::ResidentProcessRetained);
     };
-    let started = awaken_lease_contract::mono::Stopwatch::start();
+    let started = awaken_time::mono::Stopwatch::start();
     if let Err(error) =
         awaken_run_executor_acp::Supervisor::reap(process.as_ref(), HAND_STOP_GRACE).await
     {
@@ -426,7 +426,7 @@ async fn launch_hand(
     operation_scope: String,
     mode: HandMode,
 ) -> Result<HandBinding, pc::SandboxError> {
-    let started = awaken_lease_contract::mono::Stopwatch::start();
+    let started = awaken_time::mono::Stopwatch::start();
     if mode == HandMode::Resident {
         // Pod Running/Ready can become observable before PID 1 has bound its
         // listener. Retry only this pre-dispatch attachment boundary.
@@ -878,7 +878,7 @@ impl SessionHandExecutor {
     }
 
     async fn replacement(&self) -> Result<(), ToolError> {
-        let started = awaken_lease_contract::mono::Stopwatch::start();
+        let started = awaken_time::mono::Stopwatch::start();
         let result = self.await_ready_binding().await;
         awaken_observability::record_hand_lifecycle(
             "reacquire",

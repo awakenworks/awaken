@@ -15,6 +15,7 @@ authority = "session-work"
 [dependencies]
 async-trait.workspace = true
 awaken-agent-contract.workspace = true
+awaken-time.workspace = true
 awaken-lease-contract.workspace = true
 awaken-session-types.workspace = true
 serde.workspace = true

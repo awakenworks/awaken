@@ -212,7 +212,7 @@ pub async fn issue_application_access(
             },
         );
     }
-    let now_ms = awaken_lease_contract::WallClockExt::now_ms(store.clock().as_ref());
+    let now_ms = awaken_time::WallClockExt::now_ms(store.clock().as_ref());
     let expires_ms = now_ms.saturating_add(request.expires_in_seconds.saturating_mul(1000));
     let expires_at = awaken_session_application_contract::epoch_millis_to_rfc3339(expires_ms);
     let grant = ApplicationGrant {
@@ -272,7 +272,7 @@ async fn revoke(
         .revoke(
             &workspace_id,
             &id,
-            awaken_lease_contract::WallClockExt::now_ms(state.store.clock().as_ref()),
+            awaken_time::WallClockExt::now_ms(state.store.clock().as_ref()),
         )
         .await
     {
@@ -655,9 +655,7 @@ mod tests {
     }
 
     fn application_access() -> Arc<ApplicationAccessStore> {
-        Arc::new(
-            ApplicationAccessStore::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
-        )
+        Arc::new(ApplicationAccessStore::open_in_memory(awaken_time::system_clock()).unwrap())
     }
 
     /// Cause-effect serialization rules: R1 a complete canonical issuance

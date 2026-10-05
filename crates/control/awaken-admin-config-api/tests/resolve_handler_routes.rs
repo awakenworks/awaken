@@ -92,7 +92,7 @@ fn harness_with(probe: Option<Arc<dyn CredentialProbe>>) -> Harness {
         model_discovery: None,
         brokered_catalog: None,
         availability: Arc::new(AvailabilityLedger::new()),
-        clock: awaken_lease_contract::system_clock(),
+        clock: awaken_time::system_clock(),
     });
     Harness { app, catalog }
 }

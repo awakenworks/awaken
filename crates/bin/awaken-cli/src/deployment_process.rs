@@ -48,11 +48,11 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
 /// guard already carries the clock selected when its lease was admitted.
 pub(super) fn process_clock_for(
     deployment: Option<&config::ResolvedDeployment>,
-) -> std::sync::Arc<dyn awaken_lease_contract::WallClock> {
+) -> std::sync::Arc<dyn awaken_time::WallClock> {
     deployment
         .and_then(|deployment| deployment.workspace_data_lease_guard.as_ref())
         .map(config::WorkspaceDataLeaseGuard::clock)
-        .unwrap_or_else(awaken_lease_contract::system_clock)
+        .unwrap_or_else(awaken_time::system_clock)
 }
 
 pub(super) async fn prepare_runtime_process_with_coordinator_services_and_installations(
@@ -62,7 +62,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
     model_supply: PublicationModelSupply,
     services: (ManagedServiceAdapters, CoordinatorServiceAdapters),
     installations: installation_binding::PreparedDeploymentInstallations,
-    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<PreparedProcess, String> {
     let (mut managed_services, coordinator_services) = services;
     debug_assert!(matches!(
@@ -302,7 +302,7 @@ pub(crate) async fn migrate_deployment_schema_prepared(
     let platform_workspace = prepared.platform_workspace_before_write()?;
     let manifest = migration_manifest(deployment.role);
     // The migration process's one wall clock.
-    let clock = awaken_lease_contract::system_clock();
+    let clock = awaken_time::system_clock();
     let mut postgres_pools = crate::postgres_pools::ProcessPostgresPools::new(
         deployment.runtime.postgres_max_connections.get(),
     );

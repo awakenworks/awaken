@@ -4,7 +4,7 @@
 // @formal reason: Managed WorkQueue command routes.
 //! Coordinator-owned Environment WorkQueue HTTP adapter.
 
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 use std::sync::Arc;
 
 use axum::Json;
@@ -42,7 +42,7 @@ fn map_execution_error(error: EnvironmentExecutionError) -> WireError {
 /// clock, whose reading every queue operation is stamped and judged with.
 pub(crate) struct WorkRoutes {
     pub(crate) environments: Arc<EnvironmentExecutionApplication>,
-    pub(crate) clock: Arc<dyn awaken_lease_contract::WallClock>,
+    pub(crate) clock: Arc<dyn awaken_time::WallClock>,
 }
 
 /// `GET /v1/environments/:id/work` — the environment's work items.
@@ -82,7 +82,7 @@ pub(super) async fn poll_work(
     // does not require it. When omitted, the opaque credential owner is also the
     // least-privilege liveness coordinate rather than a fabricated public ID.
     let poller_id = worker_id(&headers).unwrap_or(&lease_owner);
-    let started = awaken_lease_contract::mono::Stopwatch::start();
+    let started = awaken_time::mono::Stopwatch::start();
     loop {
         let claimed = state
             .claim_work_with_session_access(

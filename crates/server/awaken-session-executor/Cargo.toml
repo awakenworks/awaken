@@ -70,6 +70,7 @@ awaken-credential-contract.workspace = true
 awaken-credential.workspace = true
 awaken-credential-materializer = { workspace = true }
 async-trait.workspace = true
+awaken-time.workspace = true
 awaken-lease-contract.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

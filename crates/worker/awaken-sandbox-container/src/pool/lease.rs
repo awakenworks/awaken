@@ -127,7 +127,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use awaken_lease_contract::{Expiry, UtcTime, WallClock};
+use awaken_time::{Expiry, UtcTime, WallClock};
 
 use awaken_provisioning_contract as pc;
 use serde::{Deserialize, Serialize};

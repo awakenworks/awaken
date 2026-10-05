@@ -233,7 +233,7 @@ impl SharedHost {
     /// terminal Run may enqueue Memory extraction immediately before releasing
     /// its pool capacity, so draining auxiliary work first can miss that task.
     pub async fn drain_runtime(&self, timeout: std::time::Duration) -> bool {
-        let deadline = awaken_lease_contract::mono::MonoDeadline::after(timeout);
+        let deadline = awaken_time::mono::MonoDeadline::after(timeout);
         let Some(_local_fence) =
             await_runtime_drain_fence_before(deadline.instant(), self.begin_pool_drain()).await
         else {

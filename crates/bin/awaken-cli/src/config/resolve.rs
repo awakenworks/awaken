@@ -11,7 +11,7 @@ impl ResolvedDeployment {
         home: Option<PathBuf>,
         config_path: PathBuf,
         file: FileConfig,
-        clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+        clock: std::sync::Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, String> {
         let mut origins = BTreeMap::new();
         let (data_dir, data_dir_origin) = resolve_data_dir(

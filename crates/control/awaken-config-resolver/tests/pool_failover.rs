@@ -112,7 +112,7 @@ async fn enter(store: &InMemorySecretStore, repo: &InMemoryCredentialRepo, secre
         },
         store,
         repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();

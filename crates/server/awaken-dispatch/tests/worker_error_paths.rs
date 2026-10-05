@@ -62,11 +62,9 @@ async fn uncertain_scheduled_stage_neither_launches_its_successor_nor_acknowledg
     let (runtime, ran) = schedule_n_runtime(1);
     let store = Arc::new(harness::FlakyDispatchStore::new(
         0,
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let worker = DispatchWorker::new(runtime.clone(), store.clone(), commit, "uncertain");
     worker.install_attempt_executor(Arc::new(UncertainScheduledExecutor(runtime)));
     store
@@ -94,9 +92,7 @@ async fn failed_retry_exhaustion_commit_is_reclaimable_at_its_exact_lease_expiry
     let runtime = text_runtime();
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let inner = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let inner = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let commit = Arc::new(FailingCommit::new(inner.clone(), true));
     store
         .enqueue(RunDispatch::new(activation("exhausted")))
@@ -167,9 +163,7 @@ async fn a_genuine_drive_failure_is_reraised_and_the_dispatch_is_left_unsettled(
     let runtime = text_runtime();
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let inner = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let inner = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let commit = Arc::new(FailingCommit::new(inner.clone(), true));
 
     store
@@ -228,12 +222,8 @@ async fn a_failing_scheduled_action_is_reraised_and_left_unsettled() {
     // the worker re-raises and leaves the dispatch un-settled — the scheduled path
     // obeys the same fork as the execute/resume paths.
     let (runtime, _ran) = schedule_n_runtime(1);
-    let store = Arc::new(MemoryDispatchStore::new(
-        awaken_lease_contract::system_clock(),
-    ));
-    let inner = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let store = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
+    let inner = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
 
     // Await the run on a ScheduledAction with a healthy commit boundary first.
     let ctx = RuntimeRunContext::new().with_commit(inner.clone());
@@ -296,15 +286,13 @@ async fn a_chain_of_scheduled_actions_is_performed_to_completion_in_one_drive() 
     // lost -> retry that ACK only, never any scheduled effect.
     for lost_response in [false, true] {
         let (runtime, ran) = schedule_n_runtime(2);
-        let store = harness::FlakyDispatchStore::new(0, awaken_lease_contract::system_clock());
+        let store = harness::FlakyDispatchStore::new(0, awaken_time::system_clock());
         let store = Arc::new(if lost_response {
             store.with_finish_fault(harness::FinishFault::LostResponse)
         } else {
             store
         });
-        let commit = Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
 
         store
             .enqueue(RunDispatch::new(activation("run-1")))

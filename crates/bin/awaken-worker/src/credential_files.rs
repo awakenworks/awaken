@@ -44,7 +44,7 @@ pub struct WorkerCredentialFileResolver {
     root: PathBuf,
     holder: PlaintextHolder,
     /// The Worker's wall clock; a sealed envelope's validity is judged on it.
-    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
 }
 
 impl WorkerCredentialFileResolver {
@@ -52,7 +52,7 @@ impl WorkerCredentialFileResolver {
     pub fn new(
         root: impl Into<PathBuf>,
         trust_domain: impl Into<String>,
-        clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+        clock: std::sync::Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             root: root.into(),
@@ -178,7 +178,7 @@ impl CredentialMaterialResolver for WorkerCredentialFileResolver {
             ) => {
                 envelope.validate_for_holder(
                     request.selected_holder,
-                    awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref()),
+                    awaken_time::WallClockExt::now_ms(self.clock.as_ref()),
                 )?;
                 if envelope_ref.id.trim().is_empty()
                     || envelope_ref.payload_fingerprint.trim().is_empty()
@@ -250,11 +250,8 @@ mod tests {
         CredentialMaterialBinding,
     ) {
         let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "worker-a");
-        let resolver = WorkerCredentialFileResolver::new(
-            root,
-            "worker-a",
-            awaken_lease_contract::system_clock(),
-        );
+        let resolver =
+            WorkerCredentialFileResolver::new(root, "worker-a", awaken_time::system_clock());
         let access = CredentialAccess::new(
             CredentialRef {
                 id: "credential/alpha".into(),
@@ -301,7 +298,7 @@ mod tests {
                     let resolver = Arc::new(WorkerCredentialFileResolver::new(
                         &root,
                         domain,
-                        awaken_lease_contract::system_clock(),
+                        awaken_time::system_clock(),
                     ));
                     for holder in [
                         resolver.holder().clone(),
@@ -350,7 +347,7 @@ mod tests {
                         if envelope {
                             write(&directory, "payload_fingerprint", b"payload-a").await;
                         }
-                        let pinned = awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver.clone(), awaken_lease_contract::system_clock());
+                        let pinned = awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver.clone(), awaken_time::system_clock());
                         let (profile, kind) = if holder.boundary == PlaintextBoundary::Workload {
                             (
                                 pinned.process_secret_capabilities(),

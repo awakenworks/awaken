@@ -210,18 +210,17 @@ mod tests {
         let session = "borrowed-coordination-root";
         let run = RunId("borrowed-coordination-run".into());
         let store = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ));
         let queries = crate::authority::ScriptedStateQueries::new(Ok(Vec::new()));
         let authority = Arc::new(
-            crate::EphemeralRuntimeAuthority::new(awaken_lease_contract::system_clock())
-                .with_commit(
-                    session,
-                    Arc::new(crate::LocalCommitAdapter::with_queries(
-                        store.clone(),
-                        queries.clone(),
-                    )),
-                ),
+            crate::EphemeralRuntimeAuthority::new(awaken_time::system_clock()).with_commit(
+                session,
+                Arc::new(crate::LocalCommitAdapter::with_queries(
+                    store.clone(),
+                    queries.clone(),
+                )),
+            ),
         );
         let host = Arc::new(
             SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
@@ -414,19 +413,18 @@ mod tests {
                 .into(),
             );
             let store = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ));
             let queries =
                 crate::authority::ScriptedStateQueries::new(Err("usage State unavailable".into()));
             let authority = Arc::new(
-                crate::EphemeralRuntimeAuthority::new(awaken_lease_contract::system_clock())
-                    .with_commit(
-                        session_id,
-                        Arc::new(crate::LocalCommitAdapter::with_queries(
-                            store.clone(),
-                            queries.clone(),
-                        )),
-                    ),
+                crate::EphemeralRuntimeAuthority::new(awaken_time::system_clock()).with_commit(
+                    session_id,
+                    Arc::new(crate::LocalCommitAdapter::with_queries(
+                        store.clone(),
+                        queries.clone(),
+                    )),
+                ),
             );
             let make_host = || {
                 Arc::new(

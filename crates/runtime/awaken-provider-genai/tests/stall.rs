@@ -78,13 +78,11 @@ async fn every_native_dialect_obeys_the_inherited_deadline_before_http_dispatch(
                     .unwrap(),
                 )
             };
-            let started = awaken_lease_contract::mono::now();
+            let started = awaken_time::mono::now();
             let timing = ModelAttemptTiming::start_at(
                 started,
                 budget(Duration::from_millis(300), Duration::from_millis(300)),
-                awaken_lease_contract::mono::MonoDeadline::at(
-                    started + Duration::from_millis(logical_ms),
-                ),
+                awaken_time::mono::MonoDeadline::at(started + Duration::from_millis(logical_ms)),
             )
             .unwrap();
             let result = with_model_invocation_context(None, timing, async {
@@ -241,11 +239,9 @@ async fn healthy_text_reasoning_and_typed_tool_progress_finish_after_the_old_ten
         if kind == "tool" {
             request.tools = vec![support::compatibility_tool()];
         }
-        let timing = ModelAttemptTiming::standalone(
-            awaken_lease_contract::mono::now(),
-            ModelInferenceBudget::DEFAULT,
-        )
-        .unwrap();
+        let timing =
+            ModelAttemptTiming::standalone(awaken_time::mono::now(), ModelInferenceBudget::DEFAULT)
+                .unwrap();
         let start = tokio::time::Instant::now();
         let mut inference = tokio::spawn(async move {
             let progress = Progress(progress);
@@ -414,7 +410,7 @@ async fn responses_complete_body_outlives_the_old_two_minute_cap_and_deadline_re
         let executor =
             OpenAiResponsesExecutor::from_materialized_endpoint("openai", &base, "test").unwrap();
         let timing = ModelAttemptTiming::standalone(
-            awaken_lease_contract::mono::now(),
+            awaken_time::mono::now(),
             if complete {
                 ModelInferenceBudget::DEFAULT
             } else {

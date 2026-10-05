@@ -36,7 +36,7 @@ use serde_json::json;
 /// on the same clock axis the stores stamp with.
 #[must_use]
 pub fn at(unix_seconds: u64) -> String {
-    awaken_lease_contract::utc::epoch_millis_to_rfc3339(unix_seconds * 1000)
+    awaken_time::utc::epoch_millis_to_rfc3339(unix_seconds * 1000)
 }
 
 pub fn session(id: &str, title: &str) -> PersistedSession {

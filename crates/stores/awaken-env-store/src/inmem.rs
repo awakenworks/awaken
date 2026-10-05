@@ -20,8 +20,8 @@ use awaken_environment_contract::{
     EnvironmentRevision, EnvironmentStoreError,
 };
 
-use awaken_lease_contract::WallClock;
-use awaken_lease_contract::WallClockExt;
+use awaken_time::WallClock;
+use awaken_time::WallClockExt;
 
 pub struct InMemoryEnvRegistry {
     state: Mutex<InMemoryEnvRegistryState>,
@@ -295,7 +295,7 @@ mod tests {
     }
 
     fn r() -> InMemoryEnvRegistry {
-        InMemoryEnvRegistry::new(awaken_lease_contract::system_clock())
+        InMemoryEnvRegistry::new(awaken_time::system_clock())
     }
 
     #[tokio::test]

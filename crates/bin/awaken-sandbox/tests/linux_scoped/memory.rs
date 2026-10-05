@@ -11,17 +11,14 @@ const STORE: &str = "owner-crash-memory";
 const BEFORE: &str = "committed before owner SIGKILL — 无换行";
 const AFTER: &str = "committed by the recovered execution — 无换行";
 
-fn repository(
-    base: &Path,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
-) -> Arc<SqliteMemoryRepository> {
+fn repository(base: &Path, clock: Arc<dyn awaken_time::WallClock>) -> Arc<SqliteMemoryRepository> {
     Arc::new(SqliteMemoryRepository::open(base.join("memory.db").to_str().unwrap(), clock).unwrap())
 }
 
 pub(super) fn provider(base: &Path) -> LocalProvider {
     // One provider process reading stamps both the repository and the FUSE
     // mounter; the durable-head assertions below reopen SQLite independently.
-    let clock = awaken_lease_contract::system_clock();
+    let clock = awaken_time::system_clock();
     LocalProvider::trusted_host(base).with_memory_mounter(Arc::new(MemoryStoreMounter::new(
         repository(base, clock.clone()),
         clock,
@@ -103,7 +100,7 @@ fn kernel_mount(path: &Path) -> Option<String> {
 
 async fn durable_head(base: &Path) -> awaken_memory_store::Memory {
     // Independent reopened SQLite connection, not the FUSE content cache.
-    repository(base, awaken_lease_contract::system_clock())
+    repository(base, awaken_time::system_clock())
         .get_by_path(STORE, "/note.md")
         .await
         .unwrap()
@@ -138,7 +135,7 @@ async fn provider_owner_crash_reacquires_fuse_before_new_scoped_execution() {
     // must close before F2/F3. This proves Provider process death, not a full
     // distributed Worker/Control restart, vendor login or partial-I/O durability.
     let base = tempfile::tempdir().unwrap();
-    repository(base.path(), awaken_lease_contract::system_clock())
+    repository(base.path(), awaken_time::system_clock())
         .create(STORE, "/note.md", "seed")
         .await
         .unwrap();

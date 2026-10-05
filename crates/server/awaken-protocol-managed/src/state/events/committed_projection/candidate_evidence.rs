@@ -9,8 +9,8 @@
 
 use super::*;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
-use awaken_lease_contract::WallClockExt as _;
 use awaken_managed_session_events::{AcceptanceFence, LifecycleAcceptance, accept_lifecycle};
+use awaken_time::WallClockExt as _;
 use std::collections::{HashMap, HashSet};
 
 /// One budget-reach transition whose owning interval has closed, with its
@@ -49,7 +49,7 @@ impl CandidateEvidence {
         state: &ManagedState,
         session_id: &str,
         persisted: &awaken_session_state_contract::PersistedSession,
-        started: awaken_lease_contract::mono::Stopwatch,
+        started: awaken_time::mono::Stopwatch,
     ) -> Result<Self, StateError> {
         let price_snapshot = persisted.budget.price_snapshot().cloned();
         // The Session application reads the Runtime evidence through its

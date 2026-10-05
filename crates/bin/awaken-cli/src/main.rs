@@ -48,7 +48,7 @@ async fn run(command: Command) -> Result<(), String> {
                     config_path,
                     ..Default::default()
                 },
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )?;
             println!("{}", deployment.report(json).trim_end());
             Ok(())
@@ -59,7 +59,7 @@ async fn run(command: Command) -> Result<(), String> {
                     config_path,
                     ..Default::default()
                 },
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )?;
             println!("{}", deployment.doctor_report(json).await.trim_end());
             Ok(())

@@ -10,12 +10,12 @@ use awaken_config_service::PluginPublicationResolver;
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::{ExactCredentialAccessRequest, compile_exact_credential_access};
-use awaken_lease_contract::{WallClock, WallClockExt as _};
 use awaken_runtime_contract::credential::CredentialPurpose;
 use awaken_runtime_contract::{
     CredentialExecutionPolicy, CredentialMaterialBinding, CredentialTarget, ModelExposurePolicy,
     PlaintextBoundary, PlaintextHolder,
 };
+use awaken_time::{WallClock, WallClockExt as _};
 
 async fn compile_target_access(
     credentials: &dyn CredentialRepo,
@@ -294,7 +294,7 @@ mod tests {
             ),
             &InMemorySecretStore::new(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap()
@@ -332,7 +332,7 @@ mod tests {
         let resolver = WebSearchPublicationResolver::new(
             awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
             Arc::new(InMemoryCredentialRepo::new()),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         assert_eq!(
             resolver
@@ -376,7 +376,7 @@ mod tests {
         let fetch = WebFetchPublicationResolver::new(
             awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
             Arc::new(InMemoryCredentialRepo::new()),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         assert!(
             fetch
@@ -415,7 +415,7 @@ mod tests {
         let resolver = WebSearchPublicationResolver::new(
             awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
             credentials.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let authored = serde_json::json!({
             "provider_id": "brave",
@@ -450,7 +450,7 @@ mod tests {
         let fetch_published = WebFetchPublicationResolver::new(
             fetch_providers,
             credentials.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .resolve(
             &awaken_tenancy::ScopeId::from("workspace-a"),
@@ -515,7 +515,7 @@ mod tests {
             WebSearchPublicationResolver::new(
                 awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
                 other_credentials,
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .resolve(
                 &awaken_tenancy::ScopeId::from("workspace-a"),

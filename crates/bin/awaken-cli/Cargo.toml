@@ -137,7 +137,7 @@ awaken-agent-contract = { workspace = true }
 awaken-runtime-contract = { workspace = true }
 awaken-connection-plan = { workspace = true }
 async-trait.workspace = true
-awaken-lease-contract.workspace = true
+awaken-time.workspace = true
 axum = "0.8"
 bytes = "1"
 http-body = "1"

@@ -22,7 +22,7 @@ pub struct HostProcess {
     /// The typed Deployment this Host serves.
     pub deployment: crate::DeploymentConfig,
     /// The process wall clock the Host drives its Workers on.
-    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
+    pub clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl SharedHost {
@@ -78,7 +78,7 @@ impl SharedHost {
             HostProcess {
                 local_workspace: Self::mint_local_workspace(),
                 deployment,
-                clock: awaken_lease_contract::system_clock(),
+                clock: awaken_time::system_clock(),
             },
             HostAuthorityRole::StoreOwning,
         )
@@ -111,7 +111,7 @@ impl SharedHost {
 
     /// The process wall clock this Host drives its Workers on.
     #[must_use]
-    pub fn clock(&self) -> Arc<dyn awaken_lease_contract::WallClock> {
+    pub fn clock(&self) -> Arc<dyn awaken_time::WallClock> {
         self.clock.clone()
     }
 
@@ -613,7 +613,7 @@ mod startup_tests {
             HostProcess {
                 local_workspace: SharedHost::mint_local_workspace(),
                 deployment: crate::DeploymentConfig::ephemeral(),
-                clock: awaken_lease_contract::system_clock(),
+                clock: awaken_time::system_clock(),
             },
             HostAuthorityRole::StoreOwning,
         );
@@ -635,10 +635,9 @@ mod startup_tests {
         let file: Arc<
             dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
         > = Arc::new(awaken_resource_contract::UnavailableFileContentSource);
-        let memory: Arc<dyn awaken_resource_contract::MemoryRepository> =
-            Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
-                awaken_lease_contract::system_clock(),
-            ));
+        let memory: Arc<dyn awaken_resource_contract::MemoryRepository> = Arc::new(
+            awaken_memory_store::VolatileMemoryRepository::new(awaken_time::system_clock()),
+        );
         let extraction: Arc<dyn awaken_ext_memory::MemoryExtractionRepository> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .expect("test extraction repository"),
@@ -646,7 +645,7 @@ mod startup_tests {
         let process = || HostProcess {
             local_workspace: SharedHost::mint_local_workspace(),
             deployment: crate::DeploymentConfig::ephemeral(),
-            clock: awaken_lease_contract::system_clock(),
+            clock: awaken_time::system_clock(),
         };
         let worker = SharedHost::new_worker_with_deployment(
             Arc::new(crate::NoModelConfiguredExecutor),

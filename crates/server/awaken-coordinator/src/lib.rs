@@ -423,7 +423,7 @@ pub fn local_managed_state_with_environments_and_agent_source(
 /// itself rather than borrowing them through the Managed adapter.
 #[cfg(feature = "test-support")]
 fn volatile_environment_execution(
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Arc<awaken_environment_execution_application::EnvironmentExecutionApplication> {
     let catalog =
         Arc::new(awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new());
@@ -581,7 +581,7 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: ScenarioManagedS
 
 #[cfg(feature = "test-support")]
 fn ephemeral_resource_registry(
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
     awaken_resource_persistence::ephemeral(clock)
         .expect("open ephemeral Resources application")
@@ -837,7 +837,7 @@ pub struct ManagedRoutingExtensions {
     pub ai_sdk_browser_cors: AiSdkBrowserCors,
     /// The process wall clock the Worker transport judges leases, registry
     /// freshness and signed assertions with.
-    pub worker_clock: Arc<dyn awaken_lease_contract::WallClock>,
+    pub worker_clock: Arc<dyn awaken_time::WallClock>,
 }
 
 /// Application-layer authorities mounted together by the one managed data-plane
@@ -1111,7 +1111,7 @@ mod worker_checkpoint_authority_tests {
         // | R5   | no        | no          | no            | E5     |
         // R1 is covered by the PostgreSQL active/active acceptance test.
         let dispatch = AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )) as Arc<dyn Dispatch>);
         let root = tempfile::tempdir().expect("R2 root");
         assert!(

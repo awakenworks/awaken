@@ -217,7 +217,7 @@ impl StreamSink for EventForwardingSink {
 /// The public UTC projection is the wall-clock port's one codec: the filter's
 /// numeric normalization and the formatter are the same functions every other
 /// durable record uses, not a copy kept here.
-pub use awaken_lease_contract::utc::{
+pub use awaken_time::utc::{
     epoch_millis_to_rfc3339, project_epoch_millis, rfc3339_to_epoch_millis,
 };
 

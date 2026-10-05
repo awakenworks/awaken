@@ -13,7 +13,7 @@ authority = "time-bounded-ownership-test-evidence"
 description = "Deterministic WallClock doubles, reachable only from test and conformance code, never from a shipped binary"
 
 [dependencies]
-awaken-lease-contract.workspace = true
+awaken-time.workspace = true
 
 [lints]
 workspace = true

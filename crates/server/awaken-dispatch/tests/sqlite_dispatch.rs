@@ -185,8 +185,8 @@ async fn sqlite_ack_retirement_survives_reopen_and_sql_bypass_is_rejected() {
     }
 }
 
-use awaken_lease_contract::system_clock;
 use awaken_dispatch_contract::ControlDispatchQueue;
+use awaken_time::system_clock;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 

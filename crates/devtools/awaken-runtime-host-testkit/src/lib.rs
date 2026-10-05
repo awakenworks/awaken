@@ -10,13 +10,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use awaken_ext_memory::MemoryExtractionRepository;
-use awaken_lease_contract::WallClock;
 use awaken_resource_application::{
     ResourceAuthorities, StoreSkillBundleSource, StoreSkillCatalogApplication,
 };
 use awaken_resource_contract::SkillStore;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_session_executor::{DeploymentConfig, LocalResourcePorts, LocalSkillPorts, SharedHost};
+use awaken_time::WallClock;
 
 /// The Host's Resource ports over one selected set of Resources
 /// authorities: their Memory, File and Skill stores, reclamation state and
@@ -163,7 +163,7 @@ pub fn with_durable_store_dir(host: SharedHost, dir: &Path) -> SharedHost {
 
 fn volatile_resource_ports() -> LocalResourcePorts {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-    let clock = awaken_lease_contract::system_clock();
+    let clock = awaken_time::system_clock();
     LocalResourcePorts {
         memory_repository: Arc::new(
             awaken_memory_store::SqliteMemoryRepository::open_in_memory(clock.clone())
@@ -210,7 +210,7 @@ mod tests {
     /// clock is the exact Resources handle used to stamp and judge records.
     #[test]
     fn resource_ports_carry_every_authority_of_one_selection() {
-        let clock = awaken_lease_contract::system_clock();
+        let clock = awaken_time::system_clock();
         let resources = awaken_resource_persistence::ephemeral(clock).expect("ephemeral Resources");
         let authorities = resources.authorities();
         let ports = local_resource_ports(&authorities);

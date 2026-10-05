@@ -279,15 +279,15 @@ mod tests {
         assert!(
             awaken_work_store::PostgresWorkQueue::with_existing_pool(
                 pool.clone(),
-                awaken_lease_contract::system_clock()
+                awaken_time::system_clock()
             )
             .await
             .is_err()
         );
-        assert!(awaken_coordinator::application_access_store::ApplicationAccessStore::with_existing_postgres_pool(pool.clone(), awaken_lease_contract::system_clock()).await.is_err());
+        assert!(awaken_coordinator::application_access_store::ApplicationAccessStore::with_existing_postgres_pool(pool.clone(), awaken_time::system_clock()).await.is_err());
         assert!(
             awaken_captured_content_store::PgCapturedContentStore::with_existing_pool(
-                pool.clone(), awaken_lease_contract::system_clock(),
+                pool.clone(), awaken_time::system_clock(),
             )
                 .await
                 .is_err()
@@ -297,7 +297,7 @@ mod tests {
                 pool.clone(),
                 awaken_resource_persistence::SchemaMode::Verify,
                 None,
-                awaken_lease_contract::system_clock()
+                awaken_time::system_clock()
             )
             .await
             .is_err()

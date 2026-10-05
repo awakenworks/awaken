@@ -86,7 +86,7 @@ fn ticket(correlation: &str, run: &str, thread: &str) -> ResumeTicket {
 
 #[tokio::test]
 async fn recovery_snapshot_is_one_thread_prefix_with_distinct_versions() {
-    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
+    let store = MemoryCommitCoordinator::new(awaken_time::system_clock());
     store
         .commit(commit_with(
             "target",
@@ -144,7 +144,7 @@ async fn recovery_snapshot_is_one_thread_prefix_with_distinct_versions() {
 
 #[tokio::test]
 async fn commit_rejects_empty_run_id_before_any_write() {
-    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
+    let store = MemoryCommitCoordinator::new(awaken_time::system_clock());
     let err = store
         .commit(commit_with(
             "t",
@@ -167,7 +167,7 @@ async fn commit_rejects_empty_run_id_before_any_write() {
 
 #[tokio::test]
 async fn commit_rejects_empty_thread_id() {
-    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
+    let store = MemoryCommitCoordinator::new(awaken_time::system_clock());
     let err = store
         .commit(commit_with(
             "",
@@ -187,7 +187,7 @@ async fn commit_rejects_empty_thread_id() {
 
 #[tokio::test]
 async fn commit_rejects_ticket_for_a_different_thread() {
-    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
+    let store = MemoryCommitCoordinator::new(awaken_time::system_clock());
     let err = store
         .commit(commit_with(
             "t",
@@ -213,7 +213,7 @@ async fn commit_rejects_ticket_for_a_different_thread() {
 
 #[tokio::test]
 async fn first_ended_commit_is_allowed_then_post_terminal_is_fenced() {
-    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
+    let store = MemoryCommitCoordinator::new(awaken_time::system_clock());
     // The first Ended commit lands (the run is not yet terminal when it arrives).
     store
         .commit(commit_with(
@@ -258,7 +258,7 @@ async fn first_ended_commit_is_allowed_then_post_terminal_is_fenced() {
 
 #[tokio::test]
 async fn awaiting_state_with_ticket_awaits_then_ended_clears_it() {
-    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
+    let store = MemoryCommitCoordinator::new(awaken_time::system_clock());
     let run = RunId("r".to_string());
 
     // Await: a Some ticket + Awaiting state records the ticket.
@@ -339,7 +339,7 @@ async fn event_ids_are_dense_within_a_commit_and_ascending_across_commits() {
     // | M3 | T | T | T | E1/E2/E3 |
     // Constraints/invariants: each commit owns one 1000-slot partition, offsets
     // are dense, and persisted source cursors remain strictly commit ordered.
-    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
+    let store = MemoryCommitCoordinator::new(awaken_time::system_clock());
     // Two events in commit #1 → sequences 1*1000+0, 1*1000+1 (dense by offset).
     store
         .commit(commit_with(
@@ -412,7 +412,7 @@ async fn event_ids_are_dense_within_a_commit_and_ascending_across_commits() {
 
 #[tokio::test]
 async fn list_events_on_empty_store_is_empty() {
-    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
+    let store = MemoryCommitCoordinator::new(awaken_time::system_clock());
     assert!(
         store
             .list_events(&EventScope::Run(RunId("nope".to_string())), None, 10)
@@ -431,7 +431,7 @@ async fn list_events_on_empty_store_is_empty() {
 
 #[tokio::test]
 async fn list_events_run_scope_filters_by_run_thread_scope_spans_runs() {
-    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
+    let store = MemoryCommitCoordinator::new(awaken_time::system_clock());
     for run in ["r1", "r2"] {
         store
             .commit(commit_with(
@@ -495,7 +495,7 @@ async fn list_events_run_scope_filters_by_run_thread_scope_spans_runs() {
 
 #[tokio::test]
 async fn reads_over_a_wrong_or_empty_thread_return_empty() {
-    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
+    let store = MemoryCommitCoordinator::new(awaken_time::system_clock());
     // Empty store: no messages, no latest run.
     assert!(
         store
@@ -550,7 +550,7 @@ async fn reads_over_a_wrong_or_empty_thread_return_empty() {
 
 #[tokio::test]
 async fn replay_helpers_derive_from_committed_truth() {
-    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
+    let store = MemoryCommitCoordinator::new(awaken_time::system_clock());
     store
         .commit(commit_with(
             "t",

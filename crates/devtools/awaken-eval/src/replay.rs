@@ -151,9 +151,7 @@ async fn replay(case: &Case) -> (String, bool, Vec<String>) {
         }],
     );
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime
         .execute(activation, context)

@@ -648,7 +648,7 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let mut command = creation_command("worker-projection-recovery");
     command.intent.control.runtime_placement =
@@ -1157,7 +1157,7 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                     Arc::new(NoopMcpRealizer),
                     repository.clone(),
                     Arc::new(RecordingEnvironmentSource::default()),
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 );
                 let accepted = application
                     .accept_session(make_command())
@@ -1245,7 +1245,7 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 Arc::new(NoopMcpRealizer),
                 faulting.clone(),
                 Arc::new(RecordingEnvironmentSource::default()),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             );
             if failed_scan {
                 faulting.fail_recovery_scan_once();
@@ -1383,7 +1383,7 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let idempotency = awaken_session_state_contract::IdempotencyRecord {
         key: "create-replay-effects".into(),
@@ -1580,7 +1580,7 @@ async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
             Arc::new(NoopMcpRealizer),
             faulting,
             Arc::new(RecordingEnvironmentSource::default()),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let stable = stable_receipt.then(|| awaken_session_state_contract::IdempotencyRecord {
             key: "public-create-key".into(),
@@ -1675,7 +1675,7 @@ async fn create_failure_cleanup_is_authorized_only_by_a_terminal_durable_root() 
             Arc::new(NoopMcpRealizer),
             repository.clone(),
             Arc::new(RecordingEnvironmentSource::default()),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let session_id = format!("create-cleanup-{rule}");
 
@@ -2535,7 +2535,7 @@ mod time_assurance;
 /// The Registry of an ephemeral Resources application, on the host clock: the
 /// one these Session tests register Repositories and Memory stores against.
 pub(super) fn ephemeral_resource_registry() -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
-    awaken_resource_persistence::ephemeral(awaken_lease_contract::system_clock())
+    awaken_resource_persistence::ephemeral(awaken_time::system_clock())
         .expect("Resource authorities")
         .authorities()
         .resource_registry()

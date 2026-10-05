@@ -135,7 +135,7 @@ pub struct ControlDependencies {
     pub cloud_login: Option<Arc<dyn awaken_admin_config_api::CloudLoginApplication>>,
     /// The process's one wall clock. Every Control-owned aggregate that stamps
     /// time (Data Subjects and their erasure) reads this handle.
-    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
+    pub clock: Arc<dyn awaken_time::WallClock>,
 }
 
 /// The complete Control application component exported to a process assembly.
@@ -430,7 +430,7 @@ async fn recover_and_supervise_credentials(
     credentials: Arc<dyn CredentialRepo>,
     managed: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>,
     vault_state: Arc<VaultState>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
 ) {
     if let Err(error) = awaken_credential_vault::repo::recover_credential_mutations(

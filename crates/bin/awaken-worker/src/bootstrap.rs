@@ -65,7 +65,7 @@ impl WorkerBootstrap {
         &self,
         server: impl Into<String>,
         security: WorkerUpstreamSecurity<'_>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<awaken_worker_transport_security::WorkerUpstream, String> {
         let server = server.into();
         if let Some(directory) = &self.kubernetes_identity_directory {
@@ -414,7 +414,7 @@ impl WorkerDaemonConfig {
         // The Worker daemon's one wall clock: its request assertions, its
         // credential envelopes and the Host it builds (dispatch pool, recovery,
         // children) share it.
-        let clock = awaken_lease_contract::system_clock();
+        let clock = awaken_time::system_clock();
         let resolver: Arc<dyn awaken_runtime_contract::CredentialMaterialResolver> = match &self
             .worker
             .credential_envelope_keys_file
@@ -733,7 +733,7 @@ mod tests {
                 .upstream(
                     "https://coordinator",
                     WorkerUpstreamSecurity::Local,
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )
                 .unwrap();
             let request = upstream
@@ -757,7 +757,7 @@ mod tests {
                     .upstream(
                         "http://coordinator",
                         WorkerUpstreamSecurity::Local,
-                        awaken_lease_contract::system_clock()
+                        awaken_time::system_clock()
                     )
                     .is_err(),
                 "P1 still HTTPS"
@@ -774,7 +774,7 @@ mod tests {
                     .upstream(
                         "https://coordinator",
                         WorkerUpstreamSecurity::Local,
-                        awaken_lease_contract::system_clock()
+                        awaken_time::system_clock()
                     )
                     .is_err(),
                 "P3 mutation"
@@ -786,7 +786,7 @@ mod tests {
                     .upstream(
                         "https://coordinator",
                         WorkerUpstreamSecurity::Local,
-                        awaken_lease_contract::system_clock()
+                        awaken_time::system_clock()
                     )
                     .is_err(),
                 "P4"
@@ -824,18 +824,14 @@ mod tests {
                 .upstream(
                     "http://coordinator",
                     WorkerUpstreamSecurity::Local,
-                    awaken_lease_contract::system_clock()
+                    awaken_time::system_clock()
                 )
                 .is_ok(),
             "B1"
         );
         assert!(
             worker
-                .upstream(
-                    "https://coordinator",
-                    remote(),
-                    awaken_lease_contract::system_clock()
-                )
+                .upstream("https://coordinator", remote(), awaken_time::system_clock())
                 .is_err(),
             "B2"
         );
@@ -854,11 +850,7 @@ mod tests {
                 };
                 assert_eq!(
                     worker
-                        .upstream(
-                            "https://coordinator",
-                            security,
-                            awaken_lease_contract::system_clock()
-                        )
+                        .upstream("https://coordinator", security, awaken_time::system_clock())
                         .is_ok(),
                     source == Some(valid),
                     "B3/B4 {is_remote}"
@@ -870,18 +862,14 @@ mod tests {
                 .upstream(
                     "http://coordinator",
                     WorkerUpstreamSecurity::Local,
-                    awaken_lease_contract::system_clock()
+                    awaken_time::system_clock()
                 )
                 .is_ok(),
             "B3 local"
         );
         assert!(
             worker
-                .upstream(
-                    "http://coordinator",
-                    remote(),
-                    awaken_lease_contract::system_clock()
-                )
+                .upstream("http://coordinator", remote(), awaken_time::system_clock())
                 .is_err(),
             "B3 remote"
         );
@@ -892,7 +880,7 @@ mod tests {
                     WorkerUpstreamSecurity::Remote {
                         server_ca_certificate: Some(b"invalid")
                     },
-                    awaken_lease_contract::system_clock()
+                    awaken_time::system_clock()
                 )
                 .is_err(),
             "B5"
@@ -901,11 +889,7 @@ mod tests {
         for security in [WorkerUpstreamSecurity::Local, remote()] {
             assert!(
                 worker
-                    .upstream(
-                        "https://coordinator",
-                        security,
-                        awaken_lease_contract::system_clock()
-                    )
+                    .upstream("https://coordinator", security, awaken_time::system_clock())
                     .is_err(),
                 "B4 mismatch"
             );

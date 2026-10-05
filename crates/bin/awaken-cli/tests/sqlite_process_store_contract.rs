@@ -16,7 +16,7 @@ async fn colocated_process_stores_share_wal_and_wait_for_transient_writers() {
     let path = path.to_string_lossy().into_owned();
 
     let queue = Arc::new(
-        awaken_work_store::SqliteWorkQueue::open(&path, awaken_lease_contract::system_clock())
+        awaken_work_store::SqliteWorkQueue::open(&path, awaken_time::system_clock())
             .expect("WorkQueue"),
     );
     let _sessions =
@@ -24,7 +24,7 @@ async fn colocated_process_stores_share_wal_and_wait_for_transient_writers() {
     let _application_access =
         awaken_coordinator::application_access_store::ApplicationAccessStore::open_sqlite(
             &path,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .await
         .expect("application access");

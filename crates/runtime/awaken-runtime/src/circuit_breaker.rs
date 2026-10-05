@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use awaken_lease_contract::mono::{self, Instant};
+use awaken_time::mono::{self, Instant};
 
 use awaken_runtime_contract::metrics::MetricsRecorder;
 use parking_lot::Mutex;

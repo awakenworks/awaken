@@ -5,7 +5,7 @@
 //! [`DispatchService`] turns the [`DispatchWorker`] into a long-running service:
 //! one background task drains the queue, woken by a nudge when new work arrives
 //! and by a periodic timer otherwise (so a crashed lease is recovered without new
-//! work). It owns the edge [`WallClock`](awaken_lease_contract::WallClock) and passes that same source into every
+//! work). It owns the edge [`WallClock`](awaken_time::WallClock) and passes that same source into every
 //! Worker drive, keeping claim, renewal, and ownership checks on one timeline.
 //! It waits on a [`WakeSignal`] — a `LocalWakeSignal`
 //! for one process, or a cross-node signal for a fleet (ADR-0011, ADR-0019).
@@ -23,9 +23,9 @@ use crate::Error;
 use crate::dispatch::PendingInput;
 use crate::wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 use crate::worker::DispatchWorker;
-use awaken_lease_contract::WallClock;
-use awaken_lease_contract::WallClockExt;
 use awaken_dispatch_contract::RunDispatch;
+use awaken_time::WallClock;
+use awaken_time::WallClockExt;
 
 /// One process-level observation cadence, independent of execution throughput.
 /// An exact count can inspect a large queue, so keep it off every claim and at
@@ -290,7 +290,7 @@ async fn run_loop<S: ControlDispatch + 'static>(
     );
     let mut next_terminal_reconciliation = maintenance
         .filter(|schedule| schedule.reconciles_terminals())
-        .map(|_| awaken_lease_contract::mono::now());
+        .map(|_| awaken_time::mono::now());
     loop {
         if shutdown.is_cancelled() {
             break;
@@ -345,7 +345,7 @@ async fn run_loop<S: ControlDispatch + 'static>(
                 tracing::warn!(%error, "dispatch relay failed; retrying");
             }
             if let Some(deadline) = next_terminal_reconciliation
-                && awaken_lease_contract::mono::now() >= deadline
+                && awaken_time::mono::now() >= deadline
             {
                 if let Err(error) = worker.reconcile_committed_terminals(256).await {
                     tracing::warn!(%error, "terminal dispatch reconciliation failed; retrying");
@@ -353,7 +353,7 @@ async fn run_loop<S: ControlDispatch + 'static>(
                 let interval = config
                     .terminal_reconciliation_interval
                     .expect("the maintenance schedule retained its scan interval");
-                next_terminal_reconciliation = Some(awaken_lease_contract::mono::now() + interval);
+                next_terminal_reconciliation = Some(awaken_time::mono::now() + interval);
             }
         }
         // Do not enter ordinary execution after a failed terminal commit. The

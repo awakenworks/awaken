@@ -587,18 +587,18 @@ mod capability_tests {
         // role. Decision table: R1 C1 => E1; R2 C2 durable-only => E2, !E3;
         // R3 C2 local + !C3 => E2+E3, !E4; R4 C2 local + C3 => E2+E3+E4.
         let backend = Arc::new(awaken_dispatch::MemoryDispatchStore::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ));
         let worker = AnyDispatchStore::from_dispatch(backend.clone());
         let coordinator = AnyDispatchStore::from_durable_dispatch(backend);
         let local = AnyDispatchStore::from_durable_store(
-            awaken_dispatch::MemoryDispatchStore::new(awaken_lease_contract::system_clock()),
+            awaken_dispatch::MemoryDispatchStore::new(awaken_time::system_clock()),
             None,
         );
         let checkpoint: Arc<dyn StreamCheckpointStore> =
             Arc::new(awaken_store_inmem::MemoryStreamCheckpointStore::new());
         let paired = AnyDispatchStore::from_durable_store(
-            awaken_dispatch::MemoryDispatchStore::new(awaken_lease_contract::system_clock()),
+            awaken_dispatch::MemoryDispatchStore::new(awaken_time::system_clock()),
             Some(checkpoint.clone()),
         );
 

@@ -178,7 +178,7 @@ mod tests {
         // another durable commit store. Decision table: R1=local+C2=>E1;
         // R2=remote+C2=>E2. A shared remote projection would replace the
         // parent's claim prefix and fence its next otherwise-valid commit.
-        let clock = awaken_lease_contract::system_clock();
+        let clock = awaken_time::system_clock();
         let store = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .expect("test dispatch store"),

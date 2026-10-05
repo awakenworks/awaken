@@ -133,7 +133,7 @@ pub struct CredentialInferenceMaterializer {
 impl CredentialInferenceMaterializer {
     #[cfg(feature = "authority")]
     #[must_use]
-    pub fn new<A>(local_authority: Arc<A>, clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self
+    pub fn new<A>(local_authority: Arc<A>, clock: Arc<dyn awaken_time::WallClock>) -> Self
     where
         A: awaken_runtime_contract::CredentialMaterialResolver
             + awaken_provisioning_contract::SecretBroker
@@ -812,7 +812,7 @@ mod tests {
         }
         CredentialInferenceMaterializer::from_pinned(PinnedCredentialMaterializer::external_only(
             Arc::new(NoCredentialAccess),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ))
     }
 

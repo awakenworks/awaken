@@ -11,8 +11,8 @@ use std::sync::Arc;
 pub use awaken_file_store::object::{
     ObjectFileStoreConfig as ObjectBackingConfig, ObjectStoreProvider as ObjectBackingProvider,
 };
-use awaken_lease_contract::WallClock;
 use awaken_resource_application::{RegistryApplication, ResourceAuthorities, ResourcesApplication};
+use awaken_time::WallClock;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SchemaMode {
@@ -398,7 +398,7 @@ mod tests {
         // covered by each adapter's integration suite; this test owns atomic
         // embedded selection and the no-parallel-application invariant.
         let root = tempfile::tempdir().expect("R1 root");
-        let app = open_embedded(root.path(), awaken_lease_contract::system_clock())
+        let app = open_embedded(root.path(), awaken_time::system_clock())
             .expect("R1 complete Resources application");
         let authorities = app.authorities();
         let _ = authorities.resource_registry();
@@ -412,7 +412,7 @@ mod tests {
 
         let invalid = tempfile::NamedTempFile::new().expect("R2 file");
         assert!(matches!(
-            open_embedded(invalid.path(), awaken_lease_contract::system_clock()),
+            open_embedded(invalid.path(), awaken_time::system_clock()),
             Err(ResourcePersistenceError::CreateDirectory { .. })
         ));
     }
@@ -425,7 +425,7 @@ mod tests {
         // A second ambient Memory clock would produce a different timestamp.
         const NANOS: u128 = 1_700_000_000_123_456_789;
         let clock: Arc<dyn WallClock> = Arc::new(awaken_lease_testkit::FixedClock::at(
-            awaken_lease_contract::UtcTime::from_unix_nanos(NANOS),
+            awaken_time::UtcTime::from_unix_nanos(NANOS),
         ));
         let root = tempfile::tempdir().unwrap();
         let app = open_embedded(root.path(), clock.clone()).unwrap();
@@ -456,11 +456,10 @@ mod tests {
         // from making only part of the Resources aggregate appear recovered.
         let directory = tempfile::tempdir()?;
         let fixture = {
-            let application =
-                open_embedded(directory.path(), awaken_lease_contract::system_clock())?;
+            let application = open_embedded(directory.path(), awaken_time::system_clock())?;
             seed_all_resource_authorities(&application, "embedded-restart").await?
         };
-        let reopened = open_embedded(directory.path(), awaken_lease_contract::system_clock())?;
+        let reopened = open_embedded(directory.path(), awaken_time::system_clock())?;
         assert_all_resource_authorities(&reopened, &fixture).await
     }
 
@@ -477,20 +476,11 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let fixture = {
-            let application = open_postgres(
-                &url,
-                SchemaMode::Migrate,
-                awaken_lease_contract::system_clock(),
-            )
-            .await?;
+            let application =
+                open_postgres(&url, SchemaMode::Migrate, awaken_time::system_clock()).await?;
             seed_all_resource_authorities(&application, &format!("postgres-{suffix}")).await?
         };
-        let reopened = open_postgres(
-            &url,
-            SchemaMode::Verify,
-            awaken_lease_contract::system_clock(),
-        )
-        .await?;
+        let reopened = open_postgres(&url, SchemaMode::Verify, awaken_time::system_clock()).await?;
         assert_all_resource_authorities(&reopened, &fixture).await
     }
 
@@ -513,7 +503,7 @@ mod tests {
             &url,
             SchemaMode::Migrate,
             Some(object.clone()),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .await
         .expect("open one hybrid Resources application");

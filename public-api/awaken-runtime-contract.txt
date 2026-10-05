@@ -723,17 +723,17 @@ pub const fn awaken_runtime_contract::llm::ChatResponse::terminal_receipt(&self)
 pub struct awaken_runtime_contract::llm::ModelAttemptTiming
 impl awaken_runtime_contract::llm::ModelAttemptTiming
 pub const fn awaken_runtime_contract::llm::ModelAttemptTiming::idle(self) -> core::time::Duration
-pub const fn awaken_runtime_contract::llm::ModelAttemptTiming::response_deadline(self) -> awaken_lease_contract::mono::MonoDeadline
+pub const fn awaken_runtime_contract::llm::ModelAttemptTiming::response_deadline(self) -> awaken_time::mono::MonoDeadline
 pub fn awaken_runtime_contract::llm::ModelAttemptTiming::standalone(tokio::time::instant::Instant, awaken_runtime_contract::llm::ModelInferenceBudget) -> core::result::Result<Self, awaken_runtime_contract::llm::ModelInferenceBudgetError>
-pub fn awaken_runtime_contract::llm::ModelAttemptTiming::start_at(tokio::time::instant::Instant, awaken_runtime_contract::llm::ModelInferenceBudget, awaken_lease_contract::mono::MonoDeadline) -> core::result::Result<Self, awaken_runtime_contract::llm::ModelInferenceBudgetError>
-pub const fn awaken_runtime_contract::llm::ModelAttemptTiming::watchdog_deadline(self) -> awaken_lease_contract::mono::MonoDeadline
+pub fn awaken_runtime_contract::llm::ModelAttemptTiming::start_at(tokio::time::instant::Instant, awaken_runtime_contract::llm::ModelInferenceBudget, awaken_time::mono::MonoDeadline) -> core::result::Result<Self, awaken_runtime_contract::llm::ModelInferenceBudgetError>
+pub const fn awaken_runtime_contract::llm::ModelAttemptTiming::watchdog_deadline(self) -> awaken_time::mono::MonoDeadline
 pub struct awaken_runtime_contract::llm::ModelInferenceBudget
 impl awaken_runtime_contract::llm::ModelInferenceBudget
 pub const awaken_runtime_contract::llm::ModelInferenceBudget::DEFAULT: Self
 pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::attempt_response(self) -> core::time::Duration
 pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::connect_timeout(self) -> core::time::Duration
 pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::idle(self) -> core::time::Duration
-pub fn awaken_runtime_contract::llm::ModelInferenceBudget::logical_deadline(self, tokio::time::instant::Instant) -> core::result::Result<awaken_lease_contract::mono::MonoDeadline, awaken_runtime_contract::llm::ModelInferenceBudgetError>
+pub fn awaken_runtime_contract::llm::ModelInferenceBudget::logical_deadline(self, tokio::time::instant::Instant) -> core::result::Result<awaken_time::mono::MonoDeadline, awaken_runtime_contract::llm::ModelInferenceBudgetError>
 pub fn awaken_runtime_contract::llm::ModelInferenceBudget::new(core::time::Duration, core::time::Duration, core::time::Duration, core::time::Duration) -> core::result::Result<Self, awaken_runtime_contract::llm::ModelInferenceBudgetError>
 pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::return_allowance(self) -> core::time::Duration
 pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::total(self) -> core::time::Duration

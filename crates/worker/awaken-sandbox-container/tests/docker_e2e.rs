@@ -75,7 +75,7 @@ async fn a_containerized_agent_speaks_the_wire_over_a_published_port() {
 
     let runtime = DockerRuntime::connect_local(port).expect("docker client");
     let provider = ContainerProvider::new(Arc::new(runtime), "busybox:latest")
-        .with_clock(awaken_lease_contract::system_clock());
+        .with_clock(awaken_time::system_clock());
 
     // Create the container running the agent; retry the dial while it boots + nc binds.
     let sandbox = provider

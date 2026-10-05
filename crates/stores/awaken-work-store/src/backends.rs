@@ -11,7 +11,7 @@
 //! the two durable adapters.
 
 use super::*;
-use awaken_lease_contract::WallClockExt;
+use awaken_time::WallClockExt;
 use sqlx::postgres::PgRow;
 
 /// Decode the selected PostgreSQL Work row through the same item constructor

@@ -8,11 +8,11 @@ use async_trait::async_trait;
 use awaken_credential_contract::{
     CredentialEnvelopeIssuance, CredentialEnvelopeIssuer, CredentialMaterialError, CredentialUsage,
 };
-use awaken_lease_contract::WallClockExt as _;
 use awaken_runtime_contract::{
     AttemptCredentialDelivery, AttemptCredentialDeliveryRequest, AttemptCredentialDeliverySource,
     credential_access_without_delivery,
 };
+use awaken_time::WallClockExt as _;
 
 use super::VaultLocalMaterialAuthority;
 

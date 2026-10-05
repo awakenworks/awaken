@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use awaken_lease_contract::mono::Stopwatch;
+use awaken_time::mono::Stopwatch;
 
 use awaken_config_service::PublicationBindingReconciler;
 use awaken_environment_application::EnvironmentApplication;
@@ -286,7 +286,7 @@ mod tests {
             fail: AtomicBool::new(true),
         });
         let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ));
         let registrar = Arc::new(EnvironmentRegistrar::default());
         let environments = Arc::new(EnvironmentApplication::new(envs, registrar, None));
@@ -362,7 +362,7 @@ mod tests {
         // Constraints/invariants: only a complete successful All pass crosses
         // the recovery boundary; wakes never create an alternate work-list owner.
         let registry = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ));
         registry
             .create_once(awaken_environment_contract::CreateEnvironmentCommand {

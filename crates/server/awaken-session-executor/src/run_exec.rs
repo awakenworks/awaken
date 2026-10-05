@@ -464,7 +464,7 @@ impl SharedHost {
         let epoch = LOCAL_ATTEMPT_EPOCH
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .max(1);
-        let now_unix_ms = awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref());
+        let now_unix_ms = awaken_time::WallClockExt::now_ms(self.clock.as_ref());
         let mut bindings = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         for candidate in &candidates {
@@ -1026,10 +1026,8 @@ mod tests {
         let thread = "thread-router";
         let storage = tempfile::tempdir().unwrap();
         let dispatch = Arc::new(
-            awaken_dispatch::open_sqlite_dispatch_store_in_memory(
-                awaken_lease_contract::system_clock(),
-            )
-            .expect("artifact test dispatch"),
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+                .expect("artifact test dispatch"),
         );
         dispatch
             .enqueue(awaken_dispatch_contract::RunDispatch::new(activation(

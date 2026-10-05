@@ -15,8 +15,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use awaken_lease_contract::{WallClock, WallClockExt};
 use awaken_resource_persistence::{ObjectBackingConfig, ObjectBackingProvider};
+use awaken_time::{WallClock, WallClockExt};
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;

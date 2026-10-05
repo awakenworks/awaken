@@ -71,7 +71,7 @@ pub async fn run_dataset(
         batches: Vec::new(),
     };
     for (batch_index, cases) in dataset.cases.chunks(batch_size).enumerate() {
-        let started = awaken_lease_contract::mono::Stopwatch::start();
+        let started = awaken_time::mono::Stopwatch::start();
         let result =
             tokio::time::timeout(DEFAULT_TIMEOUT, run_batch(&runner, cases, batch_index)).await;
         let latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;

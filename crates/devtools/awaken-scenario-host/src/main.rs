@@ -65,7 +65,7 @@ fn management_scenario_adapters(rate_limit_transition: bool) -> awaken_cli::Mana
                 create_per_minute: 3,
                 read_per_minute: 1_200,
             },
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ),
     ))
 }
@@ -90,7 +90,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .filter(|address| !address.trim().is_empty());
         // The echo Worker process's one wall clock: its request assertions and
         // the Host it builds share it.
-        let clock = awaken_lease_contract::system_clock();
+        let clock = awaken_time::system_clock();
         let request_authorizer = std::env::var("AWAKEN_WORKER_REQUEST_CREDENTIAL_FILE")
             .ok()
             .map(|path| {
@@ -113,12 +113,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await;
     }
     if model_mode.as_deref() == Ok("distributed-control") {
-        return awaken_scenario_host::serve_distributed_control(
-            awaken_lease_contract::system_clock(),
-        )
-        .await
-        .map_err(std::io::Error::other)
-        .map_err(Into::into);
+        return awaken_scenario_host::serve_distributed_control(awaken_time::system_clock())
+            .await
+            .map_err(std::io::Error::other)
+            .map_err(Into::into);
     }
     // Scenario environment is test-harness input, translated here into the same
     // typed policy production receives from config.toml. The observability adapter
@@ -140,11 +138,9 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Host-backed scenarios share one explicit test-support runtime authority.
         // AllInOne and split-Control modes assemble their own canonical authority;
         // installing this one as well would create a redundant, unused owner.
-        let runtime_authority = awaken_coordinator::init_scenario_runtime(
-            &deployment,
-            awaken_lease_contract::system_clock(),
-        )
-        .await?;
+        let runtime_authority =
+            awaken_coordinator::init_scenario_runtime(&deployment, awaken_time::system_clock())
+                .await?;
         awaken_scenario_host::install_scenario_runtime_authority(runtime_authority)?;
     }
     let mut scenario_lifecycle = None;

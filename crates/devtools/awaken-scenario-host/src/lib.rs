@@ -691,7 +691,7 @@ pub async fn build_resolved_real_router() -> Router {
     // only at the worker boundary.
     let secrets = Arc::new(InMemorySecretStore::new());
     let cred_repo = Arc::new(InMemoryCredentialRepo::new());
-    let clock = awaken_lease_contract::system_clock();
+    let clock = awaken_time::system_clock();
     enter_credential(
         CredentialCreateParams {
             workspace_id: "ws".into(),
@@ -847,7 +847,7 @@ pub async fn build_oauth_resolved_router() -> Router {
         .put(source)
         .await
         .expect("persist OAuth credential");
-    let clock = awaken_lease_contract::system_clock();
+    let clock = awaken_time::system_clock();
     let (direct_policy, direct_holder) = attempt_credential::direct_provider_execution();
     let resolver = awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
         catalog_repo,
@@ -1435,11 +1435,9 @@ pub async fn build_config_router() -> Router {
         )),
         // A fresh in-memory environment registry satisfies the author port for the
         // scenario host (no durable env state in scope).
-        awaken_protocol_managed_testkit::environment_components(
-            awaken_lease_contract::system_clock(),
-        )
-        .0
-        .application(),
+        awaken_protocol_managed_testkit::environment_components(awaken_time::system_clock())
+            .0
+            .application(),
         Arc::new(awaken_admin_assistant::TracingAuditSink),
     );
     let host = resource_host_with_deployment(model, model_ref, deployment).map_host(|host| {
@@ -1474,7 +1472,7 @@ pub async fn build_config_router() -> Router {
             awaken_control::ConfigPlaneManagedAgentRepository::new(
                 plane.clone(),
                 platform_workspace.clone(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ),
         )),
     ));

@@ -281,7 +281,7 @@ impl CredentialRefreshExchange for FakeExchange {
                 },
                 self.secrets.as_ref(),
                 self.credentials.as_ref(),
-                awaken_lease_contract::system_clock().as_ref(),
+                awaken_time::system_clock().as_ref(),
             )
             .await
             .expect("fake exchange reseals the exact revision");
@@ -1044,7 +1044,7 @@ async fn delete_vault_fences_children_and_converges_after_rollout_ack() {
         reconcile_managed_vault_deletions(
             h.secrets.as_ref(),
             h.credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap(),

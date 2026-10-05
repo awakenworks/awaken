@@ -725,7 +725,7 @@ mod tests {
     impl World {
         fn new(replies: &[&str]) -> Self {
             Self {
-                store: MemoryCommitCoordinator::new(awaken_lease_contract::system_clock()),
+                store: MemoryCommitCoordinator::new(awaken_time::system_clock()),
                 commits: Mutex::new(Vec::new()),
                 replies: Mutex::new(replies.iter().map(|reply| (*reply).into()).collect()),
                 states: Mutex::new(VecDeque::new()),

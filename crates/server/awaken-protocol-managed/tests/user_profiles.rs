@@ -23,7 +23,7 @@ fn app() -> Router {
         DataSubjectApplication::new(
             repo,
             b"test-user-profile-enrollment-key!!".to_vec(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .expect("valid test enrollment key"),
     );

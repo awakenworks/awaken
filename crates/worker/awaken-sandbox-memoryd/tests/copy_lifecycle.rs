@@ -38,7 +38,7 @@ async fn live_and_recovered_copy_do_not_follow_a_renamed_head() {
             let repository = Arc::new(
                 SqliteMemoryRepository::open(
                     root.path().join("memory.sqlite").to_str().unwrap(),
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )
                 .unwrap(),
             );
@@ -109,7 +109,7 @@ async fn ingress_and_recovery_reject_a_tree_that_cannot_be_harvested() {
     let repository = Arc::new(
         SqliteMemoryRepository::open(
             root.path().join("memory.sqlite").to_str().unwrap(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap(),
     );
@@ -178,7 +178,7 @@ async fn materialization_rejects_nonportable_store_paths_before_any_file_write()
         let repository = Arc::new(
             SqliteMemoryRepository::open(
                 root.join("memory.sqlite").to_str().unwrap(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap(),
         );
@@ -244,7 +244,7 @@ async fn materialization_never_silently_overwrites_filesystem_aliases() {
     let repository = Arc::new(
         SqliteMemoryRepository::open(
             root.join("memory.sqlite").to_str().unwrap(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap(),
     );
@@ -311,7 +311,7 @@ async fn parent_alias_admission_preserves_exact_no_edit_heads_and_history() {
             let repository = Arc::new(
                 SqliteMemoryRepository::open(
                     root.path().join("memory.sqlite").to_str().unwrap(),
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )
                 .unwrap(),
             );
@@ -353,7 +353,7 @@ async fn recovery_preserves_logical_names_without_host_rematerialization() {
     let repository = Arc::new(
         SqliteMemoryRepository::open(
             root.path().join("memory.sqlite").to_str().unwrap(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap(),
     );
@@ -414,7 +414,7 @@ async fn unrepresentable_copy_blocks_writeback_until_source_is_repaired() {
                     let repository = Arc::new(
                         SqliteMemoryRepository::open(
                             database.to_str().unwrap(),
-                            awaken_lease_contract::system_clock(),
+                            awaken_time::system_clock(),
                         )
                         .unwrap(),
                     );
@@ -517,7 +517,7 @@ async fn unrepresentable_copy_blocks_writeback_until_source_is_repaired() {
                     drop(repository);
                     let reopened = SqliteMemoryRepository::open(
                         database.to_str().unwrap(),
-                        awaken_lease_contract::system_clock(),
+                        awaken_time::system_clock(),
                     )
                     .unwrap();
                     assert_eq!(reopened.snapshot_heads("s").await.unwrap(), durable_heads);
@@ -541,7 +541,7 @@ async fn ambiguous_projection_shapes_reject_before_any_write_in_both_orders() {
         let repository = Arc::new(
             SqliteMemoryRepository::open(
                 root.path().join("memory.sqlite").to_str().unwrap(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap(),
         );
@@ -592,7 +592,7 @@ async fn unreadable_projection_never_authorizes_partial_writeback() {
         let repository = Arc::new(
             SqliteMemoryRepository::open(
                 root.join("memory.sqlite").to_str().unwrap(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap(),
         );
@@ -651,7 +651,7 @@ async fn empty_entry_and_depth_overflows_fail_before_any_repository_write() {
         let repository = Arc::new(
             SqliteMemoryRepository::open(
                 root.join("memory.sqlite").to_str().unwrap(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap(),
         );
@@ -701,11 +701,8 @@ async fn unavailable_copy_root_is_not_evidence_of_memory_deletion() {
         let root = temporary_root();
         let database = root.join("memory.sqlite");
         let repository = Arc::new(
-            SqliteMemoryRepository::open(
-                database.to_str().unwrap(),
-                awaken_lease_contract::system_clock(),
-            )
-            .unwrap(),
+            SqliteMemoryRepository::open(database.to_str().unwrap(), awaken_time::system_clock())
+                .unwrap(),
         );
         let original = repository
             .create("s", "/nested/note.md", "base")
@@ -793,7 +790,7 @@ async fn concurrent_copy_harvest_preserves_one_winner_and_retry_evidence() {
             let repository = Arc::new(
                 SqliteMemoryRepository::open(
                     database.to_str().unwrap(),
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )
                 .unwrap(),
             );
@@ -899,7 +896,7 @@ async fn concurrent_copy_harvest_preserves_one_winner_and_retry_evidence() {
             drop(repository);
             let reopened = SqliteMemoryRepository::open(
                 database.to_str().unwrap(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap();
             assert_eq!(reopened.list_copy_conflicts("s").await.unwrap(), retained);
@@ -929,7 +926,7 @@ async fn unsafe_copy_entries_fail_before_any_durable_mutation() {
         let repository = Arc::new(
             SqliteMemoryRepository::open(
                 root.join("memory.sqlite").to_str().unwrap(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap(),
         );
@@ -999,7 +996,7 @@ async fn an_existing_empty_copy_is_an_intentional_delete_not_a_missing_tree() {
     let repository = Arc::new(
         SqliteMemoryRepository::open(
             root.join("memory.sqlite").to_str().unwrap(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap(),
     );
@@ -1041,7 +1038,7 @@ async fn windows_junction_is_not_a_readable_memory_projection() {
         let repository = Arc::new(
             SqliteMemoryRepository::open(
                 root.join("memory.sqlite").to_str().unwrap(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap(),
         );
@@ -1121,11 +1118,8 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
         let root = temporary_root();
         let database = root.join("memory.sqlite");
         let repository = Arc::new(
-            SqliteMemoryRepository::open(
-                database.to_str().unwrap(),
-                awaken_lease_contract::system_clock(),
-            )
-            .unwrap(),
+            SqliteMemoryRepository::open(database.to_str().unwrap(), awaken_time::system_clock())
+                .unwrap(),
         );
         repository.create("s", "/a.md", "a-base").await.unwrap();
         let z_base = repository.create("s", "/z.md", "z-base").await.unwrap();
@@ -1177,11 +1171,8 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
         drop(mounter);
         drop(repository);
         let repository = Arc::new(
-            SqliteMemoryRepository::open(
-                database.to_str().unwrap(),
-                awaken_lease_contract::system_clock(),
-            )
-            .unwrap(),
+            SqliteMemoryRepository::open(database.to_str().unwrap(), awaken_time::system_clock())
+                .unwrap(),
         );
         let mounter = MemoryStoreMounter::copy_only(repository.clone());
         let mut files = vec![
@@ -1234,11 +1225,8 @@ async fn recovered_copy_retries_committed_write_without_a_second_version() {
     let root = temporary_root();
     let database = root.join("memory.sqlite");
     let repository = Arc::new(
-        SqliteMemoryRepository::open(
-            database.to_str().unwrap(),
-            awaken_lease_contract::system_clock(),
-        )
-        .unwrap(),
+        SqliteMemoryRepository::open(database.to_str().unwrap(), awaken_time::system_clock())
+            .unwrap(),
     );
     let base = repository.create("s", "/note.md", "base").await.unwrap();
     let mounter = MemoryStoreMounter::copy_only(repository.clone());
@@ -1260,11 +1248,8 @@ async fn recovered_copy_retries_committed_write_without_a_second_version() {
     drop(mounter);
     drop(repository);
     let repository = Arc::new(
-        SqliteMemoryRepository::open(
-            database.to_str().unwrap(),
-            awaken_lease_contract::system_clock(),
-        )
-        .unwrap(),
+        SqliteMemoryRepository::open(database.to_str().unwrap(), awaken_time::system_clock())
+            .unwrap(),
     );
     let replacement = MemoryStoreMounter::copy_only(repository.clone());
     let surviving_files = [("note.md".into(), b"committed".to_vec())];
@@ -1318,7 +1303,7 @@ async fn concurrent_identical_edits_converge_but_different_creates_conflict() {
         let repository = Arc::new(
             SqliteMemoryRepository::open(
                 root.join("memory.sqlite").to_str().unwrap(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap(),
         );
@@ -1427,7 +1412,7 @@ async fn copy_mount_reconciles_once_and_survives_mounter_replacement() {
     let repository = Arc::new(
         SqliteMemoryRepository::open(
             database.to_str().expect("UTF-8 database path"),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .expect("open durable repository"),
     );
@@ -1461,7 +1446,7 @@ async fn copy_mount_reconciles_once_and_survives_mounter_replacement() {
     let replacement_repository = Arc::new(
         SqliteMemoryRepository::open(
             database.to_str().expect("UTF-8 database path"),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .expect("reopen durable repository"),
     );

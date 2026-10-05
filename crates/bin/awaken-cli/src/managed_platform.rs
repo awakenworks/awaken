@@ -63,7 +63,7 @@ impl ManagedServiceAdapters {
     pub(crate) fn install_credential_envelope(
         &mut self,
         path: Option<&std::path::Path>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>, String> {
         let Some(path) = path else {
             return Ok(None);
@@ -315,13 +315,13 @@ mod tests {
         let mut adapters = ManagedServiceAdapters::default();
         assert!(
             adapters
-                .install_credential_envelope(None, awaken_lease_contract::system_clock())
+                .install_credential_envelope(None, awaken_time::system_clock())
                 .unwrap()
                 .is_none()
         );
         assert!(
             adapters
-                .install_credential_envelope(Some(&path), awaken_lease_contract::system_clock())
+                .install_credential_envelope(Some(&path), awaken_time::system_clock())
                 .is_err()
         );
         std::fs::write(&path, serde_json::to_vec(&serde_json::json!({
@@ -335,20 +335,20 @@ mod tests {
         }
         assert!(
             adapters
-                .install_credential_envelope(Some(&path), awaken_lease_contract::system_clock())
+                .install_credential_envelope(Some(&path), awaken_time::system_clock())
                 .unwrap()
                 .is_some()
         );
         std::fs::remove_file(&path).unwrap();
         assert!(
             adapters
-                .install_credential_envelope(None, awaken_lease_contract::system_clock())
+                .install_credential_envelope(None, awaken_time::system_clock())
                 .unwrap()
                 .is_none()
         );
         assert!(
             adapters
-                .install_credential_envelope(Some(&path), awaken_lease_contract::system_clock())
+                .install_credential_envelope(Some(&path), awaken_time::system_clock())
                 .err()
                 .unwrap()
                 .contains("configured twice")
@@ -555,7 +555,7 @@ mod tests {
                     crate::web_search_publication::WebSearchPublicationResolver::new(
                         providers,
                         Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
-                        awaken_lease_contract::system_clock(),
+                        awaken_time::system_clock(),
                     ),
                 ),
                 None,

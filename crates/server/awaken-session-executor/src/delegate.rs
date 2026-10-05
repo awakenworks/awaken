@@ -1201,16 +1201,12 @@ mod durable_cancel_tests {
         let (_root, sandbox) = local_test_sandbox().await;
         let llm = Arc::new(CaptureAdvisorRequests::default());
         let store = Arc::new(
-            awaken_dispatch::open_sqlite_dispatch_store_in_memory(
-                awaken_lease_contract::system_clock(),
-            )
-            .expect("durable advisor dispatch store"),
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+                .expect("durable advisor dispatch store"),
         );
-        let commit = Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         let scheduler = RunScheduler {
-            clock: awaken_lease_contract::system_clock(),
+            clock: awaken_time::system_clock(),
             store: store.clone(),
             commit: commit.clone(),
             reader: commit.clone(),
@@ -1458,16 +1454,12 @@ mod durable_cancel_tests {
         // Decision rule: execute durable cancellation D1, then exact replay D2.
         let (_root, sandbox) = local_test_sandbox().await;
         let store = Arc::new(
-            awaken_dispatch::open_sqlite_dispatch_store_in_memory(
-                awaken_lease_contract::system_clock(),
-            )
-            .expect("durable child dispatch store"),
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+                .expect("durable child dispatch store"),
         );
-        let commit = Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         let scheduler = RunScheduler {
-            clock: awaken_lease_contract::system_clock(),
+            clock: awaken_time::system_clock(),
             store: store.clone(),
             commit: commit.clone(),
             reader: commit.clone(),

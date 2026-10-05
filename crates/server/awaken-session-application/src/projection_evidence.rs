@@ -91,7 +91,7 @@ impl SessionApplication {
     pub async fn read_projection_evidence(
         &self,
         persisted: &PersistedSession,
-        started: awaken_lease_contract::mono::Stopwatch,
+        started: awaken_time::mono::Stopwatch,
     ) -> Result<SessionProjectionEvidence, RunError> {
         let session_id = &persisted.session_id;
         // Read the root Thread first. A terminal Outcome query from before a

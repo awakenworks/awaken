@@ -144,7 +144,7 @@ impl AllowlistProxy {
         &self,
         scope: &str,
         hosts: &[String],
-        clock: Option<&std::sync::Arc<dyn awaken_lease_contract::WallClock>>,
+        clock: Option<&std::sync::Arc<dyn awaken_time::WallClock>>,
     ) -> Result<String, EgressError> {
         let clock = clock.ok_or(EgressError::AllowlistClockUnavailable)?;
         let now = clock.now().duration_since_epoch().as_secs();
@@ -242,7 +242,7 @@ pub fn egress_plan_with_allowlist(
     proxy: Option<&ForwardProxy>,
     allowlist_proxy: Option<&AllowlistProxy>,
     scope: &str,
-    clock: Option<&std::sync::Arc<dyn awaken_lease_contract::WallClock>>,
+    clock: Option<&std::sync::Arc<dyn awaken_time::WallClock>>,
 ) -> Result<EgressRealization, EgressError> {
     match policy {
         pc::NetworkPolicy::Unrestricted => Ok(EgressRealization {
@@ -347,7 +347,7 @@ mod tests {
             None,
             Some(&allowlist_proxy),
             "session-a",
-            Some(&awaken_lease_contract::system_clock()),
+            Some(&awaken_time::system_clock()),
         )
         .unwrap();
         assert_eq!(restricted.network, NetworkMode::Allowlist);
@@ -369,7 +369,7 @@ mod tests {
         // AllowlistClockUnavailable, never a host-clock fallback.
         let proxy = AllowlistProxy::new("http://gateway.internal:8081", [3; 32], 30).unwrap();
         let hosts = ["api.example.com".to_string()];
-        let clock: std::sync::Arc<dyn awaken_lease_contract::WallClock> =
+        let clock: std::sync::Arc<dyn awaken_time::WallClock> =
             std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(100_000));
         assert_eq!(
             proxy.issue("session-a", &hosts, Some(&clock)),

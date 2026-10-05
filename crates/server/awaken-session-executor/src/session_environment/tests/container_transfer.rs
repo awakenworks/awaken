@@ -31,7 +31,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             "awaken-sandbox",
             std::time::Duration::ZERO,
             residency,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .into_session_provider();
         let thread = "session-container";

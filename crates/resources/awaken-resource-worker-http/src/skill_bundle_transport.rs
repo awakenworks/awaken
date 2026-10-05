@@ -63,7 +63,7 @@ pub struct WorkerSkillBundleService {
     materialization_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionResourceMaterializationControl>>,
     /// The Coordinator's wall clock: the instant claims and leases are judged at.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl WorkerSkillBundleService {
@@ -72,7 +72,7 @@ impl WorkerSkillBundleService {
         source: Arc<dyn SkillBundleSource<RunClaim>>,
         dispatch: Arc<dyn DispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             source,

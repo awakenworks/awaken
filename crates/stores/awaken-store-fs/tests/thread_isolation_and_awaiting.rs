@@ -46,7 +46,7 @@ async fn two_threads_stay_isolated_across_reopen() {
     let tb = ThreadId("t-b".to_string());
 
     {
-        let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+        let store = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
             .await
             .expect("open");
         store.commit(ended("t-a", "r-a", "alpha")).await.expect("A");
@@ -54,7 +54,7 @@ async fn two_threads_stay_isolated_across_reopen() {
         // store dropped — the in-memory read model is gone; only the log remains
     }
 
-    let reopened = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+    let reopened = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
         .await
         .expect("reopen");
 
@@ -108,7 +108,7 @@ async fn resume_ticket_is_durable_across_reopen() {
     let run = RunId("r1".to_string());
 
     {
-        let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+        let store = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
             .await
             .expect("open");
         store
@@ -132,7 +132,7 @@ async fn resume_ticket_is_durable_across_reopen() {
         // store dropped — the in-memory read model is gone; only the log remains
     }
 
-    let reopened = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+    let reopened = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
         .await
         .expect("reopen");
     assert!(
@@ -181,7 +181,7 @@ async fn commit_time_survives_reopen_and_legacy_time_stays_unknown() {
     .unwrap();
     let thread = ThreadId("current".into());
     let run = RunId("new".into());
-    let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+    let store = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
         .await
         .unwrap();
     store
@@ -191,7 +191,7 @@ async fn commit_time_survives_reopen_and_legacy_time_stays_unknown() {
     let before = store.recovery_snapshot(&thread, &run).await.unwrap();
     assert_eq!(before.commit_timestamps.len(), 1, "T1");
     drop(store);
-    let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+    let store = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
         .await
         .unwrap();
     assert_eq!(

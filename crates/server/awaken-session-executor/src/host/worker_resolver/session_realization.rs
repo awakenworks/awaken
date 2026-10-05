@@ -135,7 +135,7 @@ mod tests {
     async fn cold_worker_runtime_projection_decision_table() {
         use awaken_dispatch::{DispatchQueue, WorkerResolver as _};
 
-        let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+        let now = awaken_time::system_clock().now().as_epoch_ms();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())

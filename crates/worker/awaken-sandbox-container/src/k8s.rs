@@ -574,7 +574,7 @@ pub struct K8sRuntime {
         Mutex<std::collections::HashMap<K8sCreationAttemptKey, Arc<K8sCreationAttemptGate>>>,
     /// The composing process's wall clock: Sandbox effect fences are judged on
     /// it. A runtime composed without one judges no fence (fail closed).
-    clock: Option<Arc<dyn awaken_lease_contract::WallClock>>,
+    clock: Option<Arc<dyn awaken_time::WallClock>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -672,7 +672,7 @@ impl K8sRuntime {
     /// Compose the runtime with the process's wall clock (see the `clock`
     /// field). The execution composition always installs it.
     #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+    pub fn with_clock(mut self, clock: Arc<dyn awaken_time::WallClock>) -> Self {
         self.clock = Some(clock);
         self
     }
@@ -758,7 +758,7 @@ impl K8sRuntime {
             continuation_volume: None,
             image_prewarm: None,
             creation_attempts: Mutex::new(Default::default()),
-            clock: Some(awaken_lease_contract::system_clock()),
+            clock: Some(awaken_time::system_clock()),
         }
     }
 
@@ -1265,7 +1265,7 @@ impl K8sRuntime {
     ) -> Result<(), RuntimeError> {
         const DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
         const DELETE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
-        let deadline = awaken_lease_contract::mono::MonoDeadline::after(DELETE_TIMEOUT);
+        let deadline = awaken_time::mono::MonoDeadline::after(DELETE_TIMEOUT);
         loop {
             admit()?;
             let observed = self.pods().get(pod_name).await;

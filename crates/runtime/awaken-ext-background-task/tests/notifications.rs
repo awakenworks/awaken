@@ -58,7 +58,7 @@ async fn project(
         BackgroundTaskConfig::default(),
         Arc::new(BackgroundTaskSupervisor::new(
             "fixture-worker",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )),
     );
     let contribution = plugin.resolve_configured(Some(&config)).unwrap();
@@ -197,7 +197,7 @@ fn invalid_notification_configuration_is_rejected_at_plugin_admission() {
         },
         Arc::new(BackgroundTaskSupervisor::new(
             "fixture-worker",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )),
     ));
     for rule in [

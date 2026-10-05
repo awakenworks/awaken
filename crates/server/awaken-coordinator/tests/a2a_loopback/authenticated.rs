@@ -94,7 +94,7 @@ impl AuthenticatedPeer {
             },
             secrets.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .expect("enter origin credential");
@@ -131,9 +131,9 @@ impl AuthenticatedPeer {
             Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
                 self.credentials.clone(),
                 self.secrets.clone(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
     }
 
@@ -145,7 +145,7 @@ impl AuthenticatedPeer {
             CredentialRetirement::Disable,
             self.secrets.as_ref(),
             self.credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .expect("revoke exact admitted origin credential");

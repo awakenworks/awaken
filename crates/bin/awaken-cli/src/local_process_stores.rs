@@ -7,7 +7,7 @@ use crate::process_stores::ControlStores;
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn in_memory_process_stores() -> ProcessStores {
     // The ephemeral process's one wall clock.
-    let clock = awaken_lease_contract::system_clock();
+    let clock = awaken_time::system_clock();
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let sessions = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -163,7 +163,7 @@ pub(super) async fn open_local_process_stores(
     key: &[u8; 32],
 ) -> Result<ProcessStores, String> {
     // The local process's one wall clock, shared by Resources and every store.
-    let clock = awaken_lease_contract::system_clock();
+    let clock = awaken_time::system_clock();
     let mut postgres_pools = crate::postgres_pools::ProcessPostgresPools::new(1);
     let resources = open_resources_application(
         config::ResourceStoreBackend::Embedded(dir.to_path_buf()),

@@ -104,7 +104,7 @@ pub struct AdminState {
     pub availability: Arc<AvailabilityLedger>,
     /// The process's one wall clock: the `now` the availability ledger is read
     /// at and the stamp manual attributes and discovered connections carry.
-    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
+    pub clock: Arc<dyn awaken_time::WallClock>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -942,7 +942,7 @@ impl AdminState {
     /// availability ledger reads. Only the HTTP layer reads the clock; the
     /// ledger itself stays time-argument pure.
     fn clock_ms(&self) -> u64 {
-        awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref())
+        awaken_time::WallClockExt::now_ms(self.clock.as_ref())
     }
 }
 

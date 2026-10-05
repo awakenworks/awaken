@@ -2,7 +2,7 @@
 //! Terminal resource reclamation through the Session aggregate's one durable
 //! cleanup operation.
 
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 use std::{future::Future, pin::Pin};
 
 use awaken_session_error_contract::RunError;
@@ -1029,7 +1029,7 @@ mod tests {
             ("T3", 1_020_001, false),
             ("T4", 999_999, false),
         ] {
-            let scheduled = awaken_lease_contract::mono::now();
+            let scheduled = awaken_time::mono::now();
             let runtime = Arc::new(RecordingTerminalProjectionRuntime::default());
             *runtime.observation.lock().unwrap() = Some(AuthorityProofStarted::from_clock_sample(
                 scheduled,

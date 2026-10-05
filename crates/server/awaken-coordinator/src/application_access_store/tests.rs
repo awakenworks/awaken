@@ -443,12 +443,10 @@ async fn durable_store_survives_restart_and_persists_no_cleartext() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("sessions.db");
     let path_text = path.to_string_lossy();
-    let first =
-        ApplicationAccessStore::open_sqlite(&path_text, awaken_lease_contract::system_clock())
-            .await
-            .unwrap();
-    let now =
-        awaken_lease_contract::WallClockExt::now_ms(awaken_lease_contract::system_clock().as_ref());
+    let first = ApplicationAccessStore::open_sqlite(&path_text, awaken_time::system_clock())
+        .await
+        .unwrap();
+    let now = awaken_time::WallClockExt::now_ms(awaken_time::system_clock().as_ref());
     let issued = first
         .mint("workspace-a".into(), now, now + 60_000, grant())
         .await
@@ -463,7 +461,7 @@ async fn durable_store_survives_restart_and_persists_no_cleartext() {
     drop(first);
 
     let restarted = Arc::new(
-        ApplicationAccessStore::open_sqlite(&path_text, awaken_lease_contract::system_clock())
+        ApplicationAccessStore::open_sqlite(&path_text, awaken_time::system_clock())
             .await
             .unwrap(),
     );
@@ -505,10 +503,9 @@ async fn durable_store_survives_restart_and_persists_no_cleartext() {
         "AAT-R8 stores only PEP-consumed grant fields"
     );
 
-    let peer =
-        ApplicationAccessStore::open_sqlite(&path_text, awaken_lease_contract::system_clock())
-            .await
-            .unwrap();
+    let peer = ApplicationAccessStore::open_sqlite(&path_text, awaken_time::system_clock())
+        .await
+        .unwrap();
     peer.revoke("workspace-a", &issued.id, now + 1)
         .await
         .expect("AAT-R9");
@@ -710,11 +707,10 @@ async fn run_postgres_repository_conformance(url: &str) {
      * these rules prove that the production store composition does not turn its
      * durable PostgreSQL behavior into a test-only synthetic-record claim.
      */
-    let origin = ApplicationAccessStore::over(first, awaken_lease_contract::system_clock());
-    let peer = ApplicationAccessStore::over(second, awaken_lease_contract::system_clock());
+    let origin = ApplicationAccessStore::over(first, awaken_time::system_clock());
+    let peer = ApplicationAccessStore::over(second, awaken_time::system_clock());
     let expected_grant = grant();
-    let now =
-        awaken_lease_contract::WallClockExt::now_ms(awaken_lease_contract::system_clock().as_ref());
+    let now = awaken_time::WallClockExt::now_ms(awaken_time::system_clock().as_ref());
     let issued = origin
         .mint(
             "workspace-a".into(),
@@ -737,7 +733,7 @@ async fn run_postgres_repository_conformance(url: &str) {
         PostgresApplicationAccessRepository::with_existing_pool(schema_pool(url).await)
             .await
             .expect("PG-S2 reconnect peer through schema verification"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let restarted_identity = restarted_peer
         .authenticate(&issued.access_token)

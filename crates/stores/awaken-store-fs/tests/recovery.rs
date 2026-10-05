@@ -51,7 +51,7 @@ async fn reopen_replays_committed_facts() {
     let run = RunId("r1".to_string());
 
     {
-        let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+        let store = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
             .await
             .expect("open");
         store
@@ -61,7 +61,7 @@ async fn reopen_replays_committed_facts() {
         // store dropped here — simulate a process restart
     }
 
-    let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+    let store = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
         .await
         .expect("reopen");
     assert_eq!(store.committed_messages(&thread).len(), 1);
@@ -92,7 +92,7 @@ async fn torn_final_line_is_discarded() {
     let run = RunId("r1".to_string());
 
     {
-        let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+        let store = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
             .await
             .expect("open");
         store
@@ -110,7 +110,7 @@ async fn torn_final_line_is_discarded() {
             .expect("torn write");
     }
 
-    let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+    let store = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
         .await
         .expect("reopen");
     // Exactly the committed prefix survives; the torn tail is discarded.
@@ -132,7 +132,7 @@ async fn recovery_truncates_a_torn_tail_before_acknowledging_a_new_commit() {
     let second_run = RunId("r-after-recovery".to_string());
 
     {
-        let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+        let store = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
             .await
             .expect("open");
         store
@@ -149,7 +149,7 @@ async fn recovery_truncates_a_torn_tail_before_acknowledging_a_new_commit() {
             .expect("simulate interrupted append");
     }
     {
-        let recovered = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+        let recovered = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
             .await
             .expect("recover");
         assert_eq!(recovered.committed_messages(&thread).len(), 1);
@@ -159,7 +159,7 @@ async fn recovery_truncates_a_torn_tail_before_acknowledging_a_new_commit() {
             .expect("post-recovery commit is acknowledged");
     }
 
-    let reopened = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+    let reopened = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
         .await
         .expect("second restart");
     let messages = reopened.committed_messages(&thread);
@@ -187,7 +187,7 @@ async fn newline_terminated_corruption_fails_closed() {
     let run = RunId("r-corrupt".to_string());
 
     {
-        let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+        let store = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
             .await
             .expect("open");
         store
@@ -204,7 +204,7 @@ async fn newline_terminated_corruption_fails_closed() {
             .expect("write complete corrupt record");
     }
 
-    let error = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+    let error = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
         .await
         .err()
         .expect("durable corruption must fail closed");
@@ -236,7 +236,7 @@ async fn operation_receipt_survives_reopen() {
         },
     };
     {
-        let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+        let store = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
             .await
             .expect("open");
         assert!(
@@ -247,7 +247,7 @@ async fn operation_receipt_survives_reopen() {
                 .duplicate
         );
     }
-    let reopened = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+    let reopened = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
         .await
         .expect("reopen");
     assert!(
@@ -277,7 +277,7 @@ async fn every_torn_envelope_prefix_preserves_committed_time_and_facts() {
     let thread = ThreadId("cut-thread".into());
     let first = RunId("first".into());
     let second = RunId("second".into());
-    let store = FsCommitCoordinator::open(source.path(), awaken_lease_contract::system_clock())
+    let store = FsCommitCoordinator::open(source.path(), awaken_time::system_clock())
         .await
         .unwrap();
     store
@@ -306,10 +306,9 @@ async fn every_torn_envelope_prefix_preserves_committed_time_and_facts() {
     for end in prefix.len()..=all.len() {
         let target = tempfile::tempdir().unwrap();
         std::fs::write(target.path().join("commits.ndjson"), &all[..end]).unwrap();
-        let recovered =
-            FsCommitCoordinator::open(target.path(), awaken_lease_contract::system_clock())
-                .await
-                .unwrap();
+        let recovered = FsCommitCoordinator::open(target.path(), awaken_time::system_clock())
+            .await
+            .unwrap();
         let snapshot = recovered.recovery_snapshot(&thread, &second).await.unwrap();
         let step = serde_json::json!({"rule": if end == all.len() { "complete" } else { "partial" }, "recovered": observations(&snapshot), "committed": committed});
         // Coalesce identical observed prefixes; every byte-cut still executes

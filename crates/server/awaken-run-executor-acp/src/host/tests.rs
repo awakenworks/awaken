@@ -282,12 +282,8 @@ fn worker_route_admission_follows_the_capability_decision_table() {
 
     let discovery: Arc<dyn AcpDiscovery> = Arc::new(AvailableDiscovery);
     let resolver = Arc::new(
-        AcpLocalCredentialResolver::from_bindings(
-            discovery,
-            [],
-            awaken_lease_contract::system_clock(),
-        )
-        .expect("empty resolver"),
+        AcpLocalCredentialResolver::from_bindings(discovery, [], awaken_time::system_clock())
+            .expect("empty resolver"),
     );
     for (rule, capability, expected) in [
         ("R4", AcpCapabilityState::ProbeFailed, BTreeMap::new()),

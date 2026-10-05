@@ -225,7 +225,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let admin = std::env::var("AWAKEN_TEST_ADMIN_DATABASE_URL").ok();
     let storage = std::env::var("AWAKEN_TEST_WORKER_STORAGE_DIR").ok();
     // This example process's one wall clock.
-    let clock = awaken_lease_contract::system_clock();
+    let clock = awaken_time::system_clock();
     match (resource, admin, storage) {
         (None, None, None) => {
             let deployment = fixture_deployment()?;

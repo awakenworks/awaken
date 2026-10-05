@@ -93,7 +93,7 @@ async fn preparation_drained_before(
 
 struct WorkerProcessConfig {
     /// The embedded Worker process's one wall clock.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     deployment: awaken_session_executor::DeploymentConfig,
     manifest: StandardManifestConfig,
     admin_listen: Option<String>,
@@ -105,7 +105,7 @@ struct WorkerProcessConfig {
 impl WorkerProcessConfig {
     /// The `run_with_*` embedder entry points take the embedding process's
     /// clock from its `main`, like every other Worker composition.
-    fn embedded_defaults(clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+    fn embedded_defaults(clock: Arc<dyn awaken_time::WallClock>) -> Self {
         Self {
             clock,
             deployment: awaken_session_executor::DeploymentConfig::ephemeral(),
@@ -137,7 +137,7 @@ impl std::error::Error for WorkerNodeBuildError {}
 /// application ports on this same path.
 pub struct WorkerNodeBuilder {
     upstream: WorkerUpstream,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     manifest: ManifestSelection,
     deployment: awaken_session_executor::DeploymentConfig,
     standard_manifest_config: StandardManifestConfig,
@@ -258,7 +258,7 @@ impl WorkerNodeBuilder {
     /// `clock` is the Worker process's one wall clock: the Host this builder
     /// assembles drives its dispatch pool, recovery and child schedulers on it.
     #[must_use]
-    pub fn new(upstream: WorkerUpstream, clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+    pub fn new(upstream: WorkerUpstream, clock: Arc<dyn awaken_time::WallClock>) -> Self {
         Self {
             upstream,
             clock,
@@ -976,7 +976,7 @@ fn validate_worker_manifest(
 pub struct WorkerNode {
     upstream: WorkerUpstream,
     /// The Worker process's one wall clock, from its builder.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     manifest: WorkerManifest,
     deployment: awaken_session_executor::DeploymentConfig,
     application: WorkerApplicationSource,
@@ -1028,7 +1028,7 @@ struct InstalledSandboxBoundary {
 pub async fn run_with_inference_materializer(
     upstream: &str,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     build_secretless_worker(
         WorkerUpstream::new(upstream),
@@ -1049,7 +1049,7 @@ pub async fn run_with_inference_and_credential_resolver<R>(
     upstream: &str,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     resolver: Arc<R>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
     R: awaken_runtime_contract::CredentialMaterialResolver
@@ -1079,7 +1079,7 @@ pub async fn run_with_inference_materializer_until<F>(
     upstream: &str,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     shutdown: F,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
     F: std::future::Future<
@@ -1526,7 +1526,7 @@ impl WorkerNode {
         // them off this boundary prevents an unavailable Sandbox backend from
         // making the Worker itself permanently Starting while claim admission
         // still fails closed for any Run that needs their evidence.
-        let environment_proof_started = awaken_lease_contract::mono::now();
+        let environment_proof_started = awaken_time::mono::now();
         if let Some(provider) = &lifecycle.session_environment_provider {
             tokio::time::timeout(startup_timing.request_timeout(), provider.probe_ready())
                 .await
@@ -1682,7 +1682,7 @@ impl WorkerNode {
         } else {
             std::time::Duration::ZERO
         };
-        let deadline_ms = awaken_lease_contract::Expiry::after(self.clock.now(), grace)
+        let deadline_ms = awaken_time::Expiry::after(self.clock.now(), grace)
             .deadline().as_epoch_ms();
         match tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -1727,7 +1727,7 @@ impl WorkerNode {
                 // does not certify physical quiescence or create an ACK.
                 session_preparations.abort();
                 let deadline =
-                    awaken_lease_contract::mono::now() + lifecycle::WORKER_REVOCATION_BUDGET;
+                    awaken_time::mono::now() + lifecycle::WORKER_REVOCATION_BUDGET;
                 cleanup = Box::pin(lifecycle::revoke_worker_session_authority_before(
                     &lifecycle,
                     deadline,
@@ -1748,7 +1748,7 @@ impl WorkerNode {
             {
                 session_preparations.abort();
                 let deadline =
-                    awaken_lease_contract::mono::now() + lifecycle::WORKER_REVOCATION_BUDGET;
+                    awaken_time::mono::now() + lifecycle::WORKER_REVOCATION_BUDGET;
                 cleanup = Box::pin(lifecycle::revoke_worker_session_authority_before(
                     &lifecycle,
                     deadline,
@@ -1770,7 +1770,7 @@ impl WorkerNode {
         // revocation ran, its original absolute deadline remains the one owner
         // for this final effect; an exhausted deadline becomes Unconfirmed.
         let deadline = cleanup_deadline
-            .unwrap_or_else(|| awaken_lease_contract::mono::now() + lifecycle::WORKER_REVOCATION_BUDGET);
+            .unwrap_or_else(|| awaken_time::mono::now() + lifecycle::WORKER_REVOCATION_BUDGET);
         cleanup = lifecycle::shutdown_worker_capacity_before(&lifecycle, deadline, cleanup).await;
         // A timeout carries no authority to publish quiescence, even when the
         // instantaneous process-local counter happens to read zero.
