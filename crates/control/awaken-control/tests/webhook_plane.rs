@@ -3,10 +3,11 @@
 // @formal evidence webhook.outbox_fact_identity_is_stable
 // @formal evidence webhook.periodic_retry_never_retires_a_failed_fact
 // @formal evidence webhook_authoring.material_mutation_is_row_authoritative
-//! Webhook-subscription CRUD over the config-plane router. This crate shipped with
-//! zero tests; these pin the security-relevant arms: the tenant self-fence (404,
-//! never an ownership disclosure), secret sealing (minted once, never echoed), and
-//! the seal-failure / missing-url faults.
+//! Webhook-subscription CRUD over the config-plane router, subscription matching,
+//! and lifecycle delivery through the Session outbox relay. The CRUD cases pin the
+//! security-relevant arms: the tenant self-fence (404, never an ownership
+//! disclosure), secret sealing (minted once, never echoed), and the seal-failure /
+//! missing-url faults.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -23,16 +24,15 @@ use awaken_control::webhook_authoring::{
     webhook_config_router, webhook_config_router_loopback,
 };
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
+use awaken_session_application::{LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL, LifecycleOutboxRelay};
 use awaken_session_application_contract::{LifecycleFactDelivery, LifecycleFactNotifier};
 use awaken_session_repository_contract::LifecycleOutbox;
 use awaken_session_state_contract::ManagedLifecycleFact;
 use awaken_tenancy::WorkspaceScope;
+use awaken_webhook::lifecycle::{ConfigPlaneLifecycleDelivery, config_plane_lifecycle_delivery};
 use awaken_webhook::{
     ResolvedSubscription, SubscriptionFailureState, SubscriptionSource, WebhookDispatcher,
     WebhookSender,
-};
-use awaken_webhook_managed::{
-    ConfigPlaneLifecycleDelivery, WebhookOutboxNotifier, config_plane_lifecycle_delivery,
 };
 use axum::Router;
 use axum::body::Body;
@@ -1175,13 +1175,44 @@ async fn shutdown_lifecycle(lifecycle: &awaken_service_lifecycle::ServiceLifecyc
         .expect("supervised webhook reconciliation exits after cancellation");
 }
 
+/// Start the relay's replay loop under the service supervisor, as Coordinator
+/// composition does.
+fn relay_with_delivery_interval(
+    delivery: Arc<dyn LifecycleFactDelivery>,
+    outbox: Arc<dyn LifecycleOutbox>,
+    interval: std::time::Duration,
+    lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+) -> LifecycleOutboxRelay {
+    let relay = LifecycleOutboxRelay::new(delivery, outbox);
+    let replay = relay
+        .replay_loop(interval)
+        .expect("new lifecycle outbox relay starts once");
+    lifecycle.spawn("coordinator-webhook-outbox", move |cancel| {
+        replay.run(cancel)
+    });
+    relay
+}
+
+fn relay_with_delivery(
+    delivery: Arc<dyn LifecycleFactDelivery>,
+    outbox: Arc<dyn LifecycleOutbox>,
+    lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+) -> LifecycleOutboxRelay {
+    relay_with_delivery_interval(
+        delivery,
+        outbox,
+        LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL,
+        lifecycle,
+    )
+}
+
 fn outbox_notifier(
     dispatcher: Arc<WebhookDispatcher>,
     org_id: Option<String>,
     outbox: Arc<dyn LifecycleOutbox>,
     lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
-) -> WebhookOutboxNotifier {
-    WebhookOutboxNotifier::with_delivery(
+) -> LifecycleOutboxRelay {
+    relay_with_delivery(
         Arc::new(ConfigPlaneLifecycleDelivery::new(dispatcher, org_id)),
         outbox,
         lifecycle,
@@ -1288,7 +1319,7 @@ async fn slow_delivery_never_blocks_new_outbox_commits_and_both_facts_drain() {
         release: tokio::sync::Notify::new(),
         ids: Mutex::new(Vec::new()),
     });
-    let notifier = WebhookOutboxNotifier::with_delivery_interval(
+    let notifier = relay_with_delivery_interval(
         delivery.clone(),
         outbox.clone() as Arc<dyn LifecycleOutbox>,
         std::time::Duration::from_millis(10),
@@ -1439,7 +1470,7 @@ async fn completion_failure_replays_the_same_stable_fact_identity() {
         .expect("append lifecycle");
     outbox.fail_completion_once();
     let delivery = Arc::new(RecordingDelivery::default());
-    let notifier = WebhookOutboxNotifier::with_delivery(
+    let notifier = relay_with_delivery(
         delivery.clone(),
         outbox.clone() as Arc<dyn LifecycleOutbox>,
         &service_lifecycle,
@@ -1609,7 +1640,7 @@ async fn periodic_reconciliation_redelivers_without_restart_or_a_new_event() {
             failing: failing.clone(),
         }),
     ));
-    let _notifier = WebhookOutboxNotifier::with_delivery_interval(
+    let _notifier = relay_with_delivery_interval(
         Arc::new(ConfigPlaneLifecycleDelivery::new(dispatcher, None)),
         outbox.clone() as Arc<dyn LifecycleOutbox>,
         std::time::Duration::from_millis(10),

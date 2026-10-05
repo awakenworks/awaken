@@ -28,12 +28,12 @@ pub trait LifecycleOutbox: Send + Sync {
 
     /// Every fact not yet retired, in enqueue order.
     ///
-    /// Caller: `WebhookOutboxNotifier` drain loop.
+    /// Caller: `LifecycleOutboxRelay` drain loop.
     async fn pending_lifecycle(&self) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError>;
 
     /// Retire one delivered fact by its exact stable id.
     ///
-    /// Caller: `WebhookOutboxNotifier` after successful delivery.
+    /// Caller: `LifecycleOutboxRelay` after successful delivery.
     async fn complete_lifecycle(&self, fact_id: &str) -> Result<(), SessionRepositoryError>;
 }
 

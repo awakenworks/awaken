@@ -1,15 +1,15 @@
 // @formal surface exclude=composition_wiring
 // @formal owner crates/contract/awaken-session-state-contract/src/lifecycle.rs
-// @formal owner crates/server/awaken-webhook-managed/src/lib.rs
+// @formal owner crates/server/awaken-session-application/src/lifecycle_outbox_relay.rs
 // @formal reason: Static owner: Coordinator assembly of existing lifecycle delivery ports. Dynamic path:
 // @formal reason: committed lifecycle facts flow through CompositeLifecycleFactDelivery to the existing
-// @formal reason: WebhookOutboxNotifier; no lifecycle transition, retry, or durable-outbox decision is
+// @formal reason: LifecycleOutboxRelay; no lifecycle transition, retry, or durable-outbox decision is
 // @formal reason: reimplemented here. Evidence:
 // @formal reason: crates/contract/awaken-session-state-contract/src/lifecycle.rs and
-// @formal reason: crates/server/awaken-webhook-managed/src/lib.rs.
+// @formal reason: crates/server/awaken-session-application/src/lifecycle_outbox_relay.rs.
 //! One Coordinator composition for Session lifecycle delivery.
 //!
-//! `WebhookOutboxNotifier` remains the sole durable outbox consumer. Its
+//! `LifecycleOutboxRelay` remains the sole durable outbox consumer. Its
 //! delivery fan-out includes the optional Control webhook sink and one weak
 //! Managed projection receiver; neither receiver reads or acknowledges the
 //! outbox independently.
@@ -17,7 +17,9 @@
 use std::sync::Arc;
 
 use awaken_protocol_managed::{ManagedLifecycleFactDelivery, ManagedState};
-use awaken_session_application::SessionApplication;
+use awaken_session_application::{
+    LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL, LifecycleOutboxRelay, SessionApplication,
+};
 use awaken_session_application_contract::{
     CompositeLifecycleFactDelivery, LifecycleFactDelivery, LifecycleFactNotifier,
 };
@@ -83,7 +85,7 @@ fn install_managed_lifecycle_delivery_inner(
         ])),
         None => managed_delivery,
     };
-    let notifier = Arc::new(awaken_webhook_managed::WebhookOutboxNotifier::deferred(
+    let notifier = Arc::new(LifecycleOutboxRelay::new(
         delivery,
         application.lifecycle_outbox_handle(),
     ));
@@ -95,9 +97,12 @@ fn install_managed_lifecycle_delivery_inner(
         let deployment_notifier: Arc<dyn LifecycleFactNotifier> = notifier.clone();
         deployments.bind_lifecycle_notifier(deployment_notifier);
     }
-    notifier
-        .start(service_lifecycle)
+    let replay = notifier
+        .replay_loop(LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL)
         .map_err(ManagedLifecycleCompositionError::Supervisor)?;
+    service_lifecycle.spawn("coordinator-webhook-outbox", move |cancel| {
+        replay.run(cancel)
+    });
     Ok(managed)
 }
 

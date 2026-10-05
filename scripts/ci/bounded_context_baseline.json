@@ -1,7 +1,5 @@
 {
-  "composition-root-leaf": {
-    "awaken-webhook-managed -> awaken-service-lifecycle": "awaken-webhook-managed dissolves; the outbox replay loop registers through a lifecycle port"
-  },
+  "composition-root-leaf": {},
   "context-contract-seam": {
     "awaken-acp-application -> awaken-credential-vault": "reach the credentials context through its contract instead of awaken-credential-vault (application), or re-home awaken-acp-application",
     "awaken-acp-application -> awaken-run-executor-acp": "reach the worker context through its contract instead of awaken-run-executor-acp (infrastructure), or re-home awaken-acp-application",
@@ -40,7 +38,6 @@
     "awaken-session-environment -> awaken-sandbox-container": "reach the sandbox context through its contract instead of awaken-sandbox-container (infrastructure), or re-home awaken-session-environment",
     "awaken-session-environment -> awaken-sandbox-local": "reach the sandbox context through its contract instead of awaken-sandbox-local (infrastructure), or re-home awaken-session-environment",
     "awaken-store-fs -> awaken-sandbox-fs": "reach the sandbox context through its contract instead of awaken-sandbox-fs (infrastructure), or re-home awaken-store-fs",
-    "awaken-webhook-managed -> awaken-webhook": "reach the config context through its contract instead of awaken-webhook (infrastructure), or re-home awaken-webhook-managed",
     "awaken-coordinator-client -> awaken-dispatch-execution": "reach the dispatch context through its contract instead of awaken-dispatch-execution (infrastructure), or re-home awaken-coordinator-client"
   },
   "extension-engine-split": {},

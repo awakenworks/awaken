@@ -520,7 +520,7 @@ dependencies = [
  "awaken-tenancy",
  "awaken-time",
  "awaken-ui-artifact",
- "awaken-webhook-managed",
+ "awaken-webhook",
  "awaken-work-store",
  "awaken-worker",
  "awaken-worker-contract",
@@ -690,9 +690,12 @@ dependencies = [
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
  "awaken-service-lifecycle",
+ "awaken-session-application",
  "awaken-session-application-contract",
  "awaken-session-configuration-contract",
+ "awaken-session-repository-contract",
  "awaken-session-resource-contract",
+ "awaken-session-state-contract",
  "awaken-session-work-contract",
  "awaken-skill-store",
  "awaken-tenancy",
@@ -818,7 +821,6 @@ dependencies = [
  "awaken-tenancy",
  "awaken-time",
  "awaken-webhook",
- "awaken-webhook-managed",
  "awaken-work-store",
  "awaken-worker-contract",
  "awaken-worker-registry",
@@ -3489,6 +3491,9 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-outbound-http",
+ "awaken-session-application-contract",
+ "awaken-session-state-contract",
+ "awaken-time",
  "axum",
  "base64 0.22.1",
  "getrandom 0.2.17",
@@ -3498,30 +3503,6 @@ dependencies = [
  "sha2 0.10.9",
  "subtle",
  "tokio",
-]
-
-[[package]]
-name = "awaken-webhook-managed"
-version = "1.0.0"
-dependencies = [
- "async-trait",
- "awaken-agent-contract",
- "awaken-config-resolver",
- "awaken-control",
- "awaken-credential-vault",
- "awaken-service-lifecycle",
- "awaken-session-application-contract",
- "awaken-session-repository-contract",
- "awaken-session-state-contract",
- "awaken-tenancy",
- "awaken-time",
- "awaken-webhook",
- "axum",
- "http-body-util",
- "serde_json",
- "tokio",
- "tower",
- "tracing",
 ]
 
 [[package]]

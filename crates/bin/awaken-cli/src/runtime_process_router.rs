@@ -516,7 +516,7 @@ pub(super) async fn prepare_runtime_routers(
     let webhook_delivery: Arc<dyn awaken_session_application_contract::LifecycleFactDelivery> =
         match local_webhook_stores {
             Some((webhook_store, secrets)) => {
-                awaken_webhook_managed::config_plane_lifecycle_delivery(
+                awaken_webhook::lifecycle::config_plane_lifecycle_delivery(
                     Arc::new(
                         awaken_control::webhook_authoring::ConfigPlaneSubscriptionSource::new(
                             webhook_store,
