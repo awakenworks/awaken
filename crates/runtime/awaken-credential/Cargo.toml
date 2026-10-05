@@ -6,6 +6,8 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "shared"
+product = "sdk"
+bounded_context = "agent-runtime"
 layer = "domain"
 authority = "credential"
 description = "Host-side credential vocabulary shared by Awaken's outbound wire clients"

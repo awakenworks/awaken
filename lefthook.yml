@@ -115,7 +115,7 @@ pre-commit:
     #     in main came from that one shape; the ratchet freezes today's debt.
     test-waits:
       # >>> generated glob from check_test_waits.py INPUT_GLOBS — do not edit
-      glob: "{crates/*/*/src/**/*.rs,crates/*/*/tests/**/*.rs,e2e/**/*.js,e2e/**/*.mjs,e2e/**/*.rs,e2e/**/*.sh,e2e/**/*.ts,scripts/ci/check_test_waits.py,scripts/ci/test_waits_baseline.json,web/e2e/**/*.mjs,web/e2e/**/*.ts}"
+      glob: "{crates/**/src/**/*.rs,crates/**/tests/**/*.rs,e2e/**/*.js,e2e/**/*.mjs,e2e/**/*.rs,e2e/**/*.sh,e2e/**/*.ts,scripts/ci/check_test_waits.py,scripts/ci/test_waits_baseline.json,web/e2e/**/*.mjs,web/e2e/**/*.ts}"
       # <<< generated glob
       run: python3 scripts/ci/check_test_waits.py
 
@@ -125,7 +125,7 @@ pre-commit:
     #     thing the rule is about, and the trigger follows the same declaration.
     observation-collapse:
       # >>> generated glob from check_observation_collapse.py INPUT_GLOBS — do not edit
-      glob: "{crates/*/*/Cargo.toml,crates/*/*/src/**/*.rs,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_observation_collapse.py}"
+      glob: "{crates/**/Cargo.toml,crates/**/src/**/*.rs,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_observation_collapse.py}"
       # <<< generated glob
       run: python3 scripts/ci/check_observation_collapse.py
 
@@ -205,7 +205,7 @@ pre-commit:
     # One Rust gate owns source and boundary checks. Trigger it for checker
     # edits too; separate hook invocations would execute the same scan twice.
     rust-quick:
-      glob: "{lefthook.yml,scripts/ci/check-rust.sh,scripts/ci/check_dependency_sources.py,scripts/ci/check_crate_boundaries.py,scripts/ci/check_feature_matrix.py,Cargo.toml,Cargo.lock,crates/**/*.rs,crates/**/Cargo.toml,apps/**/*.rs,apps/**/Cargo.toml,tests/**/*.rs,xtask/**/*.rs,xtask/**/Cargo.toml}"
+      glob: "{lefthook.yml,scripts/ci/check-rust.sh,scripts/ci/check_dependency_sources.py,scripts/ci/check_crate_boundaries.py,scripts/ci/_bounded_context_fitness.py,scripts/ci/bounded_context_baseline.json,scripts/ci/check_feature_matrix.py,Cargo.toml,Cargo.lock,crates/**/*.rs,crates/**/Cargo.toml,apps/**/*.rs,apps/**/Cargo.toml,tests/**/*.rs,xtask/**/*.rs,xtask/**/Cargo.toml}"
       run: scripts/ci/check-rust.sh --quick
 
     # An observation time is a fact its owner observed, not a value the code

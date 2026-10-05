@@ -8,6 +8,8 @@ license.workspace = true
 # Reviewed public API snapshot (public-api/awaken-mcp-wire.txt): the fuzz workspace links it from outside this workspace.
 api_snapshot = true
 context = "shared"
+product = "sdk"
+bounded_context = "agent-runtime"
 layer = "infrastructure"
 authority = "mcp-wire"
 description = "Shared MCP wire layer (JSON-RPC peer, SSE, progress) for the MCP client and server crates"

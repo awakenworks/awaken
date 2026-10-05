@@ -65,8 +65,8 @@ from pathlib import Path
 # e2e suites and the console's Playwright specs both were -- is a corpus where
 # the rule silently never ran.
 INPUT_GLOBS: tuple[str, ...] = (
-    "crates/*/*/tests/**/*.rs",
-    "crates/*/*/src/**/*.rs",
+    "crates/**/tests/**/*.rs",
+    "crates/**/src/**/*.rs",
     "e2e/**/*.mjs",
     "e2e/**/*.ts",
     "e2e/**/*.js",
@@ -504,14 +504,17 @@ def _claimed_trees() -> set[str]:
     """Directories a declared pattern claims whole: `<literal dir>/**/*.<ext>`.
 
     Derived from `INPUT_GLOBS`, so adding a corpus adds its completeness check.
-    Patterns whose directory part is itself wildcarded (`crates/*/*/src/**`)
-    claim a shape inside a tree rather than the tree, and are excluded.
+    A pattern that constrains directories below the literal head
+    (`crates/**/src/**/*.rs`) claims a shape inside a tree rather than the
+    tree, and is excluded.
     """
 
     trees: set[str] = set()
     for pattern in INPUT_GLOBS:
         head, separator, tail = pattern.partition("/**/")
         if not separator or "*" in head or Path(pattern).suffix not in DIALECTS:
+            continue
+        if "/" in tail:
             continue
         trees.add(head)
     return trees

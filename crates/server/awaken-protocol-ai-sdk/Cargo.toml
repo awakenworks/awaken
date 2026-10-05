@@ -6,6 +6,8 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "coordinator"
+product = "platform"
+bounded_context = "protocols"
 layer = "interface"
 authority = "protocol-ai-sdk"
 

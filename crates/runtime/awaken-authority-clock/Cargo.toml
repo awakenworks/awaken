@@ -10,6 +10,8 @@ license.workspace = true
 # wall-clock port, so both the Runtime Host and the local process adapter link
 # this one owner instead of the Host reaching into the execution plane.
 context = "shared"
+product = "platform"
+bounded_context = "fencing"
 layer = "infrastructure"
 authority = "authority-clock"
 

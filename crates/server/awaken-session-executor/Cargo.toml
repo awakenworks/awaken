@@ -7,6 +7,8 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "shared"
+product = "platform"
+bounded_context = "session"
 layer = "infrastructure"
 authority = "runtime-host"
 

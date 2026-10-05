@@ -26,14 +26,92 @@ def package_name(manifest: dict) -> str:
     return str(manifest["package"]["name"])
 
 
-def iter_crate_manifests() -> list[Path]:
-    if not CRATES.exists():
+_NOT_CRATE_PARTS = frozenset({"target", "node_modules"})
+
+
+def crate_manifests(crates: Path = CRATES) -> list[Path]:
+    """Every crate manifest under `crates`, at whatever directory depth.
+
+    Discovery never assumes `crates/<group>/<crate>`: a crate is any directory
+    holding a `Cargo.toml`, except a manifest nested inside another crate (a
+    test fixture), so moving a crate to a deeper directory cannot silently drop
+    it from a gate.
+    """
+    if not crates.exists():
         return []
-    return sorted(CRATES.glob("*/*/Cargo.toml"))
+    found = [
+        path
+        for path in crates.rglob("Cargo.toml")
+        if not _NOT_CRATE_PARTS.intersection(path.relative_to(crates).parts)
+    ]
+    roots = {path.parent for path in found}
+    return sorted(
+        path for path in found if not any(parent in roots for parent in path.parent.parents)
+    )
+
+
+def crate_manifest(crate_name: str, crates: Path = CRATES) -> Path | None:
+    """The manifest of the crate whose directory is named `crate_name`."""
+    return next((path for path in crate_manifests(crates) if path.parent.name == crate_name), None)
+
+
+def crate_source_files(crates: Path = CRATES, tree: str = "src") -> list[Path]:
+    """Every `.rs` file under the `tree` directory of every crate."""
+    return sorted(
+        path
+        for manifest in crate_manifests(crates)
+        for path in (manifest.parent / tree).rglob("*.rs")
+    )
+
+
+def ensure_fixture_manifest(source: Path) -> None:
+    """Give a self-test fixture source the `Cargo.toml` a real crate has.
+
+    The crate root is the directory holding the path's first `src`/`tests`
+    component, so a decision table exercises the same discovery as the tree.
+    """
+    parts = source.parts
+    index = next(i for i, part in enumerate(parts) if part in {"src", "tests"})
+    manifest = Path(*parts[:index]) / "Cargo.toml"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    if not manifest.exists():
+        manifest.write_text(f'[package]\nname = "{parts[index - 1]}"\n', encoding="utf-8")
+
+
+def workspace_member_dirs(repo_root: Path = REPO_ROOT) -> list[Path]:
+    """The crate directories the root `[workspace]` declares, globs expanded."""
+    workspace = load_manifest(repo_root / "Cargo.toml").get("workspace", {})
+    excluded = {(repo_root / pattern).resolve() for pattern in workspace.get("exclude", [])}
+    members: set[Path] = set()
+    for pattern in workspace.get("members", []):
+        for path in repo_root.glob(pattern):
+            if (path / "Cargo.toml").is_file() and path.resolve() not in excluded:
+                members.add(path.resolve())
+    return sorted(members)
+
+
+def check_crate_manifests_match_workspace(repo_root: Path = REPO_ROOT) -> list[str]:
+    """Gate discovery and the Cargo workspace name the same crate set."""
+    root = repo_root.resolve()
+    discovered = {path.parent.resolve() for path in crate_manifests(repo_root / "crates")}
+    members = set(workspace_member_dirs(repo_root))
+    errors = [
+        f"{path.relative_to(root)}: crate under crates/ is not a workspace member"
+        for path in sorted(discovered - members)
+    ]
+    errors += [
+        f"{path.relative_to(root)}: workspace member is not discovered under crates/"
+        for path in sorted(members - discovered)
+    ]
+    return errors
+
+
+def iter_crate_manifests() -> list[Path]:
+    return crate_manifests(CRATES)
 
 
 def text_files(crate_name: str) -> list[Path]:
-    manifest = next(CRATES.glob(f"*/{crate_name}/Cargo.toml"), None)
+    manifest = crate_manifest(crate_name)
     if manifest is None:
         return []
     src = manifest.parent / "src"
@@ -567,6 +645,52 @@ def public_first_party_reexports(sources: Iterable[str]) -> frozenset[str]:
     )
 
 
+def _selftest_crate_discovery() -> None:
+    # Discovery cause/effect table. Causes: C1 a crate two levels below
+    # crates/; C2 a crate three levels below; C3 a Cargo.toml nested inside a
+    # crate (fixture); C4 a Cargo.toml under target/; C5 a workspace member
+    # missing from crates/ or a crate missing from the members.
+    # Effects: E1 discovered; E2 not discovered; E3 consistency error.
+    # | Rule | cause | effect |
+    # | D1   | C1    | E1     |
+    # | D2   | C2    | E1     |
+    # | D3   | C3    | E2     |
+    # | D4   | C4    | E2     |
+    # | D5   | C5    | E3     |
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        crates = root / "crates"
+        for relative in (
+            "group/shallow",
+            "product/context/deep",
+            "group/shallow/tests/fixture",
+            "group/shallow/target/debug/build",
+        ):
+            (crates / relative / "src").mkdir(parents=True)
+            (crates / relative / "Cargo.toml").write_text("[package]\nname = 'x'\n")
+            (crates / relative / "src" / "lib.rs").write_text("")
+        names = [path.parent.name for path in crate_manifests(crates)]
+        assert names == ["shallow", "deep"] or names == ["deep", "shallow"], names
+        assert "shallow" in names, "D1"
+        assert "deep" in names, "D2"
+        assert "fixture" not in names, "D3"
+        assert "build" not in names, "D4"
+        assert crate_manifest("deep", crates) == crates / "product/context/deep/Cargo.toml", "D2"
+        assert len(crate_source_files(crates)) == 2, "D1/D2 sources; D3/D4 excluded"
+        (root / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/group/*"]\n')
+        errors = check_crate_manifests_match_workspace(root)
+        assert errors == ["crates/product/context/deep: crate under crates/ is not a workspace member"], errors
+        (root / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["crates/group/*", "crates/product/*/*", "extra/*"]\n'
+        )
+        (root / "extra" / "outside").mkdir(parents=True)
+        (root / "extra" / "outside" / "Cargo.toml").write_text("[package]\nname = 'y'\n")
+        errors = check_crate_manifests_match_workspace(root)
+        assert errors == ["extra/outside: workspace member is not discovered under crates/"], errors
+
+
 def _selftest_projection_cache() -> None:
     # Cache cause/effect graph: C1 identical source is projected repeatedly;
     # C2 source changes at the same path/length; C3 more than the bound's unique
@@ -605,6 +729,7 @@ def selftest() -> None:
     | R3   | no          | no            | yes     | E2     |
     """
     _selftest_projection_cache()
+    _selftest_crate_discovery()
     # Production-source cause/effect table: C4 an exact/`all` cfg predicate is
     # false whenever test=false; C5 `not(test)` or `any(test, feature=...)` can
     # compile outside tests; C6 a test-only item precedes later production; C7
@@ -715,6 +840,8 @@ def dependency_fitness_specs() -> list[_crate_dependency_fitness.CrateSpec]:
                 layer=str(metadata.get("layer", "")),
                 authority=str(metadata.get("authority", "")),
                 normal_deps=frozenset(normal_dependency_names(manifest)),
+                product=str(metadata.get("product", "")),
+                bounded_context=str(metadata.get("bounded_context", "")),
             )
         )
     return specs

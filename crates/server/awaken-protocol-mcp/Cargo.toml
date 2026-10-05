@@ -6,6 +6,8 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "protocol"
+product = "platform"
+bounded_context = "protocols"
 layer = "interface"
 authority = "protocol-mcp"
 description = "MCP protocol adapter (server side): exposes awaken runtime tools to external MCP clients"

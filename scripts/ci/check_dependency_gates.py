@@ -240,9 +240,26 @@ def _executable_lines(text: str) -> list[str]:
     return ["" if COMMENT.match(line) else line for line in text.splitlines()]
 
 
+CRATE_TREES = frozenset({"src", "tests", "benches", "examples"})
+
+
 def _crate_of(relpath: str) -> str | None:
+    """The crate a repository path belongs to, at whatever directory depth.
+
+    On disk the nearest ancestor holding a `Cargo.toml` is the crate. A path
+    that does not exist (the decision table) names its crate by the directory
+    holding its source tree.
+    """
     parts = relpath.split("/")
-    return parts[2] if len(parts) > 2 and parts[0] == "crates" else None
+    if len(parts) < 3 or parts[0] != "crates":
+        return None
+    for end in range(len(parts) - 1, 1, -1):
+        if (ROOT.joinpath(*parts[:end]) / "Cargo.toml").is_file():
+            return parts[end - 1]
+    for index in range(2, len(parts)):
+        if parts[index] in CRATE_TREES:
+            return parts[index - 1]
+    return None
 
 
 def _sources(root: Path) -> dict[str, str]:

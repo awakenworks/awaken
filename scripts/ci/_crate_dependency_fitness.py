@@ -82,6 +82,35 @@ PROTOCOL_INFRASTRUCTURE_CONTEXTS = frozenset({"shared", "runtime", "protocol"})
 # in the same commit that achieves it. Nothing may be added here.
 KNOWN_INVERSIONS: dict[tuple[str, str], str] = {}
 
+# Placement is a second axis beside `context`. `context` records the deployment
+# plane a crate serves; `product` and `bounded_context` record what the crate is
+# part of: the embeddable Runtime SDK, one bounded context of the Platform, a
+# composition root (apps), or developer tooling. Keeping the axes separate lets
+# the plane-based direction rules above keep running while placement becomes
+# data that later rules and any directory layout can be derived from.
+PRODUCTS = frozenset({"sdk", "platform", "apps", "devtools"})
+BOUNDED_CONTEXTS: dict[str, frozenset[str]] = {
+    "sdk": frozenset({"agent-runtime"}),
+    "platform": frozenset(
+        {
+            "fencing",
+            "storage",
+            "access",
+            "config",
+            "credentials",
+            "governance",
+            "session",
+            "dispatch",
+            "environment",
+            "sandbox",
+            "worker",
+            "resources",
+            "deployment",
+            "protocols",
+        }
+    ),
+}
+
 
 class CrateSpec(NamedTuple):
     name: str
@@ -89,6 +118,28 @@ class CrateSpec(NamedTuple):
     layer: str
     authority: str
     normal_deps: frozenset[str]
+    product: str = ""
+    bounded_context: str = ""
+
+
+def placement_violations(spec: CrateSpec) -> list[str]:
+    """A crate names one product and, inside the SDK or Platform, one context."""
+    if spec.product not in PRODUCTS:
+        return [f"{spec.name} must declare metadata.awaken.product as one of {sorted(PRODUCTS)}"]
+    allowed = BOUNDED_CONTEXTS.get(spec.product)
+    if allowed is None:
+        if spec.bounded_context:
+            return [
+                f"{spec.name} is product {spec.product!r}, which has no bounded contexts; "
+                "remove metadata.awaken.bounded_context"
+            ]
+        return []
+    if spec.bounded_context not in allowed:
+        return [
+            f"{spec.name} must declare metadata.awaken.bounded_context as one of "
+            f"{sorted(allowed)} for product {spec.product!r}"
+        ]
+    return []
 
 
 def metadata_violations(spec: CrateSpec) -> list[str]:
@@ -185,6 +236,7 @@ def _raw_dependency_violations(specs: list[CrateSpec]) -> list[tuple[tuple[str, 
 
 def check_all(specs: list[CrateSpec]) -> list[str]:
     errors = [error for spec in specs for error in metadata_violations(spec)]
+    errors += [error for spec in specs for error in placement_violations(spec)]
     return errors + dependency_violations(specs)
 
 
@@ -255,6 +307,21 @@ def selftest() -> None:
     )
     assert stale and "no longer violates" in stale[0], "R16 a removed edge must leave the ratchet"
     assert metadata_violations(c("missing", "", "", "")), "R2"
+    # Placement table. P1 SDK in its one context; P2 Platform in a listed
+    # context; P3 apps/devtools without a context; P4 unknown product; P5
+    # Platform with a missing or unknown context; P6 apps naming a context.
+    # Effects: E1 accept P1-P3; E2 reject P4-P6.
+    p = lambda product, context="": c("x", "runtime", "domain")._replace(
+        product=product, bounded_context=context
+    )
+    assert not placement_violations(p("sdk", "agent-runtime")), "P1"
+    assert not placement_violations(p("platform", "session")), "P2"
+    assert not placement_violations(p("apps")), "P3"
+    assert not placement_violations(p("devtools")), "P3"
+    assert placement_violations(p("server", "session")), "P4"
+    assert placement_violations(p("platform")), "P5 missing"
+    assert placement_violations(p("platform", "agent-runtime")), "P5 another product's context"
+    assert placement_violations(p("apps", "session")), "P6"
     assert dependency_violations(
         [c("domain", "runtime", "domain", d=frozenset({"adapter"})), c("adapter", "runtime", "infrastructure")]
     ), "R3"
