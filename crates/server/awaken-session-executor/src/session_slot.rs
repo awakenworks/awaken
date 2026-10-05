@@ -8,12 +8,16 @@
 //! projection materialized from it so registration and terminal cleanup share one
 //! lifecycle boundary instead of coordinating parallel maps.
 
+use crate::frozen_runtime_projection::{
+    FrozenBaselineRuntimeProjection, FrozenEnvironmentRuntimeProjection, ManagedContentDelivery,
+};
+use crate::mcp_material::{McpGenerationProjection, McpProjectionState};
+use crate::staged_resources::EnvironmentResourceReconciliation;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::memory::BoundMemory;
-use crate::provisioning::StagedResources;
+use crate::staged_resources::StagedResources;
 
 mod environment_owner;
 pub(crate) use environment_owner::*;
@@ -140,95 +144,6 @@ impl SessionRealizationAuthority {
         *self = Self::Closed(retained.cloned());
         true
     }
-}
-
-/// One Session-wide delivery decision for resources that can be represented
-/// either as files or as semantic tools. The frozen Resource/Skill identities
-/// remain authoritative; this value selects only their runtime projection.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum ManagedContentDelivery {
-    /// Anthropic Managed Agents compatible filesystem projection. Memory stores
-    /// are mounted and Skills are discovered from their `SKILL.md` paths.
-    #[default]
-    ManagedFilesystem,
-    /// Filesystem-free projection for Native agents whose published tool policy
-    /// cannot invoke a filesystem tool. The same frozen bindings are exposed by
-    /// bounded semantic tools instead.
-    SemanticTools,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum McpProjectionState {
-    /// The exact generation owner is installed before process spawn/connect.
-    /// Cancellation may leave this state temporarily, but never an unowned
-    /// process; the owned staging task completes or drains it canonically.
-    Staging,
-    Staged,
-    Active,
-    Draining,
-    Removed,
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct McpStagingActivity {
-    finished: Arc<AtomicBool>,
-    changed: Arc<tokio::sync::Notify>,
-}
-
-impl McpStagingActivity {
-    pub(crate) fn guard(&self) -> McpStagingActivityGuard {
-        McpStagingActivityGuard(self.clone())
-    }
-
-    pub(crate) fn finish(&self) {
-        self.finished.store(true, Ordering::Release);
-        self.changed.notify_waiters();
-    }
-
-    pub(crate) async fn wait(&self) {
-        while !self.finished.load(Ordering::Acquire) {
-            let changed = self.changed.notified();
-            if self.finished.load(Ordering::Acquire) {
-                break;
-            }
-            changed.await;
-        }
-    }
-}
-
-pub(crate) struct McpStagingActivityGuard(McpStagingActivity);
-
-impl Drop for McpStagingActivityGuard {
-    fn drop(&mut self) {
-        self.0.finish();
-    }
-}
-
-/// Process-local effect for one exact durable MCP generation. This is live
-/// material/connection state only; desired state remains in the Session
-/// aggregate and is never reconstructed from this slot.
-#[derive(Clone)]
-pub(crate) struct McpGenerationProjection {
-    /// The one canonical, secret-free effect input. Keep it intact so durable
-    /// dispatch can replay the exact generation on the execution Worker without
-    /// reconstructing a parallel MCP configuration from live transport state.
-    pub request: awaken_session_mcp_contract::StageMcpAttachment,
-    /// Exact immutable realization identity with only renewable expiry/key
-    /// excluded. It prevents a lease extension from changing target,
-    /// credential, holder, owner incarnation, epoch, or logical generation.
-    pub receipt: awaken_session_mcp_contract::McpRealizationReceipt,
-    pub server: Option<crate::mcp::McpTransportMaterial>,
-    pub native_wiring: Option<crate::mcp::McpWiring>,
-    /// Session-owned process for a Native sandbox-stdio MCP generation. ACP
-    /// starts its stdio child itself and HTTP generations have no sandbox
-    /// process, so both leave this empty.
-    pub mcp_process: Option<Arc<dyn awaken_provisioning_contract::ProcessHandle>>,
-    /// Owned spawn/connect activity. Drain waits for it before proving that a
-    /// process cannot appear after cleanup has completed.
-    pub staging: Option<McpStagingActivity>,
-    /// One cancellation-safe cleanup owner for this exact generation.
-    pub drain: Arc<tokio::sync::Mutex<()>>,
-    pub state: McpProjectionState,
 }
 
 /// Process-local admission fence for one exact durable suspend operation. It
@@ -381,26 +296,6 @@ impl SessionRuntimeSlot {
     }
 }
 
-/// Process-local reference to the exact Control-frozen baseline. Keeping the
-/// domain value intact avoids a second partial publication/layout projection:
-/// context, provider selection, cold replay, and cleanup all consume the same
-/// immutable coordinates.
-pub(crate) type FrozenBaselineRuntimeProjection =
-    awaken_session_configuration_contract::SessionBaseline;
-
-/// The sole process-local projection of the frozen Environment snapshot.
-/// Native and ACP provisioning both consume this value; no late network or
-/// Sandbox override is stored beside it.
-#[derive(Clone)]
-pub(crate) struct FrozenEnvironmentRuntimeProjection {
-    pub fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint,
-    pub network: awaken_provisioning_contract::NetworkPolicy,
-    pub packages: awaken_provisioning_contract::PackageRequirements,
-    pub sandbox: Option<awaken_provisioning_contract::SandboxOverride>,
-    pub provisioning: awaken_session_configuration_contract::SandboxProvisioning,
-    pub idle_retention: awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
-}
-
 #[derive(Default)]
 pub(crate) struct SessionRuntimeSlot {
     /// Serializes the canonical realization phase driver for this Session.
@@ -517,7 +412,7 @@ pub(crate) struct SessionRuntimeSlot {
     /// Managed-filesystem Skill discovery metadata. Full instructions remain
     /// in the exact frozen bundle (and its later filesystem projection) and
     /// are read on demand by the ordinary `read` tool.
-    pub skill_prompt: Option<crate::skills::FilesystemSkillPrompt>,
+    pub skill_prompt: Option<crate::skill_prompt::FilesystemSkillPrompt>,
     pub resources: StagedResources,
     pub manifest: Option<awaken_session_resource_contract::SessionResourceManifest>,
     /// Exact aggregate-owned physical replacement currently being replayed.
@@ -533,14 +428,6 @@ pub(crate) struct SessionRuntimeSlot {
     /// adopted providers require different idempotent mount completion, but the
     /// aggregate transition remains their single desired-state authority.
     pub environment_resource_reconciliation: EnvironmentResourceReconciliation,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum EnvironmentResourceReconciliation {
-    #[default]
-    None,
-    Fresh,
-    Adopted,
 }
 
 impl SessionRuntimeSlot {
@@ -1049,7 +936,7 @@ mod tests {
             credential: None,
             selected_plaintext_holder: None,
         };
-        let staging = McpStagingActivity::default();
+        let staging = crate::mcp_material::McpStagingActivity::default();
         let guard = staging.guard();
         let unpolled = async move {
             let _guard = guard;

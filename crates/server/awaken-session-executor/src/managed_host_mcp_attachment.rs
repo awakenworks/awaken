@@ -77,23 +77,23 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
                 && existing.receipt.receipt_fingerprint == request_fingerprint;
             if exact_replay {
                 match existing.state {
-                    crate::session_slot::McpProjectionState::Staged
-                    | crate::session_slot::McpProjectionState::Active => {
+                    crate::mcp_material::McpProjectionState::Staged
+                    | crate::mcp_material::McpProjectionState::Active => {
                         return Ok(existing.receipt);
                     }
-                    crate::session_slot::McpProjectionState::Staging => {
+                    crate::mcp_material::McpProjectionState::Staging => {
                         return Err(RunError::unavailable_classified(
                             "mcp_generation_staging",
                             "MCP generation staging is still owned by an earlier attempt",
                         ));
                     }
-                    crate::session_slot::McpProjectionState::Draining => {
+                    crate::mcp_material::McpProjectionState::Draining => {
                         return Err(RunError::unavailable_classified(
                             "mcp_generation_draining",
                             "MCP generation cleanup has not completed",
                         ));
                     }
-                    crate::session_slot::McpProjectionState::Removed => {}
+                    crate::mcp_material::McpProjectionState::Removed => {}
                 }
             } else {
                 return Err(RunError::classified(
@@ -390,7 +390,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
                         })?;
                     let refresh = if realization_kind == CredentialRealizationKind::WorkerRelay {
                         match access.refresh.as_ref() {
-                            Some(refresh) => Some(Box::new(crate::mcp::McpRefreshMaterial(
+                            Some(refresh) => Some(Box::new(crate::mcp_material::McpRefreshMaterial(
                                 self.credential_refresh_factory
                                     .as_ref()
                                     .ok_or_else(|| {
@@ -407,7 +407,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
                                     ),
                             ))),
                             None => self.credential_refresh_factory.as_ref().map(|factory| {
-                                Box::new(crate::mcp::McpRefreshMaterial(factory.bearer_reloader(
+                                Box::new(crate::mcp_material::McpRefreshMaterial(factory.bearer_reloader(
                                     awaken_credential_contract::CredentialSourceId(
                                         access.credential.id.clone(),
                                     ),
@@ -429,15 +429,15 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
             }
         };
         let projection_request = request.clone();
-        let server = crate::mcp::McpTransportMaterial {
+        let server = crate::mcp_material::McpTransportMaterial {
             name: request.name,
             prompts_as_skills: request.prompts_as_skills,
             transport: match sandbox_stdio.as_ref() {
-                Some(target) => crate::mcp::McpTransportMaterialKind::SandboxStdio {
+                Some(target) => crate::mcp_material::McpTransportMaterialKind::SandboxStdio {
                     command: target.command.clone(),
                     args: target.args.clone(),
                 },
-                None => crate::mcp::McpTransportMaterialKind::Http {
+                None => crate::mcp_material::McpTransportMaterialKind::Http {
                     // A mediated credential points the client at the mediator.
                     // Reaching upstream is the mediator's business, and the
                     // client holds nothing it could replay there.
@@ -540,9 +540,9 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
                         format!("sandbox stdio MCP home could not be materialized: {error}"),
                     )
                 })?;
-            let staging = crate::session_slot::McpStagingActivity::default();
+            let staging = crate::mcp_material::McpStagingActivity::default();
             self.host
-                .insert_mcp_projection(crate::session_slot::McpGenerationProjection {
+                .insert_mcp_projection(crate::mcp_material::McpGenerationProjection {
                     request: projection_request.clone(),
                     receipt: receipt.clone(),
                     server: Some(server.clone()),
@@ -550,7 +550,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
                     mcp_process: None,
                     staging: Some(staging.clone()),
                     drain: Arc::new(tokio::sync::Mutex::new(())),
-                    state: crate::session_slot::McpProjectionState::Staging,
+                    state: crate::mcp_material::McpProjectionState::Staging,
                 })
                 .map_err(to_run_error)?;
             let host = self.host.clone();
@@ -691,7 +691,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
         if !projection_already_inserted
             && let Err(error) =
                 self.host
-                    .insert_mcp_projection(crate::session_slot::McpGenerationProjection {
+                    .insert_mcp_projection(crate::mcp_material::McpGenerationProjection {
                         request: projection_request,
                         receipt: receipt.clone(),
                         server: Some(server),
@@ -699,7 +699,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
                         mcp_process,
                         staging: None,
                         drain: Arc::new(tokio::sync::Mutex::new(())),
-                        state: crate::session_slot::McpProjectionState::Staged,
+                        state: crate::mcp_material::McpProjectionState::Staged,
                     })
         {
             // A route is private and not yet visible, but retaining its bearer

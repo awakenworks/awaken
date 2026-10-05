@@ -1116,7 +1116,7 @@ impl SharedHost {
                             thread,
                             candidate.environment,
                             effect,
-                            crate::session_slot::EnvironmentResourceReconciliation::Adopted,
+                            crate::staged_resources::EnvironmentResourceReconciliation::Adopted,
                         )
                         .await?
                     }
@@ -1148,7 +1148,7 @@ impl SharedHost {
                             thread,
                             environment,
                             effect,
-                            crate::session_slot::EnvironmentResourceReconciliation::Adopted,
+                            crate::staged_resources::EnvironmentResourceReconciliation::Adopted,
                         )
                         .await?
                     }

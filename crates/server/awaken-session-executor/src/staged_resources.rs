@@ -1,0 +1,63 @@
+// @formal surface obligation=session_resources.repository_rotation_requires_original_live_generation
+// @formal surface obligation=session_resources.external_io_requires_durable_prepared_state
+// @formal reason: Secret-free staged resource values (mounts, liveness checks, Repository activations) held by the Session slot.
+//! The resources staged for one Session thread: neutral mount requirements,
+//! prompt fragments, liveness checks and Repository activations. Provisioning
+//! produces them and the Session slot holds them.
+
+use awaken_provisioning_contract as pc;
+
+/// A thread's staged neutral mount requirements plus the prompt fragments derived
+/// from the same effective Session inputs.
+#[derive(Default, Clone)]
+pub(crate) struct StagedResources {
+    pub mounts: Vec<pc::MountRequirement>,
+    /// Non-Resource request context retained for direct/profiled callers.
+    /// Managed File/Memory/Repository context uses `resource_prompts` so every
+    /// resource kind shares one typed renderer and one path-variable grammar.
+    pub prompts: Vec<String>,
+    pub resource_prompts: Vec<crate::managed_input_layout::ResourcePromptProjection>,
+    /// Resource-domain liveness checks repeated at each Session operation. These
+    /// carry only Workspace-owned resource identity and frozen, secret-free config
+    /// facts; authorization was completed before staging. Repository effect edges
+    /// reuse its authored remote/binding to revalidate the Session pin instead of
+    /// accepting the pin's own source id as self-authorization.
+    pub binding_checks: Vec<ResourceBindingCheck>,
+    /// Mutable Repository inputs, realized after the environment is created (not a
+    /// byte mount). The plan is secret-free; its transport credential is transient.
+    pub repositories: Vec<RepositoryActivation>,
+}
+
+#[derive(Clone)]
+pub(crate) enum ResourceBindingCheck {
+    MemoryStore {
+        memory_store_id: String,
+        config_version: awaken_resource_contract::ConfigVersion,
+    },
+    Repository {
+        repository_id: String,
+        config_version: awaken_resource_contract::ConfigVersion,
+        remote_url: String,
+        credential_binding: Option<String>,
+        authority: Option<Box<awaken_dispatch_contract::ResourceOperationFence>>,
+    },
+}
+
+/// Runtime-only activation material for one already-resolved Repository config.
+/// The plan is the neutral environment port and the credential pin is the exact,
+/// secret-free Session decision. Plaintext is materialized only at a Git effect
+/// edge, used for that one call, and never retained by this activation, the plan,
+/// origin URL, Session manifest, or sandbox.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct RepositoryActivation {
+    pub plan: pc::RepositoryRealizationPlan,
+    pub credential_pin: Option<awaken_session_resource_contract::ResolvedRepositoryCredential>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum EnvironmentResourceReconciliation {
+    #[default]
+    None,
+    Fresh,
+    Adopted,
+}

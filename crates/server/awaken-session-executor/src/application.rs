@@ -228,7 +228,7 @@ impl crate::session_slot::SessionRuntimeSlot {
     fn validate_environment_projection(
         &self,
         thread: &str,
-        projection: &crate::session_slot::FrozenEnvironmentRuntimeProjection,
+        projection: &crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection,
     ) -> Result<(), crate::HostError> {
         if self
             .environment_projection
@@ -245,7 +245,7 @@ impl crate::session_slot::SessionRuntimeSlot {
     fn install_validated_environment_projection(
         &mut self,
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-        projection: crate::session_slot::FrozenEnvironmentRuntimeProjection,
+        projection: crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection,
     ) {
         self.environment_projection.get_or_insert(projection);
         self.environment_snapshot = Some(environment.clone());
@@ -256,7 +256,7 @@ impl crate::session_slot::SessionRuntimeSlot {
     fn project_validated_session_init(
         &mut self,
         init: &awaken_session_configuration_contract::SessionInit,
-        environment: crate::session_slot::FrozenEnvironmentRuntimeProjection,
+        environment: crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection,
     ) {
         self.install_validated_environment_projection(&init.environment, environment);
         self.workspace = Some(init.workspace_id.clone());
@@ -1123,7 +1123,7 @@ impl crate::SharedHost {
     ) -> Vec<awaken_provisioning_contract::MountRequirement> {
         self.session_slots
             .read(thread, |slot| {
-                project_session_mounts(
+                crate::provisioning::project_session_mounts(
                     slot.resources.mounts.clone(),
                     slot.baseline
                         .as_ref()
@@ -1173,28 +1173,9 @@ impl crate::SharedHost {
     }
 }
 
-pub(crate) fn project_session_mounts(
-    mut resources: Vec<awaken_provisioning_contract::MountRequirement>,
-    baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
-    content_delivery: Option<crate::session_slot::ManagedContentDelivery>,
-) -> Vec<awaken_provisioning_contract::MountRequirement> {
-    if let Some(baseline_mounts) = baseline_mounts {
-        resources.extend_from_slice(baseline_mounts);
-    }
-    if content_delivery == Some(crate::session_slot::ManagedContentDelivery::SemanticTools) {
-        resources.retain(|mount| {
-            !matches!(
-                mount.source,
-                awaken_provisioning_contract::MountSource::MemoryStore { .. }
-            )
-        });
-    }
-    resources
-}
-
 pub(crate) fn baseline_projection(
     baseline: &awaken_session_configuration_contract::SessionBaseline,
-) -> crate::session_slot::FrozenBaselineRuntimeProjection {
+) -> crate::frozen_runtime_projection::FrozenBaselineRuntimeProjection {
     baseline.clone()
 }
 

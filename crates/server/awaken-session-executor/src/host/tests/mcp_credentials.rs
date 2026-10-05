@@ -195,7 +195,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     assert!(
         matches!(
             projection.server.unwrap().transport,
-            crate::mcp::McpTransportMaterialKind::Http {
+            crate::mcp_material::McpTransportMaterialKind::Http {
                 refresh: Some(_),
                 ..
             }
@@ -336,7 +336,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("H22 rebuilt projection");
     assert_eq!(
         recovered_projection.state,
-        crate::session_slot::McpProjectionState::Staged,
+        crate::mcp_material::McpProjectionState::Staged,
         "H22"
     );
     assert_eq!(
@@ -439,12 +439,12 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     assert_eq!(
         host.mcp_projection(&rebuilt.generation).unwrap().state,
-        crate::session_slot::McpProjectionState::Staged,
+        crate::mcp_material::McpProjectionState::Staged,
         "H28 staged, not published"
     );
     host.session_slots.modify("mcp-exact", |slot| {
-        slot.mcp[0].state = crate::session_slot::McpProjectionState::Staging;
-        slot.mcp[0].staging = Some(crate::session_slot::McpStagingActivity::default());
+        slot.mcp[0].state = crate::mcp_material::McpProjectionState::Staging;
+        slot.mcp[0].staging = Some(crate::mcp_material::McpStagingActivity::default());
     });
     assert_eq!(
         managed
@@ -456,7 +456,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H25"
     );
     host.session_slots.modify("mcp-exact", |slot| {
-        slot.mcp[0].state = crate::session_slot::McpProjectionState::Staged;
+        slot.mcp[0].state = crate::mcp_material::McpProjectionState::Staged;
         slot.mcp[0].staging = None;
     });
     let mut expired = request("mcp-expired", "workspace-a", 1);

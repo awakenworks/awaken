@@ -10,6 +10,10 @@ use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialM
 use awaken_resource_contract::RepositoryBindingVerifier;
 use awaken_session_error_contract::RunError;
 
+use crate::managed_input_layout::{
+    ManagedLayoutProjection, ManagedLayoutValidationScope, ResourcePromptProjection,
+    binding_layout_projection, managed_mount_access, resolved_input_layout_projection,
+};
 use crate::skill_catalog::skill_store_run_error;
 
 mod repository_error;
@@ -20,7 +24,7 @@ use repository_error::repository_binding_run_error;
 /// and optional automatic-memory candidates travel together so installation
 /// cannot publish one generation with bindings from another.
 pub(crate) struct CompiledEffectiveInputs {
-    pub(crate) staged: crate::provisioning::StagedResources,
+    pub(crate) staged: crate::staged_resources::StagedResources,
     pub(crate) memory_bindings:
         std::collections::HashMap<String, std::sync::Arc<crate::memory::BoundMemory>>,
 }
@@ -101,7 +105,7 @@ impl crate::ManagedHost {
             &awaken_session_resource_contract::SessionRealizationLease,
         )>,
     ) -> Result<CompiledEffectiveInputs, RunError> {
-        let mut all = crate::provisioning::StagedResources::default();
+        let mut all = crate::staged_resources::StagedResources::default();
         let mut memory_bindings = std::collections::HashMap::new();
         let environment = self
             .host
@@ -432,7 +436,7 @@ impl crate::ManagedHost {
         &self,
         thread: &str,
     ) -> Result<(), RunError> {
-        use crate::provisioning::ResourceBindingCheck;
+        use crate::staged_resources::ResourceBindingCheck;
 
         // This method is entered only through the SessionRuntime application
         // port. Preserve that neutral identity before dispatch so a claiming
@@ -717,7 +721,7 @@ impl crate::ManagedHost {
         if live_environment.is_some()
             && transition.previous() == transition.desired()
             && installed_manifest.as_ref() == Some(&desired_manifest)
-            && reconciliation == crate::session_slot::EnvironmentResourceReconciliation::None
+            && reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::None
         {
             return Ok(());
         }
@@ -742,7 +746,7 @@ impl crate::ManagedHost {
         }
         if live_environment.is_some()
             && transition.previous() == transition.desired()
-            && reconciliation == crate::session_slot::EnvironmentResourceReconciliation::None
+            && reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::None
         {
             // Preparation already staged the exact desired requirements. A
             // same-generation adoption is continuity, not a replacement: the
@@ -764,7 +768,7 @@ impl crate::ManagedHost {
             })
             .chain(old_memory.iter())
             .filter_map(|input| {
-                crate::managed_resource_projection::resolved_input_validation_mount(
+                crate::managed_input_layout::resolved_input_validation_mount(
                     input,
                     environment_projection.as_ref(),
                 )
@@ -775,13 +779,13 @@ impl crate::ManagedHost {
             .inputs()
             .iter()
             .filter_map(|input| {
-                crate::managed_resource_projection::resolved_input_validation_mount(
+                crate::managed_input_layout::resolved_input_validation_mount(
                     input,
                     environment_projection.as_ref(),
                 )
             })
             .collect::<Vec<_>>();
-        if reconciliation == crate::session_slot::EnvironmentResourceReconciliation::Fresh {
+        if reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::Fresh {
             previous_mounts.extend(
                 desired_mounts
                     .iter()
@@ -813,7 +817,7 @@ impl crate::ManagedHost {
                             .iter()
                             .any(|candidate| candidate == *input)
                     })
-                    .map(crate::managed_resource_projection::resolved_input_effect_path)
+                    .map(crate::managed_input_layout::resolved_input_effect_path)
                     .collect::<Vec<_>>()
             } else {
                 Vec::new()
@@ -922,7 +926,8 @@ impl crate::ManagedHost {
             let reconcile_skills = previous_manifest.resources.skills()
                 != desired_manifest.resources.skills()
                 || installed_manifest.is_none()
-                || reconciliation != crate::session_slot::EnvironmentResourceReconciliation::None;
+                || reconciliation
+                    != crate::staged_resources::EnvironmentResourceReconciliation::None;
             // Transition replay cause/effect table:
             // C1 desired path differs from the aggregate's previous generation;
             // C2 reservation CAS succeeds; C3 physical removal/attach/Git
@@ -952,8 +957,7 @@ impl crate::ManagedHost {
                         .iter()
                         .any(|candidate| candidate == input)
                     {
-                        let path =
-                            crate::managed_resource_projection::resolved_input_effect_path(input);
+                        let path = crate::managed_input_layout::resolved_input_effect_path(input);
                         environment
                             .projection()
                             .remove_projection_path(&path)
@@ -962,7 +966,8 @@ impl crate::ManagedHost {
                     }
                 }
             }
-            if reconciliation == crate::session_slot::EnvironmentResourceReconciliation::Adopted {
+            if reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::Adopted
+            {
                 environment
                     .projection()
                     .reconcile_adopted_mounts(&self.host.thread_session_mounts(thread))
@@ -970,7 +975,8 @@ impl crate::ManagedHost {
                     .map_err(|error| RunError::internal(error.to_string()))?;
             }
             if projection_change.installs_desired()
-                || reconciliation != crate::session_slot::EnvironmentResourceReconciliation::None
+                || reconciliation
+                    != crate::staged_resources::EnvironmentResourceReconciliation::None
             {
                 // Physical Skill installation belongs to this same Resource
                 // completion edge for eager, lazy and adopted Environments.
@@ -1005,7 +1011,7 @@ impl crate::ManagedHost {
                         continue;
                     }
                     if reconciliation
-                        == crate::session_slot::EnvironmentResourceReconciliation::None
+                        == crate::staged_resources::EnvironmentResourceReconciliation::None
                         && previous_manifest
                             .resources
                             .inputs()
@@ -1014,8 +1020,7 @@ impl crate::ManagedHost {
                     {
                         continue;
                     }
-                    let path =
-                        crate::managed_resource_projection::resolved_input_effect_path(input);
+                    let path = crate::managed_input_layout::resolved_input_effect_path(input);
                     match &input.source {
                         awaken_session_resource_contract::ResolvedInputSource::File { .. }
                         | awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
@@ -1031,9 +1036,9 @@ impl crate::ManagedHost {
                                     ))
                                 })?;
                             if reconciliation
-                                == crate::session_slot::EnvironmentResourceReconciliation::Adopted
+                                == crate::staged_resources::EnvironmentResourceReconciliation::Adopted
                                 || (reconciliation
-                                    == crate::session_slot::EnvironmentResourceReconciliation::Fresh
+                                    == crate::staged_resources::EnvironmentResourceReconciliation::Fresh
                                     && crate::provisioning::resource_mount_is_create_time(mount))
                             {
                                 continue;
@@ -1076,238 +1081,11 @@ impl crate::ManagedHost {
         }
         self.host.session_slots.update(thread, |slot| {
             slot.environment_resource_reconciliation =
-                crate::session_slot::EnvironmentResourceReconciliation::None;
+                crate::staged_resources::EnvironmentResourceReconciliation::None;
         });
         self.host.evict_session_for_rebuild(thread).await;
         Ok(())
     }
-}
-
-mod resource_prompt;
-
-pub(crate) use resource_prompt::{AgentPathView, ResourcePromptProjection};
-
-pub(super) fn managed_file_mount_path(requested: &str) -> String {
-    let logical = requested.trim_start_matches('/');
-    if logical.starts_with("mnt/session/uploads/") {
-        format!("/{logical}")
-    } else {
-        format!("/mnt/session/uploads/{logical}")
-    }
-}
-
-pub(crate) struct ManagedMountMetadata {
-    mount_id: String,
-    mount_path: String,
-    access: awaken_provisioning_contract::MountAccess,
-    validation_source: ManagedMountValidationSource,
-}
-
-enum ManagedMountValidationSource {
-    File,
-    MemoryStore(String),
-}
-
-impl ManagedMountMetadata {
-    fn requirement(
-        self,
-        source: awaken_provisioning_contract::MountSource,
-    ) -> awaken_provisioning_contract::MountRequirement {
-        let Self {
-            mount_id,
-            mount_path,
-            access,
-            ..
-        } = self;
-        awaken_provisioning_contract::MountRequirement {
-            mount_id,
-            source,
-            mount_path,
-            access,
-            lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
-            required: true,
-        }
-    }
-
-    fn validation_requirement(
-        self,
-        environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
-    ) -> awaken_provisioning_contract::MountRequirement {
-        let source = match &self.validation_source {
-            ManagedMountValidationSource::File => {
-                awaken_provisioning_contract::MountSource::InlineBytes {
-                    contents: Vec::new(),
-                    content_hash: None,
-                }
-            }
-            ManagedMountValidationSource::MemoryStore(store_id) => {
-                awaken_provisioning_contract::MountSource::MemoryStore {
-                    store_id: store_id.clone(),
-                    materialization_reference: None,
-                    write_consistency: crate::provisioning::projected_memory_write_consistency(
-                        self.access,
-                        environment.map(|projection| &projection.idle_retention),
-                    ),
-                }
-            }
-        };
-        self.requirement(source)
-    }
-}
-
-pub(crate) enum ManagedLayoutProjection {
-    Mount(ManagedMountMetadata),
-    Repository {
-        mount_path: String,
-        access: awaken_provisioning_contract::MountAccess,
-    },
-}
-
-/// Authority available while validating one frozen Managed Sandbox layout.
-///
-/// A Coordinator dispatching a Worker-owned Session can validate only the
-/// provider-neutral frozen structure. The claimed Worker owns the exact
-/// provider projection and repeats the same structural kernel against that
-/// provider's effective spec before any physical effect.
-#[derive(Clone, Copy)]
-enum ManagedLayoutValidationScope<'a> {
-    Structural,
-    Exact(&'a crate::session_environment::SessionEnvironmentProvider),
-}
-
-impl ManagedLayoutValidationScope<'_> {
-    fn network_isolation(self) -> bool {
-        match self {
-            Self::Structural => true,
-            Self::Exact(provider) => provider.realizer().capabilities().network_isolation,
-        }
-    }
-}
-
-impl ManagedLayoutProjection {
-    pub(crate) fn mount_path(&self) -> &str {
-        match self {
-            Self::Mount(mount) => &mount.mount_path,
-            Self::Repository { mount_path, .. } => mount_path,
-        }
-    }
-}
-
-enum ManagedInputKind<'a> {
-    File(&'a str),
-    Memory(&'a str),
-    Repository,
-}
-
-struct ManagedInputLayoutView<'a> {
-    kind: ManagedInputKind<'a>,
-    binding_id: &'a str,
-    mount_path: &'a str,
-    access: awaken_resource_contract::ResourceAccess,
-}
-
-pub(crate) fn managed_mount_access(
-    access: awaken_resource_contract::ResourceAccess,
-) -> awaken_provisioning_contract::MountAccess {
-    match access {
-        awaken_resource_contract::ResourceAccess::ReadOnly => {
-            awaken_provisioning_contract::MountAccess::ReadOnly
-        }
-        awaken_resource_contract::ResourceAccess::ReadWrite => {
-            awaken_provisioning_contract::MountAccess::ReadWrite
-        }
-    }
-}
-
-/// One metadata projector shared by pure final-layout admission and effectful
-/// staging. In particular, File mount identity is its immutable `file_id`, not
-/// the replaceable binding id; duplicate content bindings therefore fail before
-/// either durable root publication or File reads.
-fn project_managed_input_layout(view: ManagedInputLayoutView<'_>) -> ManagedLayoutProjection {
-    let access = managed_mount_access(view.access);
-    match view.kind {
-        ManagedInputKind::File(file_id) => ManagedLayoutProjection::Mount(ManagedMountMetadata {
-            mount_id: file_id.to_string(),
-            mount_path: managed_file_mount_path(view.mount_path),
-            access: awaken_provisioning_contract::MountAccess::ReadOnly,
-            validation_source: ManagedMountValidationSource::File,
-        }),
-        ManagedInputKind::Memory(store_id) => {
-            ManagedLayoutProjection::Mount(ManagedMountMetadata {
-                mount_id: view.binding_id.to_string(),
-                mount_path: awaken_provisioning_contract::memory_materialization_mount_path(
-                    view.mount_path,
-                ),
-                access,
-                validation_source: ManagedMountValidationSource::MemoryStore(store_id.to_string()),
-            })
-        }
-        ManagedInputKind::Repository => ManagedLayoutProjection::Repository {
-            mount_path: view.mount_path.to_string(),
-            access,
-        },
-    }
-}
-
-pub(crate) fn resolved_input_layout_projection(
-    input: &awaken_session_resource_contract::ResolvedInput,
-) -> ManagedLayoutProjection {
-    let kind = match &input.source {
-        awaken_session_resource_contract::ResolvedInputSource::File { file_id } => {
-            ManagedInputKind::File(file_id.as_str())
-        }
-        awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
-            memory_store_id,
-            ..
-        } => ManagedInputKind::Memory(memory_store_id.as_str()),
-        awaken_session_resource_contract::ResolvedInputSource::Repository { .. } => {
-            ManagedInputKind::Repository
-        }
-    };
-    project_managed_input_layout(ManagedInputLayoutView {
-        kind,
-        binding_id: input.binding_id.as_str(),
-        mount_path: &input.mount_path,
-        access: input.access,
-    })
-}
-
-pub(crate) fn resolved_input_effect_path(
-    input: &awaken_session_resource_contract::ResolvedInput,
-) -> String {
-    resolved_input_layout_projection(input)
-        .mount_path()
-        .to_string()
-}
-
-pub(crate) fn resolved_input_validation_mount(
-    input: &awaken_session_resource_contract::ResolvedInput,
-    environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
-) -> Option<awaken_provisioning_contract::MountRequirement> {
-    match resolved_input_layout_projection(input) {
-        ManagedLayoutProjection::Mount(mount) => Some(mount.validation_requirement(environment)),
-        ManagedLayoutProjection::Repository { .. } => None,
-    }
-}
-
-fn binding_layout_projection(
-    input: &awaken_resource_contract::InputBinding,
-) -> ManagedLayoutProjection {
-    let kind = match &input.target {
-        awaken_resource_contract::InputResourceId::File(file_id) => {
-            ManagedInputKind::File(file_id.as_str())
-        }
-        awaken_resource_contract::InputResourceId::MemoryStore(memory_store_id) => {
-            ManagedInputKind::Memory(memory_store_id.as_str())
-        }
-        awaken_resource_contract::InputResourceId::Repository(_) => ManagedInputKind::Repository,
-    };
-    project_managed_input_layout(ManagedInputLayoutView {
-        kind,
-        binding_id: input.binding_id.as_str(),
-        mount_path: &input.mount_path,
-        access: input.access,
-    })
 }
 
 impl crate::SharedHost {
@@ -1318,7 +1096,7 @@ impl crate::SharedHost {
         scope: ManagedLayoutValidationScope<'_>,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
     ) -> Result<(), crate::host::HostError> {
         let (resident_baseline, content_delivery, resident_environment, live_environment) = self
             .session_slots
@@ -1416,7 +1194,7 @@ impl crate::SharedHost {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
     ) -> Result<(), crate::host::HostError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1437,7 +1215,7 @@ impl crate::SharedHost {
         resources: &awaken_session_resource_contract::ResolvedSessionResources,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
     ) -> Result<(), crate::host::HostError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1459,7 +1237,7 @@ impl crate::SharedHost {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
     ) -> Result<(), crate::host::HostError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1477,7 +1255,7 @@ impl crate::SharedHost {
         resources: &[awaken_resource_contract::InputBinding],
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
     ) -> Result<(), crate::host::HostError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1577,8 +1355,9 @@ impl crate::ManagedHost {
             u64,
             &awaken_session_resource_contract::SessionRealizationLease,
         )>,
-        environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
-    ) -> Result<crate::provisioning::StagedResources, awaken_session_error_contract::RunError> {
+        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+    ) -> Result<crate::staged_resources::StagedResources, awaken_session_error_contract::RunError>
+    {
         let authority = if let (Some((session_id, resource_revision, lease)), true) =
             (realization, self.host.is_database_less_worker())
         {
@@ -1618,7 +1397,8 @@ impl crate::ManagedHost {
         workspace: &str,
         command: &awaken_session_state_contract::SessionRepositoryPublicationCommand,
         lease: &awaken_session_resource_contract::SessionRealizationLease,
-    ) -> Result<crate::provisioning::StagedResources, awaken_session_error_contract::RunError> {
+    ) -> Result<crate::staged_resources::StagedResources, awaken_session_error_contract::RunError>
+    {
         command.intent.validate().map_err(|error| {
             awaken_session_error_contract::RunError::bad_request(error.to_string())
         })?;
@@ -1655,8 +1435,9 @@ impl crate::ManagedHost {
             u64,
             &awaken_session_resource_contract::SessionRealizationLease,
         )>,
-        environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
-    ) -> Result<crate::provisioning::StagedResources, awaken_session_error_contract::RunError> {
+        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+    ) -> Result<crate::staged_resources::StagedResources, awaken_session_error_contract::RunError>
+    {
         use awaken_session_error_contract::RunError;
         use awaken_session_resource_contract::ResolvedInputSource;
 
@@ -1664,7 +1445,7 @@ impl crate::ManagedHost {
             awaken_dispatch_contract::ResourceOperationFence::Run(claim) => Some(claim),
             _ => None,
         });
-        let mut staged = crate::provisioning::StagedResources::default();
+        let mut staged = crate::staged_resources::StagedResources::default();
         staged
             .resource_prompts
             .push(ResourcePromptProjection::try_from_input(input)?);
@@ -1793,7 +1574,7 @@ impl crate::ManagedHost {
                         .await
                         .map_err(|error| RunError::bad_request(error.to_string()))?;
                     staged.binding_checks.push(
-                        crate::provisioning::ResourceBindingCheck::MemoryStore {
+                        crate::staged_resources::ResourceBindingCheck::MemoryStore {
                             memory_store_id: memory_store_id.to_string(),
                             config_version: config.version,
                         },
@@ -1811,7 +1592,7 @@ impl crate::ManagedHost {
                             store_id: memory_store_id.to_string(),
                             materialization_reference,
                             write_consistency:
-                                crate::provisioning::projected_memory_write_consistency(
+                                crate::managed_input_layout::projected_memory_write_consistency(
                                     managed_mount_access(input.access),
                                     environment.map(|projection| &projection.idle_retention),
                                 ),
@@ -1854,15 +1635,15 @@ impl crate::ManagedHost {
                     }
                 }
                 .map_err(repository_binding_run_error)?;
-                staged
-                    .binding_checks
-                    .push(crate::provisioning::ResourceBindingCheck::Repository {
+                staged.binding_checks.push(
+                    crate::staged_resources::ResourceBindingCheck::Repository {
                         repository_id: repository_id.to_string(),
                         config_version: config.version,
                         remote_url: config.remote_url.clone(),
                         credential_binding: config.credential_binding.clone(),
                         authority: resource_authority.cloned().map(Box::new),
-                    });
+                    },
+                );
                 // Coordinator staging has no Run claim and cannot authorize a
                 // Platform-held Git transport. Retain the exact binding check
                 // and immutable Session input; the claiming Worker recompiles
@@ -1962,7 +1743,7 @@ impl crate::ManagedHost {
                 })?;
                 staged
                     .repositories
-                    .push(crate::provisioning::RepositoryActivation {
+                    .push(crate::staged_resources::RepositoryActivation {
                         plan,
                         credential_pin,
                     });

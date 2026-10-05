@@ -149,7 +149,7 @@ impl SharedHost {
 
     pub(crate) fn install_mcp_input_handlers(
         &self,
-        projections: &[crate::session_slot::McpGenerationProjection],
+        projections: &[crate::mcp_material::McpGenerationProjection],
         configuration: &std::collections::BTreeMap<String, Value>,
     ) -> Result<(), HostError> {
         for projection in projections {
