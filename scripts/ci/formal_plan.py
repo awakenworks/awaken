@@ -17,10 +17,11 @@ Keys (each optional, each at most once):
 * ``tier``     -- ``pr`` (default) or ``nightly``, a harness measured too slow
   for the per-change lane. The full tier runs both.
 
-Harnesses sharing (package, features, default-features, target, profile) form
-one batch -- one ``cargo kani`` invocation, one CBMC resource boundary -- and
-each is selected with ``--exact`` by its fully qualified name, derived from the
-module tree of its Cargo target, so no filter can match a second harness.
+Harnesses sharing (package, features, default-features, target, profile) are
+sorted and divided into bounded batches. Each batch is one ``cargo kani``
+invocation and one CBMC resource boundary. Every harness is selected with
+``--exact`` by its fully qualified name, derived from the module tree of its
+Cargo target, so no filter can match a second harness.
 
 ``kani --tier pr|full`` prints one batch per line (``package argv...``) for the
 formal gate's loop. Nothing is listed by hand, so a new harness is planned by
@@ -47,6 +48,11 @@ from formal_sources import SourceError, detached_git_environment, repository_env
 # Input set: every Rust source (harnesses, their tags and the module tree that
 # names them) and every Cargo manifest (package and targets).
 INPUT_GLOBS: tuple[str, ...] = ("crates/**/*.rs", "crates/**/Cargo.toml")
+
+# The 23-harness event-admission selection exceeded the gate's 1800s deadline
+# although its individual proofs converged. Eight consecutive proofs took at
+# most 977s in that run; keep the same per-batch budget and bound aggregation.
+MAX_HARNESSES_PER_BATCH = 8
 
 ROOT = Path(__file__).resolve().parents[2]
 TIERS = ("pr", "nightly")
@@ -427,9 +433,14 @@ def batches(root: Path, tier: str, affected: set[str] | None = None) -> list[Bat
         if affected is not None and item.selection.package not in affected:
             continue
         grouped.setdefault(item.selection, Batch(item.selection)).names.extend(item.qualified)
-    for batch in grouped.values():
-        batch.names.sort()
-    return [grouped[key] for key in sorted(grouped)]
+    result = []
+    for key in sorted(grouped):
+        names = sorted(grouped[key].names)
+        result.extend(
+            Batch(key, names[start:start + MAX_HARNESSES_PER_BATCH])
+            for start in range(0, len(names), MAX_HARNESSES_PER_BATCH)
+        )
+    return result
 
 
 # A script this file names, or a Python module it imports from beside itself.
@@ -552,16 +563,18 @@ def self_test() -> None:
     """Decision table for tags, names and batching.
 
     Causes: T1 no tag; T2 a profile tag; T3 features and target tags; T4 two
-    harnesses share one selection; T5 a nightly tier tag; N1 an inline proof
+    harnesses share one selection; T5 a nightly tier tag; T6 a selection has
+    exactly eight or more than eight harnesses; N1 an inline proof
     module, N2 a `mod x;` file, N3 a `#[path]` module, N4 an `include!`d file;
     R1 unknown key, R2 unknown profile, R3 a profile bound to another package,
     R4 a harness no Cargo target reaches, R5 two @kani lines, R6 malformed
     features or tier.
     Effects: E1 the default argv `package --exact --harness <qualified>`; E2 the
     profile's serialized argv; E3 cargo flags before the Kani options; E4 one
-    batch; E5 present in `full`, absent from `pr`; E6 refusal naming file:line.
+    batch; E5 present in `full`, absent from `pr`; E6 refusal naming file:line;
+    E7 sorted chunks of at most eight, with every exact name once.
     Rules: T1 => E1; T2 => E2; T3 => E3; T4 => E4; T5 => E5; N1..N4 => the
-    compiler's module path; R1..R6 => E6.
+    compiler's module path; R1..R6 => E6; T6 => E7.
     """
 
     import tempfile  # noqa: PLC0415 - only the self-test builds fixtures
@@ -610,6 +623,28 @@ def self_test() -> None:
         assert plan == expected, ("T1-T4 N1-N4", plan)
         pr = {tuple(batch.argv()) for batch in batches(root, "pr")}
         assert all("root_slow" not in argv for argv in pr) and len(pr) == 3, ("T5", pr)
+        # T6 -> E7: seven full/six PR default proofs plus two reach the
+        # boundary (PR 8) and cross it (full 9). A third crosses it in PR too.
+        # The tier filter and chunk boundary must neither omit nor duplicate a
+        # proof, and the original selection's Cargo options stay unchanged.
+        for extra, expected_full, expected_pr in ((2, [8, 1], [8]), (3, [8, 2], [8, 1])):
+            (crate / "src/lib.rs").write_text(
+                lib + "".join(harness(f"extra_{number}") for number in range(extra))
+            )
+            for tier, sizes in (("full", expected_full), ("pr", expected_pr)):
+                selected = [
+                    batch for batch in batches(root, tier)
+                    if batch.selection == Selection("a")
+                ]
+                assert [len(batch.names) for batch in selected] == sizes, (tier, extra, selected)
+                names = [name for batch in selected for name in batch.names]
+                expected_names = sorted(
+                    name for name in [*qualified, *(f"extra_{number}" for number in range(extra))]
+                    if tier == "full" or name != "root_slow"
+                )
+                assert names == expected_names, (tier, extra, names)
+                assert all(batch.argv()[1] == "--exact" for batch in selected)
+        (crate / "src/lib.rs").write_text(lib)
         for tag, fragment in (
             ("colour=red", "crates/a/src/file.rs:3: @kani has unknown key 'colour'"),
             ("profile=missing-v1", "unknown Kani profile 'missing-v1'"),

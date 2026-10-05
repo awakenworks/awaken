@@ -375,6 +375,10 @@ def main() -> None:
     stale = []
     for entry in waiver_entries:
         path = str(entry["path"])
+        # A waiver for an untouched file cannot affect this diff. Check its
+        # currency when that file enters the changed-line denominator again.
+        if path not in changed:
+            continue
         selected = entry["lines"]
         assert isinstance(selected, set)
         if not any(candidate_path == path and line in selected for candidate_path, line in waived):
