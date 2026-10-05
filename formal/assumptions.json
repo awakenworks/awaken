@@ -43,14 +43,14 @@
       "obligation": "external.exactly_once_side_effects",
       "kind": "external_effect",
       "integration_evidence": [
-        "crates/server/awaken-webhook-managed/tests/crud.rs",
+        "crates/control/awaken-control/tests/webhook_plane.rs",
         "crates/server/awaken-coordinator/tests/webhook_live_session_e2e.rs"
       ],
       "runtime_evidence": [
         {
           "kind": "durable_state",
           "name": "pending_lifecycle",
-          "path": "crates/server/awaken-webhook-managed/tests/crud.rs"
+          "path": "crates/control/awaken-control/tests/webhook_plane.rs"
         }
       ],
       "status": "evidenced",
@@ -63,7 +63,7 @@
         "recovery_point_seconds": 0,
         "scope": "release_qualification_not_customer_sla",
         "drill_evidence": [
-          "crates/server/awaken-webhook-managed/tests/crud.rs"
+          "crates/control/awaken-control/tests/webhook_plane.rs"
         ]
       },
       "version_and_configuration_contract": "Remote effect endpoint, protocol revision and idempotency contract fingerprint.",

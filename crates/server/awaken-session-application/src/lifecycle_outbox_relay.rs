@@ -3,38 +3,38 @@
 // @formal entrypoint webhook.failed_delivery_remains_pending
 // @formal entrypoint webhook.outbox_fact_identity_is_stable
 // @formal entrypoint webhook.periodic_retry_never_retires_a_failed_fact
-//! Coordinator-owned lifecycle outbox projection.
+//! The one consumer of the durable Session lifecycle outbox.
 //!
-//! Coordinator retains the durable fact until the injected Control delivery
-//! port succeeds. Notifications only wake the single supervised replay loop;
-//! the Session repository remains the source of truth.
-
-mod control_plane;
-
-pub use control_plane::*;
+//! A committed lifecycle fact stays pending until the injected delivery port
+//! succeeds. Notifications only wake the single replay loop, a periodic pass
+//! retries whatever is still pending, and the Session repository remains the
+//! source of truth. The composition root runs the loop under its own supervisor.
 
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use awaken_runtime_contract::CancellationToken;
 use awaken_session_application_contract::{LifecycleFactDelivery, LifecycleFactNotifier};
 use awaken_session_repository_contract::LifecycleOutbox;
-/// Notification adapter over Coordinator's transactional Session outbox.
-pub struct WebhookOutboxNotifier {
+
+/// How often the replay loop retries pending facts without a notification.
+pub const LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Notification adapter over the transactional Session lifecycle outbox.
+pub struct LifecycleOutboxRelay {
     delivery: Arc<dyn LifecycleFactDelivery>,
     session_outbox: Arc<dyn LifecycleOutbox>,
     draining: Arc<tokio::sync::Mutex<()>>,
     wake: Arc<tokio::sync::Notify>,
-    /// One notifier owns one replay loop. Coordinator composition can reserve
-    /// the application slot before starting this loop, so a rejected duplicate
-    /// binding never leaves a second outbox consumer running.
+    /// One relay owns one replay loop. The composition root can install the
+    /// relay as the SessionApplication notifier before taking its loop, so a
+    /// rejected duplicate binding never leaves a second outbox consumer running.
     started: OnceLock<()>,
 }
 
-const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
-
 /// Borrow one fact returned by the durable lifecycle outbox. The same borrow is
 /// used for delivery and, only after delivery succeeds, for the completion key;
-/// the notifier therefore cannot mint a second retry or receipt identity.
+/// the relay therefore cannot mint a second retry or receipt identity.
 struct PendingLifecycleFact<'a, T> {
     fact: &'a T,
 }
@@ -53,41 +53,19 @@ impl<'a, T> PendingLifecycleFact<'a, T> {
     }
 }
 
-impl WebhookOutboxNotifier {
-    #[must_use]
-    pub fn with_delivery(
-        delivery: Arc<dyn LifecycleFactDelivery>,
-        outbox: Arc<dyn LifecycleOutbox>,
-        service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
-    ) -> Self {
-        Self::with_delivery_interval(delivery, outbox, RECONCILIATION_INTERVAL, service_lifecycle)
-    }
+/// The relay's replay loop, owned by whichever supervisor runs it.
+pub struct LifecycleOutboxReplay {
+    delivery: Arc<dyn LifecycleFactDelivery>,
+    session_outbox: Arc<dyn LifecycleOutbox>,
+    draining: Arc<tokio::sync::Mutex<()>>,
+    wake: Arc<tokio::sync::Notify>,
+    interval: Duration,
+}
 
-    /// Test seam for the replay interval. Production always uses
-    /// [`RECONCILIATION_INTERVAL`].
-    #[doc(hidden)]
+impl LifecycleOutboxRelay {
+    /// Construct the canonical outbox consumer without starting its loop.
     #[must_use]
-    pub fn with_delivery_interval(
-        delivery: Arc<dyn LifecycleFactDelivery>,
-        outbox: Arc<dyn LifecycleOutbox>,
-        interval: Duration,
-        service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
-    ) -> Self {
-        let sink = Self::deferred(delivery, outbox);
-        sink.register_reconciliation(interval, service_lifecycle)
-            .expect("new lifecycle outbox notifier starts once");
-        sink
-    }
-
-    /// Construct the canonical outbox consumer without starting its supervisor.
-    /// Coordinator uses this narrow composition seam to reserve the
-    /// SessionApplication notifier slot first.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn deferred(
-        delivery: Arc<dyn LifecycleFactDelivery>,
-        outbox: Arc<dyn LifecycleOutbox>,
-    ) -> Self {
+    pub fn new(delivery: Arc<dyn LifecycleFactDelivery>, outbox: Arc<dyn LifecycleOutbox>) -> Self {
         Self {
             delivery,
             session_outbox: outbox,
@@ -97,52 +75,43 @@ impl WebhookOutboxNotifier {
         }
     }
 
-    /// Start the production reconciliation cadence after the notifier has been
-    /// installed in its one SessionApplication owner.
-    #[doc(hidden)]
-    pub fn start(
-        &self,
-        service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
-    ) -> Result<(), &'static str> {
-        self.register_reconciliation(RECONCILIATION_INTERVAL, service_lifecycle)
-    }
-
-    fn register_reconciliation(
-        &self,
-        interval: Duration,
-        service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
-    ) -> Result<(), &'static str> {
+    /// Take the relay's one replay loop. Production passes
+    /// [`LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL`]; a second call fails, so
+    /// one relay never has two consumers.
+    pub fn replay_loop(&self, interval: Duration) -> Result<LifecycleOutboxReplay, &'static str> {
         self.started
             .set(())
             .map_err(|_| "lifecycle outbox notifier is already started")?;
-        let delivery = self.delivery.clone();
-        let session_outbox = self.session_outbox.clone();
-        let draining = self.draining.clone();
-        let wake = self.wake.clone();
-        service_lifecycle.spawn("coordinator-webhook-outbox", move |cancel| async move {
-            let mut ticker = tokio::time::interval(interval);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            ticker.tick().await;
-            loop {
-                Self::drain_once(&delivery, &session_outbox, &draining).await;
-                tokio::select! {
-                    () = cancel.cancelled() => break,
-                    _ = ticker.tick() => {}
-                    () = wake.notified() => {}
-                }
+        Ok(LifecycleOutboxReplay {
+            delivery: self.delivery.clone(),
+            session_outbox: self.session_outbox.clone(),
+            draining: self.draining.clone(),
+            wake: self.wake.clone(),
+            interval,
+        })
+    }
+}
+
+impl LifecycleOutboxReplay {
+    /// Drain on every notification and every interval tick until cancelled.
+    pub async fn run(self, cancel: CancellationToken) -> Result<(), String> {
+        let mut ticker = tokio::time::interval(self.interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticker.tick().await;
+        loop {
+            self.drain_once().await;
+            tokio::select! {
+                () = cancel.cancelled() => break,
+                _ = ticker.tick() => {}
+                () = self.wake.notified() => {}
             }
-            Ok(())
-        });
+        }
         Ok(())
     }
 
-    async fn drain_once(
-        delivery: &Arc<dyn LifecycleFactDelivery>,
-        session_outbox: &Arc<dyn LifecycleOutbox>,
-        draining: &Arc<tokio::sync::Mutex<()>>,
-    ) {
-        let _guard = draining.lock().await;
-        let rows = match session_outbox.pending_lifecycle().await {
+    async fn drain_once(&self) {
+        let _guard = self.draining.lock().await;
+        let rows = match self.session_outbox.pending_lifecycle().await {
             Ok(rows) => rows,
             Err(error) => {
                 tracing::warn!(%error, "Session lifecycle outbox remains pending");
@@ -151,9 +120,9 @@ impl WebhookOutboxNotifier {
         };
         for row in rows {
             let pending = PendingLifecycleFact::from_repository(&row);
-            let delivery_succeeded = delivery.deliver(pending.delivery_fact()).await.is_ok();
+            let delivery_succeeded = self.delivery.deliver(pending.delivery_fact()).await.is_ok();
             if let Some(delivered) = pending.completion_fact(delivery_succeeded)
-                && let Err(error) = session_outbox.complete_lifecycle(&delivered.id).await
+                && let Err(error) = self.session_outbox.complete_lifecycle(&delivered.id).await
             {
                 tracing::warn!(fact_id = %delivered.id, %error, "Session lifecycle receipt remains pending");
             }
@@ -161,7 +130,7 @@ impl WebhookOutboxNotifier {
     }
 }
 
-impl LifecycleFactNotifier for WebhookOutboxNotifier {
+impl LifecycleFactNotifier for LifecycleOutboxRelay {
     fn notify(&self) {
         self.wake.notify_one();
     }

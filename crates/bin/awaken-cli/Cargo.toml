@@ -72,7 +72,7 @@ awaken-worker-transport-security.workspace = true
 awaken-worker-contract.workspace = true
 awaken-sandbox-policy-store = { workspace = true }
 awaken-resource-reclaimer = { workspace = true }
-awaken-webhook-managed = { workspace = true }
+awaken-webhook = { workspace = true }
 awaken-resource-contract = { workspace = true }
 awaken-resource-application = { workspace = true }
 awaken-resource-persistence.workspace = true

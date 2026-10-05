@@ -9,10 +9,12 @@
 //! committed fact. It is also **storage-neutral**: subscriptions live in the
 //! config plane (ADR-0048), reached through the [`SubscriptionSource`] port with
 //! secrets already resolved — this crate holds only signing, the event shape, and
-//! delivery, no persistence.
+//! delivery, no persistence. [`lifecycle`] adapts it to the Session lifecycle
+//! outbox: it implements that outbox's delivery port over committed facts.
 
 mod dispatch;
 mod event;
+pub mod lifecycle;
 mod signing;
 
 pub use awaken_outbound_http::{UrlRejected, validate_endpoint_url};

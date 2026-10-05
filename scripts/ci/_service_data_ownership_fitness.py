@@ -82,10 +82,7 @@ CREDENTIAL_VAULT_SOURCE = "crates/control/awaken-credential-vault/src/lib.rs"
 CREDENTIAL_SQLITE_SOURCE = "crates/stores/awaken-credential-store/src/sqlite.rs"
 CREDENTIAL_SEALED_SOURCE = "crates/stores/awaken-credential-store/src/sealed.rs"
 WEBHOOK_DISPATCH_SOURCE = "crates/server/awaken-webhook/src/dispatch.rs"
-WEBHOOK_MANAGED_SOURCE = "crates/server/awaken-webhook-managed/src/lib.rs"
-WEBHOOK_CONTROL_PLANE_SOURCE = (
-    "crates/server/awaken-webhook-managed/src/control_plane.rs"
-)
+WEBHOOK_CONTROL_PLANE_SOURCE = "crates/server/awaken-webhook/src/lifecycle.rs"
 WEBHOOK_AUTHORING_SOURCE = "crates/control/awaken-control/src/webhook_authoring.rs"
 EXECUTABLE_AGENT_CONTRACT_SOURCE = (
     "crates/contract/awaken-executable-agent-contract/src/lib.rs"

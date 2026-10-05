@@ -87,6 +87,10 @@ schemars = { version = "1", optional = true }
 axum = { version = "0.8", features = ["multipart"] }
 
 [dev-dependencies]
+# The webhook plane test drives lifecycle delivery through the Session outbox relay.
+awaken-session-application.workspace = true
+awaken-session-repository-contract.workspace = true
+awaken-session-state-contract.workspace = true
 awaken-resource-application.workspace = true
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
@@ -110,6 +114,10 @@ workspace = true
 [features]
 schema = ["dep:schemars", "awaken-agent-config/schema", "awaken-protocol-managed/schema"]
 test-support = ["awaken-webhook/test-support"]
+
+[[test]]
+name = "webhook_plane"
+required-features = ["test-support"]
 
 [[example]]
 name = "export_mcp_schemas"
