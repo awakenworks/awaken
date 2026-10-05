@@ -314,6 +314,7 @@ impl ContainerRuntime for K8sRuntime {
         let runtime_id = self.realization_runtime_id(scope)?;
         let runtime_pod_name = pod_name(&runtime_id);
         let mut created_pod_uid = None;
+        let mut isolated_pod = None;
         if let Some(transport) = &self.create_transport {
             let joined = transport
                 .seal_predecessor(scope, expected_effect_fence)
@@ -326,6 +327,9 @@ impl ContainerRuntime for K8sRuntime {
             // handle path; another successful/unknown participant remains
             // Unknown, even if an API read currently returns 404.
             for ticket in tickets {
+                if ticket.isolation_pending {
+                    return Ok(MissingHandleTerminalEvidence::Unknown);
+                }
                 if !matches!(
                     ticket.request.resource.as_str(),
                     "pods"
@@ -337,15 +341,25 @@ impl ContainerRuntime for K8sRuntime {
                 ) {
                     return Ok(MissingHandleTerminalEvidence::Unknown);
                 }
-                match ticket.status {
+                match &ticket.status {
                     TicketStatus::Finished(TicketResult::RejectedNoEffect { .. }) => {}
                     TicketStatus::Finished(TicketResult::Created { uid })
                         if ticket.request.resource == "pods"
                             && ticket.request.namespace == self.namespace
                             && ticket.request.name == runtime_pod_name
-                            && created_pod_uid.is_none() =>
+                            && created_pod_uid.is_none()
+                            && isolated_pod.is_none() =>
                     {
-                        created_pod_uid = Some(uid);
+                        created_pod_uid = Some(uid.clone());
+                    }
+                    TicketStatus::Finished(TicketResult::Isolated { uid })
+                        if ticket.request.resource == "pods"
+                            && ticket.request.namespace == self.namespace
+                            && ticket.request.name == runtime_pod_name
+                            && created_pod_uid.is_none()
+                            && isolated_pod.is_none() =>
+                    {
+                        isolated_pod = Some((ticket.clone(), uid.clone()));
                     }
                     _ => return Ok(MissingHandleTerminalEvidence::Unknown),
                 }
@@ -361,6 +375,21 @@ impl ContainerRuntime for K8sRuntime {
             };
         }
         self.admit_plan(plan).await?;
+        if let Some((ticket, uid)) = isolated_pod {
+            if !create_ledger::verify_pod_isolation(&self.clients.control, &ticket, &uid).await? {
+                return Ok(MissingHandleTerminalEvidence::Unknown);
+            }
+            let claim = self
+                .persistent_volume_claims()
+                .get_opt(&continuation_claim_for_pod(&runtime_pod_name)?)
+                .await
+                .map_err(backend)?;
+            return Ok(if claim.is_none() {
+                MissingHandleTerminalEvidence::Isolated
+            } else {
+                MissingHandleTerminalEvidence::Unknown
+            });
+        }
         let pod = self
             .pods()
             .get_opt(&runtime_pod_name)
@@ -1004,7 +1033,8 @@ impl ContainerRuntime for K8sRuntime {
     }
 
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
-        self.remove_bound(container_id, None, None, None).await
+        self.remove_bound(container_id, None, None, false, None)
+            .await
     }
 
     async fn remove_unreceipted_scope(&self, scope: &str) -> Result<(), RuntimeError> {
@@ -1028,7 +1058,7 @@ impl ContainerRuntime for K8sRuntime {
             .clone()
             .ok_or_else(|| backend("Kubernetes warm capacity Pod has no incarnation UID"))?;
         let claim_uid = continuation::bound_claim_uid(&observed).map(str::to_owned);
-        self.remove_bound(&pod_name, Some(&pod_uid), claim_uid.as_deref(), None)
+        self.remove_bound(&pod_name, Some(&pod_uid), claim_uid.as_deref(), false, None)
             .await
     }
 
@@ -1038,7 +1068,7 @@ impl ContainerRuntime for K8sRuntime {
         runtime_handle: Option<&crate::ContainerContinuationHandle>,
     ) -> Result<(), RuntimeError> {
         let (pod_uid, claim_uid) = deletion_incarnation(runtime_handle)?;
-        self.remove_bound(container_id, pod_uid, claim_uid, None)
+        self.remove_bound(container_id, pod_uid, claim_uid, true, None)
             .await
     }
 
@@ -1054,6 +1084,7 @@ impl ContainerRuntime for K8sRuntime {
             container_id,
             pod_uid,
             claim_uid,
+            true,
             Some((authorization, authority)),
         )
         .await

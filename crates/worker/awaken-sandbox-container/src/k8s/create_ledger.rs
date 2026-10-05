@@ -4,7 +4,13 @@
 //! namespace. The Registry freezes the returned UID before Worker Ready; a
 //! replacement process must never initialize a missing ledger to claim proof.
 
+mod isolation;
 mod state;
+pub(crate) use isolation::release_original_guard;
+pub(crate) use isolation::verify_reservation as verify_pod_isolation;
+pub use isolation::{
+    ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION,
+};
 pub use state::{
     CreateTicket, CreateTicketRequest, RequestJoin, TicketAdmission, TicketResult, TicketStatus,
     WorkerCreateLedgerState,
@@ -372,12 +378,29 @@ impl K8sWorkerCreateLedger {
         binding: K8sLedgerBinding<'_>,
         request: &CreateTicketRequest,
     ) -> Result<TicketAdmission, RuntimeError> {
+        // One candidate per caller, reused across resourceVersion CAS retries.
+        // A losing caller reads the winner's retained identity and cannot
+        // replace it with its own nonce.
+        let isolation_id = if request.resource == "pods" {
+            uuid::Uuid::new_v4().simple().to_string()
+        } else {
+            String::new()
+        };
         self.mutate(binding, |state| {
-            let admission = state.admit(request)?;
+            let admission = state.admit(request, &isolation_id)?;
             let changed = admission == TicketAdmission::Forward;
             Ok((admission, changed))
         })
         .await
+    }
+
+    pub async fn ticket_for(
+        &self,
+        binding: K8sLedgerBinding<'_>,
+        request: &CreateTicketRequest,
+    ) -> Result<Option<CreateTicket>, RuntimeError> {
+        let (_, state) = self.load_exact(binding).await?;
+        Ok(state.ticket(request).cloned())
     }
 
     pub async fn finish_request(
@@ -403,6 +426,44 @@ impl K8sWorkerCreateLedger {
             Ok(((), changed))
         })
         .await?;
+        let (_, state) = self.load_exact(binding).await?;
+        Ok(state.join_group(group))
+    }
+
+    /// The existing sealed ledger is the only request authority. Once the
+    /// original Worker process has a Registry exit receipt, race an inert Pod
+    /// against each unresolved original Pod POST and retain its observed UID
+    /// in that same ticket. Other resource kinds remain Unknown.
+    pub async fn isolate_sealed_group_and_join(
+        &self,
+        binding: K8sLedgerBinding<'_>,
+        group: &str,
+    ) -> Result<RequestJoin, RuntimeError> {
+        let (_, state) = self.load_exact(binding).await?;
+        let Some(tickets) = state.sealed_worker_group_tickets(group) else {
+            return Ok(RequestJoin::Unknown);
+        };
+        for ticket in tickets {
+            if ticket.request.resource != "pods"
+                || (!matches!(ticket.status, TicketStatus::InFlight) && !ticket.isolation_pending)
+            {
+                continue;
+            }
+            let should_isolate = self
+                .mutate(binding, |state| state.start_isolation(&ticket.request))
+                .await?;
+            if !should_isolate {
+                continue;
+            }
+            let Some(result) = isolation::isolate_pod(&self.client, &ticket).await? else {
+                return Ok(RequestJoin::Unknown);
+            };
+            self.mutate(binding, |state| {
+                let changed = state.finish_isolation(&ticket.request, result.clone())?;
+                Ok(((), changed))
+            })
+            .await?;
+        }
         let (_, state) = self.load_exact(binding).await?;
         Ok(state.join_group(group))
     }

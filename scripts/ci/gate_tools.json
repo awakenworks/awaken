@@ -307,6 +307,22 @@
       "install": "your distribution's podman"
     },
     {
+      "name": "systemctl",
+      "locate": "path",
+      "gates": ["sandbox"],
+      "requirement": "optional",
+      "skip": "the independent local Worker systemd substrate row of the sandbox capability suite",
+      "install": "your Linux distribution's systemd package"
+    },
+    {
+      "name": "systemd-run",
+      "locate": "path",
+      "gates": ["sandbox"],
+      "requirement": "optional",
+      "skip": "the independent local Worker systemd substrate row of the sandbox capability suite",
+      "install": "your Linux distribution's systemd package"
+    },
+    {
       "name": "bwrap",
       "locate": "path",
       "gates": ["sandbox"],

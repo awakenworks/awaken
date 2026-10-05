@@ -16,7 +16,7 @@ use awaken_dispatch::{
     ApplicationError, AttemptAdmission, AttemptExecutionBinding, AttemptStopStatus,
     ClosedAttemptExecution, ClosedWorkerExecution, MemoryDispatchStore, PhysicalAttempt,
     PostgresDispatchStore, RunClaim, RunDispatch, SqliteDispatchStore, WorkerDirectory,
-    WorkerExecutionStopSource, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
+    WorkerExecutionStopSource, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerProcessExit,
     WorkerProcessStopStatus, WorkerRegistration, WorkerState,
     has_active_physical_attempt_for_owner, stop_expired_predecessor,
 };
@@ -41,10 +41,19 @@ struct StopSource {
     evidence_release_calls: Mutex<Vec<AttemptExecutionBinding>>,
     evidence_release_result: Mutex<Result<(), String>>,
     idle_release_calls: Mutex<Vec<WorkerIdentity>>,
+    idle_observed_exit: Mutex<Option<WorkerProcessExit>>,
 }
 
 #[async_trait::async_trait]
 impl WorkerExecutionStopSource for StopSource {
+    async fn observe_closed_idle_worker(
+        &self,
+        _identity: &WorkerIdentity,
+        _may_stop_active: bool,
+        _create_ledger: Option<&awaken_dispatch::WorkerCreateLedger>,
+    ) -> Result<Option<WorkerProcessExit>, ApplicationError> {
+        Ok(self.idle_observed_exit.lock().unwrap().clone())
+    }
     async fn release_closed_idle_worker_evidence(
         &self,
         identity: &WorkerIdentity,
@@ -368,6 +377,7 @@ impl Fixture {
             evidence_release_calls: Mutex::new(Vec::new()),
             evidence_release_result: Mutex::new(Ok(())),
             idle_release_calls: Mutex::new(Vec::new()),
+            idle_observed_exit: Mutex::new(None),
         });
         let thread_id = request_thread_id(&tag);
         let recovery: Arc<dyn RunRecoverySource> = Arc::new(StaticRecoverySource {
@@ -470,10 +480,12 @@ fn request_thread_id(tag: &str) -> awaken_agent_contract::agent::thread::Id {
 #[tokio::test]
 async fn closed_worker_releases_idle_evidence_only_after_the_original_physical_ack() {
     // C1 exact authenticated incarnation; C2 Registry closure; C3 original
-    // Dispatch physical slot occupied/acknowledged. E1 C1+C2+occupied -> retain
-    // metadata and slot, no provider stop or forged exit. E2 C1+C2+ACK -> release
-    // metadata through the existing source. R1 occupied; R2 original exact ACK;
-    // R3 retry closed deregistration converges without changing the successor.
+    // Dispatch physical slot occupied/acknowledged; C4 provider has observed
+    // the original Worker process exit. E1 C1+C2+occupied -> retain metadata
+    // and slot, no provider stop or forged exit. E2 ACK without C4 still
+    // retains evidence; E3 ACK+C4 persists the exit before releasing metadata.
+    // R1 occupied; R2 original exact ACK; R3 retry without C4 -> E2;
+    // R4 retry with C4 -> E3 without changing the successor.
     // Shared observation decision table: R4 occupied exact owner -> true;
     // R5 occupied foreign owner -> false; R6 original ACK -> false. These
     // reads leave the physical slot and Registry unchanged. Store faults or
@@ -528,7 +540,23 @@ async fn closed_worker_releases_idle_evidence_only_after_the_original_physical_a
     );
     assert!(
         request().send().await.unwrap().status().is_success(),
-        "R3 retry"
+        "R3 retry before exit evidence"
+    );
+    assert!(
+        f.stop.idle_release_calls.lock().unwrap().is_empty(),
+        "R3 no physical exit"
+    );
+    *f.stop.idle_observed_exit.lock().unwrap() = Some(
+        WorkerProcessExit::new(
+            f.binding.provider_id(),
+            f.binding.execution_ref(),
+            "observed-idle-worker-exit",
+        )
+        .unwrap(),
+    );
+    assert!(
+        request().send().await.unwrap().status().is_success(),
+        "R4 retry after exact exit evidence"
     );
     assert_eq!(*f.stop.idle_release_calls.lock().unwrap(), [identity]);
     assert!(

@@ -536,3 +536,76 @@ the root records its actual completion. The read neither claims cleanup nor
 adds a queue, journal, receipt, reassignment rule, or recovery writer. A
 historical lost Pod still needs its original physical exit evidence and is not
 made replayable by a positive demand metric.
+
+## Amendment 2026-10-05: isolate an unjoined Pod Create by its exact name
+
+The earlier handle-free path deliberately returned Unknown after a Coordinator
+hard exit between Pod POST and ticket-result CAS. A real API experiment showed
+that Namespace finalization does not close an already-admitted Create: the Pod
+can appear after the Namespace has disappeared. A second experiment held the
+old Create at admission while an inert Pod occupied the same Namespace/name.
+The old request then returned 409; deleting that inert Pod before releasing the
+old request instead allowed the old Pod to appear. Therefore the name must
+remain occupied for the entire unknown request lifetime.
+
+The existing provider ConfigMap remains the sole Create authority. Its first
+resourceVersion CAS now mints an isolation ID for each Pod ticket, and the
+Coordinator stamps that ID and the ticket's original request digest on the
+forwarded Pod, together with a Create-result finalizer. An original Pod that
+reached storage therefore remains visible even if deletion was requested
+before its 201 result could be retained. The existing exact-Pod finalizer CAS
+releases only this guard after UID-fenced terminal deletion intent, through
+the handle-bound cleanup path; unreceipted scope cleanup cannot release it.
+Without that retained original, a reservation winner could not distinguish
+"never created" from "created and then disappeared" and would be unsafe.
+After the existing Registry has retained the original Worker
+process-exit receipt, the existing seal path CASes an `isolation_pending`
+marker into that ticket **before** racing one unschedulable, tokenless Pod
+reservation against the still-InFlight original request. A later definitive
+response from the original POST does not clear the pending marker or let the
+group join; a replacement Coordinator replays the same reservation until its
+own API effect is observed and CASed. The apiserver's
+same-name Create serialization yields either the exact original UID or the
+exact reservation UID. A lost reservation response is resolved by reading that
+same UID and full immutable reservation projection; an unrelated occupant,
+missing UID, lost policy, failed CAS, or disappearing object remains Unknown.
+The ticket records `Created` or `Isolated` in the **same** ledger. A late old
+POST that loses to the reservation cannot publish while that name is retained.
+
+`Isolated` is not a Session cleanup receipt. The handle-free terminal reader
+requires the sealed Worker/group join, the canonical Pod ticket, no other
+successful participant, the exact reserved UID and normalized Pod security
+projection, no node binding or container execution status, an active cluster
+admission policy/binding, an actual UID-fenced
+dry-run DELETE denied by that policy, and exact PVC absence. Only then can the
+existing Session cleanup owner write its receipt and Flow use its existing
+failed-stage continuation. `Created` still uses the full original Pod
+projection, temporary typed handle and ordinary UID-fenced disposal. The
+policy denies Pod UPDATE/DELETE for the reservation label; the runtime roles
+cannot modify the policy or use Pod collection deletion. The finalizer alone
+does not prove immutability. The admission policy and reservation are retained
+because no bounded timeout or finite number of 404s proves the old request
+has finished. An operator with cluster-administrator authority is outside this
+runtime trust boundary and must not remove this policy or its reservations
+while old requests may exist.
+
+This slice extends only the K8s Sandbox physical adapter and its deployment
+policy. Flow WorkUnit, Dispatch attempt, Worker Registry, Session cleanup owner,
+and the direct-mode process-local gate remain their existing authorities.
+Historical tickets without an isolation ID, non-Pod InFlight tickets, rich
+participant plans, remote/opaque effects, and a missing or unready admission
+policy remain Unknown. The retained inert Pod consumes one Pod name and quota
+entry for each unresolved original request; that availability cost is explicit
+and must be included in capacity planning. The IC-11 fault matrix needs both
+race orders, response loss, process restart, policy drift, same-name/foreign
+UID and cleanup-receipt loss before general automatic recovery is claimed.
+
+The opt-in k3d provider test `pod_create_isolation_joins_one_real_api_uid_after_reservation`
+exercises the crash-before-send row against real ConfigMap CAS, Pod defaulting,
+admission policy activation, dry-run DELETE denial and exact resource cleanup.
+The opt-in `original_create_guard_keeps_a_deleted_pod_visible_until_exact_release`
+test observes that a UID-fenced DELETE leaves the guarded Pod visible and a
+same-name Create returns 409; exact guard removal then allows Pod and Namespace
+cleanup.
+It does not establish a full Flow successor or an already-sent original POST
+race in the product topology; those remain separate acceptance rows.

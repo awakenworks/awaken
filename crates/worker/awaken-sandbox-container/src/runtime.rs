@@ -1408,6 +1408,9 @@ pub trait PackageImageProvisioner: Send + Sync {
 pub enum MissingHandleTerminalEvidence {
     Unknown,
     Unmaterialized,
+    /// An inert, admission-protected Pod permanently reserves the old exact
+    /// name while the original API request may still be outstanding.
+    Isolated,
     ExactIncarnation {
         container_id: String,
         runtime_handle: crate::ContainerContinuationHandle,

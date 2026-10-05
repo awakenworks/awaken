@@ -1163,7 +1163,8 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     .map_err(pc::SandboxError::from)?;
                 admit()?;
                 match evidence {
-                    MissingHandleTerminalEvidence::Unmaterialized => return Ok(None),
+                    MissingHandleTerminalEvidence::Unmaterialized
+                    | MissingHandleTerminalEvidence::Isolated => return Ok(None),
                     MissingHandleTerminalEvidence::Unknown => {
                         return Err(pc::SandboxError::invalid(
                             "container provider cannot dispose an in-flight restore without a durable handle",
