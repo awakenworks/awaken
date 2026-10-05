@@ -1795,9 +1795,11 @@ mod tests {
 
     #[test]
     fn committed_uncertainty_uses_standard_terminal_error_not_retry_exhaustion() {
-        // C1 Indeterminate / C2 ordinary classified failure / C3 non-error.
+        // C1 Indeterminate / C2 ordinary classified failure, including the
+        // distinct neutral rate and overload causes / C3 non-error.
         // A7.1=C1=>unknown_error+terminal using existing SDK fields;
-        // A7.2=C2=>reuse existing classifier; A7.3=C3=>no invented error.
+        // A7.2=C2=>reuse existing classifier without conflating model fault
+        // families; A7.3=C3=>no invented error.
         use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
         let error =
             SessionError::from_run_state(&RunState::Ended(EndCause::Indeterminate)).unwrap();
@@ -1829,6 +1831,14 @@ mod tests {
             .unwrap();
         assert_eq!(error.kind, "model_rate_limited_error");
         assert_eq!(error.retry_status, RetryStatus::Exhausted);
+        let overloaded =
+            SessionError::from_run_state(&RunState::Ended(EndCause::Error(Failure::Inference {
+                code: "overloaded".into(),
+                message: "provider capacity exhausted".into(),
+            })))
+            .unwrap();
+        assert_eq!(overloaded.kind, "model_overloaded_error");
+        assert_eq!(overloaded.retry_status, RetryStatus::Exhausted);
         for state in [
             RunState::Running,
             RunState::Awaiting,
