@@ -38,9 +38,13 @@ with 400. A v2 list without time predicates retains unknown-time rows; when a
 Session or Event time predicate could include an unknown-time candidate, the
 whole request returns 503 instead of silently omitting it. Both versions read
 the same committed projection and ownership guard; v2 has no second history
-store or projector. Unfiltered Session pagination retains the existing stable
-cursor order; a null v2 timestamp must not be interpreted as that cursor's
-legacy placeholder date. Thread Event v2 lists use the same Event time filter;
+store or projector. Unfiltered Session pagination retains its existing cursor
+wire format and orders the public RFC3339 timestamps by instant, then Session
+ID; the historical variable-width fractional spelling cannot serve as a
+lexicographic sort key. The cursor comparison uses that same order, and a null
+v2 timestamp is not interpreted as the cursor's legacy placeholder date.
+`managed_session_pagination_e2e.mjs` and the protocol pagination unit table
+cover the mixed-precision boundary. Thread Event v2 lists use the same Event time filter;
 Thread lists have no time-filter contract and reject an explicit time predicate
 with 400 rather than ignoring it.
 

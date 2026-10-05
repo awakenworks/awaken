@@ -320,10 +320,8 @@ pub(super) fn session_list_page(
 }
 
 fn session_order(left: &Session, right: &Session, order: SessionListOrder) -> Ordering {
-    let result = left
-        .created_at
-        .cmp(&right.created_at)
-        .then_with(|| left.id.cmp(&right.id));
+    let result =
+        created_at_order(&left.created_at, &right.created_at).then_with(|| left.id.cmp(&right.id));
     match order {
         SessionListOrder::Asc => result,
         SessionListOrder::Desc => result.reverse(),
@@ -335,14 +333,22 @@ fn session_to_cursor_order(
     cursor: &SessionCursor,
     order: SessionListOrder,
 ) -> Ordering {
-    let result = session
-        .created_at
-        .cmp(&cursor.created_at)
+    let result = created_at_order(&session.created_at, &cursor.created_at)
         .then_with(|| session.id.cmp(&cursor.id));
     match order {
         SessionListOrder::Asc => result,
         SessionListOrder::Desc => result.reverse(),
     }
+}
+
+fn created_at_order(left: &str, right: &str) -> Ordering {
+    // The public codec preserves historical spellings by trimming fractional
+    // zeros, so lexical order differs from instant order (.9Z > .92Z as text).
+    // session_matches retained only parseable rows and cursor decode checked
+    // the same RFC3339 syntax before either comparator can run.
+    let left = chrono::DateTime::parse_from_rfc3339(left).expect("retained Session time is valid");
+    let right = chrono::DateTime::parse_from_rfc3339(right).expect("cursor/Session time is valid");
+    left.cmp(&right)
 }
 
 fn session_matches(session: &Session, params: &SessionListParams) -> bool {
@@ -416,7 +422,45 @@ pub(super) fn session_matches_without_time(session: &Session, params: &SessionLi
 
 #[cfg(test)]
 mod tests {
-    use super::parse_session_list;
+    use super::{
+        SessionCursor, SessionCursorDirection, SessionListOrder, created_at_order,
+        parse_session_list,
+    };
+    use std::cmp::Ordering;
+
+    #[test]
+    fn variable_precision_instants_keep_cursor_order_and_wire_spelling() {
+        // Causes: C1 adjacent instants have different fractional widths; C2
+        // equal instants have different valid RFC3339 spellings; C3 a cursor
+        // carries the old wire text. Effects: E1 chronological order, E2 equal
+        // instant leaves the ID tie-breaker in charge, E3 cursor round-trips
+        // exact bytes and compares by E1. No persisted or wire migration.
+        // | Rule | Width/instant | Cursor | Effect |
+        // | T1 | .9Z before .92Z | no | E1 |
+        // | T2 | .9Z = .900+00:00 | no | E2 |
+        // | T3 | .9Z before .92Z | yes | E1 + E3 |
+        let earlier = "2026-10-05T02:08:10.9Z";
+        let later = "2026-10-05T02:08:10.92Z";
+        assert_eq!(created_at_order(earlier, later), Ordering::Less, "T1");
+        assert_eq!(
+            created_at_order(earlier, "2026-10-05T02:08:10.900+00:00"),
+            Ordering::Equal,
+            "T2"
+        );
+        let old_wire = SessionCursor {
+            order: SessionListOrder::Asc,
+            direction: SessionCursorDirection::After,
+            created_at: earlier.into(),
+            id: "session-a".into(),
+        };
+        let decoded = SessionCursor::decode(&old_wire.encode()).expect("old cursor stays valid");
+        assert_eq!(decoded.created_at, earlier, "T3 retains exact wire text");
+        assert_eq!(
+            created_at_order(&decoded.created_at, later),
+            Ordering::Less,
+            "T3"
+        );
+    }
 
     #[test]
     fn empty_session_filters_match_python_omission() {
