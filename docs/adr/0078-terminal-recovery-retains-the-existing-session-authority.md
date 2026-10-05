@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-09-07
 - Amends: [ADR-0075](0075-unified-managed-session-worker-execution.md)
-- Implementation: complete Resource projection and terminal-only release implemented; bounded same-process Kubernetes handle-free convergence implemented
+- Implementation: Resource projection and terminal-only release implemented; bounded direct-process and brokered cross-process Kubernetes Pod handle-free convergence implemented; richer participant closure remains pending
 
 ## Context
 
