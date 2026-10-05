@@ -489,9 +489,9 @@ def check_builtin_tool_ownership() -> list[str]:
     """
     errors: list[str] = []
     for crate_name in EXTENSION_CRATES:
-        if next(CRATES.glob(f"*/{crate_name}/Cargo.toml"), None) is None:
+        if _crate_boundary_workspace.crate_manifest(crate_name) is None:
             errors.append(f"missing required extension crate {crate_name!r}")
-    manifest = next(CRATES.glob("*/awaken-ext-builtin-tools/Cargo.toml"), None)
+    manifest = _crate_boundary_workspace.crate_manifest("awaken-ext-builtin-tools")
     if manifest is None:
         return errors
     for path in sorted((manifest.parent / "src").rglob("*.rs")):
@@ -527,7 +527,7 @@ def check_background_task_is_state_only() -> list[str]:
             "awaken-ext-background-task must persist only through Runtime State; "
             f"forbidden normal dependencies: {forbidden}"
         )
-    manifest = next(CRATES.glob("*/awaken-ext-background-task/Cargo.toml"))
+    manifest = _crate_boundary_workspace.crate_manifest("awaken-ext-background-task")
     if any(path.is_dir() and path.name == "migrations" for path in manifest.parent.rglob("*")):
         errors.append("awaken-ext-background-task must not own a migrations directory")
     return errors
@@ -536,7 +536,7 @@ def check_background_task_is_state_only() -> list[str]:
 def check_tests_are_not_arch_owners() -> list[str]:
     errors: list[str] = []
     for crate_name in NEUTRAL_CRATES:
-        manifest = next(CRATES.glob(f"*/{crate_name}/Cargo.toml"), None)
+        manifest = _crate_boundary_workspace.crate_manifest(crate_name)
         if manifest is None or not (manifest.parent / "tests").exists():
             continue
         for path in sorted((manifest.parent / "tests").rglob("*.rs")):
@@ -614,7 +614,7 @@ def check_no_direct_transport_dependency(
 ) -> list[str]:
     """Transport construction lives in the authority crate or a stated exception."""
     errors: list[str] = []
-    for manifest_path in sorted(crates.glob("*/*/Cargo.toml")):
+    for manifest_path in _crate_boundary_workspace.crate_manifests(crates):
         manifest = _crate_boundary_workspace.load_manifest(manifest_path)
         try:
             name = _crate_boundary_workspace.package_name(manifest)
@@ -746,7 +746,7 @@ def check_generation_witnesses_are_complete(
     """Every `*Generation` value type is a complete CAS witness or a stated exception."""
     errors: list[str] = []
     declaration = re.compile(r"\bpub struct (\w*Generation)\b")
-    for path in sorted(crates.glob("*/*/src/**/*.rs")):
+    for path in _crate_boundary_workspace.crate_source_files(crates):
         relative = path.relative_to(repo_root)
         production = _crate_boundary_workspace.production_rust(
             path.read_text(encoding="utf-8", errors="ignore")
@@ -790,6 +790,7 @@ def selftest_generation_witnesses() -> None:
         crates = root / "crates"
         source = crates / "contract/example/src/lib.rs"
         source.parent.mkdir(parents=True)
+        _crate_boundary_workspace.ensure_fixture_manifest(source)
         source.write_text("pub struct WidgetGeneration { version: u64 }\n", encoding="utf-8")
         assert check_generation_witnesses_are_complete(root, crates)  # G1
         source.write_text(
@@ -924,7 +925,7 @@ def check_tenancy_is_not_optional(
 ) -> list[str]:
     """No ingress handler may take the tenant handle as an `Option`."""
     errors: list[str] = []
-    for path in sorted(crates.glob("*/*/src/**/*.rs")):
+    for path in _crate_boundary_workspace.crate_source_files(crates):
         relative = path.relative_to(repo_root)
         if _is_rust_test_file(relative):
             continue
@@ -952,7 +953,7 @@ def check_no_ambient_tenant_default(
 ) -> list[str]:
     """Only the composition root may name a tenant the edge did not resolve."""
     errors: list[str] = []
-    for path in sorted(crates.glob("*/*/src/**/*.rs")):
+    for path in _crate_boundary_workspace.crate_source_files(crates):
         relative = path.relative_to(repo_root)
         if relative == TENANCY_COMPOSITION_ROOT or _is_rust_test_file(relative):
             continue
@@ -1005,6 +1006,7 @@ def selftest_tenancy_is_required() -> None:
         crates = root / "crates"
         source = crates / "server/example/src/routes.rs"
         source.parent.mkdir(parents=True)
+        _crate_boundary_workspace.ensure_fixture_manifest(source)
 
         source.write_text(
             "async fn handler(scope: Option<Extension<WorkspaceScope>>) {}\n",
@@ -1063,6 +1065,7 @@ def selftest_no_ambient_tenant_default() -> None:
         crates = root / "crates"
         source = crates / "server/example/src/handlers.rs"
         source.parent.mkdir(parents=True)
+        _crate_boundary_workspace.ensure_fixture_manifest(source)
 
         source.write_text(
             "fn owner(s: Option<String>) -> String {\n"
@@ -1108,7 +1111,7 @@ def check_cloud_placement_boundary(
 ) -> list[str]:
     """Keep Cloud DataShard/Cell policy inside the one hosting ACL."""
     errors: list[str] = []
-    for path in sorted(crates.glob("*/*/src/**/*.rs")):
+    for path in _crate_boundary_workspace.crate_source_files(crates):
         relative = path.relative_to(repo_root)
         if relative == CLOUD_HOSTING_ACL or path.name.endswith("_test.rs"):
             continue
@@ -1142,6 +1145,7 @@ def selftest_cloud_placement_boundary() -> None:
         crates = root / "crates"
         leak = crates / "domain/example/src/lib.rs"
         leak.parent.mkdir(parents=True)
+        _crate_boundary_workspace.ensure_fixture_manifest(leak)
         leak.write_text("struct DomainLeak { data_shard_id: String }\n", encoding="utf-8")
         assert any(
             "data_shard_id" in error
@@ -1161,6 +1165,7 @@ def selftest_cloud_placement_boundary() -> None:
         leak.unlink()
         adapter = root / CLOUD_HOSTING_ACL
         adapter.parent.mkdir(parents=True)
+        _crate_boundary_workspace.ensure_fixture_manifest(adapter)
         adapter.write_text("struct ForeignWire { data_shard_id: String }\n", encoding="utf-8")
         assert not check_cloud_placement_boundary(root, crates)  # R4
 
@@ -1317,7 +1322,7 @@ def _unstated_composite_identities(
     """Locate every derived-equality struct with two or more String coordinates."""
     found: list[str] = []
     registered: set[str] = set()
-    for path in sorted(crates.glob("*/*/src/**/*.rs")):
+    for path in _crate_boundary_workspace.crate_source_files(crates):
         if "/tests/" in str(path) or path.name.endswith(("tests.rs", "test_support.rs")):
             continue
         relative = path.relative_to(repo_root)
@@ -1400,6 +1405,7 @@ def selftest_composite_identity_is_stated() -> None:
         scan = root / "crates"
         source = scan / "contract/example/src/lib.rs"
         source.parent.mkdir(parents=True)
+        _crate_boundary_workspace.ensure_fixture_manifest(source)
 
         def count() -> int:
             return len(_unstated_composite_identities(root, scan)[0])
@@ -1682,7 +1688,8 @@ def main() -> int:
     selftest_model_binding_producers_are_ratcheted()
     selftest_sdk_tier_is_standalone()
     errors = (
-        check_no_direct_transport_dependency()
+        _crate_boundary_workspace.check_crate_manifests_match_workspace()
+        + check_no_direct_transport_dependency()
         +
         _crate_dependency_fitness.check_all(dependency_fitness_specs())
         + check_neutral_code_boundaries()

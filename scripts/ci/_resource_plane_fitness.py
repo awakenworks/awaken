@@ -260,7 +260,7 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
             "Resources File application through Runtime Host"
         )
     for crate_name in sorted(RESOURCE_PLANE_CRATES):
-        manifest_path = next(crates.glob(f"*/{crate_name}/Cargo.toml"), None)
+        manifest_path = _crate_boundary_workspace.crate_manifest(crate_name, crates)
         if manifest_path is None:
             errors.append(f"missing resource-plane crate {crate_name!r}")
             continue

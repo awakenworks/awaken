@@ -338,10 +338,10 @@ def _production_sources(crates: Path) -> dict[Path, str]:
     blanks inline test items.
     """
     reachable = _crate_boundary_workspace.production_module_files(
-        sorted(crates.glob("*/*/Cargo.toml"))
+        _crate_boundary_workspace.crate_manifests(crates)
     )
     sources: dict[Path, str] = {}
-    for path in sorted(crates.glob("*/*/src/**/*.rs")):
+    for path in _crate_boundary_workspace.crate_source_files(crates):
         if path.resolve() not in reachable:
             continue
         raw = path.read_text(encoding="utf-8", errors="ignore")

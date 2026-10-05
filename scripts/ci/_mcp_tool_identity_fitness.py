@@ -127,7 +127,7 @@ def check_mcp_tool_identity_is_owned(
 ) -> list[str]:
     """Only one module *per side* may spell the `mcp__<server>__<tool>` grammar."""
     errors: list[str] = check_mcp_tool_identity_is_owned_in_console(repo_root)
-    for path in sorted(crates.glob("*/*/src/**/*.rs")):
+    for path in _crate_boundary_workspace.crate_source_files(crates):
         relative = path.relative_to(repo_root)
         if relative == MCP_TOOL_IDENTITY_OWNER:
             continue
@@ -177,6 +177,7 @@ def selftest_mcp_tool_identity_ownership() -> None:
         crates = root / "crates"
         source = crates / "runtime/example/src/lib.rs"
         source.parent.mkdir(parents=True)
+        _crate_boundary_workspace.ensure_fixture_manifest(source)
 
         source.write_text(constructor, encoding="utf-8")
         assert check_mcp_tool_identity_is_owned(root, crates)  # P1

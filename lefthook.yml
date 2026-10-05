@@ -115,7 +115,7 @@ pre-commit:
     #     in main came from that one shape; the ratchet freezes today's debt.
     test-waits:
       # >>> generated glob from check_test_waits.py INPUT_GLOBS — do not edit
-      glob: "{crates/*/*/src/**/*.rs,crates/*/*/tests/**/*.rs,e2e/**/*.js,e2e/**/*.mjs,e2e/**/*.rs,e2e/**/*.sh,e2e/**/*.ts,scripts/ci/check_test_waits.py,scripts/ci/test_waits_baseline.json,web/e2e/**/*.mjs,web/e2e/**/*.ts}"
+      glob: "{crates/**/src/**/*.rs,crates/**/tests/**/*.rs,e2e/**/*.js,e2e/**/*.mjs,e2e/**/*.rs,e2e/**/*.sh,e2e/**/*.ts,scripts/ci/check_test_waits.py,scripts/ci/test_waits_baseline.json,web/e2e/**/*.mjs,web/e2e/**/*.ts}"
       # <<< generated glob
       run: python3 scripts/ci/check_test_waits.py
 
@@ -125,7 +125,7 @@ pre-commit:
     #     thing the rule is about, and the trigger follows the same declaration.
     observation-collapse:
       # >>> generated glob from check_observation_collapse.py INPUT_GLOBS — do not edit
-      glob: "{crates/*/*/Cargo.toml,crates/*/*/src/**/*.rs,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_observation_collapse.py}"
+      glob: "{crates/**/Cargo.toml,crates/**/src/**/*.rs,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_observation_collapse.py}"
       # <<< generated glob
       run: python3 scripts/ci/check_observation_collapse.py
 

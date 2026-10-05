@@ -150,7 +150,7 @@ def _production_sources(crates: Path) -> dict[Path, str]:
         path: _crate_boundary_workspace.production_rust(
             path.read_text(encoding="utf-8", errors="ignore")
         )
-        for path in sorted(crates.glob("*/*/src/**/*.rs"))
+        for path in _crate_boundary_workspace.crate_source_files(crates)
     }
 
 
@@ -423,6 +423,7 @@ def selftest() -> None:
         crates = Path(directory) / "crates"
         source = crates / "server/example/src/lib.rs"
         source.parent.mkdir(parents=True)
+        _crate_boundary_workspace.ensure_fixture_manifest(source)
         source.write_text(handler + tagged, encoding="utf-8")
         assert check_all(Path(directory), crates), "an unregistered instance fails check_all"
 
