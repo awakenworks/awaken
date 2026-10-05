@@ -542,9 +542,17 @@ def compiled_module_files(manifests: Iterable[Path]) -> set[Path]:
 
 
 def production_module_files(
-    manifests: Iterable[Path], *, project: Callable[[str], str] = production_rust
+    manifests: Iterable[Path],
+    *,
+    project: Callable[[str], str] = production_rust,
+    include_test_targets: bool = False,
 ) -> set[Path]:
     """Structural module reachability from Cargo library/binary roots.
+
+    With `include_test_targets`, integration-test and bench crate roots
+    (`tests/*.rs`, `tests/*/main.rs`, `benches/...` and explicit `[[test]]`/
+    `[[bench]]` paths) are roots too. A build script is never a test target:
+    `cargo test` does not run tests compiled into `build.rs`.
 
     Reuses the production lexer: test-only branches do not connect evidence,
     while feature/platform branches are a conservative union, not proof that a
@@ -626,6 +634,16 @@ def production_module_files(
                 visit(binary_path, binary_path.parent)
             for binary_path in (root / "src/bin").glob("*/main.rs"):
                 visit(binary_path, binary_path.parent)
+        if include_test_targets:
+            for kind, directory in (("test", "tests"), ("bench", "benches")):
+                for target in manifest.get(kind, []):
+                    if "path" in target:
+                        target_path = root / target["path"]
+                        visit(target_path, target_path.parent)
+                for target_path in (root / directory).glob("*.rs"):
+                    visit(target_path, target_path.parent)
+                for target_path in (root / directory).glob("*/main.rs"):
+                    visit(target_path, target_path.parent)
     return reachable
 
 

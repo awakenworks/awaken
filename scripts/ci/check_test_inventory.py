@@ -8,7 +8,10 @@ one is invisible to a green test run: a deleted test simply stops running.
 `test_inventory.txt` records the name of every Rust test function in the
 workspace, one per line, repeated once per occurrence (names are a multiset,
 since the same name may exist in several crates). The check requires every
-recorded occurrence to still exist, by name, anywhere under `crates/`. Identity
+recorded occurrence to still exist, by name, in a file some test build compiles
+(module-reachable from a crate's lib, bin, integration-test or bench root; a
+file no `mod` declaration reaches does not count, because its tests never run).
+Identity
 is the function name, not its crate, file or body: moving a test to another
 crate, splitting a file, or changing how the test constructs its host keeps it
 matched. Renaming or deleting a test is recorded in `test_inventory_ledger.json`
@@ -71,12 +74,22 @@ def test_names(source: str) -> list[str]:
     return names
 
 
+def compiled_test_sources(root: Path = ROOT) -> list[Path]:
+    """Rust files a test build compiles: module-reachable from a crate's lib,
+    bin, integration-test or bench roots. A file no `mod` declaration reaches
+    is not compiled, so a test inside it does not run and does not count."""
+    manifests = _crate_boundary_workspace.crate_manifests(root / "crates")
+    reachable = _crate_boundary_workspace.production_module_files(
+        manifests,
+        project=_crate_boundary_workspace.rust_without_comments,
+        include_test_targets=True,
+    )
+    return sorted(reachable)
+
+
 def current_inventory(root: Path = ROOT) -> Counter[str]:
     counts: Counter[str] = Counter()
-    crates = root / "crates"
-    for path in sorted(crates.rglob("*.rs")):
-        if {"target", "node_modules"} & set(path.relative_to(crates).parts):
-            continue
+    for path in compiled_test_sources(root):
         counts.update(test_names(path.read_text(encoding="utf-8", errors="ignore")))
     return counts
 
@@ -170,13 +183,26 @@ def selftest() -> None:
     assert not missing(Counter({"a": 1}), Counter(), {"renamed": {}, "removed": {"a": "covered by b"}}), "T9"
     assert missing(Counter({"a": 2}), Counter({"a": 1}), empty), "T10"
     assert missing(Counter(), Counter(), {"renamed": {}, "removed": {"a": " "}}), "T11"
+    # T12 a test in a file no `mod` reaches does not count; T13 cfg(test)
+    # modules and integration-test roots count; T14 a build script's modules
+    # do not count (cargo test never runs them).
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        (root / "crates/x/y/src").mkdir(parents=True)
-        (root / "crates/x/y/src/lib.rs").write_text("#[test] fn moved() {}\n")
-        (root / "crates/x/y/target").mkdir()
-        (root / "crates/x/y/target/gen.rs").write_text("#[test] fn built() {}\n")
-        assert current_inventory(root) == Counter({"moved": 1}), "scan skips target/"
+        crate = root / "crates/x/y"
+        (crate / "src").mkdir(parents=True)
+        (crate / "tests").mkdir()
+        (crate / "Cargo.toml").write_text('[package]\nname = "y"\n')
+        (crate / "src/lib.rs").write_text("#[test] fn moved() {}\n#[cfg(test)]\nmod unit;\n")
+        (crate / "src/unit.rs").write_text("#[test] fn unit_case() {}\n")
+        (crate / "src/orphan.rs").write_text("#[test] fn never_compiled() {}\n")
+        (crate / "tests/flow.rs").write_text("#[test] fn integration_case() {}\n")
+        (crate / "build.rs").write_text("mod build_support;\nfn main() {}\n")
+        (crate / "build_support.rs").write_text("#[test] fn build_only() {}\n")
+        (crate / "target").mkdir()
+        (crate / "target/gen.rs").write_text("#[test] fn built() {}\n")
+        assert current_inventory(root) == Counter(
+            {"moved": 1, "unit_case": 1, "integration_case": 1}
+        ), "T12/T13/T14"
     print("check_test_inventory selftest: the decision table holds")
 
 
