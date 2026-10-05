@@ -182,6 +182,29 @@ k3d_render_sandbox_image deploy/k3d/product-backend "$SANDBOX_IMAGE" 2 \
   | kubectl apply -f -
 ```
 
+The Create-control overlay also installs the cluster admission policy that
+protects an inert Pod occupying the name of an unresolved Sandbox Create.
+Brokered original Pods carry a result guard finalizer until exact terminal
+deletion, so an earlier successful Create cannot disappear before its ticket
+is recorded and be mistaken for a never-created Pod.
+The runtime verifies that policy and a UID-bound dry-run DELETE refusal before
+accepting isolation as terminal evidence. Such Pods remain while the original
+Create request's lifetime is unknown and consume Pod quota; keep the policy
+and its reservations when operating this deployment.
+
+On a dedicated k3d cluster with no existing `awaken-create-isolation` policy,
+the opt-in provider test creates and removes its own policy, namespaces and
+reservation:
+
+```bash
+AWAKEN_K8S_E2E=1 AWAKEN_K8S_ISOLATION_E2E=1 \
+  cargo test -p awaken-sandbox-container --features k8s --test k8s_e2e \
+  pod_create_isolation_joins_one_real_api_uid_after_reservation
+AWAKEN_K8S_E2E=1 AWAKEN_K8S_ISOLATION_E2E=1 \
+  cargo test -p awaken-sandbox-container --features k8s --test k8s_e2e \
+  original_create_guard_keeps_a_deleted_pod_visible_until_exact_release
+```
+
 The product overlay has two `__AWAKEN_SANDBOX_IMAGE__` placeholders (product
 and Worker); the distributed-control overlay has one. Pass the exact expected
 count to `k3d_render_sandbox_image`. Applying either source overlay directly

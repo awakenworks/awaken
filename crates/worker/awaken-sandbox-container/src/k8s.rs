@@ -112,7 +112,8 @@ pub use sandbox_control::{
 
 pub use crate::k8s_package_image::K8sPackageImageProvisioner;
 pub use create_ledger::{
-    CreateTicket, CreateTicketRequest, K8sLedgerBinding, K8sWorkerCreateLedger, RequestJoin,
+    CreateTicket, CreateTicketRequest, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, K8sLedgerBinding,
+    K8sWorkerCreateLedger, ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION, RequestJoin,
     TicketAdmission, TicketResult, TicketStatus, WorkerCreateLedgerState,
 };
 pub(crate) use create_transport::brokered_client;
@@ -1196,6 +1197,15 @@ impl K8sRuntime {
             Err(error) if api_not_found(&error) => return Ok(()),
             Err(error) => return Err(backend(error)),
         };
+        if pod.metadata.finalizers.as_ref().is_some_and(|values| {
+            values
+                .iter()
+                .any(|value| value == create_ledger::ORIGINAL_GUARD_FINALIZER)
+        }) {
+            return Err(backend(
+                "brokered Pod replacement requires the original terminal cleanup owner",
+            ));
+        }
         let resource_version = observed
             .incarnation
             .version
@@ -1387,6 +1397,7 @@ impl K8sRuntime {
         container_id: &str,
         persisted_pod_uid: Option<&str>,
         persisted_claim_uid: Option<&str>,
+        release_original_guard: bool,
         authorization: Option<(
             &pc::SandboxDisposalAuthorization,
             &dyn pc::CurrentExecutionAuthority,
@@ -1420,6 +1431,18 @@ impl K8sRuntime {
             Err(error) => return Err(backend(error)),
         };
         admit()?;
+        let guarded_original = observed_pod.as_ref().is_some_and(|pod| {
+            pod.metadata.finalizers.as_ref().is_some_and(|values| {
+                values
+                    .iter()
+                    .any(|value| value == create_ledger::ORIGINAL_GUARD_FINALIZER)
+            })
+        });
+        if guarded_original && !release_original_guard {
+            return Err(backend(
+                "brokered original Pod needs its durable handle before guard release",
+            ));
+        }
         let pod_claim_uid = observed_pod
             .as_ref()
             .and_then(continuation::bound_claim_uid)
@@ -1500,6 +1523,9 @@ impl K8sRuntime {
             // re-read and await exact P. A foreign replacement UID ends only
             // the A wait and still cannot redirect the claim fence.
             let pod_uid = persisted_pod_uid.expect("disposing Pod has persisted UID");
+            if guarded_original {
+                create_ledger::release_original_guard(&pods, container_id, pod_uid, &admit).await?;
+            }
             self.await_exact_pod_deleted(container_id, pod_uid, &admit)
                 .await?;
             if let Some(uid) = expected_claim_uid {
@@ -1581,6 +1607,15 @@ impl K8sRuntime {
         .await?;
         if let Some(pending) = pending_pod_cleanup.as_ref() {
             continuation::release_pod_cleanup_gate(&pods, pending, &admit).await?;
+        }
+        if guarded_original {
+            create_ledger::release_original_guard(
+                &pods,
+                container_id,
+                &incarnation.identity,
+                &admit,
+            )
+            .await?;
         }
         self.await_exact_pod_deleted(container_id, &incarnation.identity, &admit)
             .await?;

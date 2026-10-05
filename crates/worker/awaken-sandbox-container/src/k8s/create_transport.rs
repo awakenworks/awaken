@@ -454,6 +454,8 @@ mod tests {
         let ticket = |status| super::super::CreateTicket {
             request: request.clone(),
             status,
+            isolation_id: String::new(),
+            isolation_pending: false,
         };
         assert_eq!(
             runtime(RequestJoin::Complete(vec![ticket(
@@ -594,6 +596,8 @@ mod tests {
             status: super::super::TicketStatus::Finished(super::super::TicketResult::Created {
                 uid: "old-uid".into(),
             }),
+            isolation_id: String::new(),
+            isolation_pending: false,
         };
         let runtime = |tickets| {
             let mut runtime = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());

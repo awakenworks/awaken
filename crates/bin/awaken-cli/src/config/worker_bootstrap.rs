@@ -129,7 +129,8 @@ mod tests {
     #[test]
     fn kubernetes_file_configuration_reaches_only_its_owning_process() {
         use super::super::{ConfigOverrides, FileConfig};
-        // F1 authored Coordinator policy -> retained unchanged at startup.
+        // F1 authored Coordinator policy, including the separate Create
+        // control Namespace -> retained unchanged at startup.
         // F2 missing adapter -> explicit rejection, not an unsigned fallback.
         // F3 projected identity on any non-Worker role or Local mode -> reject
         // before reading files. F4 unknown policy fields -> parse rejection.
@@ -147,6 +148,7 @@ mod tests {
             service_account = "executor"
             audience = "awaken-worker"
             provider_id = "cluster-a"
+            create_control_namespace = "create-control"
         "#;
         let resolve = |file| {
             crate::config::resolve_test_file(
@@ -164,6 +166,7 @@ mod tests {
             assert_eq!(policy.service_account, "executor", "F1");
             assert_eq!(policy.audience, "awaken-worker", "F1");
             assert_eq!(policy.provider_id, "cluster-a", "F1");
+            assert_eq!(policy.create_control_namespace, "create-control", "F1");
             assert!(deployment.worker.kubernetes_identity_directory.is_none());
         } else {
             assert!(result.unwrap_err().contains("container-k8s"), "F2");
