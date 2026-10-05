@@ -10,7 +10,7 @@
 //
 // | Rule | Host | PATH delimiter | Fixture wrapper | Result |
 // |---|---|---|---|---|
-// | L1 | Unix | `:` | `#!/bin/sh` | ACP turn |
+// | L1 | Unix | `:` | `#!/usr/bin/env node` | ACP turn |
 // | L2 | Windows | `;` | native fixture `.exe` | ACP turn |
 //
 // Isolation/credential cause graph: C1=Provider provisioning injects a credential
@@ -76,7 +76,9 @@ function installGeminiFixture() {
     return;
   }
   const fixture = path.join(BIN_DIR, 'gemini');
-  fs.writeFileSync(fixture, `#!${process.execPath}
+  // The launch sandbox owns its projected PATH. A shebang that embeds this
+  // test runner's private NVM path is not an installed ACP runtime dependency.
+  fs.writeFileSync(fixture, `#!/usr/bin/env node
 if (process.argv.includes('--version')) {
   console.log('gemini-fixture 1.0.0');
   process.exit(0);
@@ -119,7 +121,7 @@ function installCodexAdapterFixture() {
   fs.writeFileSync(path.join(prefix, 'package.json'), JSON.stringify({
     dependencies: { '@agentclientprotocol/codex-acp': '1.10.0' },
   }));
-  fs.writeFileSync(executable, `#!${process.execPath}
+  fs.writeFileSync(executable, `#!/usr/bin/env node
 const readline = require('node:readline');
 const lines = readline.createInterface({ input: process.stdin });
 let mcpServers = [];
@@ -341,8 +343,14 @@ async function main() {
   // session id are single authorities. C5=the Coordinator owns projection
   // policy without an ACP executor while its registered Worker owns the exact
   // launch route; E4=C5 permits the committed Session input to reach that
-  // Worker without installing a second Coordinator executor. Decision rules:
-  // L1=C1+C2=>E1; L2=L1+C3=>E2; L3=C4=>E3; L4=C1+C2+C5=>E4.
+  // Worker without installing a second Coordinator executor. C6=a Direct host
+  // executable is discovered on the fixture PATH; E5=preparation pins its
+  // absolute argv so a restricted Worker PATH cannot replace or lose it.
+  // C7=the Unix fixture uses the sandbox's `env node` interpreter instead of
+  // the outer test runner's private Node path; E6=both Gemini and Codex enter
+  // their real ACP handshake inside the isolated runtime.
+  // Decision rules: L1=C1+C2=>E1; L2=L1+C3=>E2; L3=C4=>E3;
+  // L4=C1+C2+C5=>E4; L5=C1+C6+C7=>E5+E6 and the real ACP reply.
   installGeminiFixture();
   fs.mkdirSync(STORAGE, { recursive: true });
   const binary = awakenBin();

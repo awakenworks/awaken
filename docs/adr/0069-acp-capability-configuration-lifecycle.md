@@ -469,6 +469,13 @@ Worker-local liveness resolver. `awaken-cli` owns only deployment/resource
 composition around this service; additional composition roots call the same
 service rather than importing CLI modules.
 
+For a directly installed host CLI, preparation resolves its executable through
+the host acquisition PATH and carries the canonical absolute argv through the
+existing Worker profile. The capability probe and the later sandbox launch use
+that same argv; the sandbox never rediscovers a bare command name through its
+restricted PATH. Pinned wrappers use the same profile with their installed
+absolute executable. Container image argv remains owned by the catalog.
+
 The static dependency direction is:
 
 ```text
