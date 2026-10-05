@@ -396,7 +396,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     assert!(
         matches!(
             &staged.binding_checks[0],
-            crate::provisioning::ResourceBindingCheck::Repository {
+            crate::staged_resources::ResourceBindingCheck::Repository {
                 repository_id,
                 credential_binding: Some(_),
                 authority: None,

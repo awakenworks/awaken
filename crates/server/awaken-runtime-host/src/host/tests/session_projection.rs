@@ -392,7 +392,7 @@ fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool() {
         permission: ToolPermissionRequirement::AlwaysAllow,
     };
     let repository =
-        |repository_id: &str, mount_path: &str| crate::provisioning::RepositoryActivation {
+        |repository_id: &str, mount_path: &str| crate::staged_resources::RepositoryActivation {
             plan: awaken_provisioning_contract::RepositoryRealizationPlan {
                 repository_id: repository_id.into(),
                 mount_path: mount_path.into(),
@@ -516,8 +516,8 @@ fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     // | M6 | yes | bound | yes | deferred binding | E1 metadata-only reservation |
     // | M7 | yes | other | any | deferred binding | E3 mismatched pin rejected |
     // | M8 | yes | no | no | Memory path variable | E3 physical path rejected |
+    use crate::frozen_runtime_projection::ManagedContentDelivery;
     use crate::host::session::SkillDeliveryEvidence;
-    use crate::session_slot::ManagedContentDelivery;
     use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
     };
@@ -629,7 +629,7 @@ fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
             slot.session_dispatch = true;
             slot.tools = Some(deny_filesystem());
             slot.resources.resource_prompts.push(
-                crate::managed_resource_projection::ResourcePromptProjection::try_from_input(
+                crate::managed_input_layout::ResourcePromptProjection::try_from_input(
                     &memory_with_path,
                 )
                 .unwrap(),
@@ -768,7 +768,7 @@ fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
     // Constraint K1 Agent tool capability still gates what that Agent may call;
     // reusing delivery neither widens tools nor creates a child-owned mount
     // authority. Rules CD1=C1=>E1; CD2=C2=>E2; CD3=C3=>E2.
-    use crate::session_slot::ManagedContentDelivery;
+    use crate::frozen_runtime_projection::ManagedContentDelivery;
     use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,

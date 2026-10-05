@@ -308,7 +308,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         "R2 lease generation is part of the cache authority"
     );
 
-    fn reference(staged: &crate::provisioning::StagedResources) -> Option<&str> {
+    fn reference(staged: &crate::staged_resources::StagedResources) -> Option<&str> {
         let awaken_provisioning_contract::MountSource::MemoryStore {
             materialization_reference,
             ..

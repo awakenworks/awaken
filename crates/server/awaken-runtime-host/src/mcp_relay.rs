@@ -32,7 +32,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 
-use crate::mcp::McpTransportMaterial;
+use crate::mcp_material::McpTransportMaterial;
 use awaken_lease_contract::fence::FenceSuccession;
 
 /// Where one relay route forwards to, with the host-held credential to inject.
@@ -40,7 +40,7 @@ use awaken_lease_contract::fence::FenceSuccession;
 struct Route {
     url: String,
     bearer: Option<awaken_agent_contract::RedactedString>,
-    refresh: Option<Box<crate::mcp::McpRefreshMaterial>>,
+    refresh: Option<Box<crate::mcp_material::McpRefreshMaterial>>,
     /// Opaque sandbox-held capability. It is scoped by the surrounding route
     /// key and never persisted as Session desired state.
     capability: String,
@@ -576,7 +576,7 @@ mod tests {
         McpTransportMaterial {
             name: name.into(),
             prompts_as_skills: false,
-            transport: crate::mcp::McpTransportMaterialKind::Http {
+            transport: crate::mcp_material::McpTransportMaterialKind::Http {
                 url: url.into(),
                 bearer: bearer.map(awaken_agent_contract::RedactedString::from),
                 refresh: None,
@@ -1032,12 +1032,12 @@ mod tests {
         let material = McpTransportMaterial {
             name: "rotating".into(),
             prompts_as_skills: false,
-            transport: crate::mcp::McpTransportMaterialKind::Http {
+            transport: crate::mcp_material::McpTransportMaterialKind::Http {
                 url: upstream,
                 bearer: Some(awaken_agent_contract::RedactedString::from(
                     "expired-token".to_string(),
                 )),
-                refresh: Some(Box::new(crate::mcp::McpRefreshMaterial(Arc::new(
+                refresh: Some(Box::new(crate::mcp_material::McpRefreshMaterial(Arc::new(
                     ReloadBearer {
                         calls: calls.clone(),
                     },
@@ -1113,12 +1113,12 @@ mod tests {
                 format!("http://{addr}/"),
                 Some("old-token".into()),
             );
-            let crate::mcp::McpTransportMaterialKind::Http { refresh, .. } =
+            let crate::mcp_material::McpTransportMaterialKind::Http { refresh, .. } =
                 &mut material.transport
             else {
                 unreachable!()
             };
-            *refresh = Some(Box::new(crate::mcp::McpRefreshMaterial(Arc::new(
+            *refresh = Some(Box::new(crate::mcp_material::McpRefreshMaterial(Arc::new(
                 RevokeOnRefresh(live.clone()),
             ))));
             relay.set_route(&generation, &material);
@@ -1226,12 +1226,12 @@ mod tests {
         let material = McpTransportMaterial {
             name: "effectful-rotation".into(),
             prompts_as_skills: false,
-            transport: crate::mcp::McpTransportMaterialKind::Http {
+            transport: crate::mcp_material::McpTransportMaterialKind::Http {
                 url: format!("http://{upstream}/"),
                 bearer: Some(awaken_agent_contract::RedactedString::from(
                     "expired-token".to_string(),
                 )),
-                refresh: Some(Box::new(crate::mcp::McpRefreshMaterial(Arc::new(
+                refresh: Some(Box::new(crate::mcp_material::McpRefreshMaterial(Arc::new(
                     ReloadBearer(refreshes.clone()),
                 )))),
             },

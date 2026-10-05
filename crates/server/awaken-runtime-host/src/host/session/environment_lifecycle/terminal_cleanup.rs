@@ -483,7 +483,7 @@ impl SharedHost {
         self.session_slots.update(session_id.as_str(), |slot| {
             slot.runtime = None;
             slot.environment_resource_reconciliation =
-                crate::session_slot::EnvironmentResourceReconciliation::None;
+                crate::staged_resources::EnvironmentResourceReconciliation::None;
         });
         self.terminal_cleanup_disposal_authorization(&effect)?;
         Ok(awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&effect.command))

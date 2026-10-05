@@ -423,7 +423,7 @@ impl SharedHost {
                 }
                 self.session_slots.update(thread, |slot| {
                     slot.environment_resource_reconciliation =
-                        crate::session_slot::EnvironmentResourceReconciliation::None;
+                        crate::staged_resources::EnvironmentResourceReconciliation::None;
                 });
             }
         }
@@ -1042,7 +1042,7 @@ impl SharedHost {
                         &operation_reference,
                         intent.materialization(),
                         &files,
-                        crate::managed_resource_projection::managed_mount_access(intent.access()),
+                        crate::managed_input_layout::managed_mount_access(intent.access()),
                     )
                     .await
                     .map_err(|error| HostError::unavailable(error.to_string()))?;

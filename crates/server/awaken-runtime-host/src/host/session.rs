@@ -727,9 +727,9 @@ impl SharedHost {
             // Read, not removed, so a retry re-attempts (and re-fails) the connect.
             let active_mcp = self.active_mcp_projections(thread);
             let mcp = if is_acp {
-                crate::mcp::McpWiring::empty()
+                crate::mcp_material::McpWiring::empty()
             } else {
-                let mut combined = crate::mcp::McpWiring::empty();
+                let mut combined = crate::mcp_material::McpWiring::empty();
                 for projection in &active_mcp {
                     let wiring = projection.native_wiring.as_ref().ok_or_else(|| {
                         HostError::internal(format!(
@@ -984,16 +984,17 @@ impl SharedHost {
                 env.clone(),
                 &authored_skills_subdir,
                 skill_source_roots.as_deref(),
-                content_delivery == crate::session_slot::ManagedContentDelivery::ManagedFilesystem,
+                content_delivery
+                    == crate::frozen_runtime_projection::ManagedContentDelivery::ManagedFilesystem,
                 session_dispatch,
             )
             .await
             .map_err(HostError::internal)?
             {
                 if content_delivery
-                    == crate::session_slot::ManagedContentDelivery::ManagedFilesystem
+                    == crate::frozen_runtime_projection::ManagedContentDelivery::ManagedFilesystem
                 {
-                    let prompt = crate::skills::filesystem_skill_prompt(registry.as_ref())
+                    let prompt = crate::skill_prompt::filesystem_skill_prompt(registry.as_ref())
                         .map_err(HostError::internal)?;
                     self.session_slots
                         .update(thread, |slot| slot.skill_prompt = prompt);
@@ -1046,7 +1047,9 @@ impl SharedHost {
             }
             let mut memory_descriptors = Vec::new();
             let mut semantic_memory_tools = None;
-            if content_delivery == crate::session_slot::ManagedContentDelivery::SemanticTools {
+            if content_delivery
+                == crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools
+            {
                 let bindings = self
                     .session_slots
                     .read(thread, |slot| slot.memory_bindings.clone())
@@ -1689,7 +1692,8 @@ impl SharedHost {
             };
             let tool_executor = if a2a_only {
                 None
-            } else if content_delivery == crate::session_slot::ManagedContentDelivery::SemanticTools
+            } else if content_delivery
+                == crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools
             {
                 let mut tools = Vec::new();
                 if let Some((_, skill_tools)) = semantic_skill_tools.as_ref() {

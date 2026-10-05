@@ -178,7 +178,7 @@ impl SharedHost {
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         skill_evidence: SkillDeliveryEvidence<'_>,
-    ) -> Result<crate::session_slot::ManagedContentDelivery, HostError> {
+    ) -> Result<crate::frozen_runtime_projection::ManagedContentDelivery, HostError> {
         let managed_session = self
             .session_slots
             .read(thread, |slot| slot.session_dispatch)
@@ -236,7 +236,8 @@ impl SharedHost {
             .flatten()
         {
             if managed_has_skill
-                && existing != crate::session_slot::ManagedContentDelivery::ManagedFilesystem
+                && existing
+                    != crate::frozen_runtime_projection::ManagedContentDelivery::ManagedFilesystem
             {
                 return Err(HostError::bad_request(
                     "Managed Agent Skills require filesystem progressive disclosure, but this Session disables every filesystem tool",
@@ -251,18 +252,18 @@ impl SharedHost {
             ));
         }
         let delivery = if allows_filesystem {
-            crate::session_slot::ManagedContentDelivery::ManagedFilesystem
+            crate::frozen_runtime_projection::ManagedContentDelivery::ManagedFilesystem
         } else {
-            crate::session_slot::ManagedContentDelivery::SemanticTools
+            crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools
         };
-        if delivery == crate::session_slot::ManagedContentDelivery::SemanticTools
+        if delivery == crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools
             && self
                 .session_slots
                 .read(thread, |slot| {
                     slot.resources
                         .resource_prompts
                         .iter()
-                        .any(crate::managed_resource_projection::ResourcePromptProjection::requires_filesystem_delivery)
+                        .any(crate::managed_input_layout::ResourcePromptProjection::requires_filesystem_delivery)
                 })
                 .unwrap_or(false)
         {
@@ -270,7 +271,7 @@ impl SharedHost {
                 "MemoryStore instructions reference a filesystem path, but this Session disables filesystem delivery",
             ));
         }
-        if delivery == crate::session_slot::ManagedContentDelivery::SemanticTools
+        if delivery == crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools
             && !managed_session
         {
             let frozen_requires_filesystem =

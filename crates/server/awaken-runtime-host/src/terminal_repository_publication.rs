@@ -58,7 +58,7 @@ impl ManagedHost {
             || staged.binding_checks.len() != 1
             || !matches!(
                 staged.binding_checks.first(),
-                Some(crate::provisioning::ResourceBindingCheck::Repository { .. })
+                Some(crate::staged_resources::ResourceBindingCheck::Repository { .. })
             )
         {
             return Err(RunError::internal(

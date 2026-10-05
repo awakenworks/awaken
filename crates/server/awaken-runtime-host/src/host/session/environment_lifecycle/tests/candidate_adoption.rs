@@ -396,7 +396,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                 thread,
                 environment.clone(),
                 &effect,
-                crate::session_slot::EnvironmentResourceReconciliation::Adopted,
+                crate::staged_resources::EnvironmentResourceReconciliation::Adopted,
             )
             .await;
         if fenced {
