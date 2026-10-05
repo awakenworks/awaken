@@ -60,6 +60,7 @@ pub struct ProviderConnectionSummary {
 
 #[derive(serde::Deserialize)]
 pub(super) struct ListProviderConnectionsQuery {
+    #[serde(default)]
     workspace_id: String,
 }
 
