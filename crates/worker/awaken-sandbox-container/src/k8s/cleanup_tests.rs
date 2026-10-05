@@ -403,11 +403,12 @@ async fn delayed_pod_create_cannot_be_closed_by_a_replacement_runtime() {
             !pause_before_effect,
             "C2 API acceptance and response delivery are separate cuts"
         );
-        assert!(
-            !replacement
-                .prove_unmaterialized_absence("scope", &ephemeral_plan(), Some(&fence))
+        assert_eq!(
+            replacement
+                .missing_handle_terminal_evidence("scope", &ephemeral_plan(), Some(&fence))
                 .await
                 .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unknown,
             "E1 replacement has no observed-attempt closure witness"
         );
         creating.kill().expect("C3 force-stop Worker process");

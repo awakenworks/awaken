@@ -129,7 +129,7 @@ mod tests {
     use kube::api::PostParams;
     use serde_json::json;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     struct RecordingBroker {
         requests: Mutex<Vec<(String, String)>>,
@@ -409,15 +409,16 @@ mod tests {
         };
         let fence =
             ContainerEffectFence::new("old-effect", "worker", "worker-boot", 1, u64::MAX).unwrap();
-        assert!(
-            !runtime(RequestJoin::Unknown)
-                .prove_unmaterialized_absence(
+        assert_eq!(
+            runtime(RequestJoin::Unknown)
+                .missing_handle_terminal_evidence(
                     "scope",
                     &super::super::ephemeral_plan(),
                     Some(&fence)
                 )
                 .await
                 .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unknown,
             "E1"
         );
         assert_eq!(
@@ -425,15 +426,16 @@ mod tests {
             0,
             "E1 no 404 used before join"
         );
-        assert!(
+        assert_eq!(
             runtime(RequestJoin::Complete(Vec::new()))
-                .prove_unmaterialized_absence(
+                .missing_handle_terminal_evidence(
                     "scope",
                     &super::super::ephemeral_plan(),
                     Some(&fence)
                 )
                 .await
                 .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unmaterialized,
             "E2"
         );
         assert_eq!(
@@ -453,15 +455,20 @@ mod tests {
             request: request.clone(),
             status,
         };
-        assert!(
+        assert_eq!(
             runtime(RequestJoin::Complete(vec![ticket(
                 super::super::TicketStatus::Finished(
                     super::super::TicketResult::RejectedNoEffect { code: 403 },
                 )
             )]))
-            .prove_unmaterialized_absence("scope", &super::super::ephemeral_plan(), Some(&fence))
+            .missing_handle_terminal_evidence(
+                "scope",
+                &super::super::ephemeral_plan(),
+                Some(&fence),
+            )
             .await
             .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unmaterialized,
             "H2 definitive refusal"
         );
         for status in [
@@ -470,17 +477,176 @@ mod tests {
             }),
             super::super::TicketStatus::InFlight,
         ] {
-            assert!(
-                !runtime(RequestJoin::Complete(vec![ticket(status)]))
-                    .prove_unmaterialized_absence(
+            assert_eq!(
+                runtime(RequestJoin::Complete(vec![ticket(status)]))
+                    .missing_handle_terminal_evidence(
                         "scope",
                         &super::super::ephemeral_plan(),
                         Some(&fence)
                     )
                     .await
                     .unwrap(),
+                crate::MissingHandleTerminalEvidence::Unknown,
                 "H3 a 404 cannot erase a materialized or unresolved Create"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn joined_created_pod_reconstructs_only_its_exact_live_incarnation() {
+        // Causes: C1 old request group is sealed and every ticket finished;
+        // C2 exactly one Created Pod ticket names the canonical scope and UID;
+        // C3 current Pod has the same UID, frozen effect, and no PVC; C4 the
+        // current Pod is foreign/terminating, an orphan claim exists, or
+        // another kind was Created.
+        // Effects: E1 C1+C2+C3 yields one typed incarnation for the existing
+        // handle-bound cleanup; E2 any C4 or absent C1/C2 stays Unknown and
+        // cannot turn a Pod GET into a cleanup receipt. Rules J1=C1+C2+C3->E1,
+        // J2=C1+C2+C4->E2, J3=!C1|!C2->E2.
+        let fence =
+            ContainerEffectFence::new("old-effect", "worker", "worker-boot", 1, u64::MAX).unwrap();
+        let plan = super::super::ephemeral_plan();
+        let base = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
+        let runtime_id = base.realization_runtime_id("scope").unwrap();
+        let name = super::super::pod_name(&runtime_id);
+        let fingerprint = serde_json::from_value(json!("fingerprint")).unwrap();
+        let intent = crate::ContainerRealizationIntent::Create;
+        let attempt = crate::fresh_create_attempt();
+        let context = crate::ContainerRealizationContext::new(
+            "scope",
+            &fingerprint,
+            Some(&fence),
+            &intent,
+            &attempt,
+        );
+        let mut pod = base.pod_for_effect(&runtime_id, &plan, Some(&fence));
+        base.stamp_effect_evidence(&mut pod, &context, &fingerprint);
+        super::super::stamp_pod_realization(&mut pod).unwrap();
+        pod.metadata.namespace = Some("default".into());
+        pod.metadata.uid = Some("old-uid".into());
+        pod.metadata.resource_version = Some("7".into());
+        let current = Arc::new(Mutex::new(pod));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let claim_present = Arc::new(AtomicBool::new(false));
+        let service = tower::service_fn({
+            let current = current.clone();
+            let calls = calls.clone();
+            let claim_present = claim_present.clone();
+            let name = name.clone();
+            move |request: Request<Body>| {
+                let current = current.clone();
+                let calls = calls.clone();
+                let claim_present = claim_present.clone();
+                let name = name.clone();
+                async move {
+                    assert_eq!(request.method(), Method::GET, "no new Create");
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    let is_pod =
+                        request.uri().path() == format!("/api/v1/namespaces/default/pods/{name}");
+                    let (status, body) = if is_pod {
+                        (
+                            200,
+                            serde_json::to_value(&*current.lock().unwrap()).unwrap(),
+                        )
+                    } else if claim_present.load(Ordering::SeqCst) {
+                        (
+                            200,
+                            json!({
+                                "apiVersion":"v1", "kind":"PersistentVolumeClaim",
+                                "metadata":{"name":"orphan", "namespace":"default", "uid":"claim-uid"}
+                            }),
+                        )
+                    } else {
+                        (
+                            404,
+                            json!({
+                                "apiVersion":"v1", "kind":"Status", "status":"Failure",
+                                "code":404, "reason":"NotFound"
+                            }),
+                        )
+                    };
+                    Ok::<_, std::io::Error>(
+                        Response::builder()
+                            .status(status)
+                            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                            .unwrap(),
+                    )
+                }
+            }
+        });
+        let direct = Client::new(service, "default");
+        let request = super::super::CreateTicketRequest::new(
+            "old-group",
+            "pods",
+            "default",
+            &name,
+            "a".repeat(64),
+        )
+        .unwrap();
+        let created = super::super::CreateTicket {
+            request,
+            status: super::super::TicketStatus::Finished(super::super::TicketResult::Created {
+                uid: "old-uid".into(),
+            }),
+        };
+        let runtime = |tickets| {
+            let mut runtime = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
+            runtime.clients.control = direct.clone();
+            runtime
+                .with_create_transport(Arc::new(RecordingBroker {
+                    requests: Mutex::new(Vec::new()),
+                    join: RequestJoin::Complete(tickets),
+                }))
+                .unwrap()
+        };
+        assert_eq!(
+            runtime(vec![created.clone()])
+                .missing_handle_terminal_evidence("scope", &plan, Some(&fence))
+                .await
+                .unwrap(),
+            crate::MissingHandleTerminalEvidence::ExactIncarnation {
+                container_id: name.clone(),
+                runtime_handle: crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+                    pod_uid: "old-uid".into(),
+                    claim_uid: None,
+                },
+            },
+            "J1"
+        );
+        current.lock().unwrap().metadata.uid = Some("foreign-uid".into());
+        assert_eq!(
+            runtime(vec![created.clone()])
+                .missing_handle_terminal_evidence("scope", &plan, Some(&fence))
+                .await
+                .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unknown,
+            "J2 same name with foreign UID"
+        );
+        current.lock().unwrap().metadata.uid = Some("old-uid".into());
+        claim_present.store(true, Ordering::SeqCst);
+        assert_eq!(
+            runtime(vec![created.clone()])
+                .missing_handle_terminal_evidence("scope", &plan, Some(&fence))
+                .await
+                .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unknown,
+            "J2 an unbound PVC is still a physical participant"
+        );
+        claim_present.store(false, Ordering::SeqCst);
+        let mut other = created;
+        other.request.resource = "configmaps".into();
+        assert_eq!(
+            runtime(vec![other])
+                .missing_handle_terminal_evidence("scope", &plan, Some(&fence))
+                .await
+                .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unknown,
+            "J2 another created participant"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            5,
+            "J2 other kind rejects before GET"
+        );
     }
 }

@@ -6,7 +6,7 @@
 //! port projection and its attached-agent transport sequence.
 
 use super::*;
-use crate::PreparedContainer;
+use crate::{MissingHandleTerminalEvidence, PreparedContainer};
 
 fn unmaterialized_absence_shape_is_closed(
     has_packages: bool,
@@ -289,12 +289,12 @@ impl ContainerRuntime for K8sRuntime {
             .map(drop)
     }
 
-    async fn prove_unmaterialized_absence(
+    async fn missing_handle_terminal_evidence(
         &self,
         scope: &str,
         plan: &ContainerPlan,
         expected_effect_fence: Option<&ContainerEffectFence>,
-    ) -> Result<bool, RuntimeError> {
+    ) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
         // Kubernetes creates the Pod before ConfigMaps, Secrets, Memory
         // projection, or control sidecars. For this deliberately narrow shape,
         // therefore, absence of the canonical Pod and PVC proves that no
@@ -306,25 +306,27 @@ impl ContainerRuntime for K8sRuntime {
             !plan.memory_mounts.is_empty(),
             continuation::claim_required(plan, self.continuation_volume.is_some()),
         ) {
-            return Ok(false);
+            return Ok(MissingHandleTerminalEvidence::Unknown);
         }
         let Some(expected_effect_fence) = expected_effect_fence else {
-            return Ok(false);
+            return Ok(MissingHandleTerminalEvidence::Unknown);
         };
+        let runtime_id = self.realization_runtime_id(scope)?;
+        let runtime_pod_name = pod_name(&runtime_id);
+        let mut created_pod_uid = None;
         if let Some(transport) = &self.create_transport {
             let joined = transport
                 .seal_predecessor(scope, expected_effect_fence)
                 .await?;
             let RequestJoin::Complete(tickets) = joined else {
-                return Ok(false);
+                return Ok(MissingHandleTerminalEvidence::Unknown);
             };
-            // A successful Create of any kind means a participant was
-            // materialized. Its later 404 does not prove it never ran or
-            // emitted effects. This handle-free *unmaterialized* proof only
-            // accepts definitively refused requests; created participants
-            // require the existing handle-bound cleanup and exact evidence.
-            if tickets.iter().any(|ticket| {
-                !matches!(
+            // The join covers every ticket of this Worker incarnation. One
+            // exact successful Pod may be reconstructed through the ordinary
+            // handle path; another successful/unknown participant remains
+            // Unknown, even if an API read currently returns 404.
+            for ticket in tickets {
+                if !matches!(
                     ticket.request.resource.as_str(),
                     "pods"
                         | "persistentvolumeclaims"
@@ -332,12 +334,21 @@ impl ContainerRuntime for K8sRuntime {
                         | "secrets"
                         | "jobs"
                         | "daemonsets"
-                ) || !matches!(
-                    &ticket.status,
-                    TicketStatus::Finished(TicketResult::RejectedNoEffect { .. })
-                )
-            }) {
-                return Ok(false);
+                ) {
+                    return Ok(MissingHandleTerminalEvidence::Unknown);
+                }
+                match ticket.status {
+                    TicketStatus::Finished(TicketResult::RejectedNoEffect { .. }) => {}
+                    TicketStatus::Finished(TicketResult::Created { uid })
+                        if ticket.request.resource == "pods"
+                            && ticket.request.namespace == self.namespace
+                            && ticket.request.name == runtime_pod_name
+                            && created_pod_uid.is_none() =>
+                    {
+                        created_pod_uid = Some(uid);
+                    }
+                    _ => return Ok(MissingHandleTerminalEvidence::Unknown),
+                }
             }
         } else {
             let Some(_closed_attempt) = self
@@ -346,26 +357,56 @@ impl ContainerRuntime for K8sRuntime {
             else {
                 // A direct-mode replacement cannot infer closure of a request
                 // it never joined. It never borrows the brokered proof path.
-                return Ok(false);
+                return Ok(MissingHandleTerminalEvidence::Unknown);
             };
         }
         self.admit_plan(plan).await?;
-        let runtime_id = self.realization_runtime_id(scope)?;
-        let runtime_pod_name = pod_name(&runtime_id);
         let pod = self
             .pods()
             .get_opt(&runtime_pod_name)
             .await
             .map_err(backend)?;
+        if let Some(pod_uid) = created_pod_uid {
+            let Some(pod) = pod else {
+                return Ok(MissingHandleTerminalEvidence::Unknown);
+            };
+            if pod.metadata.uid.as_deref() != Some(pod_uid.as_str())
+                || pod.metadata.deletion_timestamp.is_some()
+                || continuation::bound_claim_uid(&pod).is_some()
+                || !pod_effect_fence(pod.metadata.annotations.as_ref())?
+                    .is_some_and(|fence| fence.same_effect_identity(expected_effect_fence))
+            {
+                return Ok(MissingHandleTerminalEvidence::Unknown);
+            }
+            let claim = self
+                .persistent_volume_claims()
+                .get_opt(&continuation_claim_for_pod(&runtime_pod_name)?)
+                .await
+                .map_err(backend)?;
+            if claim.is_some() {
+                return Ok(MissingHandleTerminalEvidence::Unknown);
+            }
+            return Ok(MissingHandleTerminalEvidence::ExactIncarnation {
+                container_id: runtime_pod_name,
+                runtime_handle: crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+                    pod_uid,
+                    claim_uid: None,
+                },
+            });
+        }
         if pod.is_some() {
-            return Ok(false);
+            return Ok(MissingHandleTerminalEvidence::Unknown);
         }
         let claim = self
             .persistent_volume_claims()
             .get_opt(&continuation_claim_for_pod(&runtime_pod_name)?)
             .await
             .map_err(backend)?;
-        Ok(claim.is_none())
+        Ok(if claim.is_none() {
+            MissingHandleTerminalEvidence::Unmaterialized
+        } else {
+            MissingHandleTerminalEvidence::Unknown
+        })
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {

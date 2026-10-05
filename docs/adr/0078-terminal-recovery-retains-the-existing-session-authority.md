@@ -375,7 +375,7 @@ replacement process may claim closure. That witness must cover PVC, Pod,
 ConfigMap, Secret and other participants admitted by the frozen plan; an
 unknown broker lifetime or result remains Unknown. The existing provider
 `preflight_create_for_effect`, `prepare_for_effect`, `activate_for_effect`,
-`prove_unmaterialized_absence`, exact UID deletion and Session cleanup receipt
+`missing_handle_terminal_evidence`, exact UID deletion and Session cleanup receipt
 remain the only execution and cleanup path. The implementation must extend
 those ports rather than introduce a Flow cleanup queue or infer closure from
 Worker expiry. Until a provider-backed request join is implemented and tested
@@ -489,17 +489,26 @@ This closes the evidence-release ordering gap for newly registered independent
 Workers; missing legacy bindings remain Unknown.
 
 For the deliberately narrow handle-free, zero-participant Kubernetes shape,
-the provider now requires a complete sealed request join in which every
-admitted Create was definitively refused without effect. Any successful Create,
-even if the canonical Pod/PVC later returns 404, means the attempt may have
-materialized and must use handle-bound cleanup or remain Unknown. The request
-ledger is grouped conservatively by the entire Worker incarnation, so an
-unrelated successful Create can also keep this narrow proof Unknown; a future
-per-effect refinement must preserve that safety ordering and avoid a second
-ticket authority. In brokered mode the runtime does not enter the historical
-process-local Create gate, and a runtime that has already admitted a direct
-effect cannot switch transport modes. The gate remains only for direct-mode
-compatibility with its original process-lifetime proof boundary.
+the provider requires a complete sealed request join. All definitively refused
+Creates plus exact Pod/PVC absence prove no materialization. A single successful
+canonical Pod Create can instead be joined to its still-live original UID and
+effect fence, provided no PVC or other successful participant exists and the
+frozen spec has no mount or control-service owner. The provider constructs a
+temporary typed V2 handle and runs the existing terminal observation,
+preparation and UID-fenced disposal; it does not issue a cleanup receipt from
+the ticket alone. A Created Pod that has already disappeared, a terminating or
+foreign Pod, an orphan claim, another Created kind, or an InFlight ticket remains
+Unknown. In particular, a Coordinator hard exit after forwarding the API POST
+but before retaining its outcome is still unresolved; no later 404 converts
+that ticket into a joined result.
+
+The request ledger is grouped conservatively by the entire Worker incarnation,
+so an unrelated successful Create can also keep this narrow proof Unknown; a
+future per-effect refinement must preserve that safety ordering and avoid a
+second ticket authority. In brokered mode the runtime does not enter the
+historical process-local Create gate, and a runtime that has already admitted a
+direct effect cannot switch transport modes. The gate remains only for
+direct-mode compatibility with its original process-lifetime proof boundary.
 
 ## Amendment 2026-10-05: unfinished terminal cleanup remains Worker demand
 
