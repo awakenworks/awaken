@@ -1,7 +1,7 @@
-//! The webhook plane (ADR-0048 / S10). The shared bridge owns outbox delivery;
+//! The webhook plane (ADR-0048 / S10). `awaken-webhook` owns lifecycle delivery;
 //! Coordinator owns the guarded request-scope adapter because only its ingress
 //! can interpret Control's authenticated tenancy.
-pub use awaken_webhook_managed::*;
+pub use awaken_webhook::lifecycle::*;
 
 use awaken_authz_enforce::RequestTenancy;
 use awaken_tenancy::WorkspaceScope;

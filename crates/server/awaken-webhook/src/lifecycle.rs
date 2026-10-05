@@ -1,21 +1,19 @@
 // @formal surface obligation=webhook.delivery_requires_an_enqueued_fact
 // @formal surface obligation=webhook.failed_delivery_remains_pending
 // @formal surface obligation=webhook.periodic_retry_never_retires_a_failed_fact
-// @formal reason: Managed lifecycle to Webhook dispatch adapter over injected ports.
-//! Managed lifecycle delivery over an injected subscription source.
+// @formal reason: Session lifecycle to Webhook dispatch adapter over injected ports.
+//! Session lifecycle delivery over an injected subscription source.
 //!
-//! The managed webhook bridge connects the managed session lifecycle (the
-//! `LifecycleFactDelivery` port, in `awaken-session-application-contract`) to `awaken-webhook`'s
-//! delivery machinery. Control injects its subscription/secret source; this
-//! bridge owns no authoring store, material, or second outbox.
+//! This adapter implements the Session lifecycle delivery port
+//! (`LifecycleFactDelivery`, in `awaken-session-application-contract`) with this
+//! crate's dispatcher. Control injects its subscription/secret source; the
+//! adapter owns no authoring store, material, or second outbox.
 
 use std::sync::Arc;
 
+use crate::{ReqwestSender, SubscriptionSource, WebhookDispatcher, WebhookEvent, WebhookSender};
 use awaken_session_application_contract::LifecycleFactDelivery;
 use awaken_session_state_contract::ManagedLifecycleFact;
-use awaken_webhook::{
-    ReqwestSender, SubscriptionSource, WebhookDispatcher, WebhookEvent, WebhookSender,
-};
 
 pub struct ConfigPlaneLifecycleDelivery {
     dispatcher: Arc<WebhookDispatcher>,

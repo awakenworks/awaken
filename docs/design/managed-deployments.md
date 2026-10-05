@@ -36,7 +36,7 @@ modified, or genuinely new before describing the dependency graph.
 | executable Agent version truth | `ExecutableAgentRegistrationSource` | validates and freezes the requested latest or pinned Agent version |
 | Session creation and initial Event admission | `ManagedState::create_deployment_session_with_initial_events` over the canonical Session create command and its root-owned initial-Event plan | the only Deployment-to-execution path, idempotent by DeploymentRun |
 | organization create admission | `ManagedRateLimiter` | shares the ordinary Session-create bucket |
-| webhook delivery and retry | `WebhookOutboxNotifier` over `LifecycleFactDelivery` | drains the sole Managed lifecycle outbox; notifications carry no fact payload |
+| webhook delivery and retry | `LifecycleOutboxRelay` over `LifecycleFactDelivery` | drains the sole Managed lifecycle outbox; notifications carry no fact payload |
 
 ### Modified existing owners
 
@@ -73,7 +73,7 @@ HTTP adapter (official DTOs)
             `- ManagedState (ordinary Session/Event authority)
 
 ManagedLifecycleFact outbox
-  `- WebhookOutboxNotifier -> LifecycleFactDelivery -> official deployment.* / deployment_run.* events
+  `- LifecycleOutboxRelay -> LifecycleFactDelivery -> official deployment.* / deployment_run.* events
 ```
 
 `DeploymentApplication` keeps a locked working projection for fast list/retrieve and
@@ -218,7 +218,7 @@ Cause/effect and decision rules live in comments beside their tests.
 | official cross-module HTTP -> ordinary Session/Event behavior and future-only budget copy/update/null | `deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_events` |
 | official TypeScript SDK CRUD, paused manual run, sole `user.define_outcome`, per-run budget/budget_reached, rate-limit run, filters and archive | `management_deployments_e2e.mjs` |
 | official TypeScript SDK cron scheduling, persisted cursor, primary/subagent archive behavior | `management_deployment_schedule_e2e.mjs` |
-| durable lifecycle retry, real Deployment/run lifecycle projection, signatures, and official SDK decoding | `webhook_plane_e2e.rs`, `managed_webhooks_official_sdk_e2e.mjs`, and `awaken-webhook-managed` outbox tests |
+| durable lifecycle retry, real Deployment/run lifecycle projection, signatures, and official SDK decoding | `webhook_plane_e2e.rs`, `managed_webhooks_official_sdk_e2e.mjs`, and the awaken-control `webhook_plane.rs` outbox tests |
 
 ## References
 
