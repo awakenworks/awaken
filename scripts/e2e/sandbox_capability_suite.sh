@@ -26,6 +26,7 @@
 #   G7 MemoryMounter FUSE write-through | /dev/fuse host   | read/write/rename/persist-across-remount ;
 #                                       |                  | shared-mount coherence ; copy fallback
 #   G3 fault != success (fail closed)   | real docker      | OOM/read-only surface non-zero exit, never fake ok
+#   G2 independent local Worker stop    | systemd user     | retained unit binding -> exact stop -> adapter reopen
 #
 # Env: KUBECONFIG (for the k8s layer) — a k3d cluster with busybox:latest + awaken-bb:1
 # imported (see k8s_container_e2e.sh). AWAKEN_SKIP_K8S=1 skips the k8s layer.
@@ -198,6 +199,24 @@ if [ -e /dev/fuse ] && { command -v fusermount >/dev/null || command -v fusermou
   fi
 else
   skip "/dev/fuse or fusermount unavailable (copy fallback path is the alternative)"
+fi
+
+# The existing systemd Worker evidence test owns the local process-exit rows.
+# C1 trusted user manager/launcher available; C2 original unit binding is
+# retained before Ready; C3 hard stop and adapter reopen. E1 the same exact
+# process-exit receipt survives restart; E2 absent C1 is an explicit substrate
+# skip that --require-substrates refuses. No second local stop adapter is built.
+step "G2 independent local Worker exit against the real systemd user manager"
+if command -v systemctl >/dev/null 2>&1 \
+   && command -v systemd-run >/dev/null 2>&1 \
+   && command -v env >/dev/null 2>&1 \
+   && systemctl --user --no-pager show-environment >/dev/null 2>&1; then
+  run "systemd:exact-worker-exit-after-reopen" \
+    env AWAKEN_SYSTEMD_WORKER_E2E=1 \
+    cargo test -q -p awaken-coordinator --lib \
+      live_systemd_unit_stop_survives_adapter_reopen
+else
+  skip "systemd user manager or trusted launcher unavailable"
 fi
 
 # ── Optional: line-coverage of the pure-Rust sandbox-change surface (COVERAGE=1) ─

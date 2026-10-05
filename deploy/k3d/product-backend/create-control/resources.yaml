@@ -28,3 +28,62 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: awaken-create-ledger
+---
+# A reserved Pod name must remain occupied while its predecessor's admitted
+# Create may still finish. The finalizer retains intent; this policy makes
+# UPDATE/DELETE by either runtime ServiceAccount fail closed.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: awaken-create-isolation
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector:
+      matchLabels:
+        awaken.dev/create-isolation: "true"
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["UPDATE", "DELETE"]
+        resources: ["pods"]
+        scope: Namespaced
+  validations:
+    - expression: "false"
+      message: Awaken Create isolation is retained until the original request is joined
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: awaken-create-isolation
+spec:
+  policyName: awaken-create-isolation
+  validationActions: [Deny]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: awaken-create-isolation-read
+rules:
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingadmissionpolicies", "validatingadmissionpolicybindings"]
+    resourceNames: ["awaken-create-isolation"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: awaken-create-isolation-read
+subjects:
+  - kind: ServiceAccount
+    name: awaken-product
+    namespace: awaken-system
+  - kind: ServiceAccount
+    name: awaken-worker
+    namespace: awaken-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: awaken-create-isolation-read

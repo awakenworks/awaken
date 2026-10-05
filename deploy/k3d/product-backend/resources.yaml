@@ -113,7 +113,7 @@ rules:
   # signed Coordinator broker and its independently retained Create ticket.
   - apiGroups: [""]
     resources: ["pods", "configmaps"]
-    verbs: ["get", "list", "update", "delete", "deletecollection"]
+    verbs: ["get", "list", "update", "delete"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "delete"]

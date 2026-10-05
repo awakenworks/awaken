@@ -85,7 +85,12 @@ impl ApiState {
                     .parse()
                     .unwrap();
                 replacement.metadata.resource_version = Some((version + 1).to_string());
-                self.pod = if releasing {
+                let finalizers_empty = replacement
+                    .metadata
+                    .finalizers
+                    .as_ref()
+                    .is_none_or(Vec::is_empty);
+                self.pod = if old.metadata.deletion_timestamp.is_some() && finalizers_empty {
                     None
                 } else {
                     Some(replacement.clone())
@@ -317,6 +322,62 @@ async fn cancelled_connections_before_http_acceptance_leave_cleanup_available() 
         );
         assert_eq!(state.writes.len(), 8, "R2 exact cleanup effects");
         assert!(state.pod.is_none() && state.claim.is_none() && state.projected.is_empty());
+    }
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+}
+
+#[tokio::test]
+async fn broker_original_guard_releases_after_exact_terminal_cleanup() {
+    // Causes: C1 a brokered Pod has the result guard and a retained exact
+    // Pod/PVC handle; C2 removal is unreceipted or carries current terminal
+    // authority; C3 UID stays exact through Pod delete and two finalizer CASes.
+    // Effects: E1 unreceipted removal makes no write and keeps the guard;
+    // E2 C1+C2(current)+C3 deletes the claim/projected participants, starts
+    // exact Pod deletion, removes the continuation and result guards, and
+    // observes original UID absence. Rules BG1=C1+C2(unreceipted)->E1,
+    // BG2=C1+C2(current)+C3->E2. A disappearing/foreign UID remains covered
+    // by the existing KCE/KCA failure rows.
+    let (runtime, state, _, _, server) = fixture(0, false).await;
+    state
+        .lock()
+        .unwrap()
+        .pod
+        .as_mut()
+        .unwrap()
+        .metadata
+        .finalizers = Some(vec![create_ledger::ORIGINAL_GUARD_FINALIZER.into()]);
+    let authorization = crate::tests::disposal_authorization(
+        &pc::SandboxEffectFence::new("cleanup", "owner", "boot", 1, u64::MAX - 1).unwrap(),
+    );
+    let authority = EffectAuthority::new(authorization.effect_fence());
+    let handle = continuation::handle_extra(state.lock().unwrap().pod.as_ref().unwrap()).unwrap();
+    assert!(runtime.remove("awaken-cleanup").await.is_err(), "BG1");
+    assert!(state.lock().unwrap().writes.is_empty(), "BG1 no mutation");
+    runtime
+        .remove_exact_incarnation(
+            "awaken-cleanup",
+            handle.as_ref(),
+            &authorization,
+            &authority,
+        )
+        .await
+        .unwrap();
+    {
+        let state = state.lock().unwrap();
+        assert!(
+            state.pod.is_none() && state.claim.is_none() && state.projected.is_empty(),
+            "BG2"
+        );
+        assert!(
+            state
+                .writes
+                .iter()
+                .filter(|write| write.as_str() == "PUT pods")
+                .count()
+                >= 3,
+            "BG2 both finalizers were CASed"
+        );
     }
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());

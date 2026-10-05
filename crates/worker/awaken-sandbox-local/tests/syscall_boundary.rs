@@ -402,11 +402,13 @@ async fn networkless_workdir_shell_cannot_reach_host_daemon_sockets() {
         eprintln!("skipping: bwrap/userns, bash or python3 unavailable on this host");
         return;
     }
-    // A host daemon socket outside /tmp (which the shell masks), readable
-    // through the Workdir tier's read-only host view.
+    // W1 causes: /tmp is masked by the shell; a host daemon socket must live
+    // outside it, yet the sockaddr path must fit Linux SUN_LEN even when Cargo
+    // uses a deeply nested target. /var/tmp is a short, host-visible control
+    // path. Effects: unrestricted shell connects, networkless shell gets EPERM.
     let directory = tempfile::Builder::new()
         .prefix("awaken-daemon-")
-        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .tempdir_in("/var/tmp")
         .unwrap();
     let path = directory.path().join("daemon.sock");
     let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
@@ -466,16 +468,28 @@ async fn session_path_never_selects_the_isolation_launcher() {
     .unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
 
+    // L1 host control: a private sibling under HOME exists outside the
+    // Session-declared runtime PATH root. The namespace may create /home as
+    // an empty bind parent; its mere existence does not expose host HOME.
+    let private_host = tempfile::Builder::new()
+        .prefix("awaken-host-private-")
+        .tempdir_in(std::path::PathBuf::from(
+            std::env::var_os("HOME").expect("L1 operator HOME"),
+        ))
+        .unwrap();
+    assert!(private_host.path().exists(), "L1 host control exists");
     let tmp = tempfile::tempdir().unwrap();
     let provider = NamespaceProvider::new(tmp.path());
     let sandbox = provider
         .create(&namespace_spec("launcher-trust", pc::NetworkPolicy::None))
         .await
         .unwrap();
-    let mut command = pc::Command::new([
-        "sh",
-        "-c",
-        "test ! -e /home && test -d /mnt/session/outputs && echo confined > /mnt/session/outputs/where",
+    let mut command = pc::Command::new(vec![
+        "sh".to_owned(),
+        "-c".to_owned(),
+        "test ! -e \"$1\" && test -d /mnt/session/outputs && echo confined > /mnt/session/outputs/where".to_owned(),
+        "sh".to_owned(),
+        private_host.path().to_string_lossy().into_owned(),
     ]);
     command.stdio = pc::Stdio::Null;
     command.env.push(pc::EnvVar {

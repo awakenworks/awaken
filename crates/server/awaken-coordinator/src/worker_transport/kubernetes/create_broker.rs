@@ -20,8 +20,9 @@ use awaken_dispatch::{
 };
 use awaken_sandbox_container::ContainerEffectFence;
 use awaken_sandbox_container::k8s::{
-    CreateTicketRequest, K8sCreateRequest, K8sCreateResponse, K8sLedgerBinding,
-    K8sWorkerCreateLedger, PodProcessBinding, RequestJoin, TicketAdmission, TicketResult,
+    CreateTicketRequest, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, K8sCreateRequest,
+    K8sCreateResponse, K8sLedgerBinding, K8sWorkerCreateLedger, ORIGINAL_GUARD_FINALIZER,
+    PodProcessBinding, REQUEST_DIGEST_ANNOTATION, RequestJoin, TicketAdmission, TicketResult,
 };
 use awaken_worker_transport_security::kubernetes::KubernetesPodIdentity;
 use awaken_worker_transport_security::{
@@ -176,6 +177,30 @@ fn validate_create(
             "Kubernetes Create realization digest is malformed",
         ));
     }
+    if resource == "pods"
+        && (metadata
+            .get("labels")
+            .and_then(Value::as_object)
+            .is_some_and(|labels| labels.contains_key(ISOLATION_LABEL))
+            || metadata
+                .get("annotations")
+                .and_then(Value::as_object)
+                .is_some_and(|annotations| {
+                    annotations.contains_key(ISOLATION_ID_ANNOTATION)
+                        || annotations.contains_key(REQUEST_DIGEST_ANNOTATION)
+                })
+            || metadata.get("finalizers").is_some_and(|finalizers| {
+                finalizers.as_array().is_none_or(|values| {
+                    values
+                        .iter()
+                        .any(|value| value.as_str() == Some(ORIGINAL_GUARD_FINALIZER))
+                })
+            }))
+    {
+        return Err(ApplicationError::invalid(
+            "Worker Pod Create cannot supply provider-owned isolation evidence",
+        ));
+    }
     let body = serde_json::to_vec(&create.object)
         .map_err(|_| ApplicationError::invalid("Kubernetes Create object cannot be encoded"))?;
     let fingerprint =
@@ -189,6 +214,38 @@ fn validate_create(
         body,
         ticket,
     })
+}
+
+fn stamp_admitted_pod(
+    body: Vec<u8>,
+    isolation_id: &str,
+    request_digest: &str,
+) -> Result<Vec<u8>, ApplicationError> {
+    if isolation_id.is_empty() {
+        return Err(ApplicationError::unavailable(
+            "historical Pod Create has no provider-owned isolation identity",
+        ));
+    }
+    let mut object: Value = serde_json::from_slice(&body)
+        .map_err(|_| ApplicationError::internal("admitted Pod Create bytes are invalid"))?;
+    let metadata = object
+        .get_mut("metadata")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| ApplicationError::internal("admitted Pod Create metadata is missing"))?;
+    let annotations = metadata.entry("annotations").or_insert_with(|| json!({}));
+    let annotations = annotations
+        .as_object_mut()
+        .ok_or_else(|| ApplicationError::internal("admitted Pod annotations are invalid"))?;
+    annotations.insert(ISOLATION_ID_ANNOTATION.into(), isolation_id.into());
+    annotations.insert(REQUEST_DIGEST_ANNOTATION.into(), request_digest.into());
+    let finalizers = metadata
+        .entry("finalizers")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .ok_or_else(|| ApplicationError::internal("admitted Pod finalizers are invalid"))?;
+    finalizers.push(ORIGINAL_GUARD_FINALIZER.into());
+    serde_json::to_vec(&object)
+        .map_err(|_| ApplicationError::internal("admitted Pod Create cannot be encoded"))
 }
 
 fn binding<'a>(
@@ -378,6 +435,9 @@ impl K8sCreateBroker {
             TicketAdmission::Finished(TicketResult::Created { .. }) => {
                 Ok(status_response(409, "AlreadyExists"))
             }
+            TicketAdmission::Finished(TicketResult::Isolated { .. }) => {
+                Ok(status_response(409, "AlreadyExists"))
+            }
             TicketAdmission::Finished(TicketResult::RejectedNoEffect { code }) => {
                 Ok(status_response(code, "Rejected"))
             }
@@ -442,11 +502,18 @@ impl K8sCreateBroker {
         self.ledger.seal_worker(exact).await.map_err(|_| {
             ApplicationError::unavailable("old Worker Create ledger could not be sealed")
         })?;
+        let group = group_for(&identity);
         self.ledger
-            .seal_group_and_join(exact, &group_for(&identity))
+            .seal_group_and_join(exact, &group)
             .await
             .map_err(|_| {
                 ApplicationError::unavailable("old Worker Create requests remain unjoined")
+            })?;
+        self.ledger
+            .isolate_sealed_group_and_join(exact, &group)
+            .await
+            .map_err(|_| {
+                ApplicationError::unavailable("old Worker Pod Create isolation is unverified")
             })
     }
 
@@ -481,11 +548,29 @@ impl K8sCreateBroker {
                 })?;
             return Ok(status_response(403, "Forbidden"));
         }
+        let body = if create.ticket.resource == "pods" {
+            let admitted = self
+                .ledger
+                .ticket_for(
+                    binding(&self.ledger, &anchor, &pod, &self.provider_id)?,
+                    &create.ticket,
+                )
+                .await
+                .map_err(|_| {
+                    ApplicationError::unavailable("admitted Pod Create ticket is unavailable")
+                })?
+                .ok_or_else(|| {
+                    ApplicationError::unavailable("admitted Pod Create ticket is missing")
+                })?;
+            stamp_admitted_pod(create.body, &admitted.isolation_id, &create.ticket.digest)?
+        } else {
+            create.body
+        };
         let request = Request::builder()
             .method(Method::POST)
             .uri(create.path.as_str())
             .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(create.body))
+            .body(Body::from(body))
             .map_err(|_| ApplicationError::internal("Worker Create path could not be encoded"))?;
         let response =
             self.api_client.send(request).await.map_err(|_| {
@@ -612,6 +697,9 @@ mod tests {
             json!({"metadata":{"name":"target","namespace":"foreign","annotations":{"awaken.dev/realization-digest":"a".repeat(64)}}}),
             json!({"metadata":{"name":"target","namespace":"ns","generateName":"other-","annotations":{"awaken.dev/realization-digest":"a".repeat(64)}}}),
             json!({"metadata":{"name":"target","namespace":"ns"}}),
+            json!({"metadata":{"name":"target","namespace":"ns","labels":{(ISOLATION_LABEL):"true"},"annotations":{"awaken.dev/realization-digest":"a".repeat(64)}}}),
+            json!({"metadata":{"name":"target","namespace":"ns","annotations":{"awaken.dev/realization-digest":"a".repeat(64),(ISOLATION_ID_ANNOTATION):"forged"}}}),
+            json!({"metadata":{"name":"target","namespace":"ns","finalizers":[ORIGINAL_GUARD_FINALIZER],"annotations":{"awaken.dev/realization-digest":"a".repeat(64)}}}),
         ] {
             assert!(
                 validate_create(
@@ -639,7 +727,10 @@ mod tests {
         // Rules R1=C1+C2=>E1, R2=R1+C4(before)=>E2,
         // R3=R1+C3+API success=>E3, R4=R3+C4(after)=>E4. C5 a
         // Registry-persisted exact Pod exit arrives; E5 only C5 plus settled
-        // tickets can seal and join, never an expired lease alone.
+        // tickets can seal and join, never an expired lease alone. C6 the
+        // broker forwards a Pod after first CAS; E6 its two provider-owned
+        // annotations equal the admitted ticket, and its original-Pod guard
+        // finalizer is installed before Kubernetes can publish the Pod.
         let stored = Arc::new(Mutex::new(None::<Value>));
         let pod_posts = Arc::new(AtomicUsize::new(0));
         let started = Arc::new(Notify::new());
@@ -719,6 +810,37 @@ mod tests {
                             }
                         }
                         ("POST", "/api/v1/namespaces/sandbox-ns/pods") => {
+                            {
+                                let stored = stored.lock().unwrap();
+                                let ledger: Value = serde_json::from_str(
+                                    stored.as_ref().unwrap()["data"]["ledger"].as_str().unwrap(),
+                                )
+                                .unwrap();
+                                let ticket = ledger["tickets"]
+                                    .as_object()
+                                    .unwrap()
+                                    .values()
+                                    .next()
+                                    .unwrap();
+                                assert_eq!(
+                                    body["metadata"]["annotations"][ISOLATION_ID_ANNOTATION],
+                                    ticket["isolation_id"],
+                                    "E6 exact admission identity"
+                                );
+                                assert_eq!(
+                                    body["metadata"]["annotations"][REQUEST_DIGEST_ANNOTATION],
+                                    ticket["request"]["digest"],
+                                    "E6 exact request digest"
+                                );
+                                assert!(
+                                    body["metadata"]["finalizers"]
+                                        .as_array()
+                                        .unwrap()
+                                        .iter()
+                                        .any(|value| value == ORIGINAL_GUARD_FINALIZER),
+                                    "E6 original Pod cannot disappear before its ticket result"
+                                );
+                            }
                             pod_posts.fetch_add(1, Ordering::SeqCst);
                             started.notify_one();
                             release.notified().await;
