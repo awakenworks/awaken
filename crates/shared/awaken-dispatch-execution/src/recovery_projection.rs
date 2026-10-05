@@ -298,30 +298,35 @@ mod verification {
 
     /// @obligation remote_worker.recovery_projection_is_committed_prefix
     /// @kani default-features=false
-    /// @proof-input-debt free_symbol classify_recovery_snapshot_admission run_matches
-    /// @proof-input-debt free_symbol classify_recovery_snapshot_admission thread_matches
     #[kani::proof]
     fn recovery_snapshot_admission_requires_exact_claim_identity() {
-        // Causes: C1 returned Run matches the claim; C2 returned Thread matches
-        // the guarded dispatch. Effects: E1 admit the snapshot; E2 reject it as
-        // the wrong Run; E3 reject it as the wrong Thread. Decision rules:
-        // R1=C1+C2=>E1, R2=!C1=>E2, R3=C1+!C2=>E3. These rules are exhaustive
-        // and Run mismatch has stable precedence when both identities differ.
-        let run_matches: bool = kani::any();
-        let thread_matches: bool = kani::any();
-        let admission = classify_recovery_snapshot_admission(run_matches, thread_matches);
-        assert_eq!(
-            admission == RecoverySnapshotAdmission::Exact,
-            run_matches && thread_matches
+        // Causes: C1 returned Run is exact/foreign; C2 returned Thread is
+        // exact/foreign. Effects: R1 C1+C2 admits; R2 !C1 rejects as WrongRun
+        // even when C2 is false; R3 C1+!C2 rejects as WrongThread. The
+        // production install door derives both comparisons from these IDs.
+        let claimed_run = RunId("run:claimed".into());
+        let claimed_thread = ThreadId("thread:claimed".into());
+        let returned_run = if kani::any::<bool>() {
+            claimed_run.clone()
+        } else {
+            RunId("run:foreign".into())
+        };
+        let returned_thread = if kani::any::<bool>() {
+            claimed_thread.clone()
+        } else {
+            ThreadId("thread:foreign".into())
+        };
+        let admission = classify_recovery_snapshot_admission(
+            &returned_run == &claimed_run,
+            &returned_thread == &claimed_thread,
         );
-        assert_eq!(
-            admission == RecoverySnapshotAdmission::WrongRun,
-            !run_matches
-        );
-        assert_eq!(
-            admission == RecoverySnapshotAdmission::WrongThread,
-            run_matches && !thread_matches
-        );
+        if returned_run != claimed_run {
+            assert_eq!(admission, RecoverySnapshotAdmission::WrongRun);
+        } else if returned_thread != claimed_thread {
+            assert_eq!(admission, RecoverySnapshotAdmission::WrongThread);
+        } else {
+            assert_eq!(admission, RecoverySnapshotAdmission::Exact);
+        }
     }
 
     /// @obligation remote_worker.acknowledged_projection_is_monotonic
@@ -465,5 +470,83 @@ impl CommittedThreadView for RecoveryProjection {
                     .map(|snapshot| snapshot.state.clone())
             })
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::*;
+
+    fn snapshot(run_id: RunId, thread_id: ThreadId, thread_version: u64) -> RunRecoverySnapshot {
+        RunRecoverySnapshot {
+            thread_id,
+            claimed_run_id: run_id,
+            runs: Vec::new(),
+            latest_run_id: None,
+            messages: Vec::new(),
+            message_commit_cursors: Vec::new(),
+            commit_timestamps: Default::default(),
+            state: Vec::new(),
+            state_commit_cursors: Vec::new(),
+            events: Vec::new(),
+            resume_tickets: Vec::new(),
+            thread_version,
+            store_cursor: 0,
+            next_commit_ordinal: 0,
+        }
+    }
+
+    #[test]
+    fn install_rejects_foreign_identity_without_replacing_the_committed_prefix() {
+        // Causes: C1 returned Run exact/foreign; C2 returned Thread
+        // exact/foreign; C3 an earlier committed prefix is installed.
+        // Effects: R1 !C1 rejects as WrongRun, including !C1+!C2; R2
+        // C1+!C2 rejects as WrongThread; both preserve C3; R3 C1+C2 installs
+        // the new prefix. Run mismatch has stable precedence over Thread.
+        let claimed_run = RunId("run:claimed".into());
+        let claimed_thread = ThreadId("thread:claimed".into());
+        let foreign_run = RunId("run:foreign".into());
+        let foreign_thread = ThreadId("thread:foreign".into());
+        let projection = RecoveryProjection::new();
+        let previous = snapshot(claimed_run.clone(), claimed_thread.clone(), 1);
+        projection
+            .install(&claimed_run, &claimed_thread, previous.clone())
+            .expect("R3 first committed prefix");
+
+        for (run, thread, expected_error) in [
+            (foreign_run.clone(), claimed_thread.clone(), "run"),
+            (foreign_run, foreign_thread.clone(), "run"),
+            (claimed_run.clone(), foreign_thread, "thread"),
+        ] {
+            let error = projection
+                .install(&claimed_run, &claimed_thread, snapshot(run, thread, 2))
+                .expect_err("R1/R2 foreign snapshot cannot replace the prefix");
+            match (expected_error, error) {
+                ("run", RecoveryProjectionError::WrongRun { expected, actual }) => {
+                    assert_eq!(
+                        (expected.as_str(), actual.as_str()),
+                        ("run:claimed", "run:foreign")
+                    );
+                }
+                ("thread", RecoveryProjectionError::WrongThread { expected, actual }) => {
+                    assert_eq!(
+                        (expected.as_str(), actual.as_str()),
+                        ("thread:claimed", "thread:foreign")
+                    );
+                }
+                (_, other) => panic!("wrong identity error: {other}"),
+            }
+            assert_eq!(
+                projection.current(),
+                Some(previous.clone()),
+                "R1/R2 C3 retained"
+            );
+        }
+
+        let replacement = snapshot(claimed_run.clone(), claimed_thread.clone(), 2);
+        projection
+            .install(&claimed_run, &claimed_thread, replacement.clone())
+            .expect("R3 exact replacement");
+        assert_eq!(projection.current(), Some(replacement), "R3 new prefix");
     }
 }
