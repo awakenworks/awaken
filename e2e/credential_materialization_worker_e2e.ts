@@ -8,14 +8,14 @@
 // Session and its Work fence remain required even without session_thread_id;
 // P1 exact recipient + live expiry + payload marker + target + claim -> one
 // provider call, one committed reply; P2 changed envelope/target dimensions
-// are owned by credential_files.rs's concrete resolver decision table; P3 no
+// fail in that same Worker without another provider call; P3 no
 // authority DB/seal configuration -> Worker starts and leaves no authority
 // files; P5 the current seed owner commits its exact Run as Ended
 // and receives a durable receipt before terminal observation and Done removal;
 // P6 remote upstream + registered installed capabilities -> the per-Thread
 // Worker revalidates the SAME evidence before materialization; transport presence
-// must not erase it. P1 is this process E2E's positive cross-layer oracle;
-// P2's negative partitions are not duplicated in a synthetic Session Run.
+// must not erase it. The concrete resolver owns the full unit decision table;
+// this process test selects its four cross-boundary rejection causes.
 
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -24,7 +24,7 @@ import type { Server as HttpsServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { deploymentEnv, spawnServer, stopServer, waitForPort } from './harness.mjs';
+import { deploymentEnv, spawnServer, stopServer, waitForPort, waitForValue } from './harness.mjs';
 // @ts-ignore -- shared JavaScript fixture intentionally serves TS scenarios.
 import { withoutAmbientProviderKeys } from './process_environment.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
@@ -44,6 +44,7 @@ import {
 import { createTlsIdentityFixture } from './fixtures/tls_identity_fixture.mjs';
 import { startTlsProxy, stopTlsProxy } from './fixtures/tls_proxy_fixture.mjs';
 import { stableFingerprintFixture } from './fixtures/stable_fingerprint_fixture.mjs';
+import { sqliteDatabaseForThread, sqliteScalar } from './sqlite.mjs';
 // @ts-expect-error The shared Cargo artifact resolver is intentionally JavaScript.
 import { WORKER_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 
@@ -133,6 +134,43 @@ async function waitForReply(timeoutMs = 30_000) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`provider reply was not committed: ${JSON.stringify(messages)}`);
+}
+
+async function waitForRejectedRun(database: string, runId: string, expected: RegExp) {
+  const phase: any = await waitForValue(() => {
+    const serialized = sqliteScalar(
+      database, 'SELECT phase FROM runtime_run_record WHERE run_id = ?', runId,
+    );
+    return serialized ? JSON.parse(String(serialized)) : null;
+  }, (value: any) => Boolean(value?.Ended), `${runId} committed terminal Run`, {
+    timeoutMs: 30_000, pollMs: 50,
+  });
+  assert.equal(phase?.Ended?.Error?.Inference?.code, 'binding_rejected',
+    `${runId} must be rejected by the claimed Worker before execution: ${JSON.stringify(phase)}`);
+  assert.match(phase.Ended.Error.Inference.message, expected, runId);
+  await waitForValue(async () => {
+    const observed = await request('GET', `/v1/durable/threads/${THREAD}/dispatches`);
+    assert.equal(observed.status, 200, observed.text);
+    return observed.json.dispatches.find((entry: any) => entry.run_id === runId);
+  }, (row: any) => row === undefined, `${runId} exact dispatch settlement`, {
+    timeoutMs: 30_000, pollMs: 50,
+  });
+}
+
+async function assertIneligibleRun(runId: string) {
+  // The canonical admission keeps a non-executable credential in the durable
+  // queue for an exact renewed delivery. A placement reservation may show as
+  // Leased, but it cannot start a physical attempt or call the provider.
+  const row: any = await waitForValue(async () => {
+    const observed = await request('GET', `/v1/durable/threads/${THREAD}/dispatches`);
+    assert.equal(observed.status, 200, observed.text);
+    return observed.json.dispatches.find((entry: any) => entry.run_id === runId);
+  }, (value: any) => Boolean(value), `${runId} durable admission row`, {
+    timeoutMs: 5_000, pollMs: 50,
+  });
+  assert.ok(['Pending', 'Leased'].includes(row.status),
+    `${runId} must stay before execution: ${JSON.stringify(row)}`);
+  assert.equal(row.attempts, 0, `${runId} started a physical attempt: ${JSON.stringify(row)}`);
 }
 
 async function main() {
@@ -322,7 +360,7 @@ async function main() {
     const materialRoot = path.join(storage, 'projected-worker-credentials');
     const targetUseFingerprint = stableFingerprintFixture([
       [publishedCandidate.provisioning.provider_ref, publishedCandidate.provisioning.endpoint],
-      publishedCandidate.provisioning.credential.usage,
+      (publishedCandidate.provisioning.credential as { usage: unknown }).usage,
     ]);
     const materialDirectory = path.join(
       materialRoot,
@@ -383,6 +421,79 @@ async function main() {
       1,
       `only the valid pin reached the provider endpoint: ${JSON.stringify(upstream.requests)}`,
     );
+    const runDatabase = sqliteDatabaseForThread(storage, THREAD, 'runtime_message');
+    // G43-P02/P03 decision table. The same real Worker and same published
+    // projection process every row; only one cause changes per row. P2's
+    // binding_rejected terminal receipt proves the Worker rejected a claimed
+    // attempt. P3 stays queued without a physical attempt so a future exact
+    // delivery may renew it. Provider-request count proves both fences
+    // precede external I/O.
+    //
+    // | Rule | Marker | Target | Expiry | Recipient | Effect |
+    // | P1 | exact | exact | live | exact | one committed reply / one I/O |
+    // | P2a | forged | exact | live | exact | payload rejection / no I/O |
+    // | P2b | exact | changed | live | exact | target rejection / no I/O |
+    // | P3a | exact | exact | expired | exact | no attempt / no I/O |
+    // | P3b | exact | exact | live | wrong | no attempt / no I/O |
+    const marker = path.join(materialDirectory, 'payload_fingerprint');
+    const exactMarker = fs.readFileSync(marker);
+    const otherTargetUseFingerprint = stableFingerprintFixture([
+      [publishedCandidate.provisioning.provider_ref, {
+        ...publishedCandidate.provisioning.endpoint,
+        upstream_model: 'other-target-model',
+      }],
+      (publishedCandidate.provisioning.credential as { usage: unknown }).usage,
+    ]);
+    const otherTargetDirectory = path.join(
+      path.dirname(materialDirectory), hexComponent(otherTargetUseFingerprint),
+    );
+    const rejectionCases: {
+      rule: string;
+      mutate: (candidate: any) => void;
+      restore?: () => void;
+      expected?: RegExp;
+    }[] = [
+      {
+        rule: 'P2a',
+        mutate: (_request: any) => fs.writeFileSync(marker, 'sha256:forged-payload\n'),
+        expected: /credential material payload fingerprint mismatch/u,
+      },
+      {
+        rule: 'P2b',
+        mutate: (_candidate: any) => fs.renameSync(materialDirectory, otherTargetDirectory),
+        restore: () => fs.renameSync(otherTargetDirectory, materialDirectory),
+        expected: /credential material unavailable/u,
+      },
+      {
+        rule: 'P3a',
+        mutate: (candidate: any) => { candidate.provisioning.credential.envelope.expires_at_unix_ms = Date.now() - 1; },
+      },
+      {
+        rule: 'P3b',
+        mutate: (candidate: any) => { candidate.provisioning.credential.envelope.recipient = 'other.worker'; },
+      },
+    ];
+    for (const { rule, mutate, restore, expected } of rejectionCases) {
+      fs.writeFileSync(marker, exactMarker);
+      const rejected = structuredClone(dispatch);
+      const runId = `${dispatch.activation.run_id}-${rule}`;
+      rejected.activation.run_id = runId;
+      mutate(rejected.activation.snapshot.resolved_spec.model_binding);
+      const enqueued = await request(
+        'POST', '/v1/worker/dispatch/enqueue', { request: rejected }, seed.id,
+      );
+      assert.equal(enqueued.status, 200, `${rule} must reach the claimed Worker: ${enqueued.text}`);
+      if (expected) await waitForRejectedRun(runDatabase, runId, expected);
+      else await assertIneligibleRun(runId);
+      assert.equal(worker.exitCode, null, `${rule} stopped the Worker`);
+      assert.equal(upstream.requests.length, 1, `${rule} reached provider I/O`);
+      restore?.();
+    }
+    const afterRejections = await request('GET', `/v1/durable/threads/${THREAD}/messages`);
+    assert.equal(afterRejections.status, 200, afterRejections.text);
+    assert.equal(afterRejections.json.messages.filter(
+      (message: any) => String(message.text ?? '').includes('FAKE:seed activation'),
+    ).length, 1, 'negative rows commit no second provider reply');
     for (const forbidden of [
       'credential.db', 'files.db', 'memory_fs.db', 'resources.db', 'control-seal.key',
     ]) {
@@ -392,7 +503,7 @@ async function main() {
         `${forbidden} must not become Worker authority`,
       );
     }
-    console.log('CREDENTIAL MATERIALIZATION WORKER TS E2E PASS: a database-less production Worker consumed one exact recipient-bound projection, called the pinned endpoint, and committed once.');
+    console.log('CREDENTIAL MATERIALIZATION WORKER TS E2E PASS: one exact Worker projection called the provider and committed once; payload and target replays were rejected after claim, while expired and wrong-recipient envelopes started no physical attempt; none reached provider I/O.');
   } finally {
     if (worker) await stopServer(worker).catch(() => {});
     if (tlsProxy) await stopTlsProxy(tlsProxy).catch(() => {});
