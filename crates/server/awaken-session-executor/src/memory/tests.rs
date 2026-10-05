@@ -600,6 +600,49 @@ async fn platform_semantic_mutations_preserve_repository_cas_and_aba_fences() {
     );
 }
 
+#[tokio::test]
+async fn planned_memory_head_is_an_opaque_token_only_the_store_decodes() {
+    // Cause/effect decision table: T1 a planned mutation over an existing path
+    // carries the observed head as a token; T2 the token is the store's own
+    // head encoding; T3 a token the store cannot decode is refused and nothing
+    // is written (never read as a stale head); T4 the planned token applies.
+    let fs = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+        awaken_time::system_clock(),
+    ));
+    let handle = PlatformMemoryHandle::new(fs.clone(), "store".into(), true);
+    let created = handle
+        .write_exact("/note.md", "v1", None)
+        .await
+        .expect("seed");
+    let planned = handle
+        .plan_mutations(std::collections::BTreeMap::from([(
+            "/note.md".to_string(),
+            "v2".to_string(),
+        )]))
+        .await
+        .expect("T1");
+    let token = planned[0].observed_generation.clone().expect("T1");
+    assert_eq!(
+        token.encoded(),
+        &serde_json::to_value(created.generation()).unwrap(),
+        "T2"
+    );
+    let mut unreadable = planned[0].clone();
+    unreadable.observed_generation = Some(awaken_ext_memory::MemoryHeadToken::new(
+        serde_json::json!("not a memory head"),
+    ));
+    let error = handle.apply_mutation(&unreadable).await.expect_err("T3");
+    assert!(
+        error.contains("unreadable observed memory head"),
+        "T3: {error}"
+    );
+    let current = handle.read("/note.md").await.unwrap().unwrap();
+    assert_eq!(current.content.as_deref(), Some("v1"), "T3");
+    handle.apply_mutation(&planned[0]).await.expect("T4");
+    let current = handle.read("/note.md").await.unwrap().unwrap();
+    assert_eq!(current.content.as_deref(), Some("v2"), "T4");
+}
+
 /// Cause/effect decision table for Recall reads:
 /// | Rule | atomic snapshot | legacy list/get | Effect |
 /// |---|---|---|---|

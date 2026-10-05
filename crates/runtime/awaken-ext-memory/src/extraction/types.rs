@@ -47,6 +47,29 @@ impl MemoryExtractorSnapshot {
     }
 }
 
+/// The Memory head the extractor observed before storage, as an opaque token.
+///
+/// The SDK carries it and never interprets it: the store that issued the token
+/// is the only party that decodes and compares it. It serializes exactly as the
+/// value it wraps, so a persisted mutation keeps its wire shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MemoryHeadToken(serde_json::Value);
+
+impl MemoryHeadToken {
+    /// Wrap the store's own encoding of the head it observed.
+    #[must_use]
+    pub fn new(encoded: serde_json::Value) -> Self {
+        Self(encoded)
+    }
+
+    /// The store's encoding, for the store to decode.
+    #[must_use]
+    pub fn encoded(&self) -> &serde_json::Value {
+        &self.0
+    }
+}
+
 /// One deterministic Memory mutation proposed by the extractor.
 ///
 /// `observed_generation` is captured before storage. A retry may apply the mutation
@@ -57,7 +80,7 @@ pub struct MemoryExtractionMutation {
     pub path: String,
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observed_generation: Option<awaken_resource_contract::MemoryGeneration>,
+    pub observed_generation: Option<MemoryHeadToken>,
     pub target_sha256: String,
 }
 
@@ -201,4 +224,28 @@ pub enum MemoryExtractionOutcome {
     PermanentFailure {
         reason: String,
     },
+}
+
+#[cfg(test)]
+mod head_token_tests {
+    use super::*;
+
+    #[test]
+    fn memory_head_token_keeps_the_wire_shape_of_the_value_it_wraps() {
+        // The SDK carries the store's encoding unchanged: a persisted mutation
+        // written before the token existed decodes to the same value, and a new
+        // one serializes to exactly the store's encoding.
+        let head = serde_json::json!({"memory_id": "m", "version": 3, "content_sha256": "abc"});
+        let mutation = MemoryExtractionMutation {
+            path: "/a.md".into(),
+            content: "x".into(),
+            observed_generation: Some(MemoryHeadToken::new(head.clone())),
+            target_sha256: "t".into(),
+        };
+        let wire = serde_json::to_value(&mutation).unwrap();
+        assert_eq!(wire["observed_generation"], head);
+        let back: MemoryExtractionMutation = serde_json::from_value(wire).unwrap();
+        assert_eq!(back, mutation);
+        assert_eq!(back.observed_generation.unwrap().encoded(), &head);
+    }
 }
