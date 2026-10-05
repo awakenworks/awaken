@@ -99,7 +99,7 @@ pub async fn drive_session_realization(
     synchronizer: &dyn SessionProjectionSynchronizer,
     mcp: &dyn McpAttachmentRealizer,
     mut directive: SessionRealizationDirective,
-    mut request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+    mut request_started: awaken_lease_contract::authority::AuthorityProofStarted,
 ) -> Result<(), SessionRealizationDriveError> {
     // The Session is taken from the exclusion the caller holds, never passed
     // beside it: a permit for another Session cannot drive this one.

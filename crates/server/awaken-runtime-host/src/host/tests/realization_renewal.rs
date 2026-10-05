@@ -50,7 +50,7 @@ async fn large_session_reconciliation_is_earliest_deadline_first_and_bounded() {
     let reconciliation = tokio::spawn(async move {
         running_host
             .renew_due_session_realizations(
-                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(15_000),
+                awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(15_000),
             )
             .await
     });
@@ -159,8 +159,7 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
             },
         );
     }
-    let timing =
-        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000);
+    let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
     for _ in 0..3 {
         assert_eq!(
             host.renew_due_session_realizations(timing)
@@ -285,9 +284,7 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
                 let host = host.clone();
                 tokio::spawn(async move {
                     host.renew_due_session_realizations(
-                        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
-                            30_000,
-                        ),
+                        awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
                     )
                     .await
                 })
@@ -383,9 +380,7 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
             let host = host.clone();
             tokio::spawn(async move {
                 host.renew_due_session_realizations(
-                    awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
-                        30_000,
-                    ),
+                    awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
                 )
                 .await
             })
@@ -478,7 +473,7 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
     tokio::time::timeout(
         std::time::Duration::from_secs(120),
         host.renew_due_session_realizations(
-            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(300_000),
+            awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(300_000),
         ),
     )
     .await
@@ -517,7 +512,7 @@ async fn stale_ownership_revokes_even_when_the_old_deadline_is_still_live() {
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
             host.renew_due_session_realizations(
-                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(15_000),
+                awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(15_000),
             )
         )
         .await
@@ -568,7 +563,7 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
     tokio::time::timeout(
         std::time::Duration::from_secs(120),
         host.renew_due_session_realizations(
-            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(300_000),
+            awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(300_000),
         ),
     )
     .await
@@ -685,9 +680,7 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
         let reconciliation = tokio::spawn(async move {
             running_host
                 .renew_due_session_realizations(
-                    awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
-                        300_000,
-                    ),
+                    awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(300_000),
                 )
                 .await
         });
@@ -873,9 +866,7 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
         let renewal = tokio::spawn(async move {
             task_host
                 .renew_due_session_realizations(
-                    awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
-                        60_000,
-                    ),
+                    awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(60_000),
                 )
                 .await
         });

@@ -6,9 +6,14 @@
 //! [`fence::Lease`] is a tenure with an expiry, and a [`fence::SlotToken`]
 //! names the slot an effect is bound to.
 //!
+//! [`authority`] derives the process-local timing that proves a durable lease
+//! is still owned: renewal cadence, bounded request/retry timing and a local
+//! proof deadline from the authority-provided TTL.
+//!
 //! The wall clock, the persisted-expiry law and the monotonic read point live
 //! in `awaken-time`, the Runtime SDK's depth-0 clock leaf. The fence kernel
 //! depends on it for `Expiry` and `UtcTime`; nothing else, so the SDK can use
 //! the clock without linking the fence.
 
+pub mod authority;
 pub mod fence;

@@ -27,7 +27,7 @@ use awaken_worker_contract::{
 pub(crate) fn validate_observation_timing(
     probe_interval: Duration,
     observation_ttl: Duration,
-    publication: Option<awaken_runtime_contract::authority_lease::AuthorityLeaseTiming>,
+    publication: Option<awaken_lease_contract::authority::AuthorityLeaseTiming>,
 ) -> Result<(), String> {
     if probe_interval.is_zero() || observation_ttl <= probe_interval {
         return Err("credential observation TTL must exceed the non-zero probe interval".into());
@@ -441,7 +441,7 @@ mod tests {
         // margin. R1 zero P; R2 T<=P; R3 valid pre-negotiation; R4 T<=sum;
         // R5 T>sum; R6 checked overflow. Independent boundary rows prevent a
         // check against max(P,H), or omission of transport R, passing this table.
-        use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
+        use awaken_lease_contract::authority::AuthorityLeaseTiming;
         let negotiated = Some(AuthorityLeaseTiming::from_ttl_ms(30_000));
         for (rule, probe, ttl, publication, accepted) in [
             ("R1", 0, 30_000, None, false),

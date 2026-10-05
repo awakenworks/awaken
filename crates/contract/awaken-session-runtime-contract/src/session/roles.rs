@@ -15,7 +15,7 @@ pub trait RealizationRuntime: Send + Sync {
     /// A Runtime without this port cannot claim local timed execution proof.
     fn observe_realization_request(
         &self,
-    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError>;
+    ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError>;
 
     /// Reconcile the existing Runtime projections through the given Control
     /// owner. Local and Worker deployment use one slot-based selection and
@@ -25,7 +25,7 @@ pub trait RealizationRuntime: Send + Sync {
         control: &dyn crate::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
-        timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+        timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
     ) -> Result<usize, RunError>;
 
     /// Validate the exact provider-effective Sandbox layout without publishing

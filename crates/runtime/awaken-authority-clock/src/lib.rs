@@ -13,7 +13,7 @@
 //! wall clock that stamps observation times, and its values are meaningful only
 //! during the current boot — never durable authority.
 
-use awaken_runtime_contract::authority_lease::AuthorityProofStarted;
+use awaken_lease_contract::authority::AuthorityProofStarted;
 
 /// Sample the suspend-inclusive BOOTTIME clock shared by the authority proof
 /// and the scoped process physical cutoff.

@@ -6,7 +6,7 @@ use super::realization_control_deadline::DeadlineSessionRealizationControl;
 #[cfg(any(target_os = "linux", test))]
 use super::realization_control_deadline::MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS;
 use super::{RenewalFailureDisposition, realization_renewal_failure_disposition};
-use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
+use awaken_lease_contract::authority::AuthorityLeaseTiming;
 use awaken_session_realization_contract::SessionRealizationControl as _;
 #[cfg(target_os = "linux")]
 use futures_util::stream::{self, StreamExt};

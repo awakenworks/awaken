@@ -475,7 +475,7 @@ impl<T> WorkerSessionRealizationControl for T where
 pub trait SessionProjectionSynchronizer: Send + Sync {
     fn observe_realization_request(
         &self,
-    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError>;
+    ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError>;
 
     async fn synchronize_session_projection(
         &self,
@@ -808,7 +808,7 @@ mod tests {
         let lease = super::SessionRealizationLeaseReceipt::issued_at(lease, 0)
             .unwrap()
             .observed(
-                awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(
+                awaken_lease_contract::authority::AuthorityProofStarted::from_clock_sample(
                     awaken_time::mono::now(),
                     std::time::Duration::ZERO,
                 ),
