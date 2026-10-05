@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import _crate_boundary_workspace
+
 
 PROVIDER_ENV_READ = re.compile(
     r"std::env::var(?:_os)?\(\s*\"(?:"
@@ -93,9 +95,10 @@ def _genai_transport_errors(repo_root: Path, crates: Path) -> list[str]:
     """GenAI receives only transport-ready protocol, endpoint, model and key facts."""
 
     errors: list[str] = []
-    source = crates / "runtime" / "awaken-provider-genai" / "src"
-    if not source.exists():
-        return errors
+    manifest = _crate_boundary_workspace.crate_manifest("awaken-provider-genai", crates)
+    if manifest is None:
+        return ["awaken-provider-genai: the GenAI transport adapter this rule guards is missing"]
+    source = manifest.parent / "src"
     banned = GENAI_CONTROL_TYPES | GENAI_CONTROL_FIELDS
     for path in source.glob("**/*.rs"):
         text = path.read_text(encoding="utf-8")
@@ -156,6 +159,7 @@ def selftest() -> None:
         source = crates / "runtime" / "awaken-provider-genai" / "src"
         source.mkdir(parents=True)
         target = source / "lib.rs"
+        _crate_boundary_workspace.ensure_fixture_manifest(target)
         for token in sorted(GENAI_CONTROL_TYPES | GENAI_CONTROL_FIELDS):
             target.write_text(f"{token}\n", encoding="utf-8")
             errors = _genai_transport_errors(repo_root, crates)

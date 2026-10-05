@@ -3,6 +3,13 @@
 
 from __future__ import annotations
 
+# The checker reads every crate's manifest and sources, the root manifest, the
+# fitness modules and baselines under scripts/ci, and test trees outside crates/
+# (e2e). That is effectively the whole repository, so it declares the sentinel
+# and runs on every commit as its own fast hook, independent of the slower
+# rust shell gate that also runs it.
+INPUT_GLOBS: tuple[str, ...] = ("**/*",)
+
 import argparse
 import re
 import sys
