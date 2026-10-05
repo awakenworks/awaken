@@ -1861,7 +1861,7 @@ fn committed_await_evidence(
         .lifecycle_events_after(RunLifecycleCursor::default(), usize::MAX)
         .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?
         .events;
-    let targets = awaken_session_projection::audited_await_targets(&lifecycle, |thread_id| {
+    let targets = awaken_managed_session_events::audited_await_targets(&lifecycle, |thread_id| {
         (thread_id == snapshot.thread_id.0).then_some(snapshot)
     })
     .map_err(projection_error)?;
@@ -2475,11 +2475,11 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
     let child_run = RunId("activation-child-run".into());
     child_source.realization_progress.failure_source_run_id = Some(Box::new(child_run.clone()));
     assert!(matches!(
-        awaken_session_projection::activation_failure_projection(&child_source, &[]).unwrap(),
-        awaken_session_projection::ActivationFailureProjection::AwaitingSourceRun
+        awaken_managed_session_events::activation_failure_projection(&child_source, &[]).unwrap(),
+        awaken_managed_session_events::ActivationFailureProjection::AwaitingSourceRun
     ));
     assert!(matches!(
-        awaken_session_projection::activation_failure_projection(
+        awaken_managed_session_events::activation_failure_projection(
             &child_source,
             &terminal_run(
                 "child-thread",
@@ -2489,19 +2489,19 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
             ),
         )
         .unwrap(),
-        awaken_session_projection::ActivationFailureProjection::Ready { error: Some(_) }
+        awaken_managed_session_events::ActivationFailureProjection::Ready { error: Some(_) }
     ));
     let healthy = crate::state::tests::sample_persisted("activation-not-failed");
     assert!(matches!(
-        awaken_session_projection::activation_failure_projection(&healthy, &[]).unwrap(),
-        awaken_session_projection::ActivationFailureProjection::NotFailed
+        awaken_managed_session_events::activation_failure_projection(&healthy, &[]).unwrap(),
+        awaken_managed_session_events::ActivationFailureProjection::NotFailed
     ));
     let mut missing_cause = crate::state::tests::sample_persisted("activation-missing-cause");
     missing_cause.execution =
         awaken_session_state_contract::SessionExecutionState::ActivationFailed;
     missing_cause.realization_progress.last_error = None;
     assert!(
-        awaken_session_projection::activation_failure_projection(&missing_cause, &[]).is_err(),
+        awaken_managed_session_events::activation_failure_projection(&missing_cause, &[]).is_err(),
         "AF7 malformed ownerless failure remains closed"
     );
 }

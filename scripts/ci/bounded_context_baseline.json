@@ -44,7 +44,7 @@
   "protocol-leaf": {
     "awaken-run-executor-a2a -> awaken-protocol-a2a": "the executor uses awaken-protocol-a2a's client codec; move that codec behind a worker-side contract",
     "awaken-run-executor-acp -> awaken-protocol-acp": "the executor uses awaken-protocol-acp's client codec; move that codec behind a worker-side contract",
-    "awaken-session-application -> awaken-session-projection": "the projection evidence interface moves to awaken-session-application-contract; Session must not depend on a protocol crate"
+    "awaken-session-application -> awaken-managed-session-events": "the projection evidence interface moves to awaken-session-application-contract; Session must not depend on a protocol crate"
   },
   "sdk-standalone": {
     "awaken-runtime-contract -> awaken-credential-contract": "remove the credential-contract re-export; attempt credential facts move to awaken-credential-materializer",

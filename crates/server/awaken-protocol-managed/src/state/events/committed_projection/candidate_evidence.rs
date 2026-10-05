@@ -9,7 +9,7 @@
 
 use super::*;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
-use awaken_session_projection::{AcceptanceFence, LifecycleAcceptance, accept_lifecycle};
+use awaken_managed_session_events::{AcceptanceFence, LifecycleAcceptance, accept_lifecycle};
 use awaken_time::WallClockExt as _;
 use std::collections::{HashMap, HashSet};
 
@@ -56,7 +56,7 @@ impl CandidateEvidence {
         // read-only projection port, in the order that keeps it one prefix:
         // the root snapshot before terminal Outcome queries,
         // its coordinated links and children, then their merged lifecycle.
-        let awaken_session_application::SessionProjectionEvidence {
+        let awaken_session_application::CommittedSessionFacts {
             outcome_terminals,
             outcome_query_incomplete,
             root,
@@ -76,7 +76,7 @@ impl CandidateEvidence {
         // public payload or result cursor and must fail before any candidate
         // changes the warm cache.
         for snapshot in root.iter().chain(children.values()) {
-            awaken_session_projection::validate_committed_message_identities(&snapshot.messages)
+            awaken_managed_session_events::validate_committed_message_identities(&snapshot.messages)
                 .map_err(|error| {
                     StateError::projection_recovery_required(format!(
                         "Runtime recovery for Thread {:?} has conflicting committed Message identity: {error}; interrupt the Session to settle it",
@@ -172,14 +172,15 @@ impl CandidateEvidence {
         // before and after its ticket is consumed. A pause whose target no
         // client answers (a scheduled action, a delegation) is still
         // classified by it; only a pause that left no target blocks.
-        let targets = awaken_session_projection::audited_await_targets(&lifecycle, |thread_id| {
-            if thread_id == session_id {
-                root.as_ref()
-            } else {
-                children.get(thread_id)
-            }
-        })
-        .map_err(projection_error)?;
+        let targets =
+            awaken_managed_session_events::audited_await_targets(&lifecycle, |thread_id| {
+                if thread_id == session_id {
+                    root.as_ref()
+                } else {
+                    children.get(thread_id)
+                }
+            })
+            .map_err(projection_error)?;
         // Health and fact admission consume the same exact-cursor audit map.
         // A later repeated Awaiting audit cannot authorize an older wait.
         for snapshot in root.iter().chain(children.values()) {
@@ -219,7 +220,7 @@ impl CandidateEvidence {
             .reach_transitions()
             .iter()
             .filter(|transition| {
-                awaken_session_projection::budget_reach_projection_close_cursor(
+                awaken_managed_session_events::budget_reach_projection_close_cursor(
                     persisted,
                     transition,
                     &acceptance.accepted,
@@ -340,7 +341,7 @@ impl CandidateEvidence {
             .closed_runtime_intervals
             .iter()
             .filter(|interval| {
-                awaken_session_projection::interval_close_cursor(interval)
+                awaken_managed_session_events::interval_close_cursor(interval)
                     .is_some_and(|close| close <= source_commit_cursor)
             })
             .map(|interval| {

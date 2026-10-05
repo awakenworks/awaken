@@ -252,7 +252,7 @@ def projection_input_boundary_violations(
         errors.append("Managed candidate reads durable projection fields from its warm record")
     if re.search(r"\bself\.owner_scope\s*\(", entrypoint):
         errors.append("Managed candidate reads owner scope from its warm map, not the durable root")
-    if "awaken_session_projection::project(" not in entrypoint:
+    if "awaken_managed_session_events::project(" not in entrypoint:
         errors.append("Managed candidate lost its single committed-prefix domain plan")
     for relative, source in (adjacent_modules or {}).items():
         production = _crate_boundary_workspace.production_rust(source)
@@ -439,7 +439,7 @@ fn build_committed_projection_candidate() {
     read_persisted_session_projection(session_id); record.into_delivery_memo();
 }
 fn build_committed_projection_candidate_over(base: CommittedPrefixBase) {}
-fn plan() { awaken_session_projection::project(); }
+fn plan() { awaken_managed_session_events::project(); }
 """
     record = """
 struct ProjectionDeliveryMemo {
@@ -491,7 +491,7 @@ fn into_delivery_memo(self) {
         entry, record, {}, rendered_feedback
     ), "P8/E2 rendered feedback"
     assert projection_input_boundary_violations(
-        entry.replace("awaken_session_projection::project()", "reuse_rendered_events()"),
+        entry.replace("awaken_managed_session_events::project()", "reuse_rendered_events()"),
         record, {},
     ), "P9/E2 missing domain plan"
     assert projection_input_boundary_violations(

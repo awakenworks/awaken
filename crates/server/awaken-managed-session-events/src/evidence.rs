@@ -22,7 +22,7 @@ pub struct SessionProjectionReadTimings {
 /// in the fixed order that keeps them one fenced prefix. The Session
 /// application reads it through its read-only projection port; consumer: the
 /// protocol projector, which validates the same prefixes again after building.
-pub struct SessionProjectionEvidence {
+pub struct CommittedSessionFacts {
     /// Terminal Outcomes named by the root's retained `DefineOutcome`
     /// provenance, read after the root snapshot and checked against its exact
     /// terminal state/action cursor before any candidate may publish.

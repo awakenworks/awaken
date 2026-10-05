@@ -9,7 +9,7 @@
 
 use super::candidate_evidence::CandidateEvidence;
 use super::*;
-use awaken_session_projection::same_thread_projection_prefix;
+use awaken_managed_session_events::same_thread_projection_prefix;
 
 /// A coordinated Session needs a trailing root read that closes over every
 /// child snapshot; a root-only Session's validation root is its final fence.

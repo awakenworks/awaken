@@ -1,9 +1,9 @@
 //! Committed child transcript classification and coordination cross-post projection.
 
 use super::*;
-use awaken_session_projection::{
-    ChildTranscriptPlan, ChildTranscriptStep, FactKey, FactKind, FactProvenance, FactRole,
-    TimelineFact,
+use awaken_managed_session_events::{
+    ChildTranscriptPlan, ChildTranscriptStep, DerivedSessionEvent, EventIdentity, FactProvenance,
+    ManagedEventType, SessionEventKind,
 };
 
 /// The display name of one coordinated child record.
@@ -37,8 +37,8 @@ impl ManagedState {
             pending_source_run_id,
             historical_pending,
         } = projection;
-        let plan = awaken_session_projection::plan_child_transcript(
-            &awaken_session_projection::ChildTranscript {
+        let plan = awaken_managed_session_events::plan_child_transcript(
+            &awaken_managed_session_events::ChildTranscript {
                 thread_id,
                 advisor: advisor_model.is_some(),
                 messages,
@@ -64,9 +64,9 @@ impl ManagedState {
                         &report_content,
                     );
                     if !content.is_empty() {
-                        let key = FactKey::new(
+                        let key = EventIdentity::new(
                             thread_id,
-                            FactRole::AdvisorMessageReceived,
+                            ManagedEventType::AdvisorMessageReceived,
                             FactProvenance::AgentReport { run_id: run_id.0 },
                         );
                         let id = record.fact_id(&key);
@@ -108,13 +108,13 @@ impl ManagedState {
                 } => {
                     if let Some(text) = text {
                         record.publish_fact(
-                            &TimelineFact::new(
-                                FactKey::new(
+                            &DerivedSessionEvent::new(
+                                EventIdentity::new(
                                     thread_id,
-                                    FactRole::ChildMessageReceived,
+                                    ManagedEventType::ChildMessageReceived,
                                     FactProvenance::AgentReport { run_id },
                                 ),
-                                FactKind::ReportReceived { text },
+                                SessionEventKind::ReportReceived { text },
                             ),
                             None,
                         )?;

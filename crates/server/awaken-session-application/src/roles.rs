@@ -42,16 +42,16 @@ use awaken_session_state_contract::{
 use awaken_session_types::SessionId;
 
 use crate::{
-    ConfiguredSessionRepository, CreateProfiledSessionCommand, CreatedSession,
-    CredentialMaterialInput, ProjectionThreadSnapshots, RecoveredSessionProjection,
+    CommittedSessionFacts, ConfiguredSessionRepository, CreateProfiledSessionCommand,
+    CreatedSession, CredentialMaterialInput, ProjectionThreadSnapshots, RecoveredSessionProjection,
     ReplaceSessionResourceManifest, SessionApplication,
     SessionArchiveWithRepositoryPublicationCommand, SessionArchiveWithRepositoryPublicationError,
     SessionArchiveWithRepositoryPublicationOutcome, SessionCreateProtocol, SessionCreateRequest,
     SessionCreateRequestError, SessionCreationError, SessionDeleteCommand,
     SessionDispositionMutation, SessionEventBatchIdempotency, SessionExecutionObservation,
-    SessionMutationError, SessionPreparationError, SessionProjectionEvidence,
-    SessionProjectionRecoveryError, SessionRepositoryResourceInput, SessionResourceManifestError,
-    SessionResourceManifestOutcome, SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
+    SessionMutationError, SessionPreparationError, SessionProjectionRecoveryError,
+    SessionRepositoryResourceInput, SessionResourceManifestError, SessionResourceManifestOutcome,
+    SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
 };
 
 /// Create a Session from a protocol-lowered request, and replay a create.
@@ -147,7 +147,7 @@ pub trait SessionProjectionReads: Send + Sync {
         &self,
         persisted: &PersistedSession,
         started: awaken_time::mono::Stopwatch,
-    ) -> Result<SessionProjectionEvidence, RunError>;
+    ) -> Result<CommittedSessionFacts, RunError>;
 
     /// See [`SessionApplication::projection_thread_snapshot`].
     async fn projection_thread_snapshot(
@@ -556,7 +556,7 @@ impl SessionProjectionReads for SessionApplication {
         &self,
         persisted: &PersistedSession,
         started: awaken_time::mono::Stopwatch,
-    ) -> Result<SessionProjectionEvidence, RunError> {
+    ) -> Result<CommittedSessionFacts, RunError> {
         SessionApplication::read_projection_evidence(self, persisted, started).await
     }
 

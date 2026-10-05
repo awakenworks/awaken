@@ -4,7 +4,7 @@
 //! Pure and synchronous over borrowed evidence: no I/O, clock, cache or wire
 //! vocabulary. A protocol adapter reads the evidence through the Session
 //! application, asks this crate which facts exist and where each one sits,
-//! mints its own public ids from [`FactKey`]s and encodes each fact on its
+//! mints its own public ids from [`EventIdentity`]s and encodes each fact on its
 //! wire. Consumers: `awaken-session-application` (the evidence it reads) and
 //! the Managed protocol adapter (identity, ordering and projection).
 
@@ -45,10 +45,10 @@ pub use coordination::{
 };
 pub use error::ProjectionError;
 pub use evidence::{
-    ProjectionThreadSnapshots, SessionProjectionEvidence, SessionProjectionReadTimings,
+    CommittedSessionFacts, ProjectionThreadSnapshots, SessionProjectionReadTimings,
     committed_lifecycle_prefix,
 };
-pub use fact::{FactKind, TimelineFact};
+pub use fact::{DerivedSessionEvent, SessionEventKind};
 pub use fault::{RunFault, run_fault, run_state_fault};
 pub use historical::{
     audited_await_targets, historical_message_await_name, historical_message_boundaries,
@@ -63,19 +63,19 @@ pub use interval::{
     interval_lifecycle_open_event, is_opening, period_opening,
     running_interval_lifecycle_open_event,
 };
-pub use key::{FactKey, FactProvenance};
+pub use key::{EventIdentity, FactProvenance};
 pub use lifecycle::{
     ChildLifecycle, CoordinatedThread, ThreadStatus, archive_children, initial_coordinated_threads,
     project_child_lifecycle, root_lifecycle_opening_facts, terminate_session,
 };
 pub use observation::run_observation_facts;
-pub use order::{CanonicalOrder, Ordinal, historical_pending_projection_order};
+pub use order::{EventPosition, Ordinal, historical_pending_projection_order};
 pub use outcome::{
     AnchoredOutcome, OutcomeAnchor, anchor_outcome, outcome_owns_failure_run,
     outcome_terminal_commit_cursor, validate_outcome,
 };
 pub use prefix::same_thread_projection_prefix;
-pub use role::{FactRole, TranscriptRole, phase};
+pub use role::{ManagedEventType, TranscriptRole, phase};
 pub use stop::{StopFact, terminal_stop};
 pub use transcript::{
     AdvisorConsultationBlocks, CommittedMessageProjection, CommittedTranscriptEvidence,

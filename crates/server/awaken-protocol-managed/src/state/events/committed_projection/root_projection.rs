@@ -10,8 +10,9 @@
 
 use super::candidate_evidence::{BudgetReachProjection, CandidateEvidence};
 use super::*;
-use awaken_session_projection::{
-    FactKey, FactKind, FactProvenance, FactRole, TimelineFact, TranscriptRole,
+use awaken_managed_session_events::{
+    DerivedSessionEvent, EventIdentity, FactProvenance, ManagedEventType, SessionEventKind,
+    TranscriptRole,
 };
 
 /// Primary-thread input not already owned by a retained Managed admission.
@@ -53,7 +54,7 @@ pub(in crate::state::events) fn transcript_fact_key(
     ordinal: usize,
     kind: &OutboundKind,
     coordinates: Option<&(String, usize, usize)>,
-) -> Result<FactKey, StateError> {
+) -> Result<EventIdentity, StateError> {
     let role = TranscriptRole::from_wire_type(kind.type_str()).ok_or_else(|| {
         StateError::Run(RunError::internal(format!(
             "Managed transcript fold `{}` has no Message identity",
@@ -74,9 +75,9 @@ pub(in crate::state::events) fn transcript_fact_key(
             ordinal,
         },
     };
-    Ok(FactKey::new(
+    Ok(EventIdentity::new(
         thread_id,
-        FactRole::Transcript(role),
+        ManagedEventType::Transcript(role),
         provenance,
     ))
 }
@@ -91,21 +92,21 @@ impl ManagedState {
         if outcome_owns_failure {
             return Ok(());
         }
-        let Some(fault) =
-            awaken_session_projection::run_fault(terminal, snapshot).map_err(projection_error)?
+        let Some(fault) = awaken_managed_session_events::run_fault(terminal, snapshot)
+            .map_err(projection_error)?
         else {
             return Ok(());
         };
         record.publish_fact_once(
-            &TimelineFact::new(
-                FactKey::new(
+            &DerivedSessionEvent::new(
+                EventIdentity::new(
                     record.session.id.clone(),
-                    FactRole::RootLifecycleError,
+                    ManagedEventType::RootLifecycleError,
                     FactProvenance::Lifecycle {
                         cursor: terminal.cursor.0,
                     },
                 ),
-                FactKind::RunError {
+                SessionEventKind::RunError {
                     fault,
                     advisor: false,
                 },
@@ -180,7 +181,7 @@ impl ManagedState {
         // Each opening is decided from the entire committed lifecycle. A
         // boundary following a boundary without an intervening opening owns
         // its own Running fact on both an incremental and a cold reader.
-        for fact in awaken_session_projection::root_lifecycle_opening_facts(
+        for fact in awaken_managed_session_events::root_lifecycle_opening_facts(
             session_id,
             all_accepted_lifecycle,
         ) {
@@ -194,7 +195,7 @@ impl ManagedState {
         let root_pending_source_run_id = root_terminal
             .filter(|event| event.kind == RunLifecycleEventKind::Awaiting)
             .map(|event| &event.run_id);
-        let folds = awaken_session_projection::plan_folds(
+        let folds = awaken_managed_session_events::plan_folds(
             session_id,
             &new_messages,
             &evidence.root_response_coordinates,

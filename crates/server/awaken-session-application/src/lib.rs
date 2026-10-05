@@ -242,8 +242,8 @@ pub use event_batches::SessionEventBatchIdempotency;
 mod outcome_reconciliation;
 mod projection;
 mod projection_evidence;
-pub use awaken_session_projection::{
-    ProjectionThreadSnapshots, SessionProjectionEvidence, SessionProjectionReadTimings,
+pub use awaken_managed_session_events::{
+    CommittedSessionFacts, ProjectionThreadSnapshots, SessionProjectionReadTimings,
 };
 pub use credentials::SessionPreparationError;
 mod mcp;

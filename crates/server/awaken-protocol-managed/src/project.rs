@@ -452,7 +452,7 @@ pub fn project_messages(
     )
 }
 
-pub(crate) use awaken_session_projection::{
+pub(crate) use awaken_managed_session_events::{
     AdvisorConsultationBlocks, RuntimeToolFollowupAdmission, RuntimeToolProjectionPhase,
     advisor_consultation_blocks, committed_transcript_evidence,
 };
@@ -470,7 +470,7 @@ pub(crate) fn project_messages_with_mcp_ids(
 ) -> Vec<ProjectedEvent> {
     let mut encoder = ManagedEncoder::default();
     encoder.mcp_ids.extend(mcp_ids);
-    encoder.transcode_facts(&awaken_session_projection::fold_transcript(
+    encoder.transcode_facts(&awaken_managed_session_events::fold_transcript(
         messages,
         pending,
         projected_tool_ids,

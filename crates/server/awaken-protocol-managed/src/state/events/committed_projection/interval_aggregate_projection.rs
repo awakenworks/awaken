@@ -1,12 +1,12 @@
 // @formal entrypoint session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
 //! Canonical aggregate projections for persisted Session runtime intervals,
-//! selected by the sole [`awaken_session_projection::plan_aggregate`].
+//! selected by the sole [`awaken_managed_session_events::plan_aggregate`].
 
 use super::*;
-use awaken_session_projection::{AggregatePlan, FactKey};
+use awaken_managed_session_events::{AggregatePlan, EventIdentity};
 
 impl ManagedState {
-    pub(super) fn append_aggregate_running_once(record: &mut SessionRecord, key: FactKey) {
+    pub(super) fn append_aggregate_running_once(record: &mut SessionRecord, key: EventIdentity) {
         record.append_fact_once(key, OutboundKind::SessionStatusRunning {});
     }
 

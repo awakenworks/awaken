@@ -2,7 +2,7 @@
 //! Child lifecycle, disposition, delegation, and aggregate terminal projection.
 
 use super::*;
-use awaken_session_projection::{CoordinatedThread, ThreadStatus};
+use awaken_managed_session_events::{CoordinatedThread, ThreadStatus};
 
 impl ManagedState {
     /// Select child Running, cross-post, and lifecycle facts in one committed
@@ -16,16 +16,16 @@ impl ManagedState {
             String,
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
         >,
-        plan: &awaken_session_projection::CommittedProjection,
+        plan: &awaken_managed_session_events::CommittedProjection,
     ) -> Result<
         (
-            awaken_session_projection::ChildLifecycle,
+            awaken_managed_session_events::ChildLifecycle,
             Vec<CoordinatedThread>,
         ),
         StateError,
     > {
-        let mut threads = awaken_session_projection::initial_coordinated_threads(links);
-        let projection = awaken_session_projection::project_child_activity(
+        let mut threads = awaken_managed_session_events::initial_coordinated_threads(links);
+        let projection = awaken_managed_session_events::project_child_activity(
             &mut threads,
             &plan.cross_posts,
             &plan.coordination_orders,
@@ -43,7 +43,7 @@ impl ManagedState {
         threads: &mut [CoordinatedThread],
         dispositions: &std::collections::HashMap<String, awaken_agent_contract::ThreadDisposition>,
     ) -> Result<(), StateError> {
-        for fact in awaken_session_projection::archive_children(threads, dispositions) {
+        for fact in awaken_managed_session_events::archive_children(threads, dispositions) {
             record.publish_fact(&fact, None)?;
         }
         Ok(())
@@ -64,10 +64,10 @@ impl ManagedState {
             return Ok(());
         }
         let session_id = record.session.id.clone();
-        let primary = awaken_session_projection::FactKey::new(
+        let primary = awaken_managed_session_events::EventIdentity::new(
             session_id.as_str(),
-            awaken_session_projection::FactRole::ParentTerminalPrimaryStatusTerminated,
-            awaken_session_projection::FactProvenance::ParentTerminal,
+            awaken_managed_session_events::ManagedEventType::ParentTerminalPrimaryStatusTerminated,
+            awaken_managed_session_events::FactProvenance::ParentTerminal,
         );
         let primary_published = record.has_event_id(&record.fact_id(&primary));
         // Child and primary terminals are Thread statuses, so any aggregate
@@ -76,7 +76,7 @@ impl ManagedState {
             .events
             .iter()
             .any(|event| matches!(event.kind, OutboundKind::SessionStatusTerminated { .. }));
-        for fact in awaken_session_projection::terminate_session(
+        for fact in awaken_managed_session_events::terminate_session(
             &session_id,
             threads,
             primary_published,
@@ -96,7 +96,7 @@ impl ManagedState {
         &self,
         record: &mut SessionRecord,
         evidence: DelegationProjectionEvidence<'_>,
-        plan: &awaken_session_projection::CommittedProjection,
+        plan: &awaken_managed_session_events::CommittedProjection,
     ) -> Result<Vec<CoordinatedThread>, StateError> {
         let DelegationProjectionEvidence {
             links,
@@ -138,7 +138,7 @@ impl ManagedState {
             });
             record.child_threads[index].usage = usage.get(&thread_id).cloned().flatten();
             if is_new {
-                for fact in awaken_session_projection::link_facts(link) {
+                for fact in awaken_managed_session_events::link_facts(link) {
                     record.publish_fact(&fact, None)?;
                 }
             }
@@ -157,8 +157,8 @@ impl ManagedState {
         for fact in activity.facts.iter().filter(|fact| {
             matches!(
                 fact.key.role,
-                awaken_session_projection::FactRole::CoordinationStatusRunning
-                    | awaken_session_projection::FactRole::CoordinationMessageSent
+                awaken_managed_session_events::ManagedEventType::CoordinationStatusRunning
+                    | awaken_managed_session_events::ManagedEventType::CoordinationMessageSent
             )
         }) {
             record.publish_fact(fact, None)?;
@@ -214,8 +214,8 @@ impl ManagedState {
         for fact in activity.facts.iter().filter(|fact| {
             !matches!(
                 fact.key.role,
-                awaken_session_projection::FactRole::CoordinationStatusRunning
-                    | awaken_session_projection::FactRole::CoordinationMessageSent
+                awaken_managed_session_events::ManagedEventType::CoordinationStatusRunning
+                    | awaken_managed_session_events::ManagedEventType::CoordinationMessageSent
             )
         }) {
             record.publish_fact(fact, None)?;

@@ -6,15 +6,15 @@ use super::*;
 use crate::types::{EvaluatedPermission, RecordedPermission, SpanModelUsage};
 use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
+#[cfg(test)]
+use awaken_managed_session_events::SEND_MESSAGE_TOOL_ID as SEND_MESSAGE;
+use awaken_managed_session_events::{EventIdentity, FactProvenance, ManagedEventType};
 use awaken_runtime_contract::resolved::ADVISOR_FAILURE_NOTICE;
 use awaken_session_application_contract::Pending;
 use awaken_session_event_contract::{
     SessionEventCommand, SessionEventInput, SessionEventInterrupt, SessionEventToolReply,
     SessionEventToolReplyKind, SessionOutcomeRubric,
 };
-#[cfg(test)]
-use awaken_session_projection::SEND_MESSAGE_TOOL_ID as SEND_MESSAGE;
-use awaken_session_projection::{FactKey, FactProvenance, FactRole};
 #[cfg(test)]
 use awaken_session_runtime_contract::SessionThreadToolReply;
 use awaken_session_runtime_contract::{
@@ -275,7 +275,7 @@ struct DurableOutcomeProjection {
 }
 
 /// A terminal Outcome paired with the root-Thread commits (from the timeline
-/// domain's [`awaken_session_projection::anchor_outcome`]) that make each of
+/// domain's [`awaken_managed_session_events::anchor_outcome`]) that make each of
 /// its facts public.
 struct AnchoredOutcomeProjection {
     outcome_id: String,
@@ -286,7 +286,7 @@ struct AnchoredOutcomeProjection {
 
 impl AnchoredOutcomeProjection {
     fn owns_failure_run(&self, run_id: &awaken_agent_contract::agent::run::Id) -> bool {
-        awaken_session_projection::outcome_owns_failure_run(&self.terminal, run_id)
+        awaken_managed_session_events::outcome_owns_failure_run(&self.terminal, run_id)
     }
 }
 
@@ -297,10 +297,14 @@ impl DurableOutcomeProjection {
         self,
         snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Option<AnchoredOutcomeProjection> {
-        let awaken_session_projection::OutcomeAnchor {
+        let awaken_managed_session_events::OutcomeAnchor {
             terminal_commit_cursor,
             evaluation_commit_cursors,
-        } = awaken_session_projection::anchor_outcome(&self.outcome_id, &self.terminal, snapshot)?;
+        } = awaken_managed_session_events::anchor_outcome(
+            &self.outcome_id,
+            &self.terminal,
+            snapshot,
+        )?;
         Some(AnchoredOutcomeProjection {
             outcome_id: self.outcome_id,
             terminal: self.terminal,
@@ -314,7 +318,7 @@ fn validate_durable_outcome_projection(
     outcome_id: String,
     terminal: CommittedOutcomeProjection,
 ) -> Result<DurableOutcomeProjection, StateError> {
-    awaken_session_projection::validate_outcome(&outcome_id, &terminal)
+    awaken_managed_session_events::validate_outcome(&outcome_id, &terminal)
         .map_err(projection_error)?;
     Ok(DurableOutcomeProjection {
         outcome_id,
@@ -324,7 +328,7 @@ fn validate_durable_outcome_projection(
 
 /// A committed prefix the timeline domain refuses to project is an internal
 /// Runtime fault; the published projection is kept.
-fn projection_error(error: awaken_session_projection::ProjectionError) -> StateError {
+fn projection_error(error: awaken_managed_session_events::ProjectionError) -> StateError {
     StateError::Run(RunError::internal(error.to_string()))
 }
 
@@ -378,7 +382,7 @@ fn append_durable_outcome_projections(
             CommittedOutcomeProjection::Completed(report) => {
                 for iteration in &report.iterations {
                     let evaluation = |role| {
-                        FactKey::new(
+                        EventIdentity::new(
                             &session_id,
                             role,
                             FactProvenance::OutcomeEvaluation {
@@ -387,24 +391,25 @@ fn append_durable_outcome_projections(
                             },
                         )
                     };
-                    let start_id = record.fact_id(&evaluation(FactRole::OutcomeEvaluationStart));
+                    let start_id =
+                        record.fact_id(&evaluation(ManagedEventType::OutcomeEvaluationStart));
                     for (role, kind) in [
                         (
-                            FactRole::OutcomeEvaluationStart,
+                            ManagedEventType::OutcomeEvaluationStart,
                             OutboundKind::SpanOutcomeEvaluationStart {
                                 outcome_id: projection.outcome_id.clone(),
                                 iteration: iteration.iteration,
                             },
                         ),
                         (
-                            FactRole::OutcomeEvaluationOngoing,
+                            ManagedEventType::OutcomeEvaluationOngoing,
                             OutboundKind::SpanOutcomeEvaluationOngoing {
                                 outcome_id: projection.outcome_id.clone(),
                                 iteration: iteration.iteration,
                             },
                         ),
                         (
-                            FactRole::OutcomeEvaluationEnd,
+                            ManagedEventType::OutcomeEvaluationEnd,
                             OutboundKind::SpanOutcomeEvaluationEnd {
                                 outcome_id: projection.outcome_id.clone(),
                                 outcome_evaluation_start_id: start_id.clone(),
@@ -436,9 +441,9 @@ fn append_durable_outcome_projections(
             }
             CommittedOutcomeProjection::Errored(failure) => {
                 record.append_fact_once(
-                    FactKey::new(
+                    EventIdentity::new(
                         &session_id,
-                        FactRole::OutcomeError,
+                        ManagedEventType::OutcomeError,
                         FactProvenance::Outcome {
                             outcome_id: projection.outcome_id.clone(),
                         },
@@ -458,7 +463,7 @@ fn append_durable_outcome_projections(
 /// to the same warm/cold projector that appends the public event. Tool-use
 /// events keep their separate reversible `managed_tool_event_id` owner because
 /// command admission must recover their Runtime call id.
-pub(super) type ManagedMultiagentEventProvenance = awaken_session_projection::FactProvenance;
+pub(super) type ManagedMultiagentEventProvenance = awaken_managed_session_events::FactProvenance;
 
 /// The four official primary-Thread lifecycle projections. Session lifecycle
 /// remains the aggregate authority; this enum only prevents foreground,
@@ -528,7 +533,10 @@ pub(crate) fn managed_assistant_event_id(
 }
 
 /// The public id of one timeline fact of `session_id`.
-pub(super) fn fact_event_id(session_id: &str, key: &awaken_session_projection::FactKey) -> String {
+pub(super) fn fact_event_id(
+    session_id: &str,
+    key: &awaken_managed_session_events::EventIdentity,
+) -> String {
     managed_multiagent_event_id(
         session_id,
         &key.thread,

@@ -104,16 +104,16 @@ impl SessionError {
     pub(crate) fn from_run_state(
         state: &awaken_agent_contract::agent::run::RunState,
     ) -> Option<Self> {
-        awaken_session_projection::run_state_fault(state).map(|fault| Self::from_fault(&fault))
+        awaken_managed_session_events::run_state_fault(state).map(|fault| Self::from_fault(&fault))
     }
 
     /// The Managed error of one neutral Run fault.
-    pub(crate) fn from_fault(fault: &awaken_session_projection::RunFault) -> Self {
+    pub(crate) fn from_fault(fault: &awaken_managed_session_events::RunFault) -> Self {
         match fault {
-            awaken_session_projection::RunFault::Failed { code, message } => {
+            awaken_managed_session_events::RunFault::Failed { code, message } => {
                 Self::classify(code, message.clone())
             }
-            awaken_session_projection::RunFault::ExecutionUnknown => Self::execution_unknown(),
+            awaken_managed_session_events::RunFault::ExecutionUnknown => Self::execution_unknown(),
         }
     }
 

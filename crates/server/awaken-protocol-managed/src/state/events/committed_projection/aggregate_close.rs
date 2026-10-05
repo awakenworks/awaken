@@ -8,7 +8,9 @@
 use super::candidate_evidence::CandidateEvidence;
 use super::root_projection::RootProjection;
 use super::*;
-use awaken_session_projection::{FactKey, FactKind, FactProvenance, FactRole, TimelineFact};
+use awaken_managed_session_events::{
+    DerivedSessionEvent, EventIdentity, FactProvenance, ManagedEventType, SessionEventKind,
+};
 
 impl ManagedState {
     pub(super) fn close_aggregate(
@@ -18,7 +20,7 @@ impl ManagedState {
         persisted: &awaken_session_state_contract::PersistedSession,
         evidence: &CandidateEvidence,
         root: &RootProjection,
-        plan: &awaken_session_projection::AggregatePlan,
+        plan: &awaken_managed_session_events::AggregatePlan,
     ) -> Result<(), StateError> {
         let RootProjection {
             projected_budget_reach,
@@ -30,9 +32,9 @@ impl ManagedState {
             event.thread_id.0 == session_id
                 && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(event.kind)
         }) {
-            let idle_key = FactKey::new(
+            let idle_key = EventIdentity::new(
                 record.session.id.clone(),
-                FactRole::RootLifecycleStatusIdle,
+                ManagedEventType::RootLifecycleStatusIdle,
                 FactProvenance::Lifecycle {
                     cursor: terminal.cursor.0,
                 },
@@ -50,14 +52,14 @@ impl ManagedState {
                     .any(|projection| projection.owns_failure_run(&terminal.run_id)),
                 evidence.root.as_ref(),
             )?;
-            let stop = awaken_session_projection::terminal_stop(
+            let stop = awaken_managed_session_events::terminal_stop(
                 &terminal.state,
                 historical_pending.get(&terminal.cursor),
                 terminal.await_reason.as_ref(),
                 false,
             );
             record.publish_fact_once(
-                &TimelineFact::new(idle_key, FactKind::ThreadIdle(stop)),
+                &DerivedSessionEvent::new(idle_key, SessionEventKind::ThreadIdle(stop)),
                 None,
             )?;
             record
@@ -74,17 +76,18 @@ impl ManagedState {
         // answerable-wait history. A later Running Session, pending call or
         // child Archive cannot erase a previously issued budget pair.
         for (generation, usage, budget) in projected_budget_reach.iter().cloned() {
-            let at =
-                |role| FactKey::new(session_id, role, FactProvenance::BudgetReach { generation });
+            let at = |role| {
+                EventIdentity::new(session_id, role, FactProvenance::BudgetReach { generation })
+            };
             record.push_fact(
-                at(FactRole::BudgetReachUsage),
+                at(ManagedEventType::BudgetReachUsage),
                 OutboundKind::SessionUsage {
                     usage,
                     budget: Some(budget),
                 },
             );
             record.push_fact(
-                at(FactRole::BudgetReachStatusIdle),
+                at(ManagedEventType::BudgetReachStatusIdle),
                 OutboundKind::SessionStatusIdle {
                     stop_reason: StopReason::BudgetReached,
                     stop_details: None,
@@ -101,7 +104,7 @@ impl ManagedState {
         record: &mut SessionRecord,
         persisted: &awaken_session_state_contract::PersistedSession,
         evidence: &CandidateEvidence,
-        plan: &awaken_session_projection::AggregatePlan,
+        plan: &awaken_managed_session_events::AggregatePlan,
     ) -> Result<(), StateError> {
         let session_id = record.session.id.clone();
         for opening in &plan.fallback_openings {
@@ -109,11 +112,11 @@ impl ManagedState {
         }
         for close in &plan.fallback_closes {
             let stop_reason = match &close.stop {
-                awaken_session_projection::AggregateStop::Run { calls_owner, stop } => {
+                awaken_managed_session_events::AggregateStop::Run { calls_owner, stop } => {
                     let owner = (calls_owner != &session_id).then_some(calls_owner.as_str());
                     timeline_encoding::resolve_stop(record, owner, stop)?
                 }
-                awaken_session_projection::AggregateStop::Calls { thread_calls } => {
+                awaken_managed_session_events::AggregateStop::Calls { thread_calls } => {
                     let mut event_ids = thread_calls
                         .iter()
                         .map(|(thread, call)| {

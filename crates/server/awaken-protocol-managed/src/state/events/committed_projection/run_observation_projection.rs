@@ -5,7 +5,7 @@
 // @formal reason: Evidence: session.multiagent.thread_authority and managed projection tests; this is a
 // @formal reason: product-requirement classification, not a direct proof claim.
 //! Projection of Runtime-owned model and context observations (decided by
-//! [`awaken_session_projection::run_observation_facts`]).
+//! [`awaken_managed_session_events::run_observation_facts`]).
 
 use super::*;
 
@@ -19,7 +19,7 @@ impl ManagedState {
         thread_id: &str,
         snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
     ) -> Result<(), StateError> {
-        let facts = awaken_session_projection::run_observation_facts(thread_id, snapshot)
+        let facts = awaken_managed_session_events::run_observation_facts(thread_id, snapshot)
             .map_err(projection_error)?;
         for fact in &facts {
             record.publish_fact_once(fact, None)?;

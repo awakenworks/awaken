@@ -30,7 +30,7 @@ mod source_fence;
 mod usage_projection;
 use crate::state::session_record::ProjectionDeliveryMemo;
 use crate::state::sessions::RehydrationPurpose;
-use awaken_session_projection::{
+use awaken_managed_session_events::{
     AnchoredOutcome, BudgetReachAnchor, OrderEvidence, OrderIndex, ParentTerminalEvidence,
 };
 use candidate_evidence::CandidateEvidence;
@@ -145,14 +145,14 @@ impl ManagedState {
         {
             return Ok(publication::ProjectionRefreshBuild::Retry);
         }
-        let activation_failure = awaken_session_projection::activation_failure_projection(
+        let activation_failure = awaken_managed_session_events::activation_failure_projection(
             &persisted,
             &evidence.acceptance.accepted,
         )
         .map_err(projection_error)?;
         if matches!(
             &activation_failure,
-            awaken_session_projection::ActivationFailureProjection::AwaitingSourceRun
+            awaken_managed_session_events::ActivationFailureProjection::AwaitingSourceRun
         ) {
             // The Session failure precedes this claimed Run's terminal commit.
             // Reuse the existing bounded source retry; publishing either the
@@ -195,15 +195,15 @@ impl ManagedState {
         // One domain plan selects both interval-owned and fallback aggregate
         // facts. The adapter only renders it after root/child tool identities
         // exist; it cannot run a second lifecycle selection walk.
-        let aggregate_plan = awaken_session_projection::plan_aggregate(
+        let aggregate_plan = awaken_managed_session_events::plan_aggregate(
             &persisted,
             &evidence.acceptance.accepted,
             &evidence.historical_pending,
             &evidence.links,
         )
         .map_err(projection_error)?;
-        let coordination = awaken_session_projection::project(
-            &awaken_session_projection::CommittedPrefix {
+        let coordination = awaken_managed_session_events::project(
+            &awaken_managed_session_events::CommittedPrefix {
                 session_id,
                 root: evidence.root.as_ref(),
                 root_blocked: evidence.root_blocked(session_id),
@@ -244,7 +244,7 @@ impl ManagedState {
         self.append_activation_failure_error_projection(record, &activation_failure)?;
         if matches!(
             &activation_failure,
-            awaken_session_projection::ActivationFailureProjection::Ready { .. }
+            awaken_managed_session_events::ActivationFailureProjection::Ready { .. }
         ) || persisted.terminal_cleanup.runtime_commit_cursor().is_some()
         {
             self.append_parent_terminal_projection(record, &mut child_threads)?;
@@ -342,7 +342,7 @@ impl ManagedState {
 // Test-only re-exports stay after every production item: they name the
 // kernels the Session event tests pin, under the paths those tests use.
 #[cfg(test)]
-pub(super) use awaken_session_projection::{
+pub(super) use awaken_managed_session_events::{
     budget_reach_close_cursor, budget_reach_projection_close_cursor,
     message_projection_ordinal_bound,
 };

@@ -273,7 +273,8 @@ impl ManagedState {
             Item = &'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
         >,
     ) -> Result<Vec<RunLifecycleEvent>, StateError> {
-        awaken_session_projection::committed_lifecycle_prefix(snapshots).map_err(projection_error)
+        awaken_managed_session_events::committed_lifecycle_prefix(snapshots)
+            .map_err(projection_error)
     }
 
     pub(super) fn pending_ticket_from_recovery_snapshot(
@@ -760,7 +761,7 @@ impl ManagedState {
         messages: &[awaken_agent_contract::agent::message::Message],
         run_ids: &[awaken_agent_contract::agent::run::Id],
     ) -> std::collections::HashMap<String, (String, usize, usize)> {
-        awaken_session_projection::assistant_response_coordinates(messages, run_ids)
+        awaken_managed_session_events::assistant_response_coordinates(messages, run_ids)
     }
 }
 

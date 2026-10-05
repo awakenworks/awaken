@@ -14,6 +14,6 @@ pub(super) fn project_committed_thread_usage(
     snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
 ) -> Result<Option<crate::types::SessionThreadUsage>, StateError> {
-    let usage = awaken_session_projection::committed_thread_usage(snapshot);
+    let usage = awaken_managed_session_events::committed_thread_usage(snapshot);
     session_thread_usage_value(usage, price_snapshot).map_err(StateError::Run)
 }

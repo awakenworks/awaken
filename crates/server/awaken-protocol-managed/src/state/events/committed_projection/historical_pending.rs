@@ -1,6 +1,6 @@
 // @formal entrypoint session.runtime_projection_historical_pending_precedes_terminal_projection
 //! Answerable events for historical Awaiting targets recovered from the Thread
-//! audit prefix (see [`awaken_session_projection::historical_pending_by_lifecycle`]).
+//! audit prefix (see [`awaken_managed_session_events::historical_pending_by_lifecycle`]).
 
 use super::*;
 
@@ -46,7 +46,7 @@ impl ManagedState {
                     "committed ToolUse Message cursors are not aligned",
                 )));
             }
-            if !awaken_session_projection::needs_synthetic_awaiting_tool(
+            if !awaken_managed_session_events::needs_synthetic_awaiting_tool(
                 snapshot, lifecycle, pending,
             ) {
                 continue;
