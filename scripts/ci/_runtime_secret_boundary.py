@@ -6,16 +6,20 @@ import re
 import tomllib
 from pathlib import Path
 
+import _crate_boundary_workspace
+
 
 def _runtime_context_dirs(crates: Path) -> list[Path]:
-    """crates/runtime plus the runtime-context contract crates that live under crates/contract."""
+    """Every Runtime SDK crate, wherever it lives under `crates`.
+
+    Selected by placement metadata (`product = "sdk"`) or the runtime
+    deployment context, never by directory, so moving a crate cannot drop it.
+    """
     dirs: list[Path] = []
-    runtime_dir = crates / "runtime"
-    if runtime_dir.exists():
-        dirs.append(runtime_dir)
-    for manifest in sorted((crates / "contract").glob("*/Cargo.toml")):
+    for manifest in _crate_boundary_workspace.crate_manifests(crates):
         package = tomllib.loads(manifest.read_text(encoding="utf-8")).get("package", {})
-        if package.get("metadata", {}).get("awaken", {}).get("context") == "runtime":
+        metadata = package.get("metadata", {}).get("awaken", {})
+        if metadata.get("product") == "sdk" or metadata.get("context") == "runtime":
             dirs.append(manifest.parent)
     return dirs
 
