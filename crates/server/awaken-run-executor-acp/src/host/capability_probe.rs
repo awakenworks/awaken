@@ -65,7 +65,7 @@ impl HostAcpCapabilityNegotiator {
     }
 }
 
-fn executable_on_path(program: &str) -> PathBuf {
+pub(super) fn executable_on_path(program: &str, path: Option<&std::ffi::OsStr>) -> PathBuf {
     let requested = Path::new(program);
     if requested.components().count() > 1 {
         return requested.to_path_buf();
@@ -82,9 +82,8 @@ fn executable_on_path(program: &str) -> PathBuf {
     } else {
         vec![String::new()]
     };
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+    path.into_iter()
+        .flat_map(|path| std::env::split_paths(path).collect::<Vec<_>>())
         .flat_map(|directory| {
             extensions.iter().map(move |extension| {
                 directory.join(if extension.is_empty() {
@@ -109,7 +108,7 @@ impl AcpCapabilityNegotiator for HostAcpCapabilityNegotiator {
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| "ACP capability probe requires a non-empty argv".to_string())?;
-        let executable = executable_on_path(program);
+        let executable = executable_on_path(program, std::env::var_os("PATH").as_deref());
         let mut command = tokio::process::Command::new(&executable);
         command
             .args(args)

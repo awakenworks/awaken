@@ -87,6 +87,58 @@ fn wrapper_cache_requires_the_exact_pinned_package_manifest() {
     assert!(!installed_wrapper_matches(directory.path(), "unversioned"));
 }
 
+#[tokio::test]
+async fn direct_host_acquisition_pins_the_probe_executable_for_worker_launch() {
+    // Causes: C1 a direct catalog executable exists on the preparation PATH;
+    // C2 it is absent; C3 the catalog carries an ACP flag. Effects: E1 the
+    // Worker argv starts with the canonical absolute executable and retains
+    // C3, E2 missing executable refuses preparation. The existing wrapper
+    // cache test owns pinned npm acquisition; neither branch adds a PATH
+    // lookup after the Worker has entered its restricted sandbox.
+    // | Rule | C1 | C2 | C3 | Effect |
+    // | D1 | yes | no | yes | E1 |
+    // | D2 | no | yes | any | E2 |
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("gemini");
+    std::fs::write(&fixture, b"fixture").unwrap();
+    let found = capability_probe::executable_on_path("gemini", Some(directory.path().as_os_str()));
+    assert_eq!(found, fixture, "D1 finds the acquisition PATH entry");
+    assert_eq!(
+        canonical_launch_argv(&found, &["--acp"]).unwrap(),
+        vec![
+            fixture
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            "--acp".into()
+        ],
+        "D1 keeps the exact executable and flag",
+    );
+    let missing =
+        capability_probe::executable_on_path("missing", Some(directory.path().as_os_str()));
+    assert!(canonical_launch_argv(&missing, &[]).is_err(), "D2");
+
+    let current = std::env::current_exe().unwrap().canonicalize().unwrap();
+    let executable: &'static str =
+        Box::leak(current.to_string_lossy().into_owned().into_boxed_str());
+    let mut cli = *acp_cli("gemini").unwrap();
+    cli.acquisition = crate::AcpAcquisition::Direct {
+        executable,
+        args: &["--acp"],
+    };
+    let argv = NpmWrapperInstaller
+        .resolved_argv(&cli, directory.path())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        argv,
+        vec![executable.to_string(), "--acp".into()],
+        "D1 production adapter"
+    );
+}
+
 struct AvailableDiscovery;
 
 fn observation(
