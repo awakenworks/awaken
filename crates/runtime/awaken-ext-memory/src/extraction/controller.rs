@@ -5,7 +5,7 @@
 //! those existing contracts without introducing a second lifecycle authority.
 
 use super::*;
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 
 impl Default for MemoryExtractionPolicy {
     fn default() -> Self {
@@ -23,7 +23,7 @@ impl MemoryExtractionController {
     pub fn new(
         repository: std::sync::Arc<dyn MemoryExtractionRepository>,
         owner: impl Into<String>,
-        clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+        clock: std::sync::Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             repository,

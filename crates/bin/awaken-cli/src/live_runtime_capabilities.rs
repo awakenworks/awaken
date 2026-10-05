@@ -1,7 +1,7 @@
 // @formal entrypoint worker.acp_capability_is_detected_only_after_a_verified_handshake
 use std::sync::Arc;
 
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 
 /// Project the one executable ACP catalog into the management read model. This
 /// startup edge is intentionally the only place that knows both contexts;
@@ -207,7 +207,7 @@ pub(crate) struct LiveRuntimeCapabilities {
     pub(crate) workers: Arc<dyn awaken_coordinator::WorkerObservationSource>,
     pub(crate) credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     pub(crate) workspace: String,
-    pub(crate) clock: Arc<dyn awaken_lease_contract::WallClock>,
+    pub(crate) clock: Arc<dyn awaken_time::WallClock>,
 }
 
 #[async_trait::async_trait]

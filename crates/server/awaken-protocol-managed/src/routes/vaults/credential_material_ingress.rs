@@ -313,7 +313,7 @@ mod tests {
         let vault = VaultState::new(
             secrets.clone(),
             repository.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let source_id = CredentialSourceId("credential:repository:exact".into());
         let exact_target =
@@ -539,7 +539,7 @@ mod tests {
             },
             secrets.as_ref(),
             repository.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .expect("V4 legacy fixture");

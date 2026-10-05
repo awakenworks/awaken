@@ -127,7 +127,7 @@ pub async fn published_retirement(
                 recover_managed_credential_mutations(
                     &secrets,
                     &repo,
-                    awaken_lease_contract::system_clock().as_ref()
+                    awaken_time::system_clock().as_ref()
                 )
                 .await
                 .unwrap(),
@@ -179,20 +179,17 @@ pub async fn published_retirement(
             phase: &phase,
             marker: marker.to_str().unwrap(),
         };
-        let completed = recover_credential_mutations(
-            &faults,
-            &repo,
-            awaken_lease_contract::system_clock().as_ref(),
-        )
-        .await
-        .unwrap()
-            + recover_managed_credential_mutations(
-                &faults,
-                &repo,
-                awaken_lease_contract::system_clock().as_ref(),
-            )
-            .await
-            .unwrap();
+        let completed =
+            recover_credential_mutations(&faults, &repo, awaken_time::system_clock().as_ref())
+                .await
+                .unwrap()
+                + recover_managed_credential_mutations(
+                    &faults,
+                    &repo,
+                    awaken_time::system_clock().as_ref(),
+                )
+                .await
+                .unwrap();
         assert_eq!(completed, 1);
         assert_eq!(phase, "retired");
         checkpoint(marker.to_str().unwrap()).await;
@@ -222,20 +219,17 @@ pub async fn published_retirement(
             + repo.pending_managed_mutations().await.unwrap().len();
         assert_eq!(pending, usize::from(phase != "retired"), "C4 WAL prefix");
         for repeat in 0..2 {
-            let completed = recover_credential_mutations(
-                &secrets,
-                &repo,
-                awaken_lease_contract::system_clock().as_ref(),
-            )
-            .await
-            .unwrap()
-                + recover_managed_credential_mutations(
-                    &secrets,
-                    &repo,
-                    awaken_lease_contract::system_clock().as_ref(),
-                )
-                .await
-                .unwrap();
+            let completed =
+                recover_credential_mutations(&secrets, &repo, awaken_time::system_clock().as_ref())
+                    .await
+                    .unwrap()
+                    + recover_managed_credential_mutations(
+                        &secrets,
+                        &repo,
+                        awaken_time::system_clock().as_ref(),
+                    )
+                    .await
+                    .unwrap();
             assert_eq!(completed, usize::from(repeat == 0 && phase != "retired"));
         }
         assert!(repo.pending_mutations().await.unwrap().is_empty());

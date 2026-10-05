@@ -102,7 +102,7 @@ fn duration_millis(duration: Duration) -> u64 {
 /// A reading of a Resource Worker service's injected wall clock, shared by
 /// every Resource Worker route. Pre-epoch readings fail closed as zero;
 /// unrepresentable far-future values saturate.
-pub(crate) fn clock_ms(clock: &dyn awaken_lease_contract::WallClock) -> u64 {
+pub(crate) fn clock_ms(clock: &dyn awaken_time::WallClock) -> u64 {
     duration_millis(clock.now().duration_since_epoch())
 }
 

@@ -60,7 +60,7 @@ pub struct WorkerFileContentService {
     materialization_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionResourceMaterializationControl>>,
     /// The Coordinator's wall clock: the instant claims and leases are judged at.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl WorkerFileContentService {
@@ -69,7 +69,7 @@ impl WorkerFileContentService {
         source: Arc<dyn FileContentSource<ResourceOperationFence>>,
         dispatch: Arc<dyn DispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             source,

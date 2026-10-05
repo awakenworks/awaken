@@ -80,7 +80,7 @@ pub struct ContainerProvider<R: ContainerRuntime> {
     /// The composing process's wall clock: effect fences are judged and
     /// allowlist capabilities issued on it. A provider composed without one
     /// judges no fence and issues no capability (fail closed).
-    pub(super) clock: Option<Arc<dyn awaken_lease_contract::WallClock>>,
+    pub(super) clock: Option<Arc<dyn awaken_time::WallClock>>,
 }
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
@@ -122,13 +122,13 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     /// A unit-test provider composed on the host clock.
     #[cfg(test)]
     pub(crate) fn for_test(runtime: Arc<R>, default_image: impl Into<String>) -> Self {
-        Self::new(runtime, default_image).with_clock(awaken_lease_contract::system_clock())
+        Self::new(runtime, default_image).with_clock(awaken_time::system_clock())
     }
 
     /// Compose the provider with the process's wall clock (see the `clock`
     /// field). The execution composition always installs it.
     #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+    pub fn with_clock(mut self, clock: Arc<dyn awaken_time::WallClock>) -> Self {
         self.clock = Some(clock);
         self
     }

@@ -407,11 +407,8 @@ async fn resolver_erase_without_erasers_stamps_subject_and_returns_zero() {
     s.upsert_consent(granted(Purpose::TelemetryContent));
     repo.create(s).await.unwrap();
 
-    let resolver = RepoDataSubjectResolver::new(
-        repo.clone(),
-        repo.clone(),
-        awaken_lease_contract::system_clock(),
-    );
+    let resolver =
+        RepoDataSubjectResolver::new(repo.clone(), repo.clone(), awaken_time::system_clock());
     let id = DataSubjectId("dsub_1".into());
     let receipt = resolver.erase(&id).await.unwrap();
     assert_eq!(receipt.records_removed, 0, "no erasers → nothing removed");
@@ -440,12 +437,11 @@ async fn resolver_erase_unknown_subject_counts_eraser_removals() {
     }
 
     let repo = std::sync::Arc::new(InMemoryDataSubjectRepo::new());
-    let resolver =
-        RepoDataSubjectResolver::new(repo.clone(), repo, awaken_lease_contract::system_clock())
-            .with_target(
-                ErasureTarget::Coordinator,
-                std::sync::Arc::new(FakeEraser(6)),
-            );
+    let resolver = RepoDataSubjectResolver::new(repo.clone(), repo, awaken_time::system_clock())
+        .with_target(
+            ErasureTarget::Coordinator,
+            std::sync::Arc::new(FakeEraser(6)),
+        );
     // Subject was never put(); erasers still remove its orphaned content.
     let receipt = resolver
         .erase(&DataSubjectId("orphan".into()))
@@ -488,27 +484,24 @@ async fn erasure_retry_resumes_after_the_last_durable_checkpoint() {
     let repo = std::sync::Arc::new(InMemoryDataSubjectRepo::new());
     let first_calls = std::sync::Arc::new(AtomicUsize::new(0));
     let second_calls = std::sync::Arc::new(AtomicUsize::new(0));
-    let resolver = RepoDataSubjectResolver::new(
-        repo.clone(),
-        repo.clone(),
-        awaken_lease_contract::system_clock(),
-    )
-    .with_target(
-        ErasureTarget::Coordinator,
-        std::sync::Arc::new(CountingEraser {
-            calls: first_calls.clone(),
-            removed: 2,
-            fail_first: false,
-        }),
-    )
-    .with_target(
-        ErasureTarget::Resources,
-        std::sync::Arc::new(CountingEraser {
-            calls: second_calls.clone(),
-            removed: 3,
-            fail_first: true,
-        }),
-    );
+    let resolver =
+        RepoDataSubjectResolver::new(repo.clone(), repo.clone(), awaken_time::system_clock())
+            .with_target(
+                ErasureTarget::Coordinator,
+                std::sync::Arc::new(CountingEraser {
+                    calls: first_calls.clone(),
+                    removed: 2,
+                    fail_first: false,
+                }),
+            )
+            .with_target(
+                ErasureTarget::Resources,
+                std::sync::Arc::new(CountingEraser {
+                    calls: second_calls.clone(),
+                    removed: 3,
+                    fail_first: true,
+                }),
+            );
     let subject = DataSubjectId("resume-me".into());
 
     assert!(resolver.erase(&subject).await.is_err());
@@ -555,12 +548,9 @@ async fn concurrent_erasure_replays_effect_but_counts_one_checkpoint() {
         barrier: tokio::sync::Barrier::new(2),
         calls: AtomicUsize::new(0),
     });
-    let resolver = RepoDataSubjectResolver::new(
-        repo.clone(),
-        repo.clone(),
-        awaken_lease_contract::system_clock(),
-    )
-    .with_target(ErasureTarget::Coordinator, eraser.clone());
+    let resolver =
+        RepoDataSubjectResolver::new(repo.clone(), repo.clone(), awaken_time::system_clock())
+            .with_target(ErasureTarget::Coordinator, eraser.clone());
 
     let (left, right) = tokio::join!(resolver.erase(&subject), resolver.erase(&subject));
     assert_eq!(left.unwrap().records_removed, 5, "E3");
@@ -583,8 +573,7 @@ async fn resolver_reads_grant_and_erases() {
     s.upsert_consent(granted(Purpose::TelemetryContent));
     repo.create(s).await.unwrap();
 
-    let resolver =
-        RepoDataSubjectResolver::new(repo.clone(), repo, awaken_lease_contract::system_clock());
+    let resolver = RepoDataSubjectResolver::new(repo.clone(), repo, awaken_time::system_clock());
     let id = DataSubjectId("dsub_1".into());
     assert_eq!(
         resolver
@@ -657,7 +646,7 @@ async fn resolver_erase_surfaces_backend_failures() {
     let with_failing_eraser = RepoDataSubjectResolver::new(
         std::sync::Arc::new(FailingPutRepo),
         jobs.clone(),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_target(
         ErasureTarget::Coordinator,
@@ -681,7 +670,7 @@ async fn resolver_erase_surfaces_backend_failures() {
     let with_failing_put = RepoDataSubjectResolver::new(
         std::sync::Arc::new(FailingPutRepo),
         jobs,
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_target(ErasureTarget::Coordinator, std::sync::Arc::new(CleanEraser));
     let err = with_failing_put
@@ -722,19 +711,16 @@ async fn erase_fans_out_and_sums_removed_counts() {
         repo.create(DataSubject::new(id.clone(), "org_1", 0))
             .await
             .unwrap();
-        let resolver = RepoDataSubjectResolver::new(
-            repo.clone(),
-            repo.clone(),
-            awaken_lease_contract::system_clock(),
-        )
-        .with_target(
-            ErasureTarget::Coordinator,
-            std::sync::Arc::new(FakeEraser(first)),
-        )
-        .with_target(
-            ErasureTarget::Resources,
-            std::sync::Arc::new(FakeEraser(second)),
-        );
+        let resolver =
+            RepoDataSubjectResolver::new(repo.clone(), repo.clone(), awaken_time::system_clock())
+                .with_target(
+                    ErasureTarget::Coordinator,
+                    std::sync::Arc::new(FakeEraser(first)),
+                )
+                .with_target(
+                    ErasureTarget::Resources,
+                    std::sync::Arc::new(FakeEraser(second)),
+                );
         let result = resolver.erase(&id).await;
         let progress = repo.load(&id).await.unwrap().unwrap();
         if let Some(total) = expected {
@@ -786,16 +772,13 @@ async fn resolver_erase_fans_out_and_stamps_retained_subject() {
     s.upsert_consent(granted(Purpose::TelemetryContent));
     repo.create(s).await.unwrap();
 
-    let resolver = RepoDataSubjectResolver::new(
-        repo.clone(),
-        repo.clone(),
-        awaken_lease_contract::system_clock(),
-    )
-    .with_target(
-        ErasureTarget::Coordinator,
-        std::sync::Arc::new(FakeEraser(4)),
-    )
-    .with_target(ErasureTarget::Resources, std::sync::Arc::new(FakeEraser(3)));
+    let resolver =
+        RepoDataSubjectResolver::new(repo.clone(), repo.clone(), awaken_time::system_clock())
+            .with_target(
+                ErasureTarget::Coordinator,
+                std::sync::Arc::new(FakeEraser(4)),
+            )
+            .with_target(ErasureTarget::Resources, std::sync::Arc::new(FakeEraser(3)));
     let id = DataSubjectId("dsub_1".into());
 
     let receipt = resolver.erase(&id).await.unwrap();
@@ -1101,7 +1084,7 @@ async fn storage_outage_never_masquerades_as_missing_consent() {
     let application = DataSubjectApplication::new(
         Arc::new(FailingRepo),
         vec![3; 32],
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .unwrap();
     assert!(matches!(
@@ -1166,8 +1149,7 @@ async fn stale_profile_writer_retries_without_losing_consent() {
         injected: AtomicBool::new(false),
     });
     let application =
-        DataSubjectApplication::new(repo, vec![4; 32], awaken_lease_contract::system_clock())
-            .unwrap();
+        DataSubjectApplication::new(repo, vec![4; 32], awaken_time::system_clock()).unwrap();
     let profile = application
         .create_user_profile(CreateUserProfileCommand {
             org: "org".into(),
@@ -1209,8 +1191,7 @@ async fn revision_exhaustion_fails_instead_of_saturating() {
     subject.revision = u64::MAX;
     repo.create(subject).await.unwrap();
     let application =
-        DataSubjectApplication::new(repo, vec![5; 32], awaken_lease_contract::system_clock())
-            .unwrap();
+        DataSubjectApplication::new(repo, vec![5; 32], awaken_time::system_clock()).unwrap();
     assert!(matches!(
         application
             .update_user_profile(
@@ -1418,11 +1399,8 @@ async fn restored_erasure_checkpoint_is_validated_before_replay_or_effects() {
             .unwrap();
         repo.progress_cas.store(0, Ordering::SeqCst);
         let effects = Arc::new(AtomicUsize::new(0));
-        let mut resolver = RepoDataSubjectResolver::new(
-            repo.clone(),
-            repo.clone(),
-            awaken_lease_contract::system_clock(),
-        );
+        let mut resolver =
+            RepoDataSubjectResolver::new(repo.clone(), repo.clone(), awaken_time::system_clock());
         for (target, bound) in [
             (ErasureTarget::Coordinator, enabled[0]),
             (ErasureTarget::Resources, enabled[1]),

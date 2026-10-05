@@ -9,7 +9,6 @@
 use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_lease_contract::WallClockExt as _;
 use awaken_session_error_contract::RunError;
 use awaken_session_event_contract::SessionEventProjectionAnchor;
 use awaken_session_state_contract::{
@@ -18,6 +17,7 @@ use awaken_session_state_contract::{
     SessionRuntimeIntervalObservation,
 };
 use awaken_session_types::SessionRevision;
+use awaken_time::WallClockExt as _;
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
 

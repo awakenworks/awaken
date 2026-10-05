@@ -67,13 +67,9 @@ async fn secret_write_survives_kill_and_is_compensated_from_the_intent() {
             marker: &marker,
         };
         assert_eq!(
-            recover_credential_mutations(
-                &faults,
-                &repo,
-                awaken_lease_contract::system_clock().as_ref()
-            )
-            .await
-            .unwrap(),
+            recover_credential_mutations(&faults, &repo, awaken_time::system_clock().as_ref())
+                .await
+                .unwrap(),
             1
         );
         assert_eq!(phase, "retired");
@@ -117,13 +113,9 @@ async fn secret_write_survives_kill_and_is_compensated_from_the_intent() {
         if phase == "retired" {
             assert!(secrets.inventory().await.unwrap().is_empty());
             assert_eq!(
-                recover_credential_mutations(
-                    &secrets,
-                    &repo,
-                    awaken_lease_contract::system_clock().as_ref()
-                )
-                .await
-                .unwrap(),
+                recover_credential_mutations(&secrets, &repo, awaken_time::system_clock().as_ref())
+                    .await
+                    .unwrap(),
                 0
             );
             continue;
@@ -144,25 +136,17 @@ async fn secret_write_survives_kill_and_is_compensated_from_the_intent() {
             repo.abort_mutation(&claimed).await.unwrap();
         }
         assert_eq!(
-            recover_credential_mutations(
-                &secrets,
-                &repo,
-                awaken_lease_contract::system_clock().as_ref()
-            )
-            .await
-            .unwrap(),
+            recover_credential_mutations(&secrets, &repo, awaken_time::system_clock().as_ref())
+                .await
+                .unwrap(),
             1
         );
         assert!(repo.pending_mutations().await.unwrap().is_empty());
         assert!(secrets.get(&attempted_ref).await.is_err());
         assert_eq!(
-            recover_credential_mutations(
-                &secrets,
-                &repo,
-                awaken_lease_contract::system_clock().as_ref()
-            )
-            .await
-            .unwrap(),
+            recover_credential_mutations(&secrets, &repo, awaken_time::system_clock().as_ref())
+                .await
+                .unwrap(),
             0
         );
     }

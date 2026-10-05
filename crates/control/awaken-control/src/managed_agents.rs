@@ -16,7 +16,6 @@ use awaken_agent_contract::AgentSkillBinding;
 use awaken_config_service::{
     ConfigPlane, RESERVED_ADMIN_SCOPE, parse_managed_model_id, render_managed_model_id,
 };
-use awaken_lease_contract::WallClock;
 use awaken_protocol_managed::types::agent::{
     AdvisorRosterEntry, AdvisorRosterEntryKind, Agent, AgentCreateParams, AgentListParams,
     AgentMcpServer, AgentSkill, AgentUpdateParams, MultiagentConfig as WireMultiagent,
@@ -31,6 +30,7 @@ use awaken_session_configuration_contract::{
     toolset_policies, validate_agent_tools,
 };
 use awaken_tenancy::ScopeId;
+use awaken_time::WallClock;
 
 mod lifecycle_identity;
 mod projection;
@@ -736,7 +736,7 @@ mod tests {
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane.clone(),
             "workspace-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let error = repository
             .create("workspace-a", create_params("invalid"))
@@ -783,7 +783,7 @@ mod tests {
                 created_at_unix_ms: None,
                 updated_at_unix_ms: None,
             },
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .expect("projected");
         assert!(projected.tools.is_empty());
@@ -809,7 +809,7 @@ mod tests {
                     created_at_unix_ms: None,
                     updated_at_unix_ms: None,
                 },
-                awaken_lease_contract::system_clock().as_ref(),
+                awaken_time::system_clock().as_ref(),
             )
         };
         assert_eq!(
@@ -855,7 +855,7 @@ mod tests {
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane.clone(),
             "workspace-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let mut create = create_params("opaque");
         create.multiagent = Some(
@@ -995,7 +995,7 @@ mod tests {
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane.clone(),
             "workspace-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
 
         let created = repository
@@ -1082,7 +1082,7 @@ mod tests {
             let repository = ConfigPlaneManagedAgentRepository::new(
                 plane(path.to_str().unwrap()),
                 "workspace-a",
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             );
             let created = repository
                 .create("workspace-a", create_params("assistant"))
@@ -1098,7 +1098,7 @@ mod tests {
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane(path.to_str().unwrap()),
             "workspace-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let current = repository.retrieve("workspace-a", &id, None).await.unwrap();
         assert_eq!(current.name, "renamed");
@@ -1136,7 +1136,7 @@ mod tests {
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane.clone(),
             "workspace-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let created = repository
             .create("workspace-a", create_params("published name"))
@@ -1237,7 +1237,7 @@ mod tests {
             let repository = ConfigPlaneManagedAgentRepository::new(
                 plane.clone(),
                 "workspace-a",
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             );
             let mut params = create_params("controlled");
             params.model = ModelInput::Config(ModelConfigParams {
@@ -1267,7 +1267,7 @@ mod tests {
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane.clone(),
             "workspace-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let restored = repository.retrieve("workspace-a", &id, None).await.unwrap();
         assert_eq!(restored.model.speed, Some(ModelSpeed::Fast));
@@ -1315,7 +1315,7 @@ mod tests {
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane,
             "workspace-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
 
         let worker = repository
@@ -1436,7 +1436,7 @@ mod tests {
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane,
             "workspace-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let mut worker = create_params("worker");
         worker.model = ModelInput::Config(ModelConfigParams {
@@ -1547,7 +1547,7 @@ mod tests {
                     created_at_unix_ms: Some(1_000),
                     updated_at_unix_ms: Some(2_000),
                 },
-                awaken_lease_contract::system_clock().as_ref(),
+                awaken_time::system_clock().as_ref(),
             )
             .expect("projected");
             let Some(WireMultiagent::Coordinator { agents }) = projected.multiagent else {
@@ -1611,7 +1611,7 @@ mod tests {
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane.clone(),
             "workspace-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
 
         let mut worker_params = create_params("researcher");
@@ -1722,7 +1722,7 @@ mod tests {
         let cold = ConfigPlaneManagedAgentRepository::new(
             plane_with_delegation(path.to_str().unwrap()),
             "workspace-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         assert_wire_order(
             "C4 cold retrieve",
@@ -1779,7 +1779,7 @@ mod tests {
         let native_repository = ConfigPlaneManagedAgentRepository::new(
             plane(native_temp.path().join("config.sqlite").to_str().unwrap()),
             "workspace-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let native = native_repository
             .create("workspace-a", create_params("native"))
@@ -1855,7 +1855,7 @@ mod tests {
                     created_at_unix_ms: Some(1_000),
                     updated_at_unix_ms: Some(2_000),
                 },
-                awaken_lease_contract::system_clock().as_ref(),
+                awaken_time::system_clock().as_ref(),
             )
             .expect("projected"),
         )
@@ -1941,7 +1941,7 @@ mod tests {
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane.clone(),
             "workspace-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
 
         let projected = repository
@@ -1967,18 +1967,15 @@ mod tests {
             Err(ManagedAgentError::NotFound)
         ));
         assert_eq!(
-            ConfigPlaneManagedAgentRepository::request_scoped(
-                plane,
-                awaken_lease_contract::system_clock(),
-            )
-            .retrieve(
-                "workspace-b",
-                awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID,
-                None,
-            )
-            .await
-            .expect("P3 request-scoped projection")
-            .id,
+            ConfigPlaneManagedAgentRepository::request_scoped(plane, awaken_time::system_clock(),)
+                .retrieve(
+                    "workspace-b",
+                    awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID,
+                    None,
+                )
+                .await
+                .expect("P3 request-scoped projection")
+                .id,
             awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID
         );
     }

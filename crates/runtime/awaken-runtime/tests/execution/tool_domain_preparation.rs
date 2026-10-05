@@ -185,9 +185,7 @@ async fn tool_domain_preparation_preserves_result_and_fatal_boundaries_in_each_d
                     parallel,
                     invocations: Mutex::new(Vec::new()),
                 });
-                let durable = Arc::new(MemoryCommitCoordinator::new(
-                    awaken_lease_contract::system_clock(),
-                ));
+                let durable = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
                 let mut request = activation("catalog-a");
                 request.snapshot.resolved_spec.tool_descriptors = ["a", "b"]
                     .into_iter()

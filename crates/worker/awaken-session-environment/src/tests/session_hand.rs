@@ -78,7 +78,7 @@ async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
         "/usr/local/bin/awaken-sandbox",
         std::time::Duration::ZERO,
         awaken_session_environment_contract::ContainerHandResidency::Resident,
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .into_session_provider();
 
@@ -666,7 +666,7 @@ async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
         "/usr/local/bin/awaken-sandbox",
         std::time::Duration::ZERO,
         awaken_session_environment_contract::ContainerHandResidency::Resident,
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .into_session_provider()
     .create(&spec())
@@ -1048,7 +1048,7 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
         "/opt/custom/awaken-sandbox",
         &unsupported_plan,
         None,
-        &awaken_lease_contract::system_clock(),
+        &awaken_time::system_clock(),
     )
     .await
     .expect_err("C1/E1 unsupported path");
@@ -1077,7 +1077,7 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
         "/opt/custom/awaken-sandbox",
         &import_plan,
         None,
-        &awaken_lease_contract::system_clock(),
+        &awaken_time::system_clock(),
     )
     .await
     .expect_err("a failed container import is not reported as provisioned");
@@ -1112,7 +1112,7 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
         &plan,
         &expectation,
         None,
-        &awaken_lease_contract::system_clock(),
+        &awaken_time::system_clock(),
     )
     .await
     .expect_err("a failed container push is not published");
@@ -1145,7 +1145,7 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
         &plan,
         &expectation,
         None,
-        &awaken_lease_contract::system_clock(),
+        &awaken_time::system_clock(),
     )
     .await
     .expect_err("R6 exact remote conflict is durable rejection evidence");
@@ -1168,7 +1168,7 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
         &plan,
         &expectation,
         None,
-        &awaken_lease_contract::system_clock(),
+        &awaken_time::system_clock(),
     )
     .await
     .expect_err("R8 exact local HEAD conflict is durable rejection evidence");

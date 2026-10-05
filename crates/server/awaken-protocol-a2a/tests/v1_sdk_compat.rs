@@ -97,7 +97,7 @@ fn params(tenant: &str, context: &str) -> Value {
 
 #[tokio::test]
 async fn card_and_unknown_version_are_negotiated_explicitly() {
-    let app = router(Arc::new(Runtime), awaken_lease_contract::system_clock());
+    let app = router(Arc::new(Runtime), awaken_time::system_clock());
     let (_, headers, body) = call(
         app.clone(),
         "GET",
@@ -128,7 +128,7 @@ async fn card_and_unknown_version_are_negotiated_explicitly() {
 
 #[tokio::test]
 async fn v1_pascal_case_send_stream_and_list_tasks_match_protojson() {
-    let app = router(Arc::new(Runtime), awaken_lease_contract::system_clock());
+    let app = router(Arc::new(Runtime), awaken_time::system_clock());
     let (_, _, body) = call(
         app.clone(),
         "POST",
@@ -181,7 +181,7 @@ async fn v1_pascal_case_send_stream_and_list_tasks_match_protojson() {
 
 #[tokio::test]
 async fn v1_flat_push_configuration_crud_is_tenant_fenced() {
-    let app = router(Arc::new(Runtime), awaken_lease_contract::system_clock());
+    let app = router(Arc::new(Runtime), awaken_time::system_clock());
     let (_, _, body) = call(
         app.clone(), "POST", "/v1/a2a",
         json!({ "jsonrpc": "2.0", "id": 1, "method": "SendMessage", "params": params("tenant-a", "push-context") }),
@@ -219,7 +219,7 @@ async fn v1_flat_push_configuration_crud_is_tenant_fenced() {
 
 #[tokio::test]
 async fn v1_rest_transport_paths_media_type_and_tenant_scope_match_the_sdk() {
-    let app = router(Arc::new(Runtime), awaken_lease_contract::system_clock());
+    let app = router(Arc::new(Runtime), awaken_time::system_clock());
     let (status, headers, body) = call(
         app.clone(),
         "POST",
@@ -265,7 +265,7 @@ async fn v1_rest_transport_paths_media_type_and_tenant_scope_match_the_sdk() {
 
 #[tokio::test]
 async fn v1_return_immediately_replaces_the_legacy_blocking_switch() {
-    let app = router(Arc::new(Runtime), awaken_lease_contract::system_clock());
+    let app = router(Arc::new(Runtime), awaken_time::system_clock());
     let mut immediate = params("tenant-a", "immediate-context");
     immediate["configuration"] = json!({ "returnImmediately": true });
     let (_, _, body) = call(

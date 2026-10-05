@@ -38,7 +38,7 @@ pub struct InMemoryCapturedContentStore {
     state: Mutex<InMemoryState>,
     seq: AtomicU64,
     /// The wall clock a sink record is stamped with.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 #[derive(Default)]
@@ -49,7 +49,7 @@ struct InMemoryState {
 
 impl InMemoryCapturedContentStore {
     #[must_use]
-    pub fn new(clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+    pub fn new(clock: Arc<dyn awaken_time::WallClock>) -> Self {
         Self {
             state: Mutex::default(),
             seq: AtomicU64::new(0),
@@ -192,7 +192,7 @@ mod tests {
     use super::*;
 
     fn store() -> InMemoryCapturedContentStore {
-        let s = InMemoryCapturedContentStore::new(awaken_lease_contract::system_clock());
+        let s = InMemoryCapturedContentStore::new(awaken_time::system_clock());
         s.insert(
             DataSubjectId("a".into()),
             Purpose::TelemetryContent,
@@ -211,7 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn capture_sink_records_then_erases_by_subject() {
-        let s = InMemoryCapturedContentStore::new(awaken_lease_contract::system_clock());
+        let s = InMemoryCapturedContentStore::new(awaken_time::system_clock());
         s.record(
             &DataSubjectId("a".into()),
             Purpose::TelemetryContent,
@@ -251,7 +251,7 @@ mod tests {
         // R2 different subject -> record normally.
         // One mutex owns fence + rows, so concurrent write/erase linearizes to
         // either "record then delete" or "fence then reject".
-        let store = InMemoryCapturedContentStore::new(awaken_lease_contract::system_clock());
+        let store = InMemoryCapturedContentStore::new(awaken_time::system_clock());
         let erased = DataSubjectId("erased".into());
         store.insert(erased.clone(), Purpose::TelemetryContent, "old", 1);
         assert_eq!(store.erase_subject(&erased).await.unwrap(), 1, "R1");
@@ -282,7 +282,7 @@ mod tests {
 
     #[tokio::test]
     async fn restricted_records_survive_erasure_and_ttl() {
-        let s = InMemoryCapturedContentStore::new(awaken_lease_contract::system_clock());
+        let s = InMemoryCapturedContentStore::new(awaken_time::system_clock());
         s.insert(
             DataSubjectId("a".into()),
             Purpose::TelemetryContent,
@@ -319,7 +319,7 @@ mod tests {
     // currently-restricted rows (c) and is likewise idempotent (d).
     #[test]
     fn restrict_and_release_count_only_matching_and_are_idempotent() {
-        let s = InMemoryCapturedContentStore::new(awaken_lease_contract::system_clock());
+        let s = InMemoryCapturedContentStore::new(awaken_time::system_clock());
         let a = DataSubjectId("a".into());
         s.insert(a.clone(), Purpose::TelemetryContent, "x1", 100);
         s.insert(a.clone(), Purpose::TelemetryContent, "x2", 100);
@@ -342,7 +342,7 @@ mod tests {
     // swept (the retain predicate keeps only `age < ttl`). Guards the off-by-one.
     #[test]
     fn ttl_sweep_at_exact_boundary_age_is_swept() {
-        let s = InMemoryCapturedContentStore::new(awaken_lease_contract::system_clock());
+        let s = InMemoryCapturedContentStore::new(awaken_time::system_clock());
         s.insert(
             DataSubjectId("a".into()),
             Purpose::TelemetryContent,

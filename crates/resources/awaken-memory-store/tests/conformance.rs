@@ -10,12 +10,12 @@
 //! compare-and-swap semantics as the in-process backends.
 
 #[cfg(any(feature = "test-support", feature = "postgres"))]
-use awaken_lease_contract::UtcTime;
-#[cfg(any(feature = "test-support", feature = "postgres"))]
 use awaken_lease_testkit::{FixedClock, ManualClock};
 #[cfg(feature = "test-support")]
 use awaken_memory_store::VolatileMemoryRepository;
 use awaken_memory_store::{MemErr, MemoryRepository};
+#[cfg(any(feature = "test-support", feature = "postgres"))]
+use awaken_time::UtcTime;
 #[cfg(any(feature = "test-support", feature = "postgres"))]
 use std::sync::Arc;
 
@@ -68,7 +68,7 @@ async fn sqlite_memory_timestamps_use_the_injected_clock_and_checked_sql_range()
 #[cfg(feature = "test-support")]
 #[tokio::test]
 async fn volatile_materialized_path_cas() {
-    let fs = VolatileMemoryRepository::new(awaken_lease_contract::system_clock());
+    let fs = VolatileMemoryRepository::new(awaken_time::system_clock());
     shared::materialized_path_cas(&fs).await;
     shared::complete_generation_rejects_same_content_aba(&fs).await;
     shared::materialized_update_races_rename(&fs).await;
@@ -77,10 +77,9 @@ async fn volatile_materialized_path_cas() {
 #[cfg(all(feature = "sqlite", feature = "test-support"))]
 #[tokio::test]
 async fn sqlite_materialized_path_cas() {
-    let fs = awaken_memory_store::SqliteMemoryRepository::open_in_memory(
-        awaken_lease_contract::system_clock(),
-    )
-    .unwrap();
+    let fs =
+        awaken_memory_store::SqliteMemoryRepository::open_in_memory(awaken_time::system_clock())
+            .unwrap();
     shared::materialized_path_cas(&fs).await;
     shared::complete_generation_rejects_same_content_aba(&fs).await;
     shared::materialized_update_races_rename(&fs).await;
@@ -172,7 +171,7 @@ async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn M
 #[tokio::test]
 async fn in_memory_conditional_delete_is_atomic() {
     conditional_delete_never_removes_a_changed_or_recreated_head(&VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ))
     .await;
 }
@@ -182,7 +181,7 @@ async fn in_memory_conditional_delete_is_atomic() {
 async fn sqlite_conditional_delete_is_atomic() {
     use awaken_memory_store::SqliteMemoryRepository;
     conditional_delete_never_removes_a_changed_or_recreated_head(
-        &SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
+        &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
     )
     .await;
 }
@@ -192,7 +191,7 @@ async fn sqlite_conditional_delete_is_atomic() {
 async fn sqlite_concurrent_create_has_exactly_one_winner() {
     use awaken_memory_store::SqliteMemoryRepository;
     concurrent_create_one_winner(Arc::new(
-        SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
+        SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
     ))
     .await;
 }
@@ -207,9 +206,8 @@ async fn sqlite_concurrent_cas_has_exactly_one_winner() {
     // Separate repositories isolate the two rules; R2 deliberately shares its
     // repository across create and CAS so an empty-store assumption is exposed.
     for with_history in [false, true] {
-        let fs = Arc::new(
-            SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
-        );
+        let fs =
+            Arc::new(SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap());
         if with_history {
             concurrent_create_one_winner(fs.clone()).await;
         }
@@ -309,7 +307,7 @@ mod postgres {
         let Some(pool) = schema_pool("t_memoryfs").await else {
             return;
         };
-        let clock = awaken_lease_contract::system_clock();
+        let clock = awaken_time::system_clock();
 
         // Causal graph and decision table:
         // absent ledger + verify -> fail/no DDL; migrate -> current ledger;
@@ -358,7 +356,7 @@ mod postgres {
         };
         let fs = Arc::new(PostgresMemoryRepository::with_pool(
             pool,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ));
         fs.ensure_schema().await.unwrap();
         concurrent_create_one_winner(fs.clone()).await;
@@ -372,7 +370,7 @@ mod postgres {
         let Some(pool) = schema_pool("t_memory_repo_reuse").await else {
             return;
         };
-        let fs = PostgresMemoryRepository::with_pool(pool, awaken_lease_contract::system_clock());
+        let fs = PostgresMemoryRepository::with_pool(pool, awaken_time::system_clock());
         fs.ensure_schema().await.unwrap();
         shared::ids_stay_monotonic_across_delete(&fs).await;
     }
@@ -390,10 +388,7 @@ mod postgres {
         let Some(pool) = schema_pool("t_memory_negative_version").await else {
             return;
         };
-        let fs = PostgresMemoryRepository::with_pool(
-            pool.clone(),
-            awaken_lease_contract::system_clock(),
-        );
+        let fs = PostgresMemoryRepository::with_pool(pool.clone(), awaken_time::system_clock());
         fs.ensure_schema().await.unwrap();
         fs.create("s", "/negative.md", "value")
             .await

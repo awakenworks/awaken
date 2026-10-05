@@ -6,7 +6,7 @@
 // @formal entrypoint credential.restart_recovery_compensates_unpublished_material
 // @formal entrypoint credential.visible_row_always_has_material
 use awaken_lease_contract::fence::Epoch;
-use awaken_lease_contract::{Expiry, UtcTime, WallClock, WallClockExt as _};
+use awaken_time::{Expiry, UtcTime, WallClock, WallClockExt as _};
 use std::collections::BTreeSet;
 
 use crate::{CredentialError, CredentialSource};

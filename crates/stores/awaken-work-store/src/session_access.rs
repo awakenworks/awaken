@@ -10,8 +10,8 @@
 //! the pre-minted digest in the same statement that writes the lease epoch.
 
 use super::*;
-use awaken_lease_contract::WallClockExt;
 use awaken_session_work_contract::SessionAccessDigest;
+use awaken_time::WallClockExt;
 
 // SQL adapters share these exact column shapes. Keeping the aliases beside the
 // conversion boundary prevents SQLite and PostgreSQL from independently
@@ -39,7 +39,7 @@ impl SqliteWorkQueue {
     ) -> Result<Option<WorkClaim>, WorkQueueError> {
         // `started_at` is the very reading the lease arithmetic below uses, so a
         // claim's durable start and its lease window cannot disagree.
-        let started_at = awaken_lease_contract::utc::epoch_millis_to_rfc3339(now_ms);
+        let started_at = awaken_time::utc::epoch_millis_to_rfc3339(now_ms);
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
@@ -296,7 +296,7 @@ impl SqliteWorkQueue {
         let session_id = session_id.to_string();
         let worker_owner = worker_owner.to_string();
         let created_at = self.clock.observed_at();
-        let started_at = awaken_lease_contract::utc::epoch_millis_to_rfc3339(now_ms);
+        let started_at = awaken_time::utc::epoch_millis_to_rfc3339(now_ms);
         self.with_connection(move |conn| {
             let work_id = Self::insert(conn, &env_id, "session", Some(&session_id), created_at)?;
             let tx = conn
@@ -460,7 +460,7 @@ impl PostgresWorkQueue {
                  lease_refreshed_ms = $4, latest_heartbeat_at = NULL, \
                  session_token_sha256 = $5 WHERE work_id = $6",
         )
-        .bind(awaken_lease_contract::utc::epoch_millis_to_rfc3339(now_ms))
+        .bind(awaken_time::utc::epoch_millis_to_rfc3339(now_ms))
         .bind(next_authority.owner)
         .bind(next_authority.expires_at)
         .bind(next_authority.refreshed_at)

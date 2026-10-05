@@ -34,7 +34,7 @@ fn block<F: std::future::Future>(f: F) -> F::Output {
 #[test]
 fn in_memory_backend_conforms() {
     block(run_suite(
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
         async |clock| InMemoryWorkQueue::new(clock),
         LEASE_TTL_MS,
     ));
@@ -43,7 +43,7 @@ fn in_memory_backend_conforms() {
 #[test]
 fn sqlite_backend_conforms() {
     block(run_suite(
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
         async |clock| SqliteWorkQueue::open_in_memory(clock).expect("sqlite in-memory queue"),
         LEASE_TTL_MS,
     ));
@@ -63,7 +63,7 @@ async fn postgres_backend_conforms() {
     };
     let fixtures = tokio::sync::Mutex::new(Vec::new());
     run_suite(
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
         async |clock| {
             let fixture = work_postgres_fixture::WorkPostgresFixture::new(&url, 16).await;
             let store = PostgresWorkQueue::with_pool(fixture.pool.clone(), clock)
@@ -120,12 +120,11 @@ async fn work_fixture_cleanup_preserves_another_live_schema() {
     let first = work_postgres_fixture::WorkPostgresFixture::new(&url, 16).await;
     let second = work_postgres_fixture::WorkPostgresFixture::new(&url, 16).await;
     assert_ne!(first.scoped_url, second.scoped_url, "F3 different schemas");
-    let first_store =
-        PostgresWorkQueue::with_pool(first.pool.clone(), awaken_lease_contract::system_clock())
-            .await
-            .unwrap();
+    let first_store = PostgresWorkQueue::with_pool(first.pool.clone(), awaken_time::system_clock())
+        .await
+        .unwrap();
     let second_store =
-        PostgresWorkQueue::with_pool(second.pool.clone(), awaken_lease_contract::system_clock())
+        PostgresWorkQueue::with_pool(second.pool.clone(), awaken_time::system_clock())
             .await
             .unwrap();
     first_store.enqueue_healthcheck("first").await.unwrap();

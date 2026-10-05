@@ -22,7 +22,7 @@ use crate::sqlite::SqliteDispatchStore;
 #[cfg(feature = "durable")]
 pub fn open_sqlite(
     path: &str,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<AnyDispatchStore, String> {
     SqliteDispatchStore::open(path, clock)
         .map(|store| AnyDispatchStore::from_durable_store(store, None))
@@ -35,7 +35,7 @@ pub fn open_sqlite(
 #[cfg(feature = "durable")]
 #[cfg(any(test, feature = "test-support"))]
 pub fn open_sqlite_in_memory(
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<AnyDispatchStore, String> {
     SqliteDispatchStore::open_in_memory(clock)
         .map(|store| AnyDispatchStore::from_durable_store(store, None))

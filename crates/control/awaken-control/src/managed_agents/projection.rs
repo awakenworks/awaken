@@ -257,7 +257,7 @@ pub(super) fn wire_tools(
 
 pub(super) fn project(
     revision: AgentConfigRevision,
-    clock: &dyn awaken_lease_contract::WallClock,
+    clock: &dyn awaken_time::WallClock,
 ) -> Result<Agent, ManagedAgentError> {
     let revision_number = revision.revision;
     let fallback_timestamp = lifecycle_timestamp_at(clock);

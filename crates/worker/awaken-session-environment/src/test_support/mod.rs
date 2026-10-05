@@ -873,7 +873,7 @@ impl crate::SandboxEnvironmentProvider {
             hand_bin,
             hand_idle_after,
             awaken_session_environment_contract::ContainerHandResidency::AttachedExec,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
     }
 }

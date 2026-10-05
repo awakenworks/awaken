@@ -3,7 +3,7 @@
 //!
 //! A lease is a [`Tenure`] — the complete identity of one grant: *what* is held
 //! (the subject), *who* holds it (the holder) and *which* grant it is (the
-//! [`Epoch`]) — held until an [`Expiry`](crate::Expiry). Every successor
+//! [`Epoch`]) — held until an [`Expiry`](awaken_time::Expiry). Every successor
 //! judgement goes through one law, [`fence_succession`]: another subject is
 //! never a successor; a strictly higher epoch reassigns; only the exact tenure
 //! renews, and only without shortening expiry. [`EffectFence`] projects a lease
@@ -134,8 +134,8 @@ pub trait FenceToken {
 /// Liveness law shared by every fence token: live strictly before expiry.
 #[must_use]
 pub const fn fence_is_live_at(expires_at_unix_ms: u64, now_unix_ms: u64) -> bool {
-    crate::Expiry::from_epoch_ms(expires_at_unix_ms)
-        .is_live_at(crate::UtcTime::from_epoch_ms(now_unix_ms))
+    awaken_time::Expiry::from_epoch_ms(expires_at_unix_ms)
+        .is_live_at(awaken_time::UtcTime::from_epoch_ms(now_unix_ms))
 }
 
 #[cfg(test)]
@@ -171,7 +171,7 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::*;
-    use crate::Expiry;
+    use awaken_time::Expiry;
 
     struct Probe;
 

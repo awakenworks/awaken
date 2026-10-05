@@ -51,16 +51,9 @@
   },
   "sdk-standalone": {
     "awaken-ext-background-task -> awaken-lease-contract": "replace Epoch/Tenure with an SDK generation token the platform maps onto fencing",
-    "awaken-ext-memory -> awaken-lease-contract": "uses only the clock; depend on awaken-time once the clock is split out of awaken-lease-contract",
     "awaken-ext-memory -> awaken-resource-contract": "define MemoryGeneration locally; the extension needs no Resources contract",
-    "awaken-mcp-wire -> awaken-lease-contract": "uses only the clock; depend on awaken-time once the clock is split out of awaken-lease-contract",
-    "awaken-provider-genai -> awaken-lease-contract": "uses only the clock; depend on awaken-time once the clock is split out of awaken-lease-contract",
-    "awaken-runtime -> awaken-lease-contract": "uses only the clock; depend on awaken-time once the clock is split out of awaken-lease-contract",
     "awaken-runtime-contract -> awaken-credential-contract": "remove the credential-contract re-export; attempt credential facts move to awaken-credential-materializer",
-    "awaken-runtime-contract -> awaken-lease-contract": "uses only the clock; depend on awaken-time once the clock is split out of awaken-lease-contract",
     "awaken-runtime-contract -> awaken-tenancy": "replace ScopeId/ExecutionScopeRef with an opaque execution-scope label mapped at the platform edge",
-    "awaken-runtime-examples -> awaken-lease-contract": "uses only the clock; depend on awaken-time once the clock is split out of awaken-lease-contract",
-    "awaken-store-inmem -> awaken-lease-contract": "uses only the clock; depend on awaken-time once the clock is split out of awaken-lease-contract",
     "awaken-tool-contract -> awaken-tenancy": "replace ScopeId/ExecutionScopeRef with an opaque execution-scope label mapped at the platform edge"
   }
 }

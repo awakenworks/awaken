@@ -200,7 +200,7 @@ async fn managed_creation_publishes_source_and_child_in_one_repository_step() {
         managed_command("https://mcp.example.com"),
         &secrets,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -224,7 +224,7 @@ async fn stable_managed_creation_replays_the_published_pair_and_rejects_changed_
         managed_command("https://mcp.example.com"),
         &secrets,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -232,7 +232,7 @@ async fn stable_managed_creation_replays_the_published_pair_and_rejects_changed_
         managed_command("https://mcp.example.com"),
         &secrets,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -252,7 +252,7 @@ async fn stable_managed_creation_replays_the_published_pair_and_rejects_changed_
         changed,
         &secrets,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap_err();
@@ -309,7 +309,7 @@ async fn managed_logical_pending_follower_performs_zero_material_writes() {
         managed_command("https://mcp.example.com"),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await;
 
@@ -343,7 +343,7 @@ async fn managed_creation_does_not_publish_unopenable_material() {
         managed_command("https://mcp.example.com"),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await;
 
@@ -382,7 +382,7 @@ async fn managed_creation_does_not_publish_unopenable_material() {
         recover_managed_credential_mutations(
             &store.inner,
             &repo,
-            awaken_lease_contract::system_clock().as_ref()
+            awaken_time::system_clock().as_ref()
         )
         .await
         .unwrap(),
@@ -403,7 +403,7 @@ async fn managed_vault_delete_fences_children_waits_for_rollout_and_tombstones_r
         managed_command("https://mcp.example.com"),
         &secrets,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -425,7 +425,7 @@ async fn managed_vault_delete_fences_children_waits_for_rollout_and_tombstones_r
             "2026-08-16T00:00:01Z".into(),
             &secrets,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await,
         Err(ManagedCredentialMutationError::InvalidLifecycle)
@@ -445,7 +445,7 @@ async fn managed_vault_delete_fences_children_waits_for_rollout_and_tombstones_r
             &requested,
             &secrets,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap(),
@@ -470,7 +470,7 @@ async fn managed_vault_delete_fences_children_waits_for_rollout_and_tombstones_r
             &pending,
             &secrets,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap(),
@@ -492,7 +492,7 @@ async fn managed_vault_delete_fences_children_waits_for_rollout_and_tombstones_r
             new_child,
             &secrets,
             &repo,
-            awaken_lease_contract::system_clock().as_ref()
+            awaken_time::system_clock().as_ref()
         )
         .await,
         Err(ManagedCredentialCreationError::Admission(
@@ -519,7 +519,7 @@ async fn managed_update_atomically_publishes_exact_rollout_until_service_acknowl
         managed_command("https://mcp.example.com"),
         &secrets,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -536,7 +536,7 @@ async fn managed_update_atomically_publishes_exact_rollout_until_service_acknowl
         "2026-09-17T00:00:01Z".into(),
         &secrets,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -631,7 +631,7 @@ async fn managed_update_rejects_a_conflicting_rollout_id_before_publishing_the_p
         managed_command("https://mcp.example.com"),
         &secrets,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -662,7 +662,7 @@ async fn managed_update_rejects_a_conflicting_rollout_id_before_publishing_the_p
         "2026-09-17T00:00:01Z".into(),
         &secrets,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await;
 
@@ -691,7 +691,7 @@ async fn managed_material_refs_are_unique_to_the_writer_attempt() {
         managed_command("https://mcp.example.com"),
         &secrets,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1124,7 +1124,7 @@ async fn rejected_managed_creation_reclaims_material_and_pending_fact() {
         managed_command("file:///secret"),
         &secrets,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap_err();
@@ -1150,7 +1150,7 @@ async fn published_managed_identity_rejects_a_new_pending_fact_before_material_w
         managed_command("https://mcp.example.com"),
         &secrets,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1163,7 +1163,7 @@ async fn published_managed_identity_rejects_a_new_pending_fact_before_material_w
         replay,
         &secrets,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap_err();
@@ -1614,7 +1614,7 @@ async fn committed_managed_pair_returns_success_and_retries_failed_cleanup() {
         managed_command("https://mcp.example.com"),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1632,7 +1632,7 @@ async fn committed_managed_pair_returns_success_and_retries_failed_cleanup() {
         "2026-09-17T00:00:01Z".into(),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .expect("after-commit cleanup failure must not fail the logical command");

@@ -9,9 +9,9 @@
 //! lease renewal, ownership checks and settlement fencing are NOT among them:
 //! the store that owns the row judges those against its own clock, so no caller
 //! can disagree with it. Long-running services and pools own the drive source;
-//! every source is an `awaken_lease_contract::WallClock` handle, which direct
+//! every source is an `awaken_time::WallClock` handle, which direct
 //! tests build from `awaken-lease-testkit` and production from
-//! `awaken_lease_contract::system_clock()`.
+//! `awaken_time::system_clock()`.
 
 /// Largest epoch-millisecond value representable by the SQL backends. The
 /// public contract is `u64`; all stores normalize through this one boundary so

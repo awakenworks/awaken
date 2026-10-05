@@ -41,7 +41,7 @@ pub struct FileApplication {
     reclamation: Arc<dyn ResourceReclamationRepository>,
     /// Stamps `created_at`; the Files API computes `expires_at` from the same
     /// Resources clock, so one File record never mixes two timelines.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl FileApplication {
@@ -50,7 +50,7 @@ impl FileApplication {
         store: Arc<dyn FileStore>,
         catalog: Arc<dyn FileCatalog>,
         reclamation: Arc<dyn ResourceReclamationRepository>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             store,
@@ -502,7 +502,7 @@ mod tests {
                 awaken_resource_store::SqliteResourceStore::in_memory()
                     .expect("resource reclamation"),
             ),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
     }
 
@@ -695,7 +695,7 @@ mod tests {
                 awaken_resource_store::SqliteResourceStore::in_memory()
                     .expect("resource reclamation"),
             ),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let ordinary_publication = artifact_publication("report.txt", b"report", None);
         let ordinary = app

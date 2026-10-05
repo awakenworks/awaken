@@ -33,7 +33,7 @@ use tower::ServiceExt;
 use support::wait_for_session_events;
 
 fn resource_registry() -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
-    awaken_resource_persistence::ephemeral(awaken_lease_contract::system_clock())
+    awaken_resource_persistence::ephemeral(awaken_time::system_clock())
         .expect("open the Deployment test Resource application")
         .authorities()
         .resource_registry()
@@ -422,9 +422,7 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
         catalog,
         Arc::new(DeploymentPriceProvider),
     );
-    let deployments = Arc::new(DeploymentApplication::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let deployments = Arc::new(DeploymentApplication::new(awaken_time::system_clock()));
     deployments.bind_launcher(Arc::new(ManagedDeploymentSessionLauncher::new(
         managed.managed.clone(),
     )));

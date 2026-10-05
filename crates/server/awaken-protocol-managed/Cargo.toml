@@ -98,6 +98,7 @@ tokio-stream = "0.1"
 # The live-SSE endpoint yields a snapshot backfill then live broadcast frames from
 # one `async` generator (`stream!`).
 async-stream = "0.3"
+awaken-time.workspace = true
 awaken-lease-contract.workspace = true
 # Decode the `event_deltas[]` query param (keys/values may be percent-encoded).
 form_urlencoded = "1"

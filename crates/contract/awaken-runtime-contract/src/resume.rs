@@ -13,7 +13,7 @@ use awaken_agent_contract::agent::awaiting::{
 };
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_lease_contract::{Expiry, UtcTime};
+use awaken_time::{Expiry, UtcTime};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

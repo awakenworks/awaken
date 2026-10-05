@@ -34,10 +34,9 @@ pub fn observe_realization_request() -> Result<
     awaken_runtime_contract::authority_lease::AuthorityProofStarted,
     awaken_session_error_contract::RunError,
 > {
-    static ORIGIN: std::sync::OnceLock<awaken_lease_contract::mono::Instant> =
-        std::sync::OnceLock::new();
-    let origin = *ORIGIN.get_or_init(awaken_lease_contract::mono::now);
-    let now = awaken_lease_contract::mono::now();
+    static ORIGIN: std::sync::OnceLock<awaken_time::mono::Instant> = std::sync::OnceLock::new();
+    let origin = *ORIGIN.get_or_init(awaken_time::mono::now);
+    let now = awaken_time::mono::now();
     Ok(
         awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(
             now,
@@ -208,8 +207,7 @@ pub(crate) fn environment_components() -> (
     std::sync::Arc<crate::EnvironmentAuthoringState>,
     std::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
 ) {
-    let fixture =
-        awaken_protocol_managed_testkit::environment_fixture(awaken_lease_contract::system_clock());
+    let fixture = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
     (
         std::sync::Arc::new(crate::EnvironmentAuthoringState::new(
             fixture.application,

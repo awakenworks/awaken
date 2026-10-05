@@ -66,7 +66,7 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -107,7 +107,7 @@ mod tests {
         let issuer = Arc::new(
             crate::recipient_envelope::RecipientKeyEnvelope::open(
                 &keys,
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap(),
         );
@@ -115,7 +115,7 @@ mod tests {
             Arc::new(VaultLocalMaterialAuthority::new(
                 credentials.clone(),
                 secrets.clone(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )),
             issuer.clone(),
         );
@@ -209,7 +209,7 @@ mod tests {
                 Arc::new(VaultLocalMaterialAuthority::new(
                     credentials,
                     secrets,
-                    awaken_lease_contract::system_clock()
+                    awaken_time::system_clock()
                 )),
                 issuer,
             )

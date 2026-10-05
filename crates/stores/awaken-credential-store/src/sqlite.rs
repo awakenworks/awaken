@@ -1392,7 +1392,7 @@ mod tests {
             "2026-09-17T00:00:01Z".into(),
             &InMemorySecretStore::new(),
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await;
         assert!(matches!(

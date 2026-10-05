@@ -6,7 +6,7 @@
 //! It adapts the canonical ACP discovery observations to the existing credential
 //! liveness port. It never opens, returns, or materializes CLI credentials.
 
-use awaken_lease_contract::WallClock;
+use awaken_time::WallClock;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -145,7 +145,7 @@ async fn prepare_local_acp_with_workspace(
 fn configured_worker_upstream(
     upstream: impl Into<String>,
     deployment: &crate::config::ResolvedDeployment,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<awaken_worker_transport_security::WorkerUpstream, String> {
     deployment.worker.upstream(
         upstream,
@@ -158,7 +158,7 @@ fn configured_worker_builder(
     upstream: impl Into<String>,
     deployment: &crate::config::ResolvedDeployment,
     credentials: awaken_credential_materializer::PinnedCredentialMaterializer,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<awaken_worker::WorkerNodeBuilder, String> {
     let worker = &deployment.worker;
     let upstream = configured_worker_upstream(upstream, deployment, clock.clone())?;
@@ -261,7 +261,7 @@ impl PreparedLocalAcp {
         self,
         upstream: impl Into<String>,
         deployment: &crate::config::ResolvedDeployment,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<awaken_worker::WorkerNode, String> {
         let resolver = self.resolver;
         let credentials = awaken_credential_materializer::PinnedCredentialMaterializer::new(
@@ -298,7 +298,7 @@ impl PreparedLocalWorker {
         &self,
         upstream: impl Into<String>,
         deployment: &crate::config::ResolvedDeployment,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<awaken_worker::WorkerNode, String> {
         let credentials = awaken_credential_materializer::PinnedCredentialMaterializer::new(
             Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
@@ -417,7 +417,7 @@ mod tests {
         let unsigned = configured_worker_upstream(
             "http://coordinator",
             &deployment,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap();
         let unsigned_request = unsigned
@@ -449,7 +449,7 @@ mod tests {
         let signed = configured_worker_upstream(
             "http://coordinator",
             &deployment,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap();
         let signed_request = signed
@@ -481,7 +481,7 @@ mod tests {
             configured_worker_upstream(
                 "http://coordinator",
                 &deployment,
-                awaken_lease_contract::system_clock()
+                awaken_time::system_clock()
             )
             .is_err(),
             "W3"
@@ -604,7 +604,7 @@ mod tests {
         let error = match prepare_local_acp(
             &mut deployment,
             &[0x61; 32],
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .await
         {
@@ -717,7 +717,7 @@ mod tests {
         let resolver = awaken_acp_application::resolver_from_sources(
             discovery.clone(),
             [codex, claude, gemini, opencode, disabled],
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap();
         let observations = resolver.credential_observations().await.unwrap();
@@ -771,7 +771,7 @@ mod tests {
         let resolver = awaken_acp_application::resolver_from_sources(
             discovery.clone(),
             [codex],
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap();
 
@@ -807,7 +807,7 @@ mod tests {
             awaken_acp_application::resolver_from_sources(
                 discovery.clone(),
                 [missing],
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .is_err()
         );
@@ -823,7 +823,7 @@ mod tests {
         let resolver = awaken_acp_application::resolver_from_sources(
             discovery,
             [unrelated],
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap();
         assert!(resolver.credential_observations().await.unwrap().is_empty());
@@ -854,7 +854,7 @@ mod tests {
             awaken_acp_application::resolver_from_sources(
                 discovery,
                 [source],
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap(),
         );
@@ -871,16 +871,16 @@ mod tests {
         );
         let worker = awaken_worker::WorkerNodeBuilder::new(
             awaken_worker_transport_security::WorkerUpstream::new("http://control"),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_credential_materializer(
             awaken_credential_materializer::PinnedCredentialMaterializer::new(
                 Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
                     credentials,
                     Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ),
         )
         .with_worker_local_credential_resolver(resolver.clone())
@@ -932,7 +932,7 @@ mod tests {
             .build_worker(
                 "http://127.0.0.1:1",
                 &deployment,
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .await
             .expect("W1 WorkerNode");
@@ -1027,7 +1027,7 @@ mod tests {
             fixed_negotiator(),
             stores.clone(),
             workspace.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .await
         .unwrap()
@@ -1046,7 +1046,7 @@ mod tests {
             .build_worker(
                 "http://127.0.0.1:1",
                 &deployment,
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .await
             .unwrap();
@@ -1094,7 +1094,7 @@ mod tests {
             fixed_negotiator(),
             stores,
             workspace.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .await
         .unwrap()
@@ -1238,7 +1238,7 @@ mod tests {
             fixed_negotiator(),
             stores,
             workspace.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .await
         .expect("F2 startup remains diagnosable");

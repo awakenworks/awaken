@@ -10,7 +10,7 @@
 // @formal entrypoint worker_drain.registry_transition_follows_local_fence
 //! Worker registry authority, heartbeat, and local admission lifecycle.
 
-use awaken_lease_contract::mono::{self, Instant};
+use awaken_time::mono::{self, Instant};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
@@ -352,7 +352,7 @@ pub(crate) fn spawn_heartbeat(
     lifecycle: Arc<WorkerSupervisor>,
     sequence: u64,
     timing: AuthorityLeaseTiming,
-    environment_proof_started: awaken_lease_contract::mono::Instant,
+    environment_proof_started: awaken_time::mono::Instant,
 ) -> tokio::task::JoinHandle<WorkerRevocationReport> {
     tokio::spawn(async move {
         // Independent, single-flight lanes under the same incarnation owner.
@@ -702,8 +702,8 @@ pub(crate) fn spawn_session_realization_reconciliation(
                     // Registry authority: it never outlives it, and a lapsed
                     // registry proof mints no claim this cycle.
                     let now_at = lifecycle.host.clock().now();
-                    let Some(claim_expiry) = awaken_lease_contract::Expiry::child_within(
-                        awaken_lease_contract::Expiry::after(now_at, lifecycle.authority.remaining()),
+                    let Some(claim_expiry) = awaken_time::Expiry::child_within(
+                        awaken_time::Expiry::after(now_at, lifecycle.authority.remaining()),
                         now_at,
                         std::time::Duration::from_millis(cold_lease_ttl_ms),
                     ) else {
@@ -754,8 +754,8 @@ pub(crate) fn spawn_session_preparation_reconciliation(
                 continue;
             }
             let now_at = lifecycle.host.clock().now();
-            let Some(claim_expiry) = awaken_lease_contract::Expiry::child_within(
-                awaken_lease_contract::Expiry::after(now_at, lifecycle.authority.remaining()),
+            let Some(claim_expiry) = awaken_time::Expiry::child_within(
+                awaken_time::Expiry::after(now_at, lifecycle.authority.remaining()),
                 now_at,
                 std::time::Duration::from_millis(cold_cleanup_lease_ttl_ms(registry_timing)),
             ) else {
@@ -1078,7 +1078,7 @@ mod tests {
         // | R5 | yes | yes | pending | - | yes | E2/Retirement |
         // | R6 | yes | yes | yes | pending | yes | E2/Capacity+E5 |
         let budget = std::time::Duration::from_secs(5);
-        let completed_deadline = awaken_lease_contract::mono::now() + budget;
+        let completed_deadline = awaken_time::mono::now() + budget;
         let completed = complete_worker_revocation_before(
             completed_deadline,
             async { Ok(2) },
@@ -1095,7 +1095,7 @@ mod tests {
         );
 
         let fence_timeout = complete_worker_revocation_before(
-            awaken_lease_contract::mono::now() + budget,
+            awaken_time::mono::now() + budget,
             std::future::pending(),
             |_| async { true },
             async { Ok(()) },
@@ -1115,7 +1115,7 @@ mod tests {
 
         let observer_dropped = Arc::new(AtomicBool::new(false));
         let observer_started = Arc::new(tokio::sync::Notify::new());
-        let deadline = awaken_lease_contract::mono::now() + budget;
+        let deadline = awaken_time::mono::now() + budget;
         let task = tokio::spawn(complete_worker_revocation_before(
             deadline,
             async { Ok(3) },
@@ -1161,7 +1161,7 @@ mod tests {
 
         let retired = Arc::new(AtomicBool::new(false));
         let explicit_unknown = complete_worker_revocation_before(
-            awaken_lease_contract::mono::now() + budget,
+            awaken_time::mono::now() + budget,
             async { Ok(4) },
             |_| async { false },
             {
@@ -1187,7 +1187,7 @@ mod tests {
         );
 
         let retirement_timeout = complete_worker_revocation_before(
-            awaken_lease_contract::mono::now() + budget,
+            awaken_time::mono::now() + budget,
             async { Ok(5) },
             |_| async { true },
             std::future::pending(),
@@ -1206,7 +1206,7 @@ mod tests {
         );
 
         let capacity_timeout = complete_worker_capacity_before(
-            awaken_lease_contract::mono::now() + budget,
+            awaken_time::mono::now() + budget,
             WorkerRevocationOutcome::Completed { interrupted: 6 },
             std::future::pending(),
         )
@@ -1532,7 +1532,7 @@ mod tests {
                 lifecycle,
                 1,
                 AuthorityLeaseTiming::from_ttl_ms(6000),
-                awaken_lease_contract::mono::now(),
+                awaken_time::mono::now(),
             );
             if mode < 2 {
                 let heartbeat = tokio::time::timeout(Duration::from_secs(5), received.recv())
@@ -1598,7 +1598,7 @@ mod tests {
         let captured = awaken_reliability_testkit::events::CapturedEvents::default();
         let timing =
             awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(600);
-        let started = awaken_lease_contract::mono::now();
+        let started = awaken_time::mono::now();
         let calls = AtomicUsize::new(0);
         let active = AtomicUsize::new(0);
         struct Flight<'a>(&'a AtomicUsize);
@@ -1651,7 +1651,7 @@ mod tests {
             awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(600);
         let calls = AtomicUsize::new(0);
         super::environment_evidence::monitor(
-            awaken_lease_contract::mono::now() - timing.proof_window(),
+            awaken_time::mono::now() - timing.proof_window(),
             timing,
             || async {
                 calls.fetch_add(1, Ordering::SeqCst);
@@ -1669,7 +1669,7 @@ mod tests {
         // T5 explicit error is independently covered by the real Worker test P3.
         let timing =
             awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(600);
-        let started = awaken_lease_contract::mono::now();
+        let started = awaken_time::mono::now();
         let calls = AtomicUsize::new(0);
         super::environment_evidence::monitor(started, timing, || async {
             if calls.fetch_add(1, Ordering::SeqCst) == 0 {

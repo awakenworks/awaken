@@ -4,7 +4,7 @@ use super::{PostgresSchemaMode, config};
 
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn ephemeral_resources_application(
-    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> awaken_resource_application::ResourcesApplication {
     awaken_resource_persistence::ephemeral(clock).expect("open ephemeral Resources application")
 }
@@ -14,7 +14,7 @@ pub(super) fn ephemeral_resources_application(
 pub(super) async fn open_resources_application(
     backend: config::ResourceStoreBackend,
     postgres_schema: PostgresSchemaMode,
-    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
     postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
 ) -> Result<awaken_resource_application::ResourcesApplication, String> {
     let application = match backend {
@@ -89,15 +89,13 @@ mod tests {
                 &application.purge_scheduler()
             ));
         };
-        assert_complete(&ephemeral_resources_application(
-            awaken_lease_contract::system_clock(),
-        ));
+        assert_complete(&ephemeral_resources_application(awaken_time::system_clock()));
 
         let root = tempfile::tempdir().expect("resource application root");
         let embedded = open_resources_application(
             config::ResourceStoreBackend::Embedded(root.path().to_path_buf()),
             PostgresSchemaMode::Migrate,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
             &mut crate::postgres_pools::ProcessPostgresPools::new(2),
         )
         .await

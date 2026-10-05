@@ -27,7 +27,7 @@ pub struct LocalResourcePorts {
     /// Resource lifecycle/reference state, when the composition has one.
     pub reclamation: Option<Arc<dyn awaken_resource_contract::ResourceReclamationRepository>>,
     /// The composition's clock, which also becomes the Host's process clock.
-    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
+    pub clock: Arc<dyn awaken_time::WallClock>,
 }
 
 /// The durable Skill catalog and the two Resources applications over it that
@@ -111,7 +111,7 @@ impl ResourcePorts {
         llm: &Arc<dyn LlmExecutor>,
         inputs: ResourceInputs,
         store_dir: Option<&std::path::Path>,
-        clock: &Arc<dyn awaken_lease_contract::WallClock>,
+        clock: &Arc<dyn awaken_time::WallClock>,
         memory_sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
     ) -> Self {
         let ResourceInputs {

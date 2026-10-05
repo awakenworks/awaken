@@ -1754,7 +1754,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration::default(),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let fact = awaken_session_state_contract::ManagedLifecycleFact {
         id: "profiled-publication:terminated".into(),
@@ -1880,7 +1880,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
         faulting_repo,
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration::default(),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let effects_before_foreign = runtime.terminal_effect_order.lock().unwrap().len();
     assert!(
@@ -6294,7 +6294,7 @@ async fn cancellation_before_external_realization_settles_without_a_runtime_inte
         None,
         true,
         false,
-        awaken_lease_contract::system_clock().now().as_epoch_ms(),
+        awaken_time::system_clock().now().as_epoch_ms(),
         0,
     )
     .expect("P1/C2 activity admitted during external realization");
@@ -6422,7 +6422,7 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
         realizer.clone(),
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let idempotency_key = "mixed-update-key";
     let command = SessionUpdateCommand {
@@ -7788,7 +7788,7 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                 repo.clone(),
                 Arc::new(RecordingEnvironmentSource::default()),
             );
-            let expiry = awaken_lease_contract::system_clock().now().as_epoch_ms() + 60_000;
+            let expiry = awaken_time::system_clock().now().as_epoch_ms() + 60_000;
             let lease = SessionRealizationLease {
                 owner: "owner".into(),
                 runtime_incarnation: "old-boot".into(),

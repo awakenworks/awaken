@@ -1,6 +1,6 @@
 //! Managed Agent lifecycle identities and timestamps.
 
-use awaken_lease_contract::{WallClock, WallClockExt};
+use awaken_time::{WallClock, WallClockExt};
 
 /// A fresh Agent id. Only uniqueness is required of it, so it is drawn from a
 /// random source rather than composed from a clock reading, the process id and

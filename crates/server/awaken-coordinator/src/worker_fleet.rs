@@ -34,7 +34,7 @@ struct ReadinessQuery {
 /// on it.
 pub fn router(
     directory: Arc<dyn WorkerDirectory>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Router {
     Router::new()
         .route("/v1/workers/readiness", get(readiness))
@@ -42,10 +42,7 @@ pub fn router(
 }
 
 async fn readiness(
-    State((directory, clock)): State<(
-        Arc<dyn WorkerDirectory>,
-        Arc<dyn awaken_lease_contract::WallClock>,
-    )>,
+    State((directory, clock)): State<(Arc<dyn WorkerDirectory>, Arc<dyn awaken_time::WallClock>)>,
     Query(query): Query<ReadinessQuery>,
 ) -> Response {
     let required = parse_capabilities(query.capabilities.as_deref());
@@ -61,7 +58,7 @@ async fn readiness(
             );
         }
     };
-    let now_ms = awaken_lease_contract::WallClockExt::now_ms(clock.as_ref());
+    let now_ms = awaken_time::WallClockExt::now_ms(clock.as_ref());
     Json(fleet_readiness(&workers, &required, now_ms)).into_response()
 }
 

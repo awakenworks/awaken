@@ -16,7 +16,7 @@ async fn terminal_cleanup_claim_requires_current_registry_incarnation() {
     let dispatch = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let session_control = Arc::new(RecordingSessionControl::default());
     *session_control.projection.lock().unwrap() = Some(frozen_projection());
-    let service = WorkerDispatchService::local(dispatch, awaken_lease_contract::system_clock())
+    let service = WorkerDispatchService::local(dispatch, awaken_time::system_clock())
         .with_session_control(session_control.clone());
     let router = dispatch_transport_router_with_service(Arc::new(service));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

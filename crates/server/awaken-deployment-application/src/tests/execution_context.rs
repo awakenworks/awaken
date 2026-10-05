@@ -8,7 +8,7 @@ async fn launch_origin_is_projected_from_the_run_and_cannot_change_authoring_ide
     // no authority minted by deserializing transient projection fields.
     // D1+D2+D3=>first two effects; D4=>last two. Actual scheduler/Run admission
     // remains covered by the existing scheduled failure/capacity/claim tables.
-    let app = DeploymentApplication::new(awaken_lease_contract::system_clock());
+    let app = DeploymentApplication::new(awaken_time::system_clock());
     let mut authored = command(true);
     authored
         .metadata

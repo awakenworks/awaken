@@ -809,7 +809,7 @@ mod tests {
             .unwrap()
             .observed(
                 awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(
-                    awaken_lease_contract::mono::now(),
+                    awaken_time::mono::now(),
                     std::time::Duration::ZERO,
                 ),
             );

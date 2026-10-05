@@ -4,7 +4,7 @@
 // @formal reason: Revisioned Session update path.
 //! Canonical mutable Session command and its durable/effect ordering.
 
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 use std::collections::BTreeMap;
 
 use awaken_agent_contract::stable_fingerprint;

@@ -80,7 +80,7 @@ impl<S: TenureScope, Op: Eq> Eq for EffectFence<S, Op> {}
 mod tests {
     use super::*;
     use crate::fence::{Epoch, Tenure};
-    use crate::{Expiry, UtcTime};
+    use awaken_time::{Expiry, UtcTime};
 
     struct Probe;
 

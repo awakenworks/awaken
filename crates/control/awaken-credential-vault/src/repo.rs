@@ -1333,7 +1333,7 @@ pub async fn reconcile_managed_vault_deletion(
     vault: &ManagedVault,
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
-    clock: &dyn awaken_lease_contract::WallClock,
+    clock: &dyn awaken_time::WallClock,
 ) -> Result<bool, ManagedCredentialMutationError> {
     if vault.is_deleted() {
         return Ok(true);
@@ -1440,7 +1440,7 @@ pub async fn reconcile_managed_vault_deletion(
 pub async fn reconcile_managed_vault_deletions(
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
-    clock: &dyn awaken_lease_contract::WallClock,
+    clock: &dyn awaken_time::WallClock,
 ) -> Result<usize, ManagedCredentialMutationError> {
     let pending = repo.pending_managed_vault_deletions().await?;
     let mut completed = 0;

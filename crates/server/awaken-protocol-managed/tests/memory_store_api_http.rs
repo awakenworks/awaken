@@ -26,7 +26,7 @@ fn router() -> Router {
     memory_stores_router(
         resources.authorities().memory_repository(),
         resources.memory_stores(),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
 }
 
@@ -107,7 +107,7 @@ async fn retained_copy_candidates_use_store_visibility_and_explicit_content_view
     let router = memory_stores_router(
         memories.clone(),
         resources.memory_stores(),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let store = create_store(&router, "conflicts").await;
     let base = MemoryCopyBase {
@@ -458,7 +458,7 @@ async fn workspace_and_lifecycle_are_intrinsic_resource_guards() {
     let router = memory_stores_router(
         resources.authorities().memory_repository(),
         resources.memory_stores(),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let created = call_scoped(
         &router,
@@ -1163,7 +1163,7 @@ async fn store_time_filters_match_wire_precision_before_pagination_and_lifecycle
     let router = memory_stores_router(
         resources.authorities().memory_repository(),
         resources.memory_stores(),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     for include_archived in [false, true] {
         for (millis, wire) in [
@@ -1397,7 +1397,7 @@ async fn store_found_conflicts_answer_the_contract_only_when_already_at_the_requ
                 winner_content: winner_content.map(str::to_string),
             }),
             resources.memory_stores(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let store = create_store(&router, "race-host").await;
         let created = call(

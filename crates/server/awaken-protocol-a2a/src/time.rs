@@ -2,7 +2,7 @@
 //! the wall-clock port's one codec; parsing stays here because A2A accepts
 //! numeric UTC offsets the persisted `...Z` vocabulary does not.
 
-use awaken_lease_contract::utc::{days_from_civil, days_in_month};
+use awaken_time::utc::{days_from_civil, days_in_month};
 
 pub(crate) fn parse_rfc3339(value: &str) -> Option<i64> {
     let (date, clock_and_zone) = value.split_once('T')?;
@@ -75,7 +75,7 @@ mod tests {
     fn rendered_timestamps_parse_back_to_the_same_second() {
         // The rendering is the codec's whole-second spelling, and this parser
         // reads it back to the same Unix second.
-        let now = awaken_lease_contract::UtcTime::from_epoch_ms(1_000).to_rfc3339_secs();
+        let now = awaken_time::UtcTime::from_epoch_ms(1_000).to_rfc3339_secs();
         assert_eq!(now.len(), 20, "{now}");
         let seconds = parse_rfc3339(&now).expect("rendered timestamp parses");
         assert_eq!(seconds, 1);

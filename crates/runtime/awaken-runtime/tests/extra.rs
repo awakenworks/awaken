@@ -40,7 +40,7 @@ impl LlmExecutor for TextLlm {
 
 #[test]
 fn committed_thread_view_returns_empty_for_unknown_ids() {
-    let commit = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
+    let commit = MemoryCommitCoordinator::new(awaken_time::system_clock());
     assert!(
         commit
             .committed_messages(&ThreadId("nope".to_string()))

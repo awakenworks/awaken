@@ -23,7 +23,7 @@ pub(crate) struct SessionContextAttemptExecutor {
     inner: Arc<dyn RunAttemptExecutor>,
     slots: crate::session_slot::SessionRuntimeSlots,
     session_id: String,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl SessionContextAttemptExecutor {
@@ -31,7 +31,7 @@ impl SessionContextAttemptExecutor {
         inner: Arc<dyn RunAttemptExecutor>,
         slots: crate::session_slot::SessionRuntimeSlots,
         session_id: impl Into<String>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             inner,
@@ -490,7 +490,7 @@ mod acp_context_tests {
             Arc::new(UnusedExecutor),
             slots.clone(),
             "session-1",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         // Construction happens before the claim-fenced frozen projection is
         // accepted; realization installs the one authoritative slot later.
@@ -520,7 +520,7 @@ mod acp_context_tests {
             Arc::new(UnusedExecutor),
             crate::session_slot::SessionRuntimeSlots::default(),
             "session-1",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let mut empty_context = awaken_runtime_contract::RuntimeRunContext::default();
         let unchanged = activation("genai");
@@ -554,7 +554,7 @@ mod acp_context_tests {
             Arc::new(UnusedExecutor),
             slots.clone(),
             "session-1",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         slots.update("session-1", |slot| {
             slot.resources.prompts = vec!["resource revision one".into()]
@@ -607,7 +607,7 @@ mod acp_context_tests {
             Arc::new(UnusedExecutor),
             slots.clone(),
             "session-1",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ));
         let release = Arc::new(std::sync::Barrier::new(2));
         let (writer_locked_tx, writer_locked_rx) = std::sync::mpsc::channel();
@@ -665,7 +665,7 @@ mod acp_context_tests {
             Arc::new(UnusedExecutor),
             slots.clone(),
             "session-1",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let publication = activation("genai");
         let retained = publication.snapshot.clone();
@@ -753,7 +753,7 @@ mod acp_context_tests {
             Arc::new(UnusedExecutor),
             crate::session_slot::SessionRuntimeSlots::default(),
             "session-1",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let unchanged = activation("genai");
         let mut absent_context = awaken_runtime_contract::RuntimeRunContext::default();

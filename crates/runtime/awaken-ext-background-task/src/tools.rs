@@ -9,13 +9,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::state::{Scope, Store};
-use awaken_lease_contract::WallClockExt;
 use awaken_runtime_contract::plugin::DynamicTool;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{
     RawTool, ToolCall, ToolError, ToolOutput, ToolRecoveryCapability, current_tool_execution_facts,
     current_tool_operation_context, current_tool_state, parse_tool_args,
 };
+use awaken_time::WallClockExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

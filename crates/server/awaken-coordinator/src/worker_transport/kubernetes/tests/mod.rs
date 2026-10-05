@@ -412,9 +412,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
         );
         clock.set(100);
         store.begin_attempt(&old_claim, Some(&bound)).await.unwrap();
-        let recovery = Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let recovery = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         if rule == "valid" {
             commit_actual_model_only_result(recovery.clone(), model_activation).await;
         }

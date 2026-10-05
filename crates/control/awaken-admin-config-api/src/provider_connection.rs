@@ -115,7 +115,7 @@ pub struct ProviderConnectionService {
     secrets: Arc<dyn SecretStore>,
     discovery: Arc<dyn ModelCatalogDiscovery>,
     /// The process's one wall clock: the stamp a discovered connection carries.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl ProviderConnectionService {
@@ -125,7 +125,7 @@ impl ProviderConnectionService {
         credentials: Arc<dyn CredentialRepo>,
         secrets: Arc<dyn SecretStore>,
         discovery: Arc<dyn ModelCatalogDiscovery>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             catalog,
@@ -403,7 +403,7 @@ impl ProviderConnectionService {
                 provider.clone(),
                 endpoint.clone(),
                 models,
-                awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref()),
+                awaken_time::WallClockExt::now_ms(self.clock.as_ref()),
             )
             .await?;
         if command_owned && credential.status != CredentialStatus::Active {

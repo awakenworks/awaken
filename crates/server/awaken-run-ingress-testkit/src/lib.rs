@@ -329,7 +329,7 @@ impl ManualStoreClock {
 
     /// The handle to inject into the store under test.
     #[must_use]
-    pub fn clock(&self) -> std::sync::Arc<dyn awaken_lease_contract::WallClock> {
+    pub fn clock(&self) -> std::sync::Arc<dyn awaken_time::WallClock> {
         self.0.clone()
     }
 }

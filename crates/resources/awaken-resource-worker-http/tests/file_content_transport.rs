@@ -582,9 +582,7 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
         .await
         .unwrap();
     let (directory, identity) = support::ready_worker("worker-application-file").await;
-    let dispatch = Arc::new(MemoryDispatchStore::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let dispatch = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
     let claim = claimed_application_dispatch(
         &dispatch,
         &identity.lease_owner(),
@@ -612,14 +610,14 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
         store.clone(),
         store,
         lifecycle,
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     let service = Arc::new(
         WorkerFileContentService::new(
             Arc::new(ApplicationFileContentSource::new(application)),
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_worker_directory(directory)
         .with_session_repository(sessions),
@@ -695,23 +693,21 @@ async fn model_content_file_requires_its_claimed_thread_and_strong_input_referen
         .await
         .unwrap();
     let (directory, identity) = support::ready_worker("worker-model-content").await;
-    let dispatch = Arc::new(MemoryDispatchStore::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let dispatch = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
     let claim = claimed_model_dispatch(&dispatch, "file-model", &identity.lease_owner()).await;
     let lifecycle = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
     let application = Arc::new(awaken_resource_application::FileApplication::new(
         store.clone(),
         store,
         lifecycle,
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     let service = Arc::new(
         WorkerFileContentService::new(
             Arc::new(ApplicationFileContentSource::new(application)),
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_worker_directory(directory),
     );
@@ -799,9 +795,7 @@ async fn model_content_recovery_uses_parent_partition_for_a_child_thread() {
         .await
         .unwrap();
     let (directory, identity) = support::ready_worker("worker-model-recovery").await;
-    let dispatch = Arc::new(MemoryDispatchStore::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let dispatch = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
     let (claim, session_thread_id, thread_id, run_id) =
         claimed_recovery_model_dispatch(&dispatch, &identity.lease_owner()).await;
     let recovery = Arc::new(RecordingParentRecovery {
@@ -844,14 +838,14 @@ async fn model_content_recovery_uses_parent_partition_for_a_child_thread() {
         store.clone(),
         store,
         lifecycle,
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     let service = Arc::new(
         WorkerFileContentService::new(
             Arc::new(ApplicationFileContentSource::new(application)),
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_worker_directory(directory)
         .with_recovery(recovery.clone()),

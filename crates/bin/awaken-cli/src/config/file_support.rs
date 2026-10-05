@@ -16,7 +16,7 @@ use super::{ConfigOverrides, FileConfig, OperatingMode, ResolvedDeployment, Role
 impl ResolvedDeployment {
     pub fn load(
         overrides: ConfigOverrides,
-        clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+        clock: std::sync::Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, String> {
         let home = home_dir();
         let explicit_path = overrides.config_path.is_some();

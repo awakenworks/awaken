@@ -1142,7 +1142,7 @@ fn container_plan_with_allowlist(
     command: &[String],
     forward_proxy: Option<&ForwardProxy>,
     allowlist_proxy: Option<&AllowlistProxy>,
-    clock: Option<&Arc<dyn awaken_lease_contract::WallClock>>,
+    clock: Option<&Arc<dyn awaken_time::WallClock>>,
 ) -> Result<ContainerPlan, EgressError> {
     let egress = egress_plan_with_allowlist(
         &spec.network,

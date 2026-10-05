@@ -164,7 +164,7 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -175,8 +175,7 @@ mod tests {
             [CredentialTargetContract::new(target.clone(), usage.clone())],
         ));
         credentials.put(source.clone()).await.unwrap();
-        let materializer =
-            pinned_vault(credentials, secrets, awaken_lease_contract::system_clock());
+        let materializer = pinned_vault(credentials, secrets, awaken_time::system_clock());
         let holder = PlaintextHolder::new(PlaintextBoundary::Platform, "gateway.beta");
         let access = CredentialAccess::new(
             CredentialRef {

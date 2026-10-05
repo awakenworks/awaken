@@ -406,7 +406,7 @@ pub(super) fn pod_readiness(pod: &Pod) -> PodReadiness {
 }
 
 pub(super) async fn await_pod_ready(api: &Api<Pod>, name: &str) -> Result<(), RuntimeError> {
-    let deadline = awaken_lease_contract::mono::MonoDeadline::after(POD_READY_TIMEOUT);
+    let deadline = awaken_time::mono::MonoDeadline::after(POD_READY_TIMEOUT);
     loop {
         let pod = api.get(name).await.map_err(backend)?;
         match pod_readiness(&pod) {

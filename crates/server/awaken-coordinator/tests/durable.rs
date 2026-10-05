@@ -43,7 +43,7 @@ async fn host_over(dir: &std::path::Path, process: &str) -> Arc<SharedHost> {
     authority_deployment.storage_dir = Some(dir.to_path_buf());
     let authority = awaken_coordinator::init_scenario_runtime(
         &authority_deployment,
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .await
     .expect("open Coordinator-owned SQLite runtime authority");

@@ -64,7 +64,7 @@ pub struct ResourcesRouterInput {
     pub skills: Option<Arc<dyn SkillStore>>,
     pub purge: Arc<dyn ResourcePurgeScheduler>,
     /// The Resources context's clock, the one its File application stamps with.
-    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
+    pub clock: Arc<dyn awaken_time::WallClock>,
 }
 
 /// Mount all public resource families once. File, Memory, and Skill retain their
@@ -114,7 +114,7 @@ mod tests {
         use tower::ServiceExt;
 
         let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-        let clock = awaken_lease_contract::system_clock();
+        let clock = awaken_time::system_clock();
         let storage = Arc::new(
             awaken_resource_store::SqliteResourceStore::in_memory().expect("resource registry"),
         );

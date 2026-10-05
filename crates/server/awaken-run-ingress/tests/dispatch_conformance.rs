@@ -66,7 +66,7 @@ async fn memory_session_reply_activity_rotation_conforms() {
     // exercised. Effects: E1-E10 are inherited from that helper. Constraint/
     // Invariant: activity rotation is atomic with the existing row. Decision
     // rule: matrix row M1 delegates once to the canonical AR0-AR9 table.
-    let store = MemoryDispatchStore::new(awaken_lease_contract::system_clock());
+    let store = MemoryDispatchStore::new(awaken_time::system_clock());
     assert_session_reply_activity_rotation_conformance(&store, "conformance-memory-reply").await;
 }
 
@@ -113,7 +113,7 @@ async fn sqlite_session_reply_activity_rotation_conforms() {
     // exercised. Effects: E1-E10 and durable replay follow the helper. Constraint/
     // Invariant: rotation and staged input share one SQL transaction. Decision
     // rule: matrix row S1 delegates once to the canonical AR0-AR9 table.
-    let store = SqliteDispatchStore::open_in_memory(awaken_lease_contract::system_clock())
+    let store = SqliteDispatchStore::open_in_memory(awaken_time::system_clock())
         .expect("open sqlite reply conformance store");
     assert_session_reply_activity_rotation_conformance(&store, "conformance-sqlite-reply").await;
 }

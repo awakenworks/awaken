@@ -3,7 +3,7 @@
 //! Both adapters read the process's one injected wall clock; these helpers only
 //! spell a reading in the two shapes the IAM contract consumes.
 
-use awaken_lease_contract::{WallClock, WallClockExt};
+use awaken_time::{WallClock, WallClockExt};
 
 /// A reading of `clock` as the contract's canonical fixed-width RFC 3339 UTC
 /// timestamp, spelled by the wall-clock port's one codec.

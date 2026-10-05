@@ -11,10 +11,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-#[cfg(unix)]
-use awaken_lease_contract::Expiry;
-use awaken_lease_contract::WallClock;
 use awaken_sandbox_control::RepositoryGitCredentialQuery;
+#[cfg(unix)]
+use awaken_time::Expiry;
+use awaken_time::WallClock;
 
 #[cfg(unix)]
 use awaken_sandbox_control::{
@@ -386,7 +386,7 @@ mod tests {
                     operation,
                     &mut reader,
                     &mut output,
-                    &*awaken_lease_contract::system_clock(),
+                    &*awaken_time::system_clock(),
                 ),
             )
             .await
@@ -521,7 +521,7 @@ mod tests {
                 operation,
                 &mut source,
                 &mut output,
-                &*awaken_lease_contract::system_clock(),
+                &*awaken_time::system_clock(),
             )
             .await
             .expect("stateless no-op");
@@ -537,7 +537,7 @@ mod tests {
                 Operation::Store,
                 &mut reader,
                 &mut output,
-                &*awaken_lease_contract::system_clock(),
+                &*awaken_time::system_clock(),
             ),
         )
         .await;

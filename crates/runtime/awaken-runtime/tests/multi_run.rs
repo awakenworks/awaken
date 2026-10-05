@@ -102,9 +102,8 @@ fn activation(message_id: &str, text: &str) -> RunActivation {
 #[tokio::test]
 async fn a_fresh_run_continues_the_thread_with_a_reader() {
     let runtime = runtime();
-    let commit: Arc<MemoryCommitCoordinator> = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit: Arc<MemoryCommitCoordinator> =
+        Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let reader: Arc<dyn CommittedThreadView> = commit.clone();
 
     // Run 1: the model sees only this Run's input.
@@ -144,9 +143,8 @@ async fn without_a_reader_a_fresh_run_starts_clean() {
     // No reader: the Run sees only its own input. This is the
     // backward-compatible default.
     let runtime = runtime();
-    let commit: Arc<MemoryCommitCoordinator> = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit: Arc<MemoryCommitCoordinator> =
+        Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
 
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
     runtime
@@ -187,9 +185,8 @@ async fn request_context_is_model_visible_but_never_committed() {
      * compactor), while R1 still requires that exact C1 at inference assembly.
      */
     let runtime = runtime();
-    let commit: Arc<MemoryCommitCoordinator> = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit: Arc<MemoryCommitCoordinator> =
+        Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let reader: Arc<dyn CommittedThreadView> = commit.clone();
 
     runtime

@@ -25,7 +25,7 @@ use std::sync::Arc;
 /// without an explicit cutoff is judged at its reading.
 pub fn durable_ops_router(
     application: Arc<dyn DurableRunOperations>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Router {
     durable_ops_router_with_session_commands(
         application.clone(),
@@ -43,7 +43,7 @@ pub fn durable_ops_router_with_session_admission(
     application: Arc<dyn DurableRunOperations>,
     background: Arc<dyn SessionRunBackgroundApplication>,
     supersede: Arc<dyn SessionRunReplacementApplication>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Router {
     durable_ops_router_with_session_commands(
         application.clone(),
@@ -75,7 +75,7 @@ fn durable_ops_router_with_session_commands(
     application: Arc<dyn DurableRunOperations>,
     background_application: BackgroundApplication,
     supersede_application: SupersedeApplication,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Router {
     let quarantine = Router::new()
         .route(
@@ -388,7 +388,7 @@ async fn reconcile(
 async fn quarantine_retry_exhausted(
     State((application, clock)): State<(
         Arc<dyn DurableRunOperations>,
-        Arc<dyn awaken_lease_contract::WallClock>,
+        Arc<dyn awaken_time::WallClock>,
     )>,
     Path(thread): Path<String>,
     Query(query): Query<HashMap<String, String>>,
@@ -402,7 +402,7 @@ async fn quarantine_retry_exhausted(
     let now = query
         .get("now_ms")
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or_else(|| awaken_lease_contract::WallClockExt::now_ms(clock.as_ref()));
+        .unwrap_or_else(|| awaken_time::WallClockExt::now_ms(clock.as_ref()));
     respond(
         application
             .quarantine_retry_exhausted(&thread, max_attempts, now)

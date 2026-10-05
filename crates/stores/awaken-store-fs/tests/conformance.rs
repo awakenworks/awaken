@@ -7,7 +7,7 @@ use awaken_store_fs::FsCommitCoordinator;
 async fn fresh(name: &str) -> FsCommitCoordinator {
     let dir = std::env::temp_dir().join(format!("awaken_store_fs_conf_{name}"));
     let _ = std::fs::remove_dir_all(&dir);
-    FsCommitCoordinator::open(dir, awaken_lease_contract::system_clock())
+    FsCommitCoordinator::open(dir, awaken_time::system_clock())
         .await
         .expect("open")
 }

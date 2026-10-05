@@ -16,7 +16,7 @@ test-support = []
 
 [dependencies]
 # The one wall-clock port: the instant a request deadline is judged at.
-awaken-lease-contract.workspace = true
+awaken-time.workspace = true
 awaken-fs-durability.workspace = true
 awaken-runtime-contract.workspace = true
 # The one channel-bound marker (ADR-0045 D6): the hand's framed I/O runs over any

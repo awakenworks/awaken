@@ -4358,7 +4358,7 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
      * | R3 | any | foreign/regressed | entry denial, zero runtime calls |
      * | R3-equal | yes | equal | E2 + E3 after one runtime call |
      */
-    let now = crate::effect_clock_reading_ms(Some(&awaken_lease_contract::system_clock())).unwrap();
+    let now = crate::effect_clock_reading_ms(Some(&awaken_time::system_clock())).unwrap();
     let initial = pc::SandboxEffectFence::new(
         "renewable-create",
         "worker-a",

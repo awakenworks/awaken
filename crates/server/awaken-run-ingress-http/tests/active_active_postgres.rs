@@ -241,7 +241,7 @@ async fn active_active_control_child() {
         WorkerDispatchService::new(
             dispatch.clone(),
             authenticator.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
             Arc::new(FixedWorkerLeasePolicy::new(120_000)),
         )
         .with_worker_directory(directory.clone(), 120_000)
@@ -251,7 +251,7 @@ async fn active_active_control_child() {
         Arc::new(ClaimedCommitService::new(dispatch, coordinator)),
         directory,
         authenticator,
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     let router = registered_worker_transport_router_with_services(
         dispatch_transport_router_with_service(dispatch_service),

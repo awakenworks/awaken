@@ -170,7 +170,7 @@ pub struct MemoryStoreApplication {
     /// Stamps a registration's creation instant. It is the clock the registry
     /// application stamps every later profile and state change with, so a
     /// store's `created` and `updated` come from one timeline.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl MemoryStoreApplication {
@@ -178,7 +178,7 @@ impl MemoryStoreApplication {
     pub fn new(
         registry: Arc<dyn ResourceRegistry>,
         purge: Arc<dyn ResourcePurgeScheduler>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             registry,
@@ -188,7 +188,7 @@ impl MemoryStoreApplication {
     }
 }
 
-fn mint_memory_store_id(now: awaken_lease_contract::UtcTime) -> String {
+fn mint_memory_store_id(now: awaken_time::UtcTime) -> String {
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     format!("memstore_{:016x}_{sequence:016x}", now.as_unix_nanos_u64())
@@ -205,7 +205,7 @@ fn required_store(
 
 fn memory_store_registration(
     command: CreateMemoryStoreCommand,
-    now: awaken_lease_contract::UtcTime,
+    now: awaken_time::UtcTime,
 ) -> RegisterMemoryStore {
     let id = command
         .id
@@ -435,7 +435,7 @@ mod tests {
 
     fn application() -> ResourcesApplication {
         let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-        let clock = awaken_lease_contract::system_clock();
+        let clock = awaken_time::system_clock();
         let resources = Arc::new(
             awaken_resource_store::SqliteResourceStore::in_memory()
                 .expect("open resource authority"),

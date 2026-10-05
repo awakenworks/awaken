@@ -448,7 +448,7 @@ struct MemoryStoreApi {
     memories: Arc<dyn MemoryRepository>,
     stores: Arc<dyn MemoryStoreApplicationService>,
     /// The Resources context's clock; a store deletion is stamped with it.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 /// Mount the Memory API over the same Resource Registry used by Session
@@ -457,7 +457,7 @@ struct MemoryStoreApi {
 pub fn memory_stores_router(
     memories: Arc<dyn MemoryRepository>,
     stores: Arc<dyn MemoryStoreApplicationService>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Router {
     let state = Arc::new(MemoryStoreApi {
         memories,
@@ -676,7 +676,7 @@ async fn delete_store(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let now = awaken_lease_contract::WallClockExt::now_ms(state.clock.as_ref());
+    let now = awaken_time::WallClockExt::now_ms(state.clock.as_ref());
     if let Err(error) = state.stores.delete(&workspace, &id, now).await {
         return application_error(error);
     }

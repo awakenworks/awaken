@@ -610,9 +610,7 @@ async fn session_recovery_reads_committed_truth_only_under_the_exact_work_epoch(
     // Constraint: the receipt comes from claim admission and recovery may never
     // self-sign the latest owner/epoch. The read-count assertion makes the
     // validation-before-Thread-read ordering observable.
-    let store = Arc::new(MemoryDispatchStore::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let store = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
     let run_id = RunId("work-epoch-recovery-run".into());
     let session_id = ThreadId("work-epoch-session".into());
     let request = RunDispatch::new(activation(&run_id.0, &session_id.0))
@@ -769,9 +767,7 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
     // as `signed_worker_transport_http.rs` legitimately does, because there the
     // store does judge a deadline — would add machinery here that decides
     // nothing.
-    let mem = Arc::new(MemoryDispatchStore::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let mem = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
     let clock = Arc::new(ManualClock::new(0));
     let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
         mem as Arc<dyn ControlDispatchQueue>,

@@ -28,7 +28,7 @@ pub(super) struct ProcessStores {
     /// The process's one wall clock. Chosen once by the process composition,
     /// used by every store opened here and handed to every component built
     /// over these stores, so no two owners judge time on different clocks.
-    pub(super) clock: Arc<dyn awaken_lease_contract::WallClock>,
+    pub(super) clock: Arc<dyn awaken_time::WallClock>,
 }
 
 pub(super) struct ControlStores {
@@ -212,7 +212,7 @@ pub(super) async fn open_session_store_views(
 pub(super) async fn open_environment_work(
     backend: &awaken_control::StoreBackend,
     postgres_schema: PostgresSchemaMode,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
 ) -> Result<Arc<dyn awaken_session_work_contract::WorkQueue>, String> {
     use awaken_control::StoreBackend;
@@ -248,7 +248,7 @@ pub(super) async fn open_environment_work(
 pub(super) async fn open_application_access(
     backend: &awaken_control::StoreBackend,
     postgres_schema: PostgresSchemaMode,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
 ) -> Result<Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>, String> {
     use awaken_control::StoreBackend;
@@ -302,7 +302,7 @@ pub(super) struct ProcessStoreOpenOptions<'a> {
     pub(super) role: config::Role,
     pub(super) postgres_schema: PostgresSchemaMode,
     /// The process's one wall clock; see [`ProcessStores::clock`].
-    pub(super) clock: Arc<dyn awaken_lease_contract::WallClock>,
+    pub(super) clock: Arc<dyn awaken_time::WallClock>,
 }
 
 pub(super) async fn open_process_stores(

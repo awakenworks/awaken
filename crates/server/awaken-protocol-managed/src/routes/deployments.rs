@@ -8,7 +8,7 @@
 //! and HTTP error mapping. Aggregate transitions, persistence, scheduling, and
 //! Session launch outcomes belong to `awaken-deployment-application`.
 
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 use std::sync::Arc;
 
 use awaken_deployment_application::{

@@ -121,7 +121,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
             .with_dispatch_store(any),
     );
     let _managed = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
-    let router = durable_ops_router(host, awaken_lease_contract::system_clock());
+    let router = durable_ops_router(host, awaken_time::system_clock());
     let thread = "t-dur";
     let base = format!("/v1/durable/threads/{thread}");
 
@@ -301,7 +301,7 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
         .await
         .unwrap();
 
-    let router = durable_ops_router(host, awaken_lease_contract::system_clock());
+    let router = durable_ops_router(host, awaken_time::system_clock());
     let base = format!("/v1/durable/threads/{thread}");
     let (status, body) = call(&router, "GET", &format!("{base}/dispatches")).await;
     assert_eq!(status, StatusCode::OK, "R1: {body}");
@@ -336,7 +336,7 @@ async fn every_dispatch_read_and_repair_verb_requires_the_one_durable_capability
             Arc::new(OkModel),
             "stub",
         )),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     for (method, path) in [
         ("GET", "/v1/durable/threads/direct/dispatches"),

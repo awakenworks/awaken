@@ -67,8 +67,8 @@ use awaken_credential_vault::{
     CredentialCreateParams as DomainCredentialCreateParams, CredentialKind,
     OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretStore,
 };
-use awaken_lease_contract::WallClock;
 use awaken_session_application::{SessionCredentialAccessRequest, SessionCredentialSource};
+use awaken_time::WallClock;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};

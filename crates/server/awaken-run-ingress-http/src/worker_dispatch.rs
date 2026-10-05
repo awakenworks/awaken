@@ -42,8 +42,8 @@ use awaken_run_ingress::{
     WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
 };
 
-use awaken_lease_contract::{WallClock, WallClockExt};
 use awaken_run_ingress::{ApplicationError as HostError, ApplicationErrorKind};
+use awaken_time::{WallClock, WallClockExt};
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, VerifiedWorkerContext, WorkerLeasePolicy,
     WorkerRequestAuthenticator, authenticate_worker_request, verify_current_worker_identity,

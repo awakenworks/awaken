@@ -16,7 +16,7 @@ pub(super) use awaken_coordinator::WorkerTransport;
 pub(super) async fn select(
     deployment: &ResolvedDeployment,
     injected: Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<WorkerTransport, String> {
     if let Some(policy) = &deployment.worker_kubernetes {
         policy.validate(
@@ -62,7 +62,7 @@ fn read_projected_file(path: &Path) -> Result<String, String> {
 
 fn authenticator(
     deployment: &ResolvedDeployment,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>, String> {
     let Some(path) = deployment.worker_trust_credentials_file.as_deref() else {
         return match deployment.mode {
@@ -126,15 +126,11 @@ mod tests {
             )
         };
         assert!(
-            select(
-                &deployment,
-                injected(),
-                awaken_lease_contract::system_clock()
-            )
-            .await
-            .unwrap()
-            .binding_source()
-            .is_none(),
+            select(&deployment, injected(), awaken_time::system_clock())
+                .await
+                .unwrap()
+                .binding_source()
+                .is_none(),
             "S1"
         );
         deployment.mode = OperatingMode::Server;
@@ -146,13 +142,9 @@ mod tests {
             provider_id: "cluster".into(),
         });
         assert!(
-            select(
-                &deployment,
-                injected(),
-                awaken_lease_contract::system_clock()
-            )
-            .await
-            .is_err(),
+            select(&deployment, injected(), awaken_time::system_clock())
+                .await
+                .is_err(),
             "S2"
         );
     }
@@ -174,7 +166,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut deployment = config::local_test_deployment(dir.path().to_path_buf());
 
-        let local = authenticator(&deployment, awaken_lease_contract::system_clock())
+        let local = authenticator(&deployment, awaken_time::system_clock())
             .expect("R1 local compatibility posture");
         let local_parts = axum::http::Request::builder()
             .uri("/v1/worker/register")
@@ -190,7 +182,7 @@ mod tests {
 
         deployment.bind = "0.0.0.0:8080".into();
         assert!(
-            authenticator(&deployment, awaken_lease_contract::system_clock())
+            authenticator(&deployment, awaken_time::system_clock())
                 .err()
                 .expect("R1b non-loopback error")
                 .contains("limited to loopback"),
@@ -200,7 +192,7 @@ mod tests {
 
         deployment.mode = OperatingMode::Server;
         assert!(
-            authenticator(&deployment, awaken_lease_contract::system_clock())
+            authenticator(&deployment, awaken_time::system_clock())
                 .err()
                 .expect("R2 missing trust error")
                 .contains("requires"),
@@ -211,7 +203,7 @@ mod tests {
         std::fs::write(&trust, "[]").unwrap();
         deployment.worker_trust_credentials_file = Some(trust.clone());
         assert!(
-            authenticator(&deployment, awaken_lease_contract::system_clock())
+            authenticator(&deployment, awaken_time::system_clock())
                 .err()
                 .expect("R3 empty trust error")
                 .contains("at least one"),
@@ -226,8 +218,8 @@ mod tests {
             ]"#,
         )
         .unwrap();
-        let signed = authenticator(&deployment, awaken_lease_contract::system_clock())
-            .expect("R4 signed posture");
+        let signed =
+            authenticator(&deployment, awaken_time::system_clock()).expect("R4 signed posture");
         assert!(signed.authenticate(&local_parts).await.is_err(), "R4");
     }
 }

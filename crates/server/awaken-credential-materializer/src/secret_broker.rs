@@ -314,10 +314,8 @@ mod tests {
         // R2=write+C1=>E1; R3=C3=>E2. The neutral materializer cannot open a
         // second Vault path or choose another source on failure.
         let authority = Arc::new(LocalAuthorityProbe::default());
-        let pinned = PinnedCredentialMaterializer::new(
-            authority.clone(),
-            awaken_lease_contract::system_clock(),
-        );
+        let pinned =
+            PinnedCredentialMaterializer::new(authority.clone(), awaken_time::system_clock());
         assert_eq!(
             pinned.materialize("vault-source@7").await.unwrap(),
             b"sealed-material",
@@ -336,7 +334,7 @@ mod tests {
         assert_eq!(authority.writes.load(Ordering::SeqCst), 1, "R2/E1 once");
         let external = PinnedCredentialMaterializer::external_only(
             authority.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         assert!(
             external.materialize("vault-source@7").await.is_err(),

@@ -124,7 +124,7 @@ mod tests {
         CatalogModelPublicationResolver::from_repo(
             catalog,
             credentials,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_direct_provider_credential_execution(policy, holder)
     }
@@ -181,7 +181,7 @@ mod tests {
                 },
                 secrets.as_ref(),
                 creds.as_ref(),
-                awaken_lease_contract::system_clock().as_ref(),
+                awaken_time::system_clock().as_ref(),
             )
             .await
             .unwrap();
@@ -197,9 +197,9 @@ mod tests {
                 Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
                     creds.clone(),
                     secrets.clone(),
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ),
             catalog,
             credentials: creds,
@@ -299,7 +299,7 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -337,9 +337,9 @@ mod tests {
                 Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
                     credentials,
                     secrets.clone(),
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ),
             candidate,
             secrets,
@@ -652,7 +652,7 @@ mod tests {
             },
             p.secrets.as_ref(),
             p.credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -695,7 +695,7 @@ mod tests {
             },
             p.secrets.as_ref(),
             p.credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -887,7 +887,7 @@ mod tests {
             },
             p.secrets.as_ref(),
             p.credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();

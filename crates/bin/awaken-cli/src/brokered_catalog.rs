@@ -9,8 +9,8 @@ use awaken_admin_config_api::BrokeredCatalogDiscovery;
 use awaken_credential_materializer::brokered_inference::{
     BrokeredModelCatalogClient, HttpBrokeredInferenceClient, fetch_brokered_catalog,
 };
-use awaken_lease_contract::{WallClock, WallClockExt};
 use awaken_model_catalog::{ApiDialect, BrokeredCatalogProjection, BrokeredModelProjection};
+use awaken_time::{WallClock, WallClockExt};
 
 /// The one Control port adapter for the process's authenticated Cloud client.
 /// The transport remains shared with inference; Control alone names catalog

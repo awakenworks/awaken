@@ -49,7 +49,7 @@ pub struct WorkerRepositoryBindingService {
     >,
     transport_authorizer: Option<Arc<dyn RepositoryTransportAuthorizer>>,
     /// The Coordinator's wall clock: the instant claims and leases are judged at.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 /// Exact frozen facts supplied to the deployment adapter after the common
@@ -311,7 +311,7 @@ impl WorkerRepositoryBindingService {
         validator: Arc<dyn LiveResourceBindingVerifier>,
         dispatch: Arc<dyn DispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             validator,

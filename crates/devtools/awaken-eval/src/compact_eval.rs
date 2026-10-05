@@ -163,7 +163,7 @@ pub async fn run_acp(
     let mut observations = Vec::with_capacity(dataset.cases.len());
     for (sequence, case) in dataset.cases.iter().enumerate() {
         let input = format!("{}\n\n{}", case.transcript, SUMMARIZE_PROMPT);
-        let started = awaken_lease_contract::mono::Stopwatch::start();
+        let started = awaken_time::mono::Stopwatch::start();
         let result = tokio::time::timeout(
             TIMEOUT,
             runner.run(

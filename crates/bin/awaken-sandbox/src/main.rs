@@ -151,7 +151,7 @@ fn run_control_forwarder_ready(args: &[String]) -> ExitCode {
 
 async fn run_git_credential(args: &[String]) -> ExitCode {
     // The Git credential helper process's one wall clock.
-    let clock = awaken_lease_contract::system_clock();
+    let clock = awaken_time::system_clock();
     match git_credential::run(args, clock.as_ref()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -325,7 +325,7 @@ async fn run_hand(args: &[String]) -> ExitCode {
         }
     };
     // The Hand process's one wall clock.
-    match serve(bind, awaken_lease_contract::system_clock()).await {
+    match serve(bind, awaken_time::system_clock()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("awaken-sandbox hand: {e}");

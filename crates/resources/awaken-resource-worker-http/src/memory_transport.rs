@@ -434,7 +434,7 @@ pub struct WorkerMemoryService {
     terminal_memory_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionTerminalMemoryControl>>,
     /// The Coordinator's wall clock: the instant claims and leases are judged at.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl WorkerMemoryService {
@@ -445,7 +445,7 @@ impl WorkerMemoryService {
         dispatch: Arc<dyn DispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
         directory: Arc<dyn WorkerDirectory>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             repository,

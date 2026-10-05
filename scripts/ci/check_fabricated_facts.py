@@ -118,7 +118,7 @@ OBSERVATION_CONST = re.compile(
 # the real clock is read and where the one clock trait, its system factory and
 # its time helpers are declared, so R2..R5 do not apply inside it. Located by
 # package name through the workspace manifests, never by a hand-written path.
-CLOCK_PORT_CRATE = "awaken-lease-contract"
+CLOCK_PORT_CRATE = "awaken-time"
 
 AMBIENT_CLOCK = re.compile(
     # The std, tokio and chrono ambient reads.
@@ -677,7 +677,7 @@ def selftest() -> None:
     assert not fabricated_literal_violations(l6), "L6/E1"
 
     # ── R2 ──
-    port = frozenset({"crates/contract/awaken-lease-contract/src/clock.rs"})
+    port = frozenset({"crates/runtime/awaken-time/src/clock.rs"})
     port_file = sorted(port)[0]
 
     c1 = {"a.rs": "fn stamp() -> u64 { SystemTime::now().elapsed() }\n"}

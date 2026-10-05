@@ -105,8 +105,8 @@ impl SandboxGeneration {
     /// Expired under the one expiry law: live strictly before its deadline.
     #[must_use]
     pub fn expired_at(&self, now_unix_ms: u64) -> bool {
-        awaken_lease_contract::Expiry::from_epoch_ms(self.expires_at_unix_ms)
-            .is_expired_at(awaken_lease_contract::UtcTime::from_epoch_ms(now_unix_ms))
+        awaken_time::Expiry::from_epoch_ms(self.expires_at_unix_ms)
+            .is_expired_at(awaken_time::UtcTime::from_epoch_ms(now_unix_ms))
     }
 }
 

@@ -131,7 +131,7 @@ async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
         2,
     ));
     let first = ContainerProvider::new(Arc::new(first_runtime), "busybox:latest")
-        .with_clock(awaken_lease_contract::system_clock())
+        .with_clock(awaken_time::system_clock())
         .acquire_restore_environment(&spec, &request)
         .await
         .expect("D1 exact restore create");
@@ -157,7 +157,7 @@ async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
         panic!("D2 daemon disappeared after exact target creation");
     };
     let retry = ContainerProvider::new(Arc::new(retry_runtime), "busybox:latest")
-        .with_clock(awaken_lease_contract::system_clock());
+        .with_clock(awaken_time::system_clock());
     let mut mismatch = request.clone();
     mismatch.generation_id.push_str("-other");
     assert!(

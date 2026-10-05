@@ -268,7 +268,7 @@ pub(super) async fn prepare_control_process_with_installations(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
     installations: installation_binding::PreparedDeploymentInstallations,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<PreparedProcess, String> {
     prepare_control_process_with_model_supply_and_installations(
         deployment,
@@ -299,7 +299,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
     >,
     mut managed_services: ManagedServiceAdapters,
     installations: installation_binding::PreparedDeploymentInstallations,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<PreparedProcess, String> {
     let publish_local_workspace = installations.publishes_local_workspace();
     let platform_workspace = installations.platform_workspace_before_write()?;

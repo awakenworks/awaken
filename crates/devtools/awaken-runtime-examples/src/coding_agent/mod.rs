@@ -143,9 +143,7 @@ impl CodingSession {
         Self {
             runtime,
             config,
-            commit: Arc::new(MemoryCommitCoordinator::new(
-                awaken_lease_contract::system_clock(),
-            )),
+            commit: Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock())),
             tool_executor,
             thread_id: ThreadId("coding".to_string()),
         }

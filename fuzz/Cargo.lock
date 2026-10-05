@@ -66,19 +66,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "awaken-lease-contract"
-version = "1.0.0"
-dependencies = [
- "serde",
- "tokio",
-]
-
-[[package]]
 name = "awaken-mcp-wire"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "awaken-lease-contract",
+ "awaken-time",
  "serde",
  "serde_json",
  "thiserror",
@@ -93,8 +85,8 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-credential-contract",
- "awaken-lease-contract",
  "awaken-tenancy",
+ "awaken-time",
  "awaken-tool-contract",
  "futures-util",
  "schemars",
@@ -112,6 +104,13 @@ name = "awaken-tenancy"
 version = "1.0.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "awaken-time"
+version = "1.0.0"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]

@@ -39,6 +39,7 @@ awaken-session-realization-driver.workspace = true
 awaken-session-work-contract.workspace = true
 awaken-worker-contract.workspace = true
 async-trait.workspace = true
+awaken-time.workspace = true
 awaken-lease-contract.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 thiserror.workspace = true

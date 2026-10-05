@@ -32,7 +32,7 @@ fn in_memory_application(executor: Arc<dyn DreamExecutor>) -> DreamApplication {
     DreamApplication::with_store(
         executor,
         Arc::new(InMemoryDreamProcessStore::default()),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .expect("empty test Dream store")
 }
@@ -206,8 +206,7 @@ async fn dream_policy_application_projects_defaults_validates_and_survives_resta
         release: Arc::new(Notify::new()),
     });
     let state = Arc::new(
-        DreamApplication::with_store(worker, repository, awaken_lease_contract::system_clock())
-            .unwrap(),
+        DreamApplication::with_store(worker, repository, awaken_time::system_clock()).unwrap(),
     );
     let default = state.policy("default", "mem_policy").unwrap();
     assert!(!default.config.enabled, "A1");
@@ -262,7 +261,7 @@ async fn dream_policy_application_projects_defaults_validates_and_survives_resta
                 release: Arc::new(Notify::new()),
             }),
             Arc::new(SqliteManagedSessionRepository::open(path.to_str().unwrap()).unwrap()),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap(),
     );
@@ -296,7 +295,7 @@ async fn concurrent_policy_ticks_claim_one_dream_across_replicas() {
                     release: Arc::new(Notify::new()),
                 }),
                 repository.clone(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap(),
         )
@@ -811,7 +810,7 @@ async fn late_worker_completion_cannot_repeat_or_overwrite_cancellation_cleanup(
                     worker_outcome,
                 }),
                 store.clone(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap(),
         );
@@ -926,7 +925,7 @@ async fn canceled_cleanup_retry_cannot_return_success_before_its_receipt() {
                 cleanups: cleanups.clone(),
             }),
             store.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap(),
     );
@@ -1339,12 +1338,8 @@ async fn sqlite_repository_restores_terminal_dreams_after_restart() {
     let repository =
         Arc::new(SqliteManagedSessionRepository::open(path.to_str().unwrap()).unwrap());
     let state = Arc::new(
-        DreamApplication::with_store(
-            worker,
-            repository.clone(),
-            awaken_lease_contract::system_clock(),
-        )
-        .unwrap(),
+        DreamApplication::with_store(worker, repository.clone(), awaken_time::system_clock())
+            .unwrap(),
     );
     state.bind_session_source(Arc::new(FixedSessionFacts));
     let app = support::edge_stamped(dreams_router(state.clone()));
@@ -1366,7 +1361,7 @@ async fn sqlite_repository_restores_terminal_dreams_after_restart() {
             release: Arc::new(Notify::new()),
         }),
         Arc::new(SqliteManagedSessionRepository::open(path.to_str().unwrap()).unwrap()),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .unwrap();
     reopened.bind_session_source(Arc::new(AlternateSessionFacts));
@@ -1417,7 +1412,7 @@ async fn resume_incomplete_cas_resets_and_executes_a_durable_running_job() {
                 never: Arc::new(Notify::new()),
             }),
             repository.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap(),
     );
@@ -1440,7 +1435,7 @@ async fn resume_incomplete_cas_resets_and_executes_a_durable_running_job() {
                 release: Arc::new(Notify::new()),
             }),
             repository,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap(),
     );
@@ -1493,7 +1488,7 @@ async fn restart_retries_terminal_cleanup_before_publishing_completion() {
         DreamApplication::with_store(
             Arc::new(CleanupFails),
             repository.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap(),
     );
@@ -1535,7 +1530,7 @@ async fn restart_retries_terminal_cleanup_before_publishing_completion() {
                 release: Arc::new(Notify::new()),
             }),
             repository,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap(),
     );

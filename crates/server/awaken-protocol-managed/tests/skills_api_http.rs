@@ -37,7 +37,7 @@ fn router_with_store() -> (
         skills_router(
             Some(store.clone()),
             resources.purge_scheduler(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ),
         store,
         dir,
@@ -790,7 +790,7 @@ async fn non_sdk_json_create_is_rejected_before_store_selection() {
     let router = skills_router(
         None,
         resources.purge_scheduler(),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let _v = post_json(
         &router,
@@ -826,7 +826,7 @@ async fn sdk_multipart_create_fails_closed_without_a_durable_store() {
     let router = skills_router(
         None,
         resources.purge_scheduler(),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     // Multipart fails closed (409) when nothing durable backs it.
     let _created = post_multipart(&router, "/v1/skills", SKILL_V1)

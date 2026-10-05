@@ -92,9 +92,7 @@ async fn http_export_model_edit_and_offline_runtime_form_one_path() {
     );
     assert_ne!(snapshot.fingerprint.0, fingerprint, "R2 identity");
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let state = runtime
         .run(
             &snapshot,

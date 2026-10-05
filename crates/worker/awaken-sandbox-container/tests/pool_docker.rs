@@ -93,7 +93,7 @@ async fn a_warm_pool_pre_provisions_capacity_and_hands_a_ready_agent_to_a_sessio
     let runtime = DockerRuntime::connect_local(AGENT_PORT).expect("docker client");
     let provider = Arc::new(
         ContainerProvider::new(Arc::new(runtime), "busybox:latest")
-            .with_clock(awaken_lease_contract::system_clock()),
+            .with_clock(awaken_time::system_clock()),
     );
     let pool = WarmContainerPool::new(provider, 2);
     // Warm capacity mints its own never-repeated scopes, but the Session scope
@@ -196,7 +196,7 @@ async fn a_session_with_a_mount_bypasses_the_pool() {
     let runtime = DockerRuntime::connect_local(AGENT_PORT).expect("docker client");
     let provider = Arc::new(
         ContainerProvider::new(Arc::new(runtime), "busybox:latest")
-            .with_clock(awaken_lease_contract::system_clock()),
+            .with_clock(awaken_time::system_clock()),
     );
     let pool = WarmContainerPool::new(provider, 2);
     let _base_residue = residue::TestResidue::arm("mount-base", residue::Backend::Docker);

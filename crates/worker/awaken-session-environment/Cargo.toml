@@ -22,7 +22,7 @@ awaken-agent-channel.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
-awaken-lease-contract.workspace = true
+awaken-time.workspace = true
 awaken-sandbox-control.workspace = true
 # The Workdir and Namespace tiers.
 awaken-sandbox-local = { workspace = true }

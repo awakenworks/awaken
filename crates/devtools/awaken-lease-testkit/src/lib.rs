@@ -8,7 +8,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use awaken_lease_contract::{UtcTime, WallClock};
+use awaken_time::{UtcTime, WallClock};
 
 /// The largest epoch millisecond a manual clock holds: the signed persisted
 /// domain every store writes, so a test can never drive a reading a store
@@ -72,7 +72,7 @@ impl WallClock for FixedClock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_lease_contract::WallClockExt;
+    use awaken_time::WallClockExt;
 
     #[test]
     fn manual_clock_atomic_advance_is_exact_and_saturating() {

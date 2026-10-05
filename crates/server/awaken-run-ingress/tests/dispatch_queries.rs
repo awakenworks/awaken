@@ -226,11 +226,8 @@ async fn sqlite_corrupt_summary_does_not_poison_identity_pages() {
     // Q7 uses a real persisted payload corruption, not a mock query result.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("queries.sqlite");
-    let store = SqliteDispatchStore::open(
-        path.to_str().unwrap(),
-        awaken_lease_contract::system_clock(),
-    )
-    .unwrap();
+    let store =
+        SqliteDispatchStore::open(path.to_str().unwrap(), awaken_time::system_clock()).unwrap();
     for run in ["bad", "healthy"] {
         store
             .enqueue(RunDispatch::new(harness::activation(run)))

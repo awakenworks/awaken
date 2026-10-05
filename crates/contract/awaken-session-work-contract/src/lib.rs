@@ -19,18 +19,16 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
-use awaken_lease_contract::Expiry;
 use awaken_lease_contract::fence::{Epoch, Lease, Tenure, TenureScope, ZeroEpoch};
 use awaken_session_types::{SessionContractErrorDetail, SessionId};
+use awaken_time::Expiry;
 // The UTC calendar codec is owned by the wall-clock port, so a Work receipt and
 // an Environment record spell the same reading identically.
 #[cfg(kani)]
-use awaken_lease_contract::utc::bounded_rfc3339_nanos;
-pub use awaken_lease_contract::utc::{
-    MAX_RFC3339_NANOS, format_rfc3339_utc_nanos, parse_rfc3339_utc_nanos,
-};
+use awaken_time::utc::bounded_rfc3339_nanos;
+pub use awaken_time::utc::{MAX_RFC3339_NANOS, format_rfc3339_utc_nanos, parse_rfc3339_utc_nanos};
 #[cfg(test)]
-use awaken_lease_contract::utc::{civil_from_days, days_from_civil, days_in_month};
+use awaken_time::utc::{civil_from_days, days_from_civil, days_in_month};
 
 /// Produce the opaque RFC-3339 receipt returned by a successful heartbeat.
 ///
@@ -206,7 +204,7 @@ pub struct WorkItem {
     pub metadata: BTreeMap<String, String>,
     pub state: WorkState,
     /// When the queue accepted this item, read from the store's injected
-    /// [`WallClock`](awaken_lease_contract::WallClock) inside the enqueue
+    /// [`WallClock`](awaken_time::WallClock) inside the enqueue
     /// transaction. It is a durable column, not a projection: the wire value a
     /// client reads is the instant the row was written.
     pub created_at: String,

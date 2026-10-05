@@ -65,7 +65,7 @@ struct RelayState {
     routes: Routes,
     authority: GenerationAuthority,
     /// The clock route admission reads: the owning Host's process clock.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     /// One upstream client for the life of the relay. Building one inside the
     /// handler discarded the connection pool on every forwarded call.
     client: reqwest::Client,
@@ -76,7 +76,7 @@ impl RelayState {
         route.capability == capability
             && (self.authority)(
                 &route.generation,
-                awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref()),
+                awaken_time::WallClockExt::now_ms(self.clock.as_ref()),
             )
     }
 }
@@ -151,7 +151,7 @@ impl McpRelay {
                 )
             }),
             None,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .await
     }
@@ -159,7 +159,7 @@ impl McpRelay {
     async fn start_with_authority_and_exposure(
         authority: GenerationAuthority,
         exposure: Option<&crate::ContainerMcpRelayExposure>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> std::io::Result<Self> {
         let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
         let bind = exposure.map_or_else(
@@ -639,7 +639,7 @@ mod tests {
         let relay = McpRelay::start_with_authority_and_exposure(
             Arc::new(|_, _| true),
             Some(&exposure),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .await
         .unwrap();

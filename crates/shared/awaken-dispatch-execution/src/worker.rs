@@ -63,13 +63,13 @@ use crate::dispatch::{
 };
 use crate::execution_capacity::ExecutionCapacity;
 use crate::worker_context::WorkerContext;
-use awaken_lease_contract::WallClock;
+use awaken_time::WallClock;
 
 mod claim_renewal;
 mod physical_attempt;
 mod terminal_recovery;
 
-use awaken_lease_contract::WallClockExt;
+use awaken_time::WallClockExt;
 use physical_attempt::{PhysicalAttemptOutcome, PhysicalAttemptRequest};
 
 pub(crate) use claim_renewal::{
@@ -1562,7 +1562,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             DispatchOutcome::Done => "done",
             DispatchOutcome::Awaiting => "awaiting",
         };
-        let started = awaken_lease_contract::mono::Stopwatch::start();
+        let started = awaken_time::mono::Stopwatch::start();
         let settlement = if coordinated_claim_is_stale {
             Ok(SettleOutcome::Fenced)
         } else {
@@ -1666,14 +1666,14 @@ fn cancellation_uses_tool_interruption(
 /// early `?`, and each terminal-recovery arm — without threading a timer through
 /// them. Borrows the runtime's metrics recorder for the lifetime of one drive.
 struct DriveTimer<'a> {
-    start: awaken_lease_contract::mono::Stopwatch,
+    start: awaken_time::mono::Stopwatch,
     metrics: &'a dyn awaken_runtime_contract::metrics::MetricsRecorder,
 }
 
 impl<'a> DriveTimer<'a> {
     fn new(metrics: &'a dyn awaken_runtime_contract::metrics::MetricsRecorder) -> Self {
         Self {
-            start: awaken_lease_contract::mono::Stopwatch::start(),
+            start: awaken_time::mono::Stopwatch::start(),
             metrics,
         }
     }

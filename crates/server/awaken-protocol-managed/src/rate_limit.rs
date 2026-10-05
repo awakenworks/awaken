@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use awaken_lease_contract::WallClockExt as _;
-use awaken_lease_contract::mono::Stopwatch;
+use awaken_time::WallClockExt as _;
+use awaken_time::mono::Stopwatch;
 
 use axum::Json;
 use axum::extract::{Request, State};
@@ -283,7 +283,7 @@ pub struct ManagedRateLimiter {
     started_at: Stopwatch,
     /// The composing process's wall clock; only the rendered reset instant
     /// reads it.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     buckets: Mutex<Buckets>,
 }
 
@@ -301,7 +301,7 @@ impl ManagedRateLimiter {
     #[must_use]
     pub fn for_organization(
         organization_id: impl Into<String>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self::with_limits(organization_id, ManagedRateLimits::default(), clock)
     }
@@ -310,7 +310,7 @@ impl ManagedRateLimiter {
     pub fn with_limits(
         organization_id: impl Into<String>,
         limits: ManagedRateLimits,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             organization_id: organization_id.into(),
@@ -627,7 +627,7 @@ mod tests {
                 create_per_minute: 2,
                 read_per_minute: 2,
             },
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         assert!(
             limiter
@@ -677,7 +677,7 @@ mod tests {
         // A1=C1+C2 -> E1+E2+E3. The scoped success and shared-bucket rules are
         // exercised by the following compatibility test.
         let limiter: Arc<dyn ManagedRequestLimiter> = Arc::new(
-            ManagedRateLimiter::for_organization("org", awaken_lease_contract::system_clock()),
+            ManagedRateLimiter::for_organization("org", awaken_time::system_clock()),
         );
         let app = Router::new()
             .route("/v1/sessions", post(|| async { StatusCode::CREATED }))
@@ -708,7 +708,7 @@ mod tests {
                 create_per_minute: 2,
                 read_per_minute: 1,
             },
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ));
         let app = Router::new()
             .route("/v1/sessions", post(accepted).get(|| async { "sessions" }))
@@ -772,7 +772,7 @@ mod tests {
                 create_per_minute: 1,
                 read_per_minute: 1,
             },
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ));
         let app = Router::new()
             .route(

@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use awaken_lease_contract::WallClock;
+use awaken_time::WallClock;
 
 use awaken_resource_contract::{
     ChangeMemoryStoreState, ChangeRepositoryState, ConfigVersion, ExecutionResourceResolver,
@@ -482,7 +482,7 @@ mod tests {
         let registry = RegistryApplication::new(
             repository,
             Arc::new(awaken_lease_testkit::FixedClock::at(
-                awaken_lease_contract::UtcTime::from_unix_nanos(42),
+                awaken_time::UtcTime::from_unix_nanos(42),
             )),
         );
         registry
@@ -534,7 +534,7 @@ mod tests {
             awaken_resource_store::SqliteResourceStore::in_memory()
                 .expect("open test Registry repository"),
         );
-        let registry = RegistryApplication::new(repository, awaken_lease_contract::system_clock());
+        let registry = RegistryApplication::new(repository, awaken_time::system_clock());
         for (id, state) in [
             ("active", ResourceState::Active),
             ("archived", ResourceState::Archived),

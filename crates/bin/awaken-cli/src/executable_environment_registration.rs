@@ -67,7 +67,7 @@ impl ExecutableEnvironmentWiring {
         work: Arc<dyn WorkQueue>,
         service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
         postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, String> {
         let authenticator = deployment
             .executable_agent_registration
@@ -120,7 +120,7 @@ pub(crate) async fn for_runtime_role(
     work: Arc<dyn WorkQueue>,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<ExecutableEnvironmentWiring, String> {
     match role {
         Role::AllInOne => {
@@ -172,7 +172,7 @@ async fn open_image_builds(
     schema: PostgresSchemaMode,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<Option<Arc<awaken_environment_image_build::EnvironmentImageBuildCoordinator>>, String> {
     let Some(provisioner) =
         awaken_execution_composition::package_image_provisioner(&deployment.runtime).await?
@@ -265,7 +265,7 @@ pub(crate) async fn migrate(
 #[cfg(test)]
 pub(crate) fn local_test_wiring() -> ExecutableEnvironmentWiring {
     ExecutableEnvironmentWiring::local(Arc::new(awaken_work_store::InMemoryWorkQueue::new(
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )))
     .expect("configure test executable Environment wiring")
 }
@@ -361,7 +361,7 @@ mod startup_tests {
         // | C1 | None | yes | catalog registers; no image service/demand |
         // | C2 | Some | yes | same catalog path + exactly one Pending demand |
         let without = super::ExecutableEnvironmentWiring::local(Arc::new(
-            awaken_work_store::InMemoryWorkQueue::new(awaken_lease_contract::system_clock()),
+            awaken_work_store::InMemoryWorkQueue::new(awaken_time::system_clock()),
         ))
         .unwrap();
         assert!(without.image_builds.is_none(), "C1");
@@ -380,13 +380,13 @@ mod startup_tests {
                 Arc::new(NeverRunBuilder),
                 "registry/awaken@sha256:base",
                 awaken_environment_image_build::EnvironmentImageBuildPolicy::default(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap(),
         );
         let with = super::ExecutableEnvironmentWiring::local_with_image_builds(
             Arc::new(awaken_work_store::InMemoryWorkQueue::new(
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )),
             Some(builds),
         )

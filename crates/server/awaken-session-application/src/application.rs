@@ -8,7 +8,7 @@
 // @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
 // @formal entrypoint session_time.root_observations_are_revision_bound_and_replay_stable
 // @formal entrypoint session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
-use awaken_lease_contract::WallClockExt;
+use awaken_time::WallClockExt;
 /// Process-level execution topology interpreted by the Session application.
 /// The selected value is frozen into every newly admitted Session; protocol
 /// adapters never inspect or override it.
@@ -128,7 +128,7 @@ impl Default for SessionApplicationConfiguration {
 
 /// Canonical application object shared by wire adapters.
 pub struct SessionApplication {
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     configuration: SessionApplicationConfiguration,
     runtime: Arc<dyn CompleteSessionRuntime>,
     mcp_realizer: Arc<dyn McpAttachmentRealizer>,
@@ -183,7 +183,7 @@ static APPLICATION_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
 impl SessionApplication {
     /// Install the existing clock port before sharing the application.
     #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+    pub fn with_clock(mut self, clock: Arc<dyn awaken_time::WallClock>) -> Self {
         self.clock = clock;
         self.runtime
             .install_environment_binding_sink(self.environment_binding_sink());
@@ -193,7 +193,7 @@ impl SessionApplication {
     /// The injected clock port, for an adapter that stamps observations on the
     /// same time line as this application's commands.
     #[must_use]
-    pub fn clock(&self) -> Arc<dyn awaken_lease_contract::WallClock> {
+    pub fn clock(&self) -> Arc<dyn awaken_time::WallClock> {
         self.clock.clone()
     }
 
@@ -209,7 +209,7 @@ impl SessionApplication {
         mcp_realizer: Arc<dyn McpAttachmentRealizer>,
         sessions_repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
         environments: Arc<dyn SessionEnvironmentSource>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self::new_with_configuration(
             runtime,
@@ -230,7 +230,7 @@ impl SessionApplication {
         sessions_repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
         environments: Arc<dyn SessionEnvironmentSource>,
         configuration: SessionApplicationConfiguration,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         let lifecycle_outbox: Arc<dyn awaken_session_repository_contract::LifecycleOutbox> =
             sessions_repo.clone();
@@ -1140,16 +1140,13 @@ impl awaken_session_work_contract::SessionWorkLeaseAuthority for SessionApplicat
 /// Repository-backed implementation installed at the runtime materialization boundary.
 pub struct RepositoryEnvironmentBindingSink {
     repo: Arc<dyn SessionRepository>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl RepositoryEnvironmentBindingSink {
     /// `clock` stamps each binding receipt; the owning application passes its own.
     #[must_use]
-    pub fn new(
-        repo: Arc<dyn SessionRepository>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
-    ) -> Self {
+    pub fn new(repo: Arc<dyn SessionRepository>, clock: Arc<dyn awaken_time::WallClock>) -> Self {
         Self { repo, clock }
     }
 

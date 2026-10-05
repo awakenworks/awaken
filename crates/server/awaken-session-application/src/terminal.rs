@@ -5,7 +5,6 @@
 // @formal entrypoint session_runtime_interval.one_nonoverlapping_interval_closes_with_exact_fact
 //! Durable terminal Session transitions.
 
-use awaken_lease_contract::WallClockExt as _;
 use awaken_provisioning_contract::RepositoryPublicationExpectation;
 use awaken_resource_contract::{BindingId, ResourceAccess};
 use awaken_session_error_contract::RunError;
@@ -14,6 +13,7 @@ use awaken_session_state_contract::{
     ManagedLifecycleFact, PersistedSession, SessionDisposition, SessionExecutionState,
     SessionRepositoryPublicationIntent, SessionRepositoryPublicationReceipt,
 };
+use awaken_time::WallClockExt as _;
 
 use super::{
     SessionApplication, SessionMutationError, SessionPreparationError, SnapshotCommit,

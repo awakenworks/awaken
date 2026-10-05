@@ -30,12 +30,12 @@ fn native_manifest_admission_uses_installed_materializer_evidence() {
                 pinned_vault(
                     Arc::new(InMemoryCredentialRepo::new()),
                     Arc::new(InMemorySecretStore::new()),
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )
             } else {
                 PinnedCredentialMaterializer::external_only(
                     resolver.clone(),
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )
             };
             pinned.external_material_resolver =

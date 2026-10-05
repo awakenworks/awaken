@@ -160,7 +160,7 @@ pub enum LeaseRenewalOutcome {
 /// correctly at every site is a rule that eventually is not, and only the Rust
 /// spellings were ever reachable by a proof.
 ///
-/// This is the one [`awaken_lease_contract::Expiry`] law: a deadline has passed
+/// This is the one [`awaken_time::Expiry`] law: a deadline has passed
 /// once reached (`now >= deadline`; SQL `lease_until <= now`), so a lease minted
 /// for a non-zero duration is never already expired when written. An absent
 /// deadline never passes, because "this row holds no lease" and "this row's

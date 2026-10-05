@@ -296,9 +296,7 @@ async fn permanent_inference_error_commits_a_terminal_failed_reason() {
         calls: calls.clone(),
     }));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
@@ -398,9 +396,7 @@ async fn max_tokens_truncation_continues_in_place_and_recovers() {
         calls: calls.clone(),
     }));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let stream = Arc::new(MemoryStreamSink::new());
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
@@ -503,9 +499,7 @@ async fn reasoning_only_max_tokens_uses_the_same_bounded_continuation_owner() {
         calls: calls.clone(),
         requests: requests.clone(),
     }));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let outcome = runtime
         .execute(
             activation(),
@@ -591,9 +585,7 @@ async fn max_tokens_budget_exhaustion_commits_partial_and_fails_explicitly() {
         }))
         .with_max_continuation_retries(2);
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
@@ -792,9 +784,7 @@ async fn max_tokens_with_tool_calls_skips_continuation() {
         calls: calls.clone(),
     }));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 

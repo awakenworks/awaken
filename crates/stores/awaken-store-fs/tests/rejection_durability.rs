@@ -43,7 +43,7 @@ fn ck(thread: &str, run: &str, text: &str, state: RunState) -> ThreadCommit {
 async fn fresh(name: &str) -> (std::path::PathBuf, FsCommitCoordinator) {
     let dir = std::env::temp_dir().join(format!("awaken_store_fs_reject_{name}"));
     let _ = std::fs::remove_dir_all(&dir);
-    let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+    let store = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
         .await
         .expect("open");
     (dir, store)
@@ -60,7 +60,7 @@ async fn invalid_commit_leaves_the_log_reopenable_and_empty() {
     assert!(store.commit(bad).await.is_err(), "invalid plan rejected");
     drop(store); // simulate a restart
 
-    let reopened = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+    let reopened = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
         .await
         .expect("store must still open after a rejected commit");
     assert!(
@@ -104,7 +104,7 @@ async fn post_terminal_commit_on_a_non_latest_run_is_fenced_without_corrupting_t
     assert!(fenced.is_err(), "post-terminal commit on run A is fenced");
 
     drop(store); // simulate a restart
-    let reopened = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+    let reopened = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
         .await
         .expect("store must still open after a fenced commit");
     // Exactly the two committed messages survive; the fenced duplicate is absent.
@@ -137,7 +137,7 @@ async fn events_keep_commit_order_across_a_reopen() {
         .expect("commit 3");
     drop(store);
 
-    let reopened = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+    let reopened = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
         .await
         .expect("reopen");
     let scope = EventScope::Run(RunId("r1".to_string()));

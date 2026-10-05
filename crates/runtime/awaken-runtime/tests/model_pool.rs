@@ -226,9 +226,7 @@ async fn primary_failure_fails_over_to_the_next_candidate() {
         }))
         .with_retry_policy(no_retries());
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .execute(activation("primary", &["fallback"]), context)
@@ -352,9 +350,7 @@ async fn a_committed_truncation_partial_does_not_fail_over_to_a_pool_model() {
         .with_llm(Arc::new(TruncateThenFailPrimary { seen: seen.clone() }))
         .with_retry_policy(no_retries());
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .execute(activation("primary", &["fallback"]), context)
@@ -388,9 +384,7 @@ async fn single_model_agent_does_not_fail_over() {
         }))
         .with_retry_policy(no_retries());
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .execute(activation("primary", &[]), context)
@@ -415,9 +409,7 @@ async fn all_candidates_failing_ends_in_terminal_failure_after_trying_each() {
         }))
         .with_retry_policy(no_retries());
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .execute(activation("a", &["b", "c"]), context)

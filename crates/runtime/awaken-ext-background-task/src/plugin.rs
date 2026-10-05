@@ -1,11 +1,11 @@
 // @formal entrypoint background_task.never_replay_and_attempt_exhaustion_fail_closed
 // @formal entrypoint background_task.process_completion_is_retryable_and_stale_completion_is_inert
 // @formal entrypoint background_task.stale_fence_never_finishes_or_heartbeats
-use awaken_lease_contract::WallClockExt;
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, HookReaction, IdBound, PhaseContext, PhaseHook, PhaseHookPoint,
     Plugin, PluginConfigError, PluginManifest,
 };
+use awaken_time::WallClockExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;

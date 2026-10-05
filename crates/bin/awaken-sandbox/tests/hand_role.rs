@@ -30,7 +30,7 @@ async fn the_hand_role_runs_a_real_tool_over_a_unix_socket() {
         serve_with_operation_ledger(
             HandBind::Unix(serve_path),
             ledger,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .await
     });

@@ -4,11 +4,9 @@ use awaken_memory_store::{VolatileMemoryRepository, sha256_hex};
 
 fn test_fs() -> MemoryFuse {
     MemoryFuse::new(
-        Arc::new(VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        )),
+        Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock())),
         "memstore_test".into(),
-        &*awaken_lease_contract::system_clock(),
+        &*awaken_time::system_clock(),
     )
     .unwrap()
 }
@@ -86,13 +84,11 @@ fn failed_kernel_mount_releases_only_its_invalidation_listener() {
     let (bus, mut peer) = broadcast::channel(8);
     for _ in 0..8 {
         let result = spawn_mount_with_invalidations(
-            Arc::new(VolatileMemoryRepository::new(
-                awaken_lease_contract::system_clock(),
-            )),
+            Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock())),
             "s".into(),
             root.path().join("missing-parent/mount"),
             bus.subscribe(),
-            &*awaken_lease_contract::system_clock(),
+            &*awaken_time::system_clock(),
         );
         assert!(result.is_err(), "nonexistent mountpoint cannot be mounted");
         assert_eq!(bus.receiver_count(), 1, "only the peer remains");
@@ -305,12 +301,10 @@ fn fuse_constructs_with_a_seeded_root() {
     // R1 full-precision injected mount time -> the synthetic root's created
     // and updated attributes preserve that same reading. Record-backed file
     // attributes remain governed by the adjacent record-timestamp test.
-    let reading = awaken_lease_contract::UtcTime::from_unix_nanos(1_234_567_890);
+    let reading = awaken_time::UtcTime::from_unix_nanos(1_234_567_890);
     let clock = awaken_lease_testkit::FixedClock::at(reading);
     let fs = MemoryFuse::new(
-        Arc::new(VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        )),
+        Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock())),
         "s".into(),
         &clock,
     )
@@ -406,18 +400,12 @@ fn setup_rt() -> tokio::runtime::Runtime {
 #[test]
 fn a_stale_open_fd_conflicts_and_does_not_clobber_a_newer_write() {
     let store = "s";
-    let backend = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let backend = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     let rt = setup_rt();
     let created = rt.block_on(backend.create(store, "/c.md", "v1")).unwrap();
 
-    let fuse = MemoryFuse::new(
-        backend.clone(),
-        store.into(),
-        &*awaken_lease_contract::system_clock(),
-    )
-    .unwrap();
+    let fuse =
+        MemoryFuse::new(backend.clone(), store.into(), &*awaken_time::system_clock()).unwrap();
     // Open captures base sha = sha("v1").
     let fh = fuse.open_file_for_path("/c.md", 0).unwrap();
 
@@ -494,19 +482,12 @@ fn errno_maps_every_fault_class() {
 #[test]
 fn lookup_path_resolves_files_synthetic_dirs_and_missing() {
     let store = "s";
-    let backend = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let backend = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     let rt = setup_rt();
     rt.block_on(backend.create(store, "/notes/a.md", "a"))
         .unwrap();
 
-    let fuse = MemoryFuse::new(
-        backend,
-        store.into(),
-        &*awaken_lease_contract::system_clock(),
-    )
-    .unwrap();
+    let fuse = MemoryFuse::new(backend, store.into(), &*awaken_time::system_clock()).unwrap();
     // root
     let (ino, node) = fuse.lookup_path("/").unwrap();
     assert_eq!(ino, ROOT_INO);
@@ -531,17 +512,11 @@ fn lookup_path_resolves_files_synthetic_dirs_and_missing() {
 #[test]
 fn open_create_flush_read_inner_branches() {
     let store = "s";
-    let backend = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let backend = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     let rt = setup_rt();
     rt.block_on(backend.create(store, "/f.md", "orig")).unwrap();
-    let fuse = MemoryFuse::new(
-        backend.clone(),
-        store.into(),
-        &*awaken_lease_contract::system_clock(),
-    )
-    .unwrap();
+    let fuse =
+        MemoryFuse::new(backend.clone(), store.into(), &*awaken_time::system_clock()).unwrap();
 
     // open a missing path → NotFound.
     assert!(matches!(
@@ -589,19 +564,12 @@ fn open_create_flush_read_inner_branches() {
 #[test]
 fn readdir_entries_lists_children_and_rejects_non_directories() {
     let store = "s";
-    let backend = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let backend = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     let rt = setup_rt();
     rt.block_on(backend.create(store, "/a.md", "a")).unwrap();
     rt.block_on(backend.create(store, "/sub/b.md", "b"))
         .unwrap();
-    let fuse = MemoryFuse::new(
-        backend,
-        store.into(),
-        &*awaken_lease_contract::system_clock(),
-    )
-    .unwrap();
+    let fuse = MemoryFuse::new(backend, store.into(), &*awaken_time::system_clock()).unwrap();
 
     let root: Vec<String> = fuse
         .readdir_entries(ROOT_INO)
@@ -637,18 +605,12 @@ fn readdir_entries_lists_children_and_rejects_non_directories() {
 #[test]
 fn apply_setattr_handles_metadata_fd_and_store_truncation() {
     let store = "s";
-    let backend = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let backend = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     let rt = setup_rt();
     rt.block_on(backend.create(store, "/f.md", "hello"))
         .unwrap();
-    let fuse = MemoryFuse::new(
-        backend.clone(),
-        store.into(),
-        &*awaken_lease_contract::system_clock(),
-    )
-    .unwrap();
+    let fuse =
+        MemoryFuse::new(backend.clone(), store.into(), &*awaken_time::system_clock()).unwrap();
     let (ino, _) = fuse.lookup_path("/f.md").unwrap();
 
     // size = None → metadata-only, returns the current node unchanged.
@@ -680,19 +642,13 @@ fn apply_setattr_handles_metadata_fd_and_store_truncation() {
 #[test]
 fn an_open_fd_survives_rename_and_flushes_to_the_renamed_memory() {
     let store = "s";
-    let backend = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let backend = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     let rt = setup_rt();
     rt.block_on(backend.create(store, "/old.md", "snapshot"))
         .unwrap();
 
-    let fuse = MemoryFuse::new(
-        backend.clone(),
-        store.into(),
-        &*awaken_lease_contract::system_clock(),
-    )
-    .unwrap();
+    let fuse =
+        MemoryFuse::new(backend.clone(), store.into(), &*awaken_time::system_clock()).unwrap();
     let fh = fuse.open_file_for_path("/old.md", 0).unwrap();
 
     // Cause/effect rule FR1: a FUSE-owned rename advances the durable generation
@@ -751,18 +707,11 @@ fn child_path_joins_valid_names_and_rejects_traversal() {
 #[test]
 fn write_and_read_at_offsets_splice_and_clamp_the_fd_buffer() {
     let store = "s";
-    let backend = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let backend = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     let rt = setup_rt();
     rt.block_on(backend.create(store, "/f.md", "abcdef"))
         .unwrap();
-    let fuse = MemoryFuse::new(
-        backend,
-        store.into(),
-        &*awaken_lease_contract::system_clock(),
-    )
-    .unwrap();
+    let fuse = MemoryFuse::new(backend, store.into(), &*awaken_time::system_clock()).unwrap();
     let fh = fuse.open_file_for_path("/f.md", 0).unwrap();
 
     // An overwrite in the middle of the buffer.
@@ -784,17 +733,11 @@ fn a_flush_conflict_keeps_the_buffer_dirty_for_a_re_drive() {
     // mark the fd clean — the agent's write is preserved for a re-drive, and a
     // second flush conflicts again (proving the fd was never silently cleared).
     let store = "s";
-    let backend = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let backend = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     let rt = setup_rt();
     let created = rt.block_on(backend.create(store, "/c.md", "v1")).unwrap();
-    let fuse = MemoryFuse::new(
-        backend.clone(),
-        store.into(),
-        &*awaken_lease_contract::system_clock(),
-    )
-    .unwrap();
+    let fuse =
+        MemoryFuse::new(backend.clone(), store.into(), &*awaken_time::system_clock()).unwrap();
     let fh = fuse.open_file_for_path("/c.md", 0).unwrap();
 
     // Advance the store out from under the open fd, then write + flush the stale fd.
@@ -820,17 +763,11 @@ fn apply_setattr_grow_zero_fills_through_the_store() {
     // Truncation that GROWS a file (no open fd) zero-fills to the new size and
     // writes it through the store — the mirror of the shrink case.
     let store = "s";
-    let backend = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let backend = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     let rt = setup_rt();
     rt.block_on(backend.create(store, "/g.md", "hi")).unwrap();
-    let fuse = MemoryFuse::new(
-        backend.clone(),
-        store.into(),
-        &*awaken_lease_contract::system_clock(),
-    )
-    .unwrap();
+    let fuse =
+        MemoryFuse::new(backend.clone(), store.into(), &*awaken_time::system_clock()).unwrap();
     let (ino, _) = fuse.lookup_path("/g.md").unwrap();
 
     assert_eq!(fuse.apply_setattr(ino, Some(5), None).unwrap().size, 5);
@@ -920,9 +857,7 @@ fn cross_host_write_invalidates_a_peer_mounts_cache_end_to_end() {
     // write on A must drop the path from B's cache so B's next read refetches the new
     // content from the shared durable store — coherence with no shared mount.
     let rt = setup_rt();
-    let durable = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let durable = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     let bus = Arc::new(LocalInvalidator::new(16));
     let inval: Arc<dyn Invalidator> = bus.clone();
     let fs_a = InvalidatingMemoryRepository::new(durable.clone(), inval);

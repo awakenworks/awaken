@@ -69,7 +69,7 @@ pub(crate) async fn identity_wiring(
     platform_workspace: &str,
     cloud_credential_cache: awaken_iam_client::CredentialCache,
     entitlement_provider: Option<Box<dyn awaken_iam_core::EntitlementProvider>>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<IdentityWiring, String> {
     let deployment = deployment.clone();
     let platform_workspace = platform_workspace.to_owned();
@@ -91,7 +91,7 @@ fn identity_wiring_blocking(
     platform_workspace: &str,
     cloud_credential_cache: awaken_iam_client::CredentialCache,
     entitlement_provider: Option<Box<dyn awaken_iam_core::EntitlementProvider>>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<IdentityWiring, String> {
     match deployment.identity_mode {
         ManagementIdentityMode::SelfManaged => {
@@ -141,7 +141,7 @@ fn identity_wiring_blocking(
 fn cloud_identity_wiring(
     config: &config::CloudIamConfig,
     cache: awaken_iam_client::CredentialCache,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<IdentityWiring, String> {
     let interactive = config.access_token.is_none()
         && config.service_token.is_none()
@@ -316,7 +316,7 @@ impl awaken_admin_config_api::CloudLoginApplication for DesktopCloudLogin {
 fn awaken_cloud_authz(
     config: &config::CloudIamConfig,
     desktop: Option<Arc<DesktopCloudLogin>>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<Arc<RemoteManagementAuthz>, String> {
     if let Some(path) = &config.service_token_file {
         return RemoteManagementAuthz::connect_with_projected_service_token(
@@ -587,7 +587,7 @@ mod tests {
             "workspace-test",
             cache,
             None,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .await
         {

@@ -29,9 +29,7 @@ async fn direct_runtime_example_runs_to_completion() {
         .with_tool(Arc::new(EchoTool))
         .with_gate(Arc::new(PermissionGate::new(Arc::new(policy))));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
 
     let state = runtime.run(&config, "Say hi.", ctx).await.expect("run");

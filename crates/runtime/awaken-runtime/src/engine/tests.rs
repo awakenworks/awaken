@@ -1642,7 +1642,7 @@ async fn model_entry_evidence_does_not_replace_post_write_ownership_verification
     });
     let llm: Arc<dyn LlmExecutor> = provider.clone();
     let durable = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     let context = RuntimeRunContext::new().with_commit(durable);
     let mut store = Store::default();

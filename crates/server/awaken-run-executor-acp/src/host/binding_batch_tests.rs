@@ -104,7 +104,7 @@ fn complete_writers_and_reader_are_linearizable() {
                                 AcpLocalCredentialResolver::from_bindings(
                                     Arc::new(NoDiscovery),
                                     initial,
-                                    awaken_lease_contract::system_clock(),
+                                    awaken_time::system_clock(),
                                 )
                                 .unwrap(),
                             );
@@ -210,7 +210,7 @@ fn malformed_batches_never_publish_a_prefix() {
                 AcpLocalCredentialResolver::from_bindings(
                     Arc::new(NoDiscovery),
                     [binding("a", 1, true), binding("z", 1, true)],
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )
                 .unwrap(),
             );

@@ -55,7 +55,7 @@ pub struct LiveRunControlService<S> {
     /// The control edge's clock for the cancellation drive it performs. Claim,
     /// renewal, ownership verification and settlement are judged by the store
     /// that owns the row; this clock times only what the attempt itself reads.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl<S: ControlDispatch + 'static> LiveRunControlService<S> {
@@ -63,10 +63,7 @@ impl<S: ControlDispatch + 'static> LiveRunControlService<S> {
     /// live-control handle and the durable dispatch store, keeping this service
     /// free of a second commit boundary (G6/G13). `clock` is the composing
     /// Host's clock.
-    pub fn new(
-        worker: Arc<DispatchWorker<S>>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
-    ) -> Self {
+    pub fn new(worker: Arc<DispatchWorker<S>>, clock: Arc<dyn awaken_time::WallClock>) -> Self {
         Self { worker, clock }
     }
 
@@ -193,19 +190,15 @@ mod tests {
 
     fn make_service() -> LiveRunControlService<MemoryDispatchStore> {
         let runtime = Arc::new(Runtime::new());
-        let store = Arc::new(MemoryDispatchStore::new(
-            awaken_lease_contract::system_clock(),
-        ));
-        let commit = Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let store = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         let worker = Arc::new(DispatchWorker::new(
             runtime,
             store,
             commit,
             "live-control-test",
         ));
-        LiveRunControlService::new(worker, awaken_lease_contract::system_clock())
+        LiveRunControlService::new(worker, awaken_time::system_clock())
     }
 
     fn activation(run: &str) -> RunActivation {
@@ -273,19 +266,15 @@ mod tests {
         use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 
         let runtime = Arc::new(Runtime::new());
-        let store = Arc::new(MemoryDispatchStore::new(
-            awaken_lease_contract::system_clock(),
-        ));
-        let commit = Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let store = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         let worker = Arc::new(DispatchWorker::new(
             runtime,
             store.clone(),
             commit.clone(),
             "live-control-test",
         ));
-        let service = LiveRunControlService::new(worker, awaken_lease_contract::system_clock());
+        let service = LiveRunControlService::new(worker, awaken_time::system_clock());
         store
             .enqueue(RunDispatch::new(activation("queued-cancel")))
             .await
@@ -305,12 +294,8 @@ mod tests {
     #[tokio::test]
     async fn cancellation_claim_uses_wall_time_and_cannot_be_immediately_reclaimed() {
         let runtime = Arc::new(Runtime::new());
-        let store = Arc::new(MemoryDispatchStore::new(
-            awaken_lease_contract::system_clock(),
-        ));
-        let commit = Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let store = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         let worker = Arc::new(DispatchWorker::new(
             runtime,
             store.clone(),
@@ -325,7 +310,7 @@ mod tests {
         }));
         let service = Arc::new(LiveRunControlService::new(
             worker,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ));
         store
             .enqueue(RunDispatch::new(activation("wall-clock-cancel")))
@@ -376,19 +361,15 @@ mod tests {
         // the same Runtime registry, never an ingress-private pause map.
         // Decision rules: P1=C1+C2=>E1; P2=C3=>E2.
         let runtime = Arc::new(Runtime::new());
-        let store = Arc::new(MemoryDispatchStore::new(
-            awaken_lease_contract::system_clock(),
-        ));
-        let commit = Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let store = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         let worker = Arc::new(DispatchWorker::new(
             runtime.clone(),
             store,
             commit,
             "pause-control-test",
         ));
-        let service = LiveRunControlService::new(worker, awaken_lease_contract::system_clock());
+        let service = LiveRunControlService::new(worker, awaken_time::system_clock());
         let run_id = RunId("external-attempt".into());
         let thread_id = awaken_agent_contract::agent::thread::Id("external-thread".into());
         let pause = PauseSignal::new();

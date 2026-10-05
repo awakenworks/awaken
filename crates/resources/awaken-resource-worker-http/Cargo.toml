@@ -31,7 +31,7 @@ http = "1"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 # The one wall-clock port: the instant claims and leases are judged at.
-awaken-lease-contract.workspace = true
+awaken-time.workspace = true
 
 [features]
 test-support = []

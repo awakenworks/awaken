@@ -102,7 +102,7 @@
 //! (`tests/management_authz.rs`, `tests/management_tokens.rs`) are the equivalence
 //! oracle and pass unchanged across this adoption.
 
-use awaken_lease_contract::WallClock;
+use awaken_time::WallClock;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 

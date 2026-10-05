@@ -11,7 +11,7 @@
 //! selected threads and survives a restart. The SDK object, immutable versions,
 //! and binary bundle share that one Workspace-scoped repository.
 
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 use std::sync::Arc;
 
 use crate::common::headers::ManagedCapability;
@@ -111,7 +111,7 @@ struct SkillsApi {
     purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
     /// The Resources context's clock: version creation and purge scheduling
     /// are stamped with it.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl SkillsApi {
@@ -183,7 +183,7 @@ impl SkillsApi {
 pub fn skills_router(
     store: Option<Arc<dyn SkillStore>>,
     purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Router {
     let state = Arc::new(SkillsApi {
         store,
@@ -1111,9 +1111,7 @@ mod tests {
             content,
             1,
             bundle,
-            awaken_lease_contract::system_clock()
-                .now()
-                .as_unix_nanos_u64(),
+            awaken_time::system_clock().now().as_unix_nanos_u64(),
         );
         store
             .create(
@@ -1149,11 +1147,7 @@ mod tests {
             "---\nname: private\ndescription: a\n---\nsecret-a",
         )
         .await;
-        let router = skills_router(
-            Some(store),
-            purge_scheduler(),
-            awaken_lease_contract::system_clock(),
-        );
+        let router = skills_router(Some(store), purge_scheduler(), awaken_time::system_clock());
         let id = "private";
         assert_eq!(
             get_in(&router, &format!("/v1/skills/{id}"), "ws_a").await.0,
@@ -1191,11 +1185,7 @@ mod tests {
             "---\nname: Greeter\ndescription: hi\n---\nsay hello",
         )
         .await;
-        let router = skills_router(
-            Some(store),
-            purge_scheduler(),
-            awaken_lease_contract::system_clock(),
-        );
+        let router = skills_router(Some(store), purge_scheduler(), awaken_time::system_clock());
         let cid = "Greeter";
 
         // The advertised catalog id retrieves the skill via the durable fallback…

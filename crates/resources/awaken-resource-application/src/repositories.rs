@@ -25,14 +25,14 @@ pub struct RepositoryApplication {
     registry: Arc<dyn ResourceRegistry>,
     credentials: Arc<dyn RepositoryCredentialValidator>,
     /// Stamps a registration's creation instant on the registry's timeline.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl RepositoryApplication {
     pub fn new(
         registry: Arc<dyn ResourceRegistry>,
         credentials: Arc<dyn RepositoryCredentialValidator>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             registry,

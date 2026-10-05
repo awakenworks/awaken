@@ -78,7 +78,7 @@ mod physical_attempt;
 mod selection;
 mod settlement;
 mod store;
-use awaken_lease_contract::WallClockExt;
+use awaken_time::WallClockExt;
 use selection::select_where;
 pub use store::MemoryDispatchStore;
 
@@ -219,7 +219,7 @@ struct PendingRow {
 struct State {
     /// The store's clock, reachable under the lock so every operational event
     /// is stamped on the same timeline the store judges its rows on.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     /// Enqueue order, so claim is deterministic (oldest first).
     order: Vec<RunId>,
     rows: BTreeMap<RunId, Row>,
@@ -234,7 +234,7 @@ struct State {
 }
 
 impl State {
-    fn new(clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+    fn new(clock: Arc<dyn awaken_time::WallClock>) -> Self {
         Self {
             clock,
             order: Vec::new(),
@@ -316,7 +316,7 @@ fn lock(state: &Mutex<State>) -> Result<std::sync::MutexGuard<'_, State>, Dispat
 fn push_operation(state: &mut State, operation: DispatchOperation) {
     state.operations.push(DispatchOperationalEvent {
         cursor: DispatchCursor(state.operations.len() as u64 + 1),
-        recorded_at_ms: Some(awaken_lease_contract::WallClockExt::now_ms(&*state.clock)),
+        recorded_at_ms: Some(awaken_time::WallClockExt::now_ms(&*state.clock)),
         operation,
     });
 }

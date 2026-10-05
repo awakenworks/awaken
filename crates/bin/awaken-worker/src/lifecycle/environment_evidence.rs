@@ -63,7 +63,7 @@ pub(super) async fn monitor<Probe, ProbeFuture, Error>(
     loop {
         let deadline = last_proof + timing.proof_window();
         tokio::time::sleep_until(next_attempt.min(deadline)).await;
-        let started = awaken_lease_contract::mono::now();
+        let started = awaken_time::mono::now();
         if !proof_is_fresh(
             started.saturating_duration_since(last_proof),
             timing.proof_window(),
@@ -79,7 +79,7 @@ pub(super) async fn monitor<Probe, ProbeFuture, Error>(
         let result =
             tokio::time::timeout_at((started + timing.request_timeout()).min(deadline), probe())
                 .await;
-        let finished = awaken_lease_contract::mono::now();
+        let finished = awaken_time::mono::now();
         let elapsed = finished.saturating_duration_since(last_proof);
         let probe_elapsed_ms = finished.saturating_duration_since(started).as_millis();
         let proof_age_ms = elapsed.as_millis();
@@ -123,7 +123,7 @@ pub(super) async fn monitor<Probe, ProbeFuture, Error>(
                 // into irreversible Worker authority loss. Retry immediately;
                 // timeout_at still caps this attempt at the original deadline
                 // and no successful response can extend that deadline.
-                next_attempt = awaken_lease_contract::mono::now();
+                next_attempt = awaken_time::mono::now();
             }
             EvidenceAction::CloseExpired => {
                 awaken_observability::record_worker_authority_loss("environment_evidence_expired");

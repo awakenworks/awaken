@@ -102,7 +102,7 @@ async fn resource_registry() -> std::sync::Arc<awaken_resource_application::Regi
         .expect("open ephemeral Resource Registry");
     let registry = std::sync::Arc::new(awaken_resource_application::RegistryApplication::new(
         std::sync::Arc::new(storage),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     for id in [
         "mem_1",
@@ -1696,9 +1696,7 @@ async fn publication_backend_is_the_only_session_backend_authority() {
 #[tokio::test]
 async fn agent_default_environment_requires_the_exact_revision() {
     let (environment_authoring, environment_execution) =
-        awaken_protocol_managed_testkit::environment_components(
-            awaken_lease_contract::system_clock(),
-        );
+        awaken_protocol_managed_testkit::environment_components(awaken_time::system_clock());
     let environment_id = environment_authoring
         .application()
         .create(awaken_environment_contract::CreateEnvironmentCommand {
@@ -3022,7 +3020,7 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         ),
         secrets.as_ref(),
         credentials.as_ref(),
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .expect("publish canonical MCP credential authority")
@@ -3892,7 +3890,7 @@ async fn repository_access_compiler_follows_the_decision_table() {
                 .with_expiry(if rule.not_expired { u64::MAX } else { 1 }),
                 secrets.as_ref(),
                 credentials.as_ref(),
-                awaken_lease_contract::system_clock().as_ref(),
+                awaken_time::system_clock().as_ref(),
             )
             .await
             .expect("author decision-table source");

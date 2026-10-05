@@ -91,7 +91,7 @@ mod tests {
     async fn session_survives_sqlite_restart_but_logout_does_not() {
         let dir = tempfile::tempdir().unwrap();
         let account = AccountId("local-console-admin".into());
-        let first_iam = embedded_iam(dir.path(), awaken_lease_contract::system_clock());
+        let first_iam = embedded_iam(dir.path(), awaken_time::system_clock());
         let (first_browser, handoff) = first_iam.begin_local_browser(account.clone()).unwrap();
         let exchange = awaken_iam_host::local_browser_router(first_browser)
             .oneshot(
@@ -117,7 +117,7 @@ mod tests {
             .to_owned();
         drop(first_iam);
 
-        let restarted_iam = embedded_iam(dir.path(), awaken_lease_contract::system_clock());
+        let restarted_iam = embedded_iam(dir.path(), awaken_time::system_clock());
         let (restarted_browser, _) = restarted_iam.begin_local_browser(account.clone()).unwrap();
         async fn echo() -> Response {
             (StatusCode::OK, "ok").into_response()
@@ -153,7 +153,7 @@ mod tests {
             .unwrap();
         assert_eq!(logout.status(), StatusCode::NO_CONTENT);
 
-        let after_logout_iam = embedded_iam(dir.path(), awaken_lease_contract::system_clock());
+        let after_logout_iam = embedded_iam(dir.path(), awaken_time::system_clock());
         let (after_logout_browser, _) = after_logout_iam.begin_local_browser(account).unwrap();
         let rejected = awaken_iam_host::local_browser_router(after_logout_browser)
             .oneshot(

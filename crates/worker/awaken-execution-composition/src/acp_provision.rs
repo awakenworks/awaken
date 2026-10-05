@@ -323,7 +323,7 @@ mod tests {
     fn pinned(
         credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
         secrets: Arc<dyn SecretStore>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> PinnedCredentialMaterializer {
         PinnedCredentialMaterializer::new(
             Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
@@ -705,7 +705,7 @@ mod tests {
                 pinned(
                     Arc::new(InMemoryCredentialRepo::new()),
                     Arc::new(InMemorySecretStore::new()),
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 ),
             );
             let capabilities = resolver.credential_realization_capabilities();
@@ -830,7 +830,7 @@ mod tests {
     async fn resolves_only_snapshot_endpoint_and_persisted_credential() {
         let repo = Arc::new(InMemoryCredentialRepo::new());
         let secrets = Arc::new(InMemorySecretStore::new());
-        let clock = awaken_lease_contract::system_clock();
+        let clock = awaken_time::system_clock();
         let source = enter_credential(
             CredentialCreateParams {
                 workspace_id: "ws".into(),
@@ -865,7 +865,7 @@ mod tests {
         let resolver = PublishedAcpLaunchResolver::new(
             claude(),
             None,
-            pinned(repo, secrets, awaken_lease_contract::system_clock()),
+            pinned(repo, secrets, awaken_time::system_clock()),
         );
         let context = attempt_context(&model);
         let resolved = resolver
@@ -1026,7 +1026,7 @@ mod tests {
                 },
                 secrets.as_ref(),
                 repo.as_ref(),
-                awaken_lease_contract::system_clock().as_ref(),
+                awaken_time::system_clock().as_ref(),
             )
             .await
             .unwrap_or_else(|error| panic!("{} fixture: {error}", rule.id));
@@ -1065,7 +1065,7 @@ mod tests {
             let resolver = PublishedAcpLaunchResolver::new(
                 claude(),
                 None,
-                pinned(repo, secrets.clone(), awaken_lease_contract::system_clock()),
+                pinned(repo, secrets.clone(), awaken_time::system_clock()),
             );
 
             let plan = resolver.model(&activation(Some(candidate)), &context).await;
@@ -1179,7 +1179,7 @@ mod tests {
             pinned(
                 Arc::new(InMemoryCredentialRepo::new()),
                 Arc::new(InMemorySecretStore::new()),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ),
         );
         assert!(
@@ -1226,7 +1226,7 @@ mod tests {
             },
             secrets.as_ref(),
             repo.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -1267,7 +1267,7 @@ mod tests {
             pinned(
                 Arc::new(InMemoryCredentialRepo::new()),
                 Arc::new(InMemorySecretStore::new()),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ),
         );
         let env = r.config_home_env("thr_x").unwrap();
@@ -1290,7 +1290,7 @@ mod tests {
             pinned(
                 Arc::new(InMemoryCredentialRepo::new()),
                 Arc::new(InMemorySecretStore::new()),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ),
         );
         let error = resolver.config_home_env("thr_x").unwrap_err();

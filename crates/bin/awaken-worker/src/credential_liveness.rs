@@ -13,10 +13,10 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationSource};
-use awaken_lease_contract::{WallClock, WallClockExt};
 use awaken_runtime_contract::{
     CredentialMaterialError, CredentialObservation, WorkerLocalCredentialResolver,
 };
+use awaken_time::{WallClock, WallClockExt};
 use awaken_worker_contract::{
     WorkerAcpCapabilityObservation, WorkerCredentialObservation, WorkerHeartbeat,
 };

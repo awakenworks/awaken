@@ -86,7 +86,7 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
             .unwrap();
             let repository = Arc::new(SqliteMemoryRepository::over(
                 conn,
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ));
             repository.ensure_schema().unwrap();
             if operation != "INSERT" {
@@ -94,7 +94,7 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
             }
             let observer = SqliteMemoryRepository::open(
                 database.to_str().unwrap(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap();
             let schema = rusqlite::Connection::open(&database).unwrap();
@@ -226,7 +226,7 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
             let reopened = Arc::new(
                 SqliteMemoryRepository::open(
                     database.to_str().unwrap(),
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )
                 .unwrap(),
             );
@@ -281,9 +281,8 @@ fn recovery_has_no_temp_directory_dependency_even_when_cancelled() {
 async fn recovery_without_temp_child() {
     assert_eq!(std::env::var("AWAKEN_RECOVERY_TEMP_TEST").unwrap(), "1");
     for after in [false, true] {
-        let repository = Arc::new(
-            SqliteMemoryRepository::open_in_memory(awaken_lease_contract::system_clock()).unwrap(),
-        );
+        let repository =
+            Arc::new(SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap());
         let gate = Arc::new(Gate {
             after,
             error: false,
@@ -530,7 +529,7 @@ async fn interrupted_conflict_retention_retries_without_losing_the_proposal() {
                 let repository = Arc::new(
                     SqliteMemoryRepository::open(
                         database.to_str().unwrap(),
-                        awaken_lease_contract::system_clock(),
+                        awaken_time::system_clock(),
                     )
                     .unwrap(),
                 );
@@ -622,7 +621,7 @@ async fn interrupted_conflict_retention_retries_without_losing_the_proposal() {
                 let reopened = Arc::new(
                     SqliteMemoryRepository::open(
                         database.to_str().unwrap(),
-                        awaken_lease_contract::system_clock(),
+                        awaken_time::system_clock(),
                     )
                     .unwrap(),
                 );
@@ -697,7 +696,7 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                     let repository = Arc::new(
                         SqliteMemoryRepository::open(
                             database.to_str().unwrap(),
-                            awaken_lease_contract::system_clock(),
+                            awaken_time::system_clock(),
                         )
                         .unwrap(),
                     );
@@ -831,7 +830,7 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                     let repository = Arc::new(
                         SqliteMemoryRepository::open(
                             database.to_str().unwrap(),
-                            awaken_lease_contract::system_clock(),
+                            awaken_time::system_clock(),
                         )
                         .unwrap(),
                     );

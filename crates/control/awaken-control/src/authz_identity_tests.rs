@@ -27,7 +27,7 @@ fn embedded_iam_bootstrap_uses_the_platform_provisioned_workspace() {
     let iam = embedded_iam_for_workspace(
         dir.path(),
         "workspace_platform_owned",
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let token = std::fs::read_to_string(dir.path().join(ADMIN_TOKEN_FILE)).unwrap();
     let (_, workspace) = iam.authenticate(token.trim()).unwrap();
@@ -41,7 +41,7 @@ fn embedded_iam_registers_only_org_to_workspace_scope() {
         dir.path(),
         "org_local",
         "workspace_local",
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let token = std::fs::read_to_string(dir.path().join(ADMIN_TOKEN_FILE)).unwrap();
     let (principal, _) = iam.authenticate(token.trim()).unwrap();

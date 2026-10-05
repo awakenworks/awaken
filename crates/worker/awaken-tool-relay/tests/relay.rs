@@ -113,18 +113,14 @@ async fn a_reconnected_session_joins_the_live_operation_instead_of_replaying() {
         release: release.clone(),
     }) as Arc<dyn RawTool>;
     let request = HandRequest::new(1, call("call-live", "blocking_echo", "x"));
-    let mut first = HandSession::new(
-        [tool.clone()],
-        ledger.clone(),
-        awaken_lease_contract::system_clock(),
-    );
+    let mut first = HandSession::new([tool.clone()], ledger.clone(), awaken_time::system_clock());
     let first_request = request.clone();
     let first_task = tokio::spawn(async move { first.handle(first_request).await });
     tokio::time::timeout(std::time::Duration::from_secs(30), started.notified())
         .await
         .expect("timed out waiting for started.notified()");
 
-    let mut second = HandSession::new([tool], ledger, awaken_lease_contract::system_clock());
+    let mut second = HandSession::new([tool], ledger, awaken_time::system_clock());
     let mut retry = request;
     retry.correlation_id = 2;
     let second_task = tokio::spawn(async move { second.handle(retry).await });
@@ -147,7 +143,7 @@ fn test_session(tools: impl IntoIterator<Item = Arc<dyn RawTool>>) -> HandSessio
             _directory: directory,
             inner,
         }),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
 }
 
@@ -504,7 +500,7 @@ async fn filesystem_ledger_fences_replay_but_never_persists_tool_output() {
     let mut first = HandSession::new(
         [tool()],
         Arc::new(FsOperationLedger::open(directory.path()).expect("open first ledger")),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let secret = "credential-secret-must-not-reach-disk"; // awaken-allow: secret
     let request = HandRequest::new(1, call("c1", "echo", secret));
@@ -526,7 +522,7 @@ async fn filesystem_ledger_fences_replay_but_never_persists_tool_output() {
     let mut restarted = HandSession::new(
         [tool()],
         Arc::new(FsOperationLedger::open(directory.path()).expect("reopen ledger")),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let mut retry = request;
     retry.correlation_id = 99;
@@ -714,18 +710,14 @@ async fn an_in_flight_join_deadline_returns_indeterminate_without_replay() {
         release: release.clone(),
     }) as Arc<dyn RawTool>;
     let request = HandRequest::new(1, call("deadline", "blocking_echo", "x"));
-    let mut owner = HandSession::new(
-        [tool.clone()],
-        ledger.clone(),
-        awaken_lease_contract::system_clock(),
-    );
+    let mut owner = HandSession::new([tool.clone()], ledger.clone(), awaken_time::system_clock());
     let owner_request = request.clone();
     let owner_task = tokio::spawn(async move { owner.handle(owner_request).await });
     tokio::time::timeout(std::time::Duration::from_secs(30), started.notified())
         .await
         .expect("timed out waiting for started.notified()");
 
-    let mut waiter = HandSession::new([tool], ledger, awaken_lease_contract::system_clock())
+    let mut waiter = HandSession::new([tool], ledger, awaken_time::system_clock())
         .with_in_flight_wait_timeout(std::time::Duration::from_millis(10));
     let reply = waiter.handle(request).await;
     assert_eq!(reply.result, HandResult::Indeterminate, "H8/E1");

@@ -19,7 +19,6 @@ use awaken_ext_background_task::{
     BackgroundTaskLifecycle, BackgroundTaskSupervisor, BackgroundTaskWaitCandidate, BackgroundWait,
     TaskTenure, tasks_from_state,
 };
-use awaken_lease_contract::WallClockExt;
 use awaken_runtime::{PreparedToolExecutor, Runtime};
 use awaken_runtime_contract::ExecutableAgentSnapshot;
 use awaken_runtime_contract::resolved::ToolKind;
@@ -30,6 +29,7 @@ use awaken_runtime_contract::terminal::{
 use awaken_runtime_contract::tool::{ToolOutput, ToolTaskHandle, ToolTaskPoll, ToolTaskStart};
 use awaken_session_application_contract::SessionRunBackgroundApplication;
 use awaken_session_error_contract::RunErrorKind;
+use awaken_time::WallClockExt;
 
 use crate::background::{BackgroundRuns, BackgroundWorkClass};
 use crate::store::CommittedAuthority;
@@ -1368,7 +1368,7 @@ mod tests {
         // R3=C2+C3=>E3; R4=C2+C4=>E4; R5=C2+C5=>E5; R6=C2+C6=>E6.
         let supervisor = Arc::new(BackgroundTaskSupervisor::new(
             "worker-test",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ));
         let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
             BackgroundTaskConfig {
@@ -1387,7 +1387,7 @@ mod tests {
                 .with_tool(counter.clone()),
         );
         let process_projection = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ));
         let authoritative_state = crate::authority::ScriptedStateQueries::new(Ok(Vec::new()));
         let commit = Arc::new(HostCommit::Local(Arc::new(
@@ -1627,7 +1627,7 @@ mod tests {
         // System messages, and Thread State remains the only durable truth.
         let supervisor = Arc::new(BackgroundTaskSupervisor::new(
             "worker-remote",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ));
         let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
             BackgroundTaskConfig {
@@ -1638,8 +1638,7 @@ mod tests {
         ));
         let remote = Arc::new(RemoteTaskTool::default());
         let runtime = Arc::new(Runtime::new().with_plugin(plugin).with_tool(remote.clone()));
-        let memory =
-            awaken_store_inmem::MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
+        let memory = awaken_store_inmem::MemoryCommitCoordinator::new(awaken_time::system_clock());
         let commit = Arc::new(HostCommit::Local(Arc::new(
             crate::LocalCommitAdapter::projected(memory),
         )));

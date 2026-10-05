@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use awaken_agent_contract::fresh_process_id;
-use awaken_lease_contract::WallClock;
+use awaken_time::WallClock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
@@ -782,11 +782,7 @@ mod tests {
     }
 
     fn state_with_path(path: PathBuf) -> Result<A2aState, StateError> {
-        A2aState::with_persistence_path(
-            Arc::new(Runtime),
-            Some(path),
-            awaken_lease_contract::system_clock(),
-        )
+        A2aState::with_persistence_path(Arc::new(Runtime), Some(path), awaken_time::system_clock())
     }
 
     #[tokio::test]

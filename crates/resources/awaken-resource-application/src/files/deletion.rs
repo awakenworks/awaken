@@ -147,7 +147,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("resources.sqlite");
             let open = || {
-                let clock = awaken_lease_contract::system_clock();
+                let clock = awaken_time::system_clock();
                 let files = Arc::new(
                     awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap())
                         .unwrap(),

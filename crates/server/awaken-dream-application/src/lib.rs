@@ -2,7 +2,7 @@
 // @formal entrypoint dream.public_terminal_requires_exact_session_and_artifact_cleanup_receipts
 //! Coordinator-owned Dream process application.
 
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -407,14 +407,14 @@ pub struct DreamApplication {
     runtime_budget: Duration,
     /// The composing process's wall clock: every Dream process instant is
     /// stamped on it.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl DreamApplication {
     pub fn with_store(
         executor: Arc<dyn DreamExecutor>,
         store: Arc<dyn DreamProcessStore>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, DreamApiError> {
         let processes = store
             .dream_processes()
@@ -886,7 +886,7 @@ impl DreamApplication {
                 return;
             }
         };
-        let running_started = awaken_lease_contract::mono::Stopwatch::start();
+        let running_started = awaken_time::mono::Stopwatch::start();
         let request = running_job.request();
         let preparation = match tokio::time::timeout(
             self.runtime_budget,
@@ -1487,7 +1487,7 @@ mod tests {
         let application = DreamApplication::with_store(
             Arc::new(NoopExecutor),
             Arc::new(InMemoryDreamProcessStore::default()),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap();
 
@@ -1531,7 +1531,7 @@ mod tests {
         let without_source = DreamApplication::with_store(
             Arc::new(NoopExecutor),
             Arc::new(InMemoryDreamProcessStore::default()),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap();
         assert_eq!(
@@ -1647,7 +1647,7 @@ mod tests {
             let mut application = DreamApplication::with_store(
                 executor.clone(),
                 Arc::new(InMemoryDreamProcessStore::default()),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap();
             application.runtime_budget = Duration::from_millis(5);

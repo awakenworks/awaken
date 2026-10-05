@@ -120,10 +120,10 @@ pub(crate) fn container_effect_fence_from_values(
 /// A provider or runtime composed without one judges no effect fence: it fails
 /// closed rather than reading the host clock itself.
 pub(crate) fn effect_clock_reading_ms(
-    clock: Option<&std::sync::Arc<dyn awaken_lease_contract::WallClock>>,
+    clock: Option<&std::sync::Arc<dyn awaken_time::WallClock>>,
 ) -> Result<u64, pc::SandboxError> {
     clock
-        .map(|clock| awaken_lease_contract::WallClockExt::now_ms(clock.as_ref()))
+        .map(|clock| awaken_time::WallClockExt::now_ms(clock.as_ref()))
         .ok_or_else(|| {
             pc::SandboxError::fence_rejected(
                 "container effect fence cannot be judged: the provider was composed without a clock",
@@ -306,7 +306,7 @@ mod capability_tests {
     fn effect_fences_are_judged_on_the_composed_clock_or_rejected() {
         // Decision table: C1 clock composed / absent. E1 composed => its exact
         // reading; E2 absent => a fence rejection, never a host-clock read.
-        let clock: std::sync::Arc<dyn awaken_lease_contract::WallClock> =
+        let clock: std::sync::Arc<dyn awaken_time::WallClock> =
             std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(42));
         assert_eq!(effect_clock_reading_ms(Some(&clock)).unwrap(), 42, "E1");
         assert!(
@@ -354,7 +354,7 @@ pub use awaken_container_contract::K8sContinuationVolume;
 #[cfg(feature = "k8s")]
 pub(crate) fn validate_runtime_effect_fence(
     effect_fence: &pc::SandboxEffectFence,
-    clock: Option<&std::sync::Arc<dyn awaken_lease_contract::WallClock>>,
+    clock: Option<&std::sync::Arc<dyn awaken_time::WallClock>>,
 ) -> Result<(), RuntimeError> {
     let now =
         effect_clock_reading_ms(clock).map_err(|error| RuntimeError::Backend(error.to_string()))?;

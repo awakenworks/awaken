@@ -9,7 +9,7 @@
 //! than two.
 
 use super::*;
-use awaken_lease_contract::WallClockExt;
+use awaken_time::WallClockExt;
 
 /// Postgres persistence for the environment registry (distributed deployments).
 pub struct PostgresEnvRegistry {

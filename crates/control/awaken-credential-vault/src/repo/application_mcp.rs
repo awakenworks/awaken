@@ -11,7 +11,7 @@ use awaken_credential_contract::{
     CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialSourceId,
     CredentialTarget, CredentialTargetContract, CredentialUsage, OPAQUE_SECRET_MATERIAL_TYPE,
 };
-use awaken_lease_contract::WallClock;
+use awaken_time::WallClock;
 
 use super::{
     CredentialMaterialPatch, CredentialRepo, LegacyProviderDescriptorMigration,

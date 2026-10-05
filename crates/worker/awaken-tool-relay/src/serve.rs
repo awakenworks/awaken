@@ -31,7 +31,7 @@ pub struct HandSession {
     in_flight_wait_timeout: Duration,
     /// The Hand process's wall clock: the instant a request's absolute
     /// deadline is judged at.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 const DEFAULT_IN_FLIGHT_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -41,7 +41,7 @@ impl HandSession {
     pub fn new(
         tools: impl IntoIterator<Item = Arc<dyn RawTool>>,
         ledger: Arc<dyn HandOperationLedger>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         let registry = RawToolRegistry::new(tools);
         Self {
@@ -58,7 +58,7 @@ impl HandSession {
     #[cfg(any(test, feature = "test-support"))]
     pub fn in_memory(
         tools: impl IntoIterator<Item = Arc<dyn RawTool>>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self::new(
             tools,
@@ -110,7 +110,7 @@ impl HandSession {
                 let wait = request
                     .deadline_unix_ms
                     .map(|deadline| {
-                        awaken_lease_contract::Expiry::from_epoch_ms(deadline)
+                        awaken_time::Expiry::from_epoch_ms(deadline)
                             .remaining_at(self.clock.now())
                             .unwrap_or(Duration::ZERO)
                             .min(self.in_flight_wait_timeout)
@@ -180,8 +180,7 @@ impl HandSession {
             )));
         }
         if let Some(deadline) = request.deadline_unix_ms
-            && awaken_lease_contract::Expiry::from_epoch_ms(deadline)
-                .is_expired_at(self.clock.now())
+            && awaken_time::Expiry::from_epoch_ms(deadline).is_expired_at(self.clock.now())
         {
             return Some(HandResult::err(HandError::new(
                 HandErrorKind::DeadlineExceeded,

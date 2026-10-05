@@ -2,7 +2,7 @@
 //! crate-wide ones live in [`fixtures`].
 use super::*;
 use crate::session_environment::SandboxEnvironmentAccess;
-use awaken_lease_contract::system_clock;
+use awaken_time::system_clock;
 
 #[tokio::test]
 async fn native_free_input_reuses_session_continuation_and_committed_reply_receipt() {

@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
     feature = "sqlite",
     feature = "postgres"
 ))]
-use awaken_lease_contract::WallClock;
+use awaken_time::WallClock;
 
 #[cfg(any(test, feature = "test-support"))]
 use async_trait::async_trait;
@@ -1092,58 +1092,39 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn in_memory_extended_conformance() {
-        extended_conformance(&VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ))
-        .await;
+        extended_conformance(&VolatileMemoryRepository::new(awaken_time::system_clock())).await;
     }
 
     #[tokio::test]
     async fn in_memory_history_conformance() {
-        history_conformance(&VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ))
-        .await;
+        history_conformance(&VolatileMemoryRepository::new(awaken_time::system_clock())).await;
     }
 
     #[tokio::test]
     async fn in_memory_purge_conformance() {
-        purge_conformance(&VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ))
-        .await;
+        purge_conformance(&VolatileMemoryRepository::new(awaken_time::system_clock())).await;
     }
 
     #[tokio::test]
     async fn in_memory_atomic_head_update_conformance() {
-        atomic_head_update_conformance(&VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ))
-        .await;
+        atomic_head_update_conformance(&VolatileMemoryRepository::new(awaken_time::system_clock()))
+            .await;
     }
 
     #[tokio::test]
     async fn in_memory_snapshot_heads_conformance() {
-        snapshot_heads_conformance(&VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ))
-        .await;
+        snapshot_heads_conformance(&VolatileMemoryRepository::new(awaken_time::system_clock()))
+            .await;
     }
 
     #[tokio::test]
     async fn in_memory_not_found_paths() {
-        not_found_paths(&VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ))
-        .await;
+        not_found_paths(&VolatileMemoryRepository::new(awaken_time::system_clock())).await;
     }
 
     #[tokio::test]
     async fn in_memory_backend_conforms() {
-        conformance(&VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ))
-        .await;
+        conformance(&VolatileMemoryRepository::new(awaken_time::system_clock())).await;
     }
 
     /// Ids are monotonic across a delete: deleting the highest-ordinal memory and then
@@ -1154,7 +1135,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn in_memory_ids_stay_monotonic_across_delete() {
         ids_stay_monotonic_across_delete(&VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ))
         .await;
     }
@@ -1167,7 +1148,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn in_memory_rename_replace_orphans_destination_id() {
         rename_replace_orphans_the_destination_id(&VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ))
         .await;
     }
@@ -1178,7 +1159,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn concurrent_create_of_the_same_path_has_exactly_one_winner() {
         concurrent_create_one_winner(std::sync::Arc::new(VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )))
         .await;
     }
@@ -1186,7 +1167,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn concurrent_update_on_the_same_base_has_exactly_one_cas_winner() {
         concurrent_cas_one_winner(std::sync::Arc::new(VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )))
         .await;
     }
@@ -1195,9 +1176,7 @@ pub(crate) mod tests {
     async fn a_write_through_one_handle_is_visible_through_another() {
         // Two handles to one store stand in for two mounts sharing the same source
         // of truth — the basis of ADR-0053's shared-mount read coherence.
-        let fs = std::sync::Arc::new(VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let fs = std::sync::Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
         let (writer, reader) = (fs.clone(), fs.clone());
         let m = writer.create("s", "/shared.md", "hello").await.unwrap();
         assert_eq!(
@@ -1259,9 +1238,6 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn volatile_store_capacity_rejects_only_new_heads_and_reopens_after_delete() {
-        capacity_conformance(&VolatileMemoryRepository::new(
-            awaken_lease_contract::system_clock(),
-        ))
-        .await;
+        capacity_conformance(&VolatileMemoryRepository::new(awaken_time::system_clock())).await;
     }
 }

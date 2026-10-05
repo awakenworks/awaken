@@ -437,7 +437,7 @@ mod tests {
             .await
             .unwrap();
         let envs = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ));
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let application = Arc::new(EnvironmentApplication::new(
@@ -531,7 +531,7 @@ mod tests {
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let application = Arc::new(EnvironmentApplication::new(
             Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )),
             Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog)),
             Some(Arc::new(
@@ -627,7 +627,7 @@ mod tests {
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let application = Arc::new(EnvironmentApplication::new(
             Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )),
             Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog)),
             Some(store.clone()),
@@ -718,7 +718,7 @@ mod tests {
         let unavailable = environment_extensions_router(
             Arc::new(EnvironmentApplication::new(
                 Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )),
                 Arc::new(LocalExecutableEnvironmentRegistrar::new(Arc::new(
                     ExecutableEnvironmentCatalog::new(),

@@ -106,7 +106,7 @@ async fn run_service_with_adapters(
     let deployment_role = role.deployment_role();
     // Config admission, the optional local ACP Worker and the eventual
     // Control/Coordinator graph must judge one process clock.
-    let process_clock = awaken_lease_contract::system_clock();
+    let process_clock = awaken_time::system_clock();
     let mut deployment = ResolvedDeployment::load(
         ConfigOverrides {
             config_path: args.config_path,
@@ -198,7 +198,7 @@ async fn prepare_configured_local_worker(
     role: ServiceRole,
     seal_key: Option<&[u8; 32]>,
     workspace: Option<String>,
-    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<Option<crate::PreparedLocalWorker>, String> {
     if !deployment.run_local_pool
         || !awaken_service_lifecycle::startup_requires(
@@ -315,7 +315,7 @@ async fn migrate_service_for_role(
             role: Some(role.deployment_role()),
             ..Default::default()
         },
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )?;
     let prepared =
         crate::installation_binding::prepare_deployment_installations(&deployment, &authorization)
@@ -341,7 +341,7 @@ fn load_migration_deployment(
             config_path,
             ..Default::default()
         },
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
 }
 
@@ -363,7 +363,7 @@ async fn serve_resolved(
         crate::CoordinatorServiceAdapters,
     )>,
     installations: crate::installation_binding::PreparedDeploymentInstallations,
-    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), String> {
     let process = match role {
         ServiceRole::AllInOne => match all_in_one_services {
@@ -782,7 +782,7 @@ async fn supervise_local_worker(
     upstream: String,
     deployment: ResolvedDeployment,
     mut shutdown: tokio::sync::watch::Receiver<Option<awaken_worker::WorkerShutdown>>,
-    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), String> {
     let mut restart_attempt = 0_u32;
     loop {
@@ -1052,7 +1052,7 @@ mod tests {
             coordinator_authorities: None,
             worker_authenticator: None,
             admin_tools: Vec::new(),
-            clock: awaken_lease_contract::system_clock(),
+            clock: awaken_time::system_clock(),
         }
     }
 
@@ -1119,7 +1119,7 @@ mod tests {
                         role,
                         None,
                         None,
-                        awaken_lease_contract::system_clock(),
+                        awaken_time::system_clock(),
                     )
                     .await
                     .unwrap()
@@ -1438,7 +1438,7 @@ mod tests {
             coordinator_authorities: None,
             worker_authenticator: None,
             admin_tools: Vec::new(),
-            clock: awaken_lease_contract::system_clock(),
+            clock: awaken_time::system_clock(),
         };
         let controller = configured_process_admin_controller(&process);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

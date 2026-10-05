@@ -506,9 +506,9 @@ impl crate::ManagedHost {
             Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
                 credentials,
                 secrets,
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ))
     }
 

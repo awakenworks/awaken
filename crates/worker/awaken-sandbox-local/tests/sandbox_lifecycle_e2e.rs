@@ -30,13 +30,11 @@ fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
 
 #[tokio::test]
 async fn full_lifecycle_harvests_memory_collects_outputs_then_shreds_and_reaps() {
-    let fs = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let fs = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     fs.create("mem", "/notes.md", "seed").await.unwrap();
     let mounter = Arc::new(MemoryStoreMounter::new(
         fs.clone(),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
 
     let tmp = tempfile::tempdir().unwrap();

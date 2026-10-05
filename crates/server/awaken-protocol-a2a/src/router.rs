@@ -58,10 +58,7 @@ type Runtime = A2aState;
 
 /// Build the A2A router. Mount it alongside other protocol routers; the paths are
 /// the `/v1/a2a...` surface an A2A `HTTP+JSON` client posts to.
-pub fn router(
-    runtime: Arc<dyn RunApplication>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
-) -> Router {
+pub fn router(runtime: Arc<dyn RunApplication>, clock: Arc<dyn awaken_time::WallClock>) -> Router {
     router_with_storage_root(runtime, None, clock)
 }
 
@@ -73,7 +70,7 @@ pub fn router(
 pub fn router_with_storage_root(
     runtime: Arc<dyn RunApplication>,
     storage_root: Option<&std::path::Path>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Router {
     let state = A2aState::new(
         runtime,

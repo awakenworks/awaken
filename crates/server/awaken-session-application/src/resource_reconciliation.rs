@@ -8,7 +8,6 @@
 // @formal entrypoint session_resources.terminal_session_never_reactivates
 //! Durable Session Resource recovery and terminal reclamation.
 
-use awaken_lease_contract::WallClockExt as _;
 use awaken_resource_contract::{ResourceReference, ResourceReferenceKind, ResourceReferenceRecord};
 use awaken_session_error_contract::RunError;
 use awaken_session_realization_contract::SessionRealizationControlFailure;
@@ -21,6 +20,7 @@ use awaken_session_state_contract::{
     SessionTombstone,
 };
 use awaken_session_types::SessionRevision;
+use awaken_time::WallClockExt as _;
 
 use super::{
     ConfiguredSessionRepository, CredentialMaterialInput, CredentialMaterialRetirementCommand,

@@ -31,10 +31,7 @@ impl MemoryStores {
     /// Opener for this crate's own unit tests under one storage-dir durability
     /// rule (`Some` → durable under the dir, `None` → ephemeral per-process).
     #[cfg(test)]
-    pub(crate) fn open(
-        store_dir: Option<&Path>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
-    ) -> Self {
+    pub(crate) fn open(store_dir: Option<&Path>, clock: Arc<dyn awaken_time::WallClock>) -> Self {
         // ADR-0053 path-addressed memory files persist alongside, under the same
         // durability rule. Backed by the SQLite store so rename-replace and CAS are
         // **crash-atomic** (one transaction) — the plain-file backend is only no-loss

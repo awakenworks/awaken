@@ -87,7 +87,7 @@ impl RecordingSessionControl {
         awaken_session_realization_contract::SessionRealizationLeaseReceipt,
         awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
-        use awaken_lease_contract::WallClockExt as _;
+        use awaken_time::WallClockExt as _;
         // The same injected authority clock drives HTTP admission and response
         // publication. Fixtures rejected before Control need no clock at all.
         awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
@@ -2838,7 +2838,7 @@ async fn protocol_admission_precedes_registration_and_heartbeat_mutation() {
     let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let service = WorkerDispatchService::local(
         Arc::new(MemoryDispatchStore::new(dispatch_clock.clone())),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_worker_directory(directory.clone(), 30_000);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2989,10 +2989,9 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
         .await
         .unwrap();
     let queued_before = dispatch.list_dispatches().await.unwrap();
-    let service =
-        WorkerDispatchService::local(dispatch.clone(), awaken_lease_contract::system_clock())
-            .with_worker_directory(directory.clone(), 30_000)
-            .with_session_control(session_control.clone());
+    let service = WorkerDispatchService::local(dispatch.clone(), awaken_time::system_clock())
+        .with_worker_directory(directory.clone(), 30_000)
+        .with_session_control(session_control.clone());
     let router = dispatch_transport_router_with_service(Arc::new(service));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

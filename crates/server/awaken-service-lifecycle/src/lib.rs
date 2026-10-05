@@ -517,7 +517,7 @@ impl ServiceLifecycle {
         if let ShutdownAdmission::Lead(tasks) = admission {
             let inner = self.inner.clone();
             tokio::spawn(async move {
-                let deadline = awaken_lease_contract::mono::MonoDeadline::after(timeout);
+                let deadline = awaken_time::mono::MonoDeadline::after(timeout);
                 let mut timed_out = Vec::new();
                 for mut task in tasks {
                     if task.watcher.is_finished() {

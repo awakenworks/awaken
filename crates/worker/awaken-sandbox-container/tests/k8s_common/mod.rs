@@ -22,7 +22,7 @@ pub(crate) async fn connect_with_clock(
 ) -> Result<awaken_sandbox_container::k8s::K8sRuntime, awaken_sandbox_container::RuntimeError> {
     awaken_sandbox_container::k8s::K8sRuntime::connect(namespace, address)
         .await
-        .map(|runtime| runtime.with_clock(awaken_lease_contract::system_clock()))
+        .map(|runtime| runtime.with_clock(awaken_time::system_clock()))
 }
 
 pub(crate) fn container_environment(image: String) -> pc::EnvironmentKind {

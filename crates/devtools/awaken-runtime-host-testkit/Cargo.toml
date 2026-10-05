@@ -21,7 +21,7 @@ awaken-runtime-contract.workspace = true
 awaken-resource-application.workspace = true
 awaken-resource-contract.workspace = true
 awaken-ext-memory.workspace = true
-awaken-lease-contract.workspace = true
+awaken-time.workspace = true
 awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-memory-store = { workspace = true, features = ["sqlite", "test-support"] }
 awaken-session-store = { workspace = true, features = ["test-support"] }

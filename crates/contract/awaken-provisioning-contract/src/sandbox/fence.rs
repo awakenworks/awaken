@@ -8,10 +8,10 @@
 //! fences, task leases and credential receipts have different successor rules
 //! and do not implement [`FenceToken`].
 
-use awaken_lease_contract::Expiry;
 use awaken_lease_contract::fence::{
     EffectFence, Epoch, FenceSuccession, FenceToken, Lease, Tenure, TenureScope,
 };
+use awaken_time::Expiry;
 use serde::{Deserialize, Serialize};
 
 use super::foundation::SandboxError;
@@ -241,7 +241,7 @@ impl SandboxEffectFence {
     pub fn is_live_at(&self, now_unix_ms: u64) -> bool {
         self.0
             .lease()
-            .is_live_at(awaken_lease_contract::UtcTime::from_epoch_ms(now_unix_ms))
+            .is_live_at(awaken_time::UtcTime::from_epoch_ms(now_unix_ms))
     }
 
     /// Compare the realization lease independently of any operation: the

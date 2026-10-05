@@ -390,7 +390,7 @@ pub struct ControlRouterInput {
     pub cloud_login: Option<Arc<dyn awaken_admin_config_api::CloudLoginApplication>>,
     /// The process's one wall clock, read by the admin surfaces that stamp or
     /// judge time.
-    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
+    pub clock: Arc<dyn awaken_time::WallClock>,
 }
 
 struct LiveControlCapabilities {

@@ -152,10 +152,8 @@ mod tests {
             .model(ModelBinding::new("test", "model", "native"))
             .build();
         let store = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(
-                awaken_lease_contract::system_clock(),
-            )
-            .expect("dispatch store"),
+            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+                .expect("dispatch store"),
         );
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),

@@ -71,7 +71,7 @@ async fn setup() -> Option<(ContainerProvider<DockerRuntime>, Arc<DockerRuntime>
     }
     Some((
         ContainerProvider::new(rt.clone(), "busybox:latest")
-            .with_clock(awaken_lease_contract::system_clock()),
+            .with_clock(awaken_time::system_clock()),
         rt,
     ))
 }
@@ -317,9 +317,7 @@ async fn multiple_memory_stores_enforce_exact_access_and_seal_the_parent_in_real
     let Some((provider, _)) = setup().await else {
         return;
     };
-    let memory = Arc::new(VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let memory = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     memory
         .create("rw-store", "/note.md", "rw-seed")
         .await
@@ -420,7 +418,7 @@ async fn a_real_container_rotates_and_persists_a_native_credential_file() {
         bytes: Mutex::new(initial.to_vec()),
     });
     let provider = ContainerProvider::new(rt.clone(), "busybox:latest")
-        .with_clock(awaken_lease_contract::system_clock())
+        .with_clock(awaken_time::system_clock())
         .with_secret_broker(broker.clone());
     let spec = pc::SandboxSpec {
         process_tree_supervision: false,
@@ -474,7 +472,7 @@ async fn a_file_mount_resolved_from_the_blob_source_is_readable_in_a_real_contai
     // them — the container reads the resolved file. This is the container analogue of the
     // bwrap tier's `resolve_source`, proving the store→bind wiring end-to-end.
     let provider = ContainerProvider::new(rt.clone(), "busybox:latest")
-        .with_clock(awaken_lease_contract::system_clock())
+        .with_clock(awaken_time::system_clock())
         .with_blob("blob-42", b"resolved-from-the-store".to_vec());
     let spec = pc::SandboxSpec {
         process_tree_supervision: false,
@@ -700,7 +698,7 @@ async fn allowlist_rejects_a_forward_proxy_before_docker_creation() {
         return;
     };
     let provider = ContainerProvider::new(rt.clone(), "busybox:latest")
-        .with_clock(awaken_lease_contract::system_clock())
+        .with_clock(awaken_time::system_clock())
         .with_forward_proxy(ForwardProxy {
             url: "http://127.0.0.1:1/".into(),
         });
@@ -726,7 +724,7 @@ async fn allowlist_rejects_a_forward_proxy_before_docker_creation() {
     };
     assert!(provider.create(&spec).await.is_err());
     let no_proxy = ContainerProvider::new(rt.clone(), "busybox:latest")
-        .with_clock(awaken_lease_contract::system_clock());
+        .with_clock(awaken_time::system_clock());
     assert!(
         no_proxy.create(&spec).await.is_err(),
         "an Allowlist without enforcement must fail closed"

@@ -67,7 +67,7 @@ pub struct EnforceEngine {
     state: Mutex<EngineState>,
     /// The process's one wall clock: mint and revocation stamps and the instant
     /// a presented token is judged at.
-    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
 }
 
 /// The deliberately small authority Awaken accepts from a customer application.
@@ -495,7 +495,7 @@ impl EnforceEngine {
     /// principal's `RoleBinding` covers, so Global grants are not wildcard
     /// authority — the binding confines the reach.
     #[must_use]
-    pub fn seeded(clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+    pub fn seeded(clock: std::sync::Arc<dyn awaken_time::WallClock>) -> Self {
         let now = Timestamp(rfc3339_at(clock.as_ref()));
         let mut policy = PolicySet::new();
         for role in named_role_catalog(&now) {
@@ -790,7 +790,7 @@ fn reject(status: StatusCode, detail: &str) -> Response {
 
 /// A reading of `clock` as the IAM contract's fixed-width RFC 3339 UTC
 /// timestamp, spelled by the wall-clock port's one codec.
-fn rfc3339_at(clock: &dyn awaken_lease_contract::WallClock) -> String {
+fn rfc3339_at(clock: &dyn awaken_time::WallClock) -> String {
     clock.now().to_rfc3339_secs()
 }
 
@@ -801,7 +801,7 @@ mod tests {
     const WS: &str = "wrkspc_local";
 
     fn engine_with_admin() -> (EnforceEngine, String, PrincipalRef) {
-        let engine = EnforceEngine::seeded(awaken_lease_contract::system_clock());
+        let engine = EnforceEngine::seeded(awaken_time::system_clock());
         let secret = engine
             .mint(TokenSpec {
                 token_id: "tok_admin".into(),
@@ -851,7 +851,7 @@ mod tests {
 
     #[test]
     fn an_unknown_token_is_rejected() {
-        let engine = EnforceEngine::seeded(awaken_lease_contract::system_clock());
+        let engine = EnforceEngine::seeded(awaken_time::system_clock());
         assert!(
             engine
                 .authenticate("sk-ant-nope.definitely-not-a-token")
@@ -933,7 +933,7 @@ mod tests {
     }
 
     fn admin_engine() -> (Arc<EnforceEngine>, String) {
-        let engine = Arc::new(EnforceEngine::seeded(awaken_lease_contract::system_clock()));
+        let engine = Arc::new(EnforceEngine::seeded(awaken_time::system_clock()));
         let secret = engine
             .mint(TokenSpec {
                 token_id: "tok_admin".into(),
@@ -1029,7 +1029,7 @@ mod tests {
 
     // Mint a token bound to an arbitrary preset role at the local workspace.
     fn engine_with_role(role: &str) -> (Arc<EnforceEngine>, String) {
-        let engine = Arc::new(EnforceEngine::seeded(awaken_lease_contract::system_clock()));
+        let engine = Arc::new(EnforceEngine::seeded(awaken_time::system_clock()));
         let secret = engine
             .mint(TokenSpec {
                 token_id: "tok_role".into(),
@@ -1131,7 +1131,7 @@ mod tests {
     // expiry (InvalidApiTokenWindow), so an already-expired token is not
     // constructible directly — mint a short-lived one and let it lapse.
     fn rfc3339_secs_from_now(delta: u64) -> String {
-        awaken_lease_contract::system_clock()
+        awaken_time::system_clock()
             .now()
             .saturating_add(std::time::Duration::from_secs(delta))
             .to_rfc3339_secs()
@@ -1139,7 +1139,7 @@ mod tests {
 
     #[test]
     fn authenticate_rejects_an_expired_token() {
-        let engine = EnforceEngine::seeded(awaken_lease_contract::system_clock());
+        let engine = EnforceEngine::seeded(awaken_time::system_clock());
         let secret = engine
             .mint(TokenSpec {
                 token_id: "tok_exp".into(),

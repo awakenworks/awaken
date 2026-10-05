@@ -17,9 +17,9 @@ use awaken_environment_contract::{
     EnvironmentPackagesMutation, EnvironmentRegistrationIntentFilter, EnvironmentRevision,
     EnvironmentSandboxPolicyRef, EnvironmentStoreError, InvalidEnvironmentConfig,
 };
-use awaken_lease_contract::WallClock;
-use awaken_lease_contract::utc::epoch_millis_to_rfc3339;
 use awaken_lease_testkit::ManualClock;
+use awaken_time::WallClock;
+use awaken_time::utc::epoch_millis_to_rfc3339;
 use std::sync::Arc;
 
 pub async fn make<R: EnvRegistry>(r: &R, name: &str) -> String {

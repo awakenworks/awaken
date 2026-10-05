@@ -231,7 +231,7 @@ mod tests {
         let anonymous = CatalogModelPublicationResolver::new(
             ProviderCatalog::default(),
             anonymous_repo.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_a2a_card_discovery(Arc::new(FixedA2aCard(anonymous_card)))
         .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
@@ -256,7 +256,7 @@ mod tests {
         let without_credential = CatalogModelPublicationResolver::new(
             ProviderCatalog::default(),
             anonymous_repo,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card.clone())))
         .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
@@ -280,7 +280,7 @@ mod tests {
             },
             &InMemorySecretStore::new(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -294,7 +294,7 @@ mod tests {
         let authenticated = CatalogModelPublicationResolver::new(
             ProviderCatalog::default(),
             credentials.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card.clone())))
         .with_direct_provider_credential_execution(direct_policy.clone(), direct_holder.clone())
@@ -325,7 +325,7 @@ mod tests {
         let error = CatalogModelPublicationResolver::new(
             ProviderCatalog::default(),
             credentials.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card.clone())))
         .with_direct_provider_credential_execution(direct_policy.clone(), direct_holder.clone())
@@ -358,7 +358,7 @@ mod tests {
         let error = CatalogModelPublicationResolver::new(
             ProviderCatalog::default(),
             credentials,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card)))
         .with_direct_provider_credential_execution(direct_policy, direct_holder)

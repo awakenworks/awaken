@@ -75,7 +75,7 @@ struct TracingCoordinator {
 impl Default for TracingCoordinator {
     fn default() -> Self {
         Self {
-            inner: MemoryCommitCoordinator::new(awaken_lease_contract::system_clock()),
+            inner: MemoryCommitCoordinator::new(awaken_time::system_clock()),
             commits: Arc::default(),
         }
     }

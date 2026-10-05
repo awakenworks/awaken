@@ -44,10 +44,10 @@ pub fn boottime_elapsed() -> std::io::Result<std::time::Duration> {
 /// not a claim of suspend-inclusive or process-tree qualification there.
 ///
 /// The scheduling half is the one monotonic scheduling point
-/// (`awaken_lease_contract::mono`); only the authority half reads this crate's
+/// (`awaken_time::mono`); only the authority half reads this crate's
 /// clock, so scheduling never stands in for the physical cutoff's clock.
 pub fn authority_proof_started() -> std::io::Result<AuthorityProofStarted> {
-    let scheduled = awaken_lease_contract::mono::now();
+    let scheduled = awaken_time::mono::now();
     #[cfg(target_os = "linux")]
     let elapsed = boottime_elapsed()?;
     #[cfg(not(target_os = "linux"))]

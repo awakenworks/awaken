@@ -10,12 +10,12 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::broadcast;
 
-use awaken_lease_contract::WallClock;
 use awaken_session_application::{
     DeploymentSessionEnvironment, ProfiledSessionCommands, SessionApplication, SessionCreation,
     SessionEventBatches, SessionObservation, SessionProjectionReads, SessionResourceCommands,
     SessionRootReads, SessionTermination, SessionUpdates,
 };
+use awaken_time::WallClock;
 
 use crate::types::Event;
 

@@ -40,7 +40,7 @@ pub enum SandboxEnvironmentProvider {
         hand_residency: ContainerHandResidency,
         /// The Host's process clock; container Repository credentials are
         /// stamped and judged on it.
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     },
 }
 
@@ -179,7 +179,7 @@ impl SandboxEnvironmentProvider {
         hand_bin: impl Into<String>,
         hand_idle_after: std::time::Duration,
         hand_residency: ContainerHandResidency,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self::Container {
             provider,

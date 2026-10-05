@@ -451,7 +451,7 @@ mod tests {
                     },
                     secrets.as_ref(),
                     credentials.as_ref(),
-                    awaken_lease_contract::system_clock().as_ref(),
+                    awaken_time::system_clock().as_ref(),
                 )
                 .await
                 .unwrap();

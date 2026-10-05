@@ -4,13 +4,13 @@
 //! Canonical durable Session root mutation boundary.
 
 use super::*;
-use awaken_lease_contract::WallClockExt as _;
 use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionMutation,
     SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
     SessionRepositoryError,
 };
 use awaken_session_types::SessionRevision;
+use awaken_time::WallClockExt as _;
 
 use crate::creation::{
     CompleteSessionCreateResult, CompleteSessionRoot, DurableSessionRoot,

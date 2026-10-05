@@ -13,7 +13,6 @@ use awaken_ext_background_task::{
     BackgroundTaskPlugin, BackgroundTaskSupervisor, TaskExecutionPolicy, task_state_cell,
     tasks_from_state,
 };
-use awaken_lease_contract::WallClockExt;
 use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::plugin::{
     PhaseContext, PhaseHookPoint, PhaseKind, Plugin, ResolvedExecutionEnv,
@@ -23,6 +22,7 @@ use awaken_runtime_contract::tool::{
     ToolOperationContext, ToolRecoveryPolicy, with_tool_execution_facts,
     with_tool_operation_context, with_tool_state_context,
 };
+use awaken_time::WallClockExt;
 
 struct FixtureExecutionFacts;
 
@@ -45,7 +45,7 @@ fn environment() -> ResolvedExecutionEnv {
         },
         Arc::new(BackgroundTaskSupervisor::new(
             "fixture-worker",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )),
     );
     ResolvedExecutionEnv::merge(vec![(plugin.manifest(), plugin.resolve())])
@@ -103,7 +103,7 @@ async fn expired_cancellation_reconciliation_never_fabricates_remote_termination
     // C2 cannot override either rule; a replay policy is not termination proof.
     let supervisor = Arc::new(BackgroundTaskSupervisor::new(
         "replacement",
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     let plugin = BackgroundTaskPlugin::with_supervisor(
         BackgroundTaskConfig {
@@ -333,7 +333,7 @@ async fn configuration_schema_and_persisted_state_fail_closed() {
         Default::default(),
         Arc::new(BackgroundTaskSupervisor::new(
             "fixture-worker",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )),
     );
     assert!(
@@ -690,7 +690,7 @@ async fn cancelling_unknown_completion_survives_commit_loss_without_false_cancel
 async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
     let supervisor = Arc::new(BackgroundTaskSupervisor::new(
         "worker",
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     let plugin = BackgroundTaskPlugin::with_supervisor(
         BackgroundTaskConfig {

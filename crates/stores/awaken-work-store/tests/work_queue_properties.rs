@@ -22,7 +22,7 @@ proptest! {
     /// the exactly-once guarantee for a single-worker environment.
     #[test]
     fn at_most_one_lease_is_handed_out_while_one_is_live(n in 1usize..12, claims in 2usize..8) {
-        let q = InMemoryWorkQueue::new(awaken_lease_contract::system_clock());
+        let q = InMemoryWorkQueue::new(awaken_time::system_clock());
         for i in 0..n {
             block(q.enqueue_session("env", &SessionId::from(format!("s{i}")))).expect("enqueue");
         }
@@ -39,7 +39,7 @@ proptest! {
     /// succeeds again — a dead worker never wedges the environment forever.
     #[test]
     fn an_expired_lease_is_reclaimable(n in 1usize..8) {
-        let q = InMemoryWorkQueue::new(awaken_lease_contract::system_clock());
+        let q = InMemoryWorkQueue::new(awaken_time::system_clock());
         for i in 0..n {
             block(q.enqueue_session("env", &SessionId::from(format!("s{i}")))).expect("enqueue");
         }
@@ -53,7 +53,7 @@ proptest! {
     /// env's single-active cap is independent.
     #[test]
     fn environments_lease_independently(a in 1usize..5, b in 1usize..5) {
-        let q = InMemoryWorkQueue::new(awaken_lease_contract::system_clock());
+        let q = InMemoryWorkQueue::new(awaken_time::system_clock());
         for i in 0..a { block(q.enqueue_session("env_a", &SessionId::from(format!("a{i}")))).expect("enqueue a"); }
         for i in 0..b { block(q.enqueue_session("env_b", &SessionId::from(format!("b{i}")))).expect("enqueue b"); }
         let la = block(q.claim("env_a", "w", 0)).expect("claim query").expect("env_a leases");
@@ -66,7 +66,7 @@ proptest! {
     /// (progress), and the total item count is conserved across the claim→stop→claim cycle.
     #[test]
     fn stopping_the_active_item_frees_the_next(n in 2usize..8) {
-        let q = InMemoryWorkQueue::new(awaken_lease_contract::system_clock());
+        let q = InMemoryWorkQueue::new(awaken_time::system_clock());
         for i in 0..n { block(q.enqueue_session("env", &SessionId::from(format!("s{i}")))).expect("enqueue"); }
         let first = block(q.claim("env", "w", 0)).expect("claim query").expect("first");
         prop_assert!(block(q.claim("env", "w", 0)).expect("claim").is_none(), "capped while active");
@@ -79,7 +79,7 @@ proptest! {
     /// REMOVE_ENV PURGES: after remove_env, the environment has no items and nothing to claim.
     #[test]
     fn remove_env_purges_everything(n in 1usize..8) {
-        let q = InMemoryWorkQueue::new(awaken_lease_contract::system_clock());
+        let q = InMemoryWorkQueue::new(awaken_time::system_clock());
         for i in 0..n { block(q.enqueue_session("env", &SessionId::from(format!("s{i}")))).expect("enqueue"); }
         block(q.remove_env("env")).unwrap();
         prop_assert!(block(q.list("env")).expect("list").is_empty());

@@ -801,9 +801,8 @@ impl crate::SharedHost {
             {
                 token.cancel();
             }
-            let deadline = awaken_lease_contract::mono::MonoDeadline::after(
-                std::time::Duration::from_secs(10),
-            );
+            let deadline =
+                awaken_time::mono::MonoDeadline::after(std::time::Duration::from_secs(10));
             loop {
                 if runtime
                     .active_run
