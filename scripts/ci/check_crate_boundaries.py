@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 import _arch_fitness
+import _bounded_context_fitness
 import _cancel_safety_fitness
 import _coordinator_authority_fitness
 import _crate_dependency_fitness
@@ -1665,6 +1666,7 @@ def main() -> int:
     selftest_mcp_tool_identity_ownership_in_console()
     _crate_boundary_workspace.selftest()
     _crate_dependency_fitness.selftest()
+    _bounded_context_fitness.selftest()
     _arch_fitness.selftest()
     _coordinator_authority_fitness.selftest()
     _migration_fitness.selftest()
@@ -1692,6 +1694,7 @@ def main() -> int:
         + check_no_direct_transport_dependency()
         +
         _crate_dependency_fitness.check_all(dependency_fitness_specs())
+        + _bounded_context_fitness.check_all(dependency_fitness_specs())
         + check_neutral_code_boundaries()
         + check_builtin_tool_ownership()
         + check_background_task_is_state_only()
