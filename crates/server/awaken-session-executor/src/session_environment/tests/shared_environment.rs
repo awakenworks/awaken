@@ -11,7 +11,7 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
     // E2 rendered File paths resolve to exact bytes; E3 child writes are visible
     // through the Native logical path. A file used as cwd fails without starting the
     // peer (W3). Reuse the Session owner and prompt renderer on all three OSes.
-    use crate::managed_resource_projection::ResourcePromptProjection;
+    use crate::managed_input_layout::ResourcePromptProjection;
     for cwd in [None, Some("项目 repo/src")] {
         let base = tempfile::tempdir().unwrap();
         let provider =
@@ -51,7 +51,7 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
         let prompt = ResourcePromptProjection::try_from_input(&input)
             .unwrap()
             .render(
-                crate::session_slot::ManagedContentDelivery::ManagedFilesystem,
+                crate::frozen_runtime_projection::ManagedContentDelivery::ManagedFilesystem,
                 view.prompt_paths,
             );
         let relative = prompt.split_once('\n').unwrap().1;

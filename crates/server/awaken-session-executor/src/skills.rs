@@ -8,6 +8,8 @@
 //! `awaken-ext-skills`; this module builds one registry projection and, only for
 //! legacy/direct callers, adapts that same registry to the two semantic tools.
 
+#[cfg(test)]
+use crate::skill_prompt::{FilesystemSkillPrompt, filesystem_skill_prompt};
 use std::sync::Arc;
 
 use awaken_ext_builtin_tools::{AUXILIARY_AGENT, AuxiliaryAgentInput};
@@ -551,64 +553,6 @@ pub(crate) fn semantic_skill_adapter(
     }
 }
 
-/// Rebuildable metadata only, derived from the one frozen registry. Keep the
-/// directory unrendered until the attempt selects its filesystem view; an ACP
-/// cwd is not the Skill materialization root. No bodies or version state live here.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FilesystemSkillPrompt {
-    entries: Vec<(String, String, String)>,
-}
-
-impl FilesystemSkillPrompt {
-    pub(crate) fn exposes_directory(&self, directory: &str) -> bool {
-        self.entries.iter().any(|(_, _, entry)| entry == directory)
-    }
-
-    pub(crate) fn render(
-        &self,
-        path_view: &crate::managed_resource_projection::AgentPathView,
-        environment: Option<&crate::session_environment::SessionEnvironment>,
-    ) -> Result<String, String> {
-        let entries = self
-            .entries
-            .iter()
-            .map(|(name, description, directory)| {
-                let path = match environment {
-                    Some(environment) => path_view.render(&format!(
-                        "{}/SKILL.md",
-                        environment
-                            .skills()
-                            .skill_directory_path(directory)
-                            .map_err(|error| error.to_string())?,
-                    )),
-                    // Native OnToolUse reads this stable path from the exact
-                    // frozen bundle until the Environment is materialized.
-                    None => format!("{directory}/SKILL.md"),
-                };
-                Ok(format!("- {name}: {description} (`{path}`)"))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        Ok(format!(
-            "Available Skills are listed below. Apply a relevant Skill's complete instructions. If its complete instructions are already in the conversation, DO NOT read `SKILL.md` again: apply the provided instructions without rereading or checking the same body. Otherwise, read its `SKILL.md` from the given path before acting. Names and descriptions alone are not complete instructions. Supporting scripts and references are separate: read them from the listed directory when their content is needed and is not already available in the conversation.\n{}",
-            entries.join("\n")
-        ))
-    }
-}
-
-/// Anthropic-compatible progressive-disclosure metadata; ordinary file tools
-/// read the full instructions from the pinned or materialized `SKILL.md` path.
-pub(crate) fn filesystem_skill_prompt(
-    registry: &dyn SkillRegistry,
-) -> Result<Option<FilesystemSkillPrompt>, String> {
-    let entries = registry
-        .list()?
-        .into_iter()
-        .filter(|skill| skill.model_invocable)
-        .filter_map(|skill| skill.dir.map(|dir| (skill.name, skill.description, dir)))
-        .collect::<Vec<_>>();
-    Ok((!entries.is_empty()).then_some(FilesystemSkillPrompt { entries }))
-}
-
 fn list_skills_descriptor() -> ToolDescriptor {
     awaken_ext_skills::list_skills_tool_descriptor()
 }
@@ -630,13 +574,11 @@ mod tests {
         // listed pinned file. D3 restoration preserves both rules and paths.
         // No new loaded-state flag, body detector, registry or physical work
         // is introduced: the existing model context owns what is available.
-        let projection = FilesystemSkillPrompt {
-            entries: vec![(
-                "Diagnose".into(),
-                "diagnose a project".into(),
-                ".skills/pinned".into(),
-            )],
-        };
+        let projection = FilesystemSkillPrompt::from_entries(vec![(
+            "Diagnose".into(),
+            "diagnose a project".into(),
+            ".skills/pinned".into(),
+        )]);
         let prompt = projection.render(&Default::default(), None).unwrap();
         assert!(
             prompt.contains("already in the conversation"),
@@ -1060,9 +1002,11 @@ mod tests {
         // P6 malformed directory metadata cannot yield a model request once
         // realized; propagate the shared path validator's failure unchanged.
         slots.update("skill-path", |slot| {
-            slot.skill_prompt = Some(FilesystemSkillPrompt {
-                entries: vec![("Unsafe".into(), "invalid".into(), "../escape".into())],
-            })
+            slot.skill_prompt = Some(FilesystemSkillPrompt::from_entries(vec![(
+                "Unsafe".into(),
+                "invalid".into(),
+                "../escape".into(),
+            )]))
         });
         assert!(slots.prompts("skill-path", None, true, false).is_err());
         env.lifecycle().dispose().await.unwrap();

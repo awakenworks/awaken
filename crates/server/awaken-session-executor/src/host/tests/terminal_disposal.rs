@@ -62,7 +62,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     // exact durable V2 Sandbox. Terminal cleanup must erase all of them so
     // reusing the opaque thread id cannot inherit stale scope or model state.
     host.register_thread_memory("t-end", None);
-    host.register_thread_resources("t-end", crate::provisioning::StagedResources::default());
+    host.register_thread_resources("t-end", crate::staged_resources::StagedResources::default());
     host.register_thread_model("t-end", "private-model");
     let mut lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: "terminal-test-worker".into(),

@@ -6,6 +6,7 @@
 //! session. Split out of `host.rs` to keep that file under the length limit; these
 //! are the same `SharedHost` (fields are `pub(crate)`).
 
+use crate::staged_resources::{RepositoryActivation, ResourceBindingCheck, StagedResources};
 use std::sync::Arc;
 
 use crate::host::SharedHost;
@@ -50,36 +51,18 @@ pub(crate) fn resource_mount_is_create_time(mount: &pc::MountRequirement) -> boo
     matches!(mount.source, pc::MountSource::MemoryStore { .. })
 }
 
-/// The one pure Memory consistency decision shared by validation, effectful
-/// staging, and final Sandbox assembly. Checkpoint-and-release may proceed only
-/// when writable Memory is already write-through; read-only mounts and
-/// Resident environments retain provider defaults.
-pub(crate) fn projected_memory_write_consistency(
-    access: pc::MountAccess,
-    idle_retention: Option<&pc::SandboxIdleRetentionPolicy>,
-) -> pc::MemoryWriteConsistency {
-    if access == pc::MountAccess::ReadWrite
-        && idle_retention
-            .is_some_and(|policy| policy.mode == pc::SandboxIdleRetentionMode::CheckpointAndRelease)
-    {
-        pc::MemoryWriteConsistency::WriteThroughRequired
-    } else {
-        pc::MemoryWriteConsistency::ProviderDefault
-    }
-}
-
 /// Apply the canonical per-mount decision after the Environment Sandbox
 /// overlay so authored mounts cannot bypass the same consistency policy.
 fn project_memory_write_consistency(
     mounts: &mut [pc::MountRequirement],
-    environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
+    environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
 ) {
     for mount in mounts {
         if let pc::MountSource::MemoryStore {
             write_consistency, ..
         } = &mut mount.source
         {
-            *write_consistency = projected_memory_write_consistency(
+            *write_consistency = crate::managed_input_layout::projected_memory_write_consistency(
                 mount.access,
                 environment.map(|projection| &projection.idle_retention),
             );
@@ -92,7 +75,7 @@ fn project_memory_write_consistency(
 /// so a Worker cannot claim requirements different from those it materializes.
 pub(crate) fn project_environment(
     environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-) -> crate::session_slot::FrozenEnvironmentRuntimeProjection {
+) -> crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection {
     let network = match &environment.network {
         awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted => {
             pc::NetworkPolicy::Unrestricted
@@ -131,7 +114,7 @@ pub(crate) fn project_environment(
             reference: image.clone(),
         });
     }
-    crate::session_slot::FrozenEnvironmentRuntimeProjection {
+    crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection {
         fingerprint: environment.config_fingerprint.clone(),
         network,
         packages,
@@ -256,7 +239,7 @@ fn sandbox_spec_from_projection(
     scope: &str,
     mounts: Vec<pc::MountRequirement>,
     env: Vec<pc::EnvVar>,
-    environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
+    environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
     provider_enforces_network_isolation: bool,
 ) -> pc::SandboxSpec {
     let projected_network = environment
@@ -349,8 +332,9 @@ pub(crate) struct ProjectedSandboxLayout<'a> {
     pub(crate) has_repositories: bool,
     pub(crate) baseline_mounts: Option<&'a [pc::MountRequirement]>,
     pub(crate) baseline_env: Option<&'a [pc::EnvVar]>,
-    pub(crate) content_delivery: Option<crate::session_slot::ManagedContentDelivery>,
-    pub(crate) environment: Option<&'a crate::session_slot::FrozenEnvironmentRuntimeProjection>,
+    pub(crate) content_delivery: Option<crate::frozen_runtime_projection::ManagedContentDelivery>,
+    pub(crate) environment:
+        Option<&'a crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
     pub(crate) network_isolation: bool,
 }
 
@@ -416,53 +400,6 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
         control_services: Default::default(),
         lease_ttl_secs: None,
     }
-}
-
-/// A thread's staged neutral mount requirements plus the prompt fragments derived
-/// from the same effective Session inputs.
-#[derive(Default, Clone)]
-pub(crate) struct StagedResources {
-    pub mounts: Vec<pc::MountRequirement>,
-    /// Non-Resource request context retained for direct/profiled callers.
-    /// Managed File/Memory/Repository context uses `resource_prompts` so every
-    /// resource kind shares one typed renderer and one path-variable grammar.
-    pub prompts: Vec<String>,
-    pub resource_prompts: Vec<crate::managed_resource_projection::ResourcePromptProjection>,
-    /// Resource-domain liveness checks repeated at each Session operation. These
-    /// carry only Workspace-owned resource identity and frozen, secret-free config
-    /// facts; authorization was completed before staging. Repository effect edges
-    /// reuse its authored remote/binding to revalidate the Session pin instead of
-    /// accepting the pin's own source id as self-authorization.
-    pub binding_checks: Vec<ResourceBindingCheck>,
-    /// Mutable Repository inputs, realized after the environment is created (not a
-    /// byte mount). The plan is secret-free; its transport credential is transient.
-    pub repositories: Vec<RepositoryActivation>,
-}
-
-#[derive(Clone)]
-pub(crate) enum ResourceBindingCheck {
-    MemoryStore {
-        memory_store_id: String,
-        config_version: awaken_resource_contract::ConfigVersion,
-    },
-    Repository {
-        repository_id: String,
-        config_version: awaken_resource_contract::ConfigVersion,
-        remote_url: String,
-        credential_binding: Option<String>,
-        authority: Option<Box<awaken_dispatch_contract::ResourceOperationFence>>,
-    },
-}
-
-/// Runtime-only activation material for one already-resolved Repository config.
-/// The plan is the neutral environment port and the credential pin is the exact,
-/// secret-free Session decision. Plaintext is materialized only at a Git effect
-/// edge, used for that one call, and never retained by this activation, the plan,
-/// origin URL, Session manifest, or sandbox.
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct RepositoryActivation {
-    pub plan: pc::RepositoryRealizationPlan,
-    pub credential_pin: Option<awaken_session_resource_contract::ResolvedRepositoryCredential>,
 }
 
 fn repository_http_basic_credential(
@@ -600,7 +537,7 @@ impl SharedHost {
             .inputs()
             .iter()
             .filter_map(|input| {
-                crate::managed_resource_projection::resolved_input_validation_mount(
+                crate::managed_input_layout::resolved_input_validation_mount(
                     input,
                     environment.as_ref(),
                 )
@@ -676,7 +613,7 @@ impl SharedHost {
         thread: &str,
         projection: ProjectedSandboxLayout<'_>,
     ) -> pc::SandboxSpec {
-        let mounts = crate::application::project_session_mounts(
+        let mounts = project_session_mounts(
             projection.resource_mounts,
             projection.baseline_mounts,
             projection.content_delivery,
@@ -1441,6 +1378,27 @@ impl SharedHost {
 /// and the reverse-channel no-ops when a thread has no live environment. These
 /// exercise the host-plane provisioning bookkeeping directly; the wired
 /// memory/repo write-back happy paths run in `host::tests` through a real session.
+pub(crate) fn project_session_mounts(
+    mut resources: Vec<awaken_provisioning_contract::MountRequirement>,
+    baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
+    content_delivery: Option<crate::frozen_runtime_projection::ManagedContentDelivery>,
+) -> Vec<awaken_provisioning_contract::MountRequirement> {
+    if let Some(baseline_mounts) = baseline_mounts {
+        resources.extend_from_slice(baseline_mounts);
+    }
+    if content_delivery
+        == Some(crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools)
+    {
+        resources.retain(|mount| {
+            !matches!(
+                mount.source,
+                awaken_provisioning_contract::MountSource::MemoryStore { .. }
+            )
+        });
+    }
+    resources
+}
+
 #[cfg(test)]
 #[path = "provisioning/tests.rs"]
 mod provisioning_registry_tests;

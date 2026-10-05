@@ -223,7 +223,7 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
     .await;
     host.register_thread_resources(
         "a2a-with-mount",
-        crate::provisioning::StagedResources {
+        crate::staged_resources::StagedResources {
             mounts: vec![awaken_provisioning_contract::MountRequirement {
                 mount_id: "input".into(),
                 source: awaken_provisioning_contract::MountSource::File {

@@ -14,12 +14,13 @@
 //! `awaken_session_configuration_contract::McpProbe` port the `mcp_oauth_validate` route
 //! drives — a connect + `initialize` handshake as the live credential check).
 
+use crate::mcp_material::{McpTransportMaterial, McpTransportMaterialKind, McpWiring};
 use std::sync::Arc;
 use std::time::Duration;
 
 use awaken_agent_contract::RedactedString;
 use awaken_ext_mcp::McpToolTransport;
-use awaken_ext_mcp::{Credential, CredentialRefresher, HttpTransportBuilder, McpRequestTrace};
+use awaken_ext_mcp::{Credential, HttpTransportBuilder, McpRequestTrace};
 use awaken_ext_skills::SkillRegistry as _;
 use awaken_runtime_contract::plugin::Plugin;
 use awaken_session_configuration_contract::{McpProbe, McpProbeStatus, ProbeHttpResponse};
@@ -34,59 +35,6 @@ mod prompt_skills;
 /// attachment desired state or a public Managed Agents wire extension.
 const MATERIALIZED_HTTP_MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(300);
 const MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Private Worker-side material for one exact MCP generation. It is never an
-/// authoring or desired-state value and cannot cross the Runtime Host boundary.
-#[derive(Clone)]
-pub(crate) struct McpTransportMaterial {
-    pub name: String,
-    pub prompts_as_skills: bool,
-    pub transport: McpTransportMaterialKind,
-}
-
-#[derive(Clone)]
-pub(crate) enum McpTransportMaterialKind {
-    Http {
-        url: String,
-        bearer: Option<awaken_agent_contract::RedactedString>,
-        refresh: Option<Box<McpRefreshMaterial>>,
-    },
-    SandboxStdio {
-        command: String,
-        args: Vec<String>,
-    },
-}
-
-type HttpTransportMaterialRef<'a> = (
-    &'a str,
-    &'a Option<awaken_agent_contract::RedactedString>,
-    &'a Option<Box<McpRefreshMaterial>>,
-);
-
-impl McpTransportMaterial {
-    fn http(&self) -> Option<HttpTransportMaterialRef<'_>> {
-        match &self.transport {
-            McpTransportMaterialKind::Http {
-                url,
-                bearer,
-                refresh,
-            } => Some((url, bearer, refresh)),
-            McpTransportMaterialKind::SandboxStdio { .. } => None,
-        }
-    }
-
-    pub(crate) fn bearer(&self) -> Option<&awaken_agent_contract::RedactedString> {
-        self.http().and_then(|(_, bearer, _)| bearer.as_ref())
-    }
-
-    pub(crate) fn http_url(&self) -> Option<&str> {
-        self.http().map(|(url, _, _)| url)
-    }
-
-    pub(crate) fn refresh(&self) -> Option<Box<McpRefreshMaterial>> {
-        self.http().and_then(|(_, _, refresh)| refresh.clone())
-    }
-}
 
 /// Project private Runtime material to ACP configuration. Worker-held material
 /// becomes an exact-generation loopback route; an explicitly admitted
@@ -239,12 +187,6 @@ pub(crate) fn project_mcp_session_transport(
     })
 }
 
-/// The already-authorized refresh half of one prepared MCP server. Coordinator
-/// authority owns the Vault and constructs this transport adapter; Runtime only
-/// invokes the neutral refresh contract after an auth challenge.
-#[derive(Clone)]
-pub(crate) struct McpRefreshMaterial(pub(crate) Arc<dyn CredentialRefresher>);
-
 /// The live MCP credential probe (ADR-0043), implementing the
 /// [`awaken_session_configuration_contract::McpProbe`] port over `awaken-ext-mcp`: connect +
 /// MCP `initialize` handshake + `tools/list` with the materialized bearer.
@@ -330,27 +272,11 @@ impl McpProbe for ExtMcpProbe {
     }
 }
 
-/// The discovered surface of one thread's staged MCP servers. Each server is
-/// represented by the canonical live [`awaken_ext_mcp::McpPlugin`], so model
-/// descriptors and executable tools have one source of truth. The initial exact
-/// ids are also retained for the Session permission gate.
-#[derive(Clone)]
-pub(crate) struct McpWiring {
-    pub notification_transports: Vec<(String, Arc<dyn awaken_ext_mcp::McpToolTransport>)>,
-    pub plugins: Vec<Arc<dyn Plugin>>,
-    pub tool_ids: Vec<String>,
-    pub skill_registries: Vec<Arc<dyn awaken_ext_skills::SkillRegistry>>,
-    /// Exact-generation local call fences. The durable Session generation is
-    /// still authoritative; drain closes these projections before acknowledging
-    /// its receipt so cloned Runtime tools cannot continue using old material.
-    pub call_fences: Vec<awaken_ext_mcp::transport::McpCallFence>,
-}
-
 impl crate::SharedHost {
     pub(crate) fn active_mcp_projections(
         &self,
         thread: &str,
-    ) -> Vec<crate::session_slot::McpGenerationProjection> {
+    ) -> Vec<crate::mcp_material::McpGenerationProjection> {
         self.session_slots
             .read(thread, |slot| {
                 if slot.mcp_quiescence_fence.is_some() {
@@ -359,7 +285,7 @@ impl crate::SharedHost {
                 slot.mcp
                     .iter()
                     .filter(|projection| {
-                        projection.state == crate::session_slot::McpProjectionState::Active
+                        projection.state == crate::mcp_material::McpProjectionState::Active
                             && projection.server.is_some()
                     })
                     .cloned()
@@ -371,7 +297,7 @@ impl crate::SharedHost {
     pub(crate) fn mcp_projection(
         &self,
         generation: &awaken_session_mcp_contract::McpGenerationRef,
-    ) -> Option<crate::session_slot::McpGenerationProjection> {
+    ) -> Option<crate::mcp_material::McpGenerationProjection> {
         self.session_slots
             .read(generation.session_id().as_str(), |slot| {
                 slot.mcp
@@ -384,7 +310,7 @@ impl crate::SharedHost {
 
     pub(crate) fn insert_mcp_projection(
         &self,
-        projection: crate::session_slot::McpGenerationProjection,
+        projection: crate::mcp_material::McpGenerationProjection,
     ) -> Result<(), HostError> {
         let thread = projection.request.generation.session_id().clone();
         self.session_slots.update(thread.as_str(), |slot| {
@@ -425,8 +351,8 @@ impl crate::SharedHost {
                     .ok_or_else(|| HostError::internal("unknown MCP staging owner"))?;
                 if !matches!(
                     projection.state,
-                    crate::session_slot::McpProjectionState::Staging
-                        | crate::session_slot::McpProjectionState::Draining
+                    crate::mcp_material::McpProjectionState::Staging
+                        | crate::mcp_material::McpProjectionState::Draining
                 ) || projection.staging.is_none()
                     || projection.mcp_process.is_some()
                 {
@@ -435,7 +361,7 @@ impl crate::SharedHost {
                     ));
                 }
                 let connect_admitted = admitted
-                    && projection.state == crate::session_slot::McpProjectionState::Staging;
+                    && projection.state == crate::mcp_material::McpProjectionState::Staging;
                 projection.mcp_process = Some(process);
                 Ok(connect_admitted)
             })
@@ -447,7 +373,7 @@ impl crate::SharedHost {
     pub(crate) fn complete_staging_mcp_projection(
         &self,
         generation: &awaken_session_mcp_contract::McpGenerationRef,
-        wiring: crate::mcp::McpWiring,
+        wiring: crate::mcp_material::McpWiring,
     ) -> Result<(), HostError> {
         self.session_slots
             .modify(generation.session_id().as_str(), |slot| {
@@ -462,7 +388,7 @@ impl crate::SharedHost {
                     .iter_mut()
                     .find(|projection| projection.request.generation == *generation)
                     .ok_or_else(|| HostError::internal("unknown MCP staging owner"))?;
-                if projection.state != crate::session_slot::McpProjectionState::Staging
+                if projection.state != crate::mcp_material::McpProjectionState::Staging
                     || projection.mcp_process.is_none()
                 {
                     return Err(HostError::internal(
@@ -471,7 +397,7 @@ impl crate::SharedHost {
                 }
                 projection.native_wiring = Some(wiring);
                 projection.staging = None;
-                projection.state = crate::session_slot::McpProjectionState::Staged;
+                projection.state = crate::mcp_material::McpProjectionState::Staged;
                 Ok(())
             })
             .unwrap_or_else(|| Err(HostError::internal("unknown MCP Session projection")))
@@ -510,8 +436,8 @@ impl crate::SharedHost {
                 };
                 if !matches!(
                     projection.state,
-                    crate::session_slot::McpProjectionState::Staged
-                        | crate::session_slot::McpProjectionState::Active
+                    crate::mcp_material::McpProjectionState::Staged
+                        | crate::mcp_material::McpProjectionState::Active
                 ) || projection.request.realization_id != request.realization_id
                     || projection.request.renewal_binding_fingerprint() != binding
                     || request.generation.lease_expires_at_unix_ms()
@@ -553,7 +479,7 @@ impl crate::SharedHost {
                     return false;
                 }
                 let Some(index) = slot.mcp.iter().position(|projection| {
-                    projection.state == crate::session_slot::McpProjectionState::Removed
+                    projection.state == crate::mcp_material::McpProjectionState::Removed
                         && ((projection.request == *request
                             && projection.receipt.receipt_fingerprint == request_fingerprint)
                             || (projection.request.renewal_binding_fingerprint()
@@ -585,9 +511,9 @@ impl crate::SharedHost {
         if let Some(projection) = self.mcp_projection(generation) {
             if matches!(
                 projection.state,
-                crate::session_slot::McpProjectionState::Staging
-                    | crate::session_slot::McpProjectionState::Draining
-                    | crate::session_slot::McpProjectionState::Removed
+                crate::mcp_material::McpProjectionState::Staging
+                    | crate::mcp_material::McpProjectionState::Draining
+                    | crate::mcp_material::McpProjectionState::Removed
             ) {
                 return Err(HostError::internal(
                     "non-visible MCP generation cannot be published",
@@ -640,27 +566,27 @@ impl crate::SharedHost {
                     return Err(HostError::internal("unknown MCP generation projection"));
                 };
                 match slot.mcp[index].state {
-                    crate::session_slot::McpProjectionState::Staging => Err(HostError::internal(
+                    crate::mcp_material::McpProjectionState::Staging => Err(HostError::internal(
                         "MCP generation is still staging and cannot be published",
                     )),
-                    crate::session_slot::McpProjectionState::Staged => {
+                    crate::mcp_material::McpProjectionState::Staged => {
                         for projection in &mut slot.mcp {
                             if projection.request.generation.attachment_id()
                                 == generation.attachment_id()
                                 && projection.state
-                                    == crate::session_slot::McpProjectionState::Active
+                                    == crate::mcp_material::McpProjectionState::Active
                             {
                                 projection.state =
-                                    crate::session_slot::McpProjectionState::Draining;
+                                    crate::mcp_material::McpProjectionState::Draining;
                             }
                         }
-                        slot.mcp[index].state = crate::session_slot::McpProjectionState::Active;
+                        slot.mcp[index].state = crate::mcp_material::McpProjectionState::Active;
                         slot.runtime = None;
                         Ok(true)
                     }
-                    crate::session_slot::McpProjectionState::Active => Ok(false),
-                    crate::session_slot::McpProjectionState::Draining
-                    | crate::session_slot::McpProjectionState::Removed => Err(HostError::internal(
+                    crate::mcp_material::McpProjectionState::Active => Ok(false),
+                    crate::mcp_material::McpProjectionState::Draining
+                    | crate::mcp_material::McpProjectionState::Removed => Err(HostError::internal(
                         "non-visible MCP generation cannot be published",
                     )),
                 }
@@ -713,13 +639,13 @@ impl crate::SharedHost {
                         "MCP generation projection was replaced while cleanup was waiting",
                     ));
                 }
-                if projection.state == crate::session_slot::McpProjectionState::Removed {
+                if projection.state == crate::mcp_material::McpProjectionState::Removed {
                     return Ok::<_, HostError>(None);
                 }
                 // Visibility closes before cancellation. Existing Runtime clones may
                 // still hold the dynamic tools, so their exact transport fences are
                 // cancelled and drained below before Removed is acknowledged.
-                projection.state = crate::session_slot::McpProjectionState::Draining;
+                projection.state = crate::mcp_material::McpProjectionState::Draining;
                 let call_fences = projection
                     .native_wiring
                     .as_ref()
@@ -853,10 +779,10 @@ impl crate::SharedHost {
                 else {
                     return Ok(());
                 };
-                if projection.state == crate::session_slot::McpProjectionState::Removed {
+                if projection.state == crate::mcp_material::McpProjectionState::Removed {
                     return Ok(());
                 }
-                if projection.state != crate::session_slot::McpProjectionState::Draining {
+                if projection.state != crate::mcp_material::McpProjectionState::Draining {
                     return Err(HostError::internal(
                         "MCP generation changed while its drain was quiescing",
                     ));
@@ -865,7 +791,7 @@ impl crate::SharedHost {
                 projection.native_wiring = None;
                 projection.mcp_process = None;
                 projection.staging = None;
-                projection.state = crate::session_slot::McpProjectionState::Removed;
+                projection.state = crate::mcp_material::McpProjectionState::Removed;
                 Ok(())
             }) {
             Some(result) => result,
@@ -902,7 +828,7 @@ impl crate::SharedHost {
                 slot.mcp
                     .iter()
                     .filter(|projection| {
-                        projection.state != crate::session_slot::McpProjectionState::Removed
+                        projection.state != crate::mcp_material::McpProjectionState::Removed
                     })
                     .map(|projection| projection.request.generation.clone())
                     .collect::<Vec<_>>()
@@ -926,7 +852,7 @@ impl crate::SharedHost {
             .session_slots
             .read(thread, |slot| {
                 slot.mcp.iter().any(|projection| {
-                    projection.state != crate::session_slot::McpProjectionState::Removed
+                    projection.state != crate::mcp_material::McpProjectionState::Removed
                 })
             })
             .unwrap_or(false);
@@ -948,19 +874,6 @@ impl crate::SharedHost {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct McpQuiescenceProof {
     pub generations: Vec<awaken_session_mcp_contract::McpGenerationRef>,
-}
-
-impl McpWiring {
-    #[must_use]
-    pub fn empty() -> Self {
-        Self {
-            notification_transports: Vec::new(),
-            plugins: Vec::new(),
-            tool_ids: Vec::new(),
-            skill_registries: Vec::new(),
-            call_fences: Vec::new(),
-        }
-    }
 }
 
 /// Connect every staged server and collect the discovered tools. Fail closed:

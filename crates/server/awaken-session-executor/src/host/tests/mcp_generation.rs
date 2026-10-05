@@ -13,8 +13,9 @@ fn host_with_process_reaper() -> SharedHost {
 /// change which generation is visible.
 #[tokio::test]
 async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
-    use crate::mcp::{McpTransportMaterial, McpWiring, project_mcp_session_transport};
-    use crate::session_slot::{McpGenerationProjection, McpProjectionState};
+    use crate::mcp::project_mcp_session_transport;
+    use crate::mcp_material::{McpGenerationProjection, McpProjectionState};
+    use crate::mcp_material::{McpTransportMaterial, McpWiring};
     use awaken_session_mcp_contract::McpRealizationReceipt;
 
     let host = Arc::new(host_with_process_reaper());
@@ -48,7 +49,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
             server: Some(McpTransportMaterial {
                 name: "docs".into(),
                 prompts_as_skills: false,
-                transport: crate::mcp::McpTransportMaterialKind::Http {
+                transport: crate::mcp_material::McpTransportMaterialKind::Http {
                     url: format!("https://mcp-{number}.example.test"),
                     bearer: Some(awaken_agent_contract::RedactedString::new(secret)),
                     refresh: None,
@@ -184,8 +185,8 @@ async fn mcp_drain_acknowledges_removed_only_after_busy_call_quiesces() {
     use awaken_ext_mcp::{CallToolResult, McpToolDefinition, McpTransportError};
     use awaken_session_mcp_contract::{McpRealizationReceipt, StageMcpAttachment};
 
-    use crate::mcp::{McpTransportMaterial, McpTransportMaterialKind, McpWiring};
-    use crate::session_slot::{McpGenerationProjection, McpProjectionState};
+    use crate::mcp_material::{McpGenerationProjection, McpProjectionState};
+    use crate::mcp_material::{McpTransportMaterial, McpTransportMaterialKind, McpWiring};
 
     struct DropGate(Arc<(Mutex<bool>, Condvar)>);
 
@@ -328,8 +329,8 @@ async fn worker_relay_drain_retains_exact_route_across_cancel_and_timeout_retry(
     use awaken_runtime_contract::CredentialRealizationKind;
     use awaken_session_mcp_contract::{McpRealizationReceipt, StageMcpAttachment};
 
-    use crate::mcp::{McpTransportMaterial, McpTransportMaterialKind};
-    use crate::session_slot::{McpGenerationProjection, McpProjectionState};
+    use crate::mcp_material::{McpGenerationProjection, McpProjectionState};
+    use crate::mcp_material::{McpTransportMaterial, McpTransportMaterialKind};
 
     // Route-drain cause/effect table (paired with mcp_relay's actual-forward
     // acceptance test):
@@ -473,7 +474,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
         McpGenerationRef, McpRealizationReceipt, StageMcpAttachment,
     };
 
-    use crate::session_slot::{McpGenerationProjection, McpProjectionState};
+    use crate::mcp_material::{McpGenerationProjection, McpProjectionState};
 
     struct Process {
         id: String,
@@ -741,7 +742,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
     use awaken_provisioning_contract as pc;
     use awaken_session_mcp_contract::{McpRealizationReceipt, StageMcpAttachment};
 
-    use crate::session_slot::{McpGenerationProjection, McpProjectionState, McpStagingActivity};
+    use crate::mcp_material::{McpGenerationProjection, McpProjectionState, McpStagingActivity};
 
     struct Process {
         reaped: Arc<std::sync::atomic::AtomicBool>,
@@ -924,7 +925,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         "S2 spawn transfers to the Draining owner"
     );
     assert!(
-        host.complete_staging_mcp_projection(&generation, crate::mcp::McpWiring::empty())
+        host.complete_staging_mcp_projection(&generation, crate::mcp_material::McpWiring::empty())
             .is_err(),
         "S2 commit after close is rejected"
     );
@@ -1106,7 +1107,7 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
 
 #[tokio::test]
 async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
-    use crate::session_slot::{McpGenerationProjection, McpProjectionState};
+    use crate::mcp_material::{McpGenerationProjection, McpProjectionState};
     use awaken_session_mcp_contract::{McpRealizationReceipt, StageMcpAttachment};
 
     /* Runtime renewal cause/effect decision table. C1 the same logical
@@ -1269,8 +1270,8 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
 /// compatibility/recovery path.
 #[tokio::test]
 async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
-    use crate::mcp::McpTransportMaterial;
-    use crate::session_slot::{McpGenerationProjection, McpProjectionState};
+    use crate::mcp_material::McpTransportMaterial;
+    use crate::mcp_material::{McpGenerationProjection, McpProjectionState};
     use awaken_session_mcp_contract::McpRealizationReceipt;
 
     let generation = crate::test_mcp::mcp_fence(
@@ -1284,7 +1285,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
     let server = McpTransportMaterial {
         name: "docs".into(),
         prompts_as_skills: false,
-        transport: crate::mcp::McpTransportMaterialKind::Http {
+        transport: crate::mcp_material::McpTransportMaterialKind::Http {
             url: "https://mcp.example.test".into(),
             bearer: Some(awaken_agent_contract::RedactedString::new("secret")),
             refresh: None,
@@ -1365,8 +1366,8 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
 
 #[tokio::test]
 async fn worker_authority_loss_revokes_every_session_projection() {
-    use crate::mcp::{McpTransportMaterial, McpWiring};
-    use crate::session_slot::{McpGenerationProjection, McpProjectionState};
+    use crate::mcp_material::{McpGenerationProjection, McpProjectionState};
+    use crate::mcp_material::{McpTransportMaterial, McpWiring};
     use awaken_session_mcp_contract::McpRealizationReceipt;
 
     // Cause graph: unprovable Worker authority -> enumerate the canonical
@@ -1390,7 +1391,7 @@ async fn worker_authority_loss_revokes_every_session_projection() {
     let server = McpTransportMaterial {
         name: "docs".into(),
         prompts_as_skills: false,
-        transport: crate::mcp::McpTransportMaterialKind::Http {
+        transport: crate::mcp_material::McpTransportMaterialKind::Http {
             url: "https://mcp.example.test".into(),
             bearer: Some(awaken_agent_contract::RedactedString::new("secret")),
             refresh: None,

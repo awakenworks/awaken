@@ -634,7 +634,7 @@ impl SharedHost {
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
         effect: &AuthorizedSessionEnvironmentEffect,
-        reconciliation: crate::session_slot::EnvironmentResourceReconciliation,
+        reconciliation: crate::staged_resources::EnvironmentResourceReconciliation,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
         let candidate = match effect.intent.kind() {
             awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt => {
@@ -751,12 +751,12 @@ impl SharedHost {
         let reconciliation = match &candidate.origin {
             crate::session_slot::UnboundSessionEnvironmentOrigin::New
             | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableCreate(_) => {
-                crate::session_slot::EnvironmentResourceReconciliation::Fresh
+                crate::staged_resources::EnvironmentResourceReconciliation::Fresh
             }
             crate::session_slot::UnboundSessionEnvironmentOrigin::Adoption
             | crate::session_slot::UnboundSessionEnvironmentOrigin::AdoptionFrom(_)
             | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableAdoption(_) => {
-                crate::session_slot::EnvironmentResourceReconciliation::Adopted
+                crate::staged_resources::EnvironmentResourceReconciliation::Adopted
             }
         };
         let environment =
@@ -841,7 +841,7 @@ impl SharedHost {
                 .await?,
         );
         for input in transition.desired().resources.inputs() {
-            let path = crate::managed_resource_projection::resolved_input_effect_path(input);
+            let path = crate::managed_input_layout::resolved_input_effect_path(input);
             if let Err(error) = environment.projection().reserve_owned_path(&path) {
                 let _ = environment.lifecycle().dispose().await;
                 return Err(HostError::internal(error.to_string()));
@@ -852,7 +852,7 @@ impl SharedHost {
                 thread,
                 environment,
                 &effect,
-                crate::session_slot::EnvironmentResourceReconciliation::Fresh,
+                crate::staged_resources::EnvironmentResourceReconciliation::Fresh,
             )
             .await?;
         self.session_slots.update(thread, |slot| {
@@ -916,7 +916,7 @@ impl SharedHost {
                 HostError::internal("published Session Environment lacks its Resource transition")
             })?;
         let installed = self.thread_resource_manifest(thread);
-        if reconciliation == crate::session_slot::EnvironmentResourceReconciliation::None
+        if reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::None
             && installed.as_ref() == Some(transition.desired())
         {
             return Ok(environment);
@@ -1153,7 +1153,7 @@ impl SharedHost {
                                     awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
                                 )
                             })
-                            .map(crate::managed_resource_projection::resolved_input_effect_path)
+                            .map(crate::managed_input_layout::resolved_input_effect_path)
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_else(|| {

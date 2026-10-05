@@ -141,7 +141,7 @@ impl SharedHost {
                         .mcp
                         .iter()
                         .filter(|projection| {
-                            projection.state == crate::session_slot::McpProjectionState::Active
+                            projection.state == crate::mcp_material::McpProjectionState::Active
                         })
                         .map(|projection| projection.request.clone())
                         .collect();
