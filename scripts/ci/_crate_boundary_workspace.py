@@ -840,6 +840,8 @@ def dependency_fitness_specs() -> list[_crate_dependency_fitness.CrateSpec]:
                 layer=str(metadata.get("layer", "")),
                 authority=str(metadata.get("authority", "")),
                 normal_deps=frozenset(normal_dependency_names(manifest)),
+                product=str(metadata.get("product", "")),
+                bounded_context=str(metadata.get("bounded_context", "")),
             )
         )
     return specs

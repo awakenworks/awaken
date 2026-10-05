@@ -6,6 +6,7 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "devtools"
+product = "devtools"
 layer = "tooling"
 authority = "eval"
 

@@ -6,6 +6,7 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "control"
+product = "apps"
 layer = "bootstrap"
 authority = "control"
 

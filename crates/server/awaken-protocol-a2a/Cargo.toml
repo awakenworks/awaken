@@ -9,6 +9,8 @@ workspace = true
 
 [package.metadata.awaken]
 context = "shared"
+product = "platform"
+bounded_context = "protocols"
 layer = "interface"
 authority = "protocol-a2a"
 

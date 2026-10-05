@@ -6,6 +6,8 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "control"
+product = "platform"
+bounded_context = "config"
 layer = "infrastructure"
 authority = "config"
 

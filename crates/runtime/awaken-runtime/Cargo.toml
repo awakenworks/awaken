@@ -8,6 +8,8 @@ license.workspace = true
 # Reviewed public API snapshot (public-api/awaken-runtime.txt): INVARIANTS G2 runtime-core surface.
 api_snapshot = true
 context = "runtime"
+product = "sdk"
+bounded_context = "agent-runtime"
 layer = "application"
 authority = "runtime"
 

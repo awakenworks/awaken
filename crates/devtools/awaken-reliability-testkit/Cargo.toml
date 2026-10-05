@@ -7,6 +7,7 @@ publish = false
 
 [package.metadata.awaken]
 context = "devtools"
+product = "devtools"
 layer = "tooling"
 authority = "reliability-test-evidence"
 description = "Test-only fixture admission and shared process-crash evidence primitives"

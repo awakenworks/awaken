@@ -6,6 +6,8 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "coordinator"
+product = "platform"
+bounded_context = "environment"
 layer = "infrastructure"
 authority = "environment-image"
 

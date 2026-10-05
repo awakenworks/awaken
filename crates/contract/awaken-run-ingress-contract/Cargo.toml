@@ -6,6 +6,8 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "coordinator"
+product = "platform"
+bounded_context = "dispatch"
 layer = "contract"
 # ADR-0081 §1 interface kinds this crate may hold (types | spi | api | remote | ext).
 kinds = ["types", "spi", "remote"]

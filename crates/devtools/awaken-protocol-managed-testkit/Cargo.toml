@@ -7,6 +7,7 @@ publish = false
 
 [package.metadata.awaken]
 context = "devtools"
+product = "devtools"
 layer = "tooling"
 authority = "protocol-managed"
 description = "Volatile Session, Work, Environment and sandbox-policy store fixtures handed to the Managed adapter behind their ports"

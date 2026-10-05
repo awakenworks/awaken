@@ -9,6 +9,8 @@ workspace = true
 
 [package.metadata.awaken]
 context = "resources"
+product = "platform"
+bounded_context = "resources"
 layer = "infrastructure"
 authority = "file"
 

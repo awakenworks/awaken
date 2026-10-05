@@ -9,6 +9,8 @@ license.workspace = true
 # contract. It holds no worker authority: the control plane dials the same
 # channel, so it sits in the shared ring both planes may use.
 context = "shared"
+product = "platform"
+bounded_context = "worker"
 layer = "infrastructure"
 authority = "connection-plan"
 

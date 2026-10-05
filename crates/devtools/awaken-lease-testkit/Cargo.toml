@@ -7,6 +7,7 @@ publish = false
 
 [package.metadata.awaken]
 context = "shared"
+product = "devtools"
 layer = "tooling"
 authority = "time-bounded-ownership-test-evidence"
 description = "Deterministic WallClock doubles, reachable only from test and conformance code, never from a shipped binary"

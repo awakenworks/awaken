@@ -6,6 +6,8 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "runtime"
+product = "sdk"
+bounded_context = "agent-runtime"
 layer = "infrastructure"
 authority = "ext-mcp"
 description = "Model Context Protocol (MCP) client extension for Awaken"

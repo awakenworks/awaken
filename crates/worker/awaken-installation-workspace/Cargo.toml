@@ -11,6 +11,8 @@ license.workspace = true
 # primitive it uses, so the Runtime Host receives the coordinate as a value
 # instead of reaching into the installation filesystem.
 context = "worker"
+product = "platform"
+bounded_context = "access"
 layer = "infrastructure"
 authority = "installation-workspace"
 
