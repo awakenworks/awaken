@@ -1,6 +1,6 @@
 {
   "baseline": {
-    "scanners_without_input_globs": 18,
+    "scanners_without_input_globs": 17,
     "scope_lists": 32
   },
   "comment": [
@@ -26,10 +26,6 @@
       "runner": null
     },
     "check_authority_arithmetic.py": {
-      "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker",
-      "runner": "scripts/ci/check-rust.sh"
-    },
-    "check_crate_boundaries.py": {
       "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker",
       "runner": "scripts/ci/check-rust.sh"
     },
