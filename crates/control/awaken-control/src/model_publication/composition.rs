@@ -86,7 +86,7 @@ impl ProviderCredentialHolders {
 impl CatalogModelPublicationResolver {
     /// The current reading of the injected wall clock, in epoch milliseconds.
     pub(super) fn clock_reading_ms(&self) -> u64 {
-        awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref())
+        awaken_time::WallClockExt::now_ms(self.clock.as_ref())
     }
 
     /// Resolve against a frozen catalog snapshot. This is useful for deterministic
@@ -95,7 +95,7 @@ impl CatalogModelPublicationResolver {
     pub fn new(
         catalog: ProviderCatalog,
         credentials: Arc<dyn CredentialRepo>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         let acp_capabilities = Arc::new(Vec::new());
         let executor_capabilities = Arc::new(executor_capabilities(&acp_capabilities));
@@ -125,7 +125,7 @@ impl CatalogModelPublicationResolver {
     pub fn from_repo(
         repo: Arc<dyn CatalogRepo>,
         credentials: Arc<dyn CredentialRepo>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         let acp_capabilities = Arc::new(Vec::new());
         let executor_capabilities = Arc::new(executor_capabilities(&acp_capabilities));

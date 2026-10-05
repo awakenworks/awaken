@@ -28,10 +28,8 @@ impl SessionRealizationLeaseReceipt {
     ) -> Result<Self, SessionRealizationControlFailure> {
         // The one expiry law: live strictly before the deadline, so a live
         // lease always has a nonzero remainder at millisecond resolution.
-        let remaining_ms = awaken_lease_contract::Expiry::from_epoch_ms(lease.expires_at_unix_ms)
-            .remaining_at(awaken_lease_contract::UtcTime::from_epoch_ms(
-                authority_now_unix_ms,
-            ))
+        let remaining_ms = awaken_time::Expiry::from_epoch_ms(lease.expires_at_unix_ms)
+            .remaining_at(awaken_time::UtcTime::from_epoch_ms(authority_now_unix_ms))
             .and_then(|remaining| NonZeroU64::new(u64::try_from(remaining.as_millis()).ok()?))
             .ok_or(SessionRealizationControlFailure::StaleOwnership)?;
         Ok(Self {
@@ -127,7 +125,7 @@ mod tests {
         // C3 scheduler advances/stalls. Only before grants exact remaining.
         // Changing the absolute authority epoch never changes the result:
         // no Worker wall-clock coordinate participates in this calculation.
-        let scheduled = awaken_lease_contract::mono::now();
+        let scheduled = awaken_time::mono::now();
         let started = AuthorityProofStarted::from_clock_sample(scheduled, Duration::from_secs(1));
         for authority_epoch in [0, 1_000_000, u64::MAX - 30] {
             let proof = SessionRealizationLeaseReceipt::issued_at(

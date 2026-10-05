@@ -25,7 +25,6 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
-use awaken_lease_contract::{Expiry, UtcTime};
 use awaken_runtime_contract::CredentialRealizationCapabilities;
 pub use awaken_runtime_contract::{
     AttemptCredentialBinding, AttemptCredentialBindingError, AttemptCredentialDelivery,
@@ -40,6 +39,7 @@ use awaken_runtime_contract::{
 use awaken_session_execution_contract::{
     SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
 };
+use awaken_time::{Expiry, UtcTime};
 use awaken_worker_contract::{PlacementPolicy, WorkerAssignment, WorkerIdentity, WorkerSnapshot};
 use serde::{Deserialize, Serialize};
 

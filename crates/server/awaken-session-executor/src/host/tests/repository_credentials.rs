@@ -5,7 +5,7 @@ use super::*;
 fn pinned_vault(
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> awaken_credential_materializer::PinnedCredentialMaterializer {
     awaken_credential_materializer::PinnedCredentialMaterializer::new(
         Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
@@ -124,12 +124,11 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
             repository_credential_descriptor("https://github.com/awaken/example.git"),
             secrets.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .expect("author dispatch Repository credential");
-        let materializer =
-            pinned_vault(credentials, secrets, awaken_lease_contract::system_clock());
+        let materializer = pinned_vault(credentials, secrets, awaken_time::system_clock());
         let host = Arc::new(if install_credentials {
             host.with_credential_materializer(materializer.clone())
         } else {
@@ -546,7 +545,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
             repository_credential_descriptor("https://github.com/awaken/example.git"),
             secrets.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .expect("author exact Repository credential");
@@ -572,11 +571,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
             .await
             .expect("disable exact Repository credential");
         }
-        let materializer = pinned_vault(
-            credentials.clone(),
-            secrets,
-            awaken_lease_contract::system_clock(),
-        );
+        let materializer = pinned_vault(credentials.clone(), secrets, awaken_time::system_clock());
         let host = Arc::new(host.with_credential_materializer(materializer.clone()));
         let managed =
             managed_with_resource_source(host.clone()).with_credential_materializer(materializer);
@@ -742,7 +737,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         },
         secrets.as_ref(),
         credentials.as_ref(),
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -818,7 +813,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         },
         secrets.as_ref(),
         credentials.as_ref(),
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();

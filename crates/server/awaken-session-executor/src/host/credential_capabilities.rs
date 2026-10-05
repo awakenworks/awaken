@@ -306,7 +306,7 @@ mod tests {
                         host = host.with_credential_materializer(
                             awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
                                 Arc::new(ControlReferenceResolver),
-                             awaken_lease_contract::system_clock(),),
+                             awaken_time::system_clock(),),
                         );
                     }
                     if acp_installed {
@@ -379,7 +379,7 @@ mod tests {
         let materializer =
             awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
                 Arc::new(ControlReferenceResolver),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             );
         let remote_profile = materializer.worker_relay_capabilities();
         let mut with_remote = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "test-model");

@@ -473,12 +473,8 @@ fn remote_projection_is_the_single_awaiting_resume_reader() {
     // local ownership and both remote ticket partitions.
     let worker = DispatchWorker::new(
         Arc::new(Runtime::new()),
-        Arc::new(MemoryDispatchStore::new(
-            awaken_lease_contract::system_clock(),
-        )),
-        Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        )),
+        Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
+        Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock())),
         "worker",
     );
     assert!(worker.recovery_source.is_some());
@@ -653,9 +649,7 @@ async fn terminal_recovery_rejects_conflicting_committed_identity_before_settlem
             "R2",
         ),
     ] {
-        let commit = Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         let reader: Arc<dyn CommittedThreadView> = Arc::new(TerminalView(record));
         let worker = DispatchWorker::from_parts(
             Arc::new(Runtime::new()),
@@ -693,9 +687,7 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
     let store = Arc::new(MemoryDispatchStore::new(Arc::new(
         awaken_lease_testkit::ManualClock::new(0),
     )));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let activation = |run: &str, thread: &str| {
         RunActivation::new(
             RunId(run.into()),
@@ -835,9 +827,7 @@ async fn worker_rejects_unmatched_claim_delivery_without_panicking() {
     let store = Arc::new(MemoryDispatchStore::new(Arc::new(
         awaken_lease_testkit::ManualClock::new(0),
     )));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let claimed = store
         .claim_new_run(
             crate::RunDispatch::new(RunActivation::new(

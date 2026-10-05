@@ -5,7 +5,7 @@
 
 use super::*;
 
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 
 pub(super) async fn prepare_runtime_routers(
     stores: ProcessStores,

@@ -48,7 +48,7 @@ pub struct RemoteManagementAuthz {
     config: RemoteGateConfig,
     /// The process's one wall clock: the instant every presented credential is
     /// judged at.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 /// Authenticated request identity together with the credential attributes a
@@ -110,7 +110,7 @@ impl RemoteManagementAuthz {
         issuer: String,
         user_token_source: Arc<RedactedStringSource>,
         service_token: Option<String>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Arc<Self>, String> {
         let config = RemoteGateConfig {
             base_url,
@@ -130,7 +130,7 @@ impl RemoteManagementAuthz {
         audience: String,
         issuer: String,
         service_token_file: PathBuf,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Arc<Self>, String> {
         Self::connect_config(
             RemoteGateConfig {
@@ -150,7 +150,7 @@ impl RemoteManagementAuthz {
         config: RemoteGateConfig,
         user_token_source: Option<Arc<RedactedStringSource>>,
         user_token: Option<RedactedString>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Arc<Self>, String> {
         let user_is_carrier = config.service_token.is_none()
             && config.service_token_file.is_none()

@@ -52,7 +52,7 @@ impl Harness {
             VaultState::new(
                 Arc::new(InMemorySecretStore::new()),
                 Arc::new(InMemoryCredentialRepo::new()),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .with_probe(probe.clone()),
         );
@@ -464,7 +464,7 @@ async fn supervised_catalog_refresh_uses_one_sync_path_and_stops_with_lifecycle(
         Arc::new(VaultState::new(
             Arc::new(InMemorySecretStore::new()),
             Arc::new(InMemoryCredentialRepo::new()),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )),
     );
     let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();

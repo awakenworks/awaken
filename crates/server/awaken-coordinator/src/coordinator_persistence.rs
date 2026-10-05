@@ -106,7 +106,7 @@ pub async fn migrate_postgres_schema_with_pool(
 #[cfg(any(test, feature = "test-support"))]
 pub async fn init_scenario_runtime(
     deployment: &DeploymentConfig,
-    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<std::sync::Arc<dyn awaken_session_executor::RuntimeAuthority>, String> {
     if deployment.storage_dir.is_none()
         && deployment.database_url.is_none()
@@ -138,7 +138,7 @@ pub async fn init_scenario_runtime(
 /// injected into every Worker-facing and observation-facing consumer.
 pub async fn open(
     deployment: &DeploymentConfig,
-    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<CoordinatorPersistence, String> {
     open_with(deployment, SchemaAccess::Migrate, clock).await
 }
@@ -147,7 +147,7 @@ pub async fn open(
 /// PostgreSQL ledgers. SQLite remains an explicitly durable single-node store.
 pub async fn open_existing(
     deployment: &DeploymentConfig,
-    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<CoordinatorPersistence, String> {
     open_with(deployment, SchemaAccess::Verify, clock).await
 }
@@ -155,7 +155,7 @@ pub async fn open_existing(
 async fn open_with(
     deployment: &DeploymentConfig,
     schema: SchemaAccess,
-    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<CoordinatorPersistence, String> {
     let components = postgres_components(deployment);
     let database_url = database_url(deployment)?;
@@ -327,7 +327,7 @@ mod tests {
         // exact identity/generation survives. Postgres migrate/verify rules are
         // covered by worker-registry conformance and migration-ledger tests.
         let missing = DeploymentConfig::ephemeral();
-        let reference = init_scenario_runtime(&missing, awaken_lease_contract::system_clock())
+        let reference = init_scenario_runtime(&missing, awaken_time::system_clock())
             .await
             .expect("R0 scenario SQLite runtime needs no shared backend");
         assert!(
@@ -343,7 +343,7 @@ mod tests {
                 .is_ok(),
             "R0 exact operational feed survives erasure"
         );
-        let missing_error = match open(&missing, awaken_lease_contract::system_clock()).await {
+        let missing_error = match open(&missing, awaken_time::system_clock()).await {
             Ok(_) => panic!("R1 must reject volatile authority"),
             Err(error) => error,
         };
@@ -352,7 +352,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let mut durable = DeploymentConfig::ephemeral();
         durable.storage_dir = Some(root.path().to_path_buf());
-        let directory = open(&durable, awaken_lease_contract::system_clock())
+        let directory = open(&durable, awaken_time::system_clock())
             .await
             .expect("R2 durable registry");
         let registered = directory
@@ -370,7 +370,7 @@ mod tests {
             .unwrap();
         drop(directory);
 
-        let reopened = open_existing(&durable, awaken_lease_contract::system_clock())
+        let reopened = open_existing(&durable, awaken_time::system_clock())
             .await
             .expect("R3 reopen registry");
         assert_eq!(

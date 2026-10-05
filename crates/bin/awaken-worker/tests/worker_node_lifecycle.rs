@@ -44,7 +44,7 @@ fn lifecycle_worker(upstream: WorkerUpstream) -> WorkerNodeBuilder {
     // accidentally opting into TrustedHost and requiring a local Hand binary.
     // Fault/capacity cases replace this SAME provider via the ordinary builder.
     // Real Native/TrustedHost execution remains in the portability gate.
-    WorkerNodeBuilder::new(upstream, awaken_lease_contract::system_clock())
+    WorkerNodeBuilder::new(upstream, awaken_time::system_clock())
         .with_session_container_provider(
             "external-secure",
             Arc::new(ExternalSessionProvider::default()),
@@ -354,28 +354,26 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionP
 fn builder_rejects_incomplete_or_invalid_topology() {
     let missing = WorkerNodeBuilder::new(
         WorkerUpstream::new("http://control"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .build()
     .err()
     .expect("manifest is mandatory");
     assert!(missing.to_string().contains("manifest"));
 
-    let empty_upstream = WorkerNodeBuilder::new(
-        WorkerUpstream::new(""),
-        awaken_lease_contract::system_clock(),
-    )
-    .with_manifest(manifest())
-    .build()
-    .err()
-    .expect("empty upstream is invalid");
+    let empty_upstream =
+        WorkerNodeBuilder::new(WorkerUpstream::new(""), awaken_time::system_clock())
+            .with_manifest(manifest())
+            .build()
+            .err()
+            .expect("empty upstream is invalid");
     assert!(empty_upstream.to_string().contains("upstream"));
 
     let mut zero_capacity = manifest();
     zero_capacity.capacity.max_concurrent = 0;
     let invalid_capacity = WorkerNodeBuilder::new(
         WorkerUpstream::new("http://control"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_manifest(zero_capacity)
     .build()
@@ -385,7 +383,7 @@ fn builder_rejects_incomplete_or_invalid_topology() {
 
     let invalid_standard_capacity = WorkerNodeBuilder::new(
         WorkerUpstream::new("http://control"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_standard_manifest_config(
         StandardManifestConfig::new("worker-node-test").with_max_concurrent(0),
@@ -413,7 +411,7 @@ fn standard_manifest_is_derived_from_builder_topology() {
     );
     let worker = WorkerNodeBuilder::new(
         WorkerUpstream::new("http://control"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_deployment_config(deployment)
     .with_standard_manifest(std::collections::BTreeSet::from([
@@ -439,7 +437,7 @@ fn external_session_provider_requires_its_hand_channel_port() {
     // before runtime. Capability advertisement cannot outpace executable wiring.
     let missing_hand = WorkerNodeBuilder::new(
         WorkerUpstream::new("http://control"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_session_container_provider(
         "external-secure",
@@ -453,7 +451,7 @@ fn external_session_provider_requires_its_hand_channel_port() {
 
     let empty_backend = WorkerNodeBuilder::new(
         WorkerUpstream::new("http://control"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_session_container_provider(" ", Arc::new(ExternalSessionProvider::default()))
     .with_standard_manifest(Default::default())
@@ -473,7 +471,7 @@ fn standard_manifest_preserves_repository_control_from_the_installed_provider() 
     // insufficient: the sandbox capability itself is the admission authority.
     let worker = WorkerNodeBuilder::new(
         WorkerUpstream::new("http://control"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_session_container_provider(
         "k8s",
@@ -513,7 +511,7 @@ fn container_deployment_cannot_bypass_canonical_provider_preparation() {
     deployment.sandbox_tier = awaken_session_executor::SandboxTier::K8s;
     let error = WorkerNodeBuilder::new(
         WorkerUpstream::new("http://control"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_deployment_config(deployment)
     .with_standard_manifest(Default::default())
@@ -530,7 +528,7 @@ fn container_deployment_cannot_bypass_canonical_provider_preparation() {
 fn explicit_and_standard_manifest_sources_are_mutually_exclusive() {
     let error = WorkerNodeBuilder::new(
         WorkerUpstream::new("http://control"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_manifest(manifest())
     .with_standard_manifest(Default::default())
@@ -542,7 +540,7 @@ fn explicit_and_standard_manifest_sources_are_mutually_exclusive() {
 
     let reverse = WorkerNodeBuilder::new(
         WorkerUpstream::new("http://control"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
     .with_standard_manifest(Default::default())
     .with_manifest(manifest())
@@ -563,7 +561,7 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
             b"fixture-secret".to_vec(),
         )
         .expect("signing credential is valid"),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     let registered_identity = Arc::new(Mutex::new(None));
     let observed = registered_identity.clone();
@@ -759,7 +757,7 @@ fn static_and_registered_application_sources_are_mutually_exclusive() {
     for reverse in [false, true] {
         let builder = WorkerNodeBuilder::new(
             WorkerUpstream::new("http://control"),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let builder = if reverse {
             builder
@@ -784,7 +782,7 @@ fn static_and_registered_application_sources_are_mutually_exclusive() {
     assert!(
         WorkerNodeBuilder::new(
             WorkerUpstream::new("http://control"),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_registered_application_factory(
             WorkerApplicationCapabilities::default(),
@@ -1585,7 +1583,7 @@ async fn transient_provider_timeout_recovers_without_incarnation_restart() {
         Duration::from_secs(5),
         WorkerNodeBuilder::new(
             WorkerUpstream::new(upstream.url()).with_worker_id("worker-provider-recovery-test"),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_deployment_config(local_coordinator_deployment())
         .with_session_container_provider("external-secure", provider.clone())
@@ -1620,7 +1618,7 @@ async fn stalled_initial_provider_probe_never_publishes_ready() {
         Duration::from_secs(5),
         WorkerNodeBuilder::new(
             WorkerUpstream::new(upstream.url()).with_worker_id("worker-provider-startup-stall"),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_deployment_config(local_coordinator_deployment())
         .with_session_container_provider(

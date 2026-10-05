@@ -5,7 +5,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use super::{Epoch, FenceSuccession, fence_succession};
-use crate::{Expiry, UtcTime};
+use awaken_time::{Expiry, UtcTime};
 
 /// The coordinates one family of leases is scoped by.
 ///

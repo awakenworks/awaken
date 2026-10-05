@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use awaken_lease_contract::WallClock;
+use awaken_time::WallClock;
 
 #[cfg(all(test, feature = "loom"))]
 use loom::sync::Mutex;
@@ -369,10 +369,8 @@ mod tests {
         for phase in 0..3 {
             for epoch in [1, 2, 3, u64::MAX] {
                 for owner in ["worker", "other"] {
-                    let supervisor = BackgroundTaskSupervisor::new(
-                        "worker",
-                        awaken_lease_contract::system_clock(),
-                    );
+                    let supervisor =
+                        BackgroundTaskSupervisor::new("worker", awaken_time::system_clock());
                     let token = supervisor.register(&id(), &completion(2).fence).unwrap();
                     if phase == 1 {
                         supervisor.wait(id(), wait_candidate(2));
@@ -411,7 +409,7 @@ mod tests {
         for phase in 0..3 {
             for epoch in [1, 2, 3] {
                 let supervisor =
-                    BackgroundTaskSupervisor::new("worker", awaken_lease_contract::system_clock());
+                    BackgroundTaskSupervisor::new("worker", awaken_time::system_clock());
                 supervisor.register(&id(), &completion(2).fence).unwrap();
                 if phase == 1 {
                     supervisor.wait(id(), wait_candidate(2));
@@ -445,10 +443,8 @@ mod tests {
             for same_owner in [false, true] {
                 for same_epoch in [false, true] {
                     for command in 0..4 {
-                        let supervisor = BackgroundTaskSupervisor::new(
-                            "worker",
-                            awaken_lease_contract::system_clock(),
-                        );
+                        let supervisor =
+                            BackgroundTaskSupervisor::new("worker", awaken_time::system_clock());
                         let id = id();
                         let current = completion(2).fence;
                         let token = supervisor.register(&id, &current).unwrap();
@@ -544,8 +540,7 @@ mod tests {
         // -> E2 Completed; C3 Completed+register/complete -> E3 both stutter;
         // C4 retire -> E4 vacant and registerable. Constraint: Active and
         // Completed can never coexist in parallel maps for one task id.
-        let supervisor =
-            BackgroundTaskSupervisor::new("worker", awaken_lease_contract::system_clock());
+        let supervisor = BackgroundTaskSupervisor::new("worker", awaken_time::system_clock());
         let id = id();
         assert!(
             supervisor.register(&id, &completion(1).fence).is_some(),
@@ -581,8 +576,7 @@ mod tests {
         // Cause: completion arrives without a locally registered launch.
         // Effect: it is ignored and leaves the sole slot vacant. Constraint:
         // only the owner that won register may create completion evidence.
-        let supervisor =
-            BackgroundTaskSupervisor::new("worker", awaken_lease_contract::system_clock());
+        let supervisor = BackgroundTaskSupervisor::new("worker", awaken_time::system_clock());
         let id = id();
         supervisor.complete(id.clone(), completion(1));
         assert!(supervisor.completion(&id).is_none());
@@ -608,8 +602,7 @@ mod tests {
             (Some(("worker", 1)), false, true),
             (None, false, true),
         ] {
-            let supervisor =
-                BackgroundTaskSupervisor::new("worker", awaken_lease_contract::system_clock());
+            let supervisor = BackgroundTaskSupervisor::new("worker", awaken_time::system_clock());
             let id = id();
             supervisor.register(&id, &completion(2).fence).unwrap();
             supervisor.complete(id.clone(), completion(2));
@@ -630,8 +623,7 @@ mod tests {
         // becomes Active and returns one cancellation token; R5 duplicate ack or
         // register -> no second poll. Constraint: Active/Waiting/Completed never
         // coexist in parallel maps for one durable task id.
-        let supervisor =
-            BackgroundTaskSupervisor::new("worker", awaken_lease_contract::system_clock());
+        let supervisor = BackgroundTaskSupervisor::new("worker", awaken_time::system_clock());
         let id = id();
         supervisor.wait(id.clone(), wait_candidate(1));
         assert!(supervisor.wait_candidate(&id).is_none(), "R1");
@@ -668,8 +660,7 @@ mod tests {
         // atomically replaces it; R3 delayed Wait/duplicate Terminal stutter.
         // The StepStart observer can therefore never fold Waiting after a known
         // terminal outcome for the same attempt.
-        let supervisor =
-            BackgroundTaskSupervisor::new("worker", awaken_lease_contract::system_clock());
+        let supervisor = BackgroundTaskSupervisor::new("worker", awaken_time::system_clock());
         let id = id();
         assert!(supervisor.register(&id, &completion(1).fence).is_some());
         supervisor.wait(id.clone(), wait_candidate(1));
@@ -703,7 +694,7 @@ mod loom_tests {
         loom::model(|| {
             let supervisor = Arc::new(BackgroundTaskSupervisor::new(
                 "worker",
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ));
             supervisor.register(&id(), &completion(1).fence).unwrap();
             supervisor.wait(id(), wait_candidate(1));
@@ -737,7 +728,7 @@ mod loom_tests {
         loom::model(|| {
             let supervisor = Arc::new(BackgroundTaskSupervisor::new(
                 "worker",
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ));
             supervisor.register(&id(), &completion(2).fence).unwrap();
             supervisor.wait(id(), wait_candidate(2));
@@ -769,7 +760,7 @@ mod loom_tests {
         loom::model(|| {
             let supervisor = Arc::new(BackgroundTaskSupervisor::new(
                 "worker",
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ));
             supervisor.register(&id(), &completion(1).fence).unwrap();
             let waiting = supervisor.clone();
@@ -798,7 +789,7 @@ mod loom_tests {
         loom::model(|| {
             let supervisor = Arc::new(BackgroundTaskSupervisor::new(
                 "worker",
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ));
             supervisor.register(&id(), &completion(1).fence).unwrap();
             supervisor.wait(id(), wait_candidate(1));
@@ -825,7 +816,7 @@ mod loom_tests {
         loom::model(|| {
             let supervisor = Arc::new(BackgroundTaskSupervisor::new(
                 "worker",
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ));
             supervisor.register(&id(), &completion(1).fence).unwrap();
             supervisor.complete(id(), completion(1));

@@ -70,7 +70,7 @@ pub struct CatalogModelPublicationResolver {
     credential_selection_sequences: Arc<Mutex<HashMap<String, u64>>>,
     /// The process's one wall clock: the instant credential access and Worker
     /// capability observations are judged at.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl CatalogModelPublicationResolver {
@@ -381,13 +381,13 @@ mod tests {
     };
 
     /// The wall clock these fixtures compose resolvers with.
-    pub(super) fn test_clock() -> Arc<dyn awaken_lease_contract::WallClock> {
-        awaken_lease_contract::system_clock()
+    pub(super) fn test_clock() -> Arc<dyn awaken_time::WallClock> {
+        awaken_time::system_clock()
     }
 
     /// A reading of [`test_clock`] in epoch milliseconds.
     pub(super) fn test_clock_ms() -> u64 {
-        awaken_lease_contract::WallClockExt::now_ms(test_clock().as_ref())
+        awaken_time::WallClockExt::now_ms(test_clock().as_ref())
     }
 
     pub(super) fn test_acp_capabilities() -> Arc<Vec<awaken_acp_contract::AcpPublicationCapability>>
@@ -564,7 +564,7 @@ mod tests {
             },
             &InMemorySecretStore::new(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -628,7 +628,7 @@ mod tests {
             Some("ep2".into()),
             &InMemorySecretStore::new(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -701,7 +701,7 @@ mod tests {
             },
             &secrets,
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -716,7 +716,7 @@ mod tests {
             },
             &secrets,
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -821,7 +821,7 @@ mod tests {
             },
             &secrets,
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -836,7 +836,7 @@ mod tests {
             },
             &secrets,
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -987,7 +987,7 @@ mod tests {
             },
             &InMemorySecretStore::new(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -1494,7 +1494,7 @@ mod tests {
             },
             &secrets,
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -1509,7 +1509,7 @@ mod tests {
             },
             &secrets,
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();

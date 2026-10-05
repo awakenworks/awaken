@@ -237,9 +237,7 @@ fn audited_confirmations(commit: &MemoryCommitCoordinator) -> Vec<String> {
 async fn allow_runs_the_tool_and_audits() {
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone(), ToolPermissionVerdict::Allow);
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
 
     let state = runtime
         .execute(activation(), context(&commit))
@@ -261,9 +259,7 @@ async fn deny_blocks_the_tool_and_only_permission_grants() {
             reason: "nope".to_string(),
         },
     );
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
 
     let state = runtime
         .execute(activation(), context(&commit))
@@ -278,9 +274,7 @@ async fn deny_blocks_the_tool_and_only_permission_grants() {
 async fn per_run_deny_all_cannot_be_widened_by_an_allowing_platform_policy() {
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone(), ToolPermissionVerdict::Allow);
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
 
     let state = runtime
         .execute(activation().without_tools(), context(&commit))
@@ -309,9 +303,7 @@ async fn ask_awaits_then_a_resumed_allow_runs_the_tool() {
             correlation_id: TICKET.to_string(),
         },
     );
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
 
     // Ask awaits the run on a decision ticket; the tool has not run.
     let state = runtime
@@ -432,9 +424,7 @@ async fn compact_context_survives_permission_await_and_resume_without_refolding(
     );
     runtime.register_snapshot(activation.snapshot.clone());
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let first = runtime
         .execute(activation, context(&commit))
         .await
@@ -569,9 +559,7 @@ async fn a_tool_alias_reverse_maps_to_canonical_before_the_permission_gate() {
 
     let mut act = activation();
     act.snapshot = snapshot_aliased();
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let state = runtime.execute(act, context(&commit)).await.expect("runs");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
@@ -694,9 +682,7 @@ impl PermissionHandoffFixture {
         // committed data; no model in the resumed Runtime can regenerate it.
         let arguments = serde_json::json!({"text": "é中文🙂\\\"\n".repeat(3000)});
         assert!(arguments["text"].as_str().unwrap().chars().count() > 16_073);
-        let commit = Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         let calls = Arc::new(Mutex::new(Vec::new()));
         let tool = Arc::new(PermissionEffectProbe {
             commit: commit.clone(),
@@ -1271,9 +1257,7 @@ async fn the_gate_audits_the_policy_and_reason_the_deciding_policy_stated() {
             .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
             .with_gate(Arc::new(PermissionGate::new(Arc::new(BasisPolicy(ruling)))));
         runtime.register_snapshot(snapshot());
-        let commit = Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         runtime
             .execute(activation(), context(&commit))
             .await
@@ -1320,9 +1304,7 @@ async fn a_per_run_deny_all_narrowing_audits_no_policy_even_over_a_stating_gate(
             ),
         )))));
     runtime.register_snapshot(snapshot());
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     runtime
         .execute(activation().without_tools(), context(&commit))
         .await

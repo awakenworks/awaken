@@ -113,7 +113,7 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
             recover_managed_credential_mutations(
                 &faults,
                 &repo,
-                awaken_lease_contract::system_clock().as_ref()
+                awaken_time::system_clock().as_ref()
             )
             .await
             .unwrap(),
@@ -170,7 +170,7 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
                 recover_managed_credential_mutations(
                     &secrets,
                     &repo,
-                    awaken_lease_contract::system_clock().as_ref()
+                    awaken_time::system_clock().as_ref()
                 )
                 .await
                 .unwrap(),
@@ -197,7 +197,7 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
             recover_managed_credential_mutations(
                 &secrets,
                 &repo,
-                awaken_lease_contract::system_clock().as_ref()
+                awaken_time::system_clock().as_ref()
             )
             .await
             .unwrap(),
@@ -215,8 +215,8 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
         assert!(repo.pending_managed_mutations().await.unwrap().is_empty());
         // R2 is a fresh writer after recovery. Its begin and the following
         // recovery tick must read the same live host-clock epoch.
-        let clock = awaken_lease_contract::system_clock();
-        let now = awaken_lease_contract::WallClockExt::now_ms(clock.as_ref());
+        let clock = awaken_time::system_clock();
+        let now = awaken_time::WallClockExt::now_ms(clock.as_ref());
         repo.begin_managed_mutation(
             PendingManagedCredentialMutation::create(source(), child(), now).unwrap(),
             now,

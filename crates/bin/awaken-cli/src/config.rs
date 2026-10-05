@@ -63,7 +63,7 @@ pub(in crate::config) fn resolve_test_file(
         home,
         config_path,
         file,
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     )
 }
 

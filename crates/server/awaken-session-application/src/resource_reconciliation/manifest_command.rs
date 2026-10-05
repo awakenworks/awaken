@@ -7,9 +7,9 @@
 //! only the caller-issued manifest command and the exact receipt it returns.
 
 use awaken_agent_contract::stable_fingerprint;
-use awaken_lease_contract::WallClockExt as _;
 use awaken_session_error_contract::RunError;
 use awaken_session_state_contract::{IdempotencyRecord, SessionExecutionState};
+use awaken_time::WallClockExt as _;
 
 use super::{
     ReplaceSessionResourceManifest, RepositoryRetirementCause, SessionResourceManifestError,

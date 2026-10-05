@@ -67,7 +67,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     // C1 is governed by the queue-owned clock. Wait past the relative TTL,
     // then sample the edge clock used by the existing execution-lease claim.
     tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-    let repair_now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+    let repair_now = awaken_time::system_clock().now().as_epoch_ms();
     clock.set(repair_now);
     let claimed = store
         .claim("repair-worker", 1_000, &Default::default())
@@ -211,7 +211,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .await
         .expect("R1 queue root continuation");
     let ephemeral_store = ephemeral.dispatch_store().expect("R1 dispatch authority");
-    let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+    let now = awaken_time::system_clock().now().as_epoch_ms();
     let claimed = ephemeral_store
         .claim(
             ephemeral.dispatch_owner(),
@@ -339,7 +339,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
     };
     use ingress::DispatchQueue;
 
-    let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+    let now = awaken_time::system_clock().now().as_epoch_ms();
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
@@ -538,7 +538,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .expect("K1 warm unclaimed context");
     let request = ingress::RunDispatch::new(activation).with_agent_publications(vec![child_v2]);
     store.enqueue(request).await.expect("enqueue K1");
-    let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+    let now = awaken_time::system_clock().now().as_epoch_ms();
     clock.set(now);
     let claimed = store
         .claim("worker-a", 30_000, &Default::default())
@@ -637,7 +637,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     use awaken_session_execution_contract::SessionRuntime;
     use ingress::DispatchQueue;
 
-    let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+    let now = awaken_time::system_clock().now().as_epoch_ms();
     let storage = tempfile::tempdir().expect("isolated deferred Sandbox root");
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(
@@ -739,7 +739,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         })
         .expect("runtime role")
         .install_environment_binding_sink(loss_sink.clone());
-    let loss_now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+    let loss_now = awaken_time::system_clock().now().as_epoch_ms();
     let loss_claim = claim(
         &loss_store,
         "durable-loss",

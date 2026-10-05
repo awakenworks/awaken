@@ -74,10 +74,8 @@ async fn remote_tool_runs_over_real_tcp() {
 
     let hand = tokio::spawn(async move {
         let channel = listener.accept().await.expect("accept");
-        let session = HandSession::in_memory(
-            [tool as Arc<dyn RawTool>],
-            awaken_lease_contract::system_clock(),
-        );
+        let session =
+            HandSession::in_memory([tool as Arc<dyn RawTool>], awaken_time::system_clock());
         let _ = serve_hand(channel, session).await;
     });
 
@@ -105,7 +103,7 @@ async fn unknown_tool_over_tcp_fails_closed() {
         let channel = listener.accept().await.expect("accept");
         let session = HandSession::in_memory(
             std::iter::empty::<Arc<dyn RawTool>>(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let _ = serve_hand(channel, session).await;
     });
@@ -131,11 +129,9 @@ async fn catalog_fingerprint_mismatch_over_tcp_fails_closed() {
     let (addr, listener) = bind_loopback_hand().await;
     let hand = tokio::spawn(async move {
         let channel = listener.accept().await.expect("accept");
-        let session = HandSession::in_memory(
-            [tool as Arc<dyn RawTool>],
-            awaken_lease_contract::system_clock(),
-        )
-        .with_catalog_fingerprint("hand-v1");
+        let session =
+            HandSession::in_memory([tool as Arc<dyn RawTool>], awaken_time::system_clock())
+                .with_catalog_fingerprint("hand-v1");
         let _ = serve_hand(channel, session).await;
     });
 

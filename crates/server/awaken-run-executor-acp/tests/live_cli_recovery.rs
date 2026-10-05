@@ -198,7 +198,7 @@ async fn real_instructions_context_and_committed_session_survive_relaunch() {
     let workspace = root.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
     let blobs = Arc::new(FsSessionBlobStore::new(root.path().join("blobs")));
-    let clock = awaken_lease_contract::system_clock();
+    let clock = awaken_time::system_clock();
     let commits = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
     let observer = Arc::new(Observer::default());
     let seed = SessionContextSeed::from_metadata(

@@ -93,7 +93,7 @@ pub fn loopback_lifecycle_delivery(
 /// negative (pre-epoch) second saturates to the epoch, the port's one pre-epoch
 /// rule.
 fn rfc3339(secs: i64) -> String {
-    awaken_lease_contract::UtcTime::from_duration_since_epoch(std::time::Duration::from_secs(
+    awaken_time::UtcTime::from_duration_since_epoch(std::time::Duration::from_secs(
         u64::try_from(secs).unwrap_or(0),
     ))
     .to_rfc3339_secs()

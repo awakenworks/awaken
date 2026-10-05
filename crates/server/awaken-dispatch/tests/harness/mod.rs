@@ -121,7 +121,7 @@ pub fn assert_completed_model_invocations(commit: &dyn CommittedThreadView, coun
 
 /// One deterministic edge clock shared by claim, renewal, ownership checks, and
 /// settlement in a direct Worker drive.
-pub fn clock(now_ms: u64) -> Arc<dyn awaken_lease_contract::WallClock> {
+pub fn clock(now_ms: u64) -> Arc<dyn awaken_time::WallClock> {
     Arc::new(awaken_lease_testkit::ManualClock::new(now_ms))
 }
 
@@ -132,7 +132,7 @@ pub fn clock(now_ms: u64) -> Arc<dyn awaken_lease_contract::WallClock> {
 pub fn at(
     clock: &Arc<awaken_lease_testkit::ManualClock>,
     now_ms: u64,
-) -> Arc<dyn awaken_lease_contract::WallClock> {
+) -> Arc<dyn awaken_time::WallClock> {
     clock.set(now_ms);
     clock.clone()
 }
@@ -864,7 +864,7 @@ impl FlakyDispatchStore {
     /// due, and reservation lapse are all judged against it. It is required so a
     /// drive that means to control those deadlines cannot silently end up
     /// reading wall time instead.
-    pub fn new(fail_claims: usize, clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+    pub fn new(fail_claims: usize, clock: Arc<dyn awaken_time::WallClock>) -> Self {
         Self {
             maintenance_probe: None,
             inner: Arc::new(awaken_dispatch::MemoryDispatchStore::new(clock)),

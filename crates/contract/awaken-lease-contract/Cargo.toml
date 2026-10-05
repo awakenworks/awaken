@@ -13,12 +13,11 @@ layer = "contract"
 kinds = ["types", "spi"]
 authority = "time-bounded-ownership"
 
-# A depth-0 contract leaf: no awaken dependency may be added here (see the
-# crate documentation for why the clock, the expiry law and the fence kernel
-# share this one crate).
+# The fence kernel's only awaken dependency is awaken-time, whose Expiry and
+# UtcTime carry the lease boundary law; no other awaken dependency may be added.
 [dependencies]
+awaken-time.workspace = true
 serde.workspace = true
-tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 proptest.workspace = true

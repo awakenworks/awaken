@@ -335,7 +335,7 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
         Arc::new(
             awaken_memory_store::SqliteMemoryRepository::open(
                 ":memory:",
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .expect("open test Memory repository"),
         ),

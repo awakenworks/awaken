@@ -184,7 +184,7 @@ pub(super) async fn infer_with_retry_observed(
     // The routing model id, captured before `request` moves into the retry loop —
     // it labels both the span and the metric (structure only, never content).
     let model_id = request.model_binding.identity().1.to_owned();
-    let started = awaken_lease_contract::mono::now();
+    let started = awaken_time::mono::now();
     // OTel GenAI span name is the templated `{operation} {model}` (SHOULD).
     span.record(
         "otel.name",
@@ -361,7 +361,7 @@ async fn infer_with_retry_inner(
     // journal wait spends the same caller-declared total.
     let logical_deadline = policy
         .budget
-        .logical_deadline(awaken_lease_contract::mono::now())
+        .logical_deadline(awaken_time::mono::now())
         .map_err(awaken_runtime_contract::llm::ModelInferenceBudgetError::before_dispatch)?;
     let mut attempt = 0;
     loop {
@@ -396,7 +396,7 @@ async fn infer_with_retry_inner(
         // consumes this invocation's one absolute provider response horizon,
         // which never extends past the request's logical deadline.
         let timing = awaken_runtime_contract::llm::ModelAttemptTiming::start_at(
-            awaken_lease_contract::mono::now(),
+            awaken_time::mono::now(),
             policy.budget,
             logical_deadline,
         )

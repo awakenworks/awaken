@@ -8,8 +8,8 @@
 use awaken_dispatch_contract::ControlDispatch;
 use std::sync::Arc;
 
-use awaken_lease_contract::mono;
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
+use awaken_time::mono;
 use tokio_util::sync::CancellationToken;
 
 use crate::dispatch::{LeaseRenewalOutcome, RunClaim};

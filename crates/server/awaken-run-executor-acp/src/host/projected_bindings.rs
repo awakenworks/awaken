@@ -361,7 +361,7 @@ mod tests {
                     AcpLocalCredentialResolver::from_bindings(
                         discovery,
                         [],
-                        awaken_lease_contract::system_clock(),
+                        awaken_time::system_clock(),
                     )
                     .unwrap(),
                 ),

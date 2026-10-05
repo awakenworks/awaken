@@ -172,9 +172,7 @@ async fn drive_result(
 ) {
     let runtime = runtime_with(llm);
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_stream_sink(Arc::new(MemoryStreamSink::new()))
@@ -376,10 +374,9 @@ async fn filesystem_recovery_waits_for_reopened_committed_predecessor() {
                 .expect("durable checkpoint");
         }
         {
-            let commit =
-                FsCommitCoordinator::open(&commit_dir, awaken_lease_contract::system_clock())
-                    .await
-                    .expect("initial commit store");
+            let commit = FsCommitCoordinator::open(&commit_dir, awaken_time::system_clock())
+                .await
+                .expect("initial commit store");
             if predecessor_committed {
                 let mut operation =
                     ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
@@ -405,7 +402,7 @@ async fn filesystem_recovery_waits_for_reopened_committed_predecessor() {
         }
 
         let commit = Arc::new(
-            FsCommitCoordinator::open(&commit_dir, awaken_lease_contract::system_clock())
+            FsCommitCoordinator::open(&commit_dir, awaken_time::system_clock())
                 .await
                 .expect("reopened commit store"),
         );

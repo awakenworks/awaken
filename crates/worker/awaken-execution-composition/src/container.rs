@@ -64,7 +64,7 @@ async fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     provider: ContainerProvider<R>,
     leased: bool,
     settings: &awaken_session_executor::SandboxSettings,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<BuiltContainerEnvironment, String> {
     let size = settings.warm_pool_size;
     if size == 0 {
@@ -115,7 +115,7 @@ async fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     settings: &awaken_session_executor::SandboxSettings,
     policy: &ContainerTierPolicy,
     package_provisioner: Option<Arc<dyn awaken_sandbox_container::PackageImageProvisioner>>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<BuiltContainerEnvironment, String> {
     let leased = runtime.capacity_lease_domain().is_some();
     let mut provider =
@@ -329,7 +329,7 @@ pub async fn build_container_environment_for_realization(
     image: Option<&str>,
     settings: &awaken_session_executor::SandboxSettings,
     policy: &ContainerTierPolicy,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<ContainerEnvironmentComponents, String> {
     if let Some(policy) = &settings.k8s_image_prewarm {
         policy.validate()?;
@@ -444,7 +444,7 @@ pub async fn build_container_environment_for_realization(
     _image: Option<&str>,
     _settings: &awaken_session_executor::SandboxSettings,
     _policy: &ContainerTierPolicy,
-    _clock: Arc<dyn awaken_lease_contract::WallClock>,
+    _clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<ContainerEnvironmentComponents, String> {
     Err(format!(
         "AWAKEN_SANDBOX_TIER={} needs its matching container feature",
@@ -488,7 +488,7 @@ mod tests {
             Some("sandbox:latest"),
             &settings,
             &ContainerTierPolicy::default(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .await
         {
@@ -512,14 +512,9 @@ mod tests {
             ..Default::default()
         };
         let direct = ContainerProvider::new(Arc::new(PodmanRuntime::new(8080)), "busybox");
-        let direct = wrap(
-            direct,
-            false,
-            &settings,
-            awaken_lease_contract::system_clock(),
-        )
-        .await
-        .unwrap();
+        let direct = wrap(direct, false, &settings, awaken_time::system_clock())
+            .await
+            .unwrap();
         assert!(direct.capacity.is_none());
 
         let settings = awaken_session_executor::SandboxSettings {
@@ -527,13 +522,7 @@ mod tests {
             ..Default::default()
         };
         let pooled = ContainerProvider::new(Arc::new(PodmanRuntime::new(8080)), "busybox");
-        let pooled = wrap(
-            pooled,
-            false,
-            &settings,
-            awaken_lease_contract::system_clock(),
-        )
-        .await;
+        let pooled = wrap(pooled, false, &settings, awaken_time::system_clock()).await;
         #[cfg(unix)]
         assert!(pooled.unwrap().capacity.is_some(), "R2");
         #[cfg(not(unix))]
@@ -555,7 +544,7 @@ mod tests {
                 &settings,
                 &ContainerTierPolicy::default(),
                 None,
-                awaken_lease_contract::system_clock()
+                awaken_time::system_clock()
             )
             .await
             .is_err()
@@ -567,7 +556,7 @@ mod tests {
                 &settings,
                 &ContainerTierPolicy::default(),
                 None,
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .await
             .is_ok()
@@ -615,14 +604,14 @@ mod tests {
             Some(IMAGE),
             &settings,
             &ContainerTierPolicy::default(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .await
         .expect("production Podman composition");
         let capacity = components.capacity.expect("warm capacity is configured");
         let records = || {
             let root = awaken_sandbox_container::pool::WarmCapacityLeases::host_default(
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap()
             .root()
@@ -723,14 +712,9 @@ mod windows_capacity_tests {
         let runtime = Arc::new(DockerRuntime::connect_local(8080).unwrap());
         let direct = ContainerProvider::new(runtime.clone(), "sandbox:latest");
         let settings = awaken_session_executor::SandboxSettings::default();
-        let built = wrap(
-            direct,
-            true,
-            &settings,
-            awaken_lease_contract::system_clock(),
-        )
-        .await
-        .unwrap();
+        let built = wrap(direct, true, &settings, awaken_time::system_clock())
+            .await
+            .unwrap();
         assert!(built.capacity.is_none(), "R1");
 
         let pooled = ContainerProvider::new(runtime, "sandbox:latest");
@@ -738,15 +722,10 @@ mod windows_capacity_tests {
             warm_pool_size: 1,
             ..settings
         };
-        let error = wrap(
-            pooled,
-            true,
-            &settings,
-            awaken_lease_contract::system_clock(),
-        )
-        .await
-        .err()
-        .expect("R2 unsupported warm capacity");
+        let error = wrap(pooled, true, &settings, awaken_time::system_clock())
+            .await
+            .err()
+            .expect("R2 unsupported warm capacity");
         assert!(
             error.contains("requires the Unix host lease protocol"),
             "R2"

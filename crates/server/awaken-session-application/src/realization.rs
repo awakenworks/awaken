@@ -4,7 +4,7 @@
 // @formal entrypoint session_realization.recovery_backoff_is_bounded_and_dependency_wakes_never_postpone_the_existing_deadline
 //! Canonical durable Session realization phase commands.
 
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 use std::collections::BTreeSet;
 
 use awaken_session_error_contract::RunError;
@@ -257,7 +257,7 @@ impl SessionApplication {
         self: std::sync::Arc<Self>,
         trigger: SessionRecoveryTrigger,
     ) -> SessionRecoveryCycle {
-        let cycle_started = awaken_lease_contract::mono::Stopwatch::start();
+        let cycle_started = awaken_time::mono::Stopwatch::start();
         let candidates =
             match super::scan_all_reconcilable_sessions(self.session_repository()).await {
                 Ok(scan) => super::SessionRecoveryCandidates::from_scan(
@@ -488,8 +488,8 @@ impl SessionApplication {
         cancellation: awaken_runtime_contract::CancellationToken,
     ) -> Result<(), String> {
         let mut recovery_failure_streak = 0_u32;
-        let mut next_recovery = awaken_lease_contract::mono::now();
-        let mut external_wake_cooldown = awaken_lease_contract::mono::now();
+        let mut next_recovery = awaken_time::mono::now();
+        let mut external_wake_cooldown = awaken_time::mono::now();
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
@@ -507,9 +507,9 @@ impl SessionApplication {
                 () = cancellation.cancelled() => break,
                 _ = self.lifecycle_wakeup.notified() => {
                     let delay = external_wake_coalescing_delay(
-                        next_recovery.saturating_duration_since(awaken_lease_contract::mono::now()),
+                        next_recovery.saturating_duration_since(awaken_time::mono::now()),
                         external_wake_cooldown
-                            .saturating_duration_since(awaken_lease_contract::mono::now()),
+                            .saturating_duration_since(awaken_time::mono::now()),
                     );
                     tokio::select! {
                         biased;
@@ -555,7 +555,7 @@ impl SessionApplication {
             } else {
                 recovery_failure_streak.saturating_add(1)
             };
-            let now = awaken_lease_contract::mono::now();
+            let now = awaken_time::mono::now();
             external_wake_cooldown =
                 now + next_external_wake_cooldown(recovery_trigger, cycle.settled, cycle.elapsed);
             let existing_remaining = next_recovery.saturating_duration_since(now);

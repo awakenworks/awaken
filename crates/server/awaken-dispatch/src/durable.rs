@@ -25,8 +25,8 @@ use crate::dispatch::{DispatchSummary, PendingInput, SubmitOptions};
 use awaken_dispatch_execution::{
     DispatchService, DispatchServiceConfig, DispatchWorker, LiveRunControlService,
 };
-use awaken_lease_contract::WallClock;
 use awaken_dispatch_contract::RunDispatch;
+use awaken_time::WallClock;
 
 /// Feature-gated synchronous harness over one Worker and its committed reader.
 pub struct DispatchTestHarness<S> {
@@ -500,13 +500,9 @@ mod tests {
         // rule: replace once and assert pointer identity plus weak-handle release.
         let ingress = DispatchTestHarness::new(
             Arc::new(Runtime::new()),
-            Arc::new(crate::MemoryDispatchStore::new(
-                awaken_lease_contract::system_clock(),
-            )),
-            Arc::new(MemoryCommitCoordinator::new(
-                awaken_lease_contract::system_clock(),
-            )),
-            awaken_lease_contract::system_clock(),
+            Arc::new(crate::MemoryDispatchStore::new(awaken_time::system_clock())),
+            Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock())),
+            awaken_time::system_clock(),
         );
         let provisional = Arc::downgrade(&ingress.reader);
         let projection = Arc::new(crate::RecoveryProjection::new());

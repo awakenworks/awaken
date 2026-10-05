@@ -117,7 +117,7 @@ pub struct FsCommitCoordinator {
     inner: MemoryCommitCoordinator,
     /// Stamps each appended record's `committed_at_unix_ms`, the same clock the
     /// in-memory read model is built over.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     write_lock: tokio::sync::Mutex<()>,
     // The OS lock is retained for the complete coordinator lifetime. Migration,
     // replay, append admission, and append acknowledgement therefore share one
@@ -300,7 +300,7 @@ impl FsCommitCoordinator {
     /// log into the read model. A torn final line is discarded (crash recovery).
     pub async fn open(
         dir: impl AsRef<Path>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> std::io::Result<Self> {
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir)?;
@@ -429,7 +429,7 @@ impl Coordinator for FsCommitCoordinator {
         }
         // Durable first: append + fsync the record before it is acknowledged, so a
         // crash after ack cannot lose it and a crash before ack replays nothing.
-        let committed_at_unix_ms = Some(awaken_lease_contract::WallClockExt::now_ms(&*self.clock));
+        let committed_at_unix_ms = Some(awaken_time::WallClockExt::now_ms(&*self.clock));
         self.append(&StoredCommitLogEntry {
             committed_at_unix_ms,
             entry: CommitLogEntry::Commit(commit.clone()),
@@ -446,7 +446,7 @@ impl OperationCoordinator for FsCommitCoordinator {
         if let Some(duplicate) = self.inner.inspect_operation(&operation)? {
             return Ok(duplicate);
         }
-        let committed_at_unix_ms = Some(awaken_lease_contract::WallClockExt::now_ms(&*self.clock));
+        let committed_at_unix_ms = Some(awaken_time::WallClockExt::now_ms(&*self.clock));
         self.append(&StoredCommitLogEntry {
             committed_at_unix_ms,
             entry: CommitLogEntry::Operation(operation.clone()),

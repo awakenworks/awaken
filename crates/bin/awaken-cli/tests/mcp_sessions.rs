@@ -100,7 +100,7 @@ async fn exact_vault_refresher(
             access,
             repo.clone(),
             secrets,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ),
         repo,
     )

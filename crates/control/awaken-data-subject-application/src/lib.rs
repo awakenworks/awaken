@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_lease_contract::WallClock;
+use awaken_time::WallClock;
 use base64::Engine as _;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -1188,7 +1188,7 @@ impl DataSubjectApplication {
         let payload: EnrollmentTokenPayload = serde_json::from_slice(&bytes)
             .map_err(|_| DataSubjectApplicationError::InvalidEnrollment)?;
         // The enrollment token expires at `expires_at` (the one Expiry law).
-        if awaken_lease_contract::Expiry::from_persisted_ms(payload.expires_at)
+        if awaken_time::Expiry::from_persisted_ms(payload.expires_at)
             .is_expired_at(self.clock.now())
             || payload.purposes.is_empty()
         {

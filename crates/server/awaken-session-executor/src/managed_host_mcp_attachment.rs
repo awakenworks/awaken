@@ -48,7 +48,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
                 "MCP staging is closed while the Session Environment quiesces",
             ));
         }
-        let now_unix_ms = awaken_lease_contract::WallClockExt::now_ms(self.host.clock.as_ref());
+        let now_unix_ms = awaken_time::WallClockExt::now_ms(self.host.clock.as_ref());
         if !self
             .host
             .mcp_generation_is_authorized_at(&request.generation, now_unix_ms)
@@ -716,7 +716,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
         &self,
         generation: awaken_session_mcp_contract::McpGenerationRef,
     ) -> Result<(), RunError> {
-        let now_unix_ms = awaken_lease_contract::WallClockExt::now_ms(self.host.clock.as_ref());
+        let now_unix_ms = awaken_time::WallClockExt::now_ms(self.host.clock.as_ref());
         if !self
             .host
             .mcp_generation_is_authorized_at(&generation, now_unix_ms)

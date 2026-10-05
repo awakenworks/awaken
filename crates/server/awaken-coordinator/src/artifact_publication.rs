@@ -9,7 +9,7 @@ use awaken_resource_contract::{
 };
 use awaken_dispatch::{AnyDispatchStore, ArtifactPublicationFence, DispatchQueue};
 
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 
 /// Decorates the canonical Resources publisher with the same exact-epoch fence
 /// used by the remote Worker endpoint. The Runtime Host therefore has one
@@ -23,7 +23,7 @@ pub struct ClaimFencedArtifactPublisher {
         OnceLock<Arc<dyn awaken_session_realization_contract::SessionCheckpointArtifactControl>>,
     /// The Coordinator's wall clock: claim and Session lease liveness are
     /// judged on it.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl ClaimFencedArtifactPublisher {
@@ -31,7 +31,7 @@ impl ClaimFencedArtifactPublisher {
     pub fn new(
         inner: Arc<dyn ArtifactPublisher<ArtifactPublicationFence>>,
         dispatch: Arc<AnyDispatchStore>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             inner,
@@ -313,7 +313,7 @@ fn control_publication_error(
 mod tests {
     /// The tests' host-clock reading, the clock their publishers use.
     fn artifact_now_ms() -> u64 {
-        awaken_lease_contract::WallClockExt::now_ms(awaken_lease_contract::system_clock().as_ref())
+        awaken_time::WallClockExt::now_ms(awaken_time::system_clock().as_ref())
     }
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -480,16 +480,14 @@ mod tests {
             },
         );
         let dispatch = Arc::new(AnyDispatchStore::from_dispatch(
-            Arc::new(MemoryDispatchStore::new(
-                awaken_lease_contract::system_clock(),
-            )) as Arc<dyn Dispatch>,
+            Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())) as Arc<dyn Dispatch>,
         ));
         let publisher_for = |asserted_effect, current_lease| {
             let inner = Arc::new(RecordingPublisher::default());
             let publisher = ClaimFencedArtifactPublisher::new(
                 inner.clone(),
                 dispatch.clone(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             );
             publisher
                 .install_session_control(Arc::new(ExactResourceControl {
@@ -777,7 +775,7 @@ mod tests {
             let peer = ClaimFencedArtifactPublisher::new(
                 inner.clone(),
                 Arc::new(AnyDispatchStore::from_dispatch(queue as Arc<dyn Dispatch>)),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             );
             let fence = ArtifactPublicationFence::Run(claim);
             let bytes = b"result".to_vec();
@@ -877,14 +875,13 @@ mod tests {
             );
             let inner = Arc::new(RecordingPublisher::default());
             let queue = Arc::new(AnyDispatchStore::from_dispatch(
-                Arc::new(MemoryDispatchStore::new(
-                    awaken_lease_contract::system_clock(),
-                )) as Arc<dyn Dispatch>,
+                Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()))
+                    as Arc<dyn Dispatch>,
             ));
             let peer = ClaimFencedArtifactPublisher::new(
                 inner.clone(),
                 queue,
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             );
             if cause != "unavailable" {
                 peer.install_session_control(Arc::new(ExactResourceControl {

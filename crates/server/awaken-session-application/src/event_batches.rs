@@ -12,7 +12,6 @@
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Role};
 use awaken_agent_contract::agent::run::RunState;
-use awaken_lease_contract::WallClockExt as _;
 use awaken_session_error_contract::RunError;
 use awaken_session_event_contract::{
     OUTCOME_BUSY_CODE, SessionEventBatch, SessionEventBatchAdmissionAction,
@@ -27,6 +26,7 @@ use awaken_session_execution_contract::{
 };
 use awaken_session_state_contract::PersistedSession;
 use awaken_session_types::SessionRevision;
+use awaken_time::WallClockExt as _;
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
 

@@ -255,7 +255,7 @@ fn bound_test_memory(
         Arc::new(LocalProvider::new(sandbox_base)),
         Arc::new(BackgroundRuns::new()),
         extractions.clone(),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     let config = awaken_resource_contract::MemoryStoreConfigVersion {
         memory_store_id: "test-store".into(),
@@ -263,7 +263,7 @@ fn bound_test_memory(
         retention_policy: Default::default(),
     };
     let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     let platform = Arc::new(PlatformMemoryHandle::new(
         repository.clone(),
@@ -280,7 +280,7 @@ fn bound_test_memory(
     );
     bound.bind_execution(Arc::new(HostCommit::Local(Arc::new(
         crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )),
     ))));
     (runtime, bound, repository, extractions)
@@ -438,7 +438,7 @@ async fn agent_selector_runs_the_subagent_and_parses_its_reply() {
     // unrepresentable because `AgentSelector::new` requires the authority.
     let commit = Arc::new(HostCommit::Local(Arc::new(
         crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )),
     )));
     let selector = AgentSelector::new(
@@ -513,7 +513,7 @@ async fn extraction_writes_a_memory_then_recall_reads_it_back() {
 #[tokio::test]
 async fn platform_handle_enforces_read_only_at_the_data_plane_boundary() {
     let fs = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     fs.create("store-a", "/existing.md", "safe").await.unwrap();
     let read_only = PlatformMemoryHandle::new(fs.clone(), "store-a".into(), false);
@@ -539,7 +539,7 @@ async fn platform_semantic_mutations_preserve_repository_cas_and_aba_fences() {
     // generation -> update; R4 stale generation -> conflict/no clobber; R5 exact
     // generation -> delete; R6 recreated path + stale generation -> no ABA delete.
     let fs = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     let handle = PlatformMemoryHandle::new(fs.clone(), "store".into(), true);
     let created = handle
@@ -919,7 +919,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         retention_policy: Default::default(),
     };
     let content = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     let platform = Arc::new(PlatformMemoryHandle::new(
         content.clone(),
@@ -936,7 +936,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         Arc::new(LocalProvider::new(storage.path().join("first-sandbox"))),
         Arc::new(BackgroundRuns::new()),
         first_repository.clone(),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     let child_binding = first_runtime.bind(
         parent,
@@ -977,7 +977,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
     )));
     let parent_commit = Arc::new(HostCommit::Local(Arc::new(
         crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )),
     )));
     let parent_binding = Arc::new(recovered_host.resources.memory.bind(
@@ -1108,7 +1108,7 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
     // R5 is owned by `every_worker_extraction_authority_operation_fails_closed`.
     let session = "database-less-worker-memory-session";
     let content = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     ));
     let host = Arc::new(SharedHost::new_worker_with_deployment(
         Arc::new(ExtractorModel),
@@ -1118,7 +1118,7 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
         crate::HostProcess {
             local_workspace: SharedHost::mint_local_workspace(),
             deployment: crate::DeploymentConfig::ephemeral(),
-            clock: awaken_lease_contract::system_clock(),
+            clock: awaken_time::system_clock(),
         },
     ));
     assert!(

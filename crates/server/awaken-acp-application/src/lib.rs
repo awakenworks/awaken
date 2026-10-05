@@ -5,11 +5,11 @@ use awaken_credential_vault::repo::{CredentialRepo, ensure_worker_local};
 use awaken_credential_vault::{
     CredentialKind, CredentialSource, CredentialStatus, WorkerLocalBinding,
 };
-use awaken_lease_contract::WallClock;
 use awaken_run_executor_acp::acp_cli;
 pub use awaken_run_executor_acp::host::*;
 use awaken_runtime_contract::CredentialRef;
 use awaken_runtime_contract::resolved::Backend;
+use awaken_time::WallClock;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -358,7 +358,7 @@ mod tests {
         let resolver = resolver_from_sources(
             Arc::new(AvailableDiscovery),
             [],
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap()
         .with_capability_observations(
@@ -407,7 +407,7 @@ mod tests {
         let resolver = resolver_from_sources(
             discovery.clone(),
             [source.clone()],
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .unwrap()
         .with_capability_observations(
@@ -469,7 +469,7 @@ mod tests {
                     initial_workspace: None,
                     selected_cli_ids: Some(cli_ids.iter().map(|id| (*id).to_string()).collect()),
                     credentials: Arc::new(InMemoryCredentialRepo::new()),
-                    clock: awaken_lease_contract::system_clock(),
+                    clock: awaken_time::system_clock(),
                 },
                 Arc::new(AvailableDiscovery),
                 fixture.clone(),
@@ -583,7 +583,7 @@ mod tests {
                     let resolver = resolver_from_sources(
                         discovery.clone(),
                         selected.clone(),
-                        awaken_lease_contract::system_clock(),
+                        awaken_time::system_clock(),
                     )
                     .unwrap()
                     .with_capability_observations(
@@ -699,7 +699,7 @@ mod tests {
                         initial_workspace: Some("workspace".into()),
                         selected_cli_ids: Some(["claude".into()].into_iter().collect()),
                         credentials: Arc::new(InMemoryCredentialRepo::new()),
-                        clock: awaken_lease_contract::system_clock(),
+                        clock: awaken_time::system_clock(),
                     },
                     discovery.clone(),
                     fixture.clone(),
@@ -813,7 +813,7 @@ mod tests {
                 let resolver = resolver_from_sources(
                     Arc::new(AvailableDiscovery),
                     sources.clone(),
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )
                 .unwrap();
                 let before = observed_bindings(&resolver).await;
@@ -862,7 +862,7 @@ mod tests {
             let resolver = resolver_from_sources(
                 Arc::new(AvailableDiscovery),
                 [sources[2].clone()],
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap();
             let before = observed_bindings(&resolver).await;
@@ -904,7 +904,7 @@ mod tests {
                 initial_workspace: None,
                 selected_cli_ids: Some(["codex".into()].into_iter().collect()),
                 credentials: Arc::new(InMemoryCredentialRepo::new()),
-                clock: awaken_lease_contract::system_clock(),
+                clock: awaken_time::system_clock(),
             },
             Arc::new(AvailableDiscovery),
             fixture.clone(),

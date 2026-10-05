@@ -146,7 +146,7 @@ pub trait SessionProjectionReads: Send + Sync {
     async fn read_projection_evidence(
         &self,
         persisted: &PersistedSession,
-        started: awaken_lease_contract::mono::Stopwatch,
+        started: awaken_time::mono::Stopwatch,
     ) -> Result<SessionProjectionEvidence, RunError>;
 
     /// See [`SessionApplication::projection_thread_snapshot`].
@@ -555,7 +555,7 @@ impl SessionProjectionReads for SessionApplication {
     async fn read_projection_evidence(
         &self,
         persisted: &PersistedSession,
-        started: awaken_lease_contract::mono::Stopwatch,
+        started: awaken_time::mono::Stopwatch,
     ) -> Result<SessionProjectionEvidence, RunError> {
         SessionApplication::read_projection_evidence(self, persisted, started).await
     }

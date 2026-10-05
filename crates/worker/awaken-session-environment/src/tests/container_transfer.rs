@@ -18,7 +18,7 @@ async fn docker_anonymous_repository_and_artifact_readback_use_one_sandbox() {
     // consumer boundary because the former token claim supplied no credential.
     let image = std::env::var("AWAKEN_TEST_SESSION_IMAGE")
         .expect("required Docker Session qualification needs its current Sandbox image");
-    let clock = awaken_lease_contract::system_clock();
+    let clock = awaken_time::system_clock();
 
     let runtime =
         Arc::new(awaken_sandbox_container::docker::DockerRuntime::connect_local(8080).unwrap());

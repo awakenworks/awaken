@@ -149,7 +149,7 @@ impl ManagedState {
     /// Rehydrate a record from the durable Session root exactly as a cold
     /// replica does, then reduce the current committed prefix onto it.
     async fn cold_rebuild(&self, session_id: &str) -> Result<Option<SessionRecord>, StateError> {
-        let started = awaken_lease_contract::mono::Stopwatch::start();
+        let started = awaken_time::mono::Stopwatch::start();
         let recovered = self.read_persisted_session_projection(session_id).await?;
         let persisted = recovered.session;
         let base = self.committed_prefix_base(
@@ -237,7 +237,7 @@ async fn candidate_uses_committed_prefix_even_when_warm_progress_is_poisoned() {
             session_id,
             persisted.clone(),
             fresh,
-            awaken_lease_contract::mono::Stopwatch::start(),
+            awaken_time::mono::Stopwatch::start(),
         )
     };
     let publication::ProjectionRefreshBuild::Complete(clean) = build(base.clone()).await.unwrap()

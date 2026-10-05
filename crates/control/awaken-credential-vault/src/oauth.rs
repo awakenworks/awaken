@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use awaken_lease_contract::mono::{self, Instant};
+use awaken_time::mono::{self, Instant};
 
 use awaken_agent_contract::RedactedString;
 

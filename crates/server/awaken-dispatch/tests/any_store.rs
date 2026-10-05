@@ -10,8 +10,8 @@ mod harness;
 #[path = "any_store/resolution_failure.rs"]
 mod resolution_failure;
 
-use awaken_lease_contract::system_clock;
 use awaken_dispatch_contract::ControlDispatchQueue;
+use awaken_time::system_clock;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
@@ -36,7 +36,7 @@ fn any_in_memory() -> AnyDispatchStore {
 
 /// The same runtime-selected backend over a raw injected clock handle.
 fn any_in_memory_with_clock_handle(
-    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> AnyDispatchStore {
     awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock)
         .expect("open in-memory sqlite backend")

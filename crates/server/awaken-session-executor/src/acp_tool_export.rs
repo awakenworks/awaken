@@ -770,7 +770,7 @@ mod tests {
         }
         for allow in [true, false] {
             let commit = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ));
             let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
             let tool: Arc<dyn RawTool> = Arc::new(RecordingTool(calls.clone()));

@@ -6,7 +6,7 @@
 //! or protocol logic lives here. Errors map to HTTP status; live stream output is
 //! a projection of committed events (SSE replay).
 
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 use std::sync::Arc;
 
 use std::collections::HashSet;

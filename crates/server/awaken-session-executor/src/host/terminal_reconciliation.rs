@@ -100,7 +100,7 @@ impl SharedHost {
         let dispatch = self
             .dispatch_store()
             .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
-        let now = awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref());
+        let now = awaken_time::WallClockExt::now_ms(self.clock.as_ref());
         let mut records = directory
             .list()
             .await
@@ -1075,7 +1075,7 @@ mod tests {
         );
 
         let storage = tempfile::tempdir().expect("storage");
-        let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+        let now = awaken_time::system_clock().now().as_epoch_ms();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(now));
         let store = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
@@ -1202,7 +1202,7 @@ mod tests {
         use awaken_dispatch::{DispatchQueue, SettleOutcome};
 
         let storage = tempfile::tempdir().expect("storage");
-        let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+        let now = awaken_time::system_clock().now().as_epoch_ms();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
@@ -1329,7 +1329,7 @@ mod tests {
         use awaken_dispatch::{DispatchQueue, WorkerResolver};
 
         let storage = tempfile::tempdir().expect("storage");
-        let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+        let now = awaken_time::system_clock().now().as_epoch_ms();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
@@ -1409,7 +1409,7 @@ mod tests {
         use awaken_dispatch::{DispatchQueue, SessionChildAdmission};
 
         let storage = tempfile::tempdir().expect("storage");
-        let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+        let now = awaken_time::system_clock().now().as_epoch_ms();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())

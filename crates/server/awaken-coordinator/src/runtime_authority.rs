@@ -42,7 +42,7 @@ pub struct DurableRuntimeAuthority {
     commit: CommitAuthorityConfig,
     /// The Coordinator process's one wall clock. The dispatch store judges its
     /// rows and every local commit store stamps its commits with this handle.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     dispatch: Arc<AnyDispatchStore>,
     wake: Option<Arc<dyn WakeSignal>>,
     postgres_commit: Option<Arc<PostgresCommitCoordinator>>,
@@ -218,7 +218,7 @@ impl DurableRuntimeAuthority {
     pub async fn open(
         deployment: &DeploymentConfig,
         schema: SchemaAccess,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Arc<Self>, String> {
         let postgres_pool = if deployment.dispatch_backend == DispatchBackend::Postgres
             || deployment.store == StoreKind::Postgres
@@ -245,7 +245,7 @@ impl DurableRuntimeAuthority {
         deployment: &DeploymentConfig,
         schema: SchemaAccess,
         postgres_pool: Option<sqlx::PgPool>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Arc<Self>, String> {
         let (dispatch, wake) =
             open_dispatch(deployment, schema, postgres_pool.clone(), clock.clone()).await?;
@@ -317,7 +317,7 @@ async fn open_dispatch(
     deployment: &DeploymentConfig,
     schema: SchemaAccess,
     postgres_pool: Option<sqlx::PgPool>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(Arc<AnyDispatchStore>, Option<Arc<dyn WakeSignal>>), String> {
     match deployment.dispatch_backend {
         DispatchBackend::Sqlite => {
@@ -724,7 +724,7 @@ mod tests {
         let missing_error = match DurableRuntimeAuthority::open(
             &missing,
             SchemaAccess::Migrate,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .await
         {
@@ -739,7 +739,7 @@ mod tests {
         let authority = DurableRuntimeAuthority::open(
             &durable,
             SchemaAccess::Migrate,
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .await
         .expect("A2/E2");
@@ -788,7 +788,7 @@ mod tests {
             let authority = DurableRuntimeAuthority::open(
                 &deployment,
                 SchemaAccess::Migrate,
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .await
             .expect(rule);
@@ -828,7 +828,7 @@ mod tests {
 
     fn test_local_commit() -> Arc<dyn LocalCommit> {
         Arc::new(LocalCommitAdapter::projected(
-            awaken_store_inmem::MemoryCommitCoordinator::new(awaken_lease_contract::system_clock()),
+            awaken_store_inmem::MemoryCommitCoordinator::new(awaken_time::system_clock()),
         ))
     }
 

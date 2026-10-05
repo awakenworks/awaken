@@ -318,7 +318,7 @@ pub struct SqliteDispatchStore {
     /// single-process backend; an owned guard can therefore span the separate
     /// commit database write without exposing a non-Send rusqlite transaction.
     authority: Arc<tokio::sync::Mutex<()>>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl SqliteDispatchStore {
@@ -328,10 +328,7 @@ impl SqliteDispatchStore {
     /// [`MemoryDispatchStore::new`](crate::MemoryDispatchStore::new): this store
     /// judges its own rows, so a default would let a caller believe it had
     /// supplied one when it had not.
-    pub fn open(
-        path: &str,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
-    ) -> Result<Self, StoreError> {
+    pub fn open(path: &str, clock: Arc<dyn awaken_time::WallClock>) -> Result<Self, StoreError> {
         let conn = awaken_sqlite_pool::SqliteConnectionFactory::file(path)
             .open()
             .map_err(|err| StoreError::Open(err.to_string()))?;
@@ -340,9 +337,7 @@ impl SqliteDispatchStore {
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory(
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
-    ) -> Result<Self, StoreError> {
+    pub fn open_in_memory(clock: Arc<dyn awaken_time::WallClock>) -> Result<Self, StoreError> {
         let conn = awaken_sqlite_pool::SqliteConnectionFactory::memory()
             .open()
             .map_err(|err| StoreError::Open(err.to_string()))?;
@@ -351,7 +346,7 @@ impl SqliteDispatchStore {
 
     fn from_connection(
         conn: Connection,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, StoreError> {
         let published =
             selected_dispatch_bundle(published_checksum(&conn, BUNDLE_ID, 15)?.as_deref())
@@ -565,8 +560,7 @@ mod migration_history_tests {
                 )
                 .unwrap();
             let store =
-                SqliteDispatchStore::from_connection(conn, awaken_lease_contract::system_clock())
-                    .unwrap();
+                SqliteDispatchStore::from_connection(conn, awaken_time::system_clock()).unwrap();
             let conn = store.conn.lock().unwrap();
             let selected = selected_converged_dispatch_bundle(Some(&checksum)).unwrap();
             runner.run_bundle(&conn, &selected).unwrap();
@@ -620,7 +614,7 @@ mod migration_history_tests {
         .unwrap();
         assert!(
             matches!(
-                SqliteDispatchStore::from_connection(conn, awaken_lease_contract::system_clock()),
+                SqliteDispatchStore::from_connection(conn, awaken_time::system_clock()),
                 Err(super::StoreError::Migrate(_))
             ),
             "R4 reject"
@@ -646,12 +640,12 @@ mod migration_history_tests {
             .run_bundle(&connection, &published)
             .expect("seed expanded history");
         let migrated =
-            SqliteDispatchStore::from_connection(connection, awaken_lease_contract::system_clock())
+            SqliteDispatchStore::from_connection(connection, awaken_time::system_clock())
                 .expect("Q2 selected migration");
         drop(migrated);
         let reopened = SqliteDispatchStore::open(
             path.to_str().expect("UTF-8 migration path"),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .expect("Q3 idempotent reopen");
         let connection = reopened.conn.lock().expect("Q3 inspect connection");

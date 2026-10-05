@@ -264,7 +264,7 @@ pub struct ApplicationAccessStore {
     repository: Arc<dyn ApplicationAccessRepository>,
     /// The Coordinator's wall clock: issuance, revocation and token expiry are
     /// stamped and judged on it.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl ApplicationAccessStore {
@@ -272,7 +272,7 @@ impl ApplicationAccessStore {
     /// the Coordinator Session aggregate.
     pub async fn open_sqlite(
         path: &str,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, ApplicationAccessRepositoryError> {
         let path = path.to_owned();
         tokio::task::spawn_blocking(move || {
@@ -293,7 +293,7 @@ impl ApplicationAccessStore {
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_sqlite_for_test(
         path: &str,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, ApplicationAccessRepositoryError> {
         SqliteApplicationAccessRepository::open(path)
             .map(|repository| Self::over(repository, clock))
@@ -303,7 +303,7 @@ impl ApplicationAccessStore {
     /// selected PostgreSQL database.
     pub async fn connect_postgres(
         url: &str,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, ApplicationAccessRepositoryError> {
         PostgresApplicationAccessRepository::connect(url)
             .await
@@ -319,7 +319,7 @@ impl ApplicationAccessStore {
     /// Connect to an operator-migrated PostgreSQL schema without executing DDL.
     pub async fn connect_existing_postgres(
         url: &str,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, ApplicationAccessRepositoryError> {
         PostgresApplicationAccessRepository::connect_existing(url)
             .await
@@ -329,7 +329,7 @@ impl ApplicationAccessStore {
     /// Migrate the canonical application-access schema over the process pool.
     pub async fn with_postgres_pool(
         pool: sqlx::PgPool,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, ApplicationAccessRepositoryError> {
         PostgresApplicationAccessRepository::with_pool(pool)
             .await
@@ -339,7 +339,7 @@ impl ApplicationAccessStore {
     /// Verify the canonical schema over the process pool without DDL.
     pub async fn with_existing_postgres_pool(
         pool: sqlx::PgPool,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, ApplicationAccessRepositoryError> {
         PostgresApplicationAccessRepository::with_existing_pool(pool)
             .await
@@ -348,7 +348,7 @@ impl ApplicationAccessStore {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory(
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, ApplicationAccessRepositoryError> {
         SqliteApplicationAccessRepository::open_in_memory()
             .map(|repository| Self::over(repository, clock))
@@ -356,7 +356,7 @@ impl ApplicationAccessStore {
 
     fn over(
         repository: impl ApplicationAccessRepository + 'static,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             repository: Arc::new(repository),
@@ -368,13 +368,13 @@ impl ApplicationAccessStore {
     fn over_shared(repository: Arc<dyn ApplicationAccessRepository>) -> Self {
         Self {
             repository,
-            clock: awaken_lease_contract::system_clock(),
+            clock: awaken_time::system_clock(),
         }
     }
 
     /// The store's wall clock, for the transports that stamp its commands.
     #[must_use]
-    pub fn clock(&self) -> Arc<dyn awaken_lease_contract::WallClock> {
+    pub fn clock(&self) -> Arc<dyn awaken_time::WallClock> {
         self.clock.clone()
     }
 
@@ -499,7 +499,7 @@ impl ApplicationAccessAuthenticator for ApplicationAccessStore {
             .await
             .map_err(authentication_error)?;
         if record.revoked_at_unix_ms.is_some()
-            || awaken_lease_contract::Expiry::from_epoch_ms(record.expires_at_unix_ms)
+            || awaken_time::Expiry::from_epoch_ms(record.expires_at_unix_ms)
                 .is_expired_at(self.clock.now())
         {
             return Err(ApplicationAuthenticationError::Invalid);

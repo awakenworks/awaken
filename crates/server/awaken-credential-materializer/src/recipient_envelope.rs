@@ -29,7 +29,7 @@ use awaken_credential_contract::{
     PlaintextHolder, ResolvedCredentialMaterial, SealedCredentialEnvelopeRef,
     credential_envelope_payload_fingerprint,
 };
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
@@ -77,13 +77,13 @@ struct SealedPayload {
 pub struct RecipientKeyEnvelope {
     path: PathBuf,
     capabilities: BTreeSet<CredentialMaterialCapability>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl RecipientKeyEnvelope {
     pub fn open(
         path: impl Into<PathBuf>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, CredentialMaterialError> {
         let path = path.into();
         let document = Self::read_document(&path)?;

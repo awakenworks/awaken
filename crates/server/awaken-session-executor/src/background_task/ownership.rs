@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use awaken_ext_background_task::{BackgroundTask, BackgroundTaskSupervisor, task_state_cell};
-use awaken_lease_contract::WallClockExt;
 use awaken_runtime_contract::{AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext};
+use awaken_time::WallClockExt;
 
 use super::BackgroundTaskTerminalObserver;
 use crate::store::CommittedAuthority;
@@ -111,7 +111,7 @@ mod tests {
             Arc::new(BackgroundRuns::new()),
             Arc::new(BackgroundTaskSupervisor::new(
                 "worker",
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )),
             "session".into(),
             "generation".into(),
@@ -140,7 +140,7 @@ mod tests {
         for (boundary, malformed) in [(0, false), (1, false), (2, false), (0, true)] {
             let supervisor = Arc::new(BackgroundTaskSupervisor::new(
                 "worker",
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ));
             let tool = Arc::new(RemoteTaskTool {
                 uncertain_action: (!malformed).then_some(boundary),
@@ -267,7 +267,7 @@ mod tests {
     fn local_commit() -> Arc<HostCommit> {
         Arc::new(HostCommit::Local(Arc::new(
             crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )),
         )))
     }
@@ -304,7 +304,7 @@ mod tests {
             for change in 0..5 {
                 let supervisor = Arc::new(BackgroundTaskSupervisor::new(
                     "worker",
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 ));
                 let remote = Arc::new(RemoteTaskTool::default());
                 let runtime = Arc::new(Runtime::new().with_tool(remote.clone()).with_plugin(
@@ -461,7 +461,7 @@ mod tests {
                 });
                 let supervisor = Arc::new(BackgroundTaskSupervisor::new(
                     "worker",
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 ));
                 let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
                     BackgroundTaskConfig {
@@ -628,7 +628,7 @@ mod tests {
         // previously valid expected snapshot grants authority.
         let supervisor = Arc::new(BackgroundTaskSupervisor::new(
             "worker",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ));
         let expected = task(0, &supervisor);
         supervisor
@@ -658,7 +658,7 @@ mod tests {
         let unavailable_commit: HostCommit =
             HostCommit::Local(Arc::new(crate::LocalCommitAdapter::with_queries(
                 Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )),
                 crate::authority::ScriptedStateQueries::new(Err("state read unavailable".into())),
             )));

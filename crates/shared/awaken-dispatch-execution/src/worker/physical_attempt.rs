@@ -22,11 +22,11 @@ use crate::dispatch::{AttemptAdmission, Claimed, DispatchError, RunClaim, Settle
 use crate::execution_capacity::ExecutionCapacity;
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::run::RunState;
-use awaken_lease_contract::WallClock;
-use awaken_lease_contract::WallClockExt;
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{AttemptRecoveryMode, LiveInput};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_time::WallClock;
+use awaken_time::WallClockExt;
 
 /// An unconfirmed predecessor is a domain outcome for a cancellation request,
 /// not a successful cancel or a fabricated physical-return acknowledgement.

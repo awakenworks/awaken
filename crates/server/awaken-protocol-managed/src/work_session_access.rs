@@ -10,7 +10,7 @@
 //! maps that lease to the exact Managed HTTP resources the leased Session needs;
 //! it owns no token ledger, resource catalog, or Memory synchronization loop.
 
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;

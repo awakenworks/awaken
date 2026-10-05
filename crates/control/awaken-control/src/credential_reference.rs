@@ -22,14 +22,14 @@ pub struct CredentialRevisionValidator {
     credentials: Arc<dyn CredentialRepo>,
     /// The process's one wall clock: the instant a descriptor's expiry is
     /// judged at.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl CredentialRevisionValidator {
     #[must_use]
     pub fn new(
         credentials: Arc<dyn CredentialRepo>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self { credentials, clock }
     }
@@ -83,7 +83,7 @@ impl awaken_resource_contract::RepositoryCredentialValidator for CredentialRevis
                 &awaken_session_resource_contract::repository_transport_credential_usage(),
             )
             .map_err(|_| unavailable())?;
-        let now = awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref());
+        let now = awaken_time::WallClockExt::now_ms(self.clock.as_ref());
         descriptor.validate_expiry(now).map_err(|_| unavailable())
     }
 }
@@ -170,7 +170,7 @@ mod tests {
             },
             &InMemorySecretStore::new(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -183,10 +183,8 @@ mod tests {
             "material": { "kind": "structured", "type_id": "awaken.http-basic/v1", "fields": ["password", "username"] },
             "targets": [{ "target": { "purpose": { "type": "repository_transport" }, "audience": "https://github.com/git" }, "usage": { "type": "http_basic_auth" } }]
         })).unwrap());
-        let validator = CredentialRevisionValidator::new(
-            credentials.clone(),
-            awaken_lease_contract::system_clock(),
-        );
+        let validator =
+            CredentialRevisionValidator::new(credentials.clone(), awaken_time::system_clock());
         for case in 0..14 {
             let mut candidate = source.clone();
             let mut workspace = "workspace-a";
@@ -271,12 +269,11 @@ mod tests {
             },
             &secrets,
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
-        let validator =
-            CredentialRevisionValidator::new(credentials, awaken_lease_contract::system_clock());
+        let validator = CredentialRevisionValidator::new(credentials, awaken_time::system_clock());
         let exact = CredentialRef {
             id: source.id.0,
             revision: 1,

@@ -103,7 +103,7 @@ pub struct CoordinatorDependencies {
         Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
     /// The process's one wall clock, chosen by the binary that composes the
     /// Coordinator; every Coordinator-owned judgement of time reads it.
-    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
+    pub clock: Arc<dyn awaken_time::WallClock>,
 }
 
 /// Complete Coordinator application surface.
@@ -141,7 +141,7 @@ pub enum CoordinatorBuildError {
 /// `clock` is the Coordinator process's one wall clock.
 pub async fn restore_deployment_application(
     repository: Arc<dyn DeploymentRepository>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<Arc<DeploymentApplication>, CoordinatorBuildError> {
     DeploymentApplication::from_repository(repository, clock)
         .await
@@ -199,10 +199,9 @@ pub fn register_application_access_retention(
                     () = cancel.cancelled() => break,
                     _ = interval.tick() => {}
                 }
-                let terminal_before = awaken_lease_contract::WallClockExt::now_ms(
-                    application_access.clock().as_ref(),
-                )
-                .saturating_sub(APPLICATION_ACCESS_RETENTION_MS);
+                let terminal_before =
+                    awaken_time::WallClockExt::now_ms(application_access.clock().as_ref())
+                        .saturating_sub(APPLICATION_ACCESS_RETENTION_MS);
                 if let Err(error) =
                     drain_application_access_retention(&application_access, terminal_before).await
                 {
@@ -374,7 +373,7 @@ pub async fn build_coordinator_component(
                     () = cancel.cancelled() => break,
                     _ = interval.tick() => {}
                 }
-                let now_ms = awaken_lease_contract::WallClockExt::now_ms(&*scheduler_clock);
+                let now_ms = awaken_time::WallClockExt::now_ms(&*scheduler_clock);
                 if let Err(error) = scheduled_deployments.tick_and_launch(now_ms).await {
                     eprintln!("scheduled Deployment tick failed: {error}");
                 }
@@ -460,7 +459,7 @@ mod tests {
         // scheduler, or parallel in-memory Deployment aggregate.
         let error = restore_deployment_application(
             Arc::new(FailingDeploymentRepository),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .await
         .err()

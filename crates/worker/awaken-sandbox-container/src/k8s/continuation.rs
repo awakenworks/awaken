@@ -1078,7 +1078,7 @@ pub(super) async fn await_claim_deletion(
     pending: &PendingClaimDeletion,
     admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<(), RuntimeError> {
-    let deadline = awaken_lease_contract::mono::MonoDeadline::after(DELETE_TIMEOUT);
+    let deadline = awaken_time::mono::MonoDeadline::after(DELETE_TIMEOUT);
     loop {
         admit()?;
         let observed = claims.get(&pending.name).await;

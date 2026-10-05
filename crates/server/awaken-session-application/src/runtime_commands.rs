@@ -7,7 +7,7 @@
 //! adapters invoke these use-case methods and never reach through to either
 //! collaborator, preventing a second orchestration boundary in protocol state.
 
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;

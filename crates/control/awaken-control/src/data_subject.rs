@@ -251,7 +251,7 @@ mod tests {
             DataSubjectApplication::new(
                 Arc::new(InMemoryDataSubjectRepo::new()),
                 b"test-control-enrollment-signing-key".to_vec(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .expect("test key is strong"),
         )

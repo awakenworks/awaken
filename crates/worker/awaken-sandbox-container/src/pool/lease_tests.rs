@@ -12,9 +12,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_lease_contract::UtcTime;
 use awaken_lease_testkit::ManualClock;
 use awaken_provisioning_contract as pc;
+use awaken_time::UtcTime;
 
 use super::WarmContainerPool;
 use super::lease::{ClaimOutcome, Hold, RecordKind, WarmCapacityLeasePolicy, WarmCapacityLeases};
@@ -1102,7 +1102,7 @@ async fn l1_l2_a_restarted_worker_waits_out_its_predecessors_lease_then_reclaims
 /// per-user directory beside the retained host staging.
 #[test]
 fn l7_the_host_default_is_maintained_and_per_user() {
-    let leases = WarmCapacityLeases::host_default(awaken_lease_contract::system_clock()).unwrap();
+    let leases = WarmCapacityLeases::host_default(awaken_time::system_clock()).unwrap();
     assert!(leases.maintained(), "L7 production leases are maintained");
     assert_eq!(leases.policy(), WarmCapacityLeasePolicy::default());
     let name = leases

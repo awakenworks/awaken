@@ -19,7 +19,7 @@ pub async fn with_budget<T>(
     budget: ModelInferenceBudget,
     future: impl std::future::Future<Output = T>,
 ) -> T {
-    let timing = ModelAttemptTiming::standalone(awaken_lease_contract::mono::now(), budget)
+    let timing = ModelAttemptTiming::standalone(awaken_time::mono::now(), budget)
         .expect("test budget is representable");
     with_model_invocation_context(None, timing, future).await
 }

@@ -12,13 +12,13 @@
 //! Session ownership fencing, and injected-clock observation are the port's
 //! observable contract, not one backend's behaviour.
 
-use awaken_lease_contract::WallClock;
-use awaken_lease_contract::utc::epoch_millis_to_rfc3339;
 use awaken_lease_testkit::ManualClock;
 use awaken_session_types::SessionId;
 use awaken_session_work_contract::{
     HeartbeatCondition, HeartbeatResult, LeaseHeartbeat, WorkMutationResult, WorkQueue, WorkState,
 };
+use awaken_time::WallClock;
+use awaken_time::utc::epoch_millis_to_rfc3339;
 use std::sync::Arc;
 
 /// Fixture digest for Session access assertions: a deterministic 64-hex value.

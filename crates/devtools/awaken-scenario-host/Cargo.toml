@@ -131,7 +131,7 @@ awaken-cli = { workspace = true, features = ["test-support"] }
 # The authoring plane (Stage B2): the config-router scenario mode seeds the admin
 # assistant + builds its tool executables through awaken-control's ports.
 awaken-control = { workspace = true }
-awaken-lease-contract.workspace = true
+awaken-time.workspace = true
 
 [features]
 # Cross-node dispatch wake over NATS (AWAKEN_DISPATCH_WAKE=nats), passed through to

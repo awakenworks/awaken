@@ -8,7 +8,7 @@
 // @formal entrypoint credential.visible_row_always_has_material
 use super::*;
 use crate::persist_material_exact;
-use awaken_lease_contract::WallClock;
+use awaken_time::WallClock;
 
 pub async fn ensure_worker_local(
     repo: &dyn CredentialRepo,

@@ -133,7 +133,7 @@ pub struct MemoryCommitCoordinator {
     /// Stamps every commit's `committed_at_unix_ms`. Required: the composition
     /// that owns this store chooses the clock, so a test names commit times and
     /// production never falls back to the host clock silently.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl std::fmt::Debug for MemoryCommitCoordinator {
@@ -147,7 +147,7 @@ impl std::fmt::Debug for MemoryCommitCoordinator {
 
 impl MemoryCommitCoordinator {
     #[must_use]
-    pub fn new(clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+    pub fn new(clock: Arc<dyn awaken_time::WallClock>) -> Self {
         Self {
             state: Arc::default(),
             clock,
@@ -253,14 +253,14 @@ impl MemoryCommitCoordinator {
 #[async_trait]
 impl CommitCoordinator for MemoryCommitCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
-        let committed_at = awaken_lease_contract::WallClockExt::now_ms(&*self.clock);
+        let committed_at = awaken_time::WallClockExt::now_ms(&*self.clock);
         self.commit_at(commit, Some(committed_at)).await
     }
 }
 #[async_trait]
 impl OperationCoordinator for MemoryCommitCoordinator {
     async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
-        let committed_at = awaken_lease_contract::WallClockExt::now_ms(&*self.clock);
+        let committed_at = awaken_time::WallClockExt::now_ms(&*self.clock);
         self.commit_operation_at(operation, Some(committed_at))
             .await
     }

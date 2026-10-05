@@ -177,9 +177,7 @@ impl VaultLocalMaterialAuthority {
     ) -> Result<(), SandboxError> {
         effect
             .authorization()
-            .validate_live_at(awaken_lease_contract::WallClockExt::now_ms(
-                self.clock.as_ref(),
-            ))?;
+            .validate_live_at(awaken_time::WallClockExt::now_ms(self.clock.as_ref()))?;
         let request = credential_writeback_request(effect.reference(), bytes)?;
         let revision = request.revision.ok_or_else(|| {
             SandboxError::invalid(
@@ -289,7 +287,7 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .expect("M1 legacy source");
@@ -327,7 +325,7 @@ mod tests {
             descriptor,
             secrets.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .expect("M3 described source")
@@ -335,7 +333,7 @@ mod tests {
         let broker = VaultLocalMaterialAuthority::new(
             credentials.clone(),
             secrets.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
 
         let legacy_reference = format!("{}@{}", legacy.id.0, legacy.version);
@@ -402,7 +400,7 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .expect("W1 source");
@@ -410,7 +408,7 @@ mod tests {
         let broker = VaultLocalMaterialAuthority::new(
             credentials.clone(),
             secrets.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
 
         assert_eq!(broker.materialize(&reference).await.unwrap(), b"before");
@@ -487,7 +485,7 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .expect("F1 source");
@@ -495,7 +493,7 @@ mod tests {
         let broker = VaultLocalMaterialAuthority::new(
             credentials.clone(),
             secrets.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let predecessor = awaken_provisioning_contract::SandboxEffectFence::new(
             "continuation-writeback",

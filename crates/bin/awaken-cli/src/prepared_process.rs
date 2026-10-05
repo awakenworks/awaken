@@ -37,7 +37,7 @@ pub struct PreparedProcess {
         Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
     pub admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
     /// The process's one wall clock, shared with an embedded Worker.
-    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
+    pub clock: Arc<dyn awaken_time::WallClock>,
 }
 
 pub(super) struct ProcessRouters {

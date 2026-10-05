@@ -3,7 +3,6 @@
 //! Actual TokenReview + HTTP + reopened SQLite + independently assembled stop.
 //! The shared k3d harness owns the isolated cluster; no fake provider receipts.
 use super::*;
-use awaken_lease_contract::WallClockExt;
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::ControlDispatchQueue;
 use awaken_dispatch::{
@@ -12,6 +11,7 @@ use awaken_dispatch::{
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_store_sqlite::SqliteCommitCoordinator;
+use awaken_time::WallClockExt;
 use awaken_worker_registry::SqliteWorkerDirectory;
 use awaken_coordinator_client::{WorkerControlClient, dispatch_transport_with_upstream};
 use awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer;

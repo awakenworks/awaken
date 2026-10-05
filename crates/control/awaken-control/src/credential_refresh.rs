@@ -25,7 +25,7 @@ use base64::Engine as _;
 pub struct VaultRefreshFactory {
     credentials: Arc<dyn CredentialRepo>,
     secrets: Arc<dyn SecretStore>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl VaultRefreshFactory {
@@ -33,7 +33,7 @@ impl VaultRefreshFactory {
     pub fn new(
         credentials: Arc<dyn CredentialRepo>,
         secrets: Arc<dyn SecretStore>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             credentials,
@@ -98,7 +98,7 @@ pub struct VaultRefresher {
     access: tokio::sync::Mutex<CredentialRefreshAccess>,
     credentials: Arc<dyn CredentialRepo>,
     secrets: Arc<dyn SecretStore>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     http: reqwest::Client,
 }
 
@@ -109,7 +109,7 @@ impl VaultRefresher {
         access: CredentialRefreshAccess,
         credentials: Arc<dyn CredentialRepo>,
         secrets: Arc<dyn SecretStore>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         let http = http_client_for(&access.token_endpoint);
         Self {
@@ -401,7 +401,7 @@ mod tests {
             access,
             Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
             Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         assert_eq!(
             refresher
@@ -460,7 +460,7 @@ mod tests {
         let factory = VaultRefreshFactory::new(
             credentials.clone(),
             secrets.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let challenge = AuthChallenge {
             status: 401,
@@ -503,7 +503,7 @@ mod tests {
             let case_factory = VaultRefreshFactory::new(
                 case_credentials,
                 secrets.clone(),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             );
             assert_eq!(
                 CredentialRefreshFactory::bearer_reloader(&case_factory, source.id.clone(), 1,)

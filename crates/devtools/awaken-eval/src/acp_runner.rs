@@ -97,9 +97,7 @@ impl ToolFreeAcpRunner {
                 content: vec![ContentBlock::text(input)],
             }],
         );
-        let commit = Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         let context = RuntimeRunContext::new()
             .with_commit(commit.clone())
             .with_tool_permission_policy(Arc::new(DenyAllTools));

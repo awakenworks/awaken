@@ -63,7 +63,7 @@ pub struct MemoryRuntime {
     claim_owner: String,
     extractions: RwLock<Arc<dyn MemoryExtractionRepository>>,
     /// The Host's process clock extraction claims and receipts are stamped on.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 /// One Session-scoped MemoryStore binding shared by recall and extraction.
@@ -91,7 +91,7 @@ pub struct BoundMemory {
 struct MemoryExtractionCredentialAuthority {
     repository: Arc<dyn MemoryExtractionRepository>,
     /// The Host's process clock the claim lease is judged on.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     intent_id: String,
     owner: String,
     generation: u64,
@@ -106,7 +106,7 @@ impl MemoryExtractionCredentialAuthority {
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Memory extraction credential claim disappeared".to_string())?;
-        let now = awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref());
+        let now = awaken_time::WallClockExt::now_ms(self.clock.as_ref());
         if intent.claim_owner.as_deref() != Some(self.owner.as_str())
             || intent.claim_generation != self.generation
             || intent
@@ -150,7 +150,7 @@ impl awaken_runtime_contract::CredentialRealizationRecorder
                 .record_credential_realization(
                     &self.owner,
                     self.generation,
-                    awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref()),
+                    awaken_time::WallClockExt::now_ms(self.clock.as_ref()),
                     receipt.clone(),
                 )
                 .map_err(|error| {
@@ -189,7 +189,7 @@ impl MemoryRuntime {
         provider: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
         background: Arc<BackgroundRuns>,
         extractions: Arc<dyn MemoryExtractionRepository>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             clock,
@@ -300,7 +300,7 @@ impl MemoryRuntime {
                 Some(&holder),
                 &materializer.credential_realization_capabilities(),
                 intent.claim_generation,
-                awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref()),
+                awaken_time::WallClockExt::now_ms(self.clock.as_ref()),
             )
             .map_err(|error| error.to_string())?;
             let owner = intent

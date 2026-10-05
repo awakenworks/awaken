@@ -14,7 +14,7 @@ use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrationError, ExecutableEnvironmentRegistrationOutcome,
     ExecutableEnvironmentWithdrawal, ExecutableEnvironmentWithdrawalOutcome,
 };
-use awaken_lease_contract::{WallClock, WallClockExt};
+use awaken_time::{WallClock, WallClockExt};
 
 #[derive(Clone, Debug)]
 pub struct EnvironmentImageBuildPolicy {
@@ -188,7 +188,7 @@ impl EnvironmentImageReadiness for EnvironmentImageBuildCoordinator {
         self.store
             .ensure(demand.clone(), self.clock.now_ms())
             .await?;
-        let deadline = awaken_lease_contract::mono::MonoDeadline::after(self.policy.wait_timeout);
+        let deadline = awaken_time::mono::MonoDeadline::after(self.policy.wait_timeout);
         loop {
             if let Some(record) = self.store.get(&demand.build_key).await?
                 && let EnvironmentImageBuildState::Ready { image, .. } = record.state
@@ -552,7 +552,7 @@ mod tests {
             available: AtomicBool::new(true),
             availability_checks: Mutex::new(Vec::new()),
         });
-        let clock = awaken_lease_contract::system_clock();
+        let clock = awaken_time::system_clock();
         let coordinator = Arc::new(
             EnvironmentImageBuildCoordinator::new(
                 store.clone(),
@@ -758,7 +758,7 @@ mod tests {
                     poll_interval: Duration::from_millis(1),
                     ..EnvironmentImageBuildPolicy::default()
                 },
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .unwrap(),
         );
@@ -768,7 +768,7 @@ mod tests {
                 builds.clone(),
             ));
         let definitions: Arc<dyn EnvRegistry> = Arc::new(
-            awaken_env_store::InMemoryEnvRegistry::new(awaken_lease_contract::system_clock()),
+            awaken_env_store::InMemoryEnvRegistry::new(awaken_time::system_clock()),
         );
         let control = awaken_environment_application::EnvironmentApplication::new(
             definitions,
@@ -809,7 +809,7 @@ mod tests {
         let execution =
             awaken_environment_execution_application::EnvironmentExecutionApplication::new(
                 Arc::new(awaken_work_store::InMemoryWorkQueue::new(
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )),
                 catalog.clone(),
             )

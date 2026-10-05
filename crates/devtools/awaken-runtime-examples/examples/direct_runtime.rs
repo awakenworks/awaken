@@ -54,9 +54,7 @@ async fn main() {
     // 4. Run one turn. `run` installs the config's catalog and executes — no
     //    separate install/register, no hand-built activation. Swap the in-memory
     //    commit for a SQLite coordinator to persist across restarts.
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime.run(&config, "Say hi.", context).await.expect("run");
 

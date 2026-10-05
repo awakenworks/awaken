@@ -10,7 +10,7 @@ use awaken_runtime_contract::model_operation::{ModelExecutionEvidence, NoDispatc
 /// The inherited timing of this attempt, refused before dispatch when its
 /// response deadline is already spent.
 pub(super) fn current_attempt_timing() -> Result<ModelAttemptTiming> {
-    let now = awaken_lease_contract::mono::now();
+    let now = awaken_time::mono::now();
     let timing = match awaken_runtime_contract::model_operation::current_model_attempt_timing() {
         Some(timing) => timing,
         None => ModelAttemptTiming::standalone(now, ModelInferenceBudget::DEFAULT)

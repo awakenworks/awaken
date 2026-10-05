@@ -10,8 +10,8 @@
 
 mod harness;
 
-use awaken_lease_contract::system_clock;
 use awaken_dispatch_contract::ControlDispatchQueue;
+use awaken_time::system_clock;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -15,7 +15,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch_erasure::AnyDispatchStore;
-use awaken_lease_contract::WallClock;
 use awaken_dispatch_contract::{ClaimedRunCommit, PendingInput};
 use awaken_runtime::RunInput;
 use awaken_runtime_contract::CancellationToken;
@@ -25,6 +24,7 @@ use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::{RawToolRegistry, ToolExecutor};
+use awaken_time::WallClock;
 
 use super::child_attempt::{
     ChildExecutionAdapters, bind_direct_child_credentials, child_attempt_executor,
@@ -777,9 +777,7 @@ mod tests {
         let parent_executor: Arc<dyn ToolExecutor> =
             Arc::new(RawToolRegistry::new(parent.rooted_tools()));
         let context = || {
-            let commit = Arc::new(MemoryCommitCoordinator::new(
-                awaken_lease_contract::system_clock(),
-            ));
+            let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
             RuntimeRunContext::new()
                 .with_commit(commit.clone())
                 .with_reader(commit)
@@ -1114,14 +1112,12 @@ mod tests {
                 ))
                 .await
                 .unwrap();
-            let commit = Arc::new(MemoryCommitCoordinator::new(
-                awaken_lease_contract::system_clock(),
-            ));
+            let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
             let scheduler = durable.then(|| RunScheduler {
-                clock: awaken_lease_contract::system_clock(),
+                clock: awaken_time::system_clock(),
                 store: Arc::new(
                     awaken_dispatch::open_sqlite_dispatch_store_in_memory(
-                        awaken_lease_contract::system_clock(),
+                        awaken_time::system_clock(),
                     )
                     .unwrap(),
                 ),
@@ -1238,17 +1234,15 @@ mod tests {
             .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("parent"))
             .await
             .unwrap();
-        let commit = Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         let dispatch_path = tmp.path().join("child-dispatch.db");
         let dispatch_path = dispatch_path.to_string_lossy().to_string();
         let scheduler = RunScheduler {
-            clock: awaken_lease_contract::system_clock(),
+            clock: awaken_time::system_clock(),
             store: Arc::new(
                 awaken_dispatch::open_sqlite_dispatch_store(
                     &dispatch_path,
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )
                 .expect("child dispatch store"),
             ),
@@ -1261,9 +1255,8 @@ mod tests {
             publication_source: None,
             claimed_model_request_gate: None,
         };
-        let parent_reader: Arc<dyn CommittedThreadView> = Arc::new(MemoryCommitCoordinator::new(
-            awaken_lease_contract::system_clock(),
-        ));
+        let parent_reader: Arc<dyn CommittedThreadView> =
+            Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         let context = || {
             RuntimeRunContext::new()
                 .with_commit(commit.clone())
@@ -1316,11 +1309,11 @@ mod tests {
         // A replacement process reopens the durable queue and rebuilds every live
         // runtime object from committed truth; no child handle crosses this seam.
         let replacement = RunScheduler {
-            clock: awaken_lease_contract::system_clock(),
+            clock: awaken_time::system_clock(),
             store: Arc::new(
                 awaken_dispatch::open_sqlite_dispatch_store(
                     &dispatch_path,
-                    awaken_lease_contract::system_clock(),
+                    awaken_time::system_clock(),
                 )
                 .expect("reopen child dispatch"),
             ),
@@ -1386,11 +1379,11 @@ mod tests {
         let replay = run_agent_until_boundary(
             Arc::new(PermissionModel),
             execution(RunScheduler {
-                clock: awaken_lease_contract::system_clock(),
+                clock: awaken_time::system_clock(),
                 store: Arc::new(
                     awaken_dispatch::open_sqlite_dispatch_store(
                         &dispatch_path,
-                        awaken_lease_contract::system_clock(),
+                        awaken_time::system_clock(),
                     )
                     .expect("reopen terminal child dispatch"),
                 ),

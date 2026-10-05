@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use awaken_lease_contract::mono::{self, Instant};
+use awaken_time::mono::{self, Instant};
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;

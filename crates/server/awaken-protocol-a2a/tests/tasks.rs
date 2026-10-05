@@ -103,7 +103,7 @@ async fn rpc(denied: Arc<AtomicBool>, body: Value) -> Value {
                 denied,
                 started: Arc::new(AtomicBool::new(true)),
             }),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         ),
         body,
     )
@@ -225,7 +225,7 @@ async fn message_stream_can_explicitly_deny_an_awaiting_builtin_tool() {
             denied: denied.clone(),
             started: Arc::new(AtomicBool::new(true)),
         }),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let response = app
         .oneshot(
@@ -335,7 +335,7 @@ async fn message_send_delivers_the_text_as_the_client_tool_result_on_resume() {
         Arc::new(ClientToolRuntime {
             delivered: delivered.clone(),
         }),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let resp = app
         .oneshot(
@@ -373,7 +373,7 @@ async fn message_stream_on_an_awaiting_context_uses_the_same_resume_driver() {
         Arc::new(ClientToolRuntime {
             delivered: delivered.clone(),
         }),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let response = app
         .oneshot(
@@ -417,7 +417,7 @@ async fn tasks_cancel_denies_the_awaiting_tool_and_reports_canceled() {
             denied: denied.clone(),
             started: Arc::new(AtomicBool::new(false)),
         }),
-        awaken_lease_contract::system_clock(),
+        awaken_time::system_clock(),
     );
     let task_id = seed(app.clone()).await;
     let r = call(

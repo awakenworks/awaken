@@ -25,9 +25,7 @@ fn app() -> Router {
             }
         }
     }
-    let state = Arc::new(DeploymentApplication::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let state = Arc::new(DeploymentApplication::new(awaken_time::system_clock()));
     state.bind_launcher(Arc::new(Launcher));
     deployments_router(state).layer(axum::Extension(awaken_tenancy::WorkspaceScope(
         "default".into(),
@@ -40,9 +38,7 @@ async fn deployment_routes_require_the_edge_selected_workspace() {
     // present but empty; C3=stamp is non-empty. Effects: E1=fail closed with
     // indistinguishable 404; E2=enter the Deployment application. Decision
     // rules: S1 C1=>E1, S2 C2=>E1, S3 C3=>E2 (the lifecycle tests below own S3).
-    let state = Arc::new(DeploymentApplication::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let state = Arc::new(DeploymentApplication::new(awaken_time::system_clock()));
     let missing = deployments_router(state.clone());
     let empty = deployments_router(state).layer(axum::Extension(awaken_tenancy::WorkspaceScope(
         String::new(),

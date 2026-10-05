@@ -22,14 +22,14 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_lease_contract::WallClock;
-#[cfg(all(test, not(feature = "loom")))]
-use awaken_lease_contract::system_clock;
 use awaken_session_work_contract::{
     HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, SessionAccessDigest,
     SessionWorkLease, SessionWorkReleaseAdmission, WorkClaim, WorkItem, WorkMutationResult,
     WorkQueue, WorkQueueError, WorkSessionAccess, session_work_release_admission,
 };
+use awaken_time::WallClock;
+#[cfg(all(test, not(feature = "loom")))]
+use awaken_time::system_clock;
 fn storage(error: impl std::fmt::Display) -> WorkQueueError {
     WorkQueueError::Storage(error.to_string().into())
 }
@@ -52,7 +52,7 @@ pub use lease_book::{LEASE_TTL_MS, LeaseBook, POLLER_WINDOW_MS};
 mod backends;
 use backends::pg_row_to_item;
 mod mutation;
-use awaken_lease_contract::Expiry;
+use awaken_time::Expiry;
 use mutation::{
     LeaseAuthorityCommand, LeaseAuthorityDecision, LeaseAuthorityTuple, LeaseFence,
     StoredLeaseAuthorityInput, apply_metadata_patch, claim_stored_lease_authority,
@@ -68,7 +68,7 @@ mod schema;
 #[cfg(all(test, not(feature = "loom")))]
 #[path = "../tests/support/work_postgres.rs"]
 mod work_postgres_fixture;
-use awaken_lease_contract::WallClockExt;
+use awaken_time::WallClockExt;
 use schema::*;
 mod session_access;
 
@@ -1173,7 +1173,7 @@ impl WorkQueue for PostgresWorkQueue {
                  lease_owner = $2, lease_epoch = $3, lease_expires_ms = $4, \
                  lease_refreshed_ms = $5, latest_heartbeat_at = NULL WHERE work_id = $6",
             )
-            .bind(awaken_lease_contract::utc::epoch_millis_to_rfc3339(now_ms))
+            .bind(awaken_time::utc::epoch_millis_to_rfc3339(now_ms))
             .bind(next_authority.owner)
             .bind(stored_lease_epoch(granted)?)
             .bind(next_authority.expires_at)
@@ -1838,7 +1838,7 @@ mod tests {
             Arc::new(ManualClock::new(REOPEN_MS)),
         )
         .expect("C2");
-        let expected = awaken_lease_contract::utc::epoch_millis_to_rfc3339(WRITE_MS);
+        let expected = awaken_time::utc::epoch_millis_to_rfc3339(WRITE_MS);
         let read = reopened
             .get("rt-env", &first)
             .await
@@ -1847,7 +1847,7 @@ mod tests {
         assert_eq!(read.created_at, expected, "E1");
         assert_ne!(
             read.created_at,
-            awaken_lease_contract::utc::epoch_millis_to_rfc3339(REOPEN_MS),
+            awaken_time::utc::epoch_millis_to_rfc3339(REOPEN_MS),
             "E2 the reopening clock must not supply the value"
         );
         let sibling = reopened
@@ -1857,7 +1857,7 @@ mod tests {
             .expect("sibling survives");
         assert_eq!(
             sibling.created_at,
-            awaken_lease_contract::utc::epoch_millis_to_rfc3339(SIBLING_MS),
+            awaken_time::utc::epoch_millis_to_rfc3339(SIBLING_MS),
             "E1 diffusion: the sibling keeps its own instant"
         );
         let _ = std::fs::remove_file(&path);

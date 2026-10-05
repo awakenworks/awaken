@@ -324,7 +324,7 @@ async fn enter_stores_row_and_secret_separately() {
         },
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -355,7 +355,7 @@ async fn ambiguous_row_commit_is_reconciled_from_the_durable_intent() {
         },
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await;
 
@@ -368,13 +368,9 @@ async fn ambiguous_row_commit_is_reconciled_from_the_durable_intent() {
     // the exact pending fact, and preserves the referenced material.
     assert_eq!(store.map.lock().expect("secret store mutex").len(), 1);
     assert_eq!(
-        recover_credential_mutations(
-            &store,
-            &repo,
-            awaken_lease_contract::system_clock().as_ref()
-        )
-        .await
-        .unwrap(),
+        recover_credential_mutations(&store, &repo, awaken_time::system_clock().as_ref())
+            .await
+            .unwrap(),
         1
     );
     assert_eq!(store.map.lock().expect("secret store mutex").len(), 1);
@@ -487,13 +483,9 @@ async fn source_recovery_rejects_a_mismatched_durable_key_before_secret_io() {
         .insert("cred:ws:wrong-row-key".into(), ready.clone());
 
     assert!(
-        recover_credential_mutations(
-            &store,
-            &repo,
-            awaken_lease_contract::system_clock().as_ref()
-        )
-        .await
-        .is_err(),
+        recover_credential_mutations(&store, &repo, awaken_time::system_clock().as_ref())
+            .await
+            .is_err(),
         "E1"
     );
     assert_eq!(store.gets.load(Ordering::SeqCst), 0, "E1");
@@ -652,7 +644,7 @@ async fn rotation_publishes_a_new_revision_and_reclaims_the_old_material() {
         },
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -668,7 +660,7 @@ async fn rotation_publishes_a_new_revision_and_reclaims_the_old_material() {
         },
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -713,7 +705,7 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
         },
         &store,
         &seed_repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -724,7 +716,7 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
         RedactedString::new("after-delivered"),
         &store,
         &seed_repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .expect("W1 delivered apply");
@@ -745,7 +737,7 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
         },
         &store,
         &seed_repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -759,7 +751,7 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
         RedactedString::new("after"),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await;
     assert!(
@@ -777,7 +769,7 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
         RedactedString::new("after"),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .expect("W2 exact response-loss replay");
@@ -791,7 +783,7 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
                 RedactedString::new("after"),
                 &store,
                 &repo,
-                awaken_lease_contract::system_clock().as_ref(),
+                awaken_time::system_clock().as_ref(),
             )
             .await,
             Err(CredentialError::MutationConflict(_))
@@ -807,7 +799,7 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
                 RedactedString::new("different"),
                 &store,
                 &repo,
-                awaken_lease_contract::system_clock().as_ref(),
+                awaken_time::system_clock().as_ref(),
             )
             .await,
             Err(CredentialError::MutationConflict(_))
@@ -817,13 +809,9 @@ async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
     assert_eq!(repo.get(&before.id).await.unwrap(), published, "W3/W4");
 
     assert_eq!(
-        recover_credential_mutations(
-            &store,
-            &repo,
-            awaken_lease_contract::system_clock().as_ref()
-        )
-        .await
-        .unwrap(),
+        recover_credential_mutations(&store, &repo, awaken_time::system_clock().as_ref())
+            .await
+            .unwrap(),
         1
     );
     assert!(repo.pending_mutations().await.unwrap().is_empty());
@@ -864,7 +852,7 @@ async fn rotation_does_not_publish_material_without_exact_readback() {
             },
             &store,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -880,7 +868,7 @@ async fn rotation_does_not_publish_material_without_exact_readback() {
             },
             &store,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await;
 
@@ -897,13 +885,9 @@ async fn rotation_does_not_publish_material_without_exact_readback() {
         // the adapter recovers, exact absence permits idempotent retirement.
         assert_eq!(repo.pending_mutations().await.unwrap().len(), 1, "{rule}");
         assert_eq!(
-            recover_credential_mutations(
-                &store.inner,
-                &repo,
-                awaken_lease_contract::system_clock().as_ref()
-            )
-            .await
-            .unwrap(),
+            recover_credential_mutations(&store.inner, &repo, awaken_time::system_clock().as_ref())
+                .await
+                .unwrap(),
             1
         );
         assert!(repo.pending_mutations().await.unwrap().is_empty(), "{rule}");
@@ -932,7 +916,7 @@ async fn retirement_fails_closed_and_reclaims_material() {
         },
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -945,7 +929,7 @@ async fn retirement_fails_closed_and_reclaims_material() {
             CredentialRetirement::Archive,
             &store,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await,
         Err(CredentialError::MutationConflict(_))
@@ -960,7 +944,7 @@ async fn retirement_fails_closed_and_reclaims_material() {
         CredentialRetirement::Archive,
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -993,7 +977,7 @@ async fn reversible_status_transition_retains_material_and_advances_revision() {
         },
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1001,7 +985,7 @@ async fn reversible_status_transition_retains_material_and_advances_revision() {
         &before.id,
         CredentialStatus::Disabled,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1020,7 +1004,7 @@ async fn reversible_status_transition_retains_material_and_advances_revision() {
             &disabled.id,
             CredentialStatus::Disabled,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap(),
@@ -1046,7 +1030,7 @@ async fn provider_scope_widening_is_exact_and_retains_material_authority() {
         Some("provider.chat".into()),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap()
@@ -1059,7 +1043,7 @@ async fn provider_scope_widening_is_exact_and_retains_material_authority() {
             "other-provider",
             "provider.chat",
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -1071,7 +1055,7 @@ async fn provider_scope_widening_is_exact_and_retains_material_authority() {
         "provider",
         "provider.chat",
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1089,7 +1073,7 @@ async fn provider_scope_widening_is_exact_and_retains_material_authority() {
             "provider",
             "provider.chat",
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -1116,7 +1100,7 @@ async fn recovery_uses_the_durable_side_of_a_rotation_as_cleanup_authority() {
             },
             &store,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -1142,13 +1126,9 @@ async fn recovery_uses_the_durable_side_of_a_rotation_as_cleanup_authority() {
         }
 
         let recovered = if publish_after {
-            recover_credential_mutations(
-                &store,
-                &repo,
-                awaken_lease_contract::system_clock().as_ref(),
-            )
-            .await
-            .unwrap()
+            recover_credential_mutations(&store, &repo, awaken_time::system_clock().as_ref())
+                .await
+                .unwrap()
         } else {
             recover_credential_mutations_at(&store, &repo, recovery_now)
                 .await
@@ -1241,7 +1221,7 @@ async fn inventory_reports_but_never_deletes_a_ref_a_new_pending_can_reuse() {
         },
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1451,7 +1431,7 @@ async fn get_is_an_unscoped_by_id_primitive_fenced_at_resolution() {
         },
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1489,7 +1469,7 @@ async fn idempotent_entry_has_one_identity_and_rejects_conflicting_facts() {
         Some("anthropic.anthropic_messages".into()),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1499,7 +1479,7 @@ async fn idempotent_entry_has_one_identity_and_rejects_conflicting_facts() {
         Some("anthropic.anthropic_messages".into()),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1509,7 +1489,7 @@ async fn idempotent_entry_has_one_identity_and_rejects_conflicting_facts() {
         Some("openai.open_ai_chat".into()),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await;
     let endpoint_conflict = enter_credential_idempotent(
@@ -1518,7 +1498,7 @@ async fn idempotent_entry_has_one_identity_and_rejects_conflicting_facts() {
         Some("anthropic.anthropic_messages.backup".into()),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await;
 
@@ -1559,7 +1539,7 @@ async fn verified_idempotent_entry_rejects_different_material() {
         None,
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1569,7 +1549,7 @@ async fn verified_idempotent_entry_rejects_different_material() {
         None,
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1579,7 +1559,7 @@ async fn verified_idempotent_entry_rejects_different_material() {
         None,
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await;
 
@@ -1604,7 +1584,7 @@ async fn verified_idempotent_entry_rejects_different_material() {
 async fn concurrent_verified_create_with_same_material_has_one_writer_and_replays() {
     let store = ObservedSecretStore::default();
     let repo = GatedCredentialRepo::new();
-    let clock = awaken_lease_contract::system_clock();
+    let clock = awaken_time::system_clock();
     let id = CredentialSourceId("cred:ws:verified-same-race".into());
     let params = || CredentialCreateParams {
         workspace_id: "ws".into(),
@@ -1683,7 +1663,7 @@ async fn concurrent_verified_create_with_same_material_has_one_writer_and_replay
 async fn concurrent_verified_create_with_different_material_retains_winner_bytes() {
     let store = ObservedSecretStore::default();
     let repo = GatedCredentialRepo::new();
-    let clock = awaken_lease_contract::system_clock();
+    let clock = awaken_time::system_clock();
     let id = CredentialSourceId("cred:ws:verified-different-race".into());
     let params = |material: &str| CredentialCreateParams {
         workspace_id: "ws".into(),
@@ -1794,7 +1774,7 @@ async fn application_mcp_bearer_create_replay_rotate_and_conflict_are_one_aggreg
                 },
                 &store,
                 &repo,
-                awaken_lease_contract::system_clock().as_ref(),
+                awaken_time::system_clock().as_ref(),
             )
         };
     }
@@ -1929,7 +1909,7 @@ async fn application_mcp_legacy_material_identity_upgrades_once() {
         command(),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1954,7 +1934,7 @@ async fn application_mcp_legacy_material_identity_upgrades_once() {
         command(),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap();
@@ -1973,7 +1953,7 @@ async fn application_mcp_legacy_material_identity_upgrades_once() {
 async fn application_mcp_bearer_concurrent_rotation_has_one_winner() {
     let store = InMemorySecretStore::new();
     let repo = GatedCredentialRepo::new();
-    let clock = awaken_lease_contract::system_clock();
+    let clock = awaken_time::system_clock();
     let source_id = CredentialSourceId("cred:app-mcp:race".into());
     enter_or_rotate_application_mcp_bearer(
         ApplicationMcpBearerCommand {
@@ -2133,7 +2113,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         old_descriptor,
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .expect("DR1 predecessor")
@@ -2151,7 +2131,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .expect("DR1/E1");
@@ -2184,7 +2164,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .expect("DR2/E2");
@@ -2204,7 +2184,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await;
     assert!(
@@ -2225,7 +2205,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await;
     assert!(
@@ -2242,7 +2222,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap()
@@ -2255,7 +2235,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await;
     assert!(
@@ -2285,7 +2265,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .unwrap()
@@ -2303,7 +2283,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor.clone(),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await;
     assert!(
@@ -2336,7 +2316,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
         replacement_descriptor,
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .expect("DR6/E5");
@@ -2423,7 +2403,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
         descriptor.clone(),
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .expect("D1/E1");
@@ -2446,7 +2426,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             descriptor.clone(),
             &store,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -2482,7 +2462,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             unsupported_descriptor,
             &store,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -2510,7 +2490,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             descriptor.clone(),
             &store,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -2547,7 +2527,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             incompatible_descriptor.clone(),
             &store,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -2572,7 +2552,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
         },
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .expect("D3/E3");
@@ -2592,7 +2572,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
         },
         &store,
         &repo,
-        awaken_lease_contract::system_clock().as_ref(),
+        awaken_time::system_clock().as_ref(),
     )
     .await
     .expect("D5/E5");
@@ -2626,7 +2606,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             },
             &store,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -2646,7 +2626,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             },
             &store,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -2677,7 +2657,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             },
             &store,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .is_err(),
@@ -2701,7 +2681,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             },
             &store,
             &repo,
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .is_err(),

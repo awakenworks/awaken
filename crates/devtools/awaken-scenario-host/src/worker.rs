@@ -14,7 +14,7 @@ pub async fn run_echo_worker(
     worker_id: &str,
     admin_listen: Option<&str>,
     request_authorizer: Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthorizer>>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     struct EchoWorkerProvider;
 
@@ -54,7 +54,7 @@ pub async fn run_echo_worker(
 fn echo_worker_builder(
     upstream: awaken_worker_transport_security::WorkerUpstream,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> awaken_worker::WorkerNodeBuilder {
     // The scenario image intentionally does not install bwrap: this test isolates
     // remote claim/commit recovery, while sandbox-tier tests own OS isolation.
@@ -121,7 +121,7 @@ mod tests {
             awaken_worker_transport_security::WorkerUpstream::new("http://coordinator")
                 .with_worker_id("worker-a"),
             Arc::new(HostMaterializer),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .build()
         .expect("canonical scenario Worker topology");

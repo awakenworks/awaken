@@ -217,9 +217,7 @@ async fn the_kernel_runs_agent_run_through_the_resolver() {
         .with_gate(Arc::new(allow_all()))
         .with_run_delegation(Arc::new(DoneResolver));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(commit.clone());
@@ -254,9 +252,7 @@ async fn a_delegates_usage_folds_into_the_parent_thread_tally() {
         .with_gate(Arc::new(allow_all()))
         .with_run_delegation(Arc::new(UsageResolver));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(commit.clone());
@@ -304,9 +300,7 @@ async fn an_awaiting_delegation_resumes_through_the_resolver() {
         .with_gate(Arc::new(allow_all()))
         .with_run_delegation(Arc::new(AwaitingResolver));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(commit.clone());

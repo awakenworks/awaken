@@ -272,7 +272,7 @@ mod tests {
             ManagedState::new(RehydrateFake::default()).with_environments(Arc::new(
                 awaken_environment_execution_application::EnvironmentExecutionApplication::new(
                     Arc::new(awaken_work_store::InMemoryWorkQueue::new(
-                        awaken_lease_contract::system_clock(),
+                        awaken_time::system_clock(),
                     )),
                     Arc::new(UnavailableEnvironmentSource),
                 ),

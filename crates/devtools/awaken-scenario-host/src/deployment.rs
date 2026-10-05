@@ -235,7 +235,7 @@ fn resource_host_with_selected_runtime(
     selected: Option<&Arc<dyn awaken_session_executor::RuntimeAuthority>>,
 ) -> ScenarioPlatform {
     // The Scenario process's Resources clock.
-    let clock = awaken_lease_contract::system_clock();
+    let clock = awaken_time::system_clock();
     let resources = match deployment.storage_dir.clone() {
         Some(storage_dir) => awaken_resource_persistence::open_embedded(&storage_dir, clock)
             .expect("open embedded scenario Resources application"),
@@ -347,12 +347,10 @@ mod tests {
         // -> E1. The absent/local R2 is exercised by factory_topology's AI SDK
         // Run; absent/durable R3 is the fail-closed case below.
         let deployment = awaken_session_executor::DeploymentConfig::ephemeral();
-        let selected = awaken_coordinator::init_scenario_runtime(
-            &deployment,
-            awaken_lease_contract::system_clock(),
-        )
-        .await
-        .expect("selected Coordinator scenario authority");
+        let selected =
+            awaken_coordinator::init_scenario_runtime(&deployment, awaken_time::system_clock())
+                .await
+                .expect("selected Coordinator scenario authority");
         let exact_dispatch = selected.dispatch_store();
         let (host, _resources) = resource_host_with_selected_runtime(
             Arc::new(crate::EchoModel),

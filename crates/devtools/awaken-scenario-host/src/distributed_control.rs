@@ -18,7 +18,7 @@ use axum::routing::{get, post};
 use crate::model_publication::{DistributedProviderPublicationResolver, scenario_model_catalog};
 
 pub async fn serve_distributed_control(
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), String> {
     // The scenario process is a thin model adapter, not a second config
     // owner. Its deployment fixture supplies the same explicit file used by the

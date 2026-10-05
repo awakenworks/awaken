@@ -390,7 +390,7 @@ impl RuntimeAuthorityError {
 #[cfg(any(test, feature = "test-support"))]
 pub struct EphemeralRuntimeAuthority {
     /// One clock for the dispatch store and every Thread's commit store.
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     commits: std::sync::Mutex<std::collections::HashMap<String, Arc<dyn LocalCommit>>>,
     checkpoints:
         std::sync::Mutex<std::collections::HashMap<String, Arc<dyn StreamCheckpointStore>>>,
@@ -414,7 +414,7 @@ impl EphemeralRuntimeAuthority {
     /// concrete Coordinator queue implementation.
     #[must_use]
     pub fn with_dispatch(
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
         dispatch: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
     ) -> Self {
         Self {
@@ -430,7 +430,7 @@ impl EphemeralRuntimeAuthority {
     /// their composition root through `with_dispatch`.
     #[cfg(test)]
     #[must_use]
-    pub fn new(clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+    pub fn new(clock: Arc<dyn awaken_time::WallClock>) -> Self {
         let dispatch = awaken_dispatch_erasure::AnyDispatchStore::from_durable_store(
             awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
             None,

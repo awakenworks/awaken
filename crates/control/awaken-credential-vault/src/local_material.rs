@@ -11,7 +11,7 @@ use awaken_credential_contract::{
     OAuthCredentialMaterial, PlaintextBoundary, PlaintextHolder, ResolvedCredentialMaterial,
     SELF_HOSTED_ACP_TRUST_DOMAIN, SELF_HOSTED_WORKER_TRUST_DOMAIN,
 };
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 
 use crate::repo::{
     CredentialMaterialPatch, CredentialRepo, rotate_credential_materials_exact,
@@ -26,7 +26,7 @@ use crate::{CredentialError, CredentialSource, CredentialStatus, SecretRef, Secr
 pub struct VaultLocalMaterialAuthority {
     credentials: Arc<dyn CredentialRepo>,
     secrets: Arc<dyn SecretStore>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 
 /// Last-mile status gate after the current source row is loaded and before
@@ -61,7 +61,7 @@ impl VaultLocalMaterialAuthority {
     pub fn new(
         credentials: Arc<dyn CredentialRepo>,
         secrets: Arc<dyn SecretStore>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             credentials,
@@ -349,7 +349,7 @@ mod tests {
             },
             inner.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -362,7 +362,7 @@ mod tests {
         let authority = VaultLocalMaterialAuthority::new(
             credentials.clone(),
             secrets.clone(),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let holder =
             PlaintextHolder::new(PlaintextBoundary::Worker, SELF_HOSTED_WORKER_TRUST_DOMAIN);
@@ -514,7 +514,7 @@ mod tests {
             },
             &InMemorySecretStore::new(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -540,7 +540,7 @@ mod tests {
         let authority = VaultLocalMaterialAuthority::new(
             credentials,
             Arc::new(SealErrorSecretStore),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let binding = CredentialMaterialBinding::for_target(
             "workspace-a",

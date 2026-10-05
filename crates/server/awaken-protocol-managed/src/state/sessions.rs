@@ -4,7 +4,7 @@
 //! update, delete, and archive.
 
 use super::*;
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 
 use super::session_mcp_projection::typed_mcp_servers;
 

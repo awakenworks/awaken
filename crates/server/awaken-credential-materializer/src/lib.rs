@@ -53,7 +53,7 @@ mod claimed_materialization;
 mod material_capabilities;
 use admission::{ExpectedProviderTarget, admit_exact_adapter};
 pub use ambient_environment::{AmbientApiKeyEnvironmentError, reject_ambient_api_key_environment};
-use awaken_lease_contract::WallClockExt as _;
+use awaken_time::WallClockExt as _;
 
 #[cfg(all(test, feature = "authority"))]
 use awaken_agent_contract::RedactedString;
@@ -74,7 +74,7 @@ struct RegisteredExtensionConsumer {
 /// Worker/host-side realization of one already-published credential reference.
 #[derive(Clone)]
 pub struct PinnedCredentialMaterializer {
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
     #[cfg(feature = "authority")]
     local_material_resolver: Option<Arc<dyn CredentialMaterialResolver>>,
     #[cfg(feature = "authority")]
@@ -89,7 +89,7 @@ pub struct PinnedCredentialMaterializer {
 impl PinnedCredentialMaterializer {
     #[cfg(feature = "authority")]
     #[must_use]
-    pub fn new<A>(local_authority: Arc<A>, clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self
+    pub fn new<A>(local_authority: Arc<A>, clock: Arc<dyn awaken_time::WallClock>) -> Self
     where
         A: CredentialMaterialResolver + awaken_provisioning_contract::SecretBroker + 'static,
     {
@@ -118,7 +118,7 @@ impl PinnedCredentialMaterializer {
     #[must_use]
     pub fn external_only(
         resolver: Arc<dyn CredentialMaterialResolver>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             clock,
@@ -521,7 +521,7 @@ impl CredentialMaterialResolver for PinnedCredentialMaterializer {
 pub(crate) fn pinned_vault(
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
-    clock: Arc<dyn awaken_lease_contract::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> PinnedCredentialMaterializer {
     PinnedCredentialMaterializer::new(
         Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
@@ -770,7 +770,7 @@ mod tests {
                     },
                     secrets.as_ref(),
                     credentials.as_ref(),
-                    awaken_lease_contract::system_clock().as_ref(),
+                    awaken_time::system_clock().as_ref(),
                 )
                 .await
                 .expect("fixture credential");
@@ -817,8 +817,7 @@ mod tests {
                     expires_at_unix_ms: u64::MAX,
                 });
             }
-            let resolver =
-                pinned_vault(credentials, secrets, awaken_lease_contract::system_clock());
+            let resolver = pinned_vault(credentials, secrets, awaken_time::system_clock());
             let result = resolver
                 .resolve_validated(
                     &access,
@@ -873,7 +872,7 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .expect("access-token credential");
@@ -922,7 +921,7 @@ mod tests {
             ),
         );
 
-        let resolved = pinned_vault(credentials, secrets, awaken_lease_contract::system_clock())
+        let resolved = pinned_vault(credentials, secrets, awaken_time::system_clock())
             .resolve_validated(
                 &access,
                 &holder,
@@ -976,7 +975,7 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -998,8 +997,7 @@ mod tests {
                 audience,
             ))
         };
-        let materializer =
-            pinned_vault(credentials, secrets, awaken_lease_contract::system_clock());
+        let materializer = pinned_vault(credentials, secrets, awaken_time::system_clock());
         let binding = CredentialMaterialBinding::for_target(
             "workspace-a",
             &"provider-a",
@@ -1138,7 +1136,7 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .expect("local fallback trap");
@@ -1186,7 +1184,7 @@ mod tests {
                 returned_holder,
             }) as Arc<dyn CredentialMaterialResolver>
         };
-        let base = pinned_vault(credentials, secrets, awaken_lease_contract::system_clock());
+        let base = pinned_vault(credentials, secrets, awaken_time::system_clock());
 
         let exact_access = access(&holder.trust_domain.0, u64::MAX, "sha256:sealed-payload");
         let exact = base.clone().with_external_material_resolver(resolver(
@@ -1288,7 +1286,7 @@ mod tests {
                 "sha256:unused-for-worker-reference",
                 holder.clone(),
             ),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         assert!(!external_only.has_local_authority(), "S10");
         assert_eq!(
@@ -1417,7 +1415,7 @@ mod tests {
             let materializer = pinned_vault(
                 Arc::new(InMemoryCredentialRepo::new()),
                 Arc::new(InMemorySecretStore::new()),
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             );
             assert_eq!(
                 materializer
@@ -1548,7 +1546,7 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -1611,11 +1609,7 @@ mod tests {
             ("M3", Some(lost), "attempt ownership was lost"),
             ("M4", Some(unavailable), "authority down"),
         ];
-        let materializer = pinned_vault(
-            credentials,
-            secrets.clone(),
-            awaken_lease_contract::system_clock(),
-        );
+        let materializer = pinned_vault(credentials, secrets.clone(), awaken_time::system_clock());
         for (rule, ownership, expected_error) in cases {
             let recorder = Arc::new(FixedAttempt(Ok(())));
             let mut context = awaken_runtime_contract::RuntimeRunContext::new()
@@ -1776,7 +1770,7 @@ mod tests {
             },
             secrets.as_ref(),
             credentials.as_ref(),
-            awaken_lease_contract::system_clock().as_ref(),
+            awaken_time::system_clock().as_ref(),
         )
         .await
         .unwrap();
@@ -1807,10 +1801,9 @@ mod tests {
             CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
         )
         .with_target(target);
-        let materializer =
-            pinned_vault(credentials, secrets, awaken_lease_contract::system_clock())
-                .with_extension_consumer(Arc::new(SshExtensionConsumer { corrupt_receipt }))
-                .unwrap();
+        let materializer = pinned_vault(credentials, secrets, awaken_time::system_clock())
+            .with_extension_consumer(Arc::new(SshExtensionConsumer { corrupt_receipt }))
+            .unwrap();
         (materializer, access, holder)
     }
 
@@ -1853,7 +1846,7 @@ mod tests {
         let duplicate = pinned_vault(
             Arc::new(InMemoryCredentialRepo::new()),
             Arc::new(InMemorySecretStore::new()),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_extension_consumer(Arc::new(SshExtensionConsumer {
             corrupt_receipt: false,

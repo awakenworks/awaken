@@ -793,14 +793,14 @@ pub struct MemoryExtractionController {
     repository: std::sync::Arc<dyn MemoryExtractionRepository>,
     owner: String,
     policy: MemoryExtractionPolicy,
-    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::message::{Id, Role};
-    use awaken_lease_contract::WallClockExt as _;
+    use awaken_time::WallClockExt as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -1275,7 +1275,7 @@ mod tests {
         let controller = MemoryExtractionController::new(
             repository.clone(),
             "worker-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_policy(MemoryExtractionPolicy {
             lease_ms: 1_000,
@@ -1371,7 +1371,7 @@ mod tests {
         let controller = MemoryExtractionController::new(
             repository.clone(),
             "worker-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
         .with_policy(MemoryExtractionPolicy {
             lease_ms: 1_000,
@@ -1503,7 +1503,7 @@ mod tests {
         let controller = MemoryExtractionController::new(
             repository.clone(),
             "worker-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         controller.enqueue(intent()).await.unwrap();
         let driver = TestDriver {
@@ -1570,7 +1570,7 @@ mod tests {
             let controller = MemoryExtractionController::new(
                 repository.clone(),
                 "worker-a",
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             )
             .with_policy(MemoryExtractionPolicy {
                 lease_ms: 1_000,
@@ -1615,7 +1615,7 @@ mod tests {
         let controller = MemoryExtractionController::new(
             repository.clone(),
             "worker-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let first = Message::text(Id("m1".into()), Role::User, "first new fact");
         let recall = Message::text(
@@ -1730,7 +1730,7 @@ mod tests {
         let controller = MemoryExtractionController::new(
             repository.clone(),
             "worker-a",
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         );
         let request = |session: &str, thread: &str, run: &str, transcript: Vec<Message>| {
             MemoryTerminalExtractionRequest {

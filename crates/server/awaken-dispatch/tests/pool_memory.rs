@@ -28,7 +28,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::{run::Id as RunId, run::RunState, thread::Id as ThreadId};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-use awaken_lease_contract::{WallClock, system_clock};
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
     CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchQueue,
@@ -40,6 +39,7 @@ use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::{llm::ModelInferenceBudget, resume::ResumeResult};
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_time::{WallClock, system_clock};
 
 use harness::{
     FlakyDispatchStore, activation, activation_on, blocking_tool_runtime,

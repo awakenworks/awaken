@@ -537,10 +537,8 @@ mod tests {
             .expect("production root dispatch decoration");
 
         let queue = Arc::new(
-            awaken_dispatch::open_sqlite_dispatch_store_in_memory(
-                awaken_lease_contract::system_clock(),
-            )
-            .expect("durable dispatch store"),
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+                .expect("durable dispatch store"),
         );
         let host = Arc::new(
             SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")

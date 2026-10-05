@@ -40,7 +40,7 @@ awaken-store-inmem.workspace = true
 awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-worker-transport-security.workspace = true
 async-trait.workspace = true
-awaken-lease-contract.workspace = true
+awaken-time.workspace = true
 awaken-lease-testkit.workspace = true
 axum.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

@@ -90,9 +90,7 @@ async fn terminal_observation_pending_defers_only_the_exact_claim() {
         DispatchWorker::from_parts(
             Arc::new(Runtime::new()),
             store.clone(),
-            Arc::new(MemoryCommitCoordinator::new(
-                awaken_lease_contract::system_clock(),
-            )),
+            Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock())),
             reader.clone(),
             owner,
         )

@@ -112,7 +112,7 @@ pub(crate) struct ChildExecutionAdapters {
     /// The parent Host's process clock, on which a directly delegated remote
     /// child's credential bindings are stamped. Absent in a composition that
     /// installs no remote child execution; such a child is then refused.
-    pub(crate) clock: Option<Arc<dyn awaken_lease_contract::WallClock>>,
+    pub(crate) clock: Option<Arc<dyn awaken_time::WallClock>>,
     /// The Host-owned slot registry also installed on the root Native Runtime.
     pub(crate) background_supervisor:
         Option<Arc<awaken_ext_background_task::BackgroundTaskSupervisor>>,
@@ -246,7 +246,7 @@ pub(super) fn bind_direct_child_credentials(
             "direct delegated remote execution requires the parent Host clock".to_string(),
         )
     })?;
-    let now_unix_ms = awaken_lease_contract::WallClockExt::now_ms(clock.as_ref());
+    let now_unix_ms = awaken_time::WallClockExt::now_ms(clock.as_ref());
     let holder = crate::host::self_hosted_inference_holder(activation)
         .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
     let bindings = awaken_runtime_contract::compile_candidate_credential_bindings(
@@ -432,7 +432,7 @@ mod tests {
             )
             .unwrap();
             let commit = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
-                awaken_lease_contract::system_clock(),
+                awaken_time::system_clock(),
             ));
             let outcome = runtime
                 .execute(
