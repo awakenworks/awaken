@@ -497,8 +497,9 @@ mod tests {
         // Causes: C1 old request group is sealed and every ticket finished;
         // C2 exactly one Created Pod ticket names the canonical scope and UID;
         // C3 current Pod has the same UID, frozen effect, and no PVC; C4 the
-        // current Pod is foreign/terminating, an orphan claim exists, or
-        // another kind was Created.
+        // current Pod is foreign/terminating, an orphan claim exists, its
+        // image/security spec differs despite copied annotations, or another
+        // kind was Created.
         // Effects: E1 C1+C2+C3 yields one typed incarnation for the existing
         // handle-bound cleanup; E2 any C4 or absent C1/C2 stays Unknown and
         // cannot turn a Pod GET into a cleanup receipt. Rules J1=C1+C2+C3->E1,
@@ -520,6 +521,11 @@ mod tests {
             &attempt,
         );
         let mut pod = base.pod_for_effect(&runtime_id, &plan, Some(&fence));
+        crate::k8s_package_realization::stamp_sandbox_release_annotations(
+            &mut pod,
+            "scope",
+            &plan.image,
+        );
         base.stamp_effect_evidence(&mut pod, &context, &fingerprint);
         super::super::stamp_pod_realization(&mut pod).unwrap();
         pod.metadata.namespace = Some("default".into());
@@ -613,6 +619,18 @@ mod tests {
             },
             "J1"
         );
+        let original_spec = current.lock().unwrap().spec.clone();
+        current.lock().unwrap().spec.as_mut().unwrap().containers[0].image =
+            Some("foreign-image".into());
+        assert_eq!(
+            runtime(vec![created.clone()])
+                .missing_handle_terminal_evidence("scope", &plan, Some(&fence))
+                .await
+                .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unknown,
+            "J2 copied digest and effect annotations cannot authorize changed Pod spec"
+        );
+        current.lock().unwrap().spec = original_spec;
         current.lock().unwrap().metadata.uid = Some("foreign-uid".into());
         assert_eq!(
             runtime(vec![created.clone()])
@@ -645,7 +663,7 @@ mod tests {
         );
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            5,
+            6,
             "J2 other kind rejects before GET"
         );
     }

@@ -59,6 +59,7 @@ pub(super) async fn prepare(
     runtime.stamp_effect_evidence(&mut pod, context, realization_fingerprint);
     stamp_pod_realization(&mut pod)?;
     let mut created = create_or_verify(&pods, &pod).await?;
+    restore::verify_pod_projection(&pod, &created, None)?;
     let name = created
         .metadata
         .name
@@ -90,6 +91,51 @@ pub(super) async fn prepare(
         .as_deref()
         .ok_or_else(|| backend("created pod has no UID"))?;
     Ok(name)
+}
+
+/// Reconstruct the same immutable Pod projection from its original stamped
+/// attempt, then reuse the one Kubernetes Pod verifier before a replacement
+/// process may turn a joined Create ticket into terminal cleanup evidence.
+pub(super) fn verify_interrupted_pod_projection(
+    runtime: &K8sRuntime,
+    scope: &str,
+    plan: &ContainerPlan,
+    predecessor: &ContainerEffectFence,
+    observed: &Pod,
+) -> Result<(), RuntimeError> {
+    let annotations = observed.metadata.annotations.as_ref();
+    let original_fence = pod_effect_fence(annotations)?
+        .filter(|fence| fence.same_effect_identity(predecessor))
+        .ok_or_else(|| backend("interrupted Kubernetes Pod has another effect identity"))?;
+    let stamped = |key: &str| {
+        annotations
+            .and_then(|values| values.get(key))
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| backend("interrupted Kubernetes Pod lacks realization evidence"))
+    };
+    let adoption: pc::SandboxRealizationFingerprint = serde_json::from_value(
+        serde_json::Value::String(stamped(SANDBOX_ADOPTION_ANNOTATION)?.clone()),
+    )
+    .map_err(backend)?;
+    let realization: pc::SandboxRealizationFingerprint = serde_json::from_value(
+        serde_json::Value::String(stamped(SANDBOX_REALIZATION_ANNOTATION)?.clone()),
+    )
+    .map_err(backend)?;
+    let attempt = ContainerCreateAttempt::new(stamped(SANDBOX_ATTEMPT_ANNOTATION)?.clone());
+    let intent = ContainerRealizationIntent::Create;
+    let context = ContainerRealizationContext::new(
+        scope,
+        &adoption,
+        Some(&original_fence),
+        &intent,
+        &attempt,
+    );
+    let runtime_id = runtime.realization_runtime_id(scope)?;
+    let mut expected = runtime.pod_for_effect(&runtime_id, plan, Some(&original_fence));
+    stamp_sandbox_release_annotations(&mut expected, scope, &plan.image);
+    runtime.stamp_effect_evidence(&mut expected, &context, &realization);
+    stamp_pod_realization(&mut expected)?;
+    restore::verify_pod_projection(&expected, observed, None)
 }
 
 /// Idempotently finish every participant behind an already UID-fenced Pod.
@@ -307,6 +353,66 @@ pub(super) async fn restore_or_adopt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn initial_pod_create_checks_the_same_complete_security_projection() {
+        // Causes: C1 the API accepts the exact Pod Create; C2 a mutating API
+        // response changes the workload image but retains the desired digest,
+        // effect and identity annotations. Effects: E1 C1+!C2 accepts one
+        // exact reservation; E2 C1+C2 rejects before provider activation or a
+        // durable handle; E3 both rows send exactly one Pod POST. Rules:
+        // P1=C1+!C2->E1+E3; P2=C1+C2->E2+E3. The restore and missing-handle
+        // callers use this same verifier, not separate annotation checks.
+        use http::{Request, Response};
+        use kube::client::Body;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        for changed in [false, true] {
+            let posts = std::sync::Arc::new(AtomicUsize::new(0));
+            let service = tower::service_fn({
+                let posts = posts.clone();
+                move |request: Request<Body>| {
+                    let posts = posts.clone();
+                    async move {
+                        assert_eq!(request.method(), http::Method::POST);
+                        posts.fetch_add(1, Ordering::SeqCst);
+                        let bytes = request.into_body().collect_bytes().await.unwrap();
+                        let mut object: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                        if changed {
+                            object["spec"]["containers"][0]["image"] = "foreign-image".into();
+                        }
+                        object["metadata"]["uid"] = "pod-uid".into();
+                        object["metadata"]["resourceVersion"] = "7".into();
+                        Ok::<_, std::io::Error>(
+                            Response::builder()
+                                .status(201)
+                                .body(Body::from(serde_json::to_vec(&object).unwrap()))
+                                .unwrap(),
+                        )
+                    }
+                }
+            });
+            let mut runtime = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
+            runtime.clients.control = kube::Client::new(service, "default");
+            let plan = super::super::ephemeral_plan();
+            let fingerprint = serde_json::from_value(serde_json::json!("frozen-spec")).unwrap();
+            let fence =
+                ContainerEffectFence::new("create-effect", "worker", "worker-boot", 1, u64::MAX)
+                    .unwrap();
+            let attempt = crate::fresh_create_attempt();
+            let intent = ContainerRealizationIntent::Create;
+            let context = ContainerRealizationContext::new(
+                "scope",
+                &fingerprint,
+                Some(&fence),
+                &intent,
+                &attempt,
+            );
+            let result = prepare(&runtime, &context, &plan, &fingerprint).await;
+            assert_eq!(result.is_ok(), !changed, "E1/E2 changed={changed}");
+            assert_eq!(posts.load(Ordering::SeqCst), 1, "E3 changed={changed}");
+        }
+    }
 
     fn package_plan(image: &str) -> ContainerPlan {
         ContainerPlan {

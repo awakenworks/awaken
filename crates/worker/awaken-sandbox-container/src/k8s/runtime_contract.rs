@@ -373,8 +373,14 @@ impl ContainerRuntime for K8sRuntime {
             if pod.metadata.uid.as_deref() != Some(pod_uid.as_str())
                 || pod.metadata.deletion_timestamp.is_some()
                 || continuation::bound_claim_uid(&pod).is_some()
-                || !pod_effect_fence(pod.metadata.annotations.as_ref())?
-                    .is_some_and(|fence| fence.same_effect_identity(expected_effect_fence))
+                || creation::verify_interrupted_pod_projection(
+                    self,
+                    scope,
+                    plan,
+                    expected_effect_fence,
+                    &pod,
+                )
+                .is_err()
             {
                 return Ok(MissingHandleTerminalEvidence::Unknown);
             }

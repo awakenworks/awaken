@@ -5,6 +5,111 @@ use awaken_sandbox_container::k8s::{
 };
 
 #[tokio::test]
+async fn first_pod_create_verifies_the_live_api_defaulted_projection() {
+    // Causes: C1 a unique, effect-fenced zero-participant plan reaches the
+    // actual Kubernetes Pod Create API; C2 the apiserver fills Pod defaults and
+    // assigns a UID/resourceVersion. Effects: E1 the shared complete Pod
+    // projection verifier accepts the exact object; E2 the exact UID is deleted
+    // with a precondition before the test returns. Rule LCP1=C1+C2->E1+E2.
+    // The unit decision table owns a copied-digest/spec-tamper refusal; this
+    // live row qualifies the API's real defaulting, not process/exec liveness.
+    if !require_live_cluster() {
+        return;
+    }
+    use awaken_sandbox_container::{
+        ContainerCreateAttempt, ContainerEffectFence, ContainerPlan, ContainerRealizationContext,
+        ContainerRealizationIntent, NetworkMode, RootfsPlan,
+    };
+    use k8s_openapi::api::core::v1::Pod;
+    use kube::api::{DeleteParams, ListParams, Preconditions};
+    use kube::{Api, ResourceExt};
+
+    let client = awaken_sandbox_container::k8s::connect_control_client()
+        .await
+        .unwrap();
+    let pods: Api<Pod> = Api::namespaced(client, "default");
+    let scope = format!("k8s-create-projection-{}", uuid::Uuid::new_v4());
+    let image = fixture_image();
+    let plan = ContainerPlan {
+        image: image.clone(),
+        command: vec!["sh".into(), "-c".into(), "sleep 60".into()],
+        env: Vec::new(),
+        control_services: Default::default(),
+        packages: Default::default(),
+        binds: Vec::new(),
+        outputs_volume: "/mnt/session/outputs".into(),
+        network: NetworkMode::Open,
+        egress_identity: Default::default(),
+        requests: Default::default(),
+        limits: Default::default(),
+        filesystem_continuity: pc::FilesystemContinuity::Ephemeral,
+        memory_mounts: Vec::new(),
+        rootfs: RootfsPlan::Image(image),
+    };
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .unwrap();
+    let fingerprint = serde_json::from_value(serde_json::json!("live-create-projection")).unwrap();
+    let fence = ContainerEffectFence::new(
+        "live-create-projection",
+        "worker",
+        "worker-boot",
+        1,
+        u64::MAX,
+    )
+    .unwrap();
+    let attempt = ContainerCreateAttempt::new(uuid::Uuid::new_v4().to_string());
+    let intent = ContainerRealizationIntent::Create;
+    let context =
+        ContainerRealizationContext::new(&scope, &fingerprint, Some(&fence), &intent, &attempt);
+    let result = runtime
+        .prepare_for_effect(&context, &plan, &fingerprint)
+        .await;
+    // A failed verifier can still follow an accepted Create. Find only this
+    // test's scope so cleanup remains exact even on the negative outcome.
+    let matches = pods
+        .list(&ListParams::default())
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .filter(|pod| {
+            pod.metadata
+                .annotations
+                .as_ref()
+                .and_then(|values| values.get("awaken.dev/sandbox-scope"))
+                == Some(&scope)
+        })
+        .collect::<Vec<_>>();
+    let count = matches.len();
+    for pod in matches {
+        let name = pod.name_any();
+        let uid = pod.metadata.uid.clone().expect("created Pod has UID");
+        pods.delete(
+            &name,
+            &DeleteParams {
+                preconditions: Some(Preconditions {
+                    uid: Some(uid.clone()),
+                    resource_version: None,
+                }),
+                ..DeleteParams::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while pods.get_opt(&name).await.unwrap().is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("E2 exact Pod deletion converges");
+    }
+    assert!(count <= 1, "one scope has at most one physical Pod");
+    assert!(result.is_ok(), "E1 first Pod Create: {result:?}");
+}
+
+#[tokio::test]
 async fn worker_create_ledger_joins_api_requests_and_rejects_recreated_uid() {
     // Causes: C1 two Coordinator instances contend on one group; C2 Create
     // admission wins before seal or seal wins first; C3 an admitted API request

@@ -492,8 +492,12 @@ For the deliberately narrow handle-free, zero-participant Kubernetes shape,
 the provider requires a complete sealed request join. All definitively refused
 Creates plus exact Pod/PVC absence prove no materialization. A single successful
 canonical Pod Create can instead be joined to its still-live original UID and
-effect fence, provided no PVC or other successful participant exists and the
-frozen spec has no mount or control-service owner. The provider constructs a
+effect fence, provided its complete normalized Pod security projection matches,
+no PVC or other successful participant exists, and the frozen spec has no mount
+or control-service owner. The ordinary first-Create path uses the same complete
+Pod verifier, so copying a digest annotation onto a changed executable or
+security spec cannot authorize either creation replay or terminal recovery.
+The provider constructs a
 temporary typed V2 handle and runs the existing terminal observation,
 preparation and UID-fenced disposal; it does not issue a cleanup receipt from
 the ticket alone. A Created Pod that has already disappeared, a terminating or
