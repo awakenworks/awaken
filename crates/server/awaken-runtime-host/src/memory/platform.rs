@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_ext_memory::{
-    MemoryExtractionMutation, MemoryMutationReceipt, MemoryStoreHandle, sanitize_stem,
+    MemoryExtractionMutation, MemoryHeadToken, MemoryMutationReceipt, MemoryStoreHandle,
+    sanitize_stem,
 };
 
 pub(crate) struct PlatformMemoryHandle {
@@ -107,11 +108,18 @@ impl PlatformMemoryHandle {
                 .get_by_path(&self.store_id, &path)
                 .await
                 .map_err(|error| error.to_string())?;
+            let observed_generation = current
+                .map(|memory| {
+                    serde_json::to_value(memory.generation())
+                        .map(MemoryHeadToken::new)
+                        .map_err(|error| format!("cannot encode the observed memory head: {error}"))
+                })
+                .transpose()?;
             mutations.push(MemoryExtractionMutation {
                 path,
                 target_sha256: awaken_resource_contract::memory_sha256_hex(&content),
                 content,
-                observed_generation: current.map(|memory| memory.generation()),
+                observed_generation,
             });
         }
         Ok(mutations)
@@ -139,7 +147,19 @@ impl PlatformMemoryHandle {
                 already_applied: true,
             });
         }
-        match (current, mutation.observed_generation.as_ref()) {
+        // The token is this store's own encoding; one it cannot decode is
+        // refused rather than read as a stale head.
+        let expected = mutation
+            .observed_generation
+            .as_ref()
+            .map(|token| {
+                serde_json::from_value::<awaken_resource_contract::MemoryGeneration>(
+                    token.encoded().clone(),
+                )
+                .map_err(|error| format!("unreadable observed memory head: {error}"))
+            })
+            .transpose()?;
+        match (current, expected.as_ref()) {
             (None, None) => {
                 self.fs
                     .create(&self.store_id, &mutation.path, &mutation.content)
