@@ -23,7 +23,7 @@ pub(crate) struct AttemptBackends {
     /// The Host names only this contract; concrete MCP server setup remains in
     /// `awaken-coordinator` and does not add a protocol dependency to the substrate.
     pub(crate) acp_tool_exporter:
-        Option<Arc<dyn awaken_runtime_contract::tool_export::AcpToolExporter>>,
+        Option<Arc<dyn awaken_session_environment_contract::tool_export::AcpToolExporter>>,
     /// Optional application wrapper around the complete per-Session attempt
     /// router. It cannot replace or bypass the built-in backend registry.
     pub(crate) attempt_decorator: Option<AttemptExecutorDecorator>,
@@ -51,7 +51,7 @@ impl SharedHost {
     #[must_use]
     pub fn with_acp_tool_exporter(
         mut self,
-        exporter: Arc<dyn awaken_runtime_contract::tool_export::AcpToolExporter>,
+        exporter: Arc<dyn awaken_session_environment_contract::tool_export::AcpToolExporter>,
     ) -> Self {
         self.exec.acp_tool_exporter = Some(exporter);
         self

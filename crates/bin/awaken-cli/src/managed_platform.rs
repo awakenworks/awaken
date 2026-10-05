@@ -242,7 +242,7 @@ pub struct CoordinatorServiceAdapters {
     /// composition may replace it without replacing Coordinator or Worker
     /// lifecycle ownership.
     pub inference_materializer:
-        Option<Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>>,
+        Option<Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>>,
 }
 
 impl CoordinatorServiceAdapters {
@@ -287,7 +287,7 @@ impl CoordinatorServiceAdapters {
     #[must_use]
     pub fn with_inference_materializer(
         mut self,
-        materializer: Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>,
+        materializer: Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>,
     ) -> Self {
         self.inference_materializer = Some(materializer);
         self

@@ -17,7 +17,7 @@ pub(super) struct AttachedTools {
 
 #[derive(Default)]
 struct State {
-    export: Option<awaken_runtime_contract::tool_export::AcpToolExport>,
+    export: Option<awaken_session_environment_contract::tool_export::AcpToolExport>,
     stopped: bool,
 }
 
@@ -60,7 +60,7 @@ impl AttachedTools {
 
     pub(super) async fn open(
         sandbox: &dyn awaken_session_environment_contract::AgentProcessEnvironment,
-        tools: &awaken_runtime_contract::tool_export::AttachedToolSet,
+        tools: &awaken_session_environment_contract::tool_export::AttachedToolSet,
     ) -> Result<Self, OpenError> {
         let helper = sandbox
             .channel_helper()

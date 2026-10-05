@@ -5,11 +5,11 @@
 
 use std::sync::Arc;
 
-use crate::CredentialRealizationCapabilities;
-use crate::activation::RunActivation;
-use crate::llm::LlmExecutor;
-use crate::resolved::{Backend, ResolvedModelCandidate};
-use crate::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::CredentialRealizationCapabilities;
+use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::resolved::{Backend, ResolvedModelCandidate};
+use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 /// Turns secret-free, admission-pinned inference access into a live executor.
 pub trait InferenceExecutorMaterializer: Send + Sync {

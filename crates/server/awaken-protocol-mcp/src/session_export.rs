@@ -40,7 +40,9 @@ impl Drop for SessionToolExportLease {
 }
 
 #[async_trait::async_trait]
-impl awaken_runtime_contract::tool_export::AttachedChannelToolExporter for SessionToolExporter {
+impl awaken_session_environment_contract::tool_export::AttachedChannelToolExporter
+    for SessionToolExporter
+{
     async fn export_channel_set(
         &self,
         server: awaken_runtime_contract::resolved::AcpMcpServer,
@@ -48,7 +50,7 @@ impl awaken_runtime_contract::tool_export::AttachedChannelToolExporter for Sessi
         tools: Vec<Arc<dyn RawTool>>,
         reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
         writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
-    ) -> Result<awaken_runtime_contract::tool_export::AcpToolExport, String> {
+    ) -> Result<awaken_session_environment_contract::tool_export::AcpToolExport, String> {
         if !matches!(
             server.transport,
             awaken_runtime_contract::resolved::AcpMcpTransport::Stdio { .. }
@@ -78,20 +80,23 @@ impl awaken_runtime_contract::tool_export::AttachedChannelToolExporter for Sessi
             }
             // Dropping the one physical owner revokes its streams as well.
         });
-        Ok(awaken_runtime_contract::tool_export::AcpToolExport::new(
-            server,
-            SessionToolExportLease {
-                shutdown: Some(shutdown),
-            },
-        ))
+        Ok(
+            awaken_session_environment_contract::tool_export::AcpToolExport::new(
+                server,
+                SessionToolExportLease {
+                    shutdown: Some(shutdown),
+                },
+            ),
+        )
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_runtime_contract::tool_export::AcpToolExporter for SessionToolExporter {
+impl awaken_session_environment_contract::tool_export::AcpToolExporter for SessionToolExporter {
     fn attached_channels(
         &self,
-    ) -> Option<&dyn awaken_runtime_contract::tool_export::AttachedChannelToolExporter> {
+    ) -> Option<&dyn awaken_session_environment_contract::tool_export::AttachedChannelToolExporter>
+    {
         Some(self)
     }
 
@@ -100,7 +105,7 @@ impl awaken_runtime_contract::tool_export::AcpToolExporter for SessionToolExport
         server_name: &str,
         descriptors: Vec<ToolDescriptor>,
         tools: Vec<Arc<dyn RawTool>>,
-    ) -> Result<awaken_runtime_contract::tool_export::AcpToolExport, String> {
+    ) -> Result<awaken_session_environment_contract::tool_export::AcpToolExport, String> {
         let service = tool_service(server_name, descriptors, tools)?;
         let app = crate::router(service, crate::McpHttpConfig::default());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -117,17 +122,19 @@ impl awaken_runtime_contract::tool_export::AcpToolExporter for SessionToolExport
                 })
                 .await;
         });
-        Ok(awaken_runtime_contract::tool_export::AcpToolExport::new(
-            awaken_runtime_contract::resolved::AcpMcpServer {
-                name: server_name.into(),
-                transport: awaken_runtime_contract::resolved::AcpMcpTransport::Http {
-                    url: format!("http://{address}/mcp"),
+        Ok(
+            awaken_session_environment_contract::tool_export::AcpToolExport::new(
+                awaken_runtime_contract::resolved::AcpMcpServer {
+                    name: server_name.into(),
+                    transport: awaken_runtime_contract::resolved::AcpMcpTransport::Http {
+                        url: format!("http://{address}/mcp"),
+                    },
                 },
-            },
-            SessionToolExportLease {
-                shutdown: Some(shutdown),
-            },
-        ))
+                SessionToolExportLease {
+                    shutdown: Some(shutdown),
+                },
+            ),
+        )
     }
 }
 
@@ -136,7 +143,9 @@ mod tests {
     use super::*;
     use awaken_ext_mcp::{Credential, HttpTransport, McpToolTransport};
     use awaken_runtime_contract::tool::{ToolCall, ToolOutput};
-    use awaken_runtime_contract::tool_export::{AcpToolExporter, AttachedChannelToolExporter};
+    use awaken_session_environment_contract::tool_export::{
+        AcpToolExporter, AttachedChannelToolExporter,
+    };
 
     struct EchoTool(&'static str);
 
