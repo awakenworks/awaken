@@ -8,7 +8,7 @@
 use awaken_dispatch_contract::ControlDispatch;
 use std::sync::Arc;
 
-use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
+use awaken_lease_contract::authority::AuthorityLeaseTiming;
 use awaken_time::mono;
 use tokio_util::sync::CancellationToken;
 

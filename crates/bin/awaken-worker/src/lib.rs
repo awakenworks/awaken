@@ -1281,10 +1281,9 @@ impl WorkerNode {
                 Err(error) => return Err(std::io::Error::other(error.to_string()).into()),
             }
         };
-        let startup_timing =
-            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
-                registration_receipt.lease_ttl_ms,
-            );
+        let startup_timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(
+            registration_receipt.lease_ttl_ms,
+        );
         let registration = registration_receipt.worker;
         let upstream = upstream.with_worker_identity(registration.snapshot.identity.clone());
         // The registry-assigned incarnation is the only execution identity. The
@@ -1568,7 +1567,7 @@ impl WorkerNode {
             .into());
         }
         let heartbeat_timing =
-            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+            awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(
                 initial
                     .lease_ttl_ms
                     .expect("WorkerControlClient validates applied heartbeat TTL"),

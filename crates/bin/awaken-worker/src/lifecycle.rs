@@ -14,7 +14,7 @@ use awaken_time::mono::{self, Instant};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
-use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
+use awaken_lease_contract::authority::AuthorityLeaseTiming;
 use awaken_session_executor::SharedHost;
 use awaken_worker_contract::{RegistryMutation, WorkerIdentity};
 use awaken_coordinator_client::WorkerControlClient;
@@ -1042,7 +1042,7 @@ mod tests {
             (60_000, 20_001, 20_000, true),
         ] {
             let claim_ms = cold_cleanup_lease_ttl_ms(
-                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(
                     registry_ttl_ms,
                 ),
             );
@@ -1596,8 +1596,7 @@ mod tests {
         // deadline. A returned timeout must never look like new evidence.
         use tracing::instrument::WithSubscriber;
         let captured = awaken_reliability_testkit::events::CapturedEvents::default();
-        let timing =
-            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(600);
+        let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(600);
         let started = awaken_time::mono::now();
         let calls = AtomicUsize::new(0);
         let active = AtomicUsize::new(0);
@@ -1647,8 +1646,7 @@ mod tests {
     async fn already_expired_environment_evidence_cannot_be_revived() {
         // T3 an executor resumes after the proof deadline, with a healthy
         // provider available => irreversible expiry, never start a new probe.
-        let timing =
-            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(600);
+        let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(600);
         let calls = AtomicUsize::new(0);
         super::environment_evidence::monitor(
             awaken_time::mono::now() - timing.proof_window(),
@@ -1667,8 +1665,7 @@ mod tests {
         // T4 timely success with nonzero latency + subsequent unknown probes
         // => expiry anchored at the successful REQUEST start, not its response.
         // T5 explicit error is independently covered by the real Worker test P3.
-        let timing =
-            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(600);
+        let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(600);
         let started = awaken_time::mono::now();
         let calls = AtomicUsize::new(0);
         super::environment_evidence::monitor(started, timing, || async {

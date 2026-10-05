@@ -22,7 +22,7 @@ use crate::dispatch::{AttemptAdmission, Claimed, DispatchError, RunClaim, Settle
 use crate::execution_capacity::ExecutionCapacity;
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::run::RunState;
-use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
+use awaken_lease_contract::authority::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{AttemptRecoveryMode, LiveInput};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_time::WallClock;

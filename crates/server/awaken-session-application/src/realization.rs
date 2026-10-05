@@ -161,7 +161,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
 {
     fn observe_realization_request(
         &self,
-    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+    ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
         self.runtime.observe_realization_request()
     }
 
@@ -660,7 +660,7 @@ impl SessionApplication {
         &self,
         permit: &awaken_session_realization_contract::SessionRealizationPermit,
         directive: SessionRealizationDirective,
-        request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        request_started: awaken_lease_contract::authority::AuthorityProofStarted,
     ) -> Result<(), SessionRealizationError> {
         let control = RefreshedSessionRealizationControl(self);
         crate::drive_session_realization(
@@ -695,7 +695,7 @@ impl SessionApplication {
                 &RefreshedSessionRealizationControl(self),
                 self.local_realization_owner(),
                 self.runtime_incarnation(),
-                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(
                     LOCAL_SESSION_REALIZATION_LEASE_MS,
                 ),
             )

@@ -31,14 +31,14 @@ use crate::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunn
 /// Keep one explicit advancing test clock; unsupported production Runtimes
 /// still fail closed instead of receiving a default timing capability.
 pub fn observe_realization_request() -> Result<
-    awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+    awaken_lease_contract::authority::AuthorityProofStarted,
     awaken_session_error_contract::RunError,
 > {
     static ORIGIN: std::sync::OnceLock<awaken_time::mono::Instant> = std::sync::OnceLock::new();
     let origin = *ORIGIN.get_or_init(awaken_time::mono::now);
     let now = awaken_time::mono::now();
     Ok(
-        awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(
+        awaken_lease_contract::authority::AuthorityProofStarted::from_clock_sample(
             now,
             now.duration_since(origin),
         ),
@@ -875,7 +875,7 @@ impl awaken_session_execution_contract::RealizationRuntime for CoordinatedRuntim
     fn observe_realization_request(
         &self,
     ) -> Result<
-        awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        awaken_lease_contract::authority::AuthorityProofStarted,
         awaken_session_error_contract::RunError,
     > {
         crate::test_support::observe_realization_request()
@@ -891,7 +891,7 @@ impl awaken_session_execution_contract::RealizationRuntime for CoordinatedRuntim
         control: &dyn awaken_session_realization_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
-        timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+        timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
     ) -> Result<usize, awaken_session_error_contract::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)

@@ -276,9 +276,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 let h = host.clone();
                 let renewal = tokio::spawn(async move {
                     h.renew_due_session_realizations(
-                        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
-                            30_000,
-                        ),
+                        awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
                     )
                     .await
                 });
@@ -753,8 +751,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
     }
     assert!(host.worker.session_control.is_none());
     let runtime = crate::ManagedHost::new(host.clone());
-    let timing =
-        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000);
+    let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
     assert_eq!(
         runtime
             .realization()
@@ -800,8 +797,7 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
     // exact root for cleanup. Physical refresh is independently exercised by
     // the real scoped-candidate test below, including a Closed/empty cohort.
     let host = SharedHost::new(Arc::new(OkModel), "stub");
-    let timing =
-        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000);
+    let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
     assert_eq!(
         host.renew_due_session_realizations(timing).await.unwrap(),
         0,
@@ -938,8 +934,7 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     })
     .await
     .unwrap();
-    let timing =
-        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000);
+    let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
     assert_eq!(
         host.renew_due_session_realizations(timing).await.unwrap(),
         0
@@ -1101,7 +1096,7 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
     assert_eq!(
         f.host
             .renew_due_session_realizations(
-                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000)
+                awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000)
             )
             .await
             .unwrap(),
@@ -1125,7 +1120,7 @@ async fn cold_resource_staging_is_renewable_before_projection_publication() {
     let renewed = f
         .host
         .renew_due_session_realizations(
-            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000),
+            awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
         )
         .await
         .unwrap();
@@ -1207,7 +1202,7 @@ async fn renewal_rejection_cancels_resource_io_before_waiting_for_realization_lo
         let renewal = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             f.host.renew_due_session_realizations(
-                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000),
+                awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
             ),
         )
         .await;
@@ -1233,8 +1228,7 @@ async fn temporary_renewal_failure_does_not_abort_live_resource_preparation() {
             "injected outage".into(),
         ),
     );
-    let timing =
-        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000);
+    let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
     assert!(f.host.renew_due_session_realizations(timing).await.is_err());
     assert!(!task.is_finished());
     f.assert_unpublished();
@@ -1392,7 +1386,7 @@ async fn many_cold_resource_reads_share_the_existing_renewal_scheduler() {
     let renewed = f
         .host
         .renew_due_session_realizations(
-            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000),
+            awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
         )
         .await;
     let unpublished = (0..16).all(|index| {
@@ -1450,7 +1444,7 @@ async fn renewed_preparation_survives_its_original_deadline() {
     let task = f.start().await;
     f.host
         .renew_due_session_realizations(
-            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000),
+            awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
         )
         .await
         .unwrap();
@@ -1479,7 +1473,7 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
         let host = f.host.clone();
         let renewal = tokio::spawn(async move {
             host.renew_due_session_realizations(
-                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000),
+                awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
             )
             .await
         });
@@ -1507,17 +1501,13 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
             // R17 extends the asserted Control expiry, not Worker wall time.
             // The stalled first response has not installed its newer expiry.
             expected.expires_at_unix_ms = f.lease.expires_at_unix_ms
-                + awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
-                    60_000,
-                )
-                .renew_interval()
-                .as_millis() as u64;
+                + awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(60_000)
+                    .renew_interval()
+                    .as_millis() as u64;
             assert_eq!(
                 f.host
                     .renew_due_session_realizations(
-                        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
-                            60_000
-                        )
+                        awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(60_000)
                     )
                     .await
                     .unwrap(),
@@ -1562,7 +1552,7 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
     let mut f = StagingFixture::new();
     let ttl = 600;
     f.lease.expires_at_unix_ms = f.now + ttl;
-    let timing = awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(ttl);
+    let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(ttl);
     let mut tasks = Vec::new();
     for index in 0..16 {
         let session = format!("soak-{index:02}");

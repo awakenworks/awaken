@@ -78,12 +78,12 @@ struct NoopRuntime;
 /// One explicit process-local clock supplies advancing request observations;
 /// production Runtime's unsupported default must remain fail-closed.
 pub(crate) fn test_realization_request_started()
--> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+-> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
     static ORIGIN: std::sync::OnceLock<awaken_time::mono::Instant> = std::sync::OnceLock::new();
     let origin = *ORIGIN.get_or_init(awaken_time::mono::now);
     let now = awaken_time::mono::now();
     Ok(
-        awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(
+        awaken_lease_contract::authority::AuthorityProofStarted::from_clock_sample(
             now,
             now.duration_since(origin),
         ),
@@ -826,7 +826,7 @@ awaken_session_execution_contract::neutral_role!(CapabilityRuntime for NoopRunti
 impl awaken_session_execution_contract::RealizationRuntime for NoopRuntime {
     fn observe_realization_request(
         &self,
-    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+    ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
         crate::tests::test_realization_request_started()
     }
 
@@ -840,7 +840,7 @@ impl awaken_session_execution_contract::RealizationRuntime for NoopRuntime {
         control: &dyn awaken_session_realization_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
-        timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+        timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
     ) -> Result<usize, awaken_session_error_contract::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
@@ -1343,7 +1343,7 @@ awaken_session_execution_contract::neutral_role!(CapabilityRuntime for Recording
 impl awaken_session_execution_contract::RealizationRuntime for RecordingReplyRuntime {
     fn observe_realization_request(
         &self,
-    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+    ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
         crate::tests::test_realization_request_started()
     }
 
@@ -1357,7 +1357,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingReplyRun
         control: &dyn awaken_session_realization_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
-        timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+        timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
     ) -> Result<usize, awaken_session_error_contract::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
@@ -2034,7 +2034,7 @@ awaken_session_execution_contract::neutral_role!(CapabilityRuntime for Recording
 impl awaken_session_execution_contract::RealizationRuntime for RecordingAgentAdmissionRuntime {
     fn observe_realization_request(
         &self,
-    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+    ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
         crate::tests::test_realization_request_started()
     }
 
@@ -2043,7 +2043,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingAgentAdm
         control: &dyn awaken_session_realization_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
-        timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+        timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
     ) -> Result<usize, awaken_session_error_contract::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
@@ -2681,7 +2681,7 @@ awaken_session_execution_contract::neutral_role!(CapabilityRuntime for Recording
 impl awaken_session_execution_contract::RealizationRuntime for RecordingBoundaryBudgetRuntime {
     fn observe_realization_request(
         &self,
-    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+    ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
         crate::tests::test_realization_request_started()
     }
 
@@ -2695,7 +2695,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingBoundary
         control: &dyn awaken_session_realization_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
-        timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+        timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
     ) -> Result<usize, awaken_session_error_contract::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
@@ -3389,7 +3389,7 @@ awaken_session_execution_contract::neutral_role!(CapabilityRuntime for Recording
 impl awaken_session_execution_contract::RealizationRuntime for RecordingCleanupRuntime {
     fn observe_realization_request(
         &self,
-    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+    ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
         crate::tests::test_realization_request_started()
     }
 
@@ -3403,7 +3403,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCleanupR
         control: &dyn awaken_session_realization_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
-        timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+        timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
     ) -> Result<usize, awaken_session_error_contract::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)

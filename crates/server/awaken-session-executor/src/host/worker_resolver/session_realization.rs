@@ -1192,9 +1192,7 @@ mod tests {
             tokio::time::timeout(
                 std::time::Duration::from_secs(1),
                 host.renew_due_session_realizations(
-                    awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
-                        30_000,
-                    ),
+                    awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000,),
                 ),
             )
             .await
