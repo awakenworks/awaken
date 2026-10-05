@@ -315,3 +315,26 @@ physical handle, continued ordinary-reader closure, exact remote commit and rece
 replay. Its original source-closure and divergent-remote cases remain exercised.
 This source proof does not certify the pending original UI delivery or missing
 historical physical-attempt termination evidence.
+
+## Amendment 2026-10-05: unfinished terminal cleanup remains Worker demand
+
+A Hosted Run can settle its Dispatch lease after the Session root has recorded
+terminal Repository rejection while the same Pod-bound Worker still owes
+preparation or disposal. Dispatch depth then becomes zero, and an autoscaler
+reading only that depth can remove the sole physical owner before cleanup
+completes. A new Worker cannot claim the old source by guessing its identity.
+
+The Session root's existing verified terminal cleanup operation is the only
+authority for this remaining work. Its read-only operational projection reports
+demand exactly when execution is terminal, cleanup has been requested or is in
+progress, and the verified operation is incomplete. Corrupt sidecars fail the observation; lease
+expiry or Pod absence never turns an incomplete operation into completion.
+The existing Session repository contract reads its `Reconcilable` scan to
+count distinct retained Worker owners plus one first-placement need for any
+unbound, never-materialized terminal root. It fails closed on corrupt roots,
+quarantine, an invalid physical owner, or an incomplete scan. Hosted composition
+consumes that read-only count alongside Dispatch depth to keep Worker capacity until
+the root records its actual completion. The read neither claims cleanup nor
+adds a queue, journal, receipt, reassignment rule, or recovery writer. A
+historical lost Pod still needs its original physical exit evidence and is not
+made replayable by a positive demand metric.
