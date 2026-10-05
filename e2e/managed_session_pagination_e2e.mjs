@@ -64,6 +64,9 @@ async function main() {
     pass('created 3 sessions');
 
     // L1: no limit/order uses official newest-first and exact bidirectional shape.
+    // The public timestamp codec trims fractional zeros: .9Z precedes .92Z
+    // as an instant even though string order says the opposite. The server and
+    // this independent SDK oracle compare instants, then ID on exact ties.
     const all = await client.beta.sessions.list({ betas: BETAS });
     const allIds = all.data.map((s) => s.id);
     for (const id of created) assert.ok(allIds.includes(id), `full page missing ${id}`);
@@ -73,8 +76,9 @@ async function main() {
       const previous = all.data[index - 1];
       const current = all.data[index];
       assert.ok(
-        previous.created_at > current.created_at
-          || (previous.created_at === current.created_at && previous.id > current.id),
+        Date.parse(previous.created_at) > Date.parse(current.created_at)
+          || (Date.parse(previous.created_at) === Date.parse(current.created_at)
+            && previous.id > current.id),
         'L1 newest created_at first, with id only breaking timestamp ties',
       );
     }
@@ -121,7 +125,11 @@ async function main() {
 
     // L6: filters intersect. The SDK owns the official `statuses` array's wire
     // serialization; this test observes only the public Page contract.
-    const createdTimes = all.data.map((session) => session.created_at).sort();
+    // L6 cause/effect: variable fractional width + inclusive oldest/newest
+    // filters must retain every listed row; order by instant, then use the
+    // unchanged public timestamp strings as exact wire filter values.
+    const createdTimes = all.data.map((session) => session.created_at)
+      .sort((left, right) => Date.parse(left) - Date.parse(right));
     const oldest = createdTimes[0];
     const newest = createdTimes.at(-1);
     const filtered = await client.beta.sessions.list({
@@ -129,7 +137,11 @@ async function main() {
       'created_at[gte]': oldest, 'created_at[lte]': newest,
       betas: BETAS,
     });
-    assert.equal(filtered.data.length, created.length, 'matching filters retain all three sessions');
+    assert.equal(
+      filtered.data.length,
+      created.length,
+      `matching filters retain all three sessions; unfiltered=${JSON.stringify(all.data.map(({ id, created_at, status, agent }) => ({ id, created_at, status, agent_id: agent.id, agent_version: agent.version })))}; filtered_ids=${JSON.stringify(filtered.data.map(({ id }) => id))}`,
+    );
     const newestOnly = await client.beta.sessions.list({
       'created_at[gte]': newest, 'created_at[lte]': newest, betas: BETAS,
     });
