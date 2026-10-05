@@ -6,6 +6,8 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "shared"
+product = "sdk"
+bounded_context = "agent-runtime"
 layer = "domain"
 authority = "tool-pattern"
 description = "Glob and regex pattern matching for tool calls in Awaken"

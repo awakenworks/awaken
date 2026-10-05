@@ -6,6 +6,8 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "shared"
+product = "platform"
+bounded_context = "worker"
 layer = "infrastructure"
 authority = "worker-transport-security"
 

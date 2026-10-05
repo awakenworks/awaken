@@ -6,6 +6,8 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "worker"
+product = "platform"
+bounded_context = "sandbox"
 layer = "infrastructure"
 authority = "local-process"
 

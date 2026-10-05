@@ -7,6 +7,8 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "worker"
+product = "platform"
+bounded_context = "worker"
 layer = "bootstrap"
 authority = "execution-composition"
 

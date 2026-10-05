@@ -6,6 +6,8 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "shared"
+product = "platform"
+bounded_context = "protocols"
 layer = "interface"
 authority = "mcp-server-core"
 description = "Runtime-neutral MCP server lifecycle, dispatch, and Streamable HTTP semantics"

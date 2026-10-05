@@ -52,8 +52,8 @@ ROOT = Path(__file__).resolve().parents[2]
 # This checker walks the workspace's production Rust and its own module, so its
 # lefthook trigger is rendered from exactly that set.
 INPUT_GLOBS: tuple[str, ...] = (
-    "crates/*/*/src/**/*.rs",
-    "crates/*/*/Cargo.toml",
+    "crates/**/src/**/*.rs",
+    "crates/**/Cargo.toml",
     "scripts/ci/_crate_boundary_workspace.py",
 )
 
@@ -334,14 +334,15 @@ def current_sources(root: Path) -> dict[str, str]:
     # enough to run on every commit rather than only in the nightly gate.
     candidates = [
         path
-        for path in sorted(crates.glob("*/*/src/**/*.rs"))
+        for path in _crate_boundary_workspace.crate_source_files(crates)
         if ON_THE_RECOVERY_PATH.search(path.read_text(encoding="utf-8", errors="ignore"))
     ]
-    manifests = sorted({
-        crates / path.relative_to(crates).parts[0] / path.relative_to(crates).parts[1]
-        / "Cargo.toml"
-        for path in candidates
-    })
+    candidate_set = set(candidates)
+    manifests = [
+        manifest
+        for manifest in _crate_boundary_workspace.crate_manifests(crates)
+        if any(manifest.parent in path.parents for path in candidate_set)
+    ]
     reachable = _crate_boundary_workspace.production_module_files(manifests)
     found: dict[str, str] = {}
     for path in candidates:

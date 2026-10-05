@@ -6,6 +6,8 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "devtools"
+product = "sdk"
+bounded_context = "agent-runtime"
 layer = "tooling"
 authority = "runtime-examples"
 publish = false
