@@ -265,17 +265,17 @@ fn paths() -> Value {
                 &[], Some(schema_ref("SaveProviderConnectionRequest")), 201, schema_ref("ProviderConnectionView")),
             "get": op("list_provider_connections", "catalog", "Derive workspace model-source readiness from descriptors, catalog, and credential state",
                 &[json!({
-                    "name": "workspace_id", "in": "query", "required": true,
+                    "name": "workspace_id", "in": "query", "required": false,
                     "schema": { "type": "string" },
-                    "description": "Workspace whose model-source readiness to derive"
+                    "description": "Optional claim checked against the resolved Workspace"
                 })], None, 200, array_of("ProviderConnectionSummary"))
         },
         "/v1/config/executable-models": {
             "get": op("list_executable_models", "catalog", "List model routes with authoritative catalog and credential readiness",
                 &[json!({
-                    "name": "workspace_id", "in": "query", "required": true,
+                    "name": "workspace_id", "in": "query", "required": false,
                     "schema": { "type": "string" },
-                    "description": "Workspace whose executable model routes to project"
+                    "description": "Optional claim checked against the resolved Workspace"
                 })], None, 200, array_of("ExecutableModelOption"))
         },
         "/v1/config/catalog": {
@@ -298,9 +298,9 @@ fn paths() -> Value {
                     json!({
                         "name": "workspace_id",
                         "in": "query",
-                        "required": true,
+                        "required": false,
                         "schema": { "type": "string" },
-                        "description": "Workspace whose sources to list"
+                        "description": "Optional claim checked against the resolved Workspace"
                     }),
                     json!({
                         "name": "provider_ref",

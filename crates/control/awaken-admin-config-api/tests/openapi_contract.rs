@@ -78,6 +78,30 @@ fn route_probe_app() -> axum::Router {
 }
 
 #[test]
+fn config_read_workspace_claim_is_optional_in_the_public_contract() {
+    // Causes: the edge has already resolved the Workspace and the caller may
+    // omit or include a workspace_id claim. Effects: OpenAPI cannot require a
+    // second selector; the live router test owns equal/conflicting claims.
+    // R1 edge scope + omitted claim => documented valid request for all three
+    // read routes. R2 an explicit claim remains accepted as an optional field.
+    let doc = openapi_document();
+    for path in [
+        "/v1/config/provider-connections",
+        "/v1/config/executable-models",
+        "/v1/config/credentials",
+    ] {
+        let parameters = doc["paths"][path]["get"]["parameters"]
+            .as_array()
+            .expect("GET parameters");
+        let workspace = parameters
+            .iter()
+            .find(|parameter| parameter["name"] == "workspace_id")
+            .expect("workspace claim parameter");
+        assert_eq!(workspace["required"], false, "{path}");
+    }
+}
+
+#[test]
 fn document_shape_and_schema_components() {
     let doc = openapi_document();
     assert_eq!(doc["openapi"], "3.1.0");

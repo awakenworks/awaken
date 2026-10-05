@@ -87,6 +87,58 @@ fn harness() -> Harness {
 }
 
 #[tokio::test]
+async fn config_reads_use_the_resolved_workspace_without_a_duplicate_query_selector() {
+    // Causes: C1 the trusted edge resolves workspace-a; C2 the caller's
+    // workspace_id query is absent, empty, equal, or different; C3 the edge
+    // resolves no Workspace. Effects: read only the C1 Workspace, refuse a
+    // conflicting claim, and never let a query create authority for C3.
+    // | Rule | C1 | C2 | effect |
+    // | R1 | yes | absent/empty | 200 from workspace-a |
+    // | R2 | yes | equal | 200 from workspace-a |
+    // | R3 | yes | different | 404, no cross-Workspace read |
+    // | R4 | no | absent/equal | 404, no query-created Workspace |
+    let harness = harness();
+    for path in [
+        "/v1/config/provider-connections",
+        "/v1/config/executable-models",
+        "/v1/config/credentials",
+    ] {
+        for (rule, query, expected) in [
+            ("R1-absent", "", StatusCode::OK),
+            ("R1-empty", "?workspace_id=", StatusCode::OK),
+            ("R2", "?workspace_id=workspace-a", StatusCode::OK),
+            ("R3", "?workspace_id=workspace-b", StatusCode::NOT_FOUND),
+        ] {
+            let (status, body) = call_in(
+                &harness.app,
+                "workspace-a",
+                "GET",
+                &format!("{path}{query}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, expected, "{path} {rule}: {body}");
+            if expected == StatusCode::OK {
+                assert!(body.is_array(), "{path} {rule}: {body}");
+            }
+        }
+        for query in ["", "?workspace_id=workspace-a"] {
+            let response = harness
+                .app
+                .clone()
+                .oneshot(
+                    Request::get(format!("{path}{query}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path} R4");
+        }
+    }
+}
+
+#[tokio::test]
 async fn provider_descriptors_are_read_only_capabilities_not_catalog_rows() {
     // Test design — Causes: an unconfigured client reads the descriptor endpoint.
     // Effects: it receives the secret-free static list with stable OpenAI
