@@ -311,7 +311,9 @@ unreachable: one decision costs one reason instead of a cascade of unreachable
 children - naming `billing_error` unreachable should not also demand three
 entries for the `retry_status` nobody will ever read inside it.
 
-Two of the named gaps are structural rather than missing match arms.
+The existing neutral `overloaded` fault now projects as the SDK's distinct
+`model_overloaded_error`; it does not change the hard-usage or billing decision.
+Two of the remaining named gaps are structural rather than missing match arms.
 `credential_host_unreachable_error` requires `credential_id` and `vault_id`, and
 every `repository_*` variant requires `repository_url`; `SessionError` carries
 none of those fields, so the gap is a projection that does not exist, and the
