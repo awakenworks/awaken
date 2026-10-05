@@ -127,8 +127,7 @@ use live_runtime_capabilities::LiveRuntimeCapabilities;
 struct RuntimeModelWiring {
     executor: Arc<dyn LlmExecutor>,
     model_ref: String,
-    materializer:
-        Option<Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>>,
+    materializer: Option<Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>>,
 }
 
 /// Publication policy plus a deferred runtime choice. Standalone Control uses

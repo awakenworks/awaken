@@ -47,6 +47,8 @@
 //! isolated Skill forks) use the separate [`AuxiliarySandboxFactory`] port:
 //! they never share the Session-owned environment.
 
+pub mod tool_export;
+
 use std::sync::Arc;
 
 mod acp;

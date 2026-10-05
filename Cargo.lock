@@ -2165,6 +2165,7 @@ dependencies = [
  "awaken-mcp-server-testkit",
  "awaken-mcp-wire",
  "awaken-runtime-contract",
+ "awaken-session-environment-contract",
  "axum",
  "http-body-util",
  "serde",
@@ -2945,6 +2946,8 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
  "awaken-tool-contract",
+ "schemars 1.2.1",
+ "tokio",
 ]
 
 [[package]]

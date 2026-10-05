@@ -75,7 +75,7 @@ pub type RegisteredMemoryMounterFactory = Arc<
         + Sync,
 >;
 
-use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
+use awaken_credential_materializer::InferenceExecutorMaterializer;
 use awaken_session_executor::SharedHost;
 use awaken_worker_contract::{RegistryMutation, WorkerManifest};
 use awaken_coordinator_client::WorkerControlClient;

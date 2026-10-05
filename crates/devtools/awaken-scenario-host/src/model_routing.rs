@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
+use awaken_credential_materializer::InferenceExecutorMaterializer;
 use awaken_provider_genai::{AdapterKind, GenaiExecutor};
-use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::ModelProvisioning;
 use axum::Router;

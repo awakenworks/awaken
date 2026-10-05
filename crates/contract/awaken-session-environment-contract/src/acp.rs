@@ -9,12 +9,12 @@
 
 use std::sync::Arc;
 
+use crate::tool_export::AttachedToolSet;
 use awaken_acp_contract::{AcpAdapterPolicy, SessionMcpServer};
 use awaken_runtime_contract::execution::RunAttemptExecutor;
 use awaken_runtime_contract::permission::{PermissionGrantObserver, ToolPermissionPolicy};
 use awaken_runtime_contract::resolved::{Backend, ProviderServerTool};
 use awaken_runtime_contract::resume::OwnedToolContinuation;
-use awaken_runtime_contract::tool_export::AttachedToolSet;
 
 use crate::AgentProcessEnvironment;
 

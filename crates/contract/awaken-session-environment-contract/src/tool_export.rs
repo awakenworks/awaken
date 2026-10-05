@@ -4,13 +4,16 @@
 use std::sync::Arc;
 
 pub struct AcpToolExport {
-    pub server: crate::resolved::AcpMcpServer,
+    pub server: awaken_runtime_contract::resolved::AcpMcpServer,
     _lease: Box<dyn Send + Sync>,
 }
 
 impl AcpToolExport {
     #[must_use]
-    pub fn new(server: crate::resolved::AcpMcpServer, lease: impl Send + Sync + 'static) -> Self {
+    pub fn new(
+        server: awaken_runtime_contract::resolved::AcpMcpServer,
+        lease: impl Send + Sync + 'static,
+    ) -> Self {
         Self {
             server,
             _lease: Box::new(lease),
@@ -28,15 +31,15 @@ pub trait AcpToolExporter: Send + Sync {
     async fn export_set(
         &self,
         server_name: &str,
-        descriptors: Vec<crate::resolved::ToolDescriptor>,
-        tools: Vec<Arc<dyn crate::tool::RawTool>>,
+        descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
+        tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
     ) -> Result<AcpToolExport, String>;
 
     async fn export(
         &self,
         server_name: &str,
-        descriptor: crate::resolved::ToolDescriptor,
-        tool: Arc<dyn crate::tool::RawTool>,
+        descriptor: awaken_runtime_contract::resolved::ToolDescriptor,
+        tool: Arc<dyn awaken_runtime_contract::tool::RawTool>,
     ) -> Result<AcpToolExport, String> {
         self.export_set(server_name, vec![descriptor], vec![tool])
             .await
@@ -47,15 +50,15 @@ pub trait AcpToolExporter: Send + Sync {
 /// and executor identities are paired once before either process is launched.
 pub struct AttachedToolSet {
     exporter: Arc<dyn AcpToolExporter>,
-    descriptors: Vec<crate::resolved::ToolDescriptor>,
-    executors: Vec<Arc<dyn crate::tool::RawTool>>,
+    descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
+    executors: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
 }
 
 impl AttachedToolSet {
     pub fn new(
         exporter: Arc<dyn AcpToolExporter>,
-        descriptors: Vec<crate::resolved::ToolDescriptor>,
-        executors: Vec<Arc<dyn crate::tool::RawTool>>,
+        descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
+        executors: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
     ) -> Result<Self, String> {
         let (descriptors, executors) = pair_tools(descriptors, executors)?;
         Ok(Self {
@@ -71,12 +74,12 @@ impl AttachedToolSet {
     }
 
     #[must_use]
-    pub fn descriptors(&self) -> &[crate::resolved::ToolDescriptor] {
+    pub fn descriptors(&self) -> &[awaken_runtime_contract::resolved::ToolDescriptor] {
         &self.descriptors
     }
 
     #[must_use]
-    pub fn executors(&self) -> &[Arc<dyn crate::tool::RawTool>] {
+    pub fn executors(&self) -> &[Arc<dyn awaken_runtime_contract::tool::RawTool>] {
         &self.executors
     }
 }
@@ -84,13 +87,13 @@ impl AttachedToolSet {
 /// The one descriptor/executor identity and ordering check used by both
 /// process-local and attached ACP MCP exports.
 type PairedTools = (
-    Vec<crate::resolved::ToolDescriptor>,
-    Vec<Arc<dyn crate::tool::RawTool>>,
+    Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
+    Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
 );
 
 pub fn pair_tools(
-    descriptors: Vec<crate::resolved::ToolDescriptor>,
-    executors: Vec<Arc<dyn crate::tool::RawTool>>,
+    descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
+    executors: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
 ) -> Result<PairedTools, String> {
     let descriptor_ids = descriptors
         .iter()
@@ -144,9 +147,9 @@ pub trait AttachedChannelToolExporter: AcpToolExporter {
     /// connection adapter owns byte substreams, and MCP owns their framing.
     async fn export_channel_set(
         &self,
-        server: crate::resolved::AcpMcpServer,
-        descriptors: Vec<crate::resolved::ToolDescriptor>,
-        tools: Vec<Arc<dyn crate::tool::RawTool>>,
+        server: awaken_runtime_contract::resolved::AcpMcpServer,
+        descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
+        tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
         reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
         writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
     ) -> Result<AcpToolExport, String>;
@@ -159,15 +162,18 @@ mod tests {
     struct TestTool(&'static str);
 
     #[async_trait::async_trait]
-    impl crate::tool::RawTool for TestTool {
+    impl awaken_runtime_contract::tool::RawTool for TestTool {
         fn id(&self) -> &str {
             self.0
         }
 
         async fn invoke(
             &self,
-            _: crate::tool::ToolCall,
-        ) -> Result<crate::tool::ToolOutput, crate::tool::ToolError> {
+            _: awaken_runtime_contract::tool::ToolCall,
+        ) -> Result<
+            awaken_runtime_contract::tool::ToolOutput,
+            awaken_runtime_contract::tool::ToolError,
+        > {
             unreachable!("identity admission never invokes a tool")
         }
     }
@@ -185,18 +191,18 @@ mod tests {
         async fn export_set(
             &self,
             _: &str,
-            _: Vec<crate::resolved::ToolDescriptor>,
-            _: Vec<Arc<dyn crate::tool::RawTool>>,
+            _: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
+            _: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
         ) -> Result<AcpToolExport, String> {
             unreachable!("identity admission never opens an export")
         }
     }
 
-    fn descriptor(id: &str) -> crate::resolved::ToolDescriptor {
-        crate::resolved::ToolDescriptor::for_args::<TestArgs>("test", id, id)
+    fn descriptor(id: &str) -> awaken_runtime_contract::resolved::ToolDescriptor {
+        awaken_runtime_contract::resolved::ToolDescriptor::for_args::<TestArgs>("test", id, id)
     }
 
-    fn tool(id: &'static str) -> Arc<dyn crate::tool::RawTool> {
+    fn tool(id: &'static str) -> Arc<dyn awaken_runtime_contract::tool::RawTool> {
         Arc::new(TestTool(id))
     }
 

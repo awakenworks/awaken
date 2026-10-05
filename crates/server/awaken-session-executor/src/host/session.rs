@@ -1545,7 +1545,7 @@ impl SharedHost {
                         .is_some_and(|env| env.agent_process().is_container())
                     {
                         acp_attached_tools = Some(Arc::new(
-                            awaken_runtime_contract::tool_export::AttachedToolSet::new(
+                            awaken_session_environment_contract::tool_export::AttachedToolSet::new(
                                 exporter.clone(),
                                 descriptors,
                                 executors,
