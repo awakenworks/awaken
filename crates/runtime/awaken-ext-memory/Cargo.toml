@@ -18,7 +18,6 @@ async-trait.workspace = true
 tokio.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-resource-contract.workspace = true
 awaken-time.workspace = true
 schemars = "1"
 

@@ -37,7 +37,7 @@ pub use extraction::{
     MemoryExtractionController, MemoryExtractionDriver, MemoryExtractionError,
     MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionOutcome,
     MemoryExtractionPolicy, MemoryExtractionReceipt, MemoryExtractionRepository,
-    MemoryExtractionStatus, MemoryExtractorSnapshot, MemoryMutationReceipt,
+    MemoryExtractionStatus, MemoryExtractorSnapshot, MemoryHeadToken, MemoryMutationReceipt,
     MemoryTerminalExtraction, MemoryTerminalExtractionRequest, MemoryTerminalObserver,
     PutMemoryExtractionOutcome,
 };
