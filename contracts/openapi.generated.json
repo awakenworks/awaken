@@ -6553,10 +6553,10 @@
         "operationId": "list_credentials",
         "parameters": [
           {
-            "description": "Workspace whose sources to list",
+            "description": "Optional claim checked against the resolved Workspace",
             "in": "query",
             "name": "workspace_id",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -6958,10 +6958,10 @@
         "operationId": "list_executable_models",
         "parameters": [
           {
-            "description": "Workspace whose executable model routes to project",
+            "description": "Optional claim checked against the resolved Workspace",
             "in": "query",
             "name": "workspace_id",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -7652,10 +7652,10 @@
         "operationId": "list_provider_connections",
         "parameters": [
           {
-            "description": "Workspace whose model-source readiness to derive",
+            "description": "Optional claim checked against the resolved Workspace",
             "in": "query",
             "name": "workspace_id",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }

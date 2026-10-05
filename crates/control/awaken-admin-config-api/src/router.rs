@@ -1743,6 +1743,7 @@ async fn get_credential(
 
 #[derive(serde::Deserialize)]
 struct ListCredentialsQuery {
+    #[serde(default)]
     workspace_id: String,
     #[serde(default)]
     provider_ref: Option<String>,
