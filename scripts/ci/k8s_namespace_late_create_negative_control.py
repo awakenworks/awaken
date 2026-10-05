@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Prove that a previously admitted Pod Create can outlive Namespace deletion.
+"""Exercise already-admitted Pod Create across three real API race outcomes.
 
 This is an opt-in k3d negative control for ADR-0078, not a cleanup oracle.
-It creates only a uniquely named Namespace, Pod, and validating webhook, then
-deletes and verifies those exact resources before returning.
+It creates only a uniquely named Namespace, Pod, and validating webhook for
+each invocation, then deletes and verifies those exact resources.
 """
 
 from __future__ import annotations
@@ -36,6 +36,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--kubeconfig", type=Path, required=True)
     parser.add_argument("--advertise-address", required=True)
+    parser.add_argument(
+        "--scenario",
+        choices=("namespace-deletion", "reservation-held", "reservation-released"),
+        default="namespace-deletion",
+    )
     args = parser.parse_args()
     kubeconfig = args.kubeconfig.resolve(strict=True)
     address = str(ipaddress.IPv4Address(args.advertise_address))
@@ -120,6 +125,9 @@ def main() -> None:
                 "matchPolicy": "Exact",
                 "timeoutSeconds": 30,
                 "namespaceSelector": {"matchLabels": {label: nonce}},
+                # Only the original Pod is held. The provider-owned inert
+                # reservation must race the paused request, not this webhook.
+                "objectSelector": {"matchLabels": {label: nonce}},
                 "rules": [{
                     "apiGroups": [""], "apiVersions": ["v1"],
                     "operations": ["CREATE"], "resources": ["pods"],
@@ -133,7 +141,7 @@ def main() -> None:
         }
         pod = {
             "apiVersion": "v1", "kind": "Pod",
-            "metadata": {"namespace": name, "name": pod_name},
+            "metadata": {"namespace": name, "name": pod_name, "labels": {label: nonce}},
             "spec": {"restartPolicy": "Never", "containers": [{
                 "name": "sleep", "image": "busybox:1.36",
                 "command": ["sleep", "120"],
@@ -158,23 +166,91 @@ def main() -> None:
             creating.stdin = None
             if not reached.wait(10):
                 raise RuntimeError("Pod Create did not reach the selected admission cut")
-            deleted = command([*base, "delete", "namespace", name, "--wait=true", "--timeout=15s"], timeout=20)
-            if deleted.returncode:
-                raise RuntimeError(f"Namespace did not finalize: {deleted.stderr.strip()}")
-            absent = command([*base, "get", "namespace", name, "-o", "name"])
-            if absent.returncode == 0:
-                raise RuntimeError("Namespace still exists before releasing admitted Create")
-            release.set()
-            stdout, stderr = creating.communicate(timeout=10)
-            if creating.returncode:
-                raise RuntimeError(f"already-admitted Pod Create failed: {stderr.strip()}")
-            observed = command([*base, "get", "pods", "-A", "--field-selector", f"metadata.name={pod_name}", "-o", "json"])
-            if observed.returncode:
-                raise RuntimeError(f"late Pod observation failed: {observed.stderr.strip()}")
-            items = json.loads(observed.stdout)["items"]
-            if not any(item["metadata"]["namespace"] == name and item["metadata"]["name"] == pod_name for item in items):
-                raise RuntimeError("late Pod was not observable after Namespace finalization")
-            print(f"N1 proved: {stdout.strip()} after Namespace {name} finalized")
+            if args.scenario == "namespace-deletion":
+                deleted = command([*base, "delete", "namespace", name, "--wait=true", "--timeout=15s"], timeout=20)
+                if deleted.returncode:
+                    raise RuntimeError(f"Namespace did not finalize: {deleted.stderr.strip()}")
+                absent = command([*base, "get", "namespace", name, "-o", "name"])
+                if absent.returncode == 0:
+                    raise RuntimeError("Namespace still exists before releasing admitted Create")
+                release.set()
+                stdout, stderr = creating.communicate(timeout=10)
+                if creating.returncode:
+                    raise RuntimeError(f"already-admitted Pod Create failed: {stderr.strip()}")
+                observed = command([*base, "get", "pods", "-A", "--field-selector", f"metadata.name={pod_name}", "-o", "json"])
+                if observed.returncode:
+                    raise RuntimeError(f"late Pod observation failed: {observed.stderr.strip()}")
+                items = json.loads(observed.stdout)["items"]
+                if not any(item["metadata"]["namespace"] == name and item["metadata"]["name"] == pod_name for item in items):
+                    raise RuntimeError("late Pod was not observable after Namespace finalization")
+                print(f"N1 proved: {stdout.strip()} after Namespace {name} finalized")
+            else:
+                # C1 the original Pod POST is already paused inside admission;
+                # C2 a nonrunning Pod reserves the exact namespace/name; C3 the
+                # reservation remains or is deleted before C1 resumes.
+                # E1 C1+C2+held -> old POST 409, same reservation UID retained;
+                # E2 C1+C2+released -> old POST 201 under a NEW UID. Rules
+                # R1=C1+C2+held->E1, R2=C1+C2+released->E2. Neither a
+                # Namespace 404 nor a reservation that was once present is a
+                # durable closure witness; the current exact name matters.
+                reservation = {
+                    "apiVersion": "v1", "kind": "Pod",
+                    "metadata": {
+                        "namespace": name, "name": pod_name,
+                        "labels": {"awaken.dev/late-create-reservation-control": nonce},
+                    },
+                    "spec": {
+                        "automountServiceAccountToken": False,
+                        "restartPolicy": "Never",
+                        "schedulingGates": [{"name": "awaken.dev/create-isolation"}],
+                        "nodeSelector": {"awaken.dev/create-isolation-node": "never"},
+                        "containers": [{
+                            "name": "inert", "image": "invalid.invalid/awaken-create-reservation:never",
+                            "imagePullPolicy": "Never", "command": ["/bin/false"],
+                        }],
+                    },
+                }
+                reserved = command([*base, "create", "-f", "-", "-o", "json"], body=reservation)
+                if reserved.returncode:
+                    raise RuntimeError(f"same-name reservation failed: {reserved.stderr.strip()}")
+                reservation_uid = json.loads(reserved.stdout)["metadata"]["uid"]
+
+                def exact_pod() -> dict:
+                    result = command([*base, "get", "pod", pod_name, "-n", name, "-o", "json"])
+                    if result.returncode:
+                        raise RuntimeError(f"exact Pod read failed: {result.stderr.strip()}")
+                    return json.loads(result.stdout)
+
+                observed = exact_pod()
+                if (observed["metadata"]["uid"] != reservation_uid
+                        or observed["metadata"].get("deletionTimestamp")
+                        or observed["spec"].get("nodeName")
+                        or observed["metadata"]["labels"].get("awaken.dev/late-create-reservation-control") != nonce):
+                    raise RuntimeError("reservation lost its exact inert UID before the race")
+                if args.scenario == "reservation-released":
+                    deleted = command([*base, "delete", "pod", pod_name, "-n", name,
+                                       "--wait=true", "--timeout=15s"], timeout=20)
+                    if deleted.returncode:
+                        raise RuntimeError(f"reservation could not be released: {deleted.stderr.strip()}")
+                    absent = command([*base, "get", "pod", pod_name, "-n", name, "-o", "name"])
+                    if absent.returncode == 0:
+                        raise RuntimeError("reservation name remained occupied before old Create resumed")
+                release.set()
+                stdout, stderr = creating.communicate(timeout=10)
+                if args.scenario == "reservation-held":
+                    if creating.returncode == 0 or "AlreadyExists" not in stderr:
+                        raise RuntimeError(f"old Create did not lose the held name: {stdout.strip()} {stderr.strip()}")
+                    if exact_pod()["metadata"]["uid"] != reservation_uid:
+                        raise RuntimeError("held reservation UID changed after old Create 409")
+                    print(f"R1 proved: old Create returned 409; reservation UID {reservation_uid} retained")
+                else:
+                    if creating.returncode:
+                        raise RuntimeError(f"old Create did not publish after name release: {stderr.strip()}")
+                    published = exact_pod()
+                    if (published["metadata"]["uid"] == reservation_uid
+                            or published["metadata"]["labels"].get(label) != nonce):
+                        raise RuntimeError("released name did not publish the exact old Pod under a new UID")
+                    print(f"R2 proved: released reservation UID {reservation_uid}; old Create published UID {published['metadata']['uid']}")
         finally:
             release.set()
             cleanup_errors = []
