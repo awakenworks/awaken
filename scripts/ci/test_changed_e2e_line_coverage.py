@@ -7,6 +7,7 @@ import importlib.util
 import pathlib
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -107,6 +108,39 @@ evidence = "test"
         )
         with self.assertRaises(ValueError):
             MODULE.unreachable_lines("waivers.toml")
+
+    def test_stale_waiver_is_checked_when_its_file_changes(self) -> None:
+        # Causes: C1 the waived file has changed executable lines; C2 its
+        # selected zero-hit line is among them. Effects: E1 an untouched file
+        # does not block an unrelated diff; E2 a changed stale waiver fails;
+        # E3 a changed, used waiver remains subject to the audited ceiling.
+        # Constraint: all cases use the same manifest and checker entry point.
+        # | Rule | C1 | C2 | Outcome |
+        # | W1 | F | F | E1 |
+        # | W2 | T | F | E2 |
+        # | W3 | T | T | E3 |
+        waived_path = "crates/example/src/lib.rs"
+        other_path = "crates/example/src/other.rs"
+        entry = {"path": waived_path, "lines": {3}}
+        cases = (
+            ("W1", {other_path: {2}}, {other_path: {2: 1}}, None),
+            ("W2", {waived_path: {2}}, {waived_path: {2: 1}}, "unreachable waiver no longer matches"),
+            ("W3", {waived_path: {2, 3}}, {waived_path: {2: 1, 3: 0}}, None),
+        )
+        for rule, changed, counters, expected_error in cases:
+            with (
+                self.subTest(rule=rule),
+                mock.patch.object(MODULE, "changed_lines", return_value=(changed, 0)),
+                mock.patch.object(MODULE, "lcov_lines", return_value=counters),
+                mock.patch.object(MODULE, "unreachable_lines", return_value=({waived_path: {3}}, [entry])),
+                mock.patch.object(sys, "argv", ["coverage", "--maximum-unreachable-fraction", "0.6"]),
+                mock.patch("builtins.print"),
+            ):
+                if expected_error:
+                    with self.assertRaisesRegex(SystemExit, expected_error):
+                        MODULE.main()
+                else:
+                    MODULE.main()
 
     def test_subprocess_output_is_always_decoded_as_utf8(self) -> None:
         # Cause graph: C1 repository output contains non-ASCII text; C2 the host
