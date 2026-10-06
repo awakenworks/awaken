@@ -300,8 +300,8 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
     credential_source_dependency_decision_table(repo.as_ref()).await;
     vault_reference_index_returns_only_live_scoped_sessions(repo.as_ref()).await;
     scan_query_decision_table(repo.as_ref()).await;
-    // The shared Worker-owner rules must run on the real JSONB adapter as
-    // well as SQLite: both backends include expired leases in exact reads.
+    // R1-R3 run on the JSONB adapter as well as SQLite: expired owners remain
+    // exact reads, and otherwise idle live owners enter the shared index.
     worker_realization_owner_scan_decision_table(repo.as_ref()).await;
     deployment_cas_decision_table(
         repo.as_ref(),
