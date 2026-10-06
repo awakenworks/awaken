@@ -8,7 +8,7 @@ async fn install_active_worker_relay(
     host: &SharedHost,
     thread: &str,
 ) -> (
-    crate::mcp_relay::McpRelay,
+    awaken_session_mcp::McpRelay,
     awaken_session_mcp_contract::McpGenerationRef,
 ) {
     let generation = crate::test_mcp::mcp_fence(thread, "docs", 1, "runtime-1", 1, u64::MAX);
@@ -24,19 +24,19 @@ async fn install_active_worker_relay(
         credential: None,
         selected_plaintext_holder: None,
     };
-    let server = crate::mcp_material::McpTransportMaterial {
+    let server = awaken_session_mcp::McpTransportMaterial {
         name: "docs".into(),
         prompts_as_skills: false,
-        transport: crate::mcp_material::McpTransportMaterialKind::Http {
+        transport: awaken_session_mcp::McpTransportMaterialKind::Http {
             url: "https://mcp.example.test/sse".into(),
             bearer: Some(awaken_agent_contract::RedactedString::new("relay-secret")),
             refresh: None,
         },
     };
-    let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
+    let relay = awaken_session_mcp::McpRelay::start().await.unwrap();
     assert!(host.mcp.install_relay(relay.clone()));
     relay.set_route(&generation, &server);
-    host.insert_mcp_projection(crate::mcp_material::McpGenerationProjection {
+    host.insert_mcp_projection(awaken_session_mcp::McpGenerationProjection {
         receipt: awaken_session_mcp_contract::McpRealizationReceipt {
             generation: generation.clone(),
             realization_id: request.realization_id.clone(),
@@ -52,7 +52,7 @@ async fn install_active_worker_relay(
         mcp_process: None,
         staging: None,
         drain: Arc::new(tokio::sync::Mutex::new(())),
-        state: crate::mcp_material::McpProjectionState::Active,
+        state: awaken_session_mcp::McpProjectionState::Active,
     })
     .unwrap();
     (relay, generation)
@@ -121,7 +121,7 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     assert!(
         host.mcp_projection(&mcp_generation)
             .is_some_and(|projection| projection.state
-                == crate::mcp_material::McpProjectionState::Active
+                == awaken_session_mcp::McpProjectionState::Active
                 && projection.server.is_some()),
         "R1/E2 Active MCP owner unchanged"
     );
@@ -149,7 +149,7 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     assert!(relay.route_url(&mcp_generation).is_none(), "R2/E3");
     assert_eq!(
         host.mcp_projection(&mcp_generation).unwrap().state,
-        crate::mcp_material::McpProjectionState::Removed,
+        awaken_session_mcp::McpProjectionState::Removed,
         "R2/E3"
     );
 }
@@ -246,7 +246,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
     assert!(
         host.mcp_projection(&mcp_generation)
             .is_some_and(|projection| projection.state
-                == crate::mcp_material::McpProjectionState::Active
+                == awaken_session_mcp::McpProjectionState::Active
                 && projection.server.is_some()),
         "R20/E4 Active MCP owner retained"
     );

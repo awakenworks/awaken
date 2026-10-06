@@ -36,6 +36,7 @@
     "awaken-session-environment -> awaken-run-executor-acp": "reach the worker context through its contract instead of awaken-run-executor-acp (infrastructure), or re-home awaken-session-environment",
     "awaken-session-environment -> awaken-sandbox-container": "reach the sandbox context through its contract instead of awaken-sandbox-container (infrastructure), or re-home awaken-session-environment",
     "awaken-session-environment -> awaken-sandbox-local": "reach the sandbox context through its contract instead of awaken-sandbox-local (infrastructure), or re-home awaken-session-environment",
+    "awaken-session-mcp -> awaken-credential-materializer": "reach the credentials context through its contract instead of awaken-credential-materializer (infrastructure), or re-home awaken-session-mcp",
     "awaken-store-fs -> awaken-sandbox-fs": "reach the sandbox context through its contract instead of awaken-sandbox-fs (infrastructure), or re-home awaken-store-fs",
     "awaken-coordinator-client -> awaken-dispatch-execution": "reach the dispatch context through its contract instead of awaken-dispatch-execution (infrastructure), or re-home awaken-coordinator-client"
   },

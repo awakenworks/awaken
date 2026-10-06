@@ -14,14 +14,14 @@ use awaken_runtime_contract::plugin::Plugin;
 /// Private Worker-side material for one exact MCP generation. It is never an
 /// authoring or desired-state value and cannot cross the Runtime Host boundary.
 #[derive(Clone)]
-pub(crate) struct McpTransportMaterial {
+pub struct McpTransportMaterial {
     pub name: String,
     pub prompts_as_skills: bool,
     pub transport: McpTransportMaterialKind,
 }
 
 #[derive(Clone)]
-pub(crate) enum McpTransportMaterialKind {
+pub enum McpTransportMaterialKind {
     Http {
         url: String,
         bearer: Option<awaken_agent_contract::RedactedString>,
@@ -33,14 +33,14 @@ pub(crate) enum McpTransportMaterialKind {
     },
 }
 
-pub(crate) type HttpTransportMaterialRef<'a> = (
+pub type HttpTransportMaterialRef<'a> = (
     &'a str,
     &'a Option<awaken_agent_contract::RedactedString>,
     &'a Option<Box<McpRefreshMaterial>>,
 );
 
 impl McpTransportMaterial {
-    pub(crate) fn http(&self) -> Option<HttpTransportMaterialRef<'_>> {
+    pub fn http(&self) -> Option<HttpTransportMaterialRef<'_>> {
         match &self.transport {
             McpTransportMaterialKind::Http {
                 url,
@@ -51,15 +51,15 @@ impl McpTransportMaterial {
         }
     }
 
-    pub(crate) fn bearer(&self) -> Option<&awaken_agent_contract::RedactedString> {
+    pub fn bearer(&self) -> Option<&awaken_agent_contract::RedactedString> {
         self.http().and_then(|(_, bearer, _)| bearer.as_ref())
     }
 
-    pub(crate) fn http_url(&self) -> Option<&str> {
+    pub fn http_url(&self) -> Option<&str> {
         self.http().map(|(url, _, _)| url)
     }
 
-    pub(crate) fn refresh(&self) -> Option<Box<McpRefreshMaterial>> {
+    pub fn refresh(&self) -> Option<Box<McpRefreshMaterial>> {
         self.http().and_then(|(_, _, refresh)| refresh.clone())
     }
 }
@@ -68,14 +68,14 @@ impl McpTransportMaterial {
 /// authority owns the Vault and constructs this transport adapter; Runtime only
 /// invokes the neutral refresh contract after an auth challenge.
 #[derive(Clone)]
-pub(crate) struct McpRefreshMaterial(pub(crate) Arc<dyn CredentialRefresher>);
+pub struct McpRefreshMaterial(pub Arc<dyn CredentialRefresher>);
 
 /// The discovered surface of one thread's staged MCP servers. Each server is
 /// represented by the canonical live [`awaken_ext_mcp::McpPlugin`], so model
 /// descriptors and executable tools have one source of truth. The initial exact
 /// ids are also retained for the Session permission gate.
 #[derive(Clone)]
-pub(crate) struct McpWiring {
+pub struct McpWiring {
     pub notification_transports: Vec<(String, Arc<dyn awaken_ext_mcp::McpToolTransport>)>,
     pub plugins: Vec<Arc<dyn Plugin>>,
     pub tool_ids: Vec<String>,
@@ -100,7 +100,7 @@ impl McpWiring {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum McpProjectionState {
+pub enum McpProjectionState {
     /// The exact generation owner is installed before process spawn/connect.
     /// Cancellation may leave this state temporarily, but never an unowned
     /// process; the owned staging task completes or drains it canonically.
@@ -112,22 +112,22 @@ pub(crate) enum McpProjectionState {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct McpStagingActivity {
+pub struct McpStagingActivity {
     finished: Arc<AtomicBool>,
     changed: Arc<tokio::sync::Notify>,
 }
 
 impl McpStagingActivity {
-    pub(crate) fn guard(&self) -> McpStagingActivityGuard {
+    pub fn guard(&self) -> McpStagingActivityGuard {
         McpStagingActivityGuard(self.clone())
     }
 
-    pub(crate) fn finish(&self) {
+    pub fn finish(&self) {
         self.finished.store(true, Ordering::Release);
         self.changed.notify_waiters();
     }
 
-    pub(crate) async fn wait(&self) {
+    pub async fn wait(&self) {
         while !self.finished.load(Ordering::Acquire) {
             let changed = self.changed.notified();
             if self.finished.load(Ordering::Acquire) {
@@ -138,7 +138,7 @@ impl McpStagingActivity {
     }
 }
 
-pub(crate) struct McpStagingActivityGuard(McpStagingActivity);
+pub struct McpStagingActivityGuard(McpStagingActivity);
 
 impl Drop for McpStagingActivityGuard {
     fn drop(&mut self) {
@@ -150,7 +150,7 @@ impl Drop for McpStagingActivityGuard {
 /// material/connection state only; desired state remains in the Session
 /// aggregate and is never reconstructed from this slot.
 #[derive(Clone)]
-pub(crate) struct McpGenerationProjection {
+pub struct McpGenerationProjection {
     /// The one canonical, secret-free effect input. Keep it intact so durable
     /// dispatch can replay the exact generation on the execution Worker without
     /// reconstructing a parallel MCP configuration from live transport state.
@@ -328,7 +328,7 @@ impl SessionMcpState {
             .collect()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn has_frozen_attachment(&self) -> bool {
         self.has_frozen_attachment
@@ -339,7 +339,7 @@ impl SessionMcpState {
     }
 
     /// Number of process-local generation owners, including tombstones.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn projection_count(&self) -> usize {
         self.projections.len()
@@ -347,7 +347,7 @@ impl SessionMcpState {
 
     /// Test fixtures drive an owner into a state no production path reaches
     /// directly (for example a Staging owner with a live activity).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn projections_mut(&mut self) -> &mut Vec<McpGenerationProjection> {
         &mut self.projections
     }

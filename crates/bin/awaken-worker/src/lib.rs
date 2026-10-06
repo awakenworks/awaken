@@ -144,7 +144,7 @@ pub struct WorkerNodeBuilder {
     application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
-    mcp_relay_outbound_proxy: Option<Arc<dyn awaken_session_executor::McpRelayOutboundProxy>>,
+    mcp_relay_outbound_proxy: Option<Arc<dyn awaken_session_mcp::McpRelayOutboundProxy>>,
     brokered_acp_model_access:
         Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
     remote_attempt: Option<awaken_session_executor::RemoteAttemptInstallation>,
@@ -529,7 +529,7 @@ impl WorkerNodeBuilder {
     #[must_use]
     pub fn with_mcp_relay_outbound_proxy(
         mut self,
-        issuer: Arc<dyn awaken_session_executor::McpRelayOutboundProxy>,
+        issuer: Arc<dyn awaken_session_mcp::McpRelayOutboundProxy>,
     ) -> Self {
         self.mcp_relay_outbound_proxy = Some(issuer);
         self
@@ -996,7 +996,7 @@ pub struct WorkerNode {
     application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
-    mcp_relay_outbound_proxy: Option<Arc<dyn awaken_session_executor::McpRelayOutboundProxy>>,
+    mcp_relay_outbound_proxy: Option<Arc<dyn awaken_session_mcp::McpRelayOutboundProxy>>,
     brokered_acp_model_access:
         Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
     remote_attempt: Option<awaken_session_executor::RemoteAttemptInstallation>,

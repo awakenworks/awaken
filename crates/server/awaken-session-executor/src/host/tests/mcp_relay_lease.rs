@@ -33,10 +33,10 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         lease.epoch,
         1,
     );
-    let material = crate::mcp_material::McpTransportMaterial {
+    let material = awaken_session_mcp::McpTransportMaterial {
         name: "browser".into(),
         prompts_as_skills: false,
-        transport: crate::mcp_material::McpTransportMaterialKind::Http {
+        transport: awaken_session_mcp::McpTransportMaterialKind::Http {
             url: upstream,
             bearer: Some(awaken_agent_contract::RedactedString::new(
                 "test-relay-secret",
@@ -164,12 +164,12 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
 /// | T5   | exact tenure, renewed expiry 200    | Some             | true                | removes      |
 #[tokio::test]
 async fn only_the_exact_route_tenure_may_fence_update_or_remove_a_relay_route() {
-    let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
+    let relay = awaken_session_mcp::McpRelay::start().await.unwrap();
     let staged = crate::test_mcp::mcp_fence("tenure-relay", "browser", 1, "worker/1", 3, 100);
-    let material = crate::mcp_material::McpTransportMaterial {
+    let material = awaken_session_mcp::McpTransportMaterial {
         name: "browser".into(),
         prompts_as_skills: false,
-        transport: crate::mcp_material::McpTransportMaterialKind::Http {
+        transport: awaken_session_mcp::McpTransportMaterialKind::Http {
             url: "https://fixture.test/mcp".into(),
             bearer: None,
             refresh: None,

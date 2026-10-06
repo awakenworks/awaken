@@ -33,6 +33,9 @@ use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 
 use crate::mcp_material::McpTransportMaterial;
+
+#[cfg(any(test, feature = "test-support"))]
+mod test_support;
 use awaken_lease_contract::fence::FenceSuccession;
 
 /// Where one relay route forwards to, with the host-held credential to inject.
@@ -126,13 +129,13 @@ impl RelayState {
 /// A running loopback MCP relay: its routing table plus the address it serves on. Cloneable
 /// (shares the table); the served task lives for the process.
 #[derive(Clone)]
-pub(crate) struct McpRelay {
+pub struct McpRelay {
     routes: Routes,
     advertised_origin: String,
     alive: Arc<AtomicBool>,
     #[cfg(test)]
     state: RelayState,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     server_abort: tokio::task::AbortHandle,
 }
 
@@ -148,7 +151,7 @@ impl McpRelay {
     /// Bind an ephemeral loopback port (or the deployment's container
     /// exposure) and serve the forwarding router in the background. Routes are
     /// admitted only while `authority` holds the current Session root.
-    pub(crate) async fn for_authority(
+    pub async fn for_authority(
         authority: std::sync::Weak<dyn crate::mcp::McpGenerationAuthority>,
         exposure: Option<&crate::ContainerMcpRelayExposure>,
         clock: Arc<dyn awaken_time::WallClock>,
@@ -179,35 +182,17 @@ impl McpRelay {
         .await
     }
 
-    pub(crate) fn matches_exposure(&self, exposure: &crate::ContainerMcpRelayExposure) -> bool {
+    pub fn matches_exposure(&self, exposure: &crate::ContainerMcpRelayExposure) -> bool {
         self.advertised_origin == exposure.advertised_origin().as_str().trim_end_matches('/')
     }
 
-    pub(crate) fn is_live(&self) -> bool {
+    pub fn is_live(&self) -> bool {
         self.alive.load(Ordering::Acquire)
     }
 
-    #[cfg(test)]
-    pub(crate) fn abort_for_test(&self) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn abort_for_test(&self) {
         self.server_abort.abort();
-    }
-
-    /// Protocol-only fixtures have no Session application. Production always
-    /// uses for_authority and the existing root-lease decision, never a route clock.
-    #[cfg(test)]
-    pub(crate) async fn start() -> std::io::Result<Self> {
-        Self::start_with_authority_and_exposure(
-            Arc::new(|generation, now| {
-                awaken_session_realization_contract::realization_lease_is_live_at(
-                    generation.lease_expires_at_unix_ms(),
-                    now,
-                )
-            }),
-            None,
-            awaken_time::system_clock(),
-            None,
-        )
-        .await
     }
 
     async fn start_with_authority_and_exposure(
@@ -260,7 +245,7 @@ impl McpRelay {
             let _live_guard = live_guard;
             let _ = axum::serve(listener, app).await;
         });
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-support")))]
         drop(server);
         Ok(Self {
             routes,
@@ -268,15 +253,15 @@ impl McpRelay {
             alive,
             #[cfg(test)]
             state,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             server_abort: server.abort_handle(),
         })
     }
 
     /// Install one exact-generation route. Replaying the same generation
     /// replaces only that route; it never changes another generation by name.
-    #[cfg(test)]
-    pub(crate) fn set_route(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_route(
         &self,
         generation: &awaken_session_mcp_contract::McpGenerationRef,
         server: &McpTransportMaterial,
@@ -289,7 +274,7 @@ impl McpRelay {
     /// Claim a previously absent exact-generation route during realization
     /// staging. A concurrent or leaked route is never overwritten with another
     /// request's material.
-    pub(crate) fn stage_route(
+    pub fn stage_route(
         &self,
         generation: &awaken_session_mcp_contract::McpGenerationRef,
         server: &McpTransportMaterial,
@@ -319,7 +304,7 @@ impl McpRelay {
     /// Advance facts for an already-staged exact route without manufacturing a
     /// missing effect. Publication and renewal must fail closed if staging did
     /// not create the route through the canonical realizer path.
-    pub(crate) fn update_staged_route(
+    pub fn update_staged_route(
         &self,
         generation: &awaken_session_mcp_contract::McpGenerationRef,
         server: &McpTransportMaterial,
@@ -350,7 +335,7 @@ impl McpRelay {
     /// The route is removed only for its own tenure: a late drain asserted
     /// under a predecessor (or any other) tenure of the same route key leaves
     /// the current owner's route in place.
-    pub(crate) fn remove_route(&self, generation: &awaken_session_mcp_contract::McpGenerationRef) {
+    pub fn remove_route(&self, generation: &awaken_session_mcp_contract::McpGenerationRef) {
         let mut routes = self.routes.lock().unwrap();
         let key = route_key(generation);
         if routes
@@ -365,7 +350,7 @@ impl McpRelay {
     /// the sole owner; canonical MCP drain closes this shared handle before it
     /// removes the route and acknowledges `Removed`. Another tenure of the
     /// same route key gets nothing, so it can never close the owner's fence.
-    pub(crate) fn route_call_fence(
+    pub fn route_call_fence(
         &self,
         generation: &awaken_session_mcp_contract::McpGenerationRef,
     ) -> Option<awaken_ext_mcp::transport::McpCallFence> {
@@ -379,7 +364,7 @@ impl McpRelay {
 
     /// Remove residual bearer-bearing routes only after canonical per-
     /// generation drain has succeeded for the whole Session.
-    pub(crate) fn remove_routes(&self, thread: &str) {
+    pub fn remove_routes(&self, thread: &str) {
         self.routes
             .lock()
             .expect("MCP relay routes mutex poisoned")
@@ -389,7 +374,7 @@ impl McpRelay {
     /// The loopback URL a sandboxed CLI dials for `(thread, name)` — the value written into
     /// the sandboxed MCP config in place of the real url. Only the route's own
     /// tenure may read its capability.
-    pub(crate) fn route_url(
+    pub fn route_url(
         &self,
         generation: &awaken_session_mcp_contract::McpGenerationRef,
     ) -> Option<String> {

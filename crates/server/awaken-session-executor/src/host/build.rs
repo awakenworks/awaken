@@ -310,7 +310,7 @@ impl SharedHost {
             env: capability::EnvironmentProviders::new(sandbox_root, auxiliary_sandboxes),
             tools: capability::ToolOffering::new(skills),
             resources: resource_ports,
-            mcp: crate::mcp::McpSessions::new(
+            mcp: awaken_session_mcp::McpSessions::new(
                 deployment.sandbox.container_mcp_relay.clone(),
                 clock.clone(),
             ),

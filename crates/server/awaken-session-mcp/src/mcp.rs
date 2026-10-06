@@ -45,7 +45,7 @@ const MATERIALIZED_HTTP_MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(30
 /// Project private Runtime material to ACP configuration. Worker-held material
 /// becomes an exact-generation loopback route; an explicitly admitted
 /// workload-held credential crosses only the process-local ACP Session field.
-pub(crate) fn project_mcp_session_transport(
+pub fn project_mcp_session_transport(
     prepared: &McpTransportMaterial,
     request: &awaken_session_mcp_contract::StageMcpAttachment,
     relay: Option<&crate::mcp_relay::McpRelay>,

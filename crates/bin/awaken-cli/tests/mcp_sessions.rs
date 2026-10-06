@@ -46,11 +46,11 @@ use awaken_credential_vault::{
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher};
 use awaken_protocol_managed::test_support::DurableFact;
 use awaken_runtime_contract::{CredentialRefreshAccess, TokenEndpointAuth};
-use awaken_session_executor::ExtMcpProbe;
 use awaken_scenario_host::McpToolModel;
 use awaken_session_configuration_contract::{
     McpProbe, McpProbeFailure, McpProbeStatus, ProbeHttpResponse,
 };
+use awaken_session_mcp::ExtMcpProbe;
 
 // This test drives the REAL management router but needs a deterministic model that
 // calls the MCP tool on `add <a> <b>` — that is a test concern, so it injects the

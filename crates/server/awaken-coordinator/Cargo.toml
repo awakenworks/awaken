@@ -16,6 +16,8 @@ awaken-service-lifecycle.workspace = true
 # The extracted service layer: SharedHost / ManagedHost / RunApplicationHost and all
 # host modules live here; Coordinator startup selects the served router modes.
 awaken-session-executor.workspace = true
+# The live MCP credential probe the configuration plane drives.
+awaken-session-mcp.workspace = true
 awaken-dispatch-http.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-coordinator-client.workspace = true

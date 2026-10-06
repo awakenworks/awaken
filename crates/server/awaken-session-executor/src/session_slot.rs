@@ -11,9 +11,9 @@
 use crate::frozen_runtime_projection::{
     FrozenBaselineRuntimeProjection, FrozenEnvironmentRuntimeProjection, ManagedContentDelivery,
 };
-pub(crate) use crate::mcp_material::McpQuiescenceAdmissionFence;
-use crate::mcp_material::SessionMcpState;
 use crate::staged_resources::EnvironmentResourceReconciliation;
+pub(crate) use awaken_session_mcp::McpQuiescenceAdmissionFence;
+use awaken_session_mcp::SessionMcpState;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -687,7 +687,7 @@ impl SessionRuntimeSlots {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp_material::{McpGenerationProjection, McpProjectionState};
+    use awaken_session_mcp::{McpGenerationProjection, McpProjectionState};
 
     #[test]
     fn realization_authority_close_and_renewal_have_one_projection() {
@@ -872,7 +872,7 @@ mod tests {
             credential: None,
             selected_plaintext_holder: None,
         };
-        let staging = crate::mcp_material::McpStagingActivity::default();
+        let staging = awaken_session_mcp::McpStagingActivity::default();
         let guard = staging.guard();
         let unpolled = async move {
             let _guard = guard;
