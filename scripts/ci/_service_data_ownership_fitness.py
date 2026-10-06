@@ -286,7 +286,7 @@ NON_PRODUCT_APIS = (
     (
         "open_in_memory_environment_image_build_store",
         ENV_IMAGE_BUILD_SQLITE_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory_environment_image_build_store\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory_environment_image_build_store\b",
         TEST_SUPPORT_GATE,
     ),
     (
