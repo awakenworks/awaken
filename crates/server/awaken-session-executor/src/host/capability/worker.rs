@@ -50,15 +50,6 @@ impl SharedHost {
         self
     }
 
-    #[must_use]
-    pub fn with_session_coordination_control(
-        mut self,
-        control: Arc<dyn awaken_dispatch_contract::ClaimedSessionCoordinationControl>,
-    ) -> Self {
-        self.worker.session_coordination_control = Some(control);
-        self
-    }
-
     /// Install both independent claim-fenced Session roles from the canonical
     /// Worker Control client.
     #[must_use]

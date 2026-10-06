@@ -64,7 +64,6 @@ awaken-dispatch-contract.workspace = true
 awaken-run-ingress-application-contract.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-dispatch-execution.workspace = true
-awaken-connection-plan.workspace = true
 awaken-acp-contract = { workspace = true }
 awaken-credential-contract.workspace = true
 awaken-credential.workspace = true

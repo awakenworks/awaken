@@ -119,7 +119,6 @@ awaken-sqlite-pool.workspace = true
 awaken-sql-storage = { workspace = true, features = ["postgres"] }
 awaken-store-postgres.workspace = true
 awaken-store-inmem = { workspace = true, optional = true }
-awaken-connection-plan.workspace = true
 # Webhook plane (ADR-0048 / S10): the WebhookLifecycleFactSink bridges the managed
 # session lifecycle to the neutral dispatcher; the CRUD router manages
 # workspace-scoped subscriptions over the injected durable admin store/vault.

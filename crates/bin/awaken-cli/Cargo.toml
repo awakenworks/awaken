@@ -135,7 +135,6 @@ awaken-iam-core.workspace = true
 awaken-provider-genai = { workspace = true }
 awaken-agent-contract = { workspace = true }
 awaken-runtime-contract = { workspace = true }
-awaken-connection-plan = { workspace = true }
 async-trait.workspace = true
 awaken-time.workspace = true
 axum = "0.8"
