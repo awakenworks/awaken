@@ -1,7 +1,7 @@
 // @formal surface exclude=test_only
-// @formal owner crates/server/awaken-session-executor/src/mcp.rs
-// @formal reason: In-process MCP protocol emulator declared under cfg(test) and used only by runtime-host
-// @formal reason: tests.
+// @formal owner crates/server/awaken-session-mcp/src/mcp.rs
+// @formal reason: In-process MCP protocol emulator declared under cfg(test) or the test-support feature
+// @formal reason: and used only by session-mcp and runtime-host tests.
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,27 +10,27 @@ use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-pub(crate) type SeenMcpRequests = Arc<Mutex<Vec<(String, String)>>>;
+pub type SeenMcpRequests = Arc<Mutex<Vec<(String, String)>>>;
 
 /// One shared Streamable-HTTP MCP fixture for Host and relay tests. Keeping the
 /// protocol emulator here prevents each security test from growing a subtly
 /// different initialize/list/call implementation.
-pub(crate) async fn start(required_bearer: Option<&str>) -> (String, SeenMcpRequests) {
+pub async fn start(required_bearer: Option<&str>) -> (String, SeenMcpRequests) {
     start_with_options(required_bearer, false, Duration::ZERO, false).await
 }
 
-pub(crate) async fn start_stateful(required_bearer: Option<&str>) -> (String, SeenMcpRequests) {
+pub async fn start_stateful(required_bearer: Option<&str>) -> (String, SeenMcpRequests) {
     start_with_options(required_bearer, false, Duration::ZERO, true).await
 }
 
-pub(crate) async fn start_with_prompts(
+pub async fn start_with_prompts(
     required_bearer: Option<&str>,
     prompts: bool,
 ) -> (String, SeenMcpRequests) {
     start_with_options(required_bearer, prompts, Duration::ZERO, false).await
 }
 
-pub(crate) async fn start_with_tool_call_delay(delay: Duration) -> (String, SeenMcpRequests) {
+pub async fn start_with_tool_call_delay(delay: Duration) -> (String, SeenMcpRequests) {
     start_with_options(None, false, delay, false).await
 }
 
@@ -223,7 +223,7 @@ async fn start_with_options(
 
 /// The generation fence of one bare `https://fixture.test/mcp` attachment,
 /// admitted through the fence's one persisted-coordinate door.
-pub(crate) fn mcp_fence(
+pub fn mcp_fence(
     session: impl Into<awaken_session_mcp_contract::SessionId>,
     attachment: impl Into<String>,
     version: u64,

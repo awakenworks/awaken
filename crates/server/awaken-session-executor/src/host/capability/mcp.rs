@@ -1,5 +1,5 @@
 //! MCP capability of [`SharedHost`]: the composition-installed dependencies of
-//! the Session MCP lifecycle ([`crate::mcp::McpSessions`]), which also owns the
+//! the Session MCP lifecycle ([`awaken_session_mcp::McpSessions`]), which also owns the
 //! lazily started loopback relay that holds authenticated MCP bearers host-side
 //! for sandboxed ACP sessions.
 
@@ -9,7 +9,7 @@ impl crate::host::SharedHost {
     #[must_use]
     pub fn with_mcp_relay_outbound_proxy(
         mut self,
-        issuer: Arc<dyn crate::McpRelayOutboundProxy>,
+        issuer: Arc<dyn awaken_session_mcp::McpRelayOutboundProxy>,
     ) -> Self {
         self.mcp.set_outbound_proxy(issuer);
         self

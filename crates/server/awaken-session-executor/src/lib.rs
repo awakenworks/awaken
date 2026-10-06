@@ -60,12 +60,7 @@ mod managed_input_projection;
 mod managed_model_capability;
 mod managed_outcome;
 mod managed_resource_projection;
-mod mcp;
 mod mcp_host;
-mod mcp_material;
-mod mcp_relay;
-mod mcp_relay_exposure;
-pub use mcp_relay::McpRelayOutboundProxy;
 mod memory;
 mod memory_stores;
 mod model_content_materializer;
@@ -87,7 +82,7 @@ mod step_projection;
 mod store;
 mod terminal_repository_publication;
 #[cfg(test)]
-mod test_mcp;
+use awaken_session_mcp::test_mcp;
 mod tool_output_spill;
 mod unavailable_worker;
 mod uninstalled_environment;
@@ -142,18 +137,15 @@ pub use crate::config::{
     platform_plugin_capabilities_with_web_search,
 };
 pub use crate::deployment_config::{
-    AcpWorkerProfile, ContainerMcpRelayExposure, ContentCaptureSettings, ContentRedaction,
-    DeploymentConfig, DispatchBackend, PackageImageBuilder, SandboxPackageSettingsInput,
-    SandboxSettings, SandboxTier, StoreKind, Wake, default_postgres_max_connections,
+    AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
+    PackageImageBuilder, SandboxPackageSettingsInput, SandboxSettings, SandboxTier, StoreKind,
+    Wake, default_postgres_max_connections,
 };
 pub use crate::skills::SkillForkPlacement;
 use managed_adapter_error::{to_live_inbox_error, to_run_error};
 pub(crate) use managed_input_projection::{session_system_message, user_message};
 // The model-route seam (R1/R2/R5): a process startup supplies its own
 // `InferenceExecutorMaterializer` to map a session's model ref to a labeled executor.
-// The managed-vault OAuth seams (ADR-0043): the transport-level refresher, its
-// prepared configuration, and the live MCP credential probe.
-pub use crate::mcp::ExtMcpProbe;
 // ── Managed Agents adapter over the shared host ─────────────────────────────
 
 /// Map a neutral terminal state to the Managed idle `stop_reason`. `RequiresAction`

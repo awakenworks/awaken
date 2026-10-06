@@ -88,10 +88,11 @@ pub use awaken_protocol_managed::{ResourcesRouterInput, models_router, resources
 
 pub use awaken_dispatch_http::durable_ops_router;
 pub use awaken_session_executor::{
-    ExtMcpProbe, HostResume, ManagedHost, NoModelConfiguredExecutor, RunApplicationHost,
-    SharedHost, ThreadEvent, ThreadEventHub, UNCONFIGURED_MODEL_REF, advertised_tools,
+    HostResume, ManagedHost, NoModelConfiguredExecutor, RunApplicationHost, SharedHost,
+    ThreadEvent, ThreadEventHub, UNCONFIGURED_MODEL_REF, advertised_tools,
 };
 pub use awaken_sandbox_local::content_fingerprint;
+pub use awaken_session_mcp::ExtMcpProbe;
 pub use awaken_worker_registry::{WorkerDirectory, WorkerObservationSource};
 pub use worker_registry::WorkerDirectoryHandle;
 #[cfg(any(test, feature = "test-support"))]

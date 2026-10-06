@@ -1,0 +1,64 @@
+[package]
+name = "awaken-session-mcp"
+description = "Per-Session MCP attachment lifecycle, native MCP wiring, application input and the Worker MCP relay of the Runtime Host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+product = "platform"
+bounded_context = "session"
+layer = "infrastructure"
+authority = "session-mcp"
+
+[dependencies]
+awaken-acp-contract.workspace = true
+awaken-agent-channel.workspace = true
+awaken-agent-contract.workspace = true
+awaken-container-contract.workspace = true
+awaken-credential-contract.workspace = true
+# Staging materializes MCP credentials through the pinned materializer, its
+# refresh factory and the Platform egress provisioner the Managed adapter lends.
+awaken-credential-materializer.workspace = true
+awaken-ext-mcp.workspace = true
+awaken-ext-skills.workspace = true
+awaken-lease-contract.workspace = true
+awaken-mcp-wire.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-session-application-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
+awaken-session-environment-contract.workspace = true
+awaken-session-error-contract.workspace = true
+awaken-session-mcp-contract.workspace = true
+awaken-session-realization-contract.workspace = true
+awaken-session-execution-contract.workspace = true
+awaken-session-state-contract.workspace = true
+awaken-time.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+axum = { version = "0.8" }
+# The Worker MCP relay is a reverse proxy; its transport starts from the
+# awaken-outbound-http rustls builder.
+awaken-outbound-http = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+url.workspace = true
+
+[features]
+default = []
+# The in-process MCP server fixture and relay/state fixture hooks, for the
+# Runtime Host's own MCP tests.
+test-support = []
+
+[dev-dependencies]
+# Projection tests admit adapters through the production ACP adapter policy.
+awaken-run-executor-acp = { workspace = true }
+
+[lints]
+workspace = true

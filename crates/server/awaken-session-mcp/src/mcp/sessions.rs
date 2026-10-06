@@ -194,7 +194,7 @@ impl McpSessions {
     }
 
     /// Install an already-started relay as the process relay.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn install_relay(&self, relay: McpRelay) -> bool {
         self.relay.set(relay).is_ok()
     }

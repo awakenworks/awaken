@@ -69,6 +69,7 @@ awaken-session-work-contract = { path = "crates/contract/awaken-session-work-con
 awaken-session-application = { path = "crates/server/awaken-session-application" }
 awaken-managed-session-events = { path = "crates/server/awaken-managed-session-events" }
 awaken-session-realization-driver = { path = "crates/server/awaken-session-realization-driver" }
+awaken-session-mcp = { path = "crates/server/awaken-session-mcp" }
 awaken-deployment-contract = { path = "crates/contract/awaken-deployment-contract" }
 awaken-deployment-application = { path = "crates/server/awaken-deployment-application" }
 awaken-environment-contract = { path = "crates/contract/awaken-environment-contract" }
