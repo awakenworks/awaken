@@ -12,10 +12,29 @@ use awaken_session_application_contract::SessionRunBackgroundApplication;
 use awaken_session_mcp_contract::McpGenerationRef;
 use serde_json::{Value, json};
 
-use crate::{HostError, SharedHost};
+use crate::mcp::{McpError, McpGenerationAuthority, McpSessions};
+use crate::mcp_material::McpGenerationProjection;
+
+/// The Runtime Host as the recipient of MCP application input: its visible
+/// generations, their root authority, and durable Run cancellation.
+#[async_trait::async_trait]
+pub trait McpInputHost: McpGenerationAuthority {
+    /// The Session's visible exact generations.
+    fn active_mcp_projections(&self, session: &str) -> Vec<McpGenerationProjection>;
+
+    /// Cancel one exact durable Run; `false` when cancellation was not accepted.
+    async fn cancel_durable_run(&self, session: &str, run_id: &str) -> bool;
+}
+
+/// Where admitted MCP application input goes: the Session Run admission
+/// owner and the Host whose authority every delivery rechecks.
+pub struct McpInputRecipients {
+    pub application: Weak<dyn SessionRunBackgroundApplication>,
+    pub host: Weak<dyn McpInputHost>,
+}
 
 struct SessionMcpInput {
-    host: Weak<SharedHost>,
+    host: Weak<dyn McpInputHost>,
     application: Weak<dyn SessionRunBackgroundApplication>,
     generation: McpGenerationRef,
     server: String,
@@ -77,10 +96,9 @@ impl McpNotificationHandler for SessionMcpInput {
                     self.generation.session_id(),
                     &operation,
                 );
-                if host
-                    .cancel_durable(self.generation.session_id().as_str(), &target.0)
+                if !host
+                    .cancel_durable_run(self.generation.session_id().as_str(), &target.0)
                     .await
-                    .is_err()
                 {
                     tracing::warn!(
                         code = "mcp_response_cancel_unaccepted",
@@ -134,24 +152,26 @@ impl McpNotificationHandler for SessionMcpInput {
     }
 }
 
-impl SharedHost {
-    pub(crate) fn validate_mcp_input_placement(
+impl McpSessions {
+    /// Configured MCP application input requires a co-located Native Session
+    /// application; an opaque backend or a remote Worker rejects it.
+    pub fn validate_input_placement(
         &self,
         configuration: &std::collections::BTreeMap<String, Value>,
         opaque_backend: bool,
-    ) -> Result<(), HostError> {
-        validate_input_placement(
-            configuration,
-            opaque_backend,
-            self.is_database_less_worker(),
-        )
+        remote_worker: bool,
+    ) -> Result<(), McpError> {
+        validate_input_placement(configuration, opaque_backend, remote_worker)
     }
 
-    pub(crate) fn install_mcp_input_handlers(
+    /// Bind each visible generation's notification stream to its configured
+    /// input policy. `recipients` is resolved only for a non-empty policy.
+    pub fn install_input_handlers(
         &self,
-        projections: &[crate::mcp_material::McpGenerationProjection],
+        projections: &[McpGenerationProjection],
         configuration: &std::collections::BTreeMap<String, Value>,
-    ) -> Result<(), HostError> {
+        recipients: &dyn Fn() -> Result<McpInputRecipients, McpError>,
+    ) -> Result<(), McpError> {
         for projection in projections {
             let Some(wiring) = &projection.native_wiring else {
                 continue;
@@ -159,29 +179,14 @@ impl SharedHost {
             for (server, transport) in &wiring.notification_transports {
                 let policy =
                     McpNotificationConfig::parse(configuration.get(&format!("mcp:{server}")))
-                        .map_err(HostError::bad_request)?;
+                        .map_err(McpError::bad_request)?;
                 if policy.notifications.is_empty() {
                     // A connection may survive a context refresh; an inactive
                     // policy must not retain the prior context's input handler.
                     let _ = transport.set_notification_handler(Vec::new(), None);
                     continue;
                 }
-                let application = self
-                    .dispatch
-                    .session_background_runs
-                    .read()
-                    .unwrap()
-                    .clone()
-                    .filter(|p| p.strong_count() > 0)
-                    .ok_or_else(|| {
-                        HostError::internal(
-                            "MCP application input has no Session admission authority",
-                        )
-                    })?;
-                let host = self
-                    .dispatch_session_runtime()
-                    .map_err(|e| HostError::internal(e.to_string()))?
-                    .host;
+                let McpInputRecipients { application, host } = recipients()?;
                 let methods = policy.notifications.keys().cloned().collect();
                 transport
                     .set_notification_handler(
@@ -195,7 +200,7 @@ impl SharedHost {
                         })),
                     )
                     .map_err(|_| {
-                        HostError::bad_request(
+                        McpError::bad_request(
                             "MCP transport does not support configured application input",
                         )
                     })?;
@@ -209,14 +214,14 @@ fn validate_input_placement(
     configuration: &std::collections::BTreeMap<String, Value>,
     opaque_backend: bool,
     remote_worker: bool,
-) -> Result<(), HostError> {
+) -> Result<(), McpError> {
     for (id, section) in configuration {
         if !id.starts_with("mcp:") {
             continue;
         }
-        let policy = McpNotificationConfig::parse(Some(section)).map_err(HostError::bad_request)?;
+        let policy = McpNotificationConfig::parse(Some(section)).map_err(McpError::bad_request)?;
         if !policy.notifications.is_empty() && (opaque_backend || remote_worker) {
-            return Err(HostError::bad_request(
+            return Err(McpError::bad_request(
                 "MCP application input requires a co-located Native Session application",
             ));
         }

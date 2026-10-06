@@ -1692,7 +1692,7 @@ impl SharedHost {
                 // not an Environment restoration/source-disposal authority.
                 // Preserve an already-closed quiescence fence so only the
                 // canonical durable projection proof may reopen MCP effects.
-                let mcp_quiescence_fence = slot.mcp_quiescence_fence.take();
+                let mcp = slot.mcp.take_retained_on_revocation();
                 *slot = crate::session_slot::SessionRuntimeSlot::default();
                 slot.realization = realization;
                 slot.lifecycle = lifecycle;
@@ -1707,7 +1707,7 @@ impl SharedHost {
                 slot.baseline = baseline;
                 slot.resources = resources;
                 slot.workspace = workspace;
-                slot.mcp_quiescence_fence = mcp_quiescence_fence;
+                slot.mcp = mcp;
             });
         }
         retirement_result?;

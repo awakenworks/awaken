@@ -61,8 +61,10 @@ mod managed_model_capability;
 mod managed_outcome;
 mod managed_resource_projection;
 mod mcp;
+mod mcp_host;
 mod mcp_material;
 mod mcp_relay;
+mod mcp_relay_exposure;
 pub use mcp_relay::McpRelayOutboundProxy;
 mod memory;
 mod memory_stores;
@@ -146,9 +148,7 @@ pub use crate::deployment_config::{
 };
 pub use crate::skills::SkillForkPlacement;
 use managed_adapter_error::{to_live_inbox_error, to_run_error};
-pub(crate) use managed_input_projection::{
-    exact_credential_realization_target, session_system_message, user_message,
-};
+pub(crate) use managed_input_projection::{session_system_message, user_message};
 // The model-route seam (R1/R2/R5): a process startup supplies its own
 // `InferenceExecutorMaterializer` to map a session's model ref to a labeled executor.
 // The managed-vault OAuth seams (ADR-0043): the transport-level refresher, its

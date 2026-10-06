@@ -93,6 +93,8 @@ impl SharedHost {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_deployment_config(mut self, deployment: crate::DeploymentConfig) -> Self {
+        self.mcp
+            .set_relay_exposure(deployment.sandbox.container_mcp_relay.clone());
         self.deployment = deployment;
         self
     }
@@ -308,7 +310,10 @@ impl SharedHost {
             env: capability::EnvironmentProviders::new(sandbox_root, auxiliary_sandboxes),
             tools: capability::ToolOffering::new(skills),
             resources: resource_ports,
-            mcp: capability::McpRelayCapability::default(),
+            mcp: crate::mcp::McpSessions::new(
+                deployment.sandbox.container_mcp_relay.clone(),
+                clock.clone(),
+            ),
             dispatch: capability::DispatchCapability::new(),
             capture: capability::ContentCaptureCapability::new(&deployment),
             local_workspace,

@@ -137,14 +137,7 @@ impl SharedHost {
             .session_slots
             .read(&thread, |slot| {
                 let runtime_projection = slot.environment_snapshot.clone().map(|environment| {
-                    let mcp_stages = slot
-                        .mcp
-                        .iter()
-                        .filter(|projection| {
-                            projection.state == crate::mcp_material::McpProjectionState::Active
-                        })
-                        .map(|projection| projection.request.clone())
-                        .collect();
+                    let mcp_stages = slot.mcp.active_stage_requests();
                     (environment, slot.tools.clone(), mcp_stages)
                 });
                 // Resource generation, Session identity, and runtime projection

@@ -34,7 +34,7 @@ async fn install_active_worker_relay(
         },
     };
     let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
-    assert!(host.mcp.mcp_relay.set(relay.clone()).is_ok());
+    assert!(host.mcp.install_relay(relay.clone()));
     relay.set_route(&generation, &server);
     host.insert_mcp_projection(crate::mcp_material::McpGenerationProjection {
         receipt: awaken_session_mcp_contract::McpRealizationReceipt {
@@ -378,7 +378,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     );
     assert_eq!(
         host.session_slots
-            .read(thread, |slot| slot.mcp_quiescence_fence.clone()),
+            .read(thread, |slot| slot.mcp.quiescence_fence().cloned()),
         Some(Some(fence)),
         "E3 revocation is not a quiescence-fence reopen authority"
     );

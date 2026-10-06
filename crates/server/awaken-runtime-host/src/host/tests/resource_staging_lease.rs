@@ -744,7 +744,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
         host.install_session_realization_lease(rule, lease.clone())
             .unwrap();
         host.session_slots.update(rule, |slot| {
-            slot.has_mcp_projection = rule == "L2";
+            slot.mcp.set_has_frozen_attachment(rule == "L2");
             if rule == "L5" {
                 assert!(slot.close_realization_authority(Some(&lease)));
             }
@@ -780,7 +780,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
                     (rule != "L5").then_some(&lease),
                     "{rule}"
                 );
-                assert_eq!(slot.has_mcp_projection, rule == "L2");
+                assert_eq!(slot.mcp.has_frozen_attachment(), rule == "L2");
                 assert!(
                     slot.baseline.is_none()
                         && slot.resource_transition.is_none()

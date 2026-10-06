@@ -1699,7 +1699,7 @@ mod tests {
                     slot.environment_projection
                         .as_ref()
                         .map(|projection| projection.fingerprint.clone()),
-                    slot.mcp.len(),
+                    slot.mcp.projection_count(),
                 )
             })
             .expect("RA1 retained slot caches");
@@ -1787,7 +1787,7 @@ mod tests {
                     slot.environment_projection
                         .as_ref()
                         .map(|projection| projection.fingerprint.clone()),
-                    slot.mcp.len(),
+                    slot.mcp.projection_count(),
                 )
             }),
             Some(cached),

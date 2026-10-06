@@ -145,17 +145,20 @@ impl Drop for RelayLiveGuard {
 }
 
 impl McpRelay {
-    /// Bind an ephemeral loopback port and serve the forwarding router in the background.
-    pub(crate) async fn for_host(
-        host: std::sync::Weak<crate::SharedHost>,
+    /// Bind an ephemeral loopback port (or the deployment's container
+    /// exposure) and serve the forwarding router in the background. Routes are
+    /// admitted only while `authority` holds the current Session root.
+    pub(crate) async fn for_authority(
+        authority: std::sync::Weak<dyn crate::mcp::McpGenerationAuthority>,
+        exposure: Option<&crate::ContainerMcpRelayExposure>,
+        clock: Arc<dyn awaken_time::WallClock>,
+        outbound_proxy: Option<Arc<dyn McpRelayOutboundProxy>>,
     ) -> std::io::Result<Self> {
-        let owner = host
-            .upgrade()
-            .ok_or_else(|| std::io::Error::other("MCP relay Host authority is unavailable"))?;
-        let exposure = owner.deployment.sandbox.container_mcp_relay.clone();
-        let outbound_proxy = owner.mcp.outbound_proxy.clone();
-        let clock = owner.clock.clone();
-        drop(owner);
+        if authority.upgrade().is_none() {
+            return Err(std::io::Error::other(
+                "MCP relay Host authority is unavailable",
+            ));
+        }
         if exposure.is_some() && outbound_proxy.is_none() {
             return Err(std::io::Error::other(
                 "external MCP relay requires an installed authenticated outbound proxy",
@@ -163,12 +166,13 @@ impl McpRelay {
         }
         Self::start_with_authority_and_exposure(
             Arc::new(move |generation, _now| {
-                host.upgrade().is_some_and(|host| {
-                    host.mcp_generation_root_authority(generation)
+                authority.upgrade().is_some_and(|authority| {
+                    authority
+                        .mcp_generation_root_authority(generation)
                         .unwrap_or(false)
                 })
             }),
-            exposure.as_ref(),
+            exposure,
             clock,
             outbound_proxy,
         )
@@ -189,7 +193,7 @@ impl McpRelay {
     }
 
     /// Protocol-only fixtures have no Session application. Production always
-    /// uses for_host and the existing root-lease decision, never a route clock.
+    /// uses for_authority and the existing root-lease decision, never a route clock.
     #[cfg(test)]
     pub(crate) async fn start() -> std::io::Result<Self> {
         Self::start_with_authority_and_exposure(
@@ -405,27 +409,6 @@ impl McpRelay {
             generation.generation().version(),
             capability
         ))
-    }
-}
-
-impl crate::SharedHost {
-    /// Bind the configured external relay before a Worker can publish Ready.
-    /// The endpoint is still only a transport prerequisite: provider-owned
-    /// substitution and no-bypass evidence remain independent admission facts.
-    pub async fn prepare_container_mcp_relay(self: &Arc<Self>) -> Result<(), std::io::Error> {
-        if self.deployment.sandbox.container_mcp_relay.is_none() {
-            return Ok(());
-        }
-        self.mcp
-            .mcp_relay
-            .get_or_try_init(|| McpRelay::for_host(Arc::downgrade(self)))
-            .await?;
-        if !self.mcp.mcp_relay.get().is_some_and(McpRelay::is_live) {
-            return Err(std::io::Error::other(
-                "container MCP relay transport exited during startup",
-            ));
-        }
-        Ok(())
     }
 }
 

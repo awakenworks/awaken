@@ -256,8 +256,8 @@ pub struct SharedHost {
     pub(crate) tools: capability::ToolOffering,
     /// Resources-context ports: Memory, Files, Artifacts.
     pub(crate) resources: capability::ResourcePorts,
-    /// Host-side MCP relay for sandboxed ACP sessions.
-    pub(crate) mcp: capability::McpRelayCapability,
+    /// The Session MCP lifecycle and its Worker relay for sandboxed ACP sessions.
+    pub(crate) mcp: crate::mcp::McpSessions,
     /// Content capture (ADR-0050): sink, deployment ceiling, consent source.
     pub(crate) capture: capability::ContentCaptureCapability,
 }

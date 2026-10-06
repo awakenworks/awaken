@@ -11,7 +11,8 @@
 use crate::frozen_runtime_projection::{
     FrozenBaselineRuntimeProjection, FrozenEnvironmentRuntimeProjection, ManagedContentDelivery,
 };
-use crate::mcp_material::{McpGenerationProjection, McpProjectionState};
+pub(crate) use crate::mcp_material::McpQuiescenceAdmissionFence;
+use crate::mcp_material::SessionMcpState;
 use crate::staged_resources::EnvironmentResourceReconciliation;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -146,55 +147,6 @@ impl SessionRealizationAuthority {
     }
 }
 
-/// Process-local admission fence for one exact durable suspend operation. It
-/// lives beside the MCP effect owners in the canonical Session slot; it is not
-/// durable lifecycle truth and cannot authorize checkpoint or restore.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct McpQuiescenceAdmissionFence {
-    pub operation_effect_id: String,
-    pub activity_epoch: u64,
-    pub source_effect_id: String,
-    pub source_binding: String,
-    pub generation: awaken_session_state_contract::SandboxGeneration,
-}
-
-impl McpQuiescenceAdmissionFence {
-    pub(crate) fn new(
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
-        source_effect_id: &str,
-        source_binding: &str,
-        generation: &awaken_session_state_contract::SandboxGeneration,
-    ) -> Self {
-        Self {
-            operation_effect_id: operation.effect_id.clone(),
-            activity_epoch: operation.activity_epoch,
-            source_effect_id: source_effect_id.to_owned(),
-            source_binding: source_binding.to_owned(),
-            generation: generation.clone(),
-        }
-    }
-
-    fn restored_by(
-        &self,
-        environment: &awaken_session_state_contract::SessionEnvironmentState,
-    ) -> bool {
-        match environment {
-            awaken_session_state_contract::SessionEnvironmentState::Resident {
-                binding,
-                effect_id: Some(effect_id),
-                generation: Some(generation),
-                ..
-            } => {
-                generation == &self.generation
-                    && binding != &self.source_binding
-                    && effect_id != &self.source_effect_id
-                    && effect_id != &self.operation_effect_id
-            }
-            _ => false,
-        }
-    }
-}
-
 impl SessionRuntimeSlot {
     /// Select the one Resource manifest carried by a newly authored durable
     /// Run dispatch. A prepared Session carries the aggregate's desired
@@ -225,17 +177,10 @@ impl SessionRuntimeSlot {
         &mut self,
         environment: &awaken_session_state_contract::SessionEnvironmentState,
     ) -> bool {
-        let Some(fence) = &self.mcp_quiescence_fence else {
+        let Some(fence) = self.mcp.quiescence_fence() else {
             return false;
         };
-        let local_effects_cleared = self.runtime.is_none()
-            && self.mcp.iter().all(|projection| {
-                projection.state == McpProjectionState::Removed
-                    && projection.server.is_none()
-                    && projection.native_wiring.is_none()
-                    && projection.mcp_process.is_none()
-                    && projection.staging.is_none()
-            });
+        let local_effects_cleared = self.runtime.is_none() && self.mcp.local_effects_cleared();
         if !local_effects_cleared {
             return false;
         }
@@ -291,7 +236,7 @@ impl SessionRuntimeSlot {
         if !authoritative_reopen {
             return false;
         }
-        self.mcp_quiescence_fence = None;
+        self.mcp.reopen_admission();
         true
     }
 }
@@ -376,11 +321,9 @@ pub(crate) struct SessionRuntimeSlot {
     /// The one explicitly selected automatic recall/extraction binding. This is
     /// never the authority for which standard resources are mounted.
     pub memory: Option<Arc<BoundMemory>>,
-    pub mcp: Vec<McpGenerationProjection>,
-    /// Closed before quiescence snapshots MCP owners. Only the atomic durable
-    /// projection install can reopen after proving a new exact Resident owner,
-    /// or source-free Unmaterialized plus complete local cleanup.
-    pub mcp_quiescence_fence: Option<McpQuiescenceAdmissionFence>,
+    /// The Session's MCP generation owners, quiescence fence, and frozen
+    /// attachment marker. Other Host modules use only its methods.
+    pub mcp: SessionMcpState,
     /// Current Control-issued projection authority. It is a live cache used to
     /// request renewal; durable ownership remains in the Session aggregate.
     pub realization_authority: SessionRealizationAuthority,
@@ -391,10 +334,6 @@ pub(crate) struct SessionRuntimeSlot {
     /// restart reassignment. The lease above remains the only projected fact;
     /// this notification carries no authority or parallel state.
     pub realization_changed: Arc<tokio::sync::Notify>,
-    /// Whether the last Control-frozen projection contains a nonterminal MCP
-    /// attachment. This supports lease supervision when effects live behind an
-    /// injected realizer and therefore are not stored in `mcp` locally.
-    pub has_mcp_projection: bool,
     /// The thread entered through the Session application API and its durable
     /// dispatch must therefore cross the claimed Session realization boundary.
     /// It carries no desired-state data of its own.
@@ -612,20 +551,13 @@ impl SessionRuntimeSlots {
         session: &str,
         fence: McpQuiescenceAdmissionFence,
     ) -> Result<bool, crate::HostError> {
-        self.update(session, |slot| match &slot.mcp_quiescence_fence {
-            Some(current) if current == &fence => Ok(false),
-            Some(_) => Err(crate::HostError::internal(
-                "another Session Environment quiescence fence is already installed",
-            )),
-            None => {
-                slot.mcp_quiescence_fence = Some(fence);
-                Ok(true)
-            }
-        })
+        self.update(session, |slot| slot.mcp.close_admission(fence))
+            .map_err(crate::HostError::from)
     }
 
+    #[cfg(test)]
     pub(crate) fn mcp_realization_admitted(&self, session: &str) -> bool {
-        self.read(session, |slot| slot.mcp_quiescence_fence.is_none())
+        self.read(session, |slot| slot.mcp.admits_realization())
             .unwrap_or(true)
     }
 
@@ -755,6 +687,7 @@ impl SessionRuntimeSlots {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp_material::{McpGenerationProjection, McpProjectionState};
 
     #[test]
     fn realization_authority_close_and_renewal_have_one_projection() {
@@ -893,7 +826,7 @@ mod tests {
         // the durable fence expire before the Environment receipt can commit.
         let slots = SessionRuntimeSlots::default();
         slots.update("environment-only", |slot| {
-            assert!(!slot.has_mcp_projection, "C2");
+            assert!(!slot.mcp.has_frozen_attachment(), "C2");
             slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
                 test_observed_lease(awaken_session_resource_contract::SessionRealizationLease {
                     owner: "worker".into(),

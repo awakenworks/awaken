@@ -19,7 +19,9 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
     };
     host.install_session_realization_lease(session, lease.clone())
         .unwrap();
-    let relay = crate::mcp_relay::McpRelay::for_host(Arc::downgrade(&host))
+    let relay = host
+        .mcp
+        .start_relay(Arc::downgrade(&host) as _)
         .await
         .unwrap();
     let (upstream, seen) = crate::test_mcp::start(Some("Bearer test-relay-secret")).await;

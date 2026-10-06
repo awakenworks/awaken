@@ -1401,7 +1401,7 @@ impl SharedHost {
             // Runtime construction consumes effects staged by the one public MCP
             // realization lifecycle.  It must not start a relay or recreate routes:
             // after restart, durable rehydration stages and publishes them first.
-            let relay = self.mcp.mcp_relay.get();
+            let relay = self.mcp.relay();
             let mut acp_mcp_servers = if is_acp {
                 let cli = match &execution_backend {
                     awaken_runtime_contract::resolved::Backend::Acp(backend) => backend.cli(),
