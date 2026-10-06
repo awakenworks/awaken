@@ -101,6 +101,7 @@ pub(super) fn verify_interrupted_pod_projection(
     scope: &str,
     plan: &ContainerPlan,
     predecessor: &ContainerEffectFence,
+    claim_uid: Option<&str>,
     observed: &Pod,
 ) -> Result<(), RuntimeError> {
     let annotations = observed.metadata.annotations.as_ref();
@@ -133,6 +134,9 @@ pub(super) fn verify_interrupted_pod_projection(
     let runtime_id = runtime.realization_runtime_id(scope)?;
     let mut expected = runtime.pod_for_effect(&runtime_id, plan, Some(&original_fence));
     stamp_sandbox_release_annotations(&mut expected, scope, &plan.image);
+    if let Some(uid) = claim_uid {
+        continuation::bind_claim_uid(&mut expected, uid);
+    }
     runtime.stamp_effect_evidence(&mut expected, &context, &realization);
     stamp_pod_realization(&mut expected)?;
     restore::verify_pod_projection(&expected, observed, None)

@@ -1151,6 +1151,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         let admit =
             || pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| Ok(()));
         admit()?;
+        let reconstructed = handle.is_none();
         let recovered_handle;
         let handle = match handle {
             Some(handle) => handle,
@@ -1265,6 +1266,15 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     adoption.handle,
                     None,
                     ContainerCleanupState::physical_cleanup_only(),
+                    ContainerObservationPurpose::TerminalCleanup,
+                    &admit,
+                )
+                .await
+                .map(Some),
+            pc::SandboxObservation::Provisioning if reconstructed => self
+                .adopt_observed_container_with_spec(
+                    adoption.handle,
+                    adoption.spec,
                     ContainerObservationPurpose::TerminalCleanup,
                     &admit,
                 )

@@ -872,7 +872,19 @@ impl K8sRuntime {
         let effect_fence = context.effect_fence.ok_or_else(|| {
             backend("Kubernetes retained continuation creation requires a durable effect fence")
         })?;
-        let runtime_id = self.realization_runtime_id(context.scope)?;
+        self.desired_create_claim_for_effect(context.scope, plan, effect_fence)
+    }
+
+    fn desired_create_claim_for_effect(
+        &self,
+        scope: &str,
+        plan: &ContainerPlan,
+        effect_fence: &ContainerEffectFence,
+    ) -> Result<Option<PersistentVolumeClaim>, RuntimeError> {
+        if !continuation::claim_required(plan, self.continuation_volume.is_some()) {
+            return Ok(None);
+        }
+        let runtime_id = self.realization_runtime_id(scope)?;
         let config = self
             .continuation_volume
             .as_ref()
@@ -897,15 +909,18 @@ impl K8sRuntime {
             return continuation::create_claim_admission(expected_fence, None);
         };
         let observed_fence = pod_effect_fence(observed.metadata.annotations.as_ref())?;
-        continuation::create_claim_admission(
+        let admission = continuation::create_claim_admission(
             expected_fence,
             Some(continuation::CreateClaimObservation {
                 effect_fence: observed_fence.as_ref(),
                 uid_present: observed.metadata.uid.is_some(),
                 terminating: observed.metadata.deletion_timestamp.is_some(),
-                realization_matches: realization::realization_digest_matches(desired, observed)?,
             }),
-        )
+        )?;
+        // First Create, 409 replay and handle-free terminal reconstruction
+        // share one complete immutable PVC projection verifier.
+        restore::verify_claim_projection(desired, observed, None)?;
+        Ok(admission)
     }
 
     async fn preflight_create_claim(

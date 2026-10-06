@@ -124,7 +124,7 @@ mod tests {
     use super::*;
     use crate::ContainerRuntime as _;
     use http::Request;
-    use k8s_openapi::api::core::v1::ConfigMap;
+    use k8s_openapi::api::core::v1::{ConfigMap, PersistentVolumeClaim};
     use kube::Api;
     use kube::api::PostParams;
     use serde_json::json;
@@ -601,36 +601,42 @@ mod tests {
         pod.metadata.uid = Some("old-uid".into());
         pod.metadata.resource_version = Some("7".into());
         let current = Arc::new(Mutex::new(pod));
+        let pod_present = Arc::new(AtomicBool::new(true));
         let calls = Arc::new(AtomicUsize::new(0));
-        let claim_present = Arc::new(AtomicBool::new(false));
+        let current_claim = Arc::new(Mutex::new(None::<PersistentVolumeClaim>));
+        let current_volume = Arc::new(Mutex::new(None::<crate::K8sContinuationVolume>));
         let service = tower::service_fn({
             let current = current.clone();
+            let pod_present = pod_present.clone();
             let calls = calls.clone();
-            let claim_present = claim_present.clone();
+            let current_claim = current_claim.clone();
             let name = name.clone();
             move |request: Request<Body>| {
                 let current = current.clone();
+                let pod_present = pod_present.clone();
                 let calls = calls.clone();
-                let claim_present = claim_present.clone();
+                let current_claim = current_claim.clone();
                 let name = name.clone();
                 async move {
                     assert_eq!(request.method(), Method::GET, "no new Create");
                     calls.fetch_add(1, Ordering::SeqCst);
                     let is_pod =
                         request.uri().path() == format!("/api/v1/namespaces/default/pods/{name}");
-                    let (status, body) = if is_pod {
+                    let (status, body) = if is_pod && pod_present.load(Ordering::SeqCst) {
                         (
                             200,
                             serde_json::to_value(&*current.lock().unwrap()).unwrap(),
                         )
-                    } else if claim_present.load(Ordering::SeqCst) {
+                    } else if is_pod {
                         (
-                            200,
+                            404,
                             json!({
-                                "apiVersion":"v1", "kind":"PersistentVolumeClaim",
-                                "metadata":{"name":"orphan", "namespace":"default", "uid":"claim-uid"}
+                                "apiVersion":"v1", "kind":"Status", "status":"Failure",
+                                "code":404, "reason":"NotFound"
                             }),
                         )
+                    } else if let Some(claim) = current_claim.lock().unwrap().as_ref() {
+                        (200, serde_json::to_value(claim).unwrap())
                     } else {
                         (
                             404,
@@ -669,6 +675,7 @@ mod tests {
         let runtime = |tickets| {
             let mut runtime = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
             runtime.clients.control = direct.clone();
+            runtime.continuation_volume = current_volume.lock().unwrap().clone();
             runtime
                 .with_create_transport(Arc::new(RecordingBroker {
                     requests: Mutex::new(Vec::new()),
@@ -713,7 +720,15 @@ mod tests {
             "J2 same name with foreign UID"
         );
         current.lock().unwrap().metadata.uid = Some("old-uid".into());
-        claim_present.store(true, Ordering::SeqCst);
+        *current_claim.lock().unwrap() = Some(PersistentVolumeClaim {
+            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+                name: Some("orphan".into()),
+                namespace: Some("default".into()),
+                uid: Some("claim-uid".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
         assert_eq!(
             runtime(vec![created.clone()])
                 .missing_handle_terminal_evidence("scope", &plan, Some(&fence))
@@ -722,8 +737,8 @@ mod tests {
             crate::MissingHandleTerminalEvidence::Unknown,
             "J2 an unbound PVC is still a physical participant"
         );
-        claim_present.store(false, Ordering::SeqCst);
-        let mut other = created;
+        *current_claim.lock().unwrap() = None;
+        let mut other = created.clone();
         other.request.resource = "configmaps".into();
         assert_eq!(
             runtime(vec![other.clone()])
@@ -747,8 +762,177 @@ mod tests {
         );
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            6,
+            8,
             "J2 other kind rejects before GET"
+        );
+
+        // Retained-volume decision table: R1=joined original Pod and PVC
+        // tickets + both original UIDs + immutable Pod/PVC projections and
+        // effect fence => one typed Pod/PVC handle for the existing cleanup
+        // CAS. R2=missing/foreign/terminating PVC, missing PVC ticket, altered
+        // PVC spec, or altered Pod claim binding => Unknown and zero writes.
+        // R3=PVC ticket without its original Pod => Unknown; a live claim is
+        // never converted to absence by a Pod 404 or a partial Create join.
+        let volume = crate::K8sContinuationVolume {
+            storage_class_name: None,
+            size: "1Gi".into(),
+        };
+        *current_volume.lock().unwrap() = Some(volume.clone());
+        let mut retained = plan.clone();
+        retained.filesystem_continuity =
+            awaken_provisioning_contract::FilesystemContinuity::Retained;
+        let retained_base =
+            K8sRuntime::for_test("127.0.0.1:1".parse().unwrap()).with_continuation_volume(volume);
+        let mut claim = retained_base
+            .desired_create_claim_for_effect("scope", &retained, &fence)
+            .unwrap()
+            .unwrap();
+        claim.metadata.namespace = Some("default".into());
+        claim.metadata.uid = Some("claim-uid".into());
+        claim.metadata.resource_version = Some("1".into());
+        *current_claim.lock().unwrap() = Some(claim.clone());
+        let mut retained_pod = retained_base.pod_for_effect(&runtime_id, &retained, Some(&fence));
+        crate::k8s_package_realization::stamp_sandbox_release_annotations(
+            &mut retained_pod,
+            "scope",
+            &retained.image,
+        );
+        super::super::continuation::bind_claim_uid(&mut retained_pod, "claim-uid");
+        retained_base.stamp_effect_evidence(&mut retained_pod, &context, &fingerprint);
+        super::super::stamp_pod_realization(&mut retained_pod).unwrap();
+        retained_pod.metadata.namespace = Some("default".into());
+        retained_pod.metadata.uid = Some("old-uid".into());
+        retained_pod.metadata.resource_version = Some("7".into());
+        *current.lock().unwrap() = retained_pod.clone();
+        let claim_name = super::super::continuation_claim_for_pod(&name).unwrap();
+        let claim_ticket = super::super::CreateTicket {
+            request: super::super::CreateTicketRequest::new(
+                "old-group",
+                "persistentvolumeclaims",
+                "default",
+                &claim_name,
+                "b".repeat(64),
+            )
+            .unwrap(),
+            status: super::super::TicketStatus::Finished(super::super::TicketResult::Created {
+                uid: "claim-uid".into(),
+            }),
+            isolation_id: String::new(),
+            isolation_pending: false,
+        };
+        let joined = || vec![claim_ticket.clone(), created.clone()];
+        let exact = crate::MissingHandleTerminalEvidence::ExactIncarnation {
+            container_id: name.clone(),
+            runtime_handle: crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+                pod_uid: "old-uid".into(),
+                claim_uid: Some("claim-uid".into()),
+            },
+        };
+        assert_eq!(
+            runtime(joined())
+                .missing_handle_terminal_evidence("scope", &retained, Some(&fence))
+                .await
+                .unwrap(),
+            exact,
+            "R1"
+        );
+        for tickets in [vec![created.clone()], vec![claim_ticket.clone()]] {
+            assert_eq!(
+                runtime(tickets)
+                    .missing_handle_terminal_evidence("scope", &retained, Some(&fence))
+                    .await
+                    .unwrap(),
+                crate::MissingHandleTerminalEvidence::Unknown,
+                "R2/R3 partial participant join"
+            );
+        }
+        let mut foreign = claim.clone();
+        foreign.metadata.uid = Some("new-uid".into());
+        *current_claim.lock().unwrap() = Some(foreign);
+        assert_eq!(
+            runtime(joined())
+                .missing_handle_terminal_evidence("scope", &retained, Some(&fence))
+                .await
+                .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unknown,
+            "R2 same-name foreign PVC UID"
+        );
+        let mut deleting = claim.clone();
+        deleting.metadata.deletion_timestamp =
+            Some(serde_json::from_value(json!("2026-10-07T00:00:00Z")).unwrap());
+        *current_claim.lock().unwrap() = Some(deleting);
+        assert_eq!(
+            runtime(joined())
+                .missing_handle_terminal_evidence("scope", &retained, Some(&fence))
+                .await
+                .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unknown,
+            "R2 terminating PVC cannot be adopted as live continuity"
+        );
+        *current_claim.lock().unwrap() = Some(claim.clone());
+        current_claim
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .spec
+            .as_mut()
+            .unwrap()
+            .resources
+            .as_mut()
+            .unwrap()
+            .requests
+            .as_mut()
+            .unwrap()
+            .insert(
+                "storage".into(),
+                k8s_openapi::apimachinery::pkg::api::resource::Quantity("2Gi".into()),
+            );
+        assert_eq!(
+            runtime(joined())
+                .missing_handle_terminal_evidence("scope", &retained, Some(&fence))
+                .await
+                .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unknown,
+            "R2 copied digest cannot authorize changed PVC spec"
+        );
+        *current_claim.lock().unwrap() = Some(claim.clone());
+        super::super::continuation::bind_claim_uid(&mut current.lock().unwrap(), "foreign-uid");
+        assert_eq!(
+            runtime(joined())
+                .missing_handle_terminal_evidence("scope", &retained, Some(&fence))
+                .await
+                .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unknown,
+            "R2 Pod binds another PVC UID"
+        );
+        *current.lock().unwrap() = retained_pod;
+        *current_claim.lock().unwrap() = None;
+        assert_eq!(
+            runtime(joined())
+                .missing_handle_terminal_evidence("scope", &retained, Some(&fence))
+                .await
+                .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unknown,
+            "R2 original PVC disappeared"
+        );
+        *current_claim.lock().unwrap() = Some(claim);
+        pod_present.store(false, Ordering::SeqCst);
+        assert_eq!(
+            runtime(joined())
+                .missing_handle_terminal_evidence("scope", &retained, Some(&fence))
+                .await
+                .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unknown,
+            "R3 Pod 404 cannot erase the original live claim"
+        );
+        assert_eq!(
+            runtime(vec![claim_ticket])
+                .missing_handle_terminal_evidence("scope", &retained, Some(&fence))
+                .await
+                .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unknown,
+            "R3 PVC-only Create cannot yield absence or a cleanup handle"
         );
     }
 }

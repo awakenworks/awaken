@@ -9,6 +9,7 @@ use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
     WorkerState,
 };
+#[cfg(feature = "test-support")]
 use awaken_worker_registry::MemoryWorkerDirectory;
 use awaken_worker_registry::{PostgresWorkerDirectory, SqliteWorkerDirectory};
 use std::sync::Arc;
@@ -109,7 +110,7 @@ async fn sqlite_registry_conforms_and_reopens() {
     assert_registry(store.clone(), "dwr-sqlite").await;
     assert_create_ledger_anchor(
         store.clone(),
-        Arc::new(SqliteWorkerDirectory::open(path).unwrap()),
+        Arc::new(SqliteWorkerDirectory::open(path).await.unwrap()),
         "sqlite",
     )
     .await;

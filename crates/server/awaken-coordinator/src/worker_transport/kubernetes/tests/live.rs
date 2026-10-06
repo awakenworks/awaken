@@ -543,7 +543,9 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     )
     .unwrap();
     let (address, store, server) = coordinator(files.path(), &transport, clock.clone()).await;
-    let reopened = SqliteWorkerDirectory::open(files.path().join("registry.sqlite")).unwrap();
+    let reopened = SqliteWorkerDirectory::open(files.path().join("registry.sqlite"))
+        .await
+        .unwrap();
     assert_eq!(
         reopened
             .incarnation(&worker.snapshot.identity)

@@ -67,12 +67,15 @@ async fn exact_created_pod_reenters_the_existing_handle_bound_terminal_path() {
     // removal after preparation; E2 C2
     // with a rich spec refuses before observation; E3 absent C4 refuses before
     // joining provider evidence. Rules P1=C1+C2+C3+C4->E1,
-    // P2=C1+C2+!C3+C4->E2, P3=C1+C2+C3+!C4->E3.
+    // P2=C1+C2+!C3+C4->E2, P3=C1+C2+C3+!C4->E3. P4=C1+C2
+    // with an original PVC UID and a still-Provisioning Pod -> terminal
+    // adoption through the same disposal owner; an ordinary durable handle
+    // with Provisioning has no such join and remains NotReady.
     let runtime = Arc::new(FakeRuntime::default());
     {
         let mut state = runtime.st.lock().unwrap();
         state.native_memory = true; // K8s reconstructs without host-bind staging.
-        state.recovered_created_pod = Some(("exact-pod".into(), "pod-uid".into()));
+        state.recovered_created_pod = Some(("exact-pod".into(), "pod-uid".into(), None));
     }
     let provider = provider_without_broker(runtime.clone());
     let mut empty = spec("created-pod-terminal");
@@ -138,6 +141,67 @@ async fn exact_created_pod_reenters_the_existing_handle_bound_terminal_path() {
         "P1 the existing removal edge targets one exact locator"
     );
     let observations_after_valid_cleanup = runtime.st.lock().unwrap().observations;
+
+    let retained_runtime = Arc::new(FakeRuntime::default());
+    {
+        let mut state = retained_runtime.st.lock().unwrap();
+        state.native_memory = true;
+        state.recovered_created_pod = Some((
+            "exact-pod".into(),
+            "pod-uid".into(),
+            Some("claim-uid".into()),
+        ));
+    }
+    retained_runtime.set_observation(pc::SandboxObservation::Provisioning);
+    let retained_provider = provider_without_broker(retained_runtime.clone());
+    let mut retained = empty.clone();
+    retained.filesystem_continuity = pc::FilesystemContinuity::Retained;
+    let retained_environment =
+        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+            &retained_provider,
+            &retained,
+            None,
+            Some(&create),
+            &terminal,
+            &authority,
+        )
+        .await
+        .unwrap()
+        .expect("P4 exact created Pod/PVC may still be Provisioning");
+    let retained_handle = retained_environment.handle().clone();
+    assert!(matches!(
+        retained_handle.container_payload().unwrap().runtime_handle.as_ref(),
+        Some(crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+            pod_uid,
+            claim_uid: Some(claim_uid),
+        }) if pod_uid == "pod-uid" && claim_uid == "claim-uid"
+    ));
+    let prepared = retained_environment
+        .prepare_disposal_for_effect(&terminal, &authority)
+        .await
+        .expect("P4 original cleanup preparation");
+    let removal = disposal_authorization(&prepared);
+    retained_environment
+        .dispose_for_effect(
+            &removal,
+            &pc::test_support::EffectAuthority::new(removal.effect_fence()),
+        )
+        .await
+        .expect("P4 original physical disposal");
+    assert_eq!(retained_runtime.st.lock().unwrap().removals.len(), 1);
+    assert!(
+        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+            &retained_provider,
+            &retained,
+            Some(&retained_handle),
+            Some(&create),
+            &terminal,
+            &authority,
+        )
+        .await
+        .is_err(),
+        "P4 ordinary Provisioning cannot borrow the missing-handle join"
+    );
 
     let mut rich = empty.clone();
     rich.mounts = spec("created-pod-terminal").mounts;

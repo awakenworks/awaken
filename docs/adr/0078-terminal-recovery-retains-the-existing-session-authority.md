@@ -678,3 +678,45 @@ The signed Worker-side Create client is assembled by the existing
 longer depends on the concrete Sandbox adapter across bounded contexts. The
 same client, endpoint, Registry identity and provider ticket ledger remain
 authoritative; this placement change adds no recovery or cleanup owner.
+
+## Amendment 2026-10-07: reconstruct one exact retained Pod/PVC pair
+
+The existing Worker-incarnation Create ledger and exact original Worker stop
+remain the request-lifetime authority. For a frozen plan with no package, bind,
+Memory or control participant, a complete join may contain one Created
+canonical PVC ticket and one Created canonical Pod ticket. The K8s Sandbox
+adapter requires both original UIDs still live, the PVC's original effect
+identity and complete immutable storage projection, and the Pod's complete
+security projection with its binding to that exact PVC UID. It then supplies
+the existing terminal owner with a temporary typed V2 handle containing both
+UIDs. A still-Provisioning Pod may be adopted for terminal cleanup only after
+this complete reconstruction; an ordinary handle does not gain that admission.
+The existing Pod resourceVersion/finalizer CAS serializes PVC deletion against
+Rebuild, and UID-fenced disposal must finish before Session writes its cleanup
+receipt. No Flow state, provider queue or second PVC deletion path is added.
+First Create, 409 replay and terminal reconstruction use the same typed PVC
+projection verifier; a copied digest cannot hide a changed storage request.
+The frozen adoption fingerprint also binds direct versus brokered Create
+transport. A replacement cannot upgrade a direct-created Pod into brokered
+cross-process evidence; the live fixture must use brokered mode on both sides.
+
+One missing or InFlight ticket, a missing/terminating/foreign PVC, a changed
+storage projection or Pod binding, a vanished original Pod, any unaccounted
+Kind, and a live PVC with Pod 404 all remain Unknown. PVC-only recovery still
+needs a provider-side atomic exclusion proof against a delayed Pod Create;
+name isolation or repeated 404 alone cannot supply it. Worker-wide grouping
+can conservatively block this pair when unrelated Creates exist. Group
+refinement requires its own concurrency counterexample and migration design.
+
+The Worker process is inside the trusted runtime boundary: the current Create
+broker verifies Worker identity, collection path and ticket admission, but does
+not authorize the full Worker-supplied object against a frozen Session plan.
+Sandbox workloads must not receive its token. This amendment repairs crash and
+response-loss recovery; it does not claim confinement of a compromised Worker.
+The recovery decision itself uses typed Pod, PVC, plan, fence, ticket and
+continuation handle data. The broker's existing free JSON is confined to the
+HTTP forwarding boundary; replacing it requires one coordinated migration of
+the six-Kind Worker/Create wire and kube defaulting rules, not a parallel
+decoder inside recovery. Provider tests cover the pair's positive and negative
+UID/projection rows and reuse of the terminal disposal owner. Real API and
+product-topology acceptance remain separate evidence gates.

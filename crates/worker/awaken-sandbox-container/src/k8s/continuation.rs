@@ -35,7 +35,6 @@ pub(super) struct CreateClaimObservation<'a> {
     pub(super) effect_fence: Option<&'a ContainerEffectFence>,
     pub(super) uid_present: bool,
     pub(super) terminating: bool,
-    pub(super) realization_matches: bool,
 }
 
 pub(super) fn create_claim_admission(
@@ -50,11 +49,6 @@ pub(super) fn create_claim_admission(
     }
     if observed.terminating {
         return Err(backend("Kubernetes continuation PVC is terminating"));
-    }
-    if !observed.realization_matches {
-        return Err(backend(
-            "existing Kubernetes continuation PVC belongs to a different realization",
-        ));
     }
     let Some(observed_fence) = observed.effect_fence else {
         return Err(backend(
@@ -1318,16 +1312,16 @@ mod tests {
         /* Claim-only create recovery cause/effect table. Causes: C1 the
          * canonical retained PVC is absent/present; C2 an observed PVC has an
          * immutable UID or is malformed; C3 it is live/terminating; C4 its
-         * realization digest equals/differs from the desired claim; C5 its
-         * persisted aggregate effect is exact, missing, foreign generation, or
-         * newer than the caller's asserted expiry. Effects: E1 an absent claim
-         * may be created; E2 only an exact same-effect claim may be reused after
-         * response loss; E3 every incomplete, foreign, stale-caller, terminating,
-         * or different-realization row rejects without a participant mutation.
-         * Rules: CC1 !C1=>E1; CC2 C1+UID+live+exact(C4)+exact-or-renewed(C5)=>E2;
-         * CC3 every other C1 row=>E3. Rebuild is excluded: it remains authorized
-         * only by the source V2 handle's claim UID in
-         * `rebuild_continuation_expectation`. */
+         * persisted aggregate effect is exact, missing, foreign generation,
+         * or newer than the caller's asserted expiry. Effects: E1 an absent
+         * claim may be created; E2 only an exact same-effect claim may be
+         * reused after response loss; E3 every incomplete, foreign,
+         * stale-caller or terminating row rejects without mutation. Rules:
+         * CC1 !C1=>E1; CC2 C1+UID+live+exact-or-renewed(C4)=>E2;
+         * CC3 every other C1 row=>E3. The caller separately runs the sole
+         * typed full PVC projection verifier before accepting E2; the runtime
+         * test owns the changed-spec decision row. Rebuild is excluded: it
+         * needs the source V2 handle's claim UID. */
         let expected =
             pc::SandboxEffectFence::new("create-1", "owner-1", "runtime-1", 7, 200).unwrap();
         let original =
@@ -1341,7 +1335,6 @@ mod tests {
             effect_fence: Some(&original),
             uid_present: true,
             terminating: false,
-            realization_matches: true,
         };
         assert_eq!(
             create_claim_admission(&expected, Some(exact)).unwrap(),
@@ -1360,10 +1353,6 @@ mod tests {
             },
             CreateClaimObservation {
                 terminating: true,
-                ..exact
-            },
-            CreateClaimObservation {
-                realization_matches: false,
                 ..exact
             },
             CreateClaimObservation {
