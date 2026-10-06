@@ -27,7 +27,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use awaken_api_contract::CursorPage;
 use awaken_session_application_contract::{
     CursorParams, EventForwardingSink, OwnerScopedRunApplication, Pending, RunApplication,
-    RunApplicationError, RunResume, paginate_history,
+    RunApplicationError, RunMode, RunResume, paginate_history,
 };
 use awaken_tenancy::{ResolvedResourceId, WorkspaceScope};
 
@@ -38,12 +38,6 @@ use crate::types::{AiSdkChatRequest, UIStreamEvent, attach_usage};
 type Runtime = Arc<dyn RunApplication>;
 type ScopedRuntime = Arc<dyn OwnerScopedRunApplication>;
 type RuntimeState = (Runtime, RunMode);
-
-#[derive(Clone)]
-enum RunMode {
-    Local,
-    OwnerScoped(ScopedRuntime),
-}
 
 struct RequestOwner {
     scope: String,
@@ -107,7 +101,10 @@ where
 fn router_with_ports(runtime: Runtime, mode: RunMode) -> Router {
     Router::new()
         .route("/v1/ai-sdk/chat", post(chat))
-        .route("/v1/ai-sdk/threads/{thread_id}/runs", post(chat_threaded))
+        .route(
+            "/v1/ai-sdk/threads/{thread_id}/runs",
+            post(chat_threaded).delete(interrupt_threaded),
+        )
         .route("/v1/ai-sdk/agents/{agent_id}/runs", post(chat_agent_scoped))
         .route(
             "/v1/ai-sdk/threads/{thread_id}/messages",
@@ -137,6 +134,27 @@ async fn chat_threaded(
             .unwrap_or(thread_id),
     );
     run(rt, payload, RequestOwner::new(owner, mode)).await
+}
+
+/// An explicit browser Stop is a Run command, unlike a passive SSE hang-up.
+/// The application guard has already bound the presented path Thread to this
+/// token's exact managed Session before the route sees `ResolvedResourceId`.
+async fn interrupt_threaded(
+    State((rt, _)): State<RuntimeState>,
+    Path(thread_id): Path<String>,
+    resolved: Option<Extension<ResolvedResourceId>>,
+    _owner: Extension<WorkspaceScope>,
+) -> Response {
+    let thread = resolved
+        .map(|Extension(thread)| thread.0)
+        .unwrap_or(thread_id);
+    if thread.trim().is_empty() {
+        return query_error(RunApplicationError::bad_request("thread id is required"));
+    }
+    match rt.interrupt(&thread).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => query_error(error),
+    }
 }
 
 async fn chat_agent_scoped(
@@ -285,6 +303,7 @@ fn stream_command(
         // Drive the turn on its own task so live events drain concurrently. The
         // sink lives inside that future; when the turn ends it drops, closing
         // `live_rx` and ending the drain loop.
+        let disconnect_mode = owner.mode.clone();
         let mut turn = tokio::spawn(async move {
             match (command, &owner.mode) {
                 (StreamCommand::Turn { agent, messages }, RunMode::OwnerScoped(port)) => {
@@ -379,10 +398,12 @@ fn stream_command(
             }
         }
         if disconnected {
-            // The client hung up: cancel the in-flight turn so it ends promptly
-            // instead of running to completion detached (a token leak). The
-            // cooperative cancel lets the run commit cleanly; no hard abort needed.
-            let _ = rt_usage.interrupt(&thread_usage).await;
+            // The shared Run port distinguishes a connection-bound local turn
+            // from a durable owner-scoped Run. Losing this best-effort stream
+            // alone must never cancel the latter's physical attempt.
+            let _ = disconnect_mode
+                .on_stream_disconnect(rt_usage.as_ref(), &thread_usage)
+                .await;
             return;
         }
         let mut close = match turn_result.expect("turn completes before stream closes") {
