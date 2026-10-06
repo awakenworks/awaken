@@ -12,6 +12,7 @@ layer = "infrastructure"
 authority = "env"
 
 [dependencies]
+awaken-sql-storage = { workspace = true, features = ["postgres"] }
 # The EnvRegistry port + neutral EnvItem this crate implements a durable backend for
 # (SQLite embedded / Postgres distributed, at parity).
 awaken-environment-contract.workspace = true

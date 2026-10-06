@@ -12,6 +12,7 @@ layer = "infrastructure"
 authority = "captured-content"
 
 [dependencies]
+awaken-sql-storage = { workspace = true, optional = true }
 awaken-runtime-contract.workspace = true
 # The one wall-clock port: capture and erasure-fence stamps.
 awaken-time.workspace = true
@@ -33,7 +34,7 @@ uuid = { version = "1", features = ["v4"] }
 default = []
 # Volatile privacy-state authority used only by tests and scenario fixtures.
 test-support = []
-postgres = ["sqlx/postgres"]
+postgres = ["sqlx/postgres", "dep:awaken-sql-storage", "awaken-sql-storage/postgres"]
 
 [[test]]
 name = "repo_conformance"

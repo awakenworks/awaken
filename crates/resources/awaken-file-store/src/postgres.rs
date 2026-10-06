@@ -114,7 +114,10 @@ pub struct PgFileStore {
 impl PgFileStore {
     /// Connect to `url` and ensure the schema exists.
     pub async fn connect(url: &str) -> Result<Self, FileStoreError> {
-        let pool = PgPool::connect(url).await.map_err(e)?;
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
+            .await
+            .map_err(e)?;
         let store = Self { pool };
         store.ensure_schema().await?;
         Ok(store)
@@ -122,7 +125,10 @@ impl PgFileStore {
 
     /// Connect to an already-migrated schema without executing DDL.
     pub async fn connect_existing(url: &str) -> Result<Self, FileStoreError> {
-        let pool = PgPool::connect(url).await.map_err(e)?;
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
+            .await
+            .map_err(e)?;
         Self::with_existing_pool(pool).await
     }
 

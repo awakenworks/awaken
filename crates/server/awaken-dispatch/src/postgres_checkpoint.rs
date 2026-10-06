@@ -25,7 +25,7 @@ pub struct PostgresStreamCheckpointStore {
 impl PostgresStreamCheckpointStore {
     /// Connect and apply the shared runtime-dispatch migration bundle.
     pub async fn connect(url: &str, max_connections: u32) -> Result<Self, StoreError> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .max_connections(max_connections)
             .connect(url)
             .await
@@ -35,7 +35,7 @@ impl PostgresStreamCheckpointStore {
 
     /// Connect to the already-migrated shared runtime-dispatch schema.
     pub async fn connect_existing(url: &str, max_connections: u32) -> Result<Self, StoreError> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .max_connections(max_connections)
             .connect(url)
             .await

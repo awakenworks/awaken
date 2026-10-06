@@ -19,6 +19,7 @@ test-support = []
 [dependencies]
 awaken-sqlite-pool.workspace = true
 awaken-worker-contract.workspace = true
+awaken-sql-storage = { workspace = true, features = ["postgres"] }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -12,6 +12,7 @@ layer = "infrastructure"
 authority = "model-catalog"
 
 [dependencies]
+awaken-sql-storage = { workspace = true, optional = true }
 awaken-model-catalog.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
@@ -31,7 +32,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 default = []
 test-support = ["awaken-model-catalog/test-support"]
 sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:awaken-sqlite-pool"]
-postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/json"]
+postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/json", "dep:awaken-sql-storage", "awaken-sql-storage/postgres"]
 
 [[test]]
 name = "repo_conformance"

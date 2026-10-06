@@ -17,21 +17,30 @@ pub(super) struct PostgresApplicationAccessRepository {
 
 impl PostgresApplicationAccessRepository {
     pub(super) async fn migrate(url: &str) -> Result<(), ApplicationAccessRepositoryError> {
-        let pool = PgPool::connect(url).await.map_err(unavailable)?;
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
+            .await
+            .map_err(unavailable)?;
         let result = Self::migrate_pool(&pool).await;
         pool.close().await;
         result
     }
 
     pub(super) async fn connect(url: &str) -> Result<Self, ApplicationAccessRepositoryError> {
-        let pool = PgPool::connect(url).await.map_err(unavailable)?;
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
+            .await
+            .map_err(unavailable)?;
         Self::with_pool(pool).await
     }
 
     pub(super) async fn connect_existing(
         url: &str,
     ) -> Result<Self, ApplicationAccessRepositoryError> {
-        let pool = PgPool::connect(url).await.map_err(unavailable)?;
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
+            .await
+            .map_err(unavailable)?;
         Self::with_existing_pool(pool).await
     }
 

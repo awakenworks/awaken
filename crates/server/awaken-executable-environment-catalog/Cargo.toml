@@ -12,6 +12,7 @@ layer = "infrastructure"
 authority = "executable-environment-registration"
 
 [dependencies]
+awaken-sql-storage = { workspace = true, features = ["postgres"] }
 awaken-executable-environment-contract.workspace = true
 awaken-durable-projection.workspace = true
 awaken-environment-contract.workspace = true

@@ -33,7 +33,8 @@ pub enum PgStoreError {
 }
 
 async fn connect_migrated(url: &str) -> Result<PgPool, PgStoreError> {
-    let pool = PgPool::connect(url)
+    let pool = awaken_sql_storage::postgres_pool_options()
+        .connect(url)
         .await
         .map_err(|e| PgStoreError::Connect(e.to_string()))?;
     pool_migrated(pool).await
@@ -77,7 +78,8 @@ impl PgDataSubjectRepo {
 
     /// Connect to a schema owned by the deployment migration command.
     pub async fn connect_existing(url: &str) -> Result<Self, PgStoreError> {
-        let pool = PgPool::connect(url)
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
             .await
             .map_err(|error| PgStoreError::Connect(error.to_string()))?;
         Self::with_existing_pool(pool).await

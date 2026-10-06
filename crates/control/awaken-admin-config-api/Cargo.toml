@@ -12,6 +12,7 @@ layer = "interface"
 authority = "admin-config"
 
 [dependencies]
+awaken-sql-storage = { workspace = true, optional = true }
 awaken-model-catalog.workspace = true
 awaken-credential-vault.workspace = true
 awaken-credential-contract.workspace = true
@@ -63,7 +64,7 @@ test-support = [
 # SQLite-backed admin stores (`sqlite::SqliteAdminStore`), ADR-0043 sqlite-repos.
 sqlite = ["dep:awaken-sqlite-pool", "dep:sqlx"]
 # Postgres-backed admin store (`postgres::PostgresAdminStore`), ADR-0043.
-postgres = ["dep:sqlx"]
+postgres = ["dep:sqlx", "dep:awaken-sql-storage", "awaken-sql-storage/postgres"]
 # Emit JSON Schema for the admin config DTOs (drives TS-contract generation,
 # ADR-0043). Enables the domains' own `schema` features.
 schema = [

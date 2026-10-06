@@ -19,7 +19,6 @@ use std::time::Duration;
 
 use awaken_scoped_migration::postgres::PostgresMigrationRunner;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
-use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 
 use crate::config::{OperatingMode, ResolvedDeployment, ResourceStoreBackend};
@@ -571,7 +570,7 @@ pub(crate) fn has_role_owned_local_persistence(deployment: &ResolvedDeployment) 
 }
 
 async fn connect_target(target: &InstallationTarget) -> Result<PgPool, String> {
-    PgPoolOptions::new()
+    awaken_sql_storage::postgres_pool_options()
         .max_connections(1)
         .acquire_timeout(Duration::from_secs(5))
         .connect(&target.url)

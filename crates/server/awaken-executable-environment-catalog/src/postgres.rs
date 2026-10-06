@@ -372,7 +372,10 @@ impl PostgresExecutableEnvironmentRegistrar {
         url: &str,
         catalog: Arc<ExecutableEnvironmentCatalog>,
     ) -> Result<Self, ExecutableEnvironmentRegistrationError> {
-        let pool = PgPool::connect(url).await.map_err(storage)?;
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
+            .await
+            .map_err(storage)?;
         Self::with_pool(pool, catalog).await
     }
 
@@ -393,7 +396,10 @@ impl PostgresExecutableEnvironmentRegistrar {
         url: &str,
         catalog: Arc<ExecutableEnvironmentCatalog>,
     ) -> Result<Self, ExecutableEnvironmentRegistrationError> {
-        let pool = PgPool::connect(url).await.map_err(storage)?;
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
+            .await
+            .map_err(storage)?;
         Self::with_existing_pool(pool, catalog).await
     }
 

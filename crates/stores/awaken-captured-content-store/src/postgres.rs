@@ -25,7 +25,8 @@ use crate::schema::{COORDINATOR_CAPTURE_PREFIX, coordinator_data_capture_bundle}
 const NS: &str = COORDINATOR_CAPTURE_PREFIX;
 
 async fn connect_migrated(url: &str) -> Result<PgPool, PgStoreError> {
-    let pool = PgPool::connect(url)
+    let pool = awaken_sql_storage::postgres_pool_options()
+        .connect(url)
         .await
         .map_err(|error| PgStoreError::Connect(error.to_string()))?;
     pool_migrated(pool).await
@@ -81,7 +82,8 @@ impl PgCapturedContentStore {
         url: &str,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, PgStoreError> {
-        let pool = PgPool::connect(url)
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
             .await
             .map_err(|error| PgStoreError::Connect(error.to_string()))?;
         Self::with_existing_pool(pool, clock).await

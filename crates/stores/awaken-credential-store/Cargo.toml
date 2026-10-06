@@ -12,6 +12,7 @@ layer = "infrastructure"
 authority = "credential-vault"
 
 [dependencies]
+awaken-sql-storage = { workspace = true, optional = true }
 awaken-credential-vault.workspace = true
 awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true
@@ -42,7 +43,7 @@ default = []
 test-support = ["awaken-credential-vault/test-support"]
 sealed-aead = ["dep:chacha20poly1305"]
 sqlite = ["dep:sqlx", "dep:tokio", "dep:awaken-sqlite-pool"]
-postgres = ["dep:sqlx"]
+postgres = ["dep:sqlx", "dep:awaken-sql-storage", "awaken-sql-storage/postgres"]
 
 [[test]]
 name = "key_rotation"

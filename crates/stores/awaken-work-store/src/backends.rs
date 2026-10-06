@@ -179,7 +179,8 @@ pub(super) async fn immediate(
 impl PostgresWorkQueue {
     /// Connect and apply the work-queue migrations under the `work_queue` namespace.
     pub async fn connect(url: &str, clock: Arc<dyn WallClock>) -> Result<Self, String> {
-        let pool = PgPool::connect(url)
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
             .await
             .map_err(|error| error.to_string())?;
         Self::with_pool(pool, clock).await
@@ -197,7 +198,8 @@ impl PostgresWorkQueue {
 
     /// Connect only when the published schema is already present and exact.
     pub async fn connect_existing(url: &str, clock: Arc<dyn WallClock>) -> Result<Self, String> {
-        let pool = PgPool::connect(url)
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
             .await
             .map_err(|error| error.to_string())?;
         Self::with_existing_pool(pool, clock).await

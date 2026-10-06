@@ -65,7 +65,7 @@ enum Mutation {
 
 impl PostgresWorkerDirectory {
     fn pool_options(max_connections: u32) -> PgPoolOptions {
-        PgPoolOptions::new().max_connections(max_connections)
+        awaken_sql_storage::postgres_pool_options().max_connections(max_connections)
     }
 
     pub async fn connect(url: &str, max_connections: u32) -> Result<Self, RegistryError> {

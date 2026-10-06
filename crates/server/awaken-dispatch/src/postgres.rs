@@ -344,7 +344,7 @@ impl PostgresDispatchStore {
     /// This adapter owns connection mechanics only and never reads process
     /// configuration.
     pub async fn connect(url: &str, max_connections: u32) -> Result<Self, StoreError> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .max_connections(max_connections)
             .connect(url)
             .await
@@ -355,7 +355,7 @@ impl PostgresDispatchStore {
     /// Connect to a dispatch schema already applied by the deployment migration
     /// phase. This path verifies the ledger and never executes DDL.
     pub async fn connect_existing(url: &str, max_connections: u32) -> Result<Self, StoreError> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .max_connections(max_connections)
             .connect(url)
             .await
