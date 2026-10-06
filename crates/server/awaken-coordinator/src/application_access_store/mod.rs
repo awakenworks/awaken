@@ -274,29 +274,18 @@ impl ApplicationAccessStore {
         path: &str,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, ApplicationAccessRepositoryError> {
-        let path = path.to_owned();
-        tokio::task::spawn_blocking(move || {
-            SqliteApplicationAccessRepository::open(&path)
-                .map(|repository| Self::over(repository, clock))
-        })
-        .await
-        .map_err(|error| {
-            ApplicationAccessRepositoryError::Unavailable(format!(
-                "join application access SQLite open: {error}"
-            ))
-        })?
+        SqliteApplicationAccessRepository::open(path)
+            .await
+            .map(|repository| Self::over(repository, clock))
     }
 
-    /// Explicit synchronous fixture seam. Production async composition must use
-    /// [`Self::open_sqlite`] so open, busy-timeout setup, and migration do not
-    /// block a Tokio worker.
+    /// Fixture seam over the same SQLite open as [`Self::open_sqlite`].
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_sqlite_for_test(
+    pub async fn open_sqlite_for_test(
         path: &str,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, ApplicationAccessRepositoryError> {
-        SqliteApplicationAccessRepository::open(path)
-            .map(|repository| Self::over(repository, clock))
+        Self::open_sqlite(path, clock).await
     }
 
     /// Connect and migrate the application-access bundle in the Coordinator's
@@ -347,10 +336,11 @@ impl ApplicationAccessStore {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory(
+    pub async fn open_in_memory(
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, ApplicationAccessRepositoryError> {
         SqliteApplicationAccessRepository::open_in_memory()
+            .await
             .map(|repository| Self::over(repository, clock))
     }
 

@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use awaken_session_work_contract::WorkQueue;
-use rusqlite::{Connection, TransactionBehavior};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn colocated_process_stores_share_wal_and_wait_for_transient_writers() {
@@ -31,14 +30,20 @@ async fn colocated_process_stores_share_wal_and_wait_for_transient_writers() {
         .await
         .expect("application access");
 
-    let mut writer = Connection::open(&path).expect("independent writer");
-    let journal_mode: String = writer
-        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+    let writer = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path))
+        .await
+        .expect("independent writer");
+    let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+        .fetch_one(&writer)
+        .await
         .expect("journal mode");
     assert_eq!(journal_mode.to_ascii_lowercase(), "wal", "E1");
 
     let transaction = writer
-        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .begin_with("BEGIN IMMEDIATE")
+        .await
         .expect("C2 writer reservation");
     let queued = {
         let queue = queue.clone();
@@ -52,7 +57,10 @@ async fn colocated_process_stores_share_wal_and_wait_for_transient_writers() {
         })
     };
     tokio::time::sleep(Duration::from_millis(100)).await;
-    transaction.commit().expect("release writer reservation");
+    transaction
+        .commit()
+        .await
+        .expect("release writer reservation");
 
     let work_id = tokio::time::timeout(Duration::from_secs(5), queued)
         .await

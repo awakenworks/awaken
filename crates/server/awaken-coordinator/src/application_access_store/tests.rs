@@ -11,6 +11,17 @@ use super::postgres::PostgresApplicationAccessRepository;
 use super::sqlite::SqliteApplicationAccessRepository;
 use super::*;
 
+/// A raw fixture connection to a store's file, outside the store, for
+/// inspecting and corrupting persisted rows.
+#[cfg(test)]
+async fn raw_sqlite(path: &std::path::Path) -> sqlx::SqlitePool {
+    sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(path))
+        .await
+        .expect("open raw SQLite fixture connection")
+}
+
 fn grant() -> ApplicationGrant {
     ApplicationGrant {
         protocols: HashSet::from(["ai-sdk".into()]),
@@ -321,8 +332,12 @@ async fn repository_decision_table(
 async fn sqlite_repository_conforms_and_two_instances_share_revocation() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("sessions.db");
-    let first = SqliteApplicationAccessRepository::open(&path.to_string_lossy()).unwrap();
-    let second = SqliteApplicationAccessRepository::open(&path.to_string_lossy()).unwrap();
+    let first = SqliteApplicationAccessRepository::open(&path.to_string_lossy())
+        .await
+        .unwrap();
+    let second = SqliteApplicationAccessRepository::open(&path.to_string_lossy())
+        .await
+        .unwrap();
     repository_decision_table(&first, &second).await;
 }
 
@@ -343,7 +358,11 @@ async fn sqlite_repository_conforms_and_two_instances_share_revocation() {
 /// the number of active organizations is not bounded by Open.
 #[tokio::test]
 async fn retention_drain_is_bounded_and_recovers_durable_backlog() {
-    let repository = Arc::new(SqliteApplicationAccessRepository::open_in_memory().unwrap());
+    let repository = Arc::new(
+        SqliteApplicationAccessRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let first_hash = ApplicationAccessTokenHash::from_presented("retention-backlog-0");
     for index in 0..=crate::coordinator_component::APPLICATION_ACCESS_RETENTION_BATCH {
         repository
@@ -476,14 +495,14 @@ async fn durable_store_survives_restart_and_persists_no_cleartext() {
         "AAT-R7"
     );
 
-    let raw = rusqlite::Connection::open(&path).unwrap();
-    let (stored_hash, stored_grant): (String, String) = raw
-        .query_row(
-            "SELECT token_hash, grant_json FROM application_access_credential WHERE token_id = ?1",
-            [&issued.id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
+    let raw = raw_sqlite(&path).await;
+    let (stored_hash, stored_grant): (String, String) = sqlx::query_as(
+        "SELECT token_hash, grant_json FROM application_access_credential WHERE token_id = ?1",
+    )
+    .bind(&issued.id)
+    .fetch_one(&raw)
+    .await
+    .unwrap();
     assert_eq!(
         stored_hash,
         hash_session_token(&issued.access_token),
@@ -520,12 +539,15 @@ async fn durable_store_survives_restart_and_persists_no_cleartext() {
         .as_object_mut()
         .unwrap()
         .insert("authority_id".into(), serde_json::json!("dead-authority"));
-    raw.execute(
+    sqlx::query(
         "UPDATE application_access_credential
          SET revoked_at_unix_ms = NULL, grant_json = ?2
          WHERE token_id = ?1",
-        rusqlite::params![&issued.id, legacy_grant.to_string()],
     )
+    .bind(&issued.id)
+    .bind(legacy_grant.to_string())
+    .execute(&raw)
+    .await
     .unwrap();
     assert_eq!(
         restarted.authenticate(&issued.access_token).await,
@@ -555,11 +577,12 @@ async fn durable_store_survives_restart_and_persists_no_cleartext() {
         ),
         "AAT-R11 mint rejects a non-bijective semantic grant"
     );
-    raw.execute(
-        "UPDATE application_access_credential SET grant_json = ?2 WHERE token_id = ?1",
-        rusqlite::params![&issued.id, serde_json::to_string(&invalid_grant).unwrap()],
-    )
-    .unwrap();
+    sqlx::query("UPDATE application_access_credential SET grant_json = ?2 WHERE token_id = ?1")
+        .bind(&issued.id)
+        .bind(serde_json::to_string(&invalid_grant).unwrap())
+        .execute(&raw)
+        .await
+        .unwrap();
     assert_eq!(
         restarted.authenticate(&issued.access_token).await,
         Err(ApplicationAuthenticationError::Corrupt),
@@ -574,7 +597,11 @@ async fn durable_store_survives_restart_and_persists_no_cleartext() {
 /// AUTH-F2 C2 -> E2 before any credential interpretation.
 #[tokio::test]
 async fn expired_and_unavailable_authorities_remain_distinct() {
-    let repository = Arc::new(SqliteApplicationAccessRepository::open_in_memory().unwrap());
+    let repository = Arc::new(
+        SqliteApplicationAccessRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let token = "expired-token"; // awaken-allow: secret -- inert test fixture
     repository
         .create(

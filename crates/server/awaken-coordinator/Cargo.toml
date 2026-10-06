@@ -80,8 +80,7 @@ awaken-credential-contract.workspace = true
 # Embedded IAM (ADR-0042/0043 P1): typed self-managed identity gates management
 # plane behind bearer ApiTokens. contract = ids/scopes/requests, core = token
 # directory + minter + the default-deny PolicySet evaluator, preset = the seeded
-# Anthropic role catalog + the iam-server store (rusqlite range is links-safe
-# since iam adopted foundation ADR-0005).
+# Anthropic role catalog + the iam-server store.
 awaken-iam-contract = { workspace = true }
 awaken-iam-server = { workspace = true }
 awaken-iam-core = { workspace = true }
@@ -89,11 +88,7 @@ awaken-iam-preset = { workspace = true }
 # The IAM assembly layer (ADR-0048): IamGate (single authn/authz PDP) built over
 # our own LocalIamState, driving the management guard.
 awaken-iam-host = { workspace = true }
-# The embedded IAM token/binding rows persist under typed data_dir/iam.sqlite;
-# same rusqlite generation as every other sqlite store in the workspace.
-rusqlite = { workspace = true }
-awaken-scoped-migration.workspace = true
-awaken-scoped-migration-sqlite.workspace = true
+awaken-scoped-migration = { workspace = true, features = ["sqlite"] }
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-ext-mcp.workspace = true
@@ -131,7 +126,7 @@ thiserror.workspace = true
 base64 = "0.22"
 uuid = { version = "1", features = ["v7"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }
 axum = { version = "0.8", features = ["multipart"] }
 # oneshot-forwarding for the /projects/{id} prefix-stripping ingress proxy
 # (also used by the integration tests).

@@ -7,11 +7,10 @@
 //! The embedded-process SQLite policy for sqlx pools (ADR-0087).
 //!
 //! One store opens one pool with exactly one connection. sqlx's pool acquisition
-//! is fair (first come, first served), so this keeps the admission order of the
-//! shared connection behind a fair one-permit semaphore that the rusqlite bridge
-//! provided. Every connection gets the same busy wait and foreign-key policy, and
-//! a file database is switched to WAL once, under a process-wide lock, exactly as
-//! [`crate::SqliteConnectionFactory`] does.
+//! is fair (first come, first served), so callers are admitted in the order they
+//! asked, as they were behind the former blocking bridge's fair one-permit
+//! semaphore. Every connection gets the same busy wait and foreign-key policy,
+//! and a file database is switched to WAL once, under a process-wide lock.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -180,7 +179,7 @@ mod tests {
             .unwrap()
     }
 
-    /// The same decision table as the rusqlite factory's policy test:
+    /// Connection-policy decision table:
     ///
     /// | Rule | Shared file | Effect |
     /// |---|---|---|
@@ -401,13 +400,13 @@ mod tests {
         );
     }
 
-    // ---- Admission semantics carried over from the rusqlite bridge ----
+    // ---- Admission semantics carried over from the former blocking bridge ----
     //
-    // The bridge's decision tables (S1, F1-F4, H1-H4) are re-asserted here against
-    // the one-connection pool, so every guarantee the stores relied on is checked
-    // before a store moves. F4 differs by design: a panic drops its transaction,
-    // which sqlx rolls back on the connection before handing it out, so the next
-    // caller gets a clean connection instead of a permanently poisoned one.
+    // The bridge's decision tables (S1, F1-F4, H1-H4) are asserted here against
+    // the one-connection pool, which is now their only owner. F4 differs by
+    // design: a panic drops its transaction, which sqlx rolls back on the
+    // connection before handing it out, so the next caller gets a clean
+    // connection instead of a permanently poisoned one.
 
     use std::sync::{Arc, Mutex};
 

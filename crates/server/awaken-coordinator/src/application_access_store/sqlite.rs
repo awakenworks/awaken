@@ -2,7 +2,8 @@
 // @formal reason: SQLite adapter for the sole Coordinator application-access repository; this is
 // @formal reason: product-requirement classification, not a formal-proof claim.
 use async_trait::async_trait;
-use rusqlite::{Connection, Error as SqliteError, ErrorCode, OptionalExtension, params};
+use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+use awaken_sqlite_pool::{EmbeddedPool, EmbeddedSqlite};
 
 use super::schema::{NAMESPACE, bundle};
 use super::{
@@ -11,59 +12,34 @@ use super::{
 };
 
 pub(super) struct SqliteApplicationAccessRepository {
-    pub(super) connection: awaken_sqlite_pool::SharedSqliteConnection,
+    pool: EmbeddedPool,
 }
 
 impl SqliteApplicationAccessRepository {
-    pub(super) fn open(path: &str) -> Result<Self, ApplicationAccessRepositoryError> {
-        let connection = awaken_sqlite_pool::SqliteConnectionFactory::file(path)
-            .open()
-            .map_err(|error| ApplicationAccessRepositoryError::Unavailable(error.to_string()))?;
-        Self::from_connection(connection)
+    pub(super) async fn open(path: &str) -> Result<Self, ApplicationAccessRepositoryError> {
+        Self::open_at(EmbeddedSqlite::file(path)).await
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub(super) fn open_in_memory() -> Result<Self, ApplicationAccessRepositoryError> {
-        let connection = awaken_sqlite_pool::SqliteConnectionFactory::memory()
-            .open()
-            .map_err(|error| ApplicationAccessRepositoryError::Unavailable(error.to_string()))?;
-        Self::from_connection(connection)
+    pub(super) async fn open_in_memory() -> Result<Self, ApplicationAccessRepositoryError> {
+        Self::open_at(EmbeddedSqlite::memory()).await
     }
 
-    fn from_connection(connection: Connection) -> Result<Self, ApplicationAccessRepositoryError> {
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NAMESPACE)
-            .map_err(|error| ApplicationAccessRepositoryError::Unavailable(error.to_string()))?
-            .run_bundle(
-                &connection,
-                &bundle().map_err(|error| {
-                    ApplicationAccessRepositoryError::Unavailable(error.to_string())
-                })?,
-            )
-            .map_err(|error| ApplicationAccessRepositoryError::Unavailable(error.to_string()))?;
-        Ok(Self {
-            connection: awaken_sqlite_pool::SharedSqliteConnection::new(connection),
-        })
-    }
-
-    /// Map the canonical SQLite scheduler boundary into this repository's
-    /// domain error without owning a second executor or lock policy.
-    async fn with_connection<T, F>(
-        &self,
-        operation: F,
-    ) -> Result<T, ApplicationAccessRepositoryError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut Connection) -> Result<T, ApplicationAccessRepositoryError> + Send + 'static,
-    {
-        awaken_sqlite_pool::with_connection(self.connection.clone(), operation)
-            .await
-            .map_err(|error| {
-                ApplicationAccessRepositoryError::Unavailable(format!(
-                    "run application access SQLite operation: {error}"
-                ))
-            })?
+    async fn open_at(location: EmbeddedSqlite) -> Result<Self, ApplicationAccessRepositoryError> {
+        let pool = location.open().await.map_err(unavailable)?;
+        let bundle = bundle().map_err(unavailable)?;
+        awaken_sqlite_pool::held(
+            SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NAMESPACE)
+                .map_err(unavailable)?
+                .run_bundle(&bundle),
+        )
+        .await
+        .map_err(unavailable)?;
+        Ok(Self { pool })
     }
 }
+
+type StoredRow = (String, String, String, i64, i64, Option<i64>, String);
 
 #[async_trait]
 impl ApplicationAccessRepository for SqliteApplicationAccessRepository {
@@ -72,59 +48,56 @@ impl ApplicationAccessRepository for SqliteApplicationAccessRepository {
         record: ApplicationAccessRecord,
     ) -> Result<(), ApplicationAccessRepositoryError> {
         let row = record.stored_row()?;
-        self.with_connection(move |connection| {
-            connection
-                .execute(
-                    "INSERT INTO application_access_credential
-                    (token_id, token_hash, workspace_id, created_at_unix_ms,
-                     expires_at_unix_ms, revoked_at_unix_ms, grant_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![
-                        row.token_id,
-                        row.token_hash,
-                        row.workspace_id,
-                        row.created_at_unix_ms,
-                        row.expires_at_unix_ms,
-                        row.revoked_at_unix_ms,
-                        row.grant_json,
-                    ],
-                )
-                .map_err(insert_error)?;
-            Ok(())
-        })
+        sqlx::query(
+            "INSERT INTO application_access_credential
+                (token_id, token_hash, workspace_id, created_at_unix_ms,
+                 expires_at_unix_ms, revoked_at_unix_ms, grant_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .bind(row.token_id)
+        .bind(row.token_hash)
+        .bind(row.workspace_id)
+        .bind(row.created_at_unix_ms)
+        .bind(row.expires_at_unix_ms)
+        .bind(row.revoked_at_unix_ms)
+        .bind(row.grant_json)
+        .execute(&self.pool)
         .await
+        .map_err(insert_error)?;
+        Ok(())
     }
 
     async fn find_by_token_hash(
         &self,
         token_hash: &ApplicationAccessTokenHash,
     ) -> Result<ApplicationAccessRecord, ApplicationAccessRepositoryError> {
-        let token_hash = token_hash.as_str().to_owned();
-        self.with_connection(move |connection| {
-            let row = connection
-                .query_row(
-                    "SELECT token_id, token_hash, workspace_id, created_at_unix_ms,
-                        expires_at_unix_ms, revoked_at_unix_ms, grant_json
-                 FROM application_access_credential WHERE token_hash = ?1",
-                    [token_hash],
-                    |row| {
-                        Ok(StoredApplicationAccessRow {
-                            token_id: row.get(0)?,
-                            token_hash: row.get(1)?,
-                            workspace_id: row.get(2)?,
-                            created_at_unix_ms: row.get(3)?,
-                            expires_at_unix_ms: row.get(4)?,
-                            revoked_at_unix_ms: row.get(5)?,
-                            grant_json: row.get(6)?,
-                        })
-                    },
-                )
-                .optional()
-                .map_err(read_error)?
-                .ok_or(ApplicationAccessRepositoryError::NotFound)?;
-            ApplicationAccessRecord::from_storage(row)
-        })
+        let (
+            token_id,
+            token_hash,
+            workspace_id,
+            created_at_unix_ms,
+            expires_at_unix_ms,
+            revoked_at_unix_ms,
+            grant_json,
+        ) = sqlx::query_as::<_, StoredRow>(
+            "SELECT token_id, token_hash, workspace_id, created_at_unix_ms,
+                    expires_at_unix_ms, revoked_at_unix_ms, grant_json
+             FROM application_access_credential WHERE token_hash = ?1",
+        )
+        .bind(token_hash.as_str())
+        .fetch_optional(&self.pool)
         .await
+        .map_err(read_error)?
+        .ok_or(ApplicationAccessRepositoryError::NotFound)?;
+        ApplicationAccessRecord::from_storage(StoredApplicationAccessRow {
+            token_id,
+            token_hash,
+            workspace_id,
+            created_at_unix_ms,
+            expires_at_unix_ms,
+            revoked_at_unix_ms,
+            grant_json,
+        })
     }
 
     async fn revoke(
@@ -138,23 +111,22 @@ impl ApplicationAccessRepository for SqliteApplicationAccessRepository {
                 "revoked_at_unix_ms exceeds i64 storage".into(),
             )
         })?;
-        let workspace_id = workspace_id.to_owned();
-        let id = id.to_string();
-        self.with_connection(move |connection| {
-            let changed = connection
-                .execute(
-                    "UPDATE application_access_credential
-                 SET revoked_at_unix_ms = COALESCE(revoked_at_unix_ms, ?1)
-                 WHERE workspace_id = ?2 AND token_id = ?3",
-                    params![revoked_at_unix_ms, workspace_id, id],
-                )
-                .map_err(unavailable)?;
-            if changed == 0 {
-                return Err(ApplicationAccessRepositoryError::NotFound);
-            }
-            Ok(())
-        })
+        let changed = sqlx::query(
+            "UPDATE application_access_credential
+             SET revoked_at_unix_ms = COALESCE(revoked_at_unix_ms, ?1)
+             WHERE workspace_id = ?2 AND token_id = ?3",
+        )
+        .bind(revoked_at_unix_ms)
+        .bind(workspace_id)
+        .bind(id.to_string())
+        .execute(&self.pool)
         .await
+        .map_err(unavailable)?
+        .rows_affected();
+        if changed == 0 {
+            return Err(ApplicationAccessRepositoryError::NotFound);
+        }
+        Ok(())
     }
 
     async fn delete_terminal_before(
@@ -167,48 +139,51 @@ impl ApplicationAccessRepository for SqliteApplicationAccessRepository {
                 "terminal_before_unix_ms exceeds i64 storage".into(),
             )
         })?;
-        self.with_connection(move |connection| {
-            let deleted = connection
-                .execute(
-                    "DELETE FROM application_access_credential
-                     WHERE token_id IN (
-                         SELECT token_id FROM application_access_credential
-                         WHERE expires_at_unix_ms < ?1
-                            OR (revoked_at_unix_ms IS NOT NULL
-                                AND revoked_at_unix_ms < ?1)
-                         ORDER BY token_id
-                         LIMIT ?2
-                     )",
-                    params![terminal_before_unix_ms, i64::from(limit)],
-                )
-                .map_err(unavailable)?;
-            u64::try_from(deleted).map_err(|_| {
-                ApplicationAccessRepositoryError::Corrupt(
-                    "negative SQLite retention deletion count".into(),
-                )
-            })
-        })
+        let deleted = sqlx::query(
+            "DELETE FROM application_access_credential
+             WHERE token_id IN (
+                 SELECT token_id FROM application_access_credential
+                 WHERE expires_at_unix_ms < ?1
+                    OR (revoked_at_unix_ms IS NOT NULL
+                        AND revoked_at_unix_ms < ?1)
+                 ORDER BY token_id
+                 LIMIT ?2
+             )",
+        )
+        .bind(terminal_before_unix_ms)
+        .bind(i64::from(limit))
+        .execute(&self.pool)
         .await
+        .map_err(unavailable)?;
+        Ok(deleted.rows_affected())
     }
 }
 
-fn unavailable(error: rusqlite::Error) -> ApplicationAccessRepositoryError {
+fn unavailable(error: impl std::fmt::Display) -> ApplicationAccessRepositoryError {
     ApplicationAccessRepositoryError::Unavailable(error.to_string())
 }
 
-fn read_error(error: SqliteError) -> ApplicationAccessRepositoryError {
+/// The primary SQLite result code (the low byte of an extended code).
+fn primary_code(error: &sqlx::Error) -> Option<i32> {
+    error
+        .as_database_error()
+        .and_then(|error| error.code())
+        .and_then(|code| code.parse::<i32>().ok())
+        .map(|code| code & 0xff)
+}
+
+/// A row that cannot be decoded, or a file that is not an intact database, is
+/// corrupt; every other read failure leaves the authority unavailable.
+fn read_error(error: sqlx::Error) -> ApplicationAccessRepositoryError {
+    const SQLITE_CORRUPT: i32 = 11;
+    const SQLITE_NOTADB: i32 = 26;
     let corrupt = matches!(
         &error,
-        SqliteError::FromSqlConversionFailure(..)
-            | SqliteError::IntegralValueOutOfRange(..)
-            | SqliteError::Utf8Error(..)
-            | SqliteError::InvalidColumnIndex(..)
-            | SqliteError::InvalidColumnName(..)
-            | SqliteError::InvalidColumnType(..)
-    ) || matches!(
-        error.sqlite_error_code(),
-        Some(ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase)
-    );
+        sqlx::Error::ColumnDecode { .. }
+            | sqlx::Error::Decode(..)
+            | sqlx::Error::ColumnIndexOutOfBounds { .. }
+            | sqlx::Error::ColumnNotFound(..)
+    ) || matches!(primary_code(&error), Some(SQLITE_CORRUPT | SQLITE_NOTADB));
     if corrupt {
         ApplicationAccessRepositoryError::Corrupt(error.to_string())
     } else {
@@ -216,8 +191,9 @@ fn read_error(error: SqliteError) -> ApplicationAccessRepositoryError {
     }
 }
 
-fn insert_error(error: rusqlite::Error) -> ApplicationAccessRepositoryError {
-    if error.sqlite_error_code() == Some(ErrorCode::ConstraintViolation) {
+fn insert_error(error: sqlx::Error) -> ApplicationAccessRepositoryError {
+    const SQLITE_CONSTRAINT: i32 = 19;
+    if primary_code(&error) == Some(SQLITE_CONSTRAINT) {
         ApplicationAccessRepositoryError::Invalid("token id or token hash already exists".into())
     } else {
         unavailable(error)
