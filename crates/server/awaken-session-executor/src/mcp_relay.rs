@@ -580,11 +580,12 @@ async fn forward(
     }
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let content_type = upstream
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(String::from);
+    let response_headers = awaken_mcp_wire::http::relay_response_headers(
+        upstream
+            .headers()
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_bytes())),
+    );
     if call.is_cancelled() {
         return (StatusCode::NOT_FOUND, "draining relay route").into_response();
     }
@@ -603,8 +604,8 @@ async fn forward(
             next.map(|item| (item, (upstream, call)))
         });
     let mut response = Response::builder().status(status);
-    if let Some(content_type) = content_type {
-        response = response.header(header::CONTENT_TYPE, content_type);
+    for (name, value) in response_headers {
+        response = response.header(name.as_str(), value.as_slice());
     }
     response
         .body(Body::from_stream(stream))
@@ -1081,12 +1082,15 @@ mod tests {
         assert_ne!(relay.route_url(&next), Some(live_url), "V5");
     }
 
-    // Protocol-flow decision row: when R1 holds, initialize, tools/list and
-    // tools/call must all traverse the same authenticated route; any missing
-    // injection yields upstream 401 and no successful tool result.
+    // Causes: C1 exact route and bearer; C2 stateful upstream returns a session
+    // id; C3 client uses it on following POST/GET/DELETE; C4 upstream Cookie.
+    // R1 C1+C2+C3 -> full authenticated flow and SSE; R2 !C3 -> refusal;
+    // R3 DELETE -> following call refused; R4 C4 -> Cookie stripped. Session
+    // continuity belongs to the upstream/client, never a second relay store.
     #[tokio::test]
     async fn injected_credential_preserves_the_complete_mcp_tool_flow() {
-        let (upstream, seen) = crate::test_mcp::start(Some("Bearer relay-only-secret")).await;
+        let (upstream, seen) =
+            crate::test_mcp::start_stateful(Some("Bearer relay-only-secret")).await;
 
         let relay = McpRelay::start().await.unwrap();
         let generation = generation("session-1", "mcp-functional", 1);
@@ -1116,6 +1120,68 @@ mod tests {
         assert_eq!(result_json["content"][0]["type"], "text");
         assert_eq!(result_json["content"][0]["text"], "round-trip");
         assert_eq!(result.is_error, Some(false));
+
+        let client = reqwest::Client::new();
+        let route = relay.route_url(&generation).unwrap();
+        let response = client
+            .post(&route)
+            .json(&serde_json::json!({
+                "jsonrpc":"2.0", "id":91, "method":"initialize", "params":{}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK, "R1");
+        assert!(response.headers().get("set-cookie").is_none(), "R4");
+        assert_eq!(
+            response.headers().get("mcp-protocol-version").unwrap(),
+            "2025-06-18",
+            "R1"
+        );
+        let session = response.headers().get("mcp-session-id").unwrap().clone();
+        let missing = client
+            .post(&route)
+            .json(&serde_json::json!({
+                "jsonrpc":"2.0", "id":92, "method":"tools/list", "params":{}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), reqwest::StatusCode::BAD_REQUEST, "R2");
+        let events = client
+            .get(&route)
+            .header("mcp-session-id", session.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            events.headers().get("content-type").unwrap(),
+            "text/event-stream",
+            "R1"
+        );
+        assert!(
+            events
+                .text()
+                .await
+                .unwrap()
+                .contains("notifications/tools/list_changed"),
+            "R1"
+        );
+        let deleted = client
+            .delete(&route)
+            .header("mcp-session-id", session.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), reqwest::StatusCode::NO_CONTENT, "R3");
+        let later = client
+            .post(&route)
+            .header("mcp-session-id", session)
+            .json(&serde_json::json!({"jsonrpc":"2.0", "id":93, "method":"tools/list"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(later.status(), reqwest::StatusCode::BAD_REQUEST, "R3");
 
         let seen = seen.lock().unwrap();
         for expected in [
@@ -1449,13 +1515,13 @@ mod tests {
     /// otherwise. Proves the Managed path: the workload sends no credential and the relay
     /// injects the real token, so GitHub MCP authenticates the call.
     #[tokio::test]
+    #[ignore = "requires an explicitly supplied live GitHub MCP credential"]
     async fn relay_reaches_the_real_github_mcp_when_a_token_is_present() {
-        let Ok(token) = std::env::var("AWAKEN_GITHUB_MCP_TOKEN") else {
-            eprintln!(
-                "skipping: set AWAKEN_GITHUB_MCP_TOKEN to run the live GitHub MCP relay test"
-            );
-            return;
-        };
+        // C1 explicitly selected live qualification, C2 credential available.
+        // R1 C1+C2 -> real upstream acceptance; R2 C1+!C2 -> failure, never a
+        // successful skipped test. Ordinary runs report this case as ignored.
+        let token = std::env::var("AWAKEN_GITHUB_MCP_TOKEN")
+            .expect("live GitHub MCP qualification requires AWAKEN_GITHUB_MCP_TOKEN");
         let relay = McpRelay::start().await.unwrap();
         let generation = generation("t1", "mcp-github", 1);
         relay.set_route(

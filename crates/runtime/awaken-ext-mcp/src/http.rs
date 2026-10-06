@@ -58,7 +58,7 @@ use crate::types::{
     McpResourceDefinition,
 };
 
-const SESSION_HEADER: &str = "Mcp-Session-Id";
+use awaken_mcp_wire::http::MCP_SESSION_ID_HEADER as SESSION_HEADER;
 
 /// Upper bound on the body bytes a [`McpRequestTrace`] retains from one failed
 /// HTTP response. Reading stops there, so a hostile peer cannot grow it.
