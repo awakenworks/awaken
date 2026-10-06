@@ -47,7 +47,15 @@ def run(seconds: float, command: list[str]) -> int:
         return 2
     process = subprocess.Popen(command, start_new_session=True)
     try:
-        return process.wait(timeout=seconds)
+        result = process.wait(timeout=seconds)
+        if result < 0:
+            # A child killed by a signal reports a negative Python return code.
+            # Shell callers need the conventional 128 + signal status; otherwise
+            # SystemExit(-15) wraps to 241 and hides the reason for failure.
+            number = -result
+            print(f"command terminated by signal {number}", file=sys.stderr)
+            return 128 + number
+        return result
     except subprocess.TimeoutExpired:
         terminate_group(process)
         return TIMEOUT_EXIT

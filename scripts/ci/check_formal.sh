@@ -450,7 +450,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     # host needs a smaller proof or a bigger host. CBMC says so in its own
     # output; the gate has to carry the sentence rather than overwrite it.
     local kani_transcript
-    kani_transcript="$(mktemp)"
+    kani_transcript="$(mktemp "$formal_artifact_dir/kani-${package}.XXXXXX.log")"
     if run_with_deadline "$kani_batch_timeout_seconds" \
         cargo kani -p "$package" --output-format terse -j "$kani_jobs" "$@" \
         2>&1 | tee "$kani_transcript"; then
@@ -473,7 +473,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
       formal_failure_deadline_seconds="$kani_batch_timeout_seconds"
       echo "cargo-kani batch timed out: $package (${kani_batch_timeout_seconds}s)" >&2
     fi
-    rm -f "$kani_transcript"
+    # The existing artifact manifest digests this transcript on failure. A
+    # signal, resource failure, or proof error must remain diagnosable after
+    # the temporary build tree is removed by the EXIT trap.
+    echo "cargo-kani batch transcript: $kani_transcript" >&2
     return "$result"
   }
   # Present and exactly the pinned version; a different Z3 is a hard error,

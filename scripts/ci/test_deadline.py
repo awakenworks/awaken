@@ -193,6 +193,23 @@ raise SystemExit(m.run(0.5, sys.argv[2:]))
                     self.assertEqual(result.returncode, status, result.stderr)
                     self.assertEqual(result.stdout, "complete\n")
 
+    def test_external_signals_use_shell_status_and_name_the_signal(self):
+        # C1 child exits normally; C2 child dies from TERM or KILL before the
+        # deadline; C3 deadline expires. E1 exact ordinary status (D5 above),
+        # E2 128 + signal with diagnostic, E3 124 and group cleanup (D1-D4).
+        # Decision rules D6=TERM -> 143, D7=KILL -> 137; neither may masquerade
+        # as an ordinary 241/247 exit or as the deadline's 124.
+        for number in (signal.SIGTERM, signal.SIGKILL):
+            with self.subTest(signal=number):
+                code = f"import os, signal; os.kill(os.getpid(), {int(number)})"
+                result = subprocess.run(
+                    [sys.executable, str(DEADLINE), "2", "--", sys.executable,
+                     "-c", code],
+                    capture_output=True, text=True, timeout=3,
+                )
+                self.assertEqual(result.returncode, 128 + number)
+                self.assertIn(f"command terminated by signal {number}", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

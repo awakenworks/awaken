@@ -366,7 +366,9 @@ class ProfileTests(unittest.TestCase):
         # bound, order or solver changes the digest, so it cannot drift silently.
         # P4 the actual shell runner hands every planned batch to Cargo verbatim
         # (only its Cargo/deadline port replaced by an argument recorder); a
-        # failing or empty plan starts no batch and fails the gate.
+        # failing or empty plan starts no batch and fails the gate. The isolated
+        # runner receives the same existing formal artifact directory as the
+        # full gate, so diagnostics cannot be skipped by this fixture.
         import formal_kani_options as options
         root = Path(__file__).resolve().parents[2]
         gate = (root / "scripts/ci/check_formal.sh").read_text()
@@ -425,6 +427,7 @@ class ProfileTests(unittest.TestCase):
             ("empty plan", "return 0", 1),
         ):
             shell = (f"set -euo pipefail\nz3_version='{pinned_z3}'; kani_jobs=1; kani_batch_timeout_seconds=600; "
+                     f"formal_artifact_dir={shlex.quote(str(solver_bin))}; "
                      "CARGO_TARGET_DIR=/tmp/checked-profile-test; missing=0\n"
                      "formal_selection=(--tier full); formal_affected=''\n"
                      "awaken_configure_kani_driver_target() { :; }\n"

@@ -220,7 +220,7 @@ async fn projected_official_hand_reaps_adopted_exec_descendants() {
         .await
         .expect("connect to the cluster");
     let provider = ContainerProvider::new(Arc::new(runtime), image.clone())
-        .with_clock(awaken_lease_contract::system_clock())
+        .with_clock(awaken_time::system_clock())
         .with_resident_hand(
             ResidentHandConfig::new("/usr/local/bin/awaken-sandbox", 7777).unwrap(),
         );

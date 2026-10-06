@@ -674,24 +674,6 @@ the same receipt without a changed flag. A mismatched intent or receipt fails
 closed, and a cleanup operation already frozen without publication cannot be
 upgraded after archive.
 
-### 2026-10-06 amendment: publication evidence uses the existing Session read
-
-The existing `SessionExecutionObservation` and Awaken-only execution-evidence
-projection expose the optional, command-bound Repository publication receipt.
-They reuse `SessionCleanupOperation::repository_publication_receipt`, including
-its exact outer Session, intent and fingerprint checks. The publisher, terminal
-CAS and durable sidecar remain unchanged; no second HEAD query, receipt store,
-release command or Git writer is added.
-
-The read joins frozen execution selection, committed Run facts and this existing
-receipt. An absent intent or pending publication returns no receipt; malformed
-or foreign evidence fails closed. A retained publication may be visible while
-ordinary cleanup is still pending, so the reader cannot turn it into physical
-exit, WorkUnit success or root acceptance. Consumers must keep those existing
-delivery fences and their independent Git observation. Application tests own
-the absent/pending/recorded/read-only decision table; protocol tests own the
-lossless optional projection and unchanged GET-only namespace.
-
 ### 2026-08-31 amendment: exact update lease and durable rejection
 
 `RepositoryPublicationExpectation` may additionally freeze one

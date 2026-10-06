@@ -104,3 +104,15 @@ explanation. Protocols project their error event from that state. Treating an
 otherwise valid error terminal as a proof failure would hide the authoritative
 failure behind a second, less useful internal error and would reintroduce a
 parallel transcript requirement for error truth.
+
+## Amendment: terminal responses survive a later Run (2026-10-05)
+
+A fast child report can start a successor on the coordinator's Thread after the
+first Run commits but before its protocol caller reads the response. The later
+Run is current state; it does not revoke the earlier terminal fact. Runtime
+Host accepts the earlier response only when the same atomic recovery snapshot
+contains its exact terminal lifecycle event and ordered message commit cursors.
+It bounds the response at that event's source commit and checks the original
+Run's output identity. Missing or malformed evidence still fails closed.
+This extends the existing committed-step proof; it adds no status, receipt,
+store, queue, or protocol-specific recovery path.
