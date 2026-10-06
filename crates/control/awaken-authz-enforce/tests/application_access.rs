@@ -10,7 +10,7 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::extract::{Json, Path};
 use axum::http::{Request, StatusCode};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -117,14 +117,87 @@ fn app(authenticator: Arc<dyn ApplicationAccessAuthenticator>) -> Router {
     }
 
     Router::new()
-        .route("/v1/ai-sdk/threads/{thread}/runs", post(echo_run))
+        .route(
+            "/v1/ai-sdk/threads/{thread}/runs",
+            post(echo_run).delete(echo_history),
+        )
         .route("/v1/ai-sdk/threads/{thread}/messages", get(echo_history))
         .route("/v1/ag-ui", post(echo_ag_ui))
+        .route("/v1/ag-ui/threads/{thread}/runs", delete(echo_history))
         .route("/v1/ag-ui/threads/{thread}/messages", get(echo_history))
         .layer(axum::middleware::from_fn_with_state(
             authenticator,
             application_guard,
         ))
+}
+
+#[tokio::test]
+async fn explicit_stop_uses_the_existing_run_grant_and_exact_thread_binding() {
+    // Causes: C1 exact protocol+thread with thread.run; C2 foreign Thread;
+    // C3 read-only grant; C4 wrong protocol. Effects: E1 DELETE resolves the
+    // existing managed Session; E2-E4 reject before reaching interrupt.
+    // R1=C1->E1, R2=C2->E2, R3=C3->E3, R4=C4->E4. No second cancel grant.
+    let token = "stop-application-token"; // awaken-allow: secret -- inert fixture
+    let router = app(authenticator(token, grant(&["ai-sdk"], &["thread.run"])));
+    let exact = router
+        .clone()
+        .oneshot(request(
+            "DELETE",
+            "/v1/ai-sdk/threads/customer-thread/runs",
+            Some(token),
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(exact.status(), StatusCode::OK, "R1");
+    assert_eq!(json_body(exact).await["resolved"], "sesn_existing", "R1");
+    let foreign = router
+        .clone()
+        .oneshot(request(
+            "DELETE",
+            "/v1/ai-sdk/threads/foreign-thread/runs",
+            Some(token),
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(foreign.status(), StatusCode::FORBIDDEN, "R2");
+    let wrong_protocol = router
+        .oneshot(request(
+            "DELETE",
+            "/v1/ag-ui/threads/customer-thread/runs",
+            Some(token),
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(wrong_protocol.status(), StatusCode::FORBIDDEN, "R4");
+    let read_only = "read-only-application-token"; // awaken-allow: secret -- inert fixture
+    let denied = app(authenticator(
+        read_only,
+        grant(&["ai-sdk"], &["thread.messages.read"]),
+    ))
+    .oneshot(request(
+        "DELETE",
+        "/v1/ai-sdk/threads/customer-thread/runs",
+        Some(read_only),
+        Value::Null,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN, "R3");
+    let ag_ui = "ag-ui-stop-token"; // awaken-allow: secret -- inert fixture
+    let accepted = app(authenticator(ag_ui, grant(&["ag-ui"], &["thread.run"])))
+        .oneshot(request(
+            "DELETE",
+            "/v1/ag-ui/threads/customer-thread/runs",
+            Some(ag_ui),
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK, "R1");
+    assert_eq!(json_body(accepted).await["resolved"], "sesn_existing", "R1");
 }
 
 fn request(method: &str, path: &str, token: Option<&str>, body: Value) -> Request<Body> {

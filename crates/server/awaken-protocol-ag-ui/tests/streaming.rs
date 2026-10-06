@@ -2,8 +2,8 @@
 //! `TOOL_CALL_ARGS` argument deltas live and closes with `TOOL_CALL_END` +
 //! `RUN_FINISHED`, over a real chunked SSE body driven through the axum router.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -13,7 +13,7 @@ use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::stream::event::Event;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_session_application_contract::{
-    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
+    OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
@@ -366,6 +366,10 @@ async fn live_only_tool_is_closed_when_not_present_in_committed_outcome() {
 /// regression that never notices the hang-up.
 struct HangupProbe {
     observed_close: Arc<AtomicBool>,
+    interrupted: Arc<AtomicBool>,
+    interrupted_threads: Arc<Mutex<Vec<String>>>,
+    closed: Arc<Notify>,
+    release_after_close: Option<Arc<Notify>>,
     finished: Arc<Notify>,
 }
 
@@ -399,6 +403,10 @@ impl RunApplication for HangupProbe {
                 .await;
             if sent.is_err() {
                 self.observed_close.store(true, Ordering::SeqCst);
+                self.closed.notify_one();
+                if let Some(release) = &self.release_after_close {
+                    release.notified().await;
+                }
                 break;
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
@@ -419,6 +427,11 @@ impl RunApplication for HangupProbe {
     ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
+    async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
+        self.interrupted.store(true, Ordering::SeqCst);
+        self.interrupted_threads.lock().unwrap().push(thread.into());
+        Ok(())
+    }
     async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
         Ok(None)
     }
@@ -430,12 +443,44 @@ impl RunApplication for HangupProbe {
     }
 }
 
+#[async_trait::async_trait]
+impl OwnerScopedRunApplication for HangupProbe {
+    async fn run_streaming_for_owner(
+        &self,
+        _: &str,
+        operation_id: &str,
+        thread: &str,
+        agent: Option<String>,
+        messages: Vec<Message>,
+        sink: Arc<dyn StreamSink>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        self.run_streaming(operation_id, thread, agent, messages, sink)
+            .await
+    }
+
+    async fn resume_for_owner(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        unreachable!()
+    }
+}
+
 #[tokio::test]
 async fn a_client_hangup_mid_stream_stops_the_producer_without_hanging() {
     let observed_close = Arc::new(AtomicBool::new(false));
+    let interrupted = Arc::new(AtomicBool::new(false));
     let finished = Arc::new(Notify::new());
     let rt = Arc::new(HangupProbe {
         observed_close: observed_close.clone(),
+        interrupted: interrupted.clone(),
+        interrupted_threads: Arc::new(Mutex::new(Vec::new())),
+        closed: Arc::new(Notify::new()),
+        release_after_close: None,
         finished: finished.clone(),
     });
     let app = awaken_protocol_ag_ui::router::router(rt, "test-workspace".into());
@@ -466,5 +511,97 @@ async fn a_client_hangup_mid_stream_stops_the_producer_without_hanging() {
     assert!(
         observed_close.load(Ordering::SeqCst),
         "the runtime observed the sink closing once the client disconnected"
+    );
+    assert!(interrupted.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn owner_scoped_hangup_detaches_without_interrupting_the_turn() {
+    // Causes: C1 an owner-scoped Session Run starts; C2 the AG-UI observer
+    // leaves; C3 the original executor later returns. Effects: E1 C2 closes
+    // only the live sink, without interrupt; E2 C3 completes that same drive.
+    // R1=C1+C2->E1, R2=R1+C3->E2. The adjacent local case retains interrupt.
+    let observed_close = Arc::new(AtomicBool::new(false));
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let closed = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let finished = Arc::new(Notify::new());
+    let rt = Arc::new(HangupProbe {
+        observed_close: observed_close.clone(),
+        interrupted: interrupted.clone(),
+        interrupted_threads: Arc::new(Mutex::new(Vec::new())),
+        closed: closed.clone(),
+        release_after_close: Some(release.clone()),
+        finished: finished.clone(),
+    });
+    let app = awaken_protocol_ag_ui::router::router_with_owner_scope(rt).layer(axum::Extension(
+        awaken_tenancy::WorkspaceScope("test-workspace".into()),
+    ));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ag-ui")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "threadId": "t1", "messages": [{ "role": "user", "content": "go" }] })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(response);
+    tokio::time::timeout(Duration::from_secs(5), closed.notified())
+        .await
+        .expect("the best-effort sink closes after the observer leaves");
+    assert!(observed_close.load(Ordering::SeqCst), "R1");
+    assert!(!interrupted.load(Ordering::SeqCst), "R1");
+    release.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), finished.notified())
+        .await
+        .expect("the original hosted drive completes after disconnection");
+    assert!(!interrupted.load(Ordering::SeqCst), "R2");
+}
+
+#[tokio::test]
+async fn explicit_stop_uses_the_bound_ag_ui_thread() {
+    // C1 a guarded DELETE presents the public Thread while the application
+    // guard supplies its exact managed Session. E1 the existing interrupt port
+    // sees only that resolved Session and responds 204; passive hang-up above
+    // still does not issue this command (R1=C1->E1).
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let interrupted_threads = Arc::new(Mutex::new(Vec::<String>::new()));
+    let rt = Arc::new(HangupProbe {
+        observed_close: Arc::new(AtomicBool::new(false)),
+        interrupted: interrupted.clone(),
+        interrupted_threads: interrupted_threads.clone(),
+        closed: Arc::new(Notify::new()),
+        release_after_close: None,
+        finished: Arc::new(Notify::new()),
+    });
+    let app = awaken_protocol_ag_ui::router::router_with_owner_scope(rt)
+        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+            "test-workspace".into(),
+        )))
+        .layer(axum::Extension(awaken_tenancy::ResolvedResourceId(
+            "sesn_existing".into(),
+        )));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/v1/ag-ui/threads/customer-thread/runs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(interrupted.load(Ordering::SeqCst), "R1");
+    assert_eq!(
+        interrupted_threads.lock().unwrap().as_slice(),
+        &["sesn_existing"]
     );
 }

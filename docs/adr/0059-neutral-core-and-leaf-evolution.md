@@ -248,3 +248,37 @@ removes the former admitted-but-unfenced path: an internal MCP server can author
 `tools/call` from durable running truth while a hosted Worker executes, without a public
 callback URL, protocol-specific lifecycle store, or relaxed running-Run guard. Read-only
 history, pending, model, and usage queries remain activity-free.
+
+## Amendment 2 — A hosted Run outlives its observation stream (2026-10-06)
+
+AI SDK and AG-UI each had a local copy of the Local/OwnerScoped Run selector
+and unconditionally called `RunApplication::interrupt` when their SSE receiver
+closed. In a hosted Session, that receiver is only a best-effort observation
+of a durably admitted Run. A browser, proxy, or device disconnect could
+therefore turn a still-running provider request into a durable cancellation
+while its physical effect was unknown. The dispatch/Session stop-evidence
+fence must then refuse replay; it cannot infer provider quiescence from the
+HTTP stream ending.
+
+The existing `awaken-session-application-contract` owns one shared Run mode
+selection for those two adapters. A Local, connection-bound turn still
+interrupts when its client disconnects. An OwnerScoped, durable Session Run
+does not: the adapter releases its live stream, while the already-admitted
+Run continues under the Session/Dispatch claim, bounded inference budget,
+commit, and physical-stop rules. A browser Stop previously used the same HTTP
+abort as a passive disconnect, so it now sends `DELETE` to that Thread's
+existing AI SDK Run path first; AG-UI exposes the same exact-Thread method.
+The existing ApplicationAccess guard requires the `thread.run` operation and
+the exact bound Session for this command, rejecting foreign or read-only
+capabilities. Both methods invoke the one `RunApplication::interrupt` port;
+Flow closes its local stream only after the stop command succeeds. Explicit
+user cancellation therefore remains available without turning passive
+transport loss into an implicit command. Reconnection observes or idempotently rejoins the original Run;
+it never creates a second model or tool authority. A2A's Task stream retains
+its own Task publication lifecycle and explicit `tasks/cancel` boundary;
+this amendment does not recast its Task as an AI SDK/AG-UI Session stream.
+
+The decision changes no Run identity, event store, recovery queue, terminal
+projection, or provider retry rule. A client hang-up is no longer evidence of
+Hosted Run termination, and an unknown provider effect remains fenced until
+its existing physical/effect evidence is resolved.

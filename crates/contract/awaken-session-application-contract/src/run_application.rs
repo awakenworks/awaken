@@ -98,7 +98,9 @@ pub trait RunApplication: Send + Sync {
 /// exact Workspace and an already-existing Session. A composition root must
 /// install this port explicitly; an unscoped Run port cannot silently accept
 /// or downgrade such a request. Both methods reuse the Session application's
-/// ordinary admission and resume state machines.
+/// ordinary admission and resume state machines. A production composition
+/// must back this port with durable SessionRun admission: public adapters may
+/// detach best-effort streams without cancelling its already-owned Run.
 #[async_trait]
 pub trait OwnerScopedRunApplication: RunApplication {
     async fn run_streaming_for_owner(
@@ -131,6 +133,31 @@ pub trait OwnerScopedRunApplication: RunApplication {
     ) -> Result<StepOutcome, RunApplicationError> {
         self.resume_for_owner(owner_scope, operation_id, thread, tool_use_id, resume)
             .await
+    }
+}
+
+/// The existing public stream adapters select their one Run port here. A local
+/// turn is connection-bound; an owner-scoped Session Run has a durable owner
+/// beyond the lifetime of its best-effort browser stream.
+#[derive(Clone)]
+pub enum RunMode {
+    Local,
+    OwnerScoped(Arc<dyn OwnerScopedRunApplication>),
+}
+
+impl RunMode {
+    /// A passive stream disconnect is not an explicit Run cancellation. Only
+    /// the local, connection-bound path interrupts its in-flight turn; the
+    /// owner-scoped path leaves settlement to Session/Dispatch authority.
+    pub async fn on_stream_disconnect(
+        &self,
+        runtime: &dyn RunApplication,
+        thread: &str,
+    ) -> Result<(), RunApplicationError> {
+        match self {
+            Self::Local => runtime.interrupt(thread).await,
+            Self::OwnerScoped(_) => Ok(()),
+        }
     }
 }
 
@@ -244,6 +271,96 @@ fn public_millisecond_projection_is_exact_bounded_and_nonwrapping() {
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct DisconnectProbe(AtomicUsize);
+
+    #[async_trait]
+    impl RunApplication for DisconnectProbe {
+        async fn run(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<String>,
+            _: Vec<Message>,
+        ) -> Result<StepOutcome, RunApplicationError> {
+            unreachable!()
+        }
+
+        async fn resume(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: RunResume,
+        ) -> Result<StepOutcome, RunApplicationError> {
+            unreachable!()
+        }
+
+        async fn interrupt(&self, _: &str) -> Result<(), RunApplicationError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn pending(&self, _: &str) -> Result<Option<Pending>, RunApplicationError> {
+            Ok(None)
+        }
+
+        async fn history(&self, _: &str) -> Result<Vec<Message>, RunApplicationError> {
+            Ok(Vec::new())
+        }
+
+        fn model(&self) -> String {
+            "disconnect-probe".into()
+        }
+    }
+
+    #[async_trait]
+    impl OwnerScopedRunApplication for DisconnectProbe {
+        async fn run_streaming_for_owner(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<String>,
+            _: Vec<Message>,
+            _: Arc<dyn StreamSink>,
+        ) -> Result<StepOutcome, RunApplicationError> {
+            unreachable!()
+        }
+
+        async fn resume_for_owner(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: RunResume,
+        ) -> Result<StepOutcome, RunApplicationError> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_disconnect_preserves_only_durable_owner_scoped_runs() {
+        // Causes: C1 Local stream closes; C2 owner-scoped stream closes; C3 an
+        // explicit stop targets the owner-scoped Run. Effects: E1 C1 invokes
+        // interrupt once; E2 C2 adds no interrupt; E3 C3 still invokes the
+        // same interrupt port. Rules R1=C1->E1, R2=C2->E2, R3=C3->E3.
+        let runtime = Arc::new(DisconnectProbe(AtomicUsize::new(0)));
+        RunMode::Local
+            .on_stream_disconnect(runtime.as_ref(), "thread")
+            .await
+            .unwrap();
+        assert_eq!(runtime.0.load(Ordering::SeqCst), 1, "R1");
+        RunMode::OwnerScoped(runtime.clone())
+            .on_stream_disconnect(runtime.as_ref(), "thread")
+            .await
+            .unwrap();
+        assert_eq!(runtime.0.load(Ordering::SeqCst), 1, "R2");
+        runtime.interrupt("thread").await.unwrap();
+        assert_eq!(runtime.0.load(Ordering::SeqCst), 2, "R3");
+    }
 
     #[test]
     fn terminal_fact_is_derived_from_one_run_state_authority() {

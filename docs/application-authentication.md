@@ -174,6 +174,12 @@ const chat = useChat({
 
 Keep the application token in memory. Never put a service API key in browser
 source, browser storage, a mobile bundle, or a public environment variable.
+For a deliberate Stop, send `DELETE /v1/ai-sdk/threads/{thread_id}/runs` with
+that same application token and wait for `204` before calling `chat.stop()`.
+Aborting the response by itself only detaches from an owner-scoped durable
+Run. A refused Stop must leave the stream attached and report the refusal.
+The existing `thread.run` grant and exact Thread binding authorize this
+command; no separate browser cancellation credential exists.
 
 ## Frontend AG-UI
 
@@ -194,6 +200,11 @@ const agent = new HttpAgent({
   headers: { Authorization: `Bearer ${access_token}` },
 });
 ```
+
+An AG-UI client that intends to stop a hosted Run likewise sends
+`DELETE /v1/ag-ui/threads/{thread_id}/runs` under its exact application
+capability before closing the stream. A transient stream disconnect alone
+does not cancel the owner-scoped Run.
 
 On reload, obtain a new token for the *same* backend-owned binding, read
 `GET /v1/ag-ui/threads/{thread_id}/messages`, and supply those committed
