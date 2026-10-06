@@ -138,6 +138,7 @@ class EvidenceTests(unittest.TestCase):
             # cargo.
             f"source {shlex.quote(str(self.root / 'scripts/ci/_cargo_target.sh'))}\n"
             f"CARGO_TARGET_DIR={shlex.quote(str(target))}\n"
+            f"formal_artifact_dir={shlex.quote(str(bindir))}\n"
             "kani_jobs=1\n"
             "kani_batch_timeout_seconds=37\n"
             "formal_failure_kind= formal_failure_stage= formal_failure_subject= "
@@ -165,24 +166,30 @@ class EvidenceTests(unittest.TestCase):
 
     def test_kani_batch_outcomes_preserve_the_exact_first_failure(self):
         # Causes: C1 wrapper success, C2 ordinary Cargo failure, C3 deadline
-        # status 124. Effects: E1 no failure metadata; E2 exact 23 plus
-        # execution-failed; E3 exact 124 plus resource-bound/package/deadline.
-        # Constraints: 124 is the shared deadline contract and no later receipt
-        # step may replace it. Decision rules: R1=C1->E1, R2=C2->E2, R3=C3->E3.
+        # status 124, C4 externally signaled Cargo status 143. Effects: E1 no
+        # failure metadata or transcript, E2 exact 23 plus execution-failed,
+        # E3 exact 124 plus resource-bound/package/deadline, E4 exact 143 plus
+        # execution-failed. Every failure retains the batch transcript in the
+        # one formal artifact directory. Decision rules R1-R4 map C1-C4 to
+        # E1-E4; no later receipt step may replace the first cause.
         source = (self.root / "scripts/ci/check_formal.sh").read_text()
         function = nested_shell_function(source, "run_kani")
         for wrapped_status, expected in (
             (0, (0, "", "", "", "")),
             (23, (23, "execution-failed", "cargo-kani", "awaken-provider", "")),
             (124, (124, "resource-bound", "cargo-kani", "awaken-provider", "37")),
+            (143, (143, "execution-failed", "cargo-kani", "awaken-provider", "")),
         ):
             with self.subTest(wrapped_status=wrapped_status):
+                artifact_dir = Path(self.temporary.name) / f"kani-artifacts-{wrapped_status}"
+                artifact_dir.mkdir()
                 script = (
                     "set -uo pipefail\nCARGO_TARGET_DIR=/build/fixture\nkani_jobs=1\n"
+                    f"formal_artifact_dir={shlex.quote(str(artifact_dir))}\n"
                     "kani_batch_timeout_seconds=37\n"
                     "formal_failure_kind= formal_failure_stage= formal_failure_subject= "
                     "formal_failure_deadline_seconds=\n"
-                    f"run_with_deadline() {{ return {wrapped_status}; }}\n"
+                    f"run_with_deadline() {{ printf 'proof transcript\\n'; return {wrapped_status}; }}\n"
                     + function
                     + "\nrun_kani awaken-provider --harness exact\n"
                     "status=$?\nprintf '%s\\n' \"$status\" \"$formal_failure_kind\" "
@@ -192,8 +199,13 @@ class EvidenceTests(unittest.TestCase):
                 result = subprocess.run(["/bin/bash", "-c", script], capture_output=True,
                                         text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(tuple([int(result.stdout.splitlines()[0]),
-                                        *result.stdout.splitlines()[1:]]), expected)
+                lines = result.stdout.splitlines()[-5:]
+                self.assertEqual(tuple([int(lines[0]), *lines[1:]]), expected)
+                transcripts = list(artifact_dir.glob("kani-awaken-provider.*.log"))
+                self.assertEqual(len(transcripts), 0 if wrapped_status == 0 else 1)
+                if transcripts:
+                    self.assertEqual(transcripts[0].read_text(), "proof transcript\n")
+                    self.assertIn(str(transcripts[0]), result.stderr)
 
     def test_pinned_solver_selection_and_strict_missing_tool_policy(self):
         # Z1 installed exact version + proof success => invoke the exact harness.
@@ -230,6 +242,7 @@ class EvidenceTests(unittest.TestCase):
                     tool.chmod(0o755)
                 calls = bindir / "calls"
                 script = f"set -euo pipefail\nmissing=0\nrequire_tools={strict}\nz3_version={shlex.quote(version)}\n"
+                script += f"formal_artifact_dir={shlex.quote(str(bindir))}\n"
                 script += "kani_jobs=1\nkani_batch_timeout_seconds=1\nawaken_configure_kani_driver_target() { :; }\n"
                 script += "run_with_deadline() { shift; printf '%s\\n' \"$*\" > \"$CALLS\"; return \"$PROOF_EXIT\"; }\n"
                 result = subprocess.run(["/bin/bash", "-c", script + selection + strict_check],
@@ -269,6 +282,7 @@ class EvidenceTests(unittest.TestCase):
                     (bindir / solver).chmod(0o755)
                 calls = bindir / "calls"
                 script = (f"set -euo pipefail\nmissing=0\nrequire_tools={strict}\nz3_version=unused\n"
+                          f"formal_artifact_dir={shlex.quote(str(bindir))}\n"
                           "kani_solver_tools=/released/kani/bin\nkani_jobs=1\nkani_batch_timeout_seconds=1\n"
                           "awaken_configure_kani_driver_target() { :; }\n"
                           "run_with_deadline() { shift; printf '%s\\n' \"$*\" > \"$CALLS\"; }\n")
@@ -658,17 +672,31 @@ class EvidenceTests(unittest.TestCase):
                 self.assertEqual((failure["status"], failure["exit_code"]), ("failed", expected_exit))
 
     def test_external_group_termination_cannot_certify_partial_formal_run(self):
-        # C1 the receipt and EXIT owner are installed; C2 an external TERM
-        # reaches the gate and its active child as one process group before the
-        # last proof. E1 the process exits 143, E2 the exact clean source gets
-        # Not-passed, E3 its diagnostic bundle seals Failed. R1=C1+C2->E1-E3.
+        # C1 the receipt and EXIT owner are installed; C2 the active child has
+        # installed its TERM disposition before an external TERM reaches the
+        # gate and child as one process group before the last proof; C3 the
+        # host may concurrently compile other workspaces.
+        # E1 the process exits 143, E2 the exact clean source gets Not-passed,
+        # E3 its diagnostic bundle seals Failed within the same 30-second
+        # fixture deadline used by neighboring process tests. R1=C1+C2->E1-E3
+        # for either value of C3.
         # This is the real interruption shape that once left a strict Passed
-        # JSON after only manifest self-tests. The child starts before `ready`
-        # so the group signal reaches both owners; no proof is simulated Passed.
+        # JSON after only manifest self-tests. The child itself emits `ready`
+        # after installing its TERM disposition, so a signal cannot race with
+        # its fork/exec boundary; no proof is simulated Passed.
         initialization = formal_gate_initialization(self.root)
         path = self.root / "target/test-timings/formal-run.json"
+        child_script = (
+            "import signal, time; "
+            "signal.signal(signal.SIGTERM, signal.SIG_DFL); "
+            "print('ready', flush=True); time.sleep(30)"
+        )
+        child_command = (
+            f"{shlex.quote(sys.executable)} -u -c {shlex.quote(child_script)} "
+            '& child=$!\nwait "$child"\n'
+        )
         process = subprocess.Popen(
-            ["bash", "-c", initialization + "\nsleep 30 & child=$!\nprintf 'ready\\n'\nwait \"$child\"\n",
+            ["bash", "-c", initialization + "\n" + child_command,
              "scripts/ci/check_formal.sh", "--require-tools"],
             cwd=self.root,
             env=dict(os.environ, AWAKEN_FORMAL_RUN_EVIDENCE=str(path)),
@@ -686,7 +714,7 @@ class EvidenceTests(unittest.TestCase):
                 self.assertTrue(chunk, "formal fixture exited before readiness")
                 ready += chunk
             os.killpg(process.pid, signal.SIGTERM)
-            _, stderr = process.communicate(timeout=10)
+            _, stderr = process.communicate(timeout=30)
             self.assertEqual(process.returncode, 143, stderr.decode())
             record = json.loads(path.read_text())
             self.assertEqual(record["status"], "not-passed")

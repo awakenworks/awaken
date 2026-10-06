@@ -146,7 +146,11 @@ async fn delegation_factory_wires_the_fixed_managed_coordination_surface() {
         "go research this",
     )
     .await;
-    assert_eq!(tool_names(&frames), ["list_agents", "send_message"]);
+    assert_eq!(
+        tool_names(&frames),
+        ["list_agents", "send_message"],
+        "committed AI SDK frames: {frames:?}"
+    );
     let reply = assistant_text(&frames);
     assert!(reply.starts_with("coordination accepted: "), "{reply}");
     assert!(!reply.contains("researched: 42"), "{reply}");

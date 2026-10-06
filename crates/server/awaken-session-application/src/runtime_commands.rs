@@ -60,8 +60,6 @@ pub struct SessionExecutionObservation {
     pub execution_model_ref: String,
     pub backend_ref: Option<String>,
     pub execution: awaken_session_state_contract::SessionExecutionState,
-    pub repository_publication:
-        Option<awaken_session_state_contract::SessionRepositoryPublicationReceipt>,
     pub runs: Vec<SessionRunExecutionObservation>,
 }
 
@@ -393,16 +391,6 @@ impl SessionApplication {
             })
             .transpose()?
             .unwrap_or_default();
-        let repository_publication = recovered
-            .session
-            .terminal_cleanup
-            .repository_publication_receipt(&recovered.session.session_id)
-            .map_err(|error| {
-                crate::SessionProjectionRecoveryError::Unavailable(format!(
-                    "exact Session repository publication evidence is invalid: {error}"
-                ))
-            })?
-            .cloned();
         Ok(SessionExecutionObservation {
             session_id: recovered.session.session_id.to_string(),
             session_revision: recovered.session.revision.0,
@@ -412,7 +400,6 @@ impl SessionApplication {
             execution_model_ref: baseline.execution_model_ref.clone(),
             backend_ref: baseline.runtime.clone(),
             execution: recovered.session.execution,
-            repository_publication,
             runs,
         })
     }
