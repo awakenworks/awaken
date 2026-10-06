@@ -589,10 +589,6 @@ DIRECT_TRANSPORT_EXEMPTIONS = {
         "cannot express that request, while construction still uses the one "
         "awaken-outbound-http rustls builder"
     ),
-    "awaken-session-executor": (
-        "the MCP relay is a reverse proxy: it forwards a caller-chosen method, "
-        "header set and raw body, none of which the JSON client models"
-    ),
     "awaken-session-mcp": (
         "the MCP relay is a reverse proxy: it forwards a caller-chosen method, "
         "header set and raw body, none of which the JSON client models"
