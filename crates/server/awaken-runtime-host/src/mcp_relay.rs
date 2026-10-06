@@ -1510,9 +1510,9 @@ mod tests {
         );
     }
 
-    /// Live end-to-end against the REAL GitHub MCP (`api.githubcopilot.com/mcp/`), gated on
-    /// `AWAKEN_GITHUB_MCP_TOKEN` (a fine-grained PAT / installation token) — self-skips
-    /// otherwise. Proves the Managed path: the workload sends no credential and the relay
+    /// Live end-to-end against the REAL GitHub MCP (`api.githubcopilot.com/mcp/`).
+    /// Explicit selection requires `AWAKEN_GITHUB_MCP_TOKEN` (a fine-grained PAT or
+    /// installation token). Proves the Managed path: the workload sends no credential and the relay
     /// injects the real token, so GitHub MCP authenticates the call.
     #[tokio::test]
     #[ignore = "requires an explicitly supplied live GitHub MCP credential"]
