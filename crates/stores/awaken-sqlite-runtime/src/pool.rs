@@ -30,6 +30,7 @@ static JOURNAL_MODE_CHANGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_n
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Location {
     File(PathBuf),
+    ReadOnlyFile(PathBuf),
     Memory,
 }
 
@@ -56,6 +57,16 @@ impl EmbeddedSqlite {
         }
     }
 
+    /// An existing database owned by someone else, opened read-only. Nothing is
+    /// created and the journal mode is never changed, so reading it cannot write
+    /// to the file.
+    #[must_use]
+    pub fn read_only(path: impl AsRef<Path>) -> Self {
+        Self {
+            location: Location::ReadOnlyFile(path.as_ref().to_path_buf()),
+        }
+    }
+
     /// A private in-memory database that lives as long as the returned pool.
     #[must_use]
     pub const fn memory() -> Self {
@@ -70,6 +81,9 @@ impl EmbeddedSqlite {
             Location::File(path) => SqliteConnectOptions::new()
                 .filename(path)
                 .create_if_missing(true),
+            Location::ReadOnlyFile(path) => {
+                SqliteConnectOptions::new().filename(path).read_only(true)
+            }
             Location::Memory => SqliteConnectOptions::new().in_memory(true),
         }
         .busy_timeout(WRITE_WAIT)
@@ -188,6 +202,51 @@ mod tests {
             "P3"
         );
         transaction.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_read_only_database_is_neither_written_nor_switched_to_wal() {
+        // R1 an existing rollback-journal file opened read-only keeps its journal
+        // mode; R2 a write through the pool fails; R3 a missing file is not created.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("foreign.db");
+        {
+            let owner = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    SqliteConnectOptions::new()
+                        .filename(&path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+            sqlx::query("CREATE TABLE t (id INTEGER)")
+                .execute(&owner)
+                .await
+                .unwrap();
+            owner.close().await;
+        }
+        let reader = EmbeddedSqlite::read_only(&path).open().await.unwrap();
+        assert_eq!(
+            pragma_text(&reader, "journal_mode")
+                .await
+                .to_ascii_lowercase(),
+            "delete",
+            "R1"
+        );
+        assert!(
+            sqlx::query("INSERT INTO t VALUES (1)")
+                .execute(&reader)
+                .await
+                .is_err(),
+            "R2"
+        );
+        let missing = directory.path().join("missing.db");
+        assert!(
+            EmbeddedSqlite::read_only(&missing).open().await.is_err(),
+            "R3"
+        );
+        assert!(!missing.exists(), "R3");
     }
 
     #[tokio::test]
