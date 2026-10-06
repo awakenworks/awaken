@@ -1236,6 +1236,239 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
 }
 
 #[tokio::test]
+async fn missing_handle_reconstructs_a_live_original_pod_and_claim_for_terminal_disposal() {
+    /* Live provider decision rule KPV4. Causes: C1 one broker-mode typed
+     * fixture forwards the original Pod/PVC Creates to a real API and retains
+     * both API-assigned UIDs; C2 the replacement receives its complete
+     * in-memory join; C3 frozen plan/effect and live immutable projections
+     * still match. Effects: E1 terminal preparation returns one typed V2
+     * Pod/PVC handle; E2 the existing Pod cleanup gate and UID-fenced disposal
+     * remove both objects. Rule KPV4a=C1+C2+C3->E1+E2. Unit tests own every
+     * incomplete/foreign decision row; the independent ledger live test owns
+     * durable CAS. This row qualifies real API defaulting and cleanup but its
+     * in-memory join is not a product Worker-exit receipt. */
+    use awaken_sandbox_container::RuntimeError;
+    use awaken_sandbox_container::k8s::{
+        CreateTicket, CreateTicketRequest, K8sCreateRequest, K8sCreateResponse, K8sCreateTransport,
+        RequestJoin, TicketResult, TicketStatus,
+    };
+
+    struct JoinedPair {
+        client: kube::Client,
+        namespace: String,
+        tickets: std::sync::Mutex<Vec<CreateTicket>>,
+        sealed: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl K8sCreateTransport for JoinedPair {
+        async fn create(
+            &self,
+            request: K8sCreateRequest,
+        ) -> Result<K8sCreateResponse, RuntimeError> {
+            use std::sync::atomic::Ordering;
+            if self.sealed.load(Ordering::SeqCst) {
+                return Err(RuntimeError::Backend(
+                    "terminal recovery must not admit another Create".into(),
+                ));
+            }
+            let pod_path = format!("/api/v1/namespaces/{}/pods", self.namespace);
+            let claim_path = format!(
+                "/api/v1/namespaces/{}/persistentvolumeclaims",
+                self.namespace
+            );
+            let (resource, name, uid, object) = if request.path == pod_path {
+                let desired: k8s_openapi::api::core::v1::Pod =
+                    serde_json::from_value(request.object)
+                        .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+                let name = desired.metadata.name.clone().ok_or_else(|| {
+                    RuntimeError::Backend("test Pod Create omitted its exact name".into())
+                })?;
+                let created = kube::Api::namespaced(self.client.clone(), &self.namespace)
+                    .create(&kube::api::PostParams::default(), &desired)
+                    .await
+                    .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+                (
+                    "pods",
+                    name,
+                    created.metadata.uid.clone(),
+                    serde_json::to_value(created)
+                        .map_err(|error| RuntimeError::Backend(error.to_string()))?,
+                )
+            } else if request.path == claim_path {
+                let desired: k8s_openapi::api::core::v1::PersistentVolumeClaim =
+                    serde_json::from_value(request.object)
+                        .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+                let name = desired.metadata.name.clone().ok_or_else(|| {
+                    RuntimeError::Backend("test PVC Create omitted its exact name".into())
+                })?;
+                let created = kube::Api::namespaced(self.client.clone(), &self.namespace)
+                    .create(&kube::api::PostParams::default(), &desired)
+                    .await
+                    .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+                (
+                    "persistentvolumeclaims",
+                    name,
+                    created.metadata.uid.clone(),
+                    serde_json::to_value(created)
+                        .map_err(|error| RuntimeError::Backend(error.to_string()))?,
+                )
+            } else {
+                return Err(RuntimeError::Backend(
+                    "test broker rejects another Kubernetes collection".into(),
+                ));
+            };
+            let uid =
+                uid.ok_or_else(|| RuntimeError::Backend("Kubernetes Create has no UID".into()))?;
+            self.tickets.lock().unwrap().push(CreateTicket {
+                request: CreateTicketRequest::new(
+                    "live-joined-pair",
+                    resource,
+                    &self.namespace,
+                    name,
+                    "a".repeat(64),
+                )?,
+                status: TicketStatus::Finished(TicketResult::Created { uid }),
+                origin: Default::default(),
+                isolation_id: String::new(),
+                isolation_pending: false,
+            });
+            Ok(K8sCreateResponse {
+                status: 201,
+                object,
+            })
+        }
+
+        async fn seal_predecessor(
+            &self,
+            _: &str,
+            _: &awaken_sandbox_container::ContainerEffectFence,
+            _: &str,
+        ) -> Result<RequestJoin, RuntimeError> {
+            self.sealed.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(RequestJoin::Complete(self.tickets.lock().unwrap().clone()))
+        }
+    }
+
+    let Some(first_runtime) = live_runtime().await else {
+        return;
+    };
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
+    let volume = K8sContinuationVolume {
+        storage_class_name: None,
+        size: "1Gi".into(),
+    };
+    let client = kube::Client::try_default().await.unwrap();
+    let joined = Arc::new(JoinedPair {
+        client: client.clone(),
+        namespace: namespace.clone(),
+        tickets: std::sync::Mutex::new(Vec::new()),
+        sealed: std::sync::atomic::AtomicBool::new(false),
+    });
+    let first_provider = ContainerProvider::new(
+        Arc::new(
+            first_runtime
+                .with_continuation_volume(volume.clone())
+                .with_create_transport(joined.clone())
+                .unwrap(),
+        ),
+        fixture_image(),
+    )
+    .with_clock(awaken_time::system_clock());
+    let scope = format!("joined-pvc-{}", uuid::Uuid::new_v4());
+    let frozen = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
+    let create_fence = effect_fence(&scope, "create", "joined-owner", 1);
+    let first = ContainerEnvironmentProvider::create_environment_for_effect(
+        &first_provider,
+        &frozen,
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
+    )
+    .await
+    .expect("KPV4 C1 real Pod/PVC Create");
+    let first_handle = first.handle();
+    let pod_name = container_id(&first_handle);
+    let (pod_uid, claim_uid) = match first_handle
+        .container_payload()
+        .unwrap()
+        .runtime_handle
+        .as_ref()
+    {
+        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
+            pod_uid,
+            claim_uid: Some(claim_uid),
+        }) => (pod_uid.clone(), claim_uid.clone()),
+        other => panic!("KPV4 C1 expected typed original pair: {other:?}"),
+    };
+    let pods = kube::Api::<k8s_openapi::api::core::v1::Pod>::namespaced(client.clone(), &namespace);
+    let claims = kube::Api::<k8s_openapi::api::core::v1::PersistentVolumeClaim>::namespaced(
+        client, &namespace,
+    );
+    let claim_name = only_bound_claim_name(&pods.get(&pod_name).await.unwrap());
+    assert_eq!(
+        claims
+            .get(&claim_name)
+            .await
+            .unwrap()
+            .metadata
+            .uid
+            .as_deref(),
+        Some(claim_uid.as_str()),
+        "KPV4 C1 original PVC remains present"
+    );
+    drop(first);
+
+    assert_eq!(
+        joined.tickets.lock().unwrap().len(),
+        2,
+        "KPV4 C2 two API UID results"
+    );
+    let replacement = live_runtime()
+        .await
+        .expect("KPV4 replacement reaches the same Kubernetes API")
+        .with_continuation_volume(volume)
+        .with_create_transport(joined)
+        .unwrap();
+    let replacement_provider = ContainerProvider::new(Arc::new(replacement), fixture_image())
+        .with_clock(awaken_time::system_clock());
+    let terminal_fence = effect_fence(&scope, "terminal", "joined-owner", 2);
+    let terminal = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        &replacement_provider,
+        &frozen,
+        None,
+        Some(&create_fence),
+        &terminal_fence,
+        &EffectAuthority::new(&terminal_fence),
+    )
+    .await
+    .expect("KPV4a complete joined pair prepares terminal cleanup")
+    .expect("KPV4a original pair has a typed terminal owner");
+    assert_eq!(
+        terminal.handle().container_physical_incarnation().unwrap(),
+        pod_uid,
+        "KPV4a exact original Pod UID"
+    );
+    terminal
+        .prepare_disposal_for_effect(&terminal_fence, &EffectAuthority::new(&terminal_fence))
+        .await
+        .expect("KPV4a original terminal preparation");
+    let authorization = disposal_authorization(&terminal_fence);
+    terminal
+        .dispose_for_effect(
+            &authorization,
+            &EffectAuthority::new(authorization.effect_fence()),
+        )
+        .await
+        .expect("KPV4a existing UID-fenced disposal");
+    assert!(pods.get_opt(&pod_name).await.unwrap().is_none(), "KPV4 E2");
+    assert!(
+        claims.get_opt(&claim_name).await.unwrap().is_none(),
+        "KPV4 E2"
+    );
+}
+
+#[tokio::test]
 async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes_cleanup() {
     /* Absent-primary terminal table KPV5. Causes: C1 the durable V2 handle
      * identifies Pod UID A plus retained claim UID P; C2 an exact API fault cut
@@ -1460,6 +1693,12 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
                 awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 { claim_uid, .. } =>
                     claim_uid.as_deref(),
                 awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuation { .. } => None,
+                // KPV5b cause: authorized Rebuild has a runnable replacement
+                // Pod. Effect: a terminal-only guarded claim is inadmissible;
+                // it can authorize cleanup but cannot serve this Rebuild.
+                awaken_sandbox_container::ContainerContinuationHandle::KubernetesGuardedClaim(_) => {
+                    panic!("KPV5b Rebuild returned a terminal-only guarded claim")
+                }
                 awaken_sandbox_container::ContainerContinuationHandle::HostBindRestoration(_) => {
                     panic!("KPV5b Kubernetes replacement returned a host-bind handle")
                 }

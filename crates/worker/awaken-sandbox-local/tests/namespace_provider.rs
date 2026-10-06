@@ -157,6 +157,9 @@ async fn opaque_process_writes_to_the_artifact_scan_output_root() {
 /// running, then explicit KILL ends it. All rows also require the same confined
 /// output publication and post-exit signal acceptance. Ready is written only
 /// after traps are installed; no arbitrary SDK/file-flush delay can pass a row.
+/// C5 the child is still writing ready.txt between the independent artifact
+/// listing and content-addressed read; R0=C5 -> retry NotFound or incomplete
+/// bytes, never signal until an exact "ready" read succeeds.
 #[tokio::test]
 async fn namespace_signals_reach_the_program_and_preserve_forced_cleanup() {
     if !os_native_sandbox_works().await {
@@ -193,9 +196,12 @@ async fn namespace_signals_reach_the_program_and_preserve_forced_cleanup() {
                 loop {
                     let files = sandbox.artifacts().await.unwrap();
                     if let Some(file) = files.iter().find(|file| file.path.ends_with("/ready.txt"))
-                        && sandbox.read_artifact(&file.id).await.unwrap() == b"ready"
                     {
-                        break;
+                        match sandbox.read_artifact(&file.id).await {
+                            Ok(bytes) if bytes == b"ready" => break,
+                            Ok(_) | Err(pc::SandboxError::NotFound(_)) => {}
+                            Err(error) => panic!("ready artifact observation failed: {error}"),
+                        }
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 }
@@ -259,7 +265,8 @@ async fn namespace_signals_reach_the_program_and_preserve_forced_cleanup() {
             assert_eq!(
                 marker.as_deref(),
                 settled.then_some(b"settled".as_slice()),
-                "opaque={opaque}, signal={signal:?}, ignores={ignores}"
+                "opaque={opaque}, signal={signal:?}, ignores={ignores}, process={}, wait={status:?}",
+                process.id()
             );
             let status = status.unwrap().unwrap();
             if settled {

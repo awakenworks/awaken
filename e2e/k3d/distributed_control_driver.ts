@@ -755,6 +755,15 @@ async function disposeBatch(base: string, encodedSessionIds: string) {
   console.log(`OK disposed auxiliary batch Sessions ${sessionIds.length}`);
 }
 
+async function createIndependentSession(base: string, environmentId: string) {
+  // N12: a retained predecessor has Unknown physical closure after a hard
+  // node loss. The same official SDK Session-create owner admits one unrelated
+  // identity; it never replays the predecessor's Event or borrows its PVC.
+  const [sessionId] = await createParallelSessions(clientFor(base), [environmentId]);
+  assert.equal(typeof sessionId, 'string', 'one independent Session identity');
+  console.log(`OK independent=${sessionId}`);
+}
+
 export function auditLoadResults(
   histories: any[][],
   markersBySession: string[][],
@@ -1020,6 +1029,7 @@ async function main() {
     case 'verify-native-inflight': return verifyNativeInFlight(base, args[0], args[1], args[2]);
     case 'batch': return batch(base, args[0], args[1], args[2], Number(args[3]));
     case 'dispose-batch': return disposeBatch(base, args[0]);
+    case 'create-independent-session': return createIndependentSession(base, args[0]);
     case 'load': return load(base);
     default: throw new Error(`unknown mode ${mode}`);
   }

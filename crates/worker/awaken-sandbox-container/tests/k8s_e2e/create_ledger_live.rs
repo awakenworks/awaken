@@ -1,8 +1,146 @@
 use super::*;
 use awaken_sandbox_container::k8s::{
-    CreateTicketRequest, K8sLedgerBinding, K8sWorkerCreateLedger, RequestJoin, TicketAdmission,
-    TicketResult,
+    CreateTicketRequest, ISOLATION_LABEL, K8sCreateRequest, K8sCreateResponse, K8sCreateTransport,
+    K8sLedgerBinding, K8sWorkerCreateLedger, RequestJoin, TicketAdmission, TicketResult,
 };
+
+const GUARDED_CLAIM_GROUP: &str = "guarded-claim-effect";
+
+/// The real API accepts the original PVC while the old Worker loses its Pod
+/// Create response. The same persisted ledger is reopened for terminal join.
+#[derive(Clone)]
+struct ClaimOnlyBroker {
+    client: kube::Client,
+    ledger: K8sWorkerCreateLedger,
+    sandbox_namespace: String,
+    ledger_name: String,
+    ledger_uid: String,
+    scope: String,
+    predecessor: awaken_sandbox_container::ContainerEffectFence,
+    created_claim: Arc<Mutex<Option<(String, String)>>>,
+}
+
+impl ClaimOnlyBroker {
+    fn binding(&self) -> K8sLedgerBinding<'_> {
+        K8sLedgerBinding {
+            worker_namespace: &self.sandbox_namespace,
+            worker_name: "claim-worker",
+            worker_uid: "claim-worker-uid",
+            ledger_name: &self.ledger_name,
+            ledger_uid: &self.ledger_uid,
+            configuration_fingerprint: self.ledger.configuration_fingerprint(),
+        }
+    }
+}
+
+#[async_trait]
+impl K8sCreateTransport for ClaimOnlyBroker {
+    async fn create(
+        &self,
+        request: K8sCreateRequest,
+    ) -> Result<K8sCreateResponse, awaken_sandbox_container::RuntimeError> {
+        use awaken_sandbox_container::RuntimeError;
+        use k8s_openapi::api::core::v1::PersistentVolumeClaim;
+        use kube::Api;
+        use kube::api::PostParams;
+        if request.path.ends_with("/pods") {
+            return Err(RuntimeError::MayHaveCommitted(
+                "injected original Worker loss before Pod request admission".into(),
+            ));
+        }
+        if !request.path.ends_with("/persistentvolumeclaims") {
+            return Err(RuntimeError::Backend(
+                "claim-only fixture received another Create Kind".into(),
+            ));
+        }
+        let claim: PersistentVolumeClaim = serde_json::from_value(request.object)
+            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+        let name = claim
+            .metadata
+            .name
+            .as_deref()
+            .ok_or_else(|| RuntimeError::Backend("original PVC has no name".into()))?;
+        let ticket = CreateTicketRequest::new(
+            GUARDED_CLAIM_GROUP,
+            "persistentvolumeclaims",
+            &self.sandbox_namespace,
+            name,
+            "a".repeat(64),
+        )?;
+        if self.ledger.admit_request(self.binding(), &ticket).await? != TicketAdmission::Forward {
+            return Err(RuntimeError::Backend(
+                "original PVC did not win one durable Create ticket".into(),
+            ));
+        }
+        let created =
+            Api::<PersistentVolumeClaim>::namespaced(self.client.clone(), &self.sandbox_namespace)
+                .create(&PostParams::default(), &claim)
+                .await
+                .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+        let uid = created
+            .metadata
+            .uid
+            .clone()
+            .ok_or_else(|| RuntimeError::Backend("original PVC has no UID".into()))?;
+        self.ledger
+            .finish_request(
+                self.binding(),
+                &ticket,
+                &TicketResult::Created { uid: uid.clone() },
+            )
+            .await?;
+        *self.created_claim.lock().unwrap() = Some((name.to_owned(), uid));
+        Ok(K8sCreateResponse {
+            status: 201,
+            object: serde_json::to_value(created)
+                .map_err(|error| RuntimeError::Backend(error.to_string()))?,
+        })
+    }
+
+    async fn seal_predecessor(
+        &self,
+        scope: &str,
+        predecessor: &awaken_sandbox_container::ContainerEffectFence,
+        expected_pod_name: &str,
+    ) -> Result<RequestJoin, awaken_sandbox_container::RuntimeError> {
+        if scope != self.scope || !predecessor.same_effect_identity(&self.predecessor) {
+            return Ok(RequestJoin::Unknown);
+        }
+        self.ledger.seal_worker(self.binding()).await?;
+        self.ledger
+            .seal_group_and_join(self.binding(), GUARDED_CLAIM_GROUP)
+            .await?;
+        self.ledger
+            .reserve_terminal_claim_pod_and_join(
+                self.binding(),
+                GUARDED_CLAIM_GROUP,
+                scope,
+                expected_pod_name,
+            )
+            .await
+    }
+}
+
+const PROTECTED_OTHER_KINDS: [&str; 5] = [
+    "persistentvolumeclaims",
+    "configmaps",
+    "secrets",
+    "jobs",
+    "daemonsets",
+];
+
+fn protected_other_kind_resource(resource: &str) -> kube::core::ApiResource {
+    use kube::core::{ApiResource, GroupVersionKind};
+    let (group, kind) = match resource {
+        "persistentvolumeclaims" => ("", "PersistentVolumeClaim"),
+        "configmaps" => ("", "ConfigMap"),
+        "secrets" => ("", "Secret"),
+        "jobs" => ("batch", "Job"),
+        "daemonsets" => ("apps", "DaemonSet"),
+        _ => panic!("unsupported protected reservation Kind"),
+    };
+    ApiResource::from_gvk_with_plural(&GroupVersionKind::gvk(group, "v1", kind), resource)
+}
 
 fn generated_namespace(prefix: &str) -> k8s_openapi::api::core::v1::Namespace {
     serde_json::from_value(serde_json::json!({"metadata": {"generateName": prefix}})).unwrap()
@@ -22,6 +160,48 @@ async fn delete_namespace_by_uid(
     )
     .await?;
     Ok(())
+}
+
+/// Namespace finalization needs every aggregated APIService available. A
+/// reachable node alone can strand an otherwise empty test Namespace.
+async fn require_namespace_finalization_discovery(client: &kube::Client) {
+    use k8s_openapi::kube_aggregator::pkg::apis::apiregistration::v1::APIService;
+    let services: kube::Api<APIService> = kube::Api::all(client.clone());
+    for attempt in 0..30 {
+        let observed = services
+            .list(&kube::api::ListParams::default())
+            .await
+            .expect("APIService list must be readable before Namespace creation");
+        let unavailable = observed
+            .items
+            .iter()
+            .filter(|item| {
+                item.spec
+                    .as_ref()
+                    .and_then(|spec| spec.service.as_ref())
+                    .is_some()
+            })
+            .filter(|item| {
+                !item
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.as_ref())
+                    .is_some_and(|conditions| {
+                        conditions.iter().any(|condition| {
+                            condition.type_ == "Available" && condition.status == "True"
+                        })
+                    })
+            })
+            .map(|item| item.metadata.name.clone().unwrap_or_default())
+            .collect::<Vec<_>>();
+        if unavailable.is_empty() {
+            return;
+        }
+        if attempt == 29 {
+            panic!("namespace cleanup requires available aggregated APIs: {unavailable:?}");
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
 }
 
 #[tokio::test]
@@ -152,6 +332,9 @@ async fn worker_create_ledger_joins_api_requests_and_rejects_recreated_uid() {
         .await
         .unwrap();
     let namespaces: Api<Namespace> = Api::all(client.clone());
+    // C0 complete aggregated discovery; E0 a missing endpoint fails before
+    // generated Namespace creation rather than during task-owned cleanup.
+    require_namespace_finalization_discovery(&client).await;
     let sandbox = namespaces
         .create(
             &PostParams::default(),
@@ -294,18 +477,19 @@ async fn worker_create_ledger_joins_api_requests_and_rejects_recreated_uid() {
 }
 
 #[tokio::test]
-async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
-    // Causes: C1 a task-owned, isolated k3d cluster has the exact VAP and
-    // binding; C2 the original Pod ticket wins CAS but its Create is never
-    // sent (the crash-before-send fault cut); C3 the Worker/group are sealed;
-    // C4 the first reservation response or Coordinator process may be lost.
-    // Effects: E1 C1+C2+C3 yields one real unscheduled Pod UID and one
-    // Isolated ticket; E2 C4 replay retains that UID; E3 the active policy
-    // rejects exact dry-run deletion; E4 test-owned policy and objects are
-    // removed only after this no-original-request fixture is complete.
-    // Rules L1=C1+C2+C3->E1+E3, L2=L1+C4->E2, L3=teardown->E4. The
-    // same-name delayed-original race and policy-denial mutant are covered by
-    // the separate fault cut and unit decision table.
+async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
+    // Causes: C1 a task-owned k3d cluster has the exact VAP and binding;
+    // C2 each of the six original Kind tickets wins CAS but its Create is
+    // never sent (crash-before-send); C3 Worker/group seal; C4 replay after
+    // lost reservation response or Coordinator restart; C5 a controller
+    // advances Job/DaemonSet resourceVersion. Effects: E1 C1+C2+C3 creates
+    // six inert, exact-UID reservations with zero controller child Pods and
+    // joins six Isolated tickets;
+    // E2 C4 retains all UIDs; E3 the policy rejects exact dry-run DELETE and
+    // label-removing UPDATE on every Kind without a stale-version false fail;
+    // E4 after proof, task-owned finalizers, resources and policy are removed.
+    // Rules L1=C1+C2+C3->E1+E3, L2=L1+C4->E2, L3=C5+dry-run patch->E3,
+    // L4=teardown->E4. Delayed-original races use the separate API test.
     if std::env::var("AWAKEN_K8S_ISOLATION_E2E").as_deref() != Ok("1") {
         return;
     }
@@ -314,7 +498,7 @@ async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
         ValidatingAdmissionPolicy, ValidatingAdmissionPolicyBinding,
     };
     use k8s_openapi::api::core::v1::{Namespace, Pod};
-    use kube::api::{DeleteParams, PostParams, Preconditions};
+    use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams, Preconditions};
     use kube::{Api, ResourceExt};
     use serde::Deserialize as _;
     use std::io;
@@ -331,6 +515,9 @@ async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
     let client = awaken_sandbox_container::k8s::connect_control_client()
         .await
         .unwrap();
+    // C0 incomplete aggregated discovery blocks Namespace finalization; E0
+    // refuse before creating any of the six task-owned reservations.
+    require_namespace_finalization_discovery(&client).await;
     let policies: Api<ValidatingAdmissionPolicy> = Api::all(client.clone());
     let bindings: Api<ValidatingAdmissionPolicyBinding> = Api::all(client.clone());
     assert!(
@@ -387,6 +574,18 @@ async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
         );
         let sandbox_name = sandbox.as_ref().unwrap().name_any();
         let control_name = control.as_ref().unwrap().name_any();
+        let network_graph = format!(
+            "{}/../../../deploy/k3d/bases/sandbox-network-policy",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let installed = kubectl(&["-n", &sandbox_name, "apply", "-k", &network_graph]);
+        if !installed.status.success() {
+            return Err(io::Error::other(format!(
+                "canonical Sandbox NetworkPolicy installation failed: {}",
+                String::from_utf8_lossy(&installed.stderr)
+            ))
+            .into());
+        }
         let ledger = K8sWorkerCreateLedger::new(
             client.clone(), &control_name, &sandbox_name, "provider-isolation",
         )?;
@@ -404,42 +603,340 @@ async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
         let request = CreateTicketRequest::new(
             "old-effect", "pods", &sandbox_name, "sandbox-pod", "a".repeat(64),
         )?;
-        if ledger.admit_request(anchor, &request).await? != TicketAdmission::Forward {
-            return Err(io::Error::other("first Pod ticket did not win CAS").into());
+        let mut requests = vec![request.clone()];
+        for resource in PROTECTED_OTHER_KINDS {
+            requests.push(CreateTicketRequest::new(
+                "old-effect", resource, &sandbox_name,
+                format!("reserved-{resource}"), "a".repeat(64),
+            )?);
+        }
+        for ticket in &requests {
+            if ledger.admit_request(anchor, ticket).await? != TicketAdmission::Forward {
+                return Err(io::Error::other(format!("first {resource} ticket did not win CAS", resource = ticket.resource)).into());
+            }
         }
         ledger.seal_worker(anchor).await?;
         let _ = ledger.seal_group_and_join(anchor, "old-effect").await?;
-        let mut isolated_uid = None;
+        let mut isolated = None;
         // awaken-wait: Kubernetes policy activation is an external physical fact; each retry reads the same durable ticket join.
         for _ in 0..60 {
             let joined = ledger.isolate_sealed_group_and_join(anchor, "old-effect").await?;
-            if let RequestJoin::Complete(tickets) = joined
-                && let Some(ticket) = tickets.into_iter().find(|ticket| ticket.request == request)
-                && let awaken_sandbox_container::k8s::TicketStatus::Finished(
-                    TicketResult::Isolated { uid },
-                ) = ticket.status
-                && !ticket.isolation_pending
-            {
-                isolated_uid = Some(uid);
-                break;
+            if let RequestJoin::Complete(tickets) = joined {
+                let observed = tickets.iter().filter_map(|ticket| {
+                    if ticket.isolation_pending { return None; }
+                    match &ticket.status {
+                        awaken_sandbox_container::k8s::TicketStatus::Finished(TicketResult::Isolated { uid }) =>
+                            Some((ticket.request.resource.clone(), uid.clone())),
+                        _ => None,
+                    }
+                }).collect::<std::collections::BTreeMap<_, _>>();
+                if observed.len() == requests.len() {
+                    isolated = Some(observed);
+                    break;
+                }
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        let uid = isolated_uid.ok_or_else(|| io::Error::other("real Pod isolation did not join"))?;
+        let isolated = match isolated {
+            Some(isolated) => isolated,
+            None => {
+                let mut details = Vec::new();
+                for request in &requests {
+                    let observation = if request.resource == "pods" {
+                        let api: Api<Pod> = Api::namespaced(client.clone(), &sandbox_name);
+                        api.get_opt(&request.name).await?
+                            .map(|pod| serde_json::json!({
+                                "uid":pod.metadata.uid,"phase":pod.status.and_then(|status| status.phase),
+                                "finalizers":pod.metadata.finalizers
+                            }))
+                    } else {
+                        use kube::core::DynamicObject;
+                        let resource = protected_other_kind_resource(&request.resource);
+                        let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), &sandbox_name, &resource);
+                        api.get_opt(&request.name).await?.map(|object| {
+                            let value = serde_json::to_value(object).expect("Kubernetes object is serializable");
+                            serde_json::json!({
+                                "uid":value["metadata"]["uid"],"finalizers":value["metadata"]["finalizers"],
+                                "spec":value["spec"],"status":value["status"],
+                                "immutable":value["immutable"],"type":value["type"]
+                            })
+                        })
+                    };
+                    details.push((request.resource.clone(), ledger.ticket_for(anchor, request).await?, observation));
+                }
+                return Err(io::Error::other(format!("six real Kind isolations did not join: {details:?}")).into());
+            }
+        };
+        let uid = isolated.get("pods").ok_or_else(|| io::Error::other("Pod UID missing"))?;
         let pods: Api<Pod> = Api::namespaced(client.clone(), &sandbox_name);
         let observed = pods.get("sandbox-pod").await?;
-        if observed.metadata.uid.as_deref() != Some(&uid)
+        if observed.metadata.uid.as_deref() != Some(uid.as_str())
             || observed.spec.as_ref().and_then(|spec| spec.node_name.as_ref()).is_some()
             || observed.metadata.deletion_timestamp.is_some()
         {
             return Err(io::Error::other("isolated Pod changed its exact unbound UID").into());
         }
-        let replay = ledger.isolate_sealed_group_and_join(anchor, "old-effect").await?;
+        let child_uids = ["jobs", "daemonsets"]
+            .into_iter()
+            .filter_map(|resource| isolated.get(resource))
+            .collect::<Vec<_>>();
+        if pods.list(&ListParams::default()).await?.items.iter().any(|pod| {
+            pod.metadata.owner_references.as_ref().is_some_and(|owners| {
+                owners.iter().any(|owner| child_uids.iter().any(|uid| owner.uid.as_str() == uid.as_str()))
+            })
+        }) {
+            return Err(io::Error::other("inert controller reservation created a child Pod").into());
+        }
+        for resource in PROTECTED_OTHER_KINDS {
+            use kube::core::DynamicObject;
+            let api_resource = protected_other_kind_resource(resource);
+            let api: Api<DynamicObject> =
+                Api::namespaced_with(client.clone(), &sandbox_name, &api_resource);
+            let name = format!("reserved-{resource}");
+            let created = api.get(&name).await?;
+            let uid = isolated.get(resource).ok_or_else(|| io::Error::other("Kind UID missing"))?;
+            if created.metadata.uid.as_deref() != Some(uid.as_str()) {
+                return Err(io::Error::other(format!("{resource} isolation changed UID")).into());
+            }
+            let denied = api
+                .delete(
+                    &name,
+                    &DeleteParams {
+                        dry_run: true,
+                        preconditions: Some(Preconditions {
+                            uid: Some(uid.clone()),
+                            resource_version: None,
+                        }),
+                        ..DeleteParams::default()
+                    },
+                )
+                .await;
+            if !matches!(&denied, Err(kube::Error::Api(error))
+                if matches!(error.code, 403 | 422)
+                    && error.message.contains("awaken-create-isolation"))
+            {
+                return Err(io::Error::other(format!(
+                    "{resource} selected dry-run DELETE was not denied by policy: {denied:?}"
+                ))
+                .into());
+            }
+            let denied = api
+                .patch(
+                    &name,
+                    &PatchParams::default().dry_run(),
+                    &Patch::Merge(serde_json::json!({
+                        "metadata":{"labels":{(ISOLATION_LABEL):null}}
+                    })),
+                )
+                .await;
+            if !matches!(&denied, Err(kube::Error::Api(error))
+                if matches!(error.code, 403 | 422)
+                    && error.message.contains("awaken-create-isolation"))
+            {
+                return Err(io::Error::other(format!(
+                    "{resource} label-removing UPDATE was not denied by policy: {denied:?}"
+                ))
+                .into());
+            }
+        }
+        let replacement = K8sWorkerCreateLedger::new(
+            client.clone(), &control_name, &sandbox_name, "provider-isolation",
+        )?;
+        let replay = replacement.isolate_sealed_group_and_join(anchor, "old-effect").await?;
         if !matches!(replay, RequestJoin::Complete(tickets)
-            if tickets.len() == 1
-                && tickets[0].status == awaken_sandbox_container::k8s::TicketStatus::Finished(TicketResult::Isolated { uid }))
+            if tickets.len() == requests.len()
+                && tickets.iter().all(|ticket|
+                    !ticket.isolation_pending &&
+                    matches!(&ticket.status, awaken_sandbox_container::k8s::TicketStatus::Finished(TicketResult::Isolated { uid })
+                        if isolated.get(&ticket.request.resource) == Some(uid))))
         {
             return Err(io::Error::other("isolation replay changed the joined UID").into());
+        }
+
+        // Guarded-claim terminal table. C1 the old brokered Worker created an
+        // exact retained PVC but lost its Pod Create response; C2 its process
+        // exit lets a reopened Coordinator seal the same ConfigMap ledger;
+        // C3 the provider's inert Pod reservation wins same-name Create and
+        // remains policy-protected; C4 the Session's original terminal owner
+        // prepares, then supplies a distinct current disposal authorization;
+        // C5 that disposal response or final Session receipt is lost. Effects:
+        // E1 C1+C2+C3 yields a typed, non-runnable cleanup target and zero
+        // early PVC DELETEs; E2 !C4 yields zero DELETEs; E3 C4 deletes only
+        // the original claim UID while the guard blocks a late Pod; E4 C5
+        // replays to proved absence under the same guard. Rules GC1 all
+        // causes=>E1+E3+E4, GC2 !C2|!C3=>Unknown, GC3 !C4=>E2. Unit tables
+        // cover CAS ordering, policy/UID drift and every negative projection.
+        let claim_scope = format!("guardedclaim{}", uuid::Uuid::new_v4().simple());
+        let claim_fence = effect_fence(&claim_scope, "create", "claim-worker", 1);
+        let terminal_fence = effect_fence(&claim_scope, "terminal", "claim-worker", 2);
+        let (claim_ledger_name, claim_ledger_uid) = ledger
+            .initialize(&sandbox_name, "claim-worker", "claim-worker-uid")
+            .await?;
+        let claim_result = Arc::new(Mutex::new(None));
+        let broker = Arc::new(ClaimOnlyBroker {
+            client: client.clone(),
+            ledger: ledger.clone(),
+            sandbox_namespace: sandbox_name.clone(),
+            ledger_name: claim_ledger_name,
+            ledger_uid: claim_ledger_uid,
+            scope: claim_scope.clone(),
+            predecessor: claim_fence.clone(),
+            created_claim: claim_result.clone(),
+        });
+        let volume = awaken_sandbox_container::K8sContinuationVolume {
+            storage_class_name: None,
+            size: "1Gi".into(),
+        };
+        let first_runtime = k8s_common::connect_with_clock(
+            &sandbox_name,
+            "127.0.0.1:1".parse().unwrap(),
+        )
+        .await?
+        .with_continuation_volume(volume.clone())
+        .with_create_transport(broker.clone())?;
+        let first_provider = ContainerProvider::new(Arc::new(first_runtime), fixture_image())
+            .with_clock(awaken_time::system_clock());
+        let frozen = spec_with_command(
+            &claim_scope,
+            fixture_image(),
+            vec!["sh".into(), "-c".into(), "sleep 30".into()],
+        );
+        let create_result = ContainerEnvironmentProvider::create_environment_for_effect(
+            &first_provider,
+            &frozen,
+            &claim_fence,
+            &EffectAuthority::new(&claim_fence),
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
+        )
+        .await;
+        if create_result.is_ok() {
+            return Err(io::Error::other("GC1 injected lost Pod Create unexpectedly returned a handle").into());
+        }
+        let (claim_name, claim_uid) = claim_result
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| io::Error::other("GC1 original PVC was not admitted and created"))?;
+        let claims: Api<k8s_openapi::api::core::v1::PersistentVolumeClaim> =
+            Api::namespaced(client.clone(), &sandbox_name);
+        if claims.get(&claim_name).await?.metadata.uid.as_deref() != Some(&claim_uid) {
+            return Err(io::Error::other("GC1 original PVC UID was not retained").into());
+        }
+        drop(first_provider);
+
+        let reopened = Arc::new(ClaimOnlyBroker {
+            ledger: K8sWorkerCreateLedger::new(
+                client.clone(),
+                &control_name,
+                &sandbox_name,
+                "provider-isolation",
+            )?,
+            ..(*broker).clone()
+        });
+        // GC4 cause: the requested Pod coordinate does not map to the one
+        // retained PVC ticket. Effect: sealing may join that PVC, but it
+        // cannot mint a foreign Pod guard or a terminal cleanup target.
+        let wrong_coordinate = reopened
+            .seal_predecessor(&claim_scope, &claim_fence, "awaken-foreign")
+            .await?;
+        if !matches!(wrong_coordinate, RequestJoin::Complete(tickets)
+            if tickets.len() == 1 && tickets[0].request.resource == "persistentvolumeclaims")
+        {
+            return Err(io::Error::other("GC4 foreign Pod coordinate minted a guard").into());
+        }
+        let replacement_runtime = k8s_common::connect_with_clock(
+            &sandbox_name,
+            "127.0.0.1:1".parse().unwrap(),
+        )
+        .await?
+        .with_continuation_volume(volume)
+        .with_create_transport(reopened.clone())?;
+        let replacement = ContainerProvider::new(Arc::new(replacement_runtime), fixture_image())
+            .with_clock(awaken_time::system_clock());
+        let authority = EffectAuthority::new(&terminal_fence);
+        let target = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+            &replacement,
+            &frozen,
+            None,
+            Some(&claim_fence),
+            &terminal_fence,
+            &authority,
+        )
+        .await?
+        .ok_or_else(|| io::Error::other("GC1 live PVC requires a cleanup target"))?;
+        let handle = target.handle();
+        let (guard_name, guard_uid) = match handle.container_payload()?.runtime_handle {
+            Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesGuardedClaim(
+                guarded,
+            )) if guarded.claim_uid() == claim_uid => (
+                guarded.guard_name().to_owned(),
+                guarded
+                    .guard_uid()
+                    .ok_or_else(|| io::Error::other("GC1 guard UID missing"))?
+                    .to_owned(),
+            ),
+            other => {
+                return Err(io::Error::other(format!(
+                    "GC1 terminal target did not retain a guarded claim: {other:?}"
+                ))
+                .into());
+            }
+        };
+        if claims.get(&claim_name).await?.metadata.deletion_timestamp.is_some() {
+            return Err(io::Error::other("GC1 preparation deleted the original PVC").into());
+        }
+        let prepared = target
+            .prepare_disposal_for_effect(&terminal_fence, &authority)
+            .await?;
+        let authorization = disposal_authorization(&prepared);
+        if target
+            .dispose_for_effect(&authorization, &EffectAuthority::denied())
+            .await
+            .is_ok()
+        {
+            return Err(io::Error::other("GC3 revoked authority deleted the claim").into());
+        }
+        if claims.get(&claim_name).await?.metadata.deletion_timestamp.is_some() {
+            return Err(io::Error::other("GC3 revoked authority had a PVC effect").into());
+        }
+        target
+            .dispose_for_effect(
+                &authorization,
+                &EffectAuthority::new(authorization.effect_fence()),
+            )
+            .await?;
+        if claims.get_opt(&claim_name).await?.is_some() {
+            return Err(io::Error::other("GC1 original PVC survived exact disposal").into());
+        }
+        let pods: Api<Pod> = Api::namespaced(client.clone(), &sandbox_name);
+        let guard = pods.get(&guard_name).await?;
+        if guard.metadata.uid.as_deref() != Some(&guard_uid)
+            || guard.spec.as_ref().and_then(|spec| spec.node_name.as_ref()).is_some()
+        {
+            return Err(io::Error::other("GC1 retained Pod name lost its inert exact UID").into());
+        }
+        let foreign: Pod = serde_json::from_value(serde_json::json!({
+            "metadata":{"name":guard_name},
+            "spec":{"restartPolicy":"Never","containers":[{
+                "name":"foreign","image":fixture_image(),"command":["sh","-c","true"]
+            }]}
+        }))?;
+        let late = pods.create(&PostParams::default(), &foreign).await;
+        if !matches!(late, Err(kube::Error::Api(error)) if error.code == 409) {
+            return Err(io::Error::other("GC1 late same-name Pod bypassed the guard").into());
+        }
+        if ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+            &replacement,
+            &frozen,
+            None,
+            Some(&claim_fence),
+            &terminal_fence,
+            &authority,
+        )
+        .await?
+        .is_some()
+        {
+            return Err(io::Error::other("GC1 cleanup response replay rebuilt a live target").into());
         }
         Ok(())
     }
@@ -487,56 +984,199 @@ async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
     }
     if let Some(sandbox) = &sandbox {
         let name = sandbox.name_any();
-        let pods: Api<Pod> = Api::namespaced(client.clone(), &name);
-        // awaken-wait: Admission policy removal must propagate before this test can release its exact inert Pod finalizer.
-        for _ in 0..60 {
-            match pods.get_opt("sandbox-pod").await {
-                Ok(None) => break,
-                Ok(Some(mut pod)) => {
-                    let uid = pod.metadata.uid.clone();
-                    pod.metadata.finalizers = Some(Vec::new());
-                    if pods
-                        .replace("sandbox-pod", &PostParams::default(), &pod)
+        let claims: Api<k8s_openapi::api::core::v1::PersistentVolumeClaim> =
+            Api::namespaced(client.clone(), &name);
+        match claims
+            .list(&ListParams::default().labels("awaken-continuation=active"))
+            .await
+        {
+            Ok(list) => {
+                for claim in list.items {
+                    let (Some(claim_name), Some(uid), Some(resource_version)) = (
+                        claim.metadata.name,
+                        claim.metadata.uid,
+                        claim.metadata.resource_version,
+                    ) else {
+                        cleanup_errors.push("original retained PVC lacks cleanup identity".into());
+                        continue;
+                    };
+                    if let Err(error) = claims
+                        .delete(
+                            &claim_name,
+                            &DeleteParams::default().preconditions(Preconditions {
+                                uid: Some(uid),
+                                resource_version: Some(resource_version),
+                            }),
+                        )
                         .await
-                        .is_ok()
                     {
-                        if let Err(error) = pods
-                            .delete(
-                                "sandbox-pod",
-                                &DeleteParams::default().preconditions(Preconditions {
-                                    uid,
-                                    resource_version: None,
-                                }),
-                            )
-                            .await
-                        {
-                            cleanup_errors.push(format!("Pod deletion: {error}"));
-                        }
+                        cleanup_errors.push(format!("original retained PVC deletion: {error}"));
+                    }
+                }
+            }
+            Err(error) => cleanup_errors.push(format!("original PVC cleanup scan: {error}")),
+        }
+        for resource in PROTECTED_OTHER_KINDS {
+            use kube::core::DynamicObject;
+            let api_resource = protected_other_kind_resource(resource);
+            let api: Api<DynamicObject> =
+                Api::namespaced_with(client.clone(), &name, &api_resource);
+            let object_name = format!("reserved-{resource}");
+            // awaken-wait: a selected admission policy can outlive its binding
+            // deletion briefly; only an exact UID-fenced DELETE and absence
+            // close each task-owned reservation.
+            for _ in 0..60 {
+                let observed = match api.get_opt(&object_name).await {
+                    Ok(None) => break,
+                    Ok(Some(observed)) => observed,
+                    Err(error) => {
+                        cleanup_errors.push(format!("{resource} read: {error}"));
+                        break;
+                    }
+                };
+                if observed
+                    .metadata
+                    .labels
+                    .as_ref()
+                    .and_then(|labels| labels.get(ISOLATION_LABEL))
+                    .map(String::as_str)
+                    != Some("true")
+                {
+                    cleanup_errors.push(format!("{resource} has a foreign reservation label"));
+                    break;
+                }
+                let Some(uid) = observed.metadata.uid.clone().filter(|uid| !uid.is_empty()) else {
+                    cleanup_errors.push(format!("{resource} reservation has no exact UID"));
+                    break;
+                };
+                let release = api
+                    .patch(
+                        &object_name,
+                        &PatchParams::default(),
+                        &Patch::Merge(serde_json::json!({
+                            "metadata":{"finalizers":[]}
+                        })),
+                    )
+                    .await;
+                match release {
+                    Ok(updated) if updated.metadata.uid.as_deref() == Some(uid.as_str()) => {}
+                    Err(kube::Error::Api(error))
+                        if matches!(error.code, 403 | 422)
+                            && error.message.contains("awaken-create-isolation") =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        continue;
+                    }
+                    other => {
+                        cleanup_errors
+                            .push(format!("{resource} exact finalizer release: {other:?}"));
                         break;
                     }
                 }
+                let result = api
+                    .delete(
+                        &object_name,
+                        &DeleteParams::default().preconditions(Preconditions {
+                            uid: Some(uid),
+                            resource_version: None,
+                        }),
+                    )
+                    .await;
+                match result {
+                    Ok(_) => {}
+                    Err(kube::Error::Api(error)) if error.code == 404 => {}
+                    Err(kube::Error::Api(error))
+                        if matches!(error.code, 403 | 422)
+                            && error.message.contains("awaken-create-isolation") =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        continue;
+                    }
+                    Err(error) => {
+                        cleanup_errors.push(format!("{resource} deletion: {error}"));
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            match api.get_opt(&object_name).await {
+                Ok(None) => {}
+                Ok(Some(_)) => cleanup_errors.push(format!("{resource} reservation remained")),
                 Err(error) => {
-                    cleanup_errors.push(format!("Pod read: {error}"));
-                    break;
+                    cleanup_errors.push(format!("{resource} final absence read: {error}"))
                 }
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        // awaken-wait: Kubernetes deletion completion is checked by exact Pod name and UID, not elapsed time alone.
-        for _ in 0..60 {
-            match pods.get_opt("sandbox-pod").await {
-                Ok(None) => break,
-                Ok(Some(_)) => tokio::time::sleep(Duration::from_millis(250)).await,
-                Err(error) => {
-                    cleanup_errors.push(format!("Pod absence read: {error}"));
-                    break;
+        let pods: Api<Pod> = Api::namespaced(client.clone(), &name);
+        let reserved = match pods
+            .list(&ListParams::default().labels(&format!("{ISOLATION_LABEL}=true")))
+            .await
+        {
+            Ok(list) => list.items,
+            Err(error) => {
+                cleanup_errors.push(format!("inert Pod cleanup scan: {error}"));
+                Vec::new()
+            }
+        };
+        for reserved_pod in reserved {
+            let Some(pod_name) = reserved_pod.metadata.name else {
+                cleanup_errors.push("inert Pod has no exact name".into());
+                continue;
+            };
+            // awaken-wait: Admission policy removal must propagate before the
+            // exact task-owned finalizer can be released. Both original and
+            // claim-only reservations use this one cleanup owner.
+            for _ in 0..60 {
+                match pods.get_opt(&pod_name).await {
+                    Ok(None) => break,
+                    Ok(Some(mut pod)) => {
+                        let uid = pod.metadata.uid.clone();
+                        pod.metadata.finalizers = Some(Vec::new());
+                        if pods
+                            .replace(&pod_name, &PostParams::default(), &pod)
+                            .await
+                            .is_ok()
+                        {
+                            if let Err(error) = pods
+                                .delete(
+                                    &pod_name,
+                                    &DeleteParams::default().preconditions(Preconditions {
+                                        uid,
+                                        resource_version: None,
+                                    }),
+                                )
+                                .await
+                            {
+                                cleanup_errors.push(format!("Pod {pod_name} deletion: {error}"));
+                            }
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        cleanup_errors.push(format!("Pod {pod_name} read: {error}"));
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            // awaken-wait: each exact name is absent before Namespace cleanup.
+            for _ in 0..60 {
+                match pods.get_opt(&pod_name).await {
+                    Ok(None) => break,
+                    Ok(Some(_)) => tokio::time::sleep(Duration::from_millis(250)).await,
+                    Err(error) => {
+                        cleanup_errors.push(format!("Pod {pod_name} absence read: {error}"));
+                        break;
+                    }
                 }
             }
-        }
-        match pods.get_opt("sandbox-pod").await {
-            Ok(None) => {}
-            Ok(Some(_)) => cleanup_errors.push("task-owned isolation Pod remained".into()),
-            Err(error) => cleanup_errors.push(format!("Pod final absence read: {error}")),
+            match pods.get_opt(&pod_name).await {
+                Ok(None) => {}
+                Ok(Some(_)) => cleanup_errors.push(format!("Pod {pod_name} remained")),
+                Err(error) => {
+                    cleanup_errors.push(format!("Pod {pod_name} final absence read: {error}"))
+                }
+            }
         }
     }
     for object in [control, sandbox].into_iter().flatten() {
@@ -588,6 +1228,9 @@ async fn original_create_guard_keeps_a_deleted_pod_visible_until_exact_release()
         .await
         .unwrap();
     let namespaces: Api<Namespace> = Api::all(client.clone());
+    // C0 incomplete aggregated discovery blocks Namespace finalization; E0
+    // refuse before creating the guarded task-owned Pod.
+    require_namespace_finalization_discovery(&client).await;
     let namespace = namespaces
         .create(
             &PostParams::default(),

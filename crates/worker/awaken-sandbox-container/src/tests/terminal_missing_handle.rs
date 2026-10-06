@@ -67,12 +67,15 @@ async fn exact_created_pod_reenters_the_existing_handle_bound_terminal_path() {
     // removal after preparation; E2 C2
     // with a rich spec refuses before observation; E3 absent C4 refuses before
     // joining provider evidence. Rules P1=C1+C2+C3+C4->E1,
-    // P2=C1+C2+!C3+C4->E2, P3=C1+C2+C3+!C4->E3.
+    // P2=C1+C2+!C3+C4->E2, P3=C1+C2+C3+!C4->E3. P4=C1+C2
+    // with an original PVC UID and a still-Provisioning Pod -> terminal
+    // adoption through the same disposal owner; an ordinary durable handle
+    // with Provisioning has no such join and remains NotReady.
     let runtime = Arc::new(FakeRuntime::default());
     {
         let mut state = runtime.st.lock().unwrap();
         state.native_memory = true; // K8s reconstructs without host-bind staging.
-        state.recovered_created_pod = Some(("exact-pod".into(), "pod-uid".into()));
+        state.recovered_created_pod = Some(("exact-pod".into(), "pod-uid".into(), None));
     }
     let provider = provider_without_broker(runtime.clone());
     let mut empty = spec("created-pod-terminal");
@@ -139,6 +142,67 @@ async fn exact_created_pod_reenters_the_existing_handle_bound_terminal_path() {
     );
     let observations_after_valid_cleanup = runtime.st.lock().unwrap().observations;
 
+    let retained_runtime = Arc::new(FakeRuntime::default());
+    {
+        let mut state = retained_runtime.st.lock().unwrap();
+        state.native_memory = true;
+        state.recovered_created_pod = Some((
+            "exact-pod".into(),
+            "pod-uid".into(),
+            Some("claim-uid".into()),
+        ));
+    }
+    retained_runtime.set_observation(pc::SandboxObservation::Provisioning);
+    let retained_provider = provider_without_broker(retained_runtime.clone());
+    let mut retained = empty.clone();
+    retained.filesystem_continuity = pc::FilesystemContinuity::Retained;
+    let retained_environment =
+        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+            &retained_provider,
+            &retained,
+            None,
+            Some(&create),
+            &terminal,
+            &authority,
+        )
+        .await
+        .unwrap()
+        .expect("P4 exact created Pod/PVC may still be Provisioning");
+    let retained_handle = retained_environment.handle().clone();
+    assert!(matches!(
+        retained_handle.container_payload().unwrap().runtime_handle.as_ref(),
+        Some(crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+            pod_uid,
+            claim_uid: Some(claim_uid),
+        }) if pod_uid == "pod-uid" && claim_uid == "claim-uid"
+    ));
+    let prepared = retained_environment
+        .prepare_disposal_for_effect(&terminal, &authority)
+        .await
+        .expect("P4 original cleanup preparation");
+    let removal = disposal_authorization(&prepared);
+    retained_environment
+        .dispose_for_effect(
+            &removal,
+            &pc::test_support::EffectAuthority::new(removal.effect_fence()),
+        )
+        .await
+        .expect("P4 original physical disposal");
+    assert_eq!(retained_runtime.st.lock().unwrap().removals.len(), 1);
+    assert!(
+        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+            &retained_provider,
+            &retained,
+            Some(&retained_handle),
+            Some(&create),
+            &terminal,
+            &authority,
+        )
+        .await
+        .is_err(),
+        "P4 ordinary Provisioning cannot borrow the missing-handle join"
+    );
+
     let mut rich = empty.clone();
     rich.mounts = spec("created-pod-terminal").mounts;
     assert!(
@@ -176,5 +240,147 @@ async fn exact_created_pod_reenters_the_existing_handle_bound_terminal_path() {
         runtime.st.lock().unwrap().removals.len(),
         1,
         "P2/P3 no delete"
+    );
+}
+
+#[cfg(feature = "k8s")]
+#[tokio::test]
+async fn guarded_claim_uses_the_existing_two_phase_terminal_owner() {
+    // Causes: C1 the old Worker join retained one inert protected Pod and one
+    // exact original PVC, but no Session handle; C2 the frozen spec has no
+    // mount/control participant; C3 current terminal authority is present at
+    // prepare and later disposal. Effects: E1 C1+C2+C3 returns one terminal
+    // cleanup-only environment without adopting a runnable Pod; E2 preparation
+    // makes zero physical DELETEs; E3 revoked disposal makes zero DELETEs; E4
+    // authorized disposal re-observes and removes exactly once. Rules G1 all
+    // causes=>E1+E2+E4, G2 !C2=>Unknown, G3 !C3=>E3. The real K8s test owns
+    // guard policy/UID and PVC API effects; this case owns provider ordering.
+    use crate::k8s::{CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus};
+    let scope = "guarded-claim-terminal";
+    let create = pc::SandboxEffectFence::new(
+        "create-guarded-claim",
+        "worker-owner",
+        "worker-incarnation",
+        1,
+        u64::MAX,
+    )
+    .unwrap();
+    let terminal = pc::SandboxEffectFence::new(
+        "terminal-guarded-claim",
+        "worker-owner",
+        "worker-incarnation",
+        2,
+        u64::MAX,
+    )
+    .unwrap();
+    let ticket = CreateTicket {
+        request: CreateTicketRequest::new(
+            "old-group",
+            "pods",
+            "default",
+            "awaken-guarded-claim-terminal",
+            "a".repeat(64),
+        )
+        .unwrap(),
+        status: TicketStatus::Finished(TicketResult::Isolated {
+            uid: "guard-uid".into(),
+        }),
+        origin: TicketOrigin::TerminalGuard,
+        isolation_id: "0123456789abcdef0123456789abcdef".into(),
+        isolation_pending: false,
+    };
+    let guarded =
+        crate::KubernetesGuardedClaimHandle::new(scope, &create, ticket, "claim-uid").unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    runtime.st.lock().unwrap().native_memory = true;
+    runtime.st.lock().unwrap().recovered_guarded_claim =
+        Some(("awaken-guarded-claim-terminal".into(), guarded));
+    runtime.set_observation(pc::SandboxObservation::Terminal {
+        physical_incarnation: "guard-uid".into(),
+    });
+    let provider = provider_without_broker(runtime.clone());
+    let mut frozen = spec(scope);
+    frozen.mounts.clear();
+    frozen.env.clear();
+    frozen.filesystem_continuity = pc::FilesystemContinuity::Retained;
+    let authority = pc::test_support::EffectAuthority::new(&terminal);
+    let environment = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        &provider,
+        &frozen,
+        None,
+        Some(&create),
+        &terminal,
+        &authority,
+    )
+    .await
+    .unwrap()
+    .expect("G1 exact guarded claim remains a physical cleanup target");
+    assert_eq!(
+        runtime.st.lock().unwrap().observations,
+        0,
+        "G1 no runnable Pod adoption"
+    );
+    assert_eq!(
+        runtime.st.lock().unwrap().removals.len(),
+        0,
+        "G2 zero premature DELETE"
+    );
+    assert_eq!(
+        environment
+            .handle()
+            .container_physical_incarnation()
+            .unwrap(),
+        "guard-uid"
+    );
+    let prepared = environment
+        .prepare_disposal_for_effect(&terminal, &authority)
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.st.lock().unwrap().removals.len(),
+        0,
+        "G2 preparation only"
+    );
+    let removal = disposal_authorization(&prepared);
+    assert!(
+        environment
+            .dispose_for_effect(&removal, &pc::test_support::EffectAuthority::denied())
+            .await
+            .is_err(),
+        "G3 current authority required"
+    );
+    assert_eq!(runtime.st.lock().unwrap().removals.len(), 0, "G3 no DELETE");
+    environment
+        .dispose_for_effect(
+            &removal,
+            &pc::test_support::EffectAuthority::new(removal.effect_fence()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.st.lock().unwrap().removals,
+        vec![("awaken-guarded-claim-terminal".into(), 0)],
+        "G1/E4 one existing disposal edge"
+    );
+
+    let mut rich = frozen;
+    rich.mounts = spec(scope).mounts;
+    assert!(
+        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+            &provider,
+            &rich,
+            None,
+            Some(&create),
+            &terminal,
+            &authority,
+        )
+        .await
+        .is_err(),
+        "G2 unretained participants stay Unknown"
+    );
+    assert_eq!(
+        runtime.st.lock().unwrap().removals.len(),
+        1,
+        "G2 no second DELETE"
     );
 }

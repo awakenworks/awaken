@@ -8,6 +8,162 @@
 use super::*;
 use crate::{MissingHandleTerminalEvidence, PreparedContainer};
 
+fn verify_joined_original_claim(
+    runtime: &K8sRuntime,
+    scope: &str,
+    plan: &ContainerPlan,
+    predecessor: &ContainerEffectFence,
+    ticket_uid: &str,
+    observed: &PersistentVolumeClaim,
+) -> Result<(), RuntimeError> {
+    if observed.metadata.uid.as_deref() != Some(ticket_uid)
+        || observed.metadata.deletion_timestamp.is_some()
+    {
+        return Err(backend(
+            "original continuation claim UID or live state changed",
+        ));
+    }
+    let desired = runtime
+        .desired_create_claim_for_effect(scope, plan, predecessor)?
+        .ok_or_else(|| backend("original continuation claim has no frozen retained plan"))?;
+    runtime.create_claim_admission(&desired, Some(observed), predecessor)?;
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GuardedClaimPhysical {
+    Incompatible,
+    Absent,
+    Live,
+    Deleting,
+}
+
+pub(crate) async fn guarded_claim_physical_state(
+    runtime: &K8sRuntime,
+    container_id: &str,
+    guarded: &crate::KubernetesGuardedClaimHandle,
+) -> Result<GuardedClaimPhysical, RuntimeError> {
+    let Some(guard_uid) = guarded.guard_uid() else {
+        return Ok(GuardedClaimPhysical::Incompatible);
+    };
+    let runtime_id = runtime.realization_runtime_id(&guarded.scope)?;
+    let canonical_pod = pod_name(&runtime_id);
+    let canonical_claim = continuation_claim_for_pod(&canonical_pod)?;
+    if container_id != canonical_pod
+        || guarded.guard.request.resource != "pods"
+        || guarded.guard.request.name != canonical_pod
+        || guarded.guard.request.namespace != runtime.namespace
+        || guarded.guard.isolation_pending
+        || guarded.claim_uid.trim().is_empty()
+    {
+        return Ok(GuardedClaimPhysical::Incompatible);
+    }
+    if !create_ledger::verify_pod_isolation(&runtime.clients.control, &guarded.guard, guard_uid)
+        .await?
+    {
+        return Ok(GuardedClaimPhysical::Incompatible);
+    }
+    let Some(claim) = runtime
+        .persistent_volume_claims()
+        .get_opt(&canonical_claim)
+        .await
+        .map_err(backend)?
+    else {
+        return Ok(GuardedClaimPhysical::Absent);
+    };
+    let desired = runtime.desired_claim_for_effect(&guarded.scope, &guarded.predecessor)?;
+    let claim_fence = pod_effect_fence(claim.metadata.annotations.as_ref())?;
+    if claim.metadata.uid.as_deref() != Some(guarded.claim_uid.as_str())
+        || claim.metadata.resource_version.is_none()
+        || !claim_fence.as_ref().is_some_and(|fence| {
+            continuation::original_claim_effect_matches(&guarded.predecessor, fence)
+        })
+        || restore::verify_guarded_claim_projection(&desired, &claim).is_err()
+    {
+        return Ok(GuardedClaimPhysical::Incompatible);
+    }
+    Ok(if claim.metadata.deletion_timestamp.is_some() {
+        GuardedClaimPhysical::Deleting
+    } else {
+        GuardedClaimPhysical::Live
+    })
+}
+
+async fn observe_guarded_claim(
+    runtime: &K8sRuntime,
+    expectation: ContainerObservationExpectation<'_>,
+    guarded: &crate::KubernetesGuardedClaimHandle,
+) -> Result<pc::SandboxObservation, RuntimeError> {
+    let incompatible = || pc::SandboxObservation::Incompatible {
+        reason: "guarded Kubernetes claim differs from its terminal-only physical evidence".into(),
+    };
+    if expectation.purpose != ContainerObservationPurpose::TerminalCleanup
+        || expectation.effect_fence.is_none()
+        || expectation.adoption_fingerprint.is_none()
+        || expectation.realization_fingerprint.is_none()
+    {
+        return Ok(incompatible());
+    }
+    let Some(guard_uid) = guarded.guard_uid() else {
+        return Ok(incompatible());
+    };
+    Ok(
+        match guarded_claim_physical_state(runtime, expectation.container_id, guarded).await? {
+            GuardedClaimPhysical::Incompatible => incompatible(),
+            GuardedClaimPhysical::Absent => pc::SandboxObservation::DefinitivelyUnavailable {
+                physical_incarnation: Some(guard_uid.to_owned()),
+            },
+            GuardedClaimPhysical::Live => pc::SandboxObservation::Terminal {
+                physical_incarnation: guard_uid.to_owned(),
+            },
+            GuardedClaimPhysical::Deleting => pc::SandboxObservation::Disposing {
+                physical_incarnation: guard_uid.to_owned(),
+            },
+        },
+    )
+}
+
+pub(crate) async fn remove_guarded_claim(
+    runtime: &K8sRuntime,
+    container_id: &str,
+    guarded: &crate::KubernetesGuardedClaimHandle,
+    authorization: &pc::SandboxDisposalAuthorization,
+    authority: &dyn pc::CurrentExecutionAuthority,
+) -> Result<(), RuntimeError> {
+    authorization.validate().map_err(backend)?;
+    let admit = || {
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))
+            .map_err(backend)
+    };
+    admit()?;
+    match guarded_claim_physical_state(runtime, container_id, guarded).await? {
+        GuardedClaimPhysical::Incompatible => {
+            return Err(backend(
+                "guarded continuation claim changed before exact disposal",
+            ));
+        }
+        GuardedClaimPhysical::Absent => return admit(),
+        GuardedClaimPhysical::Live | GuardedClaimPhysical::Deleting => {}
+    }
+    admit()?;
+    let claims = runtime.persistent_volume_claims();
+    if let Some(pending) =
+        continuation::initiate_claim_deletion(&claims, container_id, &guarded.claim_uid, &admit)
+            .await?
+    {
+        continuation::await_claim_deletion(&claims, &pending, &admit).await?;
+    }
+    admit()?;
+    if guarded_claim_physical_state(runtime, container_id, guarded).await?
+        != GuardedClaimPhysical::Absent
+    {
+        return Err(backend(
+            "guarded continuation claim or its Pod name did not close after deletion",
+        ));
+    }
+    admit()
+}
+
 fn unmaterialized_absence_shape_is_closed(
     has_packages: bool,
     has_binds: bool,
@@ -74,6 +230,9 @@ pub(super) fn deletion_incarnation(
         Some(crate::ContainerContinuationHandle::KubernetesContinuation { .. }) => Err(backend(
             "legacy Kubernetes handle has no Pod UID deletion fence",
         )),
+        Some(crate::ContainerContinuationHandle::KubernetesGuardedClaim(_)) => Err(backend(
+            "guarded Kubernetes claim requires aggregate-authorized terminal disposal",
+        )),
         Some(crate::ContainerContinuationHandle::HostBindRestoration(_)) => Err(backend(
             "Kubernetes removal received a host-bind continuation handle",
         )),
@@ -125,8 +284,7 @@ impl ContainerRuntime for K8sRuntime {
         access: crate::ContainerCheckpointAccess<'_>,
         mutation: crate::ContainerCheckpointMutation<'_>,
     ) -> Result<Option<pc::SandboxCheckpointUpload>, RuntimeError> {
-        self.persist_checkpoint_upload(expectation, access, mutation)
-            .await
+        checkpoint::persist_checkpoint_upload(self, expectation, access, mutation).await
     }
 
     fn historical_terminal_configuration(
@@ -296,36 +454,38 @@ impl ContainerRuntime for K8sRuntime {
         expected_effect_fence: Option<&ContainerEffectFence>,
     ) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
         // Kubernetes creates the Pod before ConfigMaps, Secrets, Memory
-        // projection, or control sidecars. For this deliberately narrow shape,
-        // therefore, absence of the canonical Pod and PVC proves that no
-        // independently governed participant was ever published. Richer plans
-        // retain the fail-closed handle requirement.
-        if !unmaterialized_absence_shape_is_closed(
+        // projection, or control sidecars. Only the narrow shape can receive
+        // an absence witness. A brokered rich attempt still seals its one
+        // provider request ledger before returning Unknown, so the original
+        // Worker cannot keep admitting physical Creates after terminal stop.
+        let reconstructible_shape = unmaterialized_absence_shape_is_closed(
             !plan.packages.is_empty(),
             !plan.binds.is_empty(),
             !plan.memory_mounts.is_empty(),
-            continuation::claim_required(plan, self.continuation_volume.is_some()),
-        ) {
-            return Ok(MissingHandleTerminalEvidence::Unknown);
-        }
+            false,
+        );
+        let claim_required = continuation::claim_required(plan, self.continuation_volume.is_some());
+        let absence_shape_closed = reconstructible_shape && !claim_required;
         let Some(expected_effect_fence) = expected_effect_fence else {
             return Ok(MissingHandleTerminalEvidence::Unknown);
         };
         let runtime_id = self.realization_runtime_id(scope)?;
         let runtime_pod_name = pod_name(&runtime_id);
+        let runtime_claim_name = continuation_claim_for_pod(&runtime_pod_name)?;
         let mut created_pod_uid = None;
+        let mut created_claim_uid = None;
         let mut isolated_pod = None;
         if let Some(transport) = &self.create_transport {
             let joined = transport
-                .seal_predecessor(scope, expected_effect_fence)
+                .seal_predecessor(scope, expected_effect_fence, &runtime_pod_name)
                 .await?;
             let RequestJoin::Complete(tickets) = joined else {
                 return Ok(MissingHandleTerminalEvidence::Unknown);
             };
-            // The join covers every ticket of this Worker incarnation. One
-            // exact successful Pod may be reconstructed through the ordinary
-            // handle path; another successful/unknown participant remains
-            // Unknown, even if an API read currently returns 404.
+            // The join covers every ticket of this Worker incarnation. Only
+            // one exact Pod, optionally paired with its original retained
+            // claim, can enter the ordinary handle path. Any other successful
+            // or unresolved participant remains Unknown after a sampled 404.
             for ticket in tickets {
                 if ticket.isolation_pending {
                     return Ok(MissingHandleTerminalEvidence::Unknown);
@@ -352,6 +512,15 @@ impl ContainerRuntime for K8sRuntime {
                     {
                         created_pod_uid = Some(uid.clone());
                     }
+                    TicketStatus::Finished(TicketResult::Created { uid })
+                        if claim_required
+                            && ticket.request.resource == "persistentvolumeclaims"
+                            && ticket.request.namespace == self.namespace
+                            && ticket.request.name == runtime_claim_name
+                            && created_claim_uid.is_none() =>
+                    {
+                        created_claim_uid = Some(uid.clone());
+                    }
                     TicketStatus::Finished(TicketResult::Isolated { uid })
                         if ticket.request.resource == "pods"
                             && ticket.request.namespace == self.namespace
@@ -365,6 +534,9 @@ impl ContainerRuntime for K8sRuntime {
                 }
             }
         } else {
+            if !absence_shape_closed {
+                return Ok(MissingHandleTerminalEvidence::Unknown);
+            }
             let Some(_closed_attempt) = self
                 .close_observed_creation_attempt(scope, expected_effect_fence)
                 .await
@@ -374,6 +546,9 @@ impl ContainerRuntime for K8sRuntime {
                 return Ok(MissingHandleTerminalEvidence::Unknown);
             };
         }
+        if !reconstructible_shape {
+            return Ok(MissingHandleTerminalEvidence::Unknown);
+        }
         self.admit_plan(plan).await?;
         if let Some((ticket, uid)) = isolated_pod {
             if !create_ledger::verify_pod_isolation(&self.clients.control, &ticket, &uid).await? {
@@ -381,13 +556,48 @@ impl ContainerRuntime for K8sRuntime {
             }
             let claim = self
                 .persistent_volume_claims()
-                .get_opt(&continuation_claim_for_pod(&runtime_pod_name)?)
+                .get_opt(&runtime_claim_name)
                 .await
                 .map_err(backend)?;
-            return Ok(if claim.is_none() {
-                MissingHandleTerminalEvidence::Isolated
-            } else {
-                MissingHandleTerminalEvidence::Unknown
+            if !claim_required {
+                return Ok(
+                    if claim.is_none() && created_claim_uid.is_none() && absence_shape_closed {
+                        MissingHandleTerminalEvidence::Isolated
+                    } else {
+                        MissingHandleTerminalEvidence::Unknown
+                    },
+                );
+            }
+            let Some(claim_uid) = created_claim_uid else {
+                return Ok(MissingHandleTerminalEvidence::Unknown);
+            };
+            let Some(claim) = claim else {
+                // The original UID is already gone and the immutable guard
+                // still excludes a late Pod. This is disposal response replay.
+                return Ok(MissingHandleTerminalEvidence::Isolated);
+            };
+            if verify_joined_original_claim(
+                self,
+                scope,
+                plan,
+                expected_effect_fence,
+                &claim_uid,
+                &claim,
+            )
+            .is_err()
+            {
+                return Ok(MissingHandleTerminalEvidence::Unknown);
+            }
+            return Ok(MissingHandleTerminalEvidence::ExactIncarnation {
+                container_id: runtime_pod_name,
+                runtime_handle: crate::ContainerContinuationHandle::KubernetesGuardedClaim(
+                    crate::KubernetesGuardedClaimHandle::new(
+                        scope,
+                        expected_effect_fence,
+                        ticket,
+                        &claim_uid,
+                    )?,
+                ),
             });
         }
         let pod = self
@@ -399,35 +609,53 @@ impl ContainerRuntime for K8sRuntime {
             let Some(pod) = pod else {
                 return Ok(MissingHandleTerminalEvidence::Unknown);
             };
+            let claim = self
+                .persistent_volume_claims()
+                .get_opt(&runtime_claim_name)
+                .await
+                .map_err(backend)?;
+            let claim_uid = match (claim_required, created_claim_uid.as_deref(), claim.as_ref()) {
+                (true, Some(ticket_uid), Some(observed))
+                    if verify_joined_original_claim(
+                        self,
+                        scope,
+                        plan,
+                        expected_effect_fence,
+                        ticket_uid,
+                        observed,
+                    )
+                    .is_ok() =>
+                {
+                    Some(ticket_uid.to_owned())
+                }
+                (false, None, None) => None,
+                _ => return Ok(MissingHandleTerminalEvidence::Unknown),
+            };
             if pod.metadata.uid.as_deref() != Some(pod_uid.as_str())
                 || pod.metadata.deletion_timestamp.is_some()
-                || continuation::bound_claim_uid(&pod).is_some()
+                || continuation::bound_claim_uid(&pod) != claim_uid.as_deref()
                 || creation::verify_interrupted_pod_projection(
                     self,
                     scope,
                     plan,
                     expected_effect_fence,
+                    claim_uid.as_deref(),
                     &pod,
                 )
                 .is_err()
             {
                 return Ok(MissingHandleTerminalEvidence::Unknown);
             }
-            let claim = self
-                .persistent_volume_claims()
-                .get_opt(&continuation_claim_for_pod(&runtime_pod_name)?)
-                .await
-                .map_err(backend)?;
-            if claim.is_some() {
-                return Ok(MissingHandleTerminalEvidence::Unknown);
-            }
             return Ok(MissingHandleTerminalEvidence::ExactIncarnation {
                 container_id: runtime_pod_name,
                 runtime_handle: crate::ContainerContinuationHandle::KubernetesContinuationV2 {
                     pod_uid,
-                    claim_uid: None,
+                    claim_uid,
                 },
             });
+        }
+        if created_claim_uid.is_some() || !absence_shape_closed {
+            return Ok(MissingHandleTerminalEvidence::Unknown);
         }
         if pod.is_some() {
             return Ok(MissingHandleTerminalEvidence::Unknown);
@@ -664,6 +892,11 @@ impl ContainerRuntime for K8sRuntime {
         &self,
         expectation: ContainerObservationExpectation<'_>,
     ) -> Result<pc::SandboxObservation, RuntimeError> {
+        if let Some(crate::ContainerContinuationHandle::KubernetesGuardedClaim(guarded)) =
+            expectation.runtime_handle
+        {
+            return observe_guarded_claim(self, expectation, guarded).await;
+        }
         let expected_pod_uid = match expectation.runtime_handle {
             Some(crate::ContainerContinuationHandle::KubernetesContinuationV2 {
                 pod_uid, ..
@@ -1079,6 +1312,12 @@ impl ContainerRuntime for K8sRuntime {
         authorization: &pc::SandboxDisposalAuthorization,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {
+        if let Some(crate::ContainerContinuationHandle::KubernetesGuardedClaim(guarded)) =
+            runtime_handle
+        {
+            return remove_guarded_claim(self, container_id, guarded, authorization, authority)
+                .await;
+        }
         let (pod_uid, claim_uid) = deletion_incarnation(runtime_handle)?;
         self.remove_bound(
             container_id,

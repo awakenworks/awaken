@@ -137,7 +137,10 @@ async fn native_probe_rejects_failure_and_bounds_a_stuck_launcher() {
     // and termination request, never readiness. The fixture uses exec (no
     // detached descendants); whole-tree death has its own OS integration test.
     // P8 probes carry no ambient HOME/loader/token environment into the child.
-    let timeout = Duration::from_millis(100);
+    // A real process start can exceed one second under Rosetta and concurrent
+    // builds. P5/P6 classify the exit without a latency claim; only P7 owns
+    // the short timeout bound, so its 100 ms deadline remains unchanged.
+    let normal_timeout = Duration::from_secs(5);
     for (argv, expected) in [
         (
             vec![
@@ -152,12 +155,13 @@ async fn native_probe_rejects_failure_and_bounds_a_stuck_launcher() {
         (vec![], false),
     ] {
         let argv = argv.into_iter().map(str::to_owned).collect::<Vec<_>>();
-        assert_eq!(run_native_probe_argv(&argv, timeout).await, expected);
+        assert_eq!(run_native_probe_argv(&argv, normal_timeout).await, expected);
     }
     let argv = ["/bin/sh", "-c", "exec /bin/sleep 30"].map(str::to_owned);
     assert!(!run_native_probe_argv(&argv, Duration::ZERO).await);
+    let hung_timeout = Duration::from_millis(100);
     let started = Instant::now();
-    assert!(!run_native_probe_argv(&argv, timeout).await);
+    assert!(!run_native_probe_argv(&argv, hung_timeout).await);
     assert!(
         started.elapsed() < Duration::from_secs(2),
         "P7 bounded wait"

@@ -16,10 +16,9 @@ use awaken_sandbox_container::k8s::{
 };
 use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_time::WallClockExt;
+use awaken_worker::WorkerK8sCreateClient;
 use awaken_worker_registry::SqliteWorkerDirectory;
-use awaken_coordinator_client::{
-    WorkerControlClient, WorkerK8sCreateClient, dispatch_transport_with_upstream,
-};
+use awaken_coordinator_client::{WorkerControlClient, dispatch_transport_with_upstream};
 use awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer;
 use awaken_worker_transport_security::{FixedWorkerLeasePolicy, WorkerUpstream};
 use k8s_openapi::api::apps::v1::Deployment;
@@ -544,7 +543,9 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     )
     .unwrap();
     let (address, store, server) = coordinator(files.path(), &transport, clock.clone()).await;
-    let reopened = SqliteWorkerDirectory::open(files.path().join("registry.sqlite")).unwrap();
+    let reopened = SqliteWorkerDirectory::open(files.path().join("registry.sqlite"))
+        .await
+        .unwrap();
     assert_eq!(
         reopened
             .incarnation(&worker.snapshot.identity)
@@ -703,7 +704,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     .unwrap();
     assert!(
         matches!(
-            successor_create.seal_predecessor("old-session", &old_effect).await.unwrap(),
+            successor_create.seal_predecessor("old-session", &old_effect, "awaken-old-session").await.unwrap(),
             RequestJoin::Complete(tickets)
                 if tickets.len() == 1 && tickets[0].request.resource == "configmaps"
         ),
@@ -882,6 +883,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         &directory,
         transport.stop_source().unwrap().as_ref(),
         &idle_identity,
+        clock.now_ms(),
     )
     .await
     .unwrap();

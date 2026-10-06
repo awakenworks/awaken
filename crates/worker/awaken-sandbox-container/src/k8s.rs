@@ -114,7 +114,7 @@ pub use crate::k8s_package_image::K8sPackageImageProvisioner;
 pub use create_ledger::{
     CreateTicket, CreateTicketRequest, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, K8sLedgerBinding,
     K8sWorkerCreateLedger, ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION, RequestJoin,
-    TicketAdmission, TicketResult, TicketStatus, WorkerCreateLedgerState,
+    TicketAdmission, TicketOrigin, TicketResult, TicketStatus, WorkerCreateLedgerState,
 };
 pub(crate) use create_transport::brokered_client;
 pub use create_transport::{K8sCreateRequest, K8sCreateResponse, K8sCreateTransport};
@@ -747,6 +747,23 @@ impl K8sRuntime {
         self
     }
 
+    /// Select the independent Create executor once for this runtime. Every
+    /// `Api<K>::create` on the control client then crosses the same broker;
+    /// reads and UID-fenced disposal remain on the existing Kubernetes client.
+    pub fn with_create_transport(
+        mut self,
+        transport: Arc<dyn K8sCreateTransport>,
+    ) -> Result<Self, RuntimeError> {
+        if self.create_transport.is_some() || self.create_mode_frozen.load(Ordering::Acquire) {
+            return Err(RuntimeError::Backend(
+                "Kubernetes Create transport cannot replace an active admission mode".into(),
+            ));
+        }
+        self.clients.control = brokered_client(self.clients.control.clone(), transport.clone());
+        self.create_transport = Some(transport);
+        Ok(self)
+    }
+
     /// A runtime backed by a **lazy** client (no cluster dial), for unit-testing the
     /// builder + Pod-assembly paths; the live `create`/`wait`/… methods still need a
     /// real apiserver (exercised by the gated `k8s_it` integration test).
@@ -859,34 +876,6 @@ impl K8sRuntime {
         stamp_k8s_attempt(object, context.attempt.as_str());
     }
 
-    fn desired_create_claim(
-        &self,
-        context: &ContainerRealizationContext<'_>,
-        plan: &ContainerPlan,
-    ) -> Result<Option<PersistentVolumeClaim>, RuntimeError> {
-        if !matches!(context.intent, ContainerRealizationIntent::Create)
-            || !continuation::claim_required(plan, self.continuation_volume.is_some())
-        {
-            return Ok(None);
-        }
-        let effect_fence = context.effect_fence.ok_or_else(|| {
-            backend("Kubernetes retained continuation creation requires a durable effect fence")
-        })?;
-        let runtime_id = self.realization_runtime_id(context.scope)?;
-        let config = self
-            .continuation_volume
-            .as_ref()
-            .expect("claim selector requires configured continuation storage");
-        let mut claim = continuation::build_claim(&runtime_id, config)?;
-        // The ordinary digest owns the immutable PVC shape. The aggregate fence
-        // is stamped afterwards so a lease-expiry renewal does not create a
-        // second filesystem identity; admission below still compares the exact
-        // stable effect identity and monotonic expiry.
-        stamp_realization(&mut claim)?;
-        stamp_effect_fence(&mut claim, effect_fence);
-        Ok(Some(claim))
-    }
-
     fn create_claim_admission(
         &self,
         desired: &PersistentVolumeClaim,
@@ -897,15 +886,18 @@ impl K8sRuntime {
             return continuation::create_claim_admission(expected_fence, None);
         };
         let observed_fence = pod_effect_fence(observed.metadata.annotations.as_ref())?;
-        continuation::create_claim_admission(
+        let admission = continuation::create_claim_admission(
             expected_fence,
             Some(continuation::CreateClaimObservation {
                 effect_fence: observed_fence.as_ref(),
                 uid_present: observed.metadata.uid.is_some(),
                 terminating: observed.metadata.deletion_timestamp.is_some(),
-                realization_matches: realization::realization_digest_matches(desired, observed)?,
             }),
-        )
+        )?;
+        // First Create, 409 replay and handle-free terminal reconstruction
+        // share one complete immutable PVC projection verifier.
+        restore::verify_claim_projection(desired, observed, None)?;
+        Ok(admission)
     }
 
     async fn preflight_create_claim(
@@ -1111,6 +1103,11 @@ impl K8sRuntime {
                 claim_uid,
                 ..
             }) => claim_uid.as_deref(),
+            Some(crate::ContainerContinuationHandle::KubernetesGuardedClaim(_)) => {
+                return Err(backend(
+                    "guarded Kubernetes claim has no ordinary Pod continuation",
+                ));
+            }
             Some(crate::ContainerContinuationHandle::HostBindRestoration(_)) => {
                 return Err(backend(
                     "Kubernetes observation received a host-bind continuation handle",
