@@ -193,13 +193,14 @@ Create request's lifetime is unknown and consume Pod quota; keep the policy
 and its reservations when operating this deployment.
 
 On a dedicated k3d cluster with no existing `awaken-create-isolation` policy,
-the opt-in provider test creates and removes its own policy, namespaces and
-reservation:
+set `KUBECONFIG` to that cluster's kubeconfig rather than relying on the global
+current context. The opt-in provider test creates and removes its own policy,
+namespaces and six Kind reservations:
 
 ```bash
 AWAKEN_K8S_E2E=1 AWAKEN_K8S_ISOLATION_E2E=1 \
   cargo test -p awaken-sandbox-container --features k8s --test k8s_e2e \
-  pod_create_isolation_joins_one_real_api_uid_after_reservation
+  brokered_create_isolation_joins_six_real_api_uids_after_reservation
 AWAKEN_K8S_E2E=1 AWAKEN_K8S_ISOLATION_E2E=1 \
   cargo test -p awaken-sandbox-container --features k8s --test k8s_e2e \
   original_create_guard_keeps_a_deleted_pod_visible_until_exact_release
@@ -297,6 +298,16 @@ Every distributed-control run resolves the current role binaries through Cargo
 and builds the Hand through the canonical sandbox builder. Cargo and Docker
 retain their incremental caches; the old tag-only reuse bypass has been removed
 because tag existence and a working Hand do not establish current-source identity.
+The distributed topology selects the Kubernetes Worker transport before any
+WorkUnit runs. Each Worker projects its Pod-bound identity and reaches the
+Coordinator's one Create broker over the existing private-CA TLS edge; the
+Worker ServiceAccount cannot create Pod, PVC, ConfigMap, Secret, Job or
+DaemonSet collections directly. The two overlays import the same Sandbox
+read/dispose and six-Kind Create Role source. The distributed overlay also
+imports the existing Create-control Namespace and isolation admission policy,
+binding only its Coordinator to the ledger and Create roles. The final hard
+crash stage retains this original authority instead of replacing transport
+mid-run.
 The shared harness checks local Docker/tmp filesystem bytes and inodes before
 cluster replacement and again before image import, accounting for every node,
 transport archives and a reserve. Remote Docker contexts fail closed because

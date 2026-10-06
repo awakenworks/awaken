@@ -389,15 +389,14 @@ async fn relay_target_reuses_the_selected_worker_pod_observer() {
 }
 
 #[tokio::test]
-async fn closed_idle_retirement_uses_registry_and_exact_dispatch_owner_without_minting_exit() {
+async fn legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_a_pod() {
     use awaken_dispatch::{DispatchQueue, WorkerDirectory};
-    // Causes: C1 Registry Starting/Ready/Draining versus Quiesced/Dead;
-    // C2 a physical slot owned by the exact incarnation; C3 an unbound slot has
-    // unknown execution; C4 a slot belongs to another owner. Effects: E1 retire
-    // only the closed-idle original Pod; E2 preserve every physical slot and no
-    // exit/Session/attempt receipt. Decision rules CI1=!closed -> no API;
-    // CI2=closed+C2+C3 -> no API, retain unknown slot; CI3=closed+!C2 -> exact
-    // DELETE/finalizer release, including C4 without touching its slot.
+    // C1 legacy registration has no Registry-frozen Create ledger/process
+    // binding; C2 Registry spans Starting/Ready/Draining/Quiesced/Dead; C3
+    // an exact, unbound or foreign Dispatch slot may exist. Rule CI1=C1 with
+    // every C2/C3 row => no Pod read, DELETE, finalizer release or exit fact;
+    // any active physical slot retains its exact value. The real-Pod L7 case
+    // owns positive retirement after a retained binding and closed-idle proof.
     for case in [
         "starting",
         "ready",
@@ -411,13 +410,14 @@ async fn closed_idle_retirement_uses_registry_and_exact_dispatch_owner_without_m
         facts.pod.lock().unwrap().1["spec"]["restartPolicy"] = json!("Always");
         let directory = awaken_worker_registry::MemoryWorkerDirectory::new();
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(100));
-        let store = awaken_dispatch::MemoryDispatchStore::new(clock);
+        let store = awaken_dispatch::MemoryDispatchStore::new(clock.clone());
         let record = directory
             .register(
                 awaken_dispatch::WorkerRegistration {
                     worker_id: "k8s:workers:worker-a:uid-a".into(),
                     incarnation_id: "uid-a".into(),
                     manifest: manifest(),
+                    create_ledger: None,
                 },
                 100,
                 1_000,
@@ -493,20 +493,12 @@ async fn closed_idle_retirement_uses_registry_and_exact_dispatch_owner_without_m
             &directory,
             transport.stop_source().unwrap().as_ref(),
             &identity,
+            awaken_time::WallClockExt::now_ms(clock.as_ref()),
         )
         .await
         .unwrap();
-        let admitted = matches!(case, "quiesced" | "dead" | "foreign-slot");
-        assert_eq!(
-            facts.deletes.lock().unwrap().len(),
-            usize::from(admitted),
-            "{case}: CI1/CI2/CI3"
-        );
-        assert_eq!(
-            facts.updates.lock().unwrap().len(),
-            usize::from(admitted),
-            "{case}: E1"
-        );
+        assert!(facts.deletes.lock().unwrap().is_empty(), "{case}: CI1");
+        assert!(facts.updates.lock().unwrap().is_empty(), "{case}: CI1");
         assert!(
             directory
                 .incarnation(&identity)
@@ -524,13 +516,7 @@ async fn closed_idle_retirement_uses_registry_and_exact_dispatch_owner_without_m
                 "{case}: E2 original slot retained"
             );
         }
-        if !admitted {
-            assert_eq!(
-                facts.reads.load(Ordering::SeqCst),
-                0,
-                "{case}: refusal before provider I/O"
-            );
-        }
+        assert_eq!(facts.reads.load(Ordering::SeqCst), 0, "{case}: CI1");
     }
 }
 

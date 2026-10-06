@@ -104,54 +104,6 @@ metadata:
 automountServiceAccountToken: true
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: awaken-runtime-read-dispose
-rules:
-  # Worker and product share one read/UID-fenced disposal policy. The Worker
-  # cannot create a Sandbox resource: every collection POST must cross the
-  # signed Coordinator broker and its independently retained Create ticket.
-  - apiGroups: [""]
-    resources: ["pods", "configmaps"]
-    verbs: ["get", "list", "update", "delete"]
-  - apiGroups: [""]
-    resources: ["persistentvolumeclaims"]
-    verbs: ["get", "delete"]
-  - apiGroups: [""]
-    resources: ["pods/exec", "pods/portforward"]
-    verbs: ["create", "get"]
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "list", "delete", "deletecollection"]
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
-    verbs: ["get", "list", "delete"]
-  # Optional node-image preparation: the native DaemonSet controller owns Pods.
-  - apiGroups: ["apps"]
-    resources: ["daemonsets"]
-    verbs: ["get", "list", "delete"]
-  # Read-only evidence for the canonical K8sRuntime policy attestor. Mutation
-  # remains outside the runtime ServiceAccount's authority.
-  - apiGroups: ["networking.k8s.io"]
-    resources: ["networkpolicies"]
-    verbs: ["get", "list", "watch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: awaken-create-executor
-rules:
-  - apiGroups: [""]
-    resources: ["pods", "configmaps", "persistentvolumeclaims", "secrets"]
-    verbs: ["create"]
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
-    verbs: ["create"]
-  - apiGroups: ["apps"]
-    resources: ["daemonsets"]
-    verbs: ["create"]
----
-apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: awaken-runtime-read-dispose

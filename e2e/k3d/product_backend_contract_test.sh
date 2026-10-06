@@ -24,9 +24,9 @@ trap 'rm -f "$RENDERED" "$CONTROL_RENDERED"' EXIT
 # finalizer, TLS transport, and bounded probes; C4 ingress is
 # restricted to namespaces explicitly labelled as an
 # Awaken Design backend; C5 K8s sandbox uses the imported non-`latest` base and
-# the canonical retained continuation PVC, with exact create/get/delete RBAC,
-# while
-# BuildKit Jobs, the derived-image Registry, and namespace-scoped RBAC including
+# the canonical retained continuation PVC and separate Create-only executor
+# and read/UID-fenced disposal Roles, while BuildKit Jobs, the derived-image
+# Registry, and namespace-scoped RBAC including
 # Pod metadata update for resourceVersion-fenced reaper-lease transfer are
 # coherent through the Registry container's internal :5000 endpoint (the host
 # publishing port is not reachable inside the cluster), while the Sandbox base

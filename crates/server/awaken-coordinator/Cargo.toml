@@ -173,7 +173,7 @@ container-k8s = ["awaken-worker-transport-security/kubernetes", "awaken-sandbox-
 
 [dev-dependencies]
 awaken-lease-contract.workspace = true
-awaken-coordinator-client = { workspace = true, features = ["container-k8s"] }
+awaken-worker = { workspace = true, features = ["container-k8s"] }
 awaken-protocol-managed-testkit.workspace = true
 awaken-runtime-host-testkit.workspace = true
 k8s-openapi = { version = "0.25", features = ["v1_30"] }

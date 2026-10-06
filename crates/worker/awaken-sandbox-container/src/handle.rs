@@ -70,8 +70,78 @@ pub enum ContainerContinuationHandle {
         #[serde(skip_serializing_if = "Option::is_none")]
         claim_uid: Option<String>,
     },
+    /// Terminal-only, provider-verified name reservation paired with one
+    /// original retained claim. Ordinary adoption must reject this locator.
+    #[cfg(feature = "k8s")]
+    KubernetesGuardedClaim(KubernetesGuardedClaimHandle),
     /// Host-owned exact staging target for a checkpoint restore.
     HostBindRestoration(HostBindRestorationHandle),
+}
+
+#[cfg(feature = "k8s")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KubernetesGuardedClaimHandle {
+    pub(crate) scope: String,
+    pub(crate) predecessor: crate::ContainerEffectFence,
+    pub(crate) guard: crate::k8s::CreateTicket,
+    pub(crate) claim_uid: String,
+}
+
+#[cfg(feature = "k8s")]
+impl KubernetesGuardedClaimHandle {
+    pub(crate) fn new(
+        scope: &str,
+        predecessor: &crate::ContainerEffectFence,
+        guard: crate::k8s::CreateTicket,
+        claim_uid: &str,
+    ) -> Result<Self, crate::RuntimeError> {
+        use crate::k8s::{TicketResult, TicketStatus};
+        if scope.is_empty()
+            || scope.trim() != scope
+            || claim_uid.trim().is_empty()
+            || claim_uid.trim() != claim_uid
+            || guard.request.resource != "pods"
+            || guard.isolation_pending
+            || !matches!(
+                &guard.status,
+                TicketStatus::Finished(TicketResult::Isolated { uid })
+                    if !uid.trim().is_empty() && uid.trim() == uid
+            )
+        {
+            return Err(crate::RuntimeError::Backend(
+                "guarded Kubernetes claim lacks exact terminal evidence".into(),
+            ));
+        }
+        Ok(Self {
+            scope: scope.to_owned(),
+            predecessor: predecessor.clone(),
+            guard,
+            claim_uid: claim_uid.to_owned(),
+        })
+    }
+
+    #[must_use]
+    pub fn claim_uid(&self) -> &str {
+        &self.claim_uid
+    }
+
+    #[must_use]
+    pub fn guard_name(&self) -> &str {
+        &self.guard.request.name
+    }
+
+    #[must_use]
+    pub fn guard_uid(&self) -> Option<&str> {
+        match &self.guard.status {
+            crate::k8s::TicketStatus::Finished(crate::k8s::TicketResult::Isolated { uid })
+                if !uid.trim().is_empty() =>
+            {
+                Some(uid)
+            }
+            _ => None,
+        }
+    }
 }
 
 impl ContainerContinuationHandle {
@@ -266,6 +336,14 @@ impl ContainerHandleCodec for pc::SandboxHandle {
                 Err(pc::SandboxError::unsupported(
                     "legacy Kubernetes handle has no Pod incarnation evidence",
                 ))
+            }
+            #[cfg(feature = "k8s")]
+            Some(ContainerContinuationHandle::KubernetesGuardedClaim(guarded)) => {
+                guarded.guard_uid().map(str::to_owned).ok_or_else(|| {
+                    pc::SandboxError::invalid(
+                        "guarded Kubernetes claim has no exact reservation UID",
+                    )
+                })
             }
             Some(ContainerContinuationHandle::HostBindRestoration(_)) => {
                 Err(pc::SandboxError::invalid(

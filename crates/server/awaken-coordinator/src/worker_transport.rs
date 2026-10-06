@@ -80,7 +80,7 @@ impl WorkerTransport {
     pub fn create_broker_router(
         &self,
         directory: Arc<dyn awaken_dispatch::WorkerDirectory>,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Option<axum::Router> {
         self.create_broker.as_ref().map(|broker| {
             broker

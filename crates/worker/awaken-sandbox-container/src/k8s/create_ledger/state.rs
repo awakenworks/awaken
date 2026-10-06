@@ -29,7 +29,7 @@ pub enum TicketResult {
     RejectedNoEffect {
         code: u16,
     },
-    /// A provider-owned, unschedulable Pod occupies the exact Create name.
+    /// A provider-owned inert object occupies the exact Create name.
     /// The independent close reader must reverify its UID and protection
     /// before this result can satisfy any Session terminal obligation.
     Isolated {
@@ -101,6 +101,7 @@ impl CreateTicketRequest {
         if fields
             .into_iter()
             .any(|(value, max)| value.is_empty() || value.len() > max || value.trim() != value)
+            || !supported_resource(&self.resource)
             || self.digest.len() != 64
             || !self
                 .digest
@@ -127,6 +128,10 @@ impl CreateTicketRequest {
 pub struct CreateTicket {
     pub request: CreateTicketRequest,
     pub status: TicketStatus,
+    /// Worker requests and terminal name reservations share this one ledger.
+    /// Historical tickets default to the original Worker request origin.
+    #[serde(default)]
+    pub origin: TicketOrigin,
     /// Minted by the provider's first CAS admission, never by the Worker.
     /// Historical tickets without it remain Unknown after process loss.
     #[serde(default)]
@@ -137,11 +142,26 @@ pub struct CreateTicket {
     pub isolation_pending: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TicketOrigin {
+    #[default]
+    Worker,
+    TerminalGuard,
+}
+
 pub(super) fn valid_isolation_id(value: &str) -> bool {
     value.len() == 32
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn supported_resource(value: &str) -> bool {
+    matches!(
+        value,
+        "pods" | "persistentvolumeclaims" | "configmaps" | "secrets" | "jobs" | "daemonsets"
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,14 +240,27 @@ impl WorkerCreateLedgerState {
                     "Kubernetes Create ledger ticket has no exact group or key",
                 ));
             }
-            if (!ticket.isolation_id.is_empty() && !valid_isolation_id(&ticket.isolation_id))
-                || (ticket.request.resource != "pods" && !ticket.isolation_id.is_empty())
-            {
+            if !ticket.isolation_id.is_empty() && !valid_isolation_id(&ticket.isolation_id) {
                 return Err(backend("Kubernetes Create isolation identity is malformed"));
             }
-            if ticket.isolation_pending
+            if ticket.origin == TicketOrigin::TerminalGuard
                 && (ticket.request.resource != "pods"
+                    || !self.worker_sealed
+                    || self.groups.get(&ticket.request.group) != Some(&GroupAdmission::Sealed)
                     || !valid_isolation_id(&ticket.isolation_id)
+                    || matches!(
+                        ticket.status,
+                        TicketStatus::Finished(
+                            TicketResult::Created { .. } | TicketResult::RejectedNoEffect { .. }
+                        )
+                    ))
+            {
+                return Err(backend(
+                    "Kubernetes terminal Pod guard is outside a sealed physical request group",
+                ));
+            }
+            if ticket.isolation_pending
+                && (!valid_isolation_id(&ticket.isolation_id)
                     || !self.worker_sealed
                     || self.groups.get(&ticket.request.group) != Some(&GroupAdmission::Sealed)
                     || matches!(
@@ -236,17 +269,16 @@ impl WorkerCreateLedgerState {
                     ))
             {
                 return Err(backend(
-                    "Kubernetes Create isolation is pending outside a sealed Pod ticket",
+                    "Kubernetes Create isolation is pending outside a sealed ticket",
                 ));
             }
             if let TicketStatus::Finished(result) = &ticket.status {
                 result.validate()?;
                 if matches!(result, TicketResult::Isolated { .. })
-                    && (ticket.request.resource != "pods"
-                        || !valid_isolation_id(&ticket.isolation_id))
+                    && !valid_isolation_id(&ticket.isolation_id)
                 {
                     return Err(backend(
-                        "Kubernetes Create isolation lacks its exact admitted Pod identity",
+                        "Kubernetes Create isolation lacks its exact admitted identity",
                     ));
                 }
             }
@@ -262,9 +294,7 @@ impl WorkerCreateLedgerState {
         isolation_id: &str,
     ) -> Result<TicketAdmission, RuntimeError> {
         request.validate()?;
-        if (request.resource == "pods" && !valid_isolation_id(isolation_id))
-            || (request.resource != "pods" && !isolation_id.is_empty())
-        {
+        if !valid_isolation_id(isolation_id) {
             return Err(backend(
                 "Kubernetes Create admission lacks an isolation identity",
             ));
@@ -297,6 +327,7 @@ impl WorkerCreateLedgerState {
             CreateTicket {
                 request: request.clone(),
                 status: TicketStatus::InFlight,
+                origin: TicketOrigin::Worker,
                 isolation_id: isolation_id.to_owned(),
                 isolation_pending: false,
             },
@@ -320,6 +351,11 @@ impl WorkerCreateLedgerState {
                 "Kubernetes Create result belongs to another exact request",
             ));
         }
+        if ticket.origin != TicketOrigin::Worker {
+            return Err(backend(
+                "provider terminal guard cannot accept a Worker Create result",
+            ));
+        }
         if matches!(result, TicketResult::Isolated { .. }) {
             return Err(backend(
                 "Kubernetes Create isolation requires the sealed physical observation path",
@@ -338,7 +374,7 @@ impl WorkerCreateLedgerState {
     }
 
     /// A verified same-name reservation can close a request even when the
-    /// original Pod POST was definitively rejected before the reservation CAS.
+    /// original POST was definitively rejected before the reservation CAS.
     /// The caller must obtain the physical observation first; this pure state
     /// transition never infers it from the HTTP status.
     pub fn finish_isolation(
@@ -348,17 +384,22 @@ impl WorkerCreateLedgerState {
     ) -> Result<bool, RuntimeError> {
         request.validate()?;
         result.validate()?;
-        if request.resource != "pods"
-            || !matches!(
-                result,
-                TicketResult::Isolated { .. } | TicketResult::Created { .. }
-            )
-        {
-            return Err(backend("Kubernetes Pod isolation result is invalid"));
+        if !matches!(
+            result,
+            TicketResult::Isolated { .. } | TicketResult::Created { .. }
+        ) {
+            return Err(backend("Kubernetes Create isolation result is invalid"));
         }
         let ticket = self
             .ticket(request)
             .ok_or_else(|| backend("Kubernetes Create isolation has no admitted request"))?;
+        if ticket.origin == TicketOrigin::TerminalGuard
+            && !matches!(result, TicketResult::Isolated { .. })
+        {
+            return Err(backend(
+                "provider terminal guard cannot claim an original Pod Create result",
+            ));
+        }
         if !valid_isolation_id(&ticket.isolation_id)
             || !self.worker_sealed
             || self.groups.get(&request.group) != Some(&GroupAdmission::Sealed)
@@ -398,7 +439,7 @@ impl WorkerCreateLedgerState {
         }
     }
 
-    /// CAS this marker before an inert Pod POST. A result from the old POST
+    /// CAS this marker before an inert same-Kind POST. A result from the old POST
     /// cannot close the group while the reservation API call might still
     /// publish. A replacement Coordinator replays the same exact reservation.
     pub fn start_isolation(
@@ -416,8 +457,10 @@ impl WorkerCreateLedgerState {
             .get_mut(&request.key())
             .filter(|ticket| ticket.request == *request)
             .ok_or_else(|| backend("Kubernetes Create isolation has no exact ticket"))?;
-        if request.resource != "pods" || !valid_isolation_id(&ticket.isolation_id) {
-            return Err(backend("Kubernetes Create isolation lacks a Pod identity"));
+        if !valid_isolation_id(&ticket.isolation_id) {
+            return Err(backend(
+                "Kubernetes Create isolation lacks an admitted identity",
+            ));
         }
         if ticket.isolation_pending {
             return Ok((true, false));
@@ -453,6 +496,64 @@ impl WorkerCreateLedgerState {
         let changed = !self.worker_sealed;
         self.worker_sealed = true;
         changed
+    }
+
+    /// Extend the already sealed Worker group with one provider-owned Pod name
+    /// reservation for an original retained PVC that has no live Pod. A prior
+    /// rejected Pod ticket retains its original nonce; an absent ticket gets a
+    /// distinct typed origin in the same CAS state. Neither case forwards an
+    /// ordinary Worker Create or changes an already-created Pod result.
+    pub fn admit_terminal_pod_guard(
+        &mut self,
+        request: &CreateTicketRequest,
+        isolation_id: &str,
+    ) -> Result<bool, RuntimeError> {
+        request.validate()?;
+        if request.resource != "pods"
+            || !valid_isolation_id(isolation_id)
+            || !self.worker_sealed
+            || self.groups.get(&request.group) != Some(&GroupAdmission::Sealed)
+        {
+            return Err(backend(
+                "terminal Pod guard requires one exact sealed Worker group",
+            ));
+        }
+        let key = request.key();
+        if let Some(existing) = self.tickets.get_mut(&key) {
+            if existing.request.resource != request.resource
+                || existing.request.namespace != request.namespace
+                || existing.request.name != request.name
+                || !valid_isolation_id(&existing.isolation_id)
+                || (existing.origin == TicketOrigin::TerminalGuard && existing.request != *request)
+            {
+                return Err(backend(
+                    "terminal Pod guard conflicts with the admitted Create identity",
+                ));
+            }
+            if matches!(
+                existing.status,
+                TicketStatus::Finished(TicketResult::RejectedNoEffect { .. })
+            ) {
+                let changed = !existing.isolation_pending;
+                existing.isolation_pending = true;
+                return Ok(changed);
+            }
+            return Ok(false);
+        }
+        if self.tickets.len() == MAX_TICKETS {
+            return Err(backend("Kubernetes Create ledger capacity is exhausted"));
+        }
+        self.tickets.insert(
+            key,
+            CreateTicket {
+                request: request.clone(),
+                status: TicketStatus::InFlight,
+                origin: TicketOrigin::TerminalGuard,
+                isolation_id: isolation_id.to_owned(),
+                isolation_pending: false,
+            },
+        );
+        Ok(true)
     }
 
     pub fn ticket(&self, request: &CreateTicketRequest) -> Option<&CreateTicket> {
@@ -508,6 +609,169 @@ mod tests {
             digest.to_string().repeat(64),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn terminal_claim_pod_guard_is_one_replayable_sealed_ticket() {
+        // Guard admission table. Causes: C1 exact Worker and group are sealed;
+        // C2 an original Pod ticket is absent, definitively rejected, created,
+        // or historical without nonce; C3 provider reservation POST settles or
+        // loses its response; C4 the Coordinator restarts. Effects: E1 only
+        // C1+absent inserts one typed InFlight guard; E2 C1+rejected reuses the
+        // original nonce and marks isolation pending; E3 pending keeps join
+        // Unknown across C4; E4 one verified Isolated UID joins, while Worker
+        // Create admission remains sealed; E5 unsealed, legacy or conflicting
+        // results reject. Rules G1 absent=>E1+E3+E4, G2 rejected=>E2+E3+E4,
+        // G3 created=>no new guard, G4 !C1/legacy/conflict=>E5.
+        let guard = request("pod-a", 'f');
+        let mut state = WorkerCreateLedgerState::default();
+        assert!(
+            state
+                .admit_terminal_pod_guard(&guard, ISOLATION_ID)
+                .is_err(),
+            "G4"
+        );
+        state.seal_group("effect-a").unwrap();
+        state.seal_worker();
+        assert!(
+            state
+                .admit_terminal_pod_guard(&guard, ISOLATION_ID)
+                .unwrap(),
+            "G1"
+        );
+        assert!(
+            !state
+                .admit_terminal_pod_guard(&guard, "f".repeat(32).as_str())
+                .unwrap(),
+            "G1 replay keeps first nonce"
+        );
+        assert_eq!(state.join_group("effect-a"), RequestJoin::Unknown, "G1/E3");
+        let mut restarted = WorkerCreateLedgerState::decode(&state.encode().unwrap()).unwrap();
+        let ticket = restarted.ticket(&guard).unwrap();
+        assert_eq!(
+            ticket.origin,
+            TicketOrigin::TerminalGuard,
+            "G1 typed origin"
+        );
+        assert_eq!(ticket.isolation_id, ISOLATION_ID, "G1 original nonce");
+        assert_eq!(
+            restarted.start_isolation(&guard).unwrap(),
+            (true, true),
+            "G1 POST admission"
+        );
+        assert_eq!(
+            restarted.join_group("effect-a"),
+            RequestJoin::Unknown,
+            "G1/C3+C4"
+        );
+        assert!(
+            restarted
+                .finish(&guard, TicketResult::Created { uid: "old".into() })
+                .is_err(),
+            "G4 provider guard is not an original Create"
+        );
+        assert!(
+            restarted
+                .finish_isolation(&guard, TicketResult::Created { uid: "old".into() })
+                .is_err(),
+            "G4 cannot forge original Pod"
+        );
+        restarted
+            .finish_isolation(
+                &guard,
+                TicketResult::Isolated {
+                    uid: "guard-uid".into(),
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(restarted.join_group("effect-a"), RequestJoin::Complete(tickets) if tickets.len() == 1 && tickets[0].origin == TicketOrigin::TerminalGuard),
+            "G1/E4"
+        );
+        assert_eq!(
+            restarted.admit(&guard, ISOLATION_ID).unwrap(),
+            TicketAdmission::Sealed,
+            "G1/E4 no late Worker Create"
+        );
+
+        let original = request("pod-b", 'a');
+        let mut rejected = WorkerCreateLedgerState::default();
+        rejected.admit(&original, ISOLATION_ID).unwrap();
+        rejected
+            .finish(&original, TicketResult::RejectedNoEffect { code: 403 })
+            .unwrap();
+        rejected.seal_group("effect-a").unwrap();
+        rejected.seal_worker();
+        let replacement_digest = request("pod-b", 'b');
+        assert!(
+            rejected
+                .admit_terminal_pod_guard(&replacement_digest, "f".repeat(32).as_str())
+                .unwrap(),
+            "G2"
+        );
+        assert_eq!(
+            rejected.join_group("effect-a"),
+            RequestJoin::Unknown,
+            "G2/E3"
+        );
+        assert_eq!(
+            rejected.ticket(&original).unwrap().isolation_id,
+            ISOLATION_ID,
+            "G2 original nonce"
+        );
+        assert_eq!(
+            rejected.start_isolation(&original).unwrap(),
+            (true, false),
+            "G2 replay the pending original"
+        );
+        rejected
+            .finish_isolation(
+                &original,
+                TicketResult::Isolated {
+                    uid: "reserved".into(),
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(rejected.join_group("effect-a"), RequestJoin::Complete(tickets) if tickets.len() == 1 && tickets[0].origin == TicketOrigin::Worker),
+            "G2/E4"
+        );
+
+        let mut created = WorkerCreateLedgerState::default();
+        created.admit(&original, ISOLATION_ID).unwrap();
+        created
+            .finish(
+                &original,
+                TicketResult::Created {
+                    uid: "original-uid".into(),
+                },
+            )
+            .unwrap();
+        created.seal_group("effect-a").unwrap();
+        created.seal_worker();
+        assert!(
+            !created
+                .admit_terminal_pod_guard(&replacement_digest, ISOLATION_ID)
+                .unwrap(),
+            "G3"
+        );
+        assert!(
+            matches!(created.join_group("effect-a"), RequestJoin::Complete(tickets) if tickets.len() == 1 && tickets[0].status == TicketStatus::Finished(TicketResult::Created { uid: "original-uid".into() })),
+            "G3"
+        );
+
+        created
+            .tickets
+            .get_mut(&original.key())
+            .unwrap()
+            .isolation_id
+            .clear();
+        assert!(
+            created
+                .admit_terminal_pod_guard(&replacement_digest, ISOLATION_ID)
+                .is_err(),
+            "G4 historical missing nonce"
+        );
     }
 
     #[test]
@@ -697,7 +961,7 @@ mod tests {
         // R original POST is InFlight or has a definitive refusal; I caller
         // has verified the same-name Pod UID. Effects: E1 A+S+P keeps join
         // Unknown across restart and R; E2 A+S+P+I joins one Isolated result;
-        // E3 !S, absent/malformed A, foreign kind or changed UID rejects;
+        // E3 !S, absent/malformed A or changed UID rejects;
         // E4 replayed admission cannot replace A's nonce. Rules P1=A+S+P->E1,
         // P2=P1+I->E2, P3=!A|!S|!I->E3, P4=A+replay->E4.
         let pod = request("pod-a", 'a');
@@ -826,6 +1090,94 @@ mod tests {
         assert!(
             WorkerCreateLedgerState::decode(&historical.to_string()).is_err(),
             "P2 historical ticket cannot claim isolation"
+        );
+    }
+
+    #[test]
+    fn every_brokered_kind_uses_the_same_durable_isolation_transition() {
+        // Causes: C1 one of the six admitted Kind collections, or an unknown
+        // collection; C2 a valid provider nonce or missing historical nonce;
+        // C3 original request remains InFlight after Worker/group seal; C4 an
+        // exact physical observation returns the reservation UID. Effects:
+        // E1 C1+C2+C3 retains pending isolation across encode/decode; E2 C4
+        // joins one Isolated result; E3 unknown C1 or missing C2 refuses
+        // admission/close and cannot mint a terminal receipt. Decision rows
+        // N1=supported+nonce+sealed->E1, N2=N1+observation->E2,
+        // N3=unsupported|missing nonce->E3.
+        for resource in [
+            "pods",
+            "persistentvolumeclaims",
+            "configmaps",
+            "secrets",
+            "jobs",
+            "daemonsets",
+        ] {
+            let request = CreateTicketRequest::new(
+                "effect-a",
+                resource,
+                "sandbox-ns",
+                "reserved",
+                "a".repeat(64),
+            )
+            .unwrap();
+            let mut state = WorkerCreateLedgerState::default();
+            assert_eq!(
+                state.admit(&request, ISOLATION_ID).unwrap(),
+                TicketAdmission::Forward,
+                "N1 {resource}"
+            );
+            state.seal_worker();
+            state.seal_group("effect-a").unwrap();
+            assert_eq!(
+                state.start_isolation(&request).unwrap(),
+                (true, true),
+                "N1 {resource}"
+            );
+            let mut restarted = WorkerCreateLedgerState::decode(&state.encode().unwrap()).unwrap();
+            assert_eq!(
+                restarted.join_group("effect-a"),
+                RequestJoin::Unknown,
+                "N1 {resource}"
+            );
+            restarted
+                .finish_isolation(
+                    &request,
+                    TicketResult::Isolated {
+                        uid: "reserved-uid".into(),
+                    },
+                )
+                .unwrap();
+            assert!(
+                matches!(restarted.join_group("effect-a"), RequestJoin::Complete(tickets)
+                if tickets.len() == 1 && tickets[0].status == TicketStatus::Finished(TicketResult::Isolated { uid: "reserved-uid".into() })),
+                "N2 {resource}"
+            );
+            assert!(state.admit(&request, "").is_err(), "N3 {resource}");
+            let mut historical: serde_json::Value =
+                serde_json::from_str(&state.encode().unwrap()).unwrap();
+            historical["tickets"][&request.key()]["isolation_pending"] = false.into();
+            historical["tickets"][&request.key()]["isolation_id"] = "".into();
+            let mut historical = WorkerCreateLedgerState::decode(&historical.to_string()).unwrap();
+            assert_eq!(
+                historical.join_group("effect-a"),
+                RequestJoin::Unknown,
+                "N3 historical {resource}"
+            );
+            assert!(
+                historical.start_isolation(&request).is_err(),
+                "N3 historical {resource}"
+            );
+        }
+        assert!(
+            CreateTicketRequest::new(
+                "effect-a",
+                "cronjobs",
+                "sandbox-ns",
+                "reserved",
+                "a".repeat(64)
+            )
+            .is_err(),
+            "N3 unknown Kind"
         );
     }
 }

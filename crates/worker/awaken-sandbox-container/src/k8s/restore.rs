@@ -126,6 +126,33 @@ pub(super) fn verify_claim_projection(
     observed: &PersistentVolumeClaim,
     disposal: Option<&pc::SandboxDisposalAuthorization>,
 ) -> Result<(), RuntimeError> {
+    verify_claim_projection_shape(expected, observed)?;
+    realization::verify_realization(expected, observed, disposal)
+}
+
+/// The terminal guard already excludes any new Pod binding. A claim whose
+/// exact UID has deletionTimestamp may be a lost response to this cleanup;
+/// preserve the same immutable spec/digest check while allowing its deletion
+/// to converge. The caller must separately verify guard policy, UID and the
+/// predecessor effect fence before using this narrower terminal projection.
+pub(super) fn verify_guarded_claim_projection(
+    expected: &PersistentVolumeClaim,
+    observed: &PersistentVolumeClaim,
+) -> Result<(), RuntimeError> {
+    verify_claim_projection_shape(expected, observed)?;
+    if realization::realization_digest_matches(expected, observed)? {
+        Ok(())
+    } else {
+        Err(backend(
+            "guarded Kubernetes continuation PVC differs from its original realization",
+        ))
+    }
+}
+
+fn verify_claim_projection_shape(
+    expected: &PersistentVolumeClaim,
+    observed: &PersistentVolumeClaim,
+) -> Result<(), RuntimeError> {
     let expected_spec = expected
         .spec
         .as_ref()
@@ -153,7 +180,7 @@ pub(super) fn verify_claim_projection(
             "Kubernetes continuation PVC differs from the exact immutable projection",
         ));
     }
-    realization::verify_realization(expected, observed, disposal)
+    Ok(())
 }
 
 /// An omitted desired storage class delegates exactly one choice to the

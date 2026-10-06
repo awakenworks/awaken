@@ -18,7 +18,8 @@ use super::finalizer::{ExactFinalizerAdmission, update_exact_pod_finalizer};
 use super::names::{continuation_claim_for_pod, continuation_claim_name};
 use super::pod_projection::CONTINUATION_VOLUME;
 use super::{
-    ContainerEffectFence, ContainerPlan, ContainerRealizationIntent, RuntimeError, backend,
+    ContainerEffectFence, ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
+    K8sRuntime, RuntimeError, backend, stamp_effect_fence, stamp_realization,
 };
 
 pub(super) const ORPHANED_LIVE_CLAIM_ERROR: &str =
@@ -35,7 +36,14 @@ pub(super) struct CreateClaimObservation<'a> {
     pub(super) effect_fence: Option<&'a ContainerEffectFence>,
     pub(super) uid_present: bool,
     pub(super) terminating: bool,
-    pub(super) realization_matches: bool,
+}
+
+pub(super) fn original_claim_effect_matches(
+    expected: &ContainerEffectFence,
+    observed: &ContainerEffectFence,
+) -> bool {
+    observed.same_effect_identity(expected)
+        && observed.expires_at_unix_ms() <= expected.expires_at_unix_ms()
 }
 
 pub(super) fn create_claim_admission(
@@ -51,19 +59,12 @@ pub(super) fn create_claim_admission(
     if observed.terminating {
         return Err(backend("Kubernetes continuation PVC is terminating"));
     }
-    if !observed.realization_matches {
-        return Err(backend(
-            "existing Kubernetes continuation PVC belongs to a different realization",
-        ));
-    }
     let Some(observed_fence) = observed.effect_fence else {
         return Err(backend(
             "existing Kubernetes continuation PVC has no durable effect fence",
         ));
     };
-    if !observed_fence.same_effect_identity(expected)
-        || observed_fence.expires_at_unix_ms() > expected.expires_at_unix_ms()
-    {
+    if !original_claim_effect_matches(expected, observed_fence) {
         return Err(backend(
             "existing Kubernetes continuation PVC is owned by a newer or conflicting effect",
         ));
@@ -919,6 +920,58 @@ pub(super) fn handle_extra(
     }
 }
 
+impl K8sRuntime {
+    pub(super) fn desired_create_claim(
+        &self,
+        context: &ContainerRealizationContext<'_>,
+        plan: &ContainerPlan,
+    ) -> Result<Option<PersistentVolumeClaim>, RuntimeError> {
+        if !matches!(context.intent, ContainerRealizationIntent::Create)
+            || !claim_required(plan, self.continuation_volume.is_some())
+        {
+            return Ok(None);
+        }
+        let effect_fence = context.effect_fence.ok_or_else(|| {
+            backend("Kubernetes retained continuation creation requires a durable effect fence")
+        })?;
+        self.desired_create_claim_for_effect(context.scope, plan, effect_fence)
+    }
+
+    pub(super) fn desired_create_claim_for_effect(
+        &self,
+        scope: &str,
+        plan: &ContainerPlan,
+        effect_fence: &ContainerEffectFence,
+    ) -> Result<Option<PersistentVolumeClaim>, RuntimeError> {
+        if !claim_required(plan, self.continuation_volume.is_some()) {
+            return Ok(None);
+        }
+        self.desired_claim_for_effect(scope, effect_fence).map(Some)
+    }
+
+    /// One immutable PVC projection for first Create, 409 replay, joined
+    /// Pod/PVC reconstruction, and guarded claim-only terminal disposal.
+    pub(super) fn desired_claim_for_effect(
+        &self,
+        scope: &str,
+        effect_fence: &ContainerEffectFence,
+    ) -> Result<PersistentVolumeClaim, RuntimeError> {
+        let runtime_id = self.realization_runtime_id(scope)?;
+        let config = self
+            .continuation_volume
+            .as_ref()
+            .ok_or_else(|| backend("Kubernetes retained claim has no frozen storage policy"))?;
+        let mut claim = build_claim(&runtime_id, config)?;
+        // The ordinary digest owns the immutable PVC shape. The aggregate fence
+        // is stamped afterwards so a lease-expiry renewal does not create a
+        // second filesystem identity; admission below still compares the exact
+        // stable effect identity and monotonic expiry.
+        stamp_realization(&mut claim)?;
+        stamp_effect_fence(&mut claim, effect_fence);
+        Ok(claim)
+    }
+}
+
 pub(super) fn build_claim(
     id: &str,
     config: &crate::K8sContinuationVolume,
@@ -1318,16 +1371,16 @@ mod tests {
         /* Claim-only create recovery cause/effect table. Causes: C1 the
          * canonical retained PVC is absent/present; C2 an observed PVC has an
          * immutable UID or is malformed; C3 it is live/terminating; C4 its
-         * realization digest equals/differs from the desired claim; C5 its
-         * persisted aggregate effect is exact, missing, foreign generation, or
-         * newer than the caller's asserted expiry. Effects: E1 an absent claim
-         * may be created; E2 only an exact same-effect claim may be reused after
-         * response loss; E3 every incomplete, foreign, stale-caller, terminating,
-         * or different-realization row rejects without a participant mutation.
-         * Rules: CC1 !C1=>E1; CC2 C1+UID+live+exact(C4)+exact-or-renewed(C5)=>E2;
-         * CC3 every other C1 row=>E3. Rebuild is excluded: it remains authorized
-         * only by the source V2 handle's claim UID in
-         * `rebuild_continuation_expectation`. */
+         * persisted aggregate effect is exact, missing, foreign generation,
+         * or newer than the caller's asserted expiry. Effects: E1 an absent
+         * claim may be created; E2 only an exact same-effect claim may be
+         * reused after response loss; E3 every incomplete, foreign,
+         * stale-caller or terminating row rejects without mutation. Rules:
+         * CC1 !C1=>E1; CC2 C1+UID+live+exact-or-renewed(C4)=>E2;
+         * CC3 every other C1 row=>E3. The caller separately runs the sole
+         * typed full PVC projection verifier before accepting E2; the runtime
+         * test owns the changed-spec decision row. Rebuild is excluded: it
+         * needs the source V2 handle's claim UID. */
         let expected =
             pc::SandboxEffectFence::new("create-1", "owner-1", "runtime-1", 7, 200).unwrap();
         let original =
@@ -1341,7 +1394,6 @@ mod tests {
             effect_fence: Some(&original),
             uid_present: true,
             terminating: false,
-            realization_matches: true,
         };
         assert_eq!(
             create_claim_admission(&expected, Some(exact)).unwrap(),
@@ -1360,10 +1412,6 @@ mod tests {
             },
             CreateClaimObservation {
                 terminating: true,
-                ..exact
-            },
-            CreateClaimObservation {
-                realization_matches: false,
                 ..exact
             },
             CreateClaimObservation {

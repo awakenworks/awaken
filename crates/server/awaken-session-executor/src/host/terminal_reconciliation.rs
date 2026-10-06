@@ -682,6 +682,7 @@ mod tests {
         let dispatch = awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
             awaken_lease_testkit::ManualClock::new(100),
         ))
+        .await
         .unwrap();
         let source = LeaseDeadlineEvidence {
             observed: Default::default(),
@@ -783,10 +784,12 @@ mod tests {
             .snapshot
             .identity;
         let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "fixture")
+            .await
             .with_dispatch_store(Arc::new(
                 awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
                     awaken_lease_testkit::ManualClock::new(0),
                 ))
+                .await
                 .unwrap(),
             ));
         host.bind_worker_evidence_reconciliation(

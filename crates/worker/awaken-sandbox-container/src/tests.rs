@@ -2903,7 +2903,9 @@ struct FakeState {
     retained_observation_attempts: Vec<Option<String>>,
     observation: Option<pc::SandboxObservation>,
     unmaterialized_absence_proven: bool,
-    recovered_created_pod: Option<(String, String)>,
+    recovered_created_pod: Option<(String, String, Option<String>)>,
+    #[cfg(feature = "k8s")]
+    recovered_guarded_claim: Option<(String, crate::KubernetesGuardedClaimHandle)>,
     unmaterialized_absence_checks: usize,
     configuration: Option<std::collections::BTreeMap<String, String>>,
     historical_configuration: Option<std::collections::BTreeMap<String, String>>,
@@ -3198,14 +3200,25 @@ impl ContainerRuntime for FakeRuntime {
     ) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
         let mut state = self.st.lock().unwrap();
         state.unmaterialized_absence_checks += 1;
+        #[cfg(feature = "k8s")]
         if expected_effect_fence.is_some()
-            && let Some((container_id, pod_uid)) = &state.recovered_created_pod
+            && let Some((container_id, guarded)) = &state.recovered_guarded_claim
+        {
+            return Ok(MissingHandleTerminalEvidence::ExactIncarnation {
+                container_id: container_id.clone(),
+                runtime_handle: crate::ContainerContinuationHandle::KubernetesGuardedClaim(
+                    guarded.clone(),
+                ),
+            });
+        }
+        if expected_effect_fence.is_some()
+            && let Some((container_id, pod_uid, claim_uid)) = &state.recovered_created_pod
         {
             return Ok(MissingHandleTerminalEvidence::ExactIncarnation {
                 container_id: container_id.clone(),
                 runtime_handle: crate::ContainerContinuationHandle::KubernetesContinuationV2 {
                     pod_uid: pod_uid.clone(),
-                    claim_uid: None,
+                    claim_uid: claim_uid.clone(),
                 },
             });
         }

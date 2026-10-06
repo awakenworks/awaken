@@ -1,8 +1,8 @@
 // @formal surface obligation=sandbox.admission_never_weakens_isolation
-// @formal reason: A sealed provider ticket reserves the exact Pod name before
+// @formal reason: A sealed provider ticket reserves the exact Kind/name before
 // @formal reason: it can be called joined. The API denial and live-name tests
 // @formal reason: qualify selected transitions, not universal K8s refinement.
-//! Physical Pod-name reservation for a Create whose response was lost.
+//! Physical same-Kind name reservation for a Create whose response was lost.
 //!
 //! This is part of the existing provider ledger, not a second retry queue.
 //! The reservation is deliberately retained: releasing its name before the
@@ -13,6 +13,7 @@ use k8s_openapi::api::admissionregistration::v1::{
     ValidatingAdmissionPolicyBindingSpec, ValidatingAdmissionPolicySpec,
 };
 use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{DeleteParams, PostParams, Preconditions};
 use kube::{Api, Client};
 use serde_json::json;
@@ -29,7 +30,8 @@ pub const ISOLATION_LABEL: &str = "awaken.dev/create-isolation";
 /// Retains an original Pod until its exact Create result and terminal disposal
 /// have been joined. The existing Pod-finalizer CAS helper owns release.
 pub const ORIGINAL_GUARD_FINALIZER: &str = "awaken.dev/create-result-guard";
-const FINALIZER: &str = "awaken.dev/create-isolation";
+const FINALIZER: &str = ISOLATION_LABEL;
+const PVC_PROTECTION_FINALIZER: &str = "kubernetes.io/pvc-protection";
 const GATE: &str = "awaken.dev/create-isolation";
 const POLICY: &str = "awaken-create-isolation";
 
@@ -40,11 +42,24 @@ fn expected_policy_spec() -> ValidatingAdmissionPolicySpec {
             "matchPolicy": "Equivalent",
             "namespaceSelector": {},
             "objectSelector": {"matchLabels": {(ISOLATION_LABEL): "true"}},
-            "resourceRules": [{
-                "apiGroups": [""], "apiVersions": ["v1"],
-                "operations": ["UPDATE", "DELETE"], "resources": ["pods"],
-                "scope": "Namespaced"
-            }]
+            "resourceRules": [
+                {
+                    "apiGroups": [""], "apiVersions": ["v1"],
+                    "operations": ["UPDATE", "DELETE"],
+                    "resources": ["pods", "persistentvolumeclaims", "configmaps", "secrets"],
+                    "scope": "Namespaced"
+                },
+                {
+                    "apiGroups": ["batch"], "apiVersions": ["v1"],
+                    "operations": ["UPDATE", "DELETE"], "resources": ["jobs"],
+                    "scope": "Namespaced"
+                },
+                {
+                    "apiGroups": ["apps"], "apiVersions": ["v1"],
+                    "operations": ["UPDATE", "DELETE"], "resources": ["daemonsets"],
+                    "scope": "Namespaced"
+                }
+            ]
         },
         "validations": [{"expression": "false", "message": "Awaken Create isolation is retained until the original request is joined"}]
     }))
@@ -123,6 +138,74 @@ fn reservation(ticket: &CreateTicket) -> Result<Pod, RuntimeError> {
     .map_err(backend)
 }
 
+fn exact_reservation_metadata(
+    ticket: &CreateTicket,
+    metadata: &ObjectMeta,
+    uid: Option<&str>,
+) -> bool {
+    let exact_finalizers = match metadata.finalizers.as_deref() {
+        Some([provider]) if provider == FINALIZER => true,
+        Some([first, second]) if ticket.request.resource == "persistentvolumeclaims" => {
+            (first == FINALIZER && second == PVC_PROTECTION_FINALIZER)
+                || (first == PVC_PROTECTION_FINALIZER && second == FINALIZER)
+        }
+        _ => false,
+    };
+    metadata.name.as_deref() == Some(ticket.request.name.as_str())
+        && metadata.namespace.as_deref() == Some(ticket.request.namespace.as_str())
+        && metadata.uid.as_deref().is_some_and(|actual| {
+            !actual.trim().is_empty() && uid.is_none_or(|expected| actual == expected)
+        })
+        && metadata.deletion_timestamp.is_none()
+        && metadata.owner_references.is_none()
+        && exact_finalizers
+        && metadata
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.get(ISOLATION_LABEL))
+            .map(String::as_str)
+            == Some("true")
+        && metadata
+            .annotations
+            .as_ref()
+            .and_then(|values| values.get(ISOLATION_ID_ANNOTATION))
+            .map(String::as_str)
+            == Some(ticket.isolation_id.as_str())
+        && metadata
+            .annotations
+            .as_ref()
+            .and_then(|values| values.get(REQUEST_DIGEST_ANNOTATION))
+            .map(String::as_str)
+            == Some(ticket.request.digest.as_str())
+}
+
+fn exact_original_metadata(ticket: &CreateTicket, metadata: &ObjectMeta) -> bool {
+    metadata.name.as_deref() == Some(ticket.request.name.as_str())
+        && metadata.namespace.as_deref() == Some(ticket.request.namespace.as_str())
+        && metadata
+            .uid
+            .as_deref()
+            .is_some_and(|uid| !uid.trim().is_empty())
+        && metadata.deletion_timestamp.is_none()
+        && metadata
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.get(ISOLATION_LABEL))
+            .is_none()
+        && metadata
+            .annotations
+            .as_ref()
+            .and_then(|values| values.get(ISOLATION_ID_ANNOTATION))
+            .map(String::as_str)
+            == Some(ticket.isolation_id.as_str())
+        && metadata
+            .annotations
+            .as_ref()
+            .and_then(|values| values.get(REQUEST_DIGEST_ANNOTATION))
+            .map(String::as_str)
+            == Some(ticket.request.digest.as_str())
+}
+
 fn exact_reservation(ticket: &CreateTicket, observed: &Pod, uid: Option<&str>) -> bool {
     let Ok(expected) = reservation(ticket) else {
         return false;
@@ -151,48 +234,11 @@ fn exact_reservation(ticket: &CreateTicket, observed: &Pod, uid: Option<&str>) -
         });
     api_defaults::normalize_pod_spec(&mut desired, false);
     api_defaults::normalize_pod_spec(&mut actual, true);
-    observed.metadata.name == Some(ticket.request.name.clone())
-        && observed.metadata.namespace == Some(ticket.request.namespace.clone())
-        && observed.metadata.uid.as_deref().is_some_and(|actual| {
-            !actual.trim().is_empty() && uid.is_none_or(|expected| actual == expected)
-        })
-        && observed.metadata.deletion_timestamp.is_none()
-        && unbound
-        && observed.metadata.owner_references.is_none()
-        && observed.metadata.finalizers.as_deref() == Some(&[FINALIZER.to_owned()][..])
-        && observed
-            .metadata
-            .labels
-            .as_ref()
-            .and_then(|labels| labels.get(ISOLATION_LABEL))
-            .map(String::as_str)
-            == Some("true")
-        && observed
-            .metadata
-            .annotations
-            .as_ref()
-            .and_then(|annotations| annotations.get(ISOLATION_ID_ANNOTATION))
-            .map(String::as_str)
-            == Some(ticket.isolation_id.as_str())
-        && observed
-            .metadata
-            .annotations
-            .as_ref()
-            .and_then(|annotations| annotations.get(REQUEST_DIGEST_ANNOTATION))
-            .map(String::as_str)
-            == Some(ticket.request.digest.as_str())
-        && desired == actual
+    exact_reservation_metadata(ticket, &observed.metadata, uid) && unbound && desired == actual
 }
 
 fn exact_original(ticket: &CreateTicket, observed: &Pod) -> bool {
-    observed.metadata.name == Some(ticket.request.name.clone())
-        && observed.metadata.namespace == Some(ticket.request.namespace.clone())
-        && observed
-            .metadata
-            .uid
-            .as_deref()
-            .is_some_and(|uid| !uid.trim().is_empty())
-        && observed.metadata.deletion_timestamp.is_none()
+    exact_original_metadata(ticket, &observed.metadata)
         && observed
             .metadata
             .finalizers
@@ -202,38 +248,21 @@ fn exact_original(ticket: &CreateTicket, observed: &Pod) -> bool {
                     .iter()
                     .any(|value| value == ORIGINAL_GUARD_FINALIZER)
             })
-        && observed
-            .metadata
-            .labels
-            .as_ref()
-            .and_then(|labels| labels.get(ISOLATION_LABEL))
-            .is_none()
-        && observed
-            .metadata
-            .annotations
-            .as_ref()
-            .and_then(|annotations| annotations.get(ISOLATION_ID_ANNOTATION))
-            .map(String::as_str)
-            == Some(ticket.isolation_id.as_str())
-        && observed
-            .metadata
-            .annotations
-            .as_ref()
-            .and_then(|annotations| annotations.get(REQUEST_DIGEST_ANNOTATION))
-            .map(String::as_str)
-            == Some(ticket.request.digest.as_str())
 }
 
-async fn deletion_is_denied(api: &Api<Pod>, name: &str, uid: &str) -> Result<bool, RuntimeError> {
-    let params = DeleteParams {
+fn delete_probe_params(uid: &str) -> DeleteParams {
+    DeleteParams {
         dry_run: true,
         preconditions: Some(Preconditions {
             uid: Some(uid.into()),
             resource_version: None,
         }),
         ..Default::default()
-    };
-    match api.delete(name, &params).await {
+    }
+}
+
+fn deletion_denial<T>(result: Result<T, kube::Error>) -> Result<bool, RuntimeError> {
+    match result {
         Err(kube::Error::Api(error))
             if matches!(error.code, 403 | 422) && error.message.contains(POLICY) =>
         {
@@ -243,6 +272,10 @@ async fn deletion_is_denied(api: &Api<Pod>, name: &str, uid: &str) -> Result<boo
         Err(kube::Error::Api(error)) if matches!(error.code, 404 | 409) => Ok(false),
         Err(error) => Err(backend(error)),
     }
+}
+
+async fn deletion_is_denied(api: &Api<Pod>, name: &str, uid: &str) -> Result<bool, RuntimeError> {
+    deletion_denial(api.delete(name, &delete_probe_params(uid)).await)
 }
 
 pub(crate) async fn verify_reservation(
@@ -300,6 +333,19 @@ pub(super) async fn isolate_pod(
     }
 }
 
+mod non_pod;
+
+pub(super) async fn isolate(
+    client: &Client,
+    ticket: &CreateTicket,
+) -> Result<Option<TicketResult>, RuntimeError> {
+    if ticket.request.resource == "pods" {
+        isolate_pod(client, ticket).await
+    } else {
+        non_pod::isolate_other(client, ticket).await
+    }
+}
+
 /// Release only the broker's original-Create guard, through the existing
 /// exact-UID/resourceVersion finalizer CAS. The caller has already initiated
 /// UID-fenced terminal Pod deletion under its original cleanup authority.
@@ -351,9 +397,15 @@ mod tests {
     use serde_json::Value;
     use std::sync::{Arc, Mutex};
 
+    #[path = "guarded_claim_tests.rs"]
+    mod guarded_claim_tests;
+
     #[derive(Default)]
     struct Fixture {
         pod: Option<Pod>,
+        claim: Option<k8s_openapi::api::core::v1::PersistentVolumeClaim>,
+        claim_deletes: usize,
+        claim_delete_response_lost: bool,
         policy: bool,
         policy_tampered: bool,
         binding_tampered: bool,
@@ -374,6 +426,7 @@ mod tests {
             )
             .unwrap(),
             status: TicketStatus::InFlight,
+            origin: Default::default(),
             isolation_id: "0123456789abcdef0123456789abcdef".into(),
             isolation_pending: true,
         }
@@ -388,9 +441,10 @@ mod tests {
 
     #[test]
     fn deployment_policy_matches_the_runtime_attestation_contract() {
-        // Causes: C1 VAP/binding selector, operation or enforcement drifts;
-        // C2 Product/Worker lose read-only policy access or regain Pod
-        // deletecollection. Effects: E1 C1 fails before rollout and live
+        // Causes: C1 the six-kind VAP/binding selector, operation or
+        // enforcement drifts; C2 Product/Worker lose read-only policy access
+        // or the shared runtime Role gains protected Create/deletecollection.
+        // Effects: E1 C1 fails before rollout and live
         // attestation returns Unknown; E2 C2 fails the deployment contract.
         // Rules D1=!C1+!C2->pass, D2=C1|C2->fail. The policy and RBAC remain
         // deployment-owned rather than a second runtime configuration.
@@ -454,8 +508,11 @@ mod tests {
                 "D1 {name} can attest the policy"
             );
         }
+        // Both Product and distributed overlays import this one RBAC base.
+        // Inspect its authoritative Role rather than the old inline Product
+        // manifest; overlay import/render checks live with the deployment gate.
         let runtime_manifest =
-            include_str!("../../../../../../deploy/k3d/product-backend/resources.yaml");
+            include_str!("../../../../../../deploy/k3d/bases/sandbox-runtime-rbac/resources.yaml");
         let runtime_docs = serde_yaml::Deserializer::from_str(runtime_manifest)
             .map(|doc| serde_yaml::Value::deserialize(doc).unwrap())
             .map(|doc| serde_json::to_value(doc).unwrap())
@@ -466,26 +523,31 @@ mod tests {
                 doc["kind"] == "Role" && doc["metadata"]["name"] == "awaken-runtime-read-dispose"
             })
             .unwrap();
-        let pods_rule = runtime_role["rules"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|rule| {
-                rule["resources"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|value| value == "pods")
-            })
-            .unwrap();
-        assert!(
-            !pods_rule["verbs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|verb| verb == "deletecollection"),
-            "D1 no Pod collection delete bypass"
-        );
+        for rule in runtime_role["rules"].as_array().unwrap() {
+            let protected = rule["resources"].as_array().unwrap().iter().any(|value| {
+                matches!(
+                    value.as_str(),
+                    Some(
+                        "pods"
+                            | "persistentvolumeclaims"
+                            | "configmaps"
+                            | "secrets"
+                            | "jobs"
+                            | "daemonsets"
+                    )
+                )
+            });
+            if protected {
+                assert!(
+                    !rule["verbs"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|verb| verb == "create" || verb == "deletecollection"),
+                    "D1 no protected Kind direct Create or collection delete bypass: {rule}"
+                );
+            }
+        }
     }
 
     fn client(state: Arc<Mutex<Fixture>>) -> Client {
@@ -493,6 +555,10 @@ mod tests {
             let state = state.clone();
             async move {
                 let path = request.uri().path().to_owned();
+                let requested_pod = path
+                    .rsplit_once("/pods/")
+                    .map(|(_, name)| name)
+                    .filter(|name| !name.is_empty() && !name.contains('/'));
                 let result = if path
                     .ends_with("validatingadmissionpolicies/awaken-create-isolation")
                 {
@@ -549,19 +615,26 @@ mod tests {
                         state.pod = Some(pod.clone());
                         response(201, serde_json::to_value(pod).unwrap())
                     }
-                } else if path.ends_with("/pods/sandbox-pod") && request.method() == Method::GET {
+                } else if requested_pod.is_some() && request.method() == Method::GET {
                     match &state.lock().unwrap().pod {
-                        Some(pod) => response(200, serde_json::to_value(pod).unwrap()),
+                        Some(pod) if pod.metadata.name.as_deref() == requested_pod => {
+                            response(200, serde_json::to_value(pod).unwrap())
+                        }
                         None => response(
                             404,
                             json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"NotFound","message":"Pod not found","code":404}),
                         ),
+                        Some(_) => response(
+                            404,
+                            json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"NotFound","message":"foreign Pod name","code":404}),
+                        ),
                     }
-                } else if path.ends_with("/pods/sandbox-pod") && request.method() == Method::PUT {
+                } else if requested_pod.is_some() && request.method() == Method::PUT {
                     let bytes = request.into_body().collect_bytes().await.unwrap();
                     let mut replacement: Pod = serde_json::from_slice(&bytes).unwrap();
                     let mut state = state.lock().unwrap();
                     let current = state.pod.as_ref().unwrap();
+                    assert_eq!(current.metadata.name.as_deref(), requested_pod);
                     if replacement.metadata.uid != current.metadata.uid
                         || replacement.metadata.resource_version
                             != current.metadata.resource_version
@@ -575,8 +648,19 @@ mod tests {
                         state.pod = Some(replacement.clone());
                         response(200, serde_json::to_value(replacement).unwrap())
                     }
-                } else if path.ends_with("/pods/sandbox-pod") && request.method() == Method::DELETE
-                {
+                } else if requested_pod.is_some() && request.method() == Method::DELETE {
+                    assert_eq!(
+                        state
+                            .lock()
+                            .unwrap()
+                            .pod
+                            .as_ref()
+                            .unwrap()
+                            .metadata
+                            .name
+                            .as_deref(),
+                        requested_pod
+                    );
                     let body = request.into_body().collect_bytes().await.unwrap();
                     let options: Value = serde_json::from_slice(&body).unwrap();
                     assert_eq!(
@@ -591,6 +675,38 @@ mod tests {
                         response(
                             code,
                             json!({"reason":"Invalid","code":code,"message":format!("denied by {POLICY}")}),
+                        )
+                    } else {
+                        response(200, json!({"kind":"Status","status":"Success","code":200}))
+                    }
+                } else if path.contains("/persistentvolumeclaims/")
+                    && request.method() == Method::GET
+                {
+                    match &state.lock().unwrap().claim {
+                        Some(claim) => response(200, serde_json::to_value(claim).unwrap()),
+                        None => response(
+                            404,
+                            json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"NotFound","message":"PVC not found","code":404}),
+                        ),
+                    }
+                } else if path.contains("/persistentvolumeclaims/")
+                    && request.method() == Method::DELETE
+                {
+                    let bytes = request.into_body().collect_bytes().await.unwrap();
+                    let options: Value = serde_json::from_slice(&bytes).unwrap();
+                    let mut state = state.lock().unwrap();
+                    let claim = state.claim.as_ref().expect("exact original PVC exists");
+                    assert_eq!(options["preconditions"]["uid"], json!(claim.metadata.uid));
+                    assert_eq!(
+                        options["preconditions"]["resourceVersion"],
+                        json!(claim.metadata.resource_version)
+                    );
+                    state.claim_deletes += 1;
+                    state.claim = None;
+                    if state.claim_delete_response_lost {
+                        response(
+                            500,
+                            json!({"reason":"InternalError","code":500,"message":"response lost after accepted PVC DELETE"}),
                         )
                     } else {
                         response(200, json!({"kind":"Status","status":"Success","code":200}))

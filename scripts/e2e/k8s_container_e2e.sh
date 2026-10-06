@@ -66,12 +66,13 @@ fi
 docker run --name "$FIXTURE_CONTAINER" --platform "$K3D_PLATFORM" busybox:1.36 true >/dev/null
 docker commit "$FIXTURE_CONTAINER" "$FIXTURE_IMAGE" >/dev/null
 docker rm -f "$FIXTURE_CONTAINER" >/dev/null
-# KQ0 no operator override => build this checkout through the existing image
-# owner, resolve its real manifest digest, then run the mandatory control test.
+# KQ0 no operator override => use the existing image owner's current-input
+# admission, resolve its real manifest digest, then run the mandatory control test.
 # KQ1 an explicit digest remains supported; malformed input fails above.
-# Rebuilding current source (Cargo/Docker retain caches) prevents an old
-# hand-capable tag from qualifying newly changed control code.
-"$(dirname "$0")/../../deploy/images/sandbox/build.sh" "$SESSION_IMAGE" ""
+# Cause/effect: exact accepted tag + matching source fingerprint reuses the
+# same bytes; a stale/missing tag rebuilds and revalidates. A hand-only check
+# cannot qualify a changed control binary. The build owner remains singular.
+"$(dirname "$0")/../../deploy/images/sandbox/build.sh" --ensure-current "$SESSION_IMAGE" ""
 if [[ -z "$CONTROL_IMAGE" ]]; then
   CONTROL_IMAGE=$(k3d_image_digest "$SESSION_IMAGE")
 fi
@@ -260,7 +261,7 @@ AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s --test k8
 # imported above. KQ1 C1+C2+C3 executes the marker/helper roundtrip; KQ2 any
 # absent cause fails before Cargo rather than returning a successful skipped
 # test. The Rust test remains the sole owner of the control-path assertions.
-AWAKEN_K8S_E2E=1 AWAKEN_K8S_CONTROL_E2E=1 \
+AWAKEN_K8S_E2E=1 AWAKEN_K8S_CONTROL_E2E=1 AWAKEN_K8S_ISOLATION_E2E=1 \
   AWAKEN_K8S_CONTROL_IMAGE="$CONTROL_IMAGE" \
   cargo test -p awaken-sandbox-container --features k8s \
   --test k8s_e2e -- --nocapture --test-threads=1
@@ -268,7 +269,7 @@ AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s \
   --test k8s_policy_drift -- --nocapture --test-threads=1
 AWAKEN_K8S_E2E=1 cargo test -p awaken-session-executor --features k8s-tests --lib \
   k8s_live_pvc_initialization_is_readable_and_reused -- --nocapture
-AWAKEN_K8S_E2E=1 cargo test -p awaken-cli --features container-k8s --lib \
-  real_pod_identity_survives_reopen_and_independent_stop_without_false_retirement -- --nocapture
+# Pod-bound Worker identity and independent stop are qualified by the existing
+# distributed-control k3d gate, which first verifies exact test selection.
 
 log "k8s container e2e PASSED"

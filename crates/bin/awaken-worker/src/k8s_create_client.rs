@@ -7,11 +7,11 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use awaken_dispatch_contract::WorkerIdentity;
 use awaken_sandbox_container::k8s::{
     K8sCreateRequest, K8sCreateResponse, K8sCreateTransport, RequestJoin,
 };
 use awaken_sandbox_container::{ContainerEffectFence, RuntimeError};
+use awaken_worker_contract::WorkerIdentity;
 use awaken_worker_transport_security::WorkerUpstream;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -108,6 +108,7 @@ struct SealWire<'a> {
     identity: &'a WorkerIdentity,
     scope: &'a str,
     predecessor: &'a ContainerEffectFence,
+    expected_pod_name: &'a str,
 }
 
 #[async_trait]
@@ -127,6 +128,7 @@ impl K8sCreateTransport for WorkerK8sCreateClient {
         &self,
         scope: &str,
         predecessor: &ContainerEffectFence,
+        expected_pod_name: &str,
     ) -> Result<RequestJoin, RuntimeError> {
         self.post(
             SEAL_PATH,
@@ -134,6 +136,7 @@ impl K8sCreateTransport for WorkerK8sCreateClient {
                 identity: self.identity()?,
                 scope,
                 predecessor,
+                expected_pod_name,
             },
         )
         .await
@@ -226,6 +229,7 @@ mod tests {
                             assert_eq!(body["identity"]["incarnation_id"], "boot", "E4");
                             assert_eq!(body["scope"], "scope", "E4");
                             assert_eq!(body["predecessor"]["operation_id"], "old-effect", "E4");
+                            assert_eq!(body["expected_pod_name"], "awaken-realization-scope", "E4");
                             Json(serde_json::json!("unknown"))
                         }
                     }
@@ -251,7 +255,7 @@ mod tests {
             ContainerEffectFence::new("old-effect", "old-worker", "old-boot", 1, u64::MAX).unwrap();
         assert_eq!(
             client
-                .seal_predecessor("scope", &predecessor)
+                .seal_predecessor("scope", &predecessor, "awaken-realization-scope")
                 .await
                 .unwrap(),
             RequestJoin::Unknown,
