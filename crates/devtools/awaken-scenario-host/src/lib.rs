@@ -78,10 +78,10 @@ pub use awaken_protocol_managed::{
 };
 pub use awaken_run_ingress_http::durable_ops_router;
 pub use awaken_runtime_host::{
-    ExtMcpProbe, HostResume, RunApplicationHost, SharedHost, ThreadEvent, ThreadEventHub,
-    advertised_tools,
+    HostResume, RunApplicationHost, SharedHost, ThreadEvent, ThreadEventHub, advertised_tools,
 };
 pub use awaken_sandbox_local::content_fingerprint;
+pub use awaken_session_mcp::ExtMcpProbe;
 
 /// One tool-free ACP stand-in that can act as either Outcome Worker or Judge.
 /// Its prompt classification makes the Worker/Grader backend matrix observable

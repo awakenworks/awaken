@@ -727,9 +727,9 @@ impl SharedHost {
             // Read, not removed, so a retry re-attempts (and re-fails) the connect.
             let active_mcp = self.active_mcp_projections(thread);
             let mcp = if is_acp {
-                crate::mcp_material::McpWiring::empty()
+                awaken_session_mcp::McpWiring::empty()
             } else {
-                let mut combined = crate::mcp_material::McpWiring::empty();
+                let mut combined = awaken_session_mcp::McpWiring::empty();
                 for projection in &active_mcp {
                     let wiring = projection.native_wiring.as_ref().ok_or_else(|| {
                         HostError::internal(format!(
@@ -1426,7 +1426,7 @@ impl SharedHost {
                             .map(|server| (projection, server))
                     })
                     .map(|(projection, server)| {
-                        crate::mcp::project_mcp_session_transport(
+                        awaken_session_mcp::project_mcp_session_transport(
                             server,
                             &projection.request,
                             relay,

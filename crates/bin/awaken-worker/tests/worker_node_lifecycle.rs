@@ -1326,7 +1326,7 @@ async fn startup_failure_and_cancellation_share_one_registration_exit() {
         if let Some(reservation) = relay_reservation.as_ref() {
             let port = reservation.local_addr().unwrap().port();
             deployment.sandbox.container_mcp_relay = Some(
-                awaken_runtime_host::ContainerMcpRelayExposure::new(
+                awaken_session_mcp::ContainerMcpRelayExposure::new(
                     format!("0.0.0.0:{port}").parse().unwrap(),
                     format!("http://relay.awaken-cloud.svc:{port}"),
                 )

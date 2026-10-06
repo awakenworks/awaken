@@ -14,9 +14,9 @@
 //! one from a typed configuration file (or explicitly for an embedding), and the
 //! library reads it rather than process-global deployment configuration.
 
-pub use crate::mcp_relay_exposure::ContainerMcpRelayExposure;
 use awaken_acp_contract::AcpAdapterPolicy;
 use awaken_runtime_contract::resolved::ProviderServerTool;
+use awaken_session_mcp::ContainerMcpRelayExposure;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::path::PathBuf;

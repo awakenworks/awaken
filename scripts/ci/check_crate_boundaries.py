@@ -593,6 +593,10 @@ DIRECT_TRANSPORT_EXEMPTIONS = {
         "the MCP relay is a reverse proxy: it forwards a caller-chosen method, "
         "header set and raw body, none of which the JSON client models"
     ),
+    "awaken-session-mcp": (
+        "the MCP relay is a reverse proxy: it forwards a caller-chosen method, "
+        "header set and raw body, none of which the JSON client models"
+    ),
     "awaken-worker-transport-security": (
         "second transport authority, for the Worker-to-Coordinator plane: owns "
         "the signed `RequestBuilder` seam and the private-CA client; it still "

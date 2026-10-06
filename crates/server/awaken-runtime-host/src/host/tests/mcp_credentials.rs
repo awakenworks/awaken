@@ -195,7 +195,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     assert!(
         matches!(
             projection.server.unwrap().transport,
-            crate::mcp_material::McpTransportMaterialKind::Http {
+            awaken_session_mcp::McpTransportMaterialKind::Http {
                 refresh: Some(_),
                 ..
             }
@@ -336,7 +336,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("H22 rebuilt projection");
     assert_eq!(
         recovered_projection.state,
-        crate::mcp_material::McpProjectionState::Staged,
+        awaken_session_mcp::McpProjectionState::Staged,
         "H22"
     );
     assert_eq!(
@@ -440,13 +440,13 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     assert_eq!(
         host.mcp_projection(&rebuilt.generation).unwrap().state,
-        crate::mcp_material::McpProjectionState::Staged,
+        awaken_session_mcp::McpProjectionState::Staged,
         "H28 staged, not published"
     );
     host.session_slots.modify("mcp-exact", |slot| {
-        slot.mcp.projections_mut()[0].state = crate::mcp_material::McpProjectionState::Staging;
+        slot.mcp.projections_mut()[0].state = awaken_session_mcp::McpProjectionState::Staging;
         slot.mcp.projections_mut()[0].staging =
-            Some(crate::mcp_material::McpStagingActivity::default());
+            Some(awaken_session_mcp::McpStagingActivity::default());
     });
     assert_eq!(
         managed
@@ -458,7 +458,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H25"
     );
     host.session_slots.modify("mcp-exact", |slot| {
-        slot.mcp.projections_mut()[0].state = crate::mcp_material::McpProjectionState::Staged;
+        slot.mcp.projections_mut()[0].state = awaken_session_mcp::McpProjectionState::Staged;
         slot.mcp.projections_mut()[0].staging = None;
     });
     let mut expired = request("mcp-expired", "workspace-a", 1);
@@ -769,14 +769,14 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     drop(relay_reservation);
     let relay_host = "relay.awaken-cloud.svc";
     struct StagingOnlyProxy;
-    impl crate::McpRelayOutboundProxy for StagingOnlyProxy {
+    impl awaken_session_mcp::McpRelayOutboundProxy for StagingOnlyProxy {
         fn issue_for(&self, _upstream_host: &str, _now_unix_ms: u64) -> Result<String, String> {
             Err("stage-only fixture has no upstream egress".into())
         }
     }
     let mut secure_deployment = crate::DeploymentConfig::ephemeral();
     secure_deployment.sandbox.container_mcp_relay = Some(
-        crate::ContainerMcpRelayExposure::new(
+        awaken_session_mcp::ContainerMcpRelayExposure::new(
             format!("0.0.0.0:{relay_port}").parse().unwrap(),
             format!("http://{relay_host}:{relay_port}"),
         )
@@ -938,7 +938,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let default_projection = default_relay_host
         .mcp_projection(&default_receipt.generation)
         .unwrap();
-    let default_transport = crate::mcp::project_mcp_session_transport(
+    let default_transport = awaken_session_mcp::project_mcp_session_transport(
         default_projection.server.as_ref().unwrap(),
         &default_projection.request,
         default_relay_host.mcp.relay(),
@@ -1004,7 +1004,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     drop(backend_relay_reservation);
     let mut backend_deployment = crate::DeploymentConfig::ephemeral();
     backend_deployment.sandbox.container_mcp_relay = Some(
-        crate::ContainerMcpRelayExposure::new(
+        awaken_session_mcp::ContainerMcpRelayExposure::new(
             format!("0.0.0.0:{backend_relay_port}").parse().unwrap(),
             format!("http://{relay_host}:{backend_relay_port}"),
         )
@@ -1114,7 +1114,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let projection = secure_acp_host
         .mcp_projection(&secure_generation)
         .expect("H20 exact projection");
-    let projected = crate::mcp::project_mcp_session_transport(
+    let projected = awaken_session_mcp::project_mcp_session_transport(
         projection.server.as_ref().expect("H20 private material"),
         &projection.request,
         secure_acp_host.mcp.relay(),
@@ -1214,7 +1214,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let client_projection = secure_acp_host
         .mcp_projection(&client_receipt.generation)
         .expect("H23 projection");
-    let client_server = crate::mcp::project_mcp_session_transport(
+    let client_server = awaken_session_mcp::project_mcp_session_transport(
         client_projection
             .server
             .as_ref()

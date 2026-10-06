@@ -7,8 +7,10 @@
 
 impl ManagedHost {
     /// The credential materialization this adapter lends one staging call.
-    fn mcp_credential_materialization(&self) -> crate::mcp::McpCredentialMaterialization<'_> {
-        crate::mcp::McpCredentialMaterialization {
+    fn mcp_credential_materialization(
+        &self,
+    ) -> awaken_session_mcp::McpCredentialMaterialization<'_> {
+        awaken_session_mcp::McpCredentialMaterialization {
             credentials: self.credentials.as_ref(),
             refresh_factory: self.credential_refresh_factory.as_deref(),
             platform_egress: self.platform_mcp_egress.as_deref(),
@@ -18,7 +20,7 @@ impl ManagedHost {
 
 // The Session facts MCP staging reads, answered from this adapter's Host.
 #[async_trait::async_trait]
-impl crate::mcp::McpStagingSession for ManagedHost {
+impl awaken_session_mcp::McpStagingSession for ManagedHost {
     fn mcp_generation_is_authorized_at(
         &self,
         generation: &awaken_session_mcp_contract::McpGenerationRef,
@@ -28,8 +30,9 @@ impl crate::mcp::McpStagingSession for ManagedHost {
             .mcp_generation_is_authorized_at(generation, now_unix_ms)
     }
 
-    fn relay_authority(&self) -> std::sync::Weak<dyn crate::mcp::McpGenerationAuthority> {
-        Arc::downgrade(&self.host) as std::sync::Weak<dyn crate::mcp::McpGenerationAuthority>
+    fn relay_authority(&self) -> std::sync::Weak<dyn awaken_session_mcp::McpGenerationAuthority> {
+        Arc::downgrade(&self.host)
+            as std::sync::Weak<dyn awaken_session_mcp::McpGenerationAuthority>
     }
 
     fn execution_backend(

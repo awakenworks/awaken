@@ -257,7 +257,7 @@ pub struct SharedHost {
     /// Resources-context ports: Memory, Files, Artifacts.
     pub(crate) resources: capability::ResourcePorts,
     /// The Session MCP lifecycle and its Worker relay for sandboxed ACP sessions.
-    pub(crate) mcp: crate::mcp::McpSessions,
+    pub(crate) mcp: awaken_session_mcp::McpSessions,
     /// Content capture (ADR-0050): sink, deployment ceiling, consent source.
     pub(crate) capture: capability::ContentCaptureCapability,
 }

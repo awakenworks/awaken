@@ -6,17 +6,17 @@
 //! The Runtime Host side of Session MCP: the slot registry and root
 //! authority the MCP lifecycle reads, the Host error projection of its
 //! failures, and the `SharedHost` methods other Host modules call, each a thin
-//! delegate to [`crate::mcp::McpSessions`].
+//! delegate to [`awaken_session_mcp::McpSessions`].
 
 use std::sync::{Arc, Weak};
 
-use crate::mcp::{
+use crate::session_slot::SessionRuntimeSlots;
+use crate::{HostError, HostErrorKind, SharedHost};
+use awaken_session_mcp::{
     McpError, McpErrorKind, McpGenerationAuthority, McpInputHost, McpInputRecipients,
     McpQuiescenceProof, McpSessionSlots,
 };
-use crate::mcp_material::{McpGenerationProjection, SessionMcpState};
-use crate::session_slot::SessionRuntimeSlots;
-use crate::{HostError, HostErrorKind, SharedHost};
+use awaken_session_mcp::{McpGenerationProjection, SessionMcpState};
 
 impl From<McpError> for HostError {
     fn from(error: McpError) -> Self {
@@ -141,7 +141,7 @@ impl SharedHost {
     pub(crate) fn complete_staging_mcp_projection(
         &self,
         generation: &awaken_session_mcp_contract::McpGenerationRef,
-        wiring: crate::mcp_material::McpWiring,
+        wiring: awaken_session_mcp::McpWiring,
     ) -> Result<(), HostError> {
         Ok(self
             .mcp
