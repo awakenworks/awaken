@@ -724,3 +724,26 @@ foreign physical effect. Only verified terminal cleanup removes retained owner
 demand. A scalar owner count does not prove which Pod a multi-replica deployment
 may delete during scale-in, so that operation still requires exact Pod-domain
 evidence before owner preservation can be claimed.
+
+## Amendment: bounded Session Worker obligation reads (2026-10-06)
+
+The Session root also owns an explicitly requested Run-free initial preparation
+before any Worker or Run exists. Its unbound first-placement demand is projected
+from that same root, while a preparation already assigned to an owner remains a
+candidate for exact same-owner retry. These are different facts: a candidate
+does not necessarily require an additional Worker replica.
+
+The existing reconciliation row retains disposable, revision-bound flags for
+preparation candidates, unbound first placement, and retained physical owner.
+The Session store updates those fields in the root-CAS transaction and rebuilds
+them during operational migration. Worker discovery reads only one candidate
+page per poll and advances a disposable process-local keyset cursor; it still
+reloads the current root, checks the registered Worker and
+canonical placement requirements, and assigns through the existing CAS. A
+capacity read aggregates the same index and cannot authorize any effect.
+
+PostgreSQL Server startup continues its complete read-only root/index audit,
+but keyset pages and per-root comparison bound process memory independently of
+historical Session count. Audit duration still grows with the number and size
+of roots; a production RTO claim requires an explicit million-root measurement.
+No second Session queue, lease, registry, or recovery authority is introduced.

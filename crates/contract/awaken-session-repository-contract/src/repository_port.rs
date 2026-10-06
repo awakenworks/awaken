@@ -5,6 +5,7 @@
 use super::*;
 use crate::{ManagedLifecycleFact, SessionId};
 use async_trait::async_trait;
+use awaken_session_state_contract::SessionWorkerObligation;
 use std::collections::HashSet;
 
 /// Outbound persistence port of the Session aggregate.
@@ -88,6 +89,28 @@ pub trait SessionRepository: Send + Sync {
         query: SessionScanQuery<'_>,
     ) -> Result<SessionScan, SessionRepositoryError>;
 
+    /// Capacity observation derived from the same committed Session roots.
+    /// Native stores may answer this from their transactionally maintained
+    /// root index; test doubles retain the exact paged reference algorithm.
+    /// This read never grants a Worker claim or a realization lease.
+    async fn worker_demand(&self) -> Result<u64, SessionRepositoryError> {
+        session_worker_demand_from_scan(self).await
+    }
+
+    /// One keyset page of explicitly requested Run-free preparation roots.
+    /// Adapters may use their root-derived index; the application always
+    /// reloads and validates the current root before its existing CAS claim.
+    /// The default keeps test doubles correct without another task registry.
+    async fn preparation_candidates(
+        &self,
+        after: Option<&SessionScanCursor>,
+    ) -> Result<SessionScan, SessionRepositoryError> {
+        let mut page = self.scan(SessionScanQuery::Reconcilable { after }).await?;
+        page.sessions
+            .retain(|scoped| scoped.session.is_run_free_initial_preparation_candidate());
+        Ok(page)
+    }
+
     /// Durable application-command receipt. This is a read of the same
     /// idempotency table written atomically by `create`/`commit`, not a second
     /// command registry.
@@ -126,8 +149,8 @@ pub trait SessionRepository: Send + Sync {
 /// retained Pod, including live Sessions with no claimable Dispatch. Any
 /// unbound, never-materialized terminal work needs one first-placement Pod.
 /// This read grants no claim or recovery.
-pub async fn session_worker_demand(
-    repository: &dyn SessionRepository,
+async fn session_worker_demand_from_scan<R: SessionRepository + ?Sized>(
+    repository: &R,
 ) -> Result<u64, SessionRepositoryError> {
     let mut cursor: Option<SessionScanCursor> = None;
     let mut owners = HashSet::new();
@@ -145,32 +168,16 @@ pub async fn session_worker_demand(
         }
         for scoped in scan.sessions {
             let session = scoped.session;
-            if session
-                .has_unfinished_worker_realization()
+            match session
+                .worker_obligation()
                 .map_err(|error| SessionRepositoryError::Corrupt(error.to_string()))?
             {
-                let lease = session.realization.as_ref().ok_or_else(|| {
-                    SessionRepositoryError::Corrupt(
-                        "unfinished Session realization has no Worker owner".into(),
-                    )
-                })?;
-                if lease.owner.trim().is_empty() {
-                    return Err(SessionRepositoryError::Corrupt(
-                        "Session has an empty Worker owner".into(),
-                    ));
+                SessionWorkerObligation::RetainedOwner(owner) => {
+                    owners.insert(owner.to_owned());
                 }
-                owners.insert(lease.owner.clone());
-            } else if !session
-                .needs_terminal_cleanup_worker()
-                .map_err(|error| SessionRepositoryError::Corrupt(error.to_string()))?
-            {
-                continue;
-            } else if matches!(session.environment, SessionEnvironmentState::Unmaterialized) {
-                unbound = true;
-            } else {
-                return Err(SessionRepositoryError::Corrupt(
-                    "terminal Session has physical state without a Worker owner".into(),
-                ));
+                SessionWorkerObligation::UnboundInitialPreparation
+                | SessionWorkerObligation::UnboundTerminalCleanup => unbound = true,
+                SessionWorkerObligation::None => {}
             }
         }
         let Some(next) = scan.next_cursor else {

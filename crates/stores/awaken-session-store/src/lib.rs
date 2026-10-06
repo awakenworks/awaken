@@ -31,6 +31,7 @@ use awaken_session_state_contract::{
     SessionCreateResult, SessionEnvironmentPhase, SessionEnvironmentState,
     SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
     SessionRecoveryQuarantine, SessionRepositoryConflict, SessionRepositoryError, SessionScan,
+    SessionWorkerObligation,
 };
 use awaken_session_types::SessionRevision;
 
@@ -55,6 +56,41 @@ use sqlx::postgres::PgPool;
 const NS: &str = "managed";
 const RECOVERY_BATCH_SIZE: i64 = 256;
 const SESSION_CREATE_REVISION: SessionRevision = SessionRevision(1);
+
+/// Disposable capacity fields stored beside the existing reconciliation row.
+/// The Session root is re-read before every claim; these fields never grant one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WorkerObligationIndex {
+    owner: Option<String>,
+    preparation_candidate: bool,
+    unbound_preparation: bool,
+    unbound_terminal: bool,
+    invalid: bool,
+}
+
+fn worker_obligation_index(session: &PersistedSession) -> WorkerObligationIndex {
+    let mut index = WorkerObligationIndex {
+        owner: None,
+        preparation_candidate: session.is_run_free_initial_preparation_candidate(),
+        unbound_preparation: false,
+        unbound_terminal: false,
+        invalid: false,
+    };
+    match session.worker_obligation() {
+        Ok(SessionWorkerObligation::None) => {}
+        Ok(SessionWorkerObligation::RetainedOwner(owner)) => {
+            index.owner = Some(owner.to_owned());
+        }
+        Ok(SessionWorkerObligation::UnboundInitialPreparation) => {
+            index.unbound_preparation = true;
+        }
+        Ok(SessionWorkerObligation::UnboundTerminalCleanup) => {
+            index.unbound_terminal = true;
+        }
+        Err(_) => index.invalid = true,
+    }
+    index
+}
 
 fn aggregate_str(session: &PersistedSession) -> Result<String, SessionRepositoryError> {
     encode(session).map_err(corrupt)

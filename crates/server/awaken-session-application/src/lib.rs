@@ -4,6 +4,7 @@
 //! caches.  This crate owns the application collaborators and durable Session
 //! repository so every protocol drives the same Session authority.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 

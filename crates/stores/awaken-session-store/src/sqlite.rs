@@ -650,16 +650,42 @@ impl SqliteManagedSessionRepository {
             .map_err(storage)?;
         }
         Self::sync_credential_source_index(tx, session)?;
+        let obligation = worker_obligation_index(session);
         if session.needs_reconciliation() {
             tx.execute(
                 "INSERT INTO managed_session_reconciliation_work \
-                    (session_id, observed_revision) VALUES (?1, ?2) \
+                    (session_id, observed_revision, worker_owner, \
+                     preparation_candidate, unbound_preparation, unbound_terminal, demand_invalid) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
                  ON CONFLICT (session_id) DO UPDATE SET \
-                    observed_revision = excluded.observed_revision",
-                params![session.session_id.as_str(), db_revision(session.revision)?],
+                    observed_revision = excluded.observed_revision, \
+                    worker_owner = excluded.worker_owner, \
+                    preparation_candidate = excluded.preparation_candidate, \
+                    unbound_preparation = excluded.unbound_preparation, \
+                    unbound_terminal = excluded.unbound_terminal, \
+                    demand_invalid = excluded.demand_invalid",
+                params![
+                    session.session_id.as_str(),
+                    db_revision(session.revision)?,
+                    obligation.owner,
+                    i64::from(obligation.preparation_candidate),
+                    i64::from(obligation.unbound_preparation),
+                    i64::from(obligation.unbound_terminal),
+                    i64::from(obligation.invalid)
+                ],
             )
             .map_err(storage)?;
         } else {
+            if obligation.owner.is_some()
+                || obligation.preparation_candidate
+                || obligation.unbound_preparation
+                || obligation.unbound_terminal
+                || obligation.invalid
+            {
+                return Err(corrupt(
+                    "Worker demand root is absent from reconciliation index",
+                ));
+            }
             tx.execute(
                 "DELETE FROM managed_session_reconciliation_work WHERE session_id = ?1",
                 params![session.session_id.as_str()],
@@ -1117,13 +1143,67 @@ impl SessionRepository for SqliteManagedSessionRepository {
         .await
     }
 
+    async fn worker_demand(&self) -> Result<u64, SessionRepositoryError> {
+        self.with_connection(move |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Deferred)
+                .map_err(storage)?;
+            let (owners, initial, terminal, invalid, drift): (i64, i64, i64, i64, i64) = tx
+                .query_row(
+                    "SELECT COUNT(DISTINCT work.worker_owner), \
+                            COALESCE(MAX(work.unbound_preparation), 0), \
+                            COALESCE(MAX(work.unbound_terminal), 0), \
+                            COALESCE(MAX(work.demand_invalid), 0), \
+                            COUNT(*) FILTER (WHERE work.observed_revision <> root.revision) \
+                     FROM managed_session_reconciliation_work work \
+                     JOIN managed_session root ON root.session_id = work.session_id",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .map_err(storage)?;
+            let quarantined: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM managed_session_quarantine LIMIT 1)",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(storage)?;
+            tx.commit().map_err(storage)?;
+            if drift != 0 || invalid != 0 || quarantined {
+                return Err(corrupt(
+                    "Session Worker demand index is incomplete or quarantined",
+                ));
+            }
+            let owners = u64::try_from(owners).map_err(corrupt)?;
+            owners
+                .checked_add(u64::from(initial != 0 || terminal != 0))
+                .ok_or_else(|| storage("Session Worker demand count overflow"))
+        })
+        .await
+    }
+
+    async fn preparation_candidates(
+        &self,
+        after: Option<&awaken_session_state_contract::SessionScanCursor>,
+    ) -> Result<SessionScan, SessionRepositoryError> {
+        self.scan_reconcilable(after, true).await
+    }
+
     async fn scan(
         &self,
         query: awaken_session_state_contract::SessionScanQuery<'_>,
     ) -> Result<SessionScan, SessionRepositoryError> {
         use awaken_session_state_contract::SessionScanQuery;
         match query {
-            SessionScanQuery::Reconcilable { after } => self.scan_reconcilable(after).await,
+            SessionScanQuery::Reconcilable { after } => self.scan_reconcilable(after, false).await,
             SessionScanQuery::WorkerRealizationOwner { worker_id } => {
                 self.scan_worker_realization_owner(worker_id).await
             }
@@ -1266,6 +1346,7 @@ impl SqliteManagedSessionRepository {
     async fn scan_reconcilable(
         &self,
         after: Option<&awaken_session_state_contract::SessionScanCursor>,
+        preparation_only: bool,
     ) -> Result<SessionScan, SessionRepositoryError> {
         let after = after.map(|cursor| cursor.session_id().to_string());
         self.with_connection(move |conn| {
@@ -1276,15 +1357,21 @@ impl SqliteManagedSessionRepository {
                 .map_err(|error| storage(format!("invalid recovery batch size: {error}")))?;
             let mut scan = SessionScan::default();
             {
+                let predicate = if preparation_only {
+                    "work.preparation_candidate = 1 AND "
+                } else {
+                    ""
+                };
+                let sql = format!(
+                    "SELECT session.scope_id, session.session_id, session.aggregate_json, \
+                            session.revision, work.observed_revision \
+                     FROM managed_session_reconciliation_work work \
+                     JOIN managed_session session ON session.session_id = work.session_id \
+                     WHERE {predicate}(?1 IS NULL OR work.session_id > ?1) \
+                     ORDER BY work.session_id LIMIT ?2"
+                );
                 let mut statement = tx
-                    .prepare(
-                        "SELECT session.scope_id, session.session_id, session.aggregate_json, \
-                                session.revision, work.observed_revision \
-                         FROM managed_session_reconciliation_work work \
-                         JOIN managed_session session ON session.session_id = work.session_id \
-                         WHERE (?1 IS NULL OR session.session_id > ?1) \
-                         ORDER BY session.session_id LIMIT ?2",
-                    )
+                    .prepare(&sql)
                     .map_err(storage)?;
                 let rows = statement
                     .query_map(params![after, RECOVERY_BATCH_SIZE + 1], |row| {
@@ -1329,6 +1416,13 @@ impl SqliteManagedSessionRepository {
                                 params![session_id],
                             )
                             .map_err(storage)?;
+                            if preparation_only
+                                && !session.is_run_free_initial_preparation_candidate()
+                            {
+                                return Err(corrupt(format!(
+                                    "Session preparation candidate index disagrees with root {session_id}"
+                                )));
+                            }
                             if session.needs_reconciliation() {
                                 scan.sessions.push(ScopedPersistedSession {
                                     workspace_id,

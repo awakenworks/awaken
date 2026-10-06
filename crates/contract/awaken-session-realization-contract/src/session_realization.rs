@@ -260,6 +260,9 @@ pub trait SessionRealizationControl: Send + Sync {
 /// Registered-Worker selector over the Session repository's existing
 /// `Preparing` reconciliation index. Assignment uses the same root CAS and
 /// realization lease as a claimed Run, but executes no Run or model request.
+/// `None` means this bounded candidate page produced no assignment; the next
+/// poll by that Worker incarnation resumes at its disposable keyset cursor
+/// and eventually wraps; another Worker has an independent cursor.
 #[async_trait]
 pub trait SessionPreparationControl: Send + Sync {
     async fn claim_next_session_preparation(

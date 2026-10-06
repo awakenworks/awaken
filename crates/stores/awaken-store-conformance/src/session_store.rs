@@ -845,6 +845,63 @@ pub fn with_mcp_credential_source(
     value
 }
 
+fn run_free_worker_candidate(id: &str) -> PersistedSession {
+    let mut pending = session(id, "run-free");
+    pending.resources = Default::default();
+    pending.mcp = Default::default();
+    pending.execution = SessionExecutionState::Preparing;
+    let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+        &mut pending.baseline
+    else {
+        panic!("run-free fixture requires frozen baseline");
+    };
+    baseline.runtime_placement =
+        awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+    pending.realization_progress.run_free_initial_preparation = true;
+    assert!(
+        pending.is_run_free_initial_preparation_candidate(),
+        "run-free fixture is a valid Worker preparation candidate"
+    );
+    pending
+}
+
+pub async fn unbound_preparation_demand_decision_table<
+    R: awaken_session_repository_contract::SessionStore,
+>(
+    r: &R,
+) {
+    // Causes: C1 isolated empty repository; C2 one explicit, unbound Worker
+    // preparation; C3 second such root. Effects: E1 zero baseline; E2 one
+    // first-placement Worker and exact candidate; E3 two roots still share
+    // that one unbound capacity slot. R1=C1=>E1; R2=C1+C2=>E2;
+    // R3=C1+C2+C3=>E3. Both backends must run this table in isolation.
+    assert_eq!(r.worker_demand().await.unwrap(), 0, "R1");
+    create_session(
+        r,
+        "ws-unbound",
+        run_free_worker_candidate("unbound-a"),
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(r.worker_demand().await.unwrap(), 1, "R2");
+    let page = r.preparation_candidates(None).await.unwrap();
+    assert_eq!(page.sessions.len(), 1, "R2 exact candidate");
+    assert_eq!(page.sessions[0].session.session_id.as_str(), "unbound-a");
+    create_session(
+        r,
+        "ws-unbound",
+        run_free_worker_candidate("unbound-b"),
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(r.worker_demand().await.unwrap(), 1, "R3 shared slot");
+    assert_eq!(
+        r.preparation_candidates(None).await.unwrap().sessions.len(),
+        2,
+        "R3"
+    );
+}
+
 pub async fn worker_realization_owner_scan_decision_table<
     R: awaken_session_repository_contract::SessionStore,
 >(
@@ -855,9 +912,36 @@ pub async fn worker_realization_owner_scan_decision_table<
     // reconciliation work. R1 either C2 with matching C1 -> one scoped root
     // regardless of C3; R2 other/absent C1 -> no root; R3 C1+C4 -> the same
     // root enters the existing reconciliation index for capacity observation.
-    // Expiry is never physical-exit evidence.
+    // C5 a separately requested Run-free Preparing root has no owner. R4 C1-C5
+    // -> two new retained owners and one shared first-placement slot if no
+    // earlier unbound work already needs that slot; C5 appears in the
+    // preparation candidate query. Expiry is never physical-exit evidence.
     use awaken_session_resource_contract::SessionRealizationLease;
-    use awaken_session_state_contract::SessionScanQuery;
+    use awaken_session_state_contract::{SessionScanQuery, SessionWorkerObligation};
+    let prior_demand = r.worker_demand().await.expect("R3 prior repository demand");
+    let mut prior_unbound = false;
+    let mut prior_cursor = None;
+    loop {
+        let page = r
+            .scan(SessionScanQuery::Reconcilable {
+                after: prior_cursor.as_ref(),
+            })
+            .await
+            .expect("R3 prior repository obligations");
+        assert!(page.quarantined.is_empty(), "R3 no quarantined fixture");
+        prior_unbound |= page.sessions.iter().any(|scoped| {
+            matches!(
+                scoped
+                    .session
+                    .worker_obligation()
+                    .expect("R3 valid fixture"),
+                SessionWorkerObligation::UnboundInitialPreparation
+                    | SessionWorkerObligation::UnboundTerminalCleanup
+            )
+        });
+        let Some(next) = page.next_cursor else { break };
+        prior_cursor = Some(next);
+    }
     let with_owner = |id: &str, owner: &str, expiry| {
         let mut value = session(id, id);
         value.resources = Default::default();
@@ -954,6 +1038,31 @@ pub async fn worker_realization_owner_scan_decision_table<
         .sessions
         .is_empty(),
         "R2",
+    );
+    assert_eq!(
+        r.worker_demand().await.unwrap(),
+        prior_demand + 2,
+        "R3 two new distinct owners, retaining earlier suite state"
+    );
+    create_session(
+        r,
+        "ws-affinity-c",
+        run_free_worker_candidate("run-free-candidate"),
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(
+        r.worker_demand().await.unwrap(),
+        prior_demand + 2 + u64::from(!prior_unbound),
+        "R4 first placement shares one unbound capacity slot"
+    );
+    let candidate_page = r.preparation_candidates(None).await.unwrap();
+    assert!(
+        candidate_page
+            .sessions
+            .iter()
+            .any(|scoped| scoped.session.session_id.as_str() == "run-free-candidate"),
+        "R4 indexed exact candidate"
     );
 }
 
