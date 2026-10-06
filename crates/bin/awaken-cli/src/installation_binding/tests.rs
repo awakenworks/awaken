@@ -184,8 +184,8 @@ fn target_observation_decision_table_fails_closed_without_parallel_identity() {
     }
 }
 
-#[test]
-fn local_installation_decision_table_requires_explicit_initialization() {
+#[tokio::test]
+async fn local_installation_decision_table_requires_explicit_initialization() {
     /* Cause/effect graph: C1 local marker is absent/exact/mismatched; C2 the
      * canonical SQLite Session store is absent/current/invalid; C3 explicit
      * initialization authorization is absent/present; C4 the role owns
@@ -209,13 +209,14 @@ fn local_installation_decision_table_requires_explicit_initialization() {
     fn deployment(root: &std::path::Path) -> ResolvedDeployment {
         crate::config::local_test_deployment(root.to_path_buf())
     }
-    fn open_session(root: &std::path::Path) {
-        drop(
-            awaken_session_store::SqliteManagedSessionRepository::open(
-                &root.join("sessions.db").to_string_lossy(),
-            )
-            .unwrap(),
-        );
+    async fn open_session(root: &std::path::Path) {
+        awaken_session_store::SqliteManagedSessionRepository::open(
+            &root.join("sessions.db").to_string_lossy(),
+        )
+        .await
+        .unwrap()
+        .close()
+        .await;
     }
 
     let ordinary = InstallationAuthorization::default();
@@ -228,13 +229,17 @@ fn local_installation_decision_table_requires_explicit_initialization() {
     let fresh_deployment = deployment(fresh.path());
     assert!(
         classify_local_installation(&fresh_deployment, &ordinary)
+            .await
             .unwrap_err()
             .starts_with("unbound_empty_local_storage:"),
         "L1"
     );
-    classify_local_installation(&fresh_deployment, &initialize).expect("L2");
+    classify_local_installation(&fresh_deployment, &initialize)
+        .await
+        .expect("L2");
     assert!(
         classify_local_installation(&fresh_deployment, &adoption)
+            .await
             .unwrap_err()
             .starts_with("unbound_empty_local_storage:"),
         "L2 adoption is not initialization authority"
@@ -254,26 +259,32 @@ fn local_installation_decision_table_requires_explicit_initialization() {
     let marker_first_deployment = deployment(marker_first.path());
     assert!(
         classify_local_installation(&marker_first_deployment, &ordinary)
+            .await
             .unwrap_err()
             .starts_with("session_storage_missing:"),
         "L3"
     );
-    classify_local_installation(&marker_first_deployment, &initialize).expect("L4");
+    classify_local_installation(&marker_first_deployment, &initialize)
+        .await
+        .expect("L4");
     assert!(
         !marker_first.path().join("sessions.db").exists(),
         "L3-L4 read-only"
     );
 
     let store_first = tempfile::tempdir().unwrap();
-    open_session(store_first.path());
+    open_session(store_first.path()).await;
     let store_first_deployment = deployment(store_first.path());
     assert!(
         classify_local_installation(&store_first_deployment, &ordinary)
+            .await
             .unwrap_err()
             .starts_with("local_installation_incomplete:"),
         "L5"
     );
-    classify_local_installation(&store_first_deployment, &initialize).expect("L6");
+    classify_local_installation(&store_first_deployment, &initialize)
+        .await
+        .expect("L6");
     assert!(
         !store_first.path().join("platform-workspace-id").exists(),
         "L5-L6 read-only"
@@ -284,7 +295,9 @@ fn local_installation_decision_table_requires_explicit_initialization() {
         "workspace-local",
     )
     .unwrap();
-    let admitted = classify_local_installation(&store_first_deployment, &ordinary).expect("L7");
+    let admitted = classify_local_installation(&store_first_deployment, &ordinary)
+        .await
+        .expect("L7");
     assert_eq!(
         admitted.workspace_before_write().unwrap(),
         Some("workspace-local".into()),
@@ -310,8 +323,9 @@ fn local_installation_decision_table_requires_explicit_initialization() {
         "L11 fence precedes every Session write"
     );
 
-    let authorized_missing =
-        classify_local_installation(&store_first_deployment, &initialize).expect("L12");
+    let authorized_missing = classify_local_installation(&store_first_deployment, &initialize)
+        .await
+        .expect("L12");
     assert_eq!(
         authorized_missing.workspace_before_write().unwrap(),
         None,
@@ -327,8 +341,9 @@ fn local_installation_decision_table_requires_explicit_initialization() {
         "workspace-local",
     )
     .unwrap();
-    let replaced =
-        classify_local_installation(&store_first_deployment, &ordinary).expect("L11 A proof");
+    let replaced = classify_local_installation(&store_first_deployment, &ordinary)
+        .await
+        .expect("L11 A proof");
     std::fs::write(
         store_first.path().join("platform-workspace-id"),
         "workspace-replaced",
@@ -349,7 +364,9 @@ fn local_installation_decision_table_requires_explicit_initialization() {
     .unwrap();
     let mut expected_change = store_first_deployment.clone();
     expected_change.expected_platform_workspace_id = Some("workspace-expected".into());
-    let expected = classify_local_installation(&expected_change, &ordinary).expect("L11 E proof");
+    let expected = classify_local_installation(&expected_change, &ordinary)
+        .await
+        .expect("L11 E proof");
     std::fs::write(
         store_first.path().join("platform-workspace-id"),
         "workspace-replaced",
@@ -367,6 +384,7 @@ fn local_installation_decision_table_requires_explicit_initialization() {
     std::fs::write(invalid.path().join("sessions.db"), []).unwrap();
     assert!(
         classify_local_installation(&deployment(invalid.path()), &initialize)
+            .await
             .unwrap_err()
             .starts_with("session_storage_empty:"),
         "L8 invalid"
@@ -381,6 +399,7 @@ fn local_installation_decision_table_requires_explicit_initialization() {
     mismatch_deployment.expected_platform_workspace_id = Some("workspace-expected".into());
     assert!(
         classify_local_installation(&mismatch_deployment, &initialize)
+            .await
             .unwrap_err()
             .starts_with("platform_workspace_mismatch:"),
         "L8 mismatch"
@@ -389,6 +408,7 @@ fn local_installation_decision_table_requires_explicit_initialization() {
     let mut expected_missing_deployment = deployment(expected_missing.path());
     expected_missing_deployment.expected_platform_workspace_id = Some("workspace-expected".into());
     classify_local_installation(&expected_missing_deployment, &initialize)
+        .await
         .expect("L8 explicit initialization may publish the configured identity");
     assert_eq!(
         std::fs::read_dir(expected_missing.path()).unwrap().count(),
@@ -401,11 +421,14 @@ fn local_installation_decision_table_requires_explicit_initialization() {
     control_deployment.role = crate::config::Role::Control;
     assert!(
         classify_local_installation(&control_deployment, &ordinary)
+            .await
             .unwrap_err()
             .starts_with("unbound_empty_local_storage:"),
         "L9 ordinary"
     );
-    classify_local_installation(&control_deployment, &initialize).expect("L9 initialize");
+    classify_local_installation(&control_deployment, &initialize)
+        .await
+        .expect("L9 initialize");
 }
 
 #[test]
@@ -560,7 +583,9 @@ async fn postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy() {
         "P0 all-PG Server has no local marker authority"
     );
     assert!(
-        classify_local_installation(&deployment, &InstallationAuthorization::default()).is_ok(),
+        classify_local_installation(&deployment, &InstallationAuthorization::default())
+            .await
+            .is_ok(),
         "P0 fresh Server migration is not deadlocked on a missing local marker"
     );
     assert!(

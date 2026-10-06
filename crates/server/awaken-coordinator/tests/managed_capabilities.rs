@@ -74,7 +74,7 @@ async fn managed_session_folds_builtins_into_the_agent_toolset() {
         "Deploy checklist",
         "STEP: migrate first.",
     );
-    let app = build_router_with_skills(Arc::new(EchoModel), "echo-model", vec![skill]);
+    let app = build_router_with_skills(Arc::new(EchoModel), "echo-model", vec![skill]).await;
 
     let session = create_session(&app).await;
 
@@ -106,7 +106,7 @@ async fn managed_session_folds_builtins_into_the_agent_toolset() {
 /// built-in toolset reference.
 #[tokio::test]
 async fn managed_session_advertises_custom_tools() {
-    let app = build_custom_router();
+    let app = build_custom_router().await;
     let session = create_session(&app).await;
 
     let tools = session["agent"]["tools"].as_array().unwrap();

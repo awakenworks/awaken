@@ -14,8 +14,8 @@ use tower::ServiceExt;
 
 mod support;
 
-fn router() -> Router {
-    let resources = support::resources::ephemeral_resources();
+async fn router() -> Router {
+    let resources = support::resources::ephemeral_resources().await;
     files_router(resources.files(), resources.authorities().clock())
 }
 
@@ -127,7 +127,7 @@ async fn delete(router: &Router, uri: &str) -> support::Call<serde_json::Value> 
 // Decision table: R1=C1+C2+C3=>E1..E4; missing/invalid input=>canonical 4xx without a write.
 #[tokio::test]
 async fn upload_download_metadata_and_delete_roundtrip() {
-    let router = router();
+    let router = router().await;
 
     let meta = upload(&router, "hello.txt", b"hello world")
         .await
@@ -179,7 +179,7 @@ async fn upload_download_metadata_and_delete_roundtrip() {
 // | complete   | malformed part  | 400    | none           |
 #[tokio::test]
 async fn multipart_stream_failure_is_atomic_and_sdk_decodable() {
-    let router = router();
+    let router = router().await;
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
     body.extend_from_slice(
@@ -229,14 +229,14 @@ async fn upload_requires_complete_resource_lifecycle_authority() {
         _: std::sync::Arc<dyn awaken_resource_contract::FileApplicationService>,
     ) {
     }
-    requires_file_service(support::resources::ephemeral_resources().files());
+    requires_file_service(support::resources::ephemeral_resources().await.files());
 }
 
 #[tokio::test]
 async fn equal_upload_bytes_deduplicate_privately_but_keep_distinct_public_files() {
     // Rule R3: equal bytes + two upload operations → two logical File ids and
     // metadata records (E6), while physical dedup remains an unexposed store fact.
-    let router = router();
+    let router = router().await;
     let a = upload(&router, "a.bin", b"same bytes")
         .await
         .expect(StatusCode::OK);
@@ -271,7 +271,7 @@ async fn equal_upload_bytes_deduplicate_privately_but_keep_distinct_public_files
 // Decision table: C1=insert, C2=replay, C3=conflict, C4=distinct logical Files.
 #[tokio::test]
 async fn idempotent_upload_replays_one_effect_and_rejects_key_drift() {
-    let router = router();
+    let router = router().await;
     let key = "workspace-agents:resource-upload:command-1";
 
     let first = upload_with_key(&router, "brief.txt", b"brief", Some(key))
@@ -308,7 +308,7 @@ async fn idempotent_upload_replays_one_effect_and_rejects_key_drift() {
 // fingerprint. This keeps every accepted key bound to exactly one reproducible File effect.
 #[tokio::test]
 async fn upload_idempotency_header_is_bounded_and_expiry_is_unambiguous() {
-    let router = router();
+    let router = router().await;
     assert_eq!(
         upload_with_key(&router, "bad.txt", b"bad", Some(&"x".repeat(256)))
             .await
@@ -360,7 +360,7 @@ async fn ga_files_projection_and_query_only_selector_match_official_sdk() {
     // retains nullable scope while adopting GA expiry and PageCursor fields.
     // Decision table: G1 C1+C3->E1+E2; G2 C1+C4->E3; G3 C1+created File->E4;
     // G4 C2+C5->E5. The same FileApplication/FileCatalog owns every rule.
-    let router = router();
+    let router = router().await;
     let mut body = multipart_file("ga.txt", b"ga");
     let closing = format!("--{BOUNDARY}--\r\n").into_bytes();
     body.truncate(body.len() - closing.len());
@@ -513,7 +513,7 @@ async fn ga_files_projection_and_query_only_selector_match_official_sdk() {
 async fn error_arms_are_fail_closed() {
     // Rules R4/R5: missing file part or unknown opaque id → 400/404 with no
     // catalog mutation or cross-resource fallback.
-    let router = router();
+    let router = router().await;
 
     // A multipart with no `file` part is a 400.
     let body = format!(
@@ -549,7 +549,7 @@ async fn standard_global_and_scoped_lists_reject_private_filters() {
     // hard-coded `beta=true` query plus its beta header. Effects: E1 catalog page; E2 scoped page; E3 invalid
     // request; E4 the same catalog page (beta selection changes no File truth).
     // Decision table: C1 -> E1; C1+C2 -> E2; C1+C3 -> E3; C1+C4 -> E4.
-    let router = router();
+    let router = router().await;
     let uploaded = upload(&router, "listed.txt", b"listed")
         .await
         .expect(StatusCode::OK);
@@ -585,7 +585,7 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
     // Session no longer registered. Effects: E1 standard `scope` projection;
     // E2 scoped list and content download succeed. Rule C1+C2+C3 -> E1+E2
     // without a GET-time harvest.
-    let resources = support::resources::ephemeral_resources();
+    let resources = support::resources::ephemeral_resources().await;
     let authorities = resources.authorities();
     let blob_id = authorities
         .file_store()
@@ -644,7 +644,7 @@ async fn list_pagination_validates_and_advances_cursors() {
     // Causes: C1 three active records, C2 limit=2, C3 valid after cursor.
     // Effects: first rule has_more=true and boundaries; second rule returns the
     // remaining record. Invalid/conflicting cursor causes map to 400 (R8-R10).
-    let router = router();
+    let router = router().await;
     for name in ["one.txt", "two.txt", "three.txt"] {
         assert_eq!(
             upload(&router, name, name.as_bytes()).await.status(),
@@ -687,7 +687,7 @@ async fn list_pagination_validates_and_advances_cursors() {
 async fn filename_validation_rejects_unsafe_and_overlong_names() {
     // Rule R11: forbidden path/control character or >255 Unicode scalar values
     // → 400 before blob/catalog creation. Boundary 255 remains accepted.
-    let router = router();
+    let router = router().await;
     assert_eq!(
         upload(&router, "../escape.txt", b"x").await.status(),
         StatusCode::BAD_REQUEST
@@ -707,7 +707,7 @@ async fn workspace_capacity_is_checked_before_accepting_more_bytes() {
     // Rule R12: active logical bytes at the 500 GiB Workspace boundary + a
     // nonempty upload → invalid request before the new blob/File is created.
     // A synthetic catalog record tests the boundary without allocating 500 GiB.
-    let resources = support::resources::ephemeral_resources();
+    let resources = support::resources::ephemeral_resources().await;
     resources
         .authorities()
         .file_catalog()
@@ -741,7 +741,7 @@ async fn workspace_capacity_is_checked_before_accepting_more_bytes() {
 async fn file_routes_require_a_preselected_workspace() {
     // Rule R13: no trusted Workspace extension → fail closed at the tenancy
     // extractor before catalog access.
-    let router = router();
+    let router = router().await;
     for request in [
         Request::builder()
             .uri("/v1/files")
@@ -777,7 +777,8 @@ async fn file_expiry_and_creation_share_the_one_resources_clock() {
     let resources = support::resources::resources_at(
         std::sync::Arc::new(awaken_skill_store::InMemorySkillStore::new()),
         clock.clone(),
-    );
+    )
+    .await;
     let router = files_router(resources.files(), clock.clone());
 
     let mut body = multipart_file("expiring.txt", b"expiring bytes");

@@ -54,8 +54,8 @@ impl awaken_runtime_contract::llm::LlmExecutor for NoLlm {
     }
 }
 
-fn host() -> SharedHost {
-    SharedHost::new(Arc::new(NoLlm), "test")
+async fn host() -> SharedHost {
+    SharedHost::new(Arc::new(NoLlm), "test").await
 }
 
 #[path = "tests/file_fence.rs"]
@@ -316,8 +316,8 @@ fn root_terminal_preparation_authorization(
     .expect("close the exact root terminal preparation authorization")
 }
 
-#[test]
-fn session_and_housekeeping_filesystem_continuity_are_distinct() {
+#[tokio::test]
+async fn session_and_housekeeping_filesystem_continuity_are_distinct() {
     /* Continuity cause/effect table.
      * Causes: C1 the spec realizes the canonical Session environment; C2
      * the spec realizes a disposable child/probe environment. Effects: E1
@@ -327,7 +327,7 @@ fn session_and_housekeeping_filesystem_continuity_are_distinct() {
      * capacity identity, so the two requests cannot share warm capacity.
      */
     assert_eq!(
-        host().sandbox_spec("session").filesystem_continuity,
+        host().await.sandbox_spec("session").filesystem_continuity,
         pc::FilesystemContinuity::Retained,
         "SC1"
     );
@@ -337,7 +337,7 @@ fn session_and_housekeeping_filesystem_continuity_are_distinct() {
         "SC2"
     );
     assert_ne!(
-        pc::SandboxCapacityShapeId::from_spec(&host().sandbox_spec("session")),
+        pc::SandboxCapacityShapeId::from_spec(&host().await.sandbox_spec("session")),
         pc::SandboxCapacityShapeId::from_spec(&agent_run_sandbox_spec("probe")),
         "SC1/SC2"
     );
@@ -358,8 +358,8 @@ fn resource_mount(logical: &str) -> pc::MountRequirement {
     }
 }
 
-#[test]
-fn projected_sandbox_layout_preserves_one_complete_input_snapshot() {
+#[tokio::test]
+async fn projected_sandbox_layout_preserves_one_complete_input_snapshot() {
     // Cause/effect graph for the private projected-layout command: C1 an
     // ordinary Resource mount is present; C2 the frozen baseline contributes a
     // second mount and one env value; C3 SemanticTools suppresses only the
@@ -372,7 +372,7 @@ fn projected_sandbox_layout_preserves_one_complete_input_snapshot() {
     // every cause is supplied in one ephemeral projection input and the helper
     // owns no retained Session or Sandbox authority. Decision rule L1:
     // C1+C2+C3+C4+C5 => E1+E2+E3+E4.
-    let host = host();
+    let host = host().await;
     let resource = resource_mount("resource.txt");
     let baseline = resource_mount("baseline.txt");
     let memory = pc::MountRequirement {
@@ -470,7 +470,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
         *write_consistency
     }
 
-    let host = Arc::new(host());
+    let host = Arc::new(host().await);
     let mut environment = frozen_projection_with_model_override(
         "workspace",
         awaken_session_state_contract::SessionEnvironmentState::default(),
@@ -656,9 +656,9 @@ fn repository_activation(logical: &str) -> RepositoryActivation {
     }
 }
 
-#[test]
-fn register_replaces_the_threads_staged_set() {
-    let host = host();
+#[tokio::test]
+async fn register_replaces_the_threads_staged_set() {
+    let host = host().await;
     host.register_thread_resources(
         "t",
         StagedResources {
@@ -689,15 +689,15 @@ fn register_replaces_the_threads_staged_set() {
     );
 }
 
-#[test]
-fn sandbox_spec_carries_deny_egress_and_the_staged_mounts() {
+#[tokio::test]
+async fn sandbox_spec_carries_deny_egress_and_the_staged_mounts() {
     // Cause graph: a frozen restriction plus a provider without strict network
     // isolation selects the existing Workdir wrapper, not an unsupported
     // admission requirement.
     // | Rule | restriction | strict provider | network | deny wrapper |
     // | W1 | absent | no | unrestricted | no |
     // | W2 | none | no | unrestricted | yes |
-    let host = host();
+    let host = host().await;
     // No registration and no egress: shared network, no mounts.
     let bare = host.sandbox_spec("t");
     assert!(!denies(&bare));
@@ -757,7 +757,7 @@ async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_pat
     // Constraint/invariant: SandboxSpec plus provider capabilities are the
     // single admission authority; no Bash command rewriting or alias mount
     // is introduced as a second path mapping.
-    let host = host();
+    let host = host().await;
     let local = crate::session_environment::SandboxEnvironmentProvider::workdir(
         tempfile::tempdir().unwrap().path(),
     )
@@ -794,13 +794,13 @@ async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_pat
     );
 }
 
-#[test]
-fn trusted_host_repository_projection_preserves_the_exact_tier() {
+#[tokio::test]
+async fn trusted_host_repository_projection_preserves_the_exact_tier() {
     // Cause/effect rules: T1 explicit TrustedHost + Repository => Workdir;
     // I1 isolated + Repository => Namespace; T2/I2 without Repository => Workdir.
     // The frozen Environment is the authority; presence of a Repository must
     // not silently change a trusted machine identity into an isolated process.
-    let host = host();
+    let host = host().await;
     for trusted in [false, true] {
         for repository in [false, true] {
             let mut environment = frozen_projection_with_model_override(
@@ -859,7 +859,7 @@ async fn projected_acp_rejects_a_provider_with_split_tool_and_process_paths() {
     // Constraint: Repository absence must not mask the independent opaque-process
     // cause, and realization must consume the same candidate predicate as Worker
     // placement instead of reconstructing it from backend text.
-    let host = host();
+    let host = host().await;
     let publication = awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
         .resolved_model(
             awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
@@ -910,7 +910,7 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
     // Constraint: the override is durable baseline truth. Realization must not
     // substitute a mutable catalog lookup or collapse an absent Agent snapshot
     // into a Native/non-opaque default.
-    let host = host();
+    let host = host().await;
     let model_override = awaken_session_configuration_contract::SessionModelOverride {
         publication: Some(Box::new(
             awaken_session_configuration_contract::SessionModelPublication {
@@ -1016,7 +1016,7 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
             .unwrap(),
     )
     .into_session_environment();
-    let host = host();
+    let host = host().await;
     host.register_thread_resources(
         "t",
         StagedResources {
@@ -1068,7 +1068,7 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
      * the activation compiled from its frozen ResolvedInput; no thread Resource
      * lookup or publish-all loop exists in this helper.
      */
-    let host = host();
+    let host = host().await;
     let repository = repository_activation("repo");
     let expectation = pc::RepositoryPublicationExpectation {
         branch: "awf/work".into(),
@@ -1135,7 +1135,7 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
 
 #[tokio::test]
 async fn reverse_channels_are_safe_noops_without_a_live_session() {
-    let host = host();
+    let host = host().await;
     // Stage a repo, but never create a session for the thread: reverse channels
     // must early-return (no live env), not panic. Memory write-through is owned
     // by the MemoryMount guard and therefore has no Host-side reverse channel.
@@ -1530,7 +1530,9 @@ async fn live_container_artifact_harvest_reads_one_complete_batch() {
     let storage = tempfile::tempdir().unwrap();
     let host = Arc::new(
         SharedHost::new(Arc::new(NoLlm), "test")
+            .await
             .with_store_dir(storage.path())
+            .await
             .with_session_container_provider(
                 provider,
                 Arc::new(crate::session_environment::UnusedHandExecutorFactory),
@@ -1584,7 +1586,12 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
     // then and only then projects physical disposal => Sandbox gone while File
     // metadata/bytes remain.
     let storage = tempfile::tempdir().unwrap();
-    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test").with_store_dir(storage.path()));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(NoLlm), "test")
+            .await
+            .with_store_dir(storage.path())
+            .await,
+    );
     host.register_thread_workspace("session-artifacts", "workspace-a");
     install_terminal_artifact_projection_before_environment(
         host.as_ref(),
@@ -1748,7 +1755,12 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
     // reconstructs that same creation receipt; H4 env absent under ordinary
     // Run semantics => empty, never a broad catalog recovery.
     let storage = tempfile::tempdir().unwrap();
-    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test").with_store_dir(storage.path()));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(NoLlm), "test")
+            .await
+            .with_store_dir(storage.path())
+            .await,
+    );
     host.register_thread_workspace("artifact-response-loss", "workspace-a");
     install_terminal_artifact_projection_before_environment(
         host.as_ref(),
@@ -1944,10 +1956,12 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
         scans: scans.clone(),
     });
     let publisher = Arc::new(RecordingArtifactRecovery::default());
-    let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test").with_session_container_provider(
-        provider,
-        Arc::new(crate::session_environment::UnusedHandExecutorFactory),
-    );
+    let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test")
+        .await
+        .with_session_container_provider(
+            provider,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+        );
     raw_host.resources.artifact_publisher = publisher.clone();
     let host = Arc::new(raw_host);
     let thread = "container-artifact-receipt-only";
@@ -2096,7 +2110,7 @@ async fn artifact_harvest_has_one_file_authority_and_no_magic_bundle_gate() {
     // E3 replay returns the same File identity. R1 C1+C2=>E1+E2;
     // R2 C1+C2+C3=>E1+E2+E3.
     let storage = tempfile::tempdir().unwrap();
-    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
+    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test").await);
     host.register_thread_workspace("plain-files", "workspace-a");
     let spec = agent_run_sandbox_spec("plain-files");
     let environment = Arc::new(
@@ -2285,7 +2299,10 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
     // harvest, never precedes it. Decision rule: execute R4 and require failure
     // with zero disposal.
     let storage = tempfile::tempdir().unwrap();
-    let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test").with_store_dir(storage.path());
+    let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test")
+        .await
+        .with_store_dir(storage.path())
+        .await;
     let catalog = Arc::new(FailingFileCatalog);
     raw_host.resources.file_catalog = catalog.clone();
     let application = Arc::new(awaken_resource_application::FileApplication::new(
@@ -2388,7 +2405,9 @@ async fn agent_authored_skill_remains_run_scoped_until_explicit_publication() {
     // Constraint: explicit control-plane publication is covered separately
     // by the durable-catalog test below and is the only route to that store.
     let dir = std::env::temp_dir().join(format!("awaken-skillharvest-{}", std::process::id()));
-    let host = SharedHost::new(Arc::new(NoLlm), "test").with_skill_store(dir.join("store"));
+    let host = SharedHost::new(Arc::new(NoLlm), "test")
+        .await
+        .with_skill_store(dir.join("store"));
 
     // A real sandbox env with a skill authored under the workspace `skills/` dir.
     let base = dir.join("sbx");
@@ -2446,7 +2465,9 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
     // enter this Managed id set. The static exclusion row is covered by
     // `managed_session_folds_builtins_into_the_agent_toolset`.
     let dir = std::env::temp_dir().join(format!("awaken-skillid-{}", std::process::id()));
-    let host = SharedHost::new(Arc::new(NoLlm), "test").with_skill_store(dir.join("store"));
+    let host = SharedHost::new(Arc::new(NoLlm), "test")
+        .await
+        .with_skill_store(dir.join("store"));
     host.tools
         .skills
         .persist_authored(
@@ -2656,10 +2677,12 @@ async fn artifact_capture_failures_do_not_publish_partial_or_rebased_sets() {
             ],
             scans: scans.clone(),
         });
-        let mut host = SharedHost::new(Arc::new(NoLlm), "test").with_session_container_provider(
-            provider,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
-        );
+        let mut host = SharedHost::new(Arc::new(NoLlm), "test")
+            .await
+            .with_session_container_provider(
+                provider,
+                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            );
         let application = host.file_application().unwrap();
         let request = awaken_resource_contract::ReplaceArtifactCapture {
             workspace_id: "workspace-a".into(),

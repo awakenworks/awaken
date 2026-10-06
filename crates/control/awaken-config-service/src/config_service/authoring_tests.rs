@@ -67,7 +67,7 @@ async fn mutable_writes_reject_legacy_permission_authoring_without_a_partial_com
     // | W9   | CAS         | published->archived+edit | error, revision unchanged |
     // | W10  | audited     | published->archived+edit | error, audit pending |
     // | W11  | audit+effect| published->archived+edit | error, audit pending; no effect |
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let plane = ConfigPlane::new(
         Arc::new(test_service()),
         store,
@@ -433,7 +433,7 @@ async fn rejected_legacy_edit_preserves_draft_generation_and_published_fingerpri
     // exact legacy publication remains readable for Runtime compatibility.
     // Decision rules: R1=C1+C2 -> stable generation/fingerprint;
     // R2=C1+C3 -> migration_required + the same durable identities.
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let plane = ConfigPlane::new(
         Arc::new(test_service()),
         store.clone(),
@@ -517,7 +517,7 @@ async fn lifecycle_archive_preserves_legacy_policy_bytes_and_rejects_mixed_edits
     // | L3   | ordinary  | legacy       | any                 | migration_required |
     // | L4   | archive   | already archived | no              | error, zero write |
     // | L5   | archive   | unchanged    | stale expected      | conflict, zero write |
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let plane = ConfigPlane::new(
         Arc::new(test_service()),
         store.clone(),

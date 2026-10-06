@@ -66,7 +66,9 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
     // P2 reads use the persisted installation Workspace stamped by the real
     // no-login edge (ADR-0061), not a second caller-authored scope.
     let dir = tempfile::tempdir().unwrap();
-    let catalog = SqliteCatalogRepo::open(dir.path().join("catalog.db").to_str().unwrap()).unwrap();
+    let catalog = SqliteCatalogRepo::open(dir.path().join("catalog.db").to_str().unwrap())
+        .await
+        .unwrap();
     catalog
         .put_provider(Provider {
             id: ProviderId::new("anthropic"),
@@ -135,6 +137,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
             "an ambiguous stable-id retry must never repeat the business write"
         );
         let audit_store = SqliteConfigStore::open(dir.path().join("config.db").to_str().unwrap())
+            .await
             .expect("open durable audit store");
         platform_workspace = std::fs::read_to_string(dir.path().join("platform-workspace-id"))
             .expect("platform workspace persisted")

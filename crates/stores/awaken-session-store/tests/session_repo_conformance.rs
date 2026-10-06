@@ -33,8 +33,25 @@ use awaken_store_conformance::session_store::*;
 use sqlx::Executor as _;
 use sqlx::postgres::PgPoolOptions;
 
+/// A raw fixture connection with SQLite's plain defaults (file created when
+/// missing, foreign keys off, journal mode untouched), outside the store policy.
+async fn raw_sqlite(path: &std::path::Path) -> sqlx::SqlitePool {
+    sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(true)
+                .foreign_keys(false),
+        )
+        .await
+        .expect("open raw SQLite fixture connection")
+}
+
 fn block<F: std::future::Future>(f: F) -> F::Output {
+    // The SQLite pool bounds connection admission with a Tokio timer.
     tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("current-thread runtime")
         .block_on(f)
@@ -80,16 +97,22 @@ async fn close_postgres_pool(pool: sqlx::PgPool, schema: &str) {
 #[test]
 fn sqlite_backend_conforms() {
     block(async {
-        run_suite(|| {
-            SqliteManagedSessionRepository::open_in_memory().expect("sqlite in-memory repo")
+        run_suite(|| async {
+            SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .expect("sqlite in-memory repo")
         })
         .await;
         create_receipt_race_decision_table(std::sync::Arc::new(
-            SqliteManagedSessionRepository::open_in_memory().expect("sqlite create-race repo"),
+            SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .expect("sqlite create-race repo"),
         ))
         .await;
         concurrent_phase_transition_has_one_count_snapshot(std::sync::Arc::new(
-            SqliteManagedSessionRepository::open_in_memory().expect("sqlite phase-count repo"),
+            SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .expect("sqlite phase-count repo"),
         ))
         .await;
         // SQLite refinement rule D8: C6 three independently opened adapters
@@ -101,16 +124,20 @@ fn sqlite_backend_conforms() {
         let database = directory.path().join("deployment-cas.db");
         let database_path = database.to_str().expect("UTF-8 Deployment CAS path");
         let left = SqliteManagedSessionRepository::open(database_path)
+            .await
             .expect("left SQLite Deployment replica");
         let right = SqliteManagedSessionRepository::open(database_path)
+            .await
             .expect("right SQLite Deployment replica");
         let third = SqliteManagedSessionRepository::open(database_path)
+            .await
             .expect("third SQLite Deployment replica");
         deployment_cas_decision_table(&left, [&left, &right, &third]).await;
         drop(third);
         drop(right);
         drop(left);
         let reopened = SqliteManagedSessionRepository::open(database_path)
+            .await
             .expect("reopen SQLite Deployment authority");
         let deployment = reopened
             .deployments()
@@ -174,7 +201,9 @@ fn sqlite_unbound_preparation_demand_uses_one_shared_capacity_slot() {
     block(async {
         // Backend S1 runs shared R1-R3 over a fresh SQLite authority so a
         // prior conformance table cannot mask first-placement demand.
-        let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+        let repo = SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap();
         unbound_preparation_demand_decision_table(&repo).await;
     });
 }
@@ -205,19 +234,21 @@ fn sqlite_lifecycle_outbox_insert_failure_rolls_back_every_root_path() {
         let database = directory.path().join("lifecycle-atomicity.db");
         let database_path = database.to_str().expect("UTF-8 lifecycle atomicity path");
         let repo = SqliteManagedSessionRepository::open(database_path)
+            .await
             .expect("open SQLite lifecycle atomicity repository");
-        lifecycle_outbox_insert_failure_rolls_back_root_paths(&repo, || {
-            rusqlite::Connection::open(&database)
-                .expect("open SQLite failure injector")
-                .execute_batch(
-                    "CREATE TRIGGER reject_lifecycle_outbox_insert \
-                     BEFORE INSERT ON managed_lifecycle_outbox \
-                     BEGIN \
-                       SELECT RAISE(ABORT, 'injected lifecycle outbox failure'); \
-                     END;",
-                )
-                .expect("install SQLite lifecycle outbox rejection");
-            std::future::ready(())
+        lifecycle_outbox_insert_failure_rolls_back_root_paths(&repo, || async {
+            let injector = raw_sqlite(&database).await;
+            sqlx::raw_sql(
+                "CREATE TRIGGER reject_lifecycle_outbox_insert \
+                 BEFORE INSERT ON managed_lifecycle_outbox \
+                 BEGIN \
+                   SELECT RAISE(ABORT, 'injected lifecycle outbox failure'); \
+                 END;",
+            )
+            .execute(&injector)
+            .await
+            .expect("install SQLite lifecycle outbox rejection");
+            injector.close().await;
         })
         .await;
     });
@@ -233,22 +264,23 @@ fn sqlite_restores_and_canonically_rewrites_the_pre_typed_deployment_record() {
         let database = directory.path().join("managed.db");
         let database_path = database.to_str().expect("UTF-8 test path");
         let repo = SqliteManagedSessionRepository::open(database_path)
+            .await
             .expect("initialize old-record compatibility database");
         let old_record = include_str!("fixtures/deployment-record-v0-managed-wire.json");
 
-        rusqlite::Connection::open(&database)
-            .expect("open fixture database")
-            .execute(
-                "INSERT INTO managed_deployment \
-                 (deployment_id, workspace_id, revision, data) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![
-                    "depl_upgrade_fixture",
-                    "workspace_upgrade_fixture",
-                    1_i64,
-                    old_record
-                ],
-            )
-            .expect("insert exact old-release Deployment document");
+        let fixture = raw_sqlite(&database).await;
+        sqlx::query(
+            "INSERT INTO managed_deployment \
+             (deployment_id, workspace_id, revision, data) VALUES (?1, ?2, ?3, ?4)",
+        )
+        .bind("depl_upgrade_fixture")
+        .bind("workspace_upgrade_fixture")
+        .bind(1_i64)
+        .bind(old_record)
+        .execute(&fixture)
+        .await
+        .expect("insert exact old-release Deployment document");
+        fixture.close().await;
 
         let mut restored = repo
             .deployments()
@@ -269,19 +301,20 @@ fn sqlite_restores_and_canonically_rewrites_the_pre_typed_deployment_record() {
         );
         drop(repo);
 
-        let stored: String = rusqlite::Connection::open(&database)
-            .expect("inspect rewritten database")
-            .query_row(
-                "SELECT data FROM managed_deployment WHERE deployment_id=?1",
-                ["depl_upgrade_fixture"],
-                |row| row.get(0),
-            )
-            .expect("rewritten Deployment document");
+        let inspector = raw_sqlite(&database).await;
+        let stored: String =
+            sqlx::query_scalar("SELECT data FROM managed_deployment WHERE deployment_id=?1")
+                .bind("depl_upgrade_fixture")
+                .fetch_one(&inspector)
+                .await
+                .expect("rewritten Deployment document");
+        inspector.close().await;
         let stored: serde_json::Value =
             serde_json::from_str(&stored).expect("valid rewritten Deployment JSON");
         assert_eq!(stored["initial_events"][0]["type"], "user_message");
 
         let reopened = SqliteManagedSessionRepository::open(database_path)
+            .await
             .expect("reopen compatibility database");
         assert_eq!(
             reopened

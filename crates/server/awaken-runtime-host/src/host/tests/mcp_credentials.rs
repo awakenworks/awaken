@@ -45,7 +45,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         }
     }
 
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let mut credential = awaken_credential_vault::repo::enter_credential(
@@ -523,7 +523,11 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         launch,
     ));
     let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-    let acp_host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_acp(executor.clone()));
+    let acp_host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_acp(executor.clone()),
+    );
     acp_host.register_thread_backend_projection("mcp-acp-forbidden", "acp:test");
     acp_host.register_thread_backend_projection("mcp-acp-protected", "acp:test");
     acp_host.register_thread_backend_projection("mcp-acp-anonymous", "acp:test");
@@ -780,11 +784,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // outbound proxy. Effects: missing issuer refuses before Worker Ready;
     // installed issuer permits transport staging without asserting public
     // upstream reachability. R1 no issuer -> refusal; R2 issuer -> bind.
-    let missing_proxy_host = Arc::new(SharedHost::new_with_deployment(
-        Arc::new(OkModel),
-        "stub",
-        secure_deployment.clone(),
-    ));
+    let missing_proxy_host = Arc::new(
+        SharedHost::new_with_deployment(Arc::new(OkModel), "stub", secure_deployment.clone()).await,
+    );
     assert!(
         missing_proxy_host
             .prepare_container_mcp_relay()
@@ -794,6 +796,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     let secure_acp_host = Arc::new(
         SharedHost::new_with_deployment(Arc::new(OkModel), "stub", secure_deployment)
+            .await
             .with_mcp_relay_outbound_proxy(Arc::new(StagingOnlyProxy))
             .with_acp(executor.clone())
             .with_session_container_provider(
@@ -895,6 +898,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // that loopback is reachable from an isolated container or of G43 custody.
     let default_relay_host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub")
+            .await
             .with_acp(executor.clone())
             .with_session_container_provider(
                 Arc::new(SecureExternalProvider),
@@ -1006,6 +1010,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     let mut backend_secure_host =
         SharedHost::new_with_deployment(Arc::new(OkModel), "stub", backend_deployment)
+            .await
             .with_mcp_relay_outbound_proxy(Arc::new(StagingOnlyProxy))
             .with_acp(executor.clone());
     backend_secure_host.env.backend_owned_session_provider = Some(
@@ -1047,6 +1052,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
 
     let weak_backend_root = tempfile::tempdir().expect("H27 weak BackendOwned root");
     let mut default_secure_host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
         .with_acp(executor.clone())
         .with_session_container_provider(
             Arc::new(SecureExternalProvider),
@@ -1321,7 +1327,7 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
         ),
         holder: holder.clone(),
     });
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let managed = crate::ManagedHost::new(host).with_credential_materializer(
         awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
             resolver,
@@ -1357,15 +1363,15 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
         .expect("R1 exact authoring target binding");
 }
 
-#[test]
-fn dispatch_session_runtime_requires_explicit_installation() {
+#[tokio::test]
+async fn dispatch_session_runtime_requires_explicit_installation() {
     // Cause/effect graph: C1 a ManagedHost is only constructed; C2 the fully
     // configured adapter is explicitly installed. Effects: E1 SharedHost has no
     // dispatch adapter; E2 SharedHost exposes exactly the installed adapter.
     // Constraint: C2 follows C1. Decision table: R1 C1&&!C2 -> E1; R2 C1&&C2
     // -> E2. This guards against constructor/builder side effects reintroducing
     // partially configured durable-dispatch state.
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let managed = crate::ManagedHost::new(host.clone());
 
     assert!(host.dispatch_session_runtime().is_err(), "R1/E1");
@@ -1437,7 +1443,7 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         }
     }
 
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let external = Arc::new(RecordingRealizer::default());
     let _managed = crate::ManagedHost::new(host.clone())
         .with_mcp_attachment_realizer(external.clone())

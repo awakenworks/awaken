@@ -28,7 +28,7 @@ async fn status(app: &Router, uri: &str) -> StatusCode {
 
 #[tokio::test]
 async fn resource_routes_share_one_application_without_conflicts() {
-    let resources = support::resources::ephemeral_resources();
+    let resources = support::resources::ephemeral_resources().await;
     let authorities = resources.authorities();
 
     // FMECA: FM1 one route family reopens its own Resource authority; FM2 a

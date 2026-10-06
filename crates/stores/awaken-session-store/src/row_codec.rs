@@ -369,9 +369,9 @@ mod tests {
     use awaken_session_repository_contract::SessionRepository as _;
     use awaken_session_state_contract::{ActivationState, SessionResourceActivation};
     use awaken_session_types::SessionRevision;
-    use rusqlite::params;
 
-    use crate::{SqliteManagedSessionRepository, tests::create_fixture, tests::sample};
+    use crate::SqliteManagedSessionRepository;
+    use crate::tests::{close_repository, create_fixture, raw_sqlite, sample};
 
     #[tokio::test]
     async fn runtime_refuses_v1_while_operational_upgrade_fences_its_writer() {
@@ -431,9 +431,9 @@ mod tests {
             .join("session-format.db")
             .to_string_lossy()
             .into_owned();
-        let repository = SqliteManagedSessionRepository::open(&path).unwrap();
+        let repository = SqliteManagedSessionRepository::open(&path).await.unwrap();
         session = create_fixture(&repository, "format-owner", session, Vec::new()).await;
-        drop(repository);
+        close_repository(repository).await;
         let current = super::encode(&session).expect("encode current");
         let mut v1: serde_json::Value = serde_json::from_str(&current).expect("reparse");
         for format in ["awaken.session.v1", "awaken.session.v999"] {
@@ -451,22 +451,26 @@ mod tests {
                     "R1/E1 names the format: {refusal}"
                 );
                 let bytes = v1.to_string();
-                let connection = rusqlite::Connection::open(&path).unwrap();
-                connection
-                    .execute(
-                        "UPDATE managed_session SET aggregate_json = ?1, revision = ?3 WHERE session_id = ?2",
-                        params![bytes, session.session_id.as_str(), i64::try_from(session.revision.0).unwrap()],
-                    )
-                    .unwrap();
-                drop(connection);
+                let connection = raw_sqlite(&path).await;
+                sqlx::query(
+                    "UPDATE managed_session SET aggregate_json = ?1, revision = ?3 WHERE session_id = ?2",
+                )
+                .bind(&bytes)
+                .bind(session.session_id.as_str())
+                .bind(i64::try_from(session.revision.0).unwrap())
+                .execute(&connection)
+                .await
+                .unwrap();
+                connection.close().await;
                 if format == "awaken.session.v1"
                     && v1["aggregate"]["mcp"]["attachments"][0]["generation"].is_u64()
                 {
                     let mut expected = session.clone();
                     expected.revision.0 += 1;
                     for _ in 0..2 {
-                        let repo =
-                            SqliteManagedSessionRepository::open(&path).expect("R4 upgrade/reopen");
+                        let repo = SqliteManagedSessionRepository::open(&path)
+                            .await
+                            .expect("R4 upgrade/reopen");
                         assert_eq!(
                             repo.get(&session.session_id).await.unwrap(),
                             expected,
@@ -476,7 +480,7 @@ mod tests {
                     continue;
                 }
                 for _ in 0..2 {
-                    let error = match SqliteManagedSessionRepository::open(&path) {
+                    let error = match SqliteManagedSessionRepository::open(&path).await {
                         Ok(_) => panic!("R4 unsupported cold root must refuse startup"),
                         Err(error) => error,
                     };
@@ -490,12 +494,15 @@ mod tests {
                         },
                         "R5: {error}"
                     );
-                    let connection = rusqlite::Connection::open(&path).unwrap();
-                    let stored: (String, i64) = connection.query_row(
+                    let connection = raw_sqlite(&path).await;
+                    let stored: (String, i64) = sqlx::query_as(
                         "SELECT aggregate_json, revision FROM managed_session WHERE session_id = ?1",
-                        params![session.session_id.as_str()],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    ).unwrap();
+                    )
+                    .bind(session.session_id.as_str())
+                    .fetch_one(&connection)
+                    .await
+                    .unwrap();
+                    connection.close().await;
                     assert_eq!(
                         stored,
                         (bytes.clone(), i64::try_from(session.revision.0).unwrap()),
@@ -505,16 +512,20 @@ mod tests {
             }
         }
         assert_eq!(super::decode_aggregate(&current).expect("R2/E2"), session);
-        let connection = rusqlite::Connection::open(&path).unwrap();
-        connection
-            .execute(
-                "UPDATE managed_session SET aggregate_json = ?1, revision = ?3 WHERE session_id = ?2",
-                params![current, session.session_id.as_str(), i64::try_from(session.revision.0).unwrap()],
-            )
-            .unwrap();
-        drop(connection);
-        let repository =
-            SqliteManagedSessionRepository::open(&path).expect("R2 current cold root opens");
+        let connection = raw_sqlite(&path).await;
+        sqlx::query(
+            "UPDATE managed_session SET aggregate_json = ?1, revision = ?3 WHERE session_id = ?2",
+        )
+        .bind(&current)
+        .bind(session.session_id.as_str())
+        .bind(i64::try_from(session.revision.0).unwrap())
+        .execute(&connection)
+        .await
+        .unwrap();
+        connection.close().await;
+        let repository = SqliteManagedSessionRepository::open(&path)
+            .await
+            .expect("R2 current cold root opens");
         assert_eq!(
             repository.get(&session.session_id).await.unwrap(),
             session,
@@ -744,7 +755,9 @@ mod tests {
         // Boundary partition: C1 canonical aggregate + matching index -> accept;
         // C2 aggregate/index revision drift -> reject. NOT NULL makes a missing
         // aggregate structurally unrepresentable in the current baseline.
-        let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+        let repo = SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap();
         create_fixture(&repo, "default", sample("strict-row"), Vec::new()).await;
         assert!(
             repo.get(&awaken_session_types::SessionId::from("strict-row"))
@@ -754,13 +767,10 @@ mod tests {
         );
 
         create_fixture(&repo, "default", sample("drifted-row"), Vec::new()).await;
-        repo.conn
-            .lock()
-            .unwrap()
-            .execute(
-                "UPDATE managed_session SET revision = revision + 1 WHERE session_id = ?1",
-                params!["drifted-row"],
-            )
+        sqlx::query("UPDATE managed_session SET revision = revision + 1 WHERE session_id = ?1")
+            .bind("drifted-row")
+            .execute(&repo.pool)
+            .await
             .unwrap();
         assert!(
             repo.get(&awaken_session_types::SessionId::from("drifted-row"))

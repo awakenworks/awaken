@@ -183,7 +183,8 @@ impl PreparedDeploymentInstallations {
 pub(crate) async fn verify_deployment_installations(
     deployment: &ResolvedDeployment,
 ) -> Result<PreparedDeploymentInstallations, String> {
-    let local = classify_local_installation(deployment, &InstallationAuthorization::default())?;
+    let local =
+        classify_local_installation(deployment, &InstallationAuthorization::default()).await?;
     let postgres = verify_deployment_postgres_installations(deployment).await?;
     Ok(PreparedDeploymentInstallations { local, postgres })
 }
@@ -195,13 +196,13 @@ pub(crate) async fn prepare_deployment_installations(
     deployment: &ResolvedDeployment,
     authorization: &InstallationAuthorization,
 ) -> Result<PreparedDeploymentInstallations, String> {
-    let local = classify_local_installation(deployment, authorization)?;
+    let local = classify_local_installation(deployment, authorization).await?;
     local.workspace_before_write()?;
     let postgres = prepare_deployment_postgres_installations(deployment, authorization).await?;
     Ok(PreparedDeploymentInstallations { local, postgres })
 }
 
-fn classify_local_installation(
+async fn classify_local_installation(
     deployment: &ResolvedDeployment,
     authorization: &InstallationAuthorization,
 ) -> Result<PreparedLocalInstallation, String> {
@@ -276,6 +277,7 @@ fn classify_local_installation(
             awaken_session_store::SqliteManagedSessionRepository::verify_existing(
                 &session_path.to_string_lossy(),
             )
+            .await
             .map_err(|error| {
                 format!(
                     "session_storage_invalid: verify {}: {error}",

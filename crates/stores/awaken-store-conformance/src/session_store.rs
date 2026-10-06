@@ -1639,27 +1639,29 @@ pub use cas::*;
 mod deployment;
 pub use deployment::*;
 
-pub async fn run_suite<R: awaken_session_repository_contract::SessionStore + 'static>(
-    fresh: impl Fn() -> R,
-) {
-    save_get_round_trips(&fresh()).await;
-    absent_id_reads_none(&fresh()).await;
-    save_is_idempotent_upsert(&fresh()).await;
-    ownership_is_one_atomic_repository_fact(&fresh()).await;
-    environment_state_is_atomic_and_non_destructive(&fresh()).await;
-    global_environment_phase_count_has_no_recovery_batch_limit(&fresh()).await;
-    vault_reference_index_returns_only_live_scoped_sessions(&fresh()).await;
-    scan_query_decision_table(&fresh()).await;
-    worker_realization_owner_scan_decision_table(&fresh()).await;
-    credential_source_dependency_decision_table(&fresh()).await;
-    lifecycle_outbox_tracks_every_committed_transition(&fresh()).await;
-    pending_resource_activation_index_is_durable(&fresh()).await;
-    tombstone_requires_hidden_completed_cleanup(&fresh()).await;
-    deleted_event_admission_decision_table(&fresh()).await;
-    let cas_repo = fresh();
+pub async fn run_suite<R, F>(fresh: impl Fn() -> F)
+where
+    R: awaken_session_repository_contract::SessionStore + 'static,
+    F: std::future::Future<Output = R>,
+{
+    save_get_round_trips(&fresh().await).await;
+    absent_id_reads_none(&fresh().await).await;
+    save_is_idempotent_upsert(&fresh().await).await;
+    ownership_is_one_atomic_repository_fact(&fresh().await).await;
+    environment_state_is_atomic_and_non_destructive(&fresh().await).await;
+    global_environment_phase_count_has_no_recovery_batch_limit(&fresh().await).await;
+    vault_reference_index_returns_only_live_scoped_sessions(&fresh().await).await;
+    scan_query_decision_table(&fresh().await).await;
+    worker_realization_owner_scan_decision_table(&fresh().await).await;
+    credential_source_dependency_decision_table(&fresh().await).await;
+    lifecycle_outbox_tracks_every_committed_transition(&fresh().await).await;
+    pending_resource_activation_index_is_durable(&fresh().await).await;
+    tombstone_requires_hidden_completed_cleanup(&fresh().await).await;
+    deleted_event_admission_decision_table(&fresh().await).await;
+    let cas_repo = fresh().await;
     root_cas_decision_table(&cas_repo).await;
-    create_receipt_decision_table(&fresh()).await;
-    concurrent_root_cas_has_one_authoritative_winner(std::sync::Arc::new(fresh())).await;
+    create_receipt_decision_table(&fresh().await).await;
+    concurrent_root_cas_has_one_authoritative_winner(std::sync::Arc::new(fresh().await)).await;
 }
 
 // ── Backend rows: each must pass the identical universal suite ───────────────────

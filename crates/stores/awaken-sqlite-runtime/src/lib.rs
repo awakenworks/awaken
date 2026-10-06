@@ -19,7 +19,12 @@ use std::time::Duration;
 
 use rusqlite::Connection;
 
+mod clock_hold;
+mod embedded_pool;
 mod pool;
+mod settle;
+pub use clock_hold::held;
+pub use embedded_pool::{EmbeddedConnection, EmbeddedPool, EmbeddedTransaction};
 pub use pool::{EmbeddedSqlite, SqlitePoolError};
 use tokio::sync::Semaphore;
 

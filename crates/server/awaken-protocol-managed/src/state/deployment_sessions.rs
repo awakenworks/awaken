@@ -129,9 +129,12 @@ mod tests {
         // | D3 | present | exact | different | E3 |
         // | D4 | present | different | exact | E3 |
         let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-            Arc::new(ephemeral_session_repo());
-        let state =
-            Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));
+            Arc::new(ephemeral_session_repo().await);
+        let state = Arc::new(
+            ManagedState::new(RehydrateFake::default())
+                .await
+                .with_session_repo(repo.clone()),
+        );
         let request = |title: &str| {
             let mut request = SessionCreateParams::new(
                 "deployment-agent",
@@ -172,8 +175,11 @@ mod tests {
         assert_eq!(created.metadata.len(), 1, "D1/E4");
 
         drop(state);
-        let state =
-            Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));
+        let state = Arc::new(
+            ManagedState::new(RehydrateFake::default())
+                .await
+                .with_session_repo(repo.clone()),
+        );
         assert!(state.list_sessions().is_empty(), "D2 cold cache");
         let replayed = state
             .create_deployment_session_with_initial_events(
@@ -255,7 +261,7 @@ mod tests {
             vault_ids: Vec::new(),
             budget_max_list_cost_minor: None,
         };
-        let missing = Arc::new(ManagedState::new(RehydrateFake::default()));
+        let missing = Arc::new(ManagedState::new(RehydrateFake::default()).await);
         let missing_launcher = crate::ManagedDeploymentSessionLauncher::new(missing);
         assert!(
             matches!(
@@ -269,14 +275,16 @@ mod tests {
         );
 
         let unavailable = Arc::new(
-            ManagedState::new(RehydrateFake::default()).with_environments(Arc::new(
-                awaken_environment_execution_application::EnvironmentExecutionApplication::new(
-                    Arc::new(awaken_work_store::InMemoryWorkQueue::new(
-                        awaken_time::system_clock(),
-                    )),
-                    Arc::new(UnavailableEnvironmentSource),
-                ),
-            )),
+            ManagedState::new(RehydrateFake::default())
+                .await
+                .with_environments(Arc::new(
+                    awaken_environment_execution_application::EnvironmentExecutionApplication::new(
+                        Arc::new(awaken_work_store::InMemoryWorkQueue::new(
+                            awaken_time::system_clock(),
+                        )),
+                        Arc::new(UnavailableEnvironmentSource),
+                    ),
+                )),
         );
         let unavailable_launcher = crate::ManagedDeploymentSessionLauncher::new(unavailable);
         assert!(
@@ -296,7 +304,7 @@ mod tests {
         // projection range; E1 launch fails before Session creation. Decision
         // D1: C1 => E1. Falling back to the latest revision would execute a
         // different immutable Agent than the Deployment selected.
-        let state = Arc::new(ManagedState::new(RehydrateFake::default()));
+        let state = Arc::new(ManagedState::new(RehydrateFake::default()).await);
         let launcher = crate::ManagedDeploymentSessionLauncher::new(state);
         let request = DeploymentLaunch {
             deployment_id: "depl_version".into(),

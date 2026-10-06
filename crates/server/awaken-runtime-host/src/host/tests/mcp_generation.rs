@@ -2,8 +2,9 @@
 
 use super::*;
 
-fn host_with_process_reaper() -> SharedHost {
+async fn host_with_process_reaper() -> SharedHost {
     SharedHost::new(Arc::new(OkModel), "stub")
+        .await
         .with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor))
 }
 
@@ -18,7 +19,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     use crate::mcp_material::{McpTransportMaterial, McpWiring};
     use awaken_session_mcp_contract::McpRealizationReceipt;
 
-    let host = Arc::new(host_with_process_reaper());
+    let host = Arc::new(host_with_process_reaper().await);
     let generation = |number: u64| {
         crate::test_mcp::mcp_fence("mcp-parity", "mcp-docs", number, "runtime-1", 7, u64::MAX)
     };
@@ -233,7 +234,7 @@ async fn mcp_drain_acknowledges_removed_only_after_busy_call_quiesces() {
     // that can disappear before registration. Decision rules:
     // Q0 C0=>the start observation is retained; Q1 C1+C2+C3+C4=>E1+E2;
     // Q2 Q1+quiesced=>E3+E4.
-    let host = Arc::new(host_with_process_reaper());
+    let host = Arc::new(host_with_process_reaper().await);
     let generation =
         crate::test_mcp::mcp_fence("mcp-busy-drain", "docs", 1, "runtime-1", 1, u64::MAX);
     let request = StageMcpAttachment {
@@ -342,7 +343,7 @@ async fn worker_relay_drain_retains_exact_route_across_cancel_and_timeout_retry(
     // constraints for every rule. E1 no new route permit is admitted after the
     // first close. Cancellation/timeout never manufactures a different fence,
     // route registry, or Removed receipt.
-    let host = Arc::new(host_with_process_reaper());
+    let host = Arc::new(host_with_process_reaper().await);
     let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
     assert!(host.mcp.mcp_relay.set(relay.clone()).is_ok());
     let generation = crate::test_mcp::mcp_fence(
@@ -518,7 +519,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
         }
     }
 
-    let host = host_with_process_reaper();
+    let host = host_with_process_reaper().await;
     let generation = |session: &str, number| {
         crate::test_mcp::mcp_fence(
             session,
@@ -565,7 +566,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
             state: McpProjectionState::Active,
         }
     };
-    let missing_reaper_host = SharedHost::new(Arc::new(OkModel), "stub");
+    let missing_reaper_host = SharedHost::new(Arc::new(OkModel), "stub").await;
     let missing = generation("mcp-reaper-missing", 9);
     let missing_projection = projection(missing.clone(), false);
     let same_handle = missing_projection.mcp_process.as_ref().unwrap().clone();
@@ -619,7 +620,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     );
 
     let runtime_thread = "mcp-runtime-quiescence";
-    let (runtime_host, _runtime_managed) = dispatch_test_host(host_with_process_reaper());
+    let (runtime_host, _runtime_managed) = dispatch_test_host(host_with_process_reaper().await);
     let runtime = runtime_host
         .ctx_for(runtime_thread, None)
         .await
@@ -771,7 +772,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         }
     }
 
-    let host = Arc::new(host_with_process_reaper());
+    let host = Arc::new(host_with_process_reaper().await);
     let generation = crate::test_mcp::mcp_fence(
         "mcp-staging-quiescence",
         "docs",
@@ -1012,8 +1013,8 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
 /// | A6 | no | absent | absent | absent | E2 |
 /// | A7 | yes | no | any | any | E2 (root overrides live assertion) |
 /// | A8 | yes | yes | no OR C4=no | any | E2 |
-#[test]
-fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_renewal() {
+#[tokio::test]
+async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_renewal() {
     let base = crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000;
     let generation = crate::test_mcp::mcp_fence(
         "mcp-effect-authority",
@@ -1023,7 +1024,7 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
         3,
         base + 101,
     );
-    let live = host_with_process_reaper();
+    let live = host_with_process_reaper().await;
     assert!(
         live.mcp_generation_is_authorized_at(&generation, base + 100),
         "A1/E1"
@@ -1074,7 +1075,7 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
         ),
         ("A6", None, false),
     ] {
-        let host = host_with_process_reaper();
+        let host = host_with_process_reaper().await;
         let has_root = lease.is_some();
         if let Some(lease) = lease {
             // A4/A5 keep exact generation bytes but carry exhausted local
@@ -1126,7 +1127,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
         ("R1", McpProjectionState::Staged),
         ("R2", McpProjectionState::Active),
     ] {
-        let host = host_with_process_reaper();
+        let host = host_with_process_reaper().await;
         let old_generation = crate::test_mcp::mcp_fence(
             SessionId::from(format!("renew-{rule}")),
             "browser",
@@ -1240,7 +1241,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
         );
     }
 
-    let absent = host_with_process_reaper();
+    let absent = host_with_process_reaper().await;
     let request = StageMcpAttachment {
         workspace_id: "workspace".into(),
         generation: crate::test_mcp::mcp_fence(
@@ -1330,7 +1331,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
     // | S1 | absent | absent | reject | staged |
     // | S2 | present | absent | reject | staged |
     // | S3 | present | present | accept | active |
-    let host = host_with_process_reaper();
+    let host = host_with_process_reaper().await;
     host.insert_mcp_projection(projection).unwrap();
     assert!(
         host.publish_mcp_projection(&generation).await.is_err(),
@@ -1379,7 +1380,7 @@ async fn worker_authority_loss_revokes_every_session_projection() {
     // |---|---|---|---|
     // | A1 | lost/unprovable | one | detach + revoke route + remove slot |
     // | A2 | lost/unprovable | none | zero/no-op |
-    let host = host_with_process_reaper();
+    let host = host_with_process_reaper().await;
     let generation = crate::test_mcp::mcp_fence(
         "authority-loss",
         "mcp-docs",
@@ -1451,7 +1452,7 @@ async fn worker_authority_loss_revokes_every_session_projection() {
 #[tokio::test]
 async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection() {
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(host_with_process_reaper());
+    let host = Arc::new(host_with_process_reaper().await);
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credential = awaken_credential_vault::repo::enter_credential(

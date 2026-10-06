@@ -11,7 +11,7 @@ use awaken_worker_registry::{PostgresWorkerDirectory, SqliteWorkerDirectory, Wor
 
 pub type WorkerDirectoryHandle = Arc<dyn WorkerDirectory>;
 
-pub fn open_sqlite(storage_dir: &Path) -> Result<WorkerDirectoryHandle, String> {
+pub async fn open_sqlite(storage_dir: &Path) -> Result<WorkerDirectoryHandle, String> {
     std::fs::create_dir_all(storage_dir).map_err(|error| {
         format!(
             "create Worker registry directory {}: {error}",
@@ -20,6 +20,7 @@ pub fn open_sqlite(storage_dir: &Path) -> Result<WorkerDirectoryHandle, String> 
     })?;
     let path = storage_dir.join("worker-registry.db");
     SqliteWorkerDirectory::open(&path)
+        .await
         .map(|directory| Arc::new(directory) as WorkerDirectoryHandle)
         .map_err(|error| format!("open Worker registry {}: {error}", path.display()))
 }

@@ -1046,10 +1046,11 @@ mod tests {
         assert_eq!(deleted.as_object().unwrap().len(), 2, "S3");
     }
 
-    fn purge_scheduler() -> Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> {
+    async fn purge_scheduler() -> Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> {
         Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
             Arc::new(
                 awaken_resource_store::SqliteResourceStore::in_memory()
+                    .await
                     .expect("resource lifecycle"),
             ),
         ))
@@ -1147,7 +1148,11 @@ mod tests {
             "---\nname: private\ndescription: a\n---\nsecret-a",
         )
         .await;
-        let router = skills_router(Some(store), purge_scheduler(), awaken_time::system_clock());
+        let router = skills_router(
+            Some(store),
+            purge_scheduler().await,
+            awaken_time::system_clock(),
+        );
         let id = "private";
         assert_eq!(
             get_in(&router, &format!("/v1/skills/{id}"), "ws_a").await.0,
@@ -1185,7 +1190,11 @@ mod tests {
             "---\nname: Greeter\ndescription: hi\n---\nsay hello",
         )
         .await;
-        let router = skills_router(Some(store), purge_scheduler(), awaken_time::system_clock());
+        let router = skills_router(
+            Some(store),
+            purge_scheduler().await,
+            awaken_time::system_clock(),
+        );
         let cid = "Greeter";
 
         // The advertised catalog id retrieves the skill via the durable fallback…

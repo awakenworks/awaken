@@ -298,7 +298,7 @@ mod tests {
             for material_access in [false, true] {
                 for acp_installed in [false, true] {
                     let mut host =
-                        SharedHost::new(Arc::new(crate::host::MemoryHostModel), "test-model");
+                        SharedHost::new(Arc::new(crate::host::MemoryHostModel), "test-model").await;
                     if database_less_worker {
                         host = host.with_database_less_worker_role_for_test();
                     }
@@ -343,8 +343,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn local_capabilities_publish_only_installed_session_mcp_mechanisms() {
+    #[tokio::test]
+    async fn local_capabilities_publish_only_installed_session_mcp_mechanisms() {
         // Causes: C1 materializer absent/present; C2 ACP executor absent/present;
         // C3 exact catalog adapter declares HTTP ClientInjection; C4 an
         // independent Remote adapter declares WorkerRelay.
@@ -355,7 +355,7 @@ mod tests {
         // from the Session request. Decision rules: R1=!C1=>neither; R2=C1&&!C2
         // =>WorkerRelay only; R3=C1+C2+C3=>both; R4=C4=>WorkerRelay only;
         // R5=C1+C2+undeclared backend=>no client-injection profile for it.
-        let without = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "test-model");
+        let without = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "test-model").await;
         let launch = awaken_run_executor_acp::AcpLaunch::custom(vec!["true".into()], vec![]);
         let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
             launch,
@@ -363,6 +363,7 @@ mod tests {
         let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
         let acp_without_materializer =
             SharedHost::new(Arc::new(crate::host::MemoryHostModel), "test-model")
+                .await
                 .with_acp(executor.clone());
         assert!(
             !has_worker_relay(&without.local_credential_realization_capabilities()),
@@ -382,7 +383,8 @@ mod tests {
                 awaken_time::system_clock(),
             );
         let remote_profile = materializer.worker_relay_capabilities();
-        let mut with_remote = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "test-model");
+        let mut with_remote =
+            SharedHost::new(Arc::new(crate::host::MemoryHostModel), "test-model").await;
         with_remote.agent.remote_credential_realization = remote_profile;
         assert!(
             has_worker_relay(&with_remote.local_credential_realization_capabilities()),
@@ -403,6 +405,7 @@ mod tests {
         );
 
         let with_acp = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "test-model")
+            .await
             .with_credential_materializer(materializer)
             .with_acp(executor);
         let capabilities = with_acp.local_credential_realization_capabilities();

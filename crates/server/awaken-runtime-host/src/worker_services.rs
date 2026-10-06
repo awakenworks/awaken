@@ -210,8 +210,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn remote_artifact_publisher_removes_local_file_commands() {
+    #[tokio::test]
+    async fn remote_artifact_publisher_removes_local_file_commands() {
         // FMECA: a database-less Worker retaining local File commands could
         // publish outside the Coordinator's fenced Resource authority.
         // Cause/effect graph: C1 test/embedded Host owns a local File
@@ -222,7 +222,8 @@ mod tests {
         let host = SharedHost::new(
             Arc::new(crate::NoModelConfiguredExecutor),
             "startup-fixture",
-        );
+        )
+        .await;
         assert!(host.file_application().is_some(), "P1/C1");
         let host = host.with_artifact_publisher(Arc::new(RemotePublisher));
         assert!(host.file_application().is_none(), "P1/E1");

@@ -4,7 +4,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 async fn page_state() -> (ManagedState, String) {
-    let state = ManagedState::new(LifecycleRuntime::default());
+    let state = ManagedState::new(LifecycleRuntime::default()).await;
     let session = state
         .create_session(
             serde_json::from_value(

@@ -2,6 +2,7 @@
 // @formal entrypoint dream.public_terminal_requires_exact_session_and_artifact_cleanup_receipts
 //! Neutral Coordinator Dream request and projection vocabulary.
 
+use async_trait::async_trait;
 use awaken_session_types::{SessionContractErrorDetail, SessionId};
 use serde::{Deserialize, Serialize};
 
@@ -143,20 +144,21 @@ pub enum DreamProcessStoreError {
 
 /// Coordinator persistence port for cross-Session Dream processes and the
 /// atomic scheduled-occurrence claim. It is deliberately separate from Memory.
+#[async_trait]
 pub trait DreamProcessStore: Send + Sync {
-    fn dream_processes(&self) -> Result<Vec<DreamProcessRecord>, DreamProcessStoreError>;
-    fn compare_and_swap_dream_process(
+    async fn dream_processes(&self) -> Result<Vec<DreamProcessRecord>, DreamProcessStoreError>;
+    async fn compare_and_swap_dream_process(
         &self,
         expected: Option<&DreamProcessRecord>,
         record: DreamProcessRecord,
     ) -> Result<bool, DreamProcessStoreError>;
-    fn dream_policies(&self) -> Result<Vec<DreamPolicyRecord>, DreamProcessStoreError>;
-    fn compare_and_swap_dream_policy(
+    async fn dream_policies(&self) -> Result<Vec<DreamPolicyRecord>, DreamProcessStoreError>;
+    async fn compare_and_swap_dream_policy(
         &self,
         expected: Option<&DreamPolicyRecord>,
         record: DreamPolicyRecord,
     ) -> Result<bool, DreamProcessStoreError>;
-    fn claim_dream_policy(
+    async fn claim_dream_policy(
         &self,
         expected_policy: &DreamPolicyRecord,
         policy: DreamPolicyRecord,
@@ -246,14 +248,15 @@ pub enum DreamPolicyApplicationError {
 ///
 /// Workspace selection is resolved and authorized at the trusted process boundary; the
 /// protocol adapter only forwards that opaque ownership coordinate.
+#[async_trait]
 pub trait DreamPolicyApplication: Send + Sync {
-    fn policy(
+    async fn policy(
         &self,
         workspace_id: &str,
         memory_store_id: &str,
     ) -> Result<DreamPolicy, DreamPolicyApplicationError>;
 
-    fn set_policy(
+    async fn set_policy(
         &self,
         workspace_id: &str,
         memory_store_id: &str,

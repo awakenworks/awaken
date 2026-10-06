@@ -5,16 +5,18 @@ use crate::process_stores::ControlStores;
 
 /// Ephemeral deployment stores: everything in process memory (dev / e2e default).
 #[cfg(any(test, feature = "test-support"))]
-pub(super) fn in_memory_process_stores() -> ProcessStores {
+pub(super) async fn in_memory_process_stores() -> ProcessStores {
     // The ephemeral process's one wall clock.
     let clock = awaken_time::system_clock();
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let sessions = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("open ephemeral managed Session repository"),
     );
     let admin = Arc::new(
         awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+            .await
             .expect("open ephemeral admin store"),
     );
     let data_subjects = Arc::new(awaken_data_subject_store::InMemoryDataSubjectRepo::new());
@@ -33,7 +35,7 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
             resources: admin.clone(),
             webhooks: admin,
             config: Arc::new(
-                awaken_config_store::SqliteConfigStore::open_in_memory()
+                awaken_config_store::SqliteConfigStore::open_in_memory().await
                     .expect("open config store"),
             ),
             data_subjects: data_subjects.clone(),
@@ -44,7 +46,7 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
             ),
         }),
         coordinator: Some(CoordinatorStores {
-            resources: ephemeral_resources_application(clock.clone()),
+            resources: ephemeral_resources_application(clock.clone()).await,
             sessions: sessions.clone(),
             application_access: Arc::new(
                 awaken_coordinator::application_access_store::ApplicationAccessStore::open_in_memory(
@@ -63,15 +65,15 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
 }
 
 #[cfg(test)]
-pub(super) fn in_memory_control_stores() -> ProcessStores {
-    let mut stores = in_memory_process_stores();
+pub(super) async fn in_memory_control_stores() -> ProcessStores {
+    let mut stores = in_memory_process_stores().await;
     stores.coordinator = None;
     stores
 }
 
 #[cfg(test)]
-pub(super) fn in_memory_split_coordinator() -> (ProcessStores, ControlServices) {
-    let mut stores = in_memory_process_stores();
+pub(super) async fn in_memory_split_coordinator() -> (ProcessStores, ControlServices) {
+    let mut stores = in_memory_process_stores().await;
     let control = stores
         .control
         .take()
@@ -122,10 +124,10 @@ pub(super) fn in_memory_split_coordinator() -> (ProcessStores, ControlServices) 
 /// ephemeral. A restarted runtime can only rehydrate a governed Session when its
 /// configuration and owner fence survive beside the committed thread facts.
 #[cfg(test)]
-pub(super) fn process_stores_for_runtime_storage(
+pub(super) async fn process_stores_for_runtime_storage(
     storage_dir: Option<&std::path::Path>,
 ) -> ProcessStores {
-    let mut stores = in_memory_process_stores();
+    let mut stores = in_memory_process_stores().await;
     let Some(dir) = storage_dir else {
         return stores;
     };
@@ -134,6 +136,7 @@ pub(super) fn process_stores_for_runtime_storage(
         awaken_session_store::SqliteManagedSessionRepository::open(
             &dir.join("sessions.db").to_string_lossy(),
         )
+        .await
         .expect("open sessions.db under runtime storage directory"),
     );
     stores.workspace_root = Some(dir.to_path_buf());

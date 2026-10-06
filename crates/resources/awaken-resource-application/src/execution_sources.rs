@@ -599,7 +599,11 @@ mod tests {
         let application = Arc::new(crate::FileApplication::new(
             blobs,
             catalog,
-            Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap()),
+            Arc::new(
+                awaken_resource_store::SqliteResourceStore::in_memory()
+                    .await
+                    .unwrap(),
+            ),
             awaken_time::system_clock(),
         ));
         let file = application
@@ -668,6 +672,7 @@ mod tests {
             files,
             Arc::new(
                 awaken_resource_store::SqliteResourceStore::in_memory()
+                    .await
                     .expect("resource lifecycle"),
             ),
             awaken_time::system_clock(),

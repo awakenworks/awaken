@@ -143,10 +143,10 @@ pub(super) fn update_params(version: u64) -> AgentUpdateParams {
         multiagent: None,
     }
 }
-pub(super) fn plane(path: &str) -> ConfigPlane {
-    plane_with_catalog(path).0
+pub(super) async fn plane(path: &str) -> ConfigPlane {
+    plane_with_catalog(path).await.0
 }
-pub(super) fn plane_with_catalog(path: &str) -> (ConfigPlane, Arc<ExecutableAgentCatalog>) {
+pub(super) async fn plane_with_catalog(path: &str) -> (ConfigPlane, Arc<ExecutableAgentCatalog>) {
     let catalog = Arc::new(ExecutableAgentCatalog::new());
     (
         ConfigPlane::new(
@@ -154,16 +154,16 @@ pub(super) fn plane_with_catalog(path: &str) -> (ConfigPlane, Arc<ExecutableAgen
                 Arc::new(TestModelResolver),
                 Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
             )),
-            Arc::new(SqliteConfigStore::open(path).expect("config store")),
+            Arc::new(SqliteConfigStore::open(path).await.expect("config store")),
             Arc::new(StaticToolCatalog(Vec::new())),
         ),
         catalog,
     )
 }
-pub(super) fn plane_with_delegation(path: &str) -> ConfigPlane {
-    plane_with_delegation_and_catalog(path).0
+pub(super) async fn plane_with_delegation(path: &str) -> ConfigPlane {
+    plane_with_delegation_and_catalog(path).await.0
 }
-pub(super) fn plane_with_delegation_and_catalog(
+pub(super) async fn plane_with_delegation_and_catalog(
     path: &str,
 ) -> (ConfigPlane, Arc<ExecutableAgentCatalog>) {
     let catalog = Arc::new(ExecutableAgentCatalog::new());
@@ -173,7 +173,7 @@ pub(super) fn plane_with_delegation_and_catalog(
                 Arc::new(TestModelResolver),
                 Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
             )),
-            Arc::new(SqliteConfigStore::open(path).expect("config store")),
+            Arc::new(SqliteConfigStore::open(path).await.expect("config store")),
             Arc::new(StaticToolCatalog(vec![
                 ToolDescriptor::pinned(
                     "managed",
@@ -187,7 +187,7 @@ pub(super) fn plane_with_delegation_and_catalog(
         catalog,
     )
 }
-pub(super) fn rejecting_plane(path: &str) -> ConfigPlane {
+pub(super) async fn rejecting_plane(path: &str) -> ConfigPlane {
     ConfigPlane::new(
         Arc::new(ConfigService::new(
             Arc::new(RejectModelResolver),
@@ -195,7 +195,7 @@ pub(super) fn rejecting_plane(path: &str) -> ConfigPlane {
                 ExecutableAgentCatalog::new(),
             ))),
         )),
-        Arc::new(SqliteConfigStore::open(path).expect("config store")),
+        Arc::new(SqliteConfigStore::open(path).await.expect("config store")),
         Arc::new(StaticToolCatalog(Vec::new())),
     )
 }

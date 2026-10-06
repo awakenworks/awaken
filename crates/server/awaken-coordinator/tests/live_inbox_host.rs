@@ -50,14 +50,14 @@ struct Harness {
     permits: mpsc::UnboundedSender<()>,
 }
 
-fn harness() -> Harness {
+async fn harness() -> Harness {
     let (started_tx, started_rx) = mpsc::unbounded_channel();
     let (permit_tx, permit_rx) = mpsc::unbounded_channel();
     let llm = GatedEcho {
         started: started_tx,
         permits: Mutex::new(permit_rx),
     };
-    let host = awaken_scenario_host::build_unmounted_host(Arc::new(llm), "gated");
+    let host = awaken_scenario_host::build_unmounted_host(Arc::new(llm), "gated").await;
     let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     Harness {
         host,
@@ -93,7 +93,7 @@ async fn a_message_queued_mid_run_reaches_the_same_run() {
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let h = harness();
+    let h = harness().await;
     let thread = "live-1";
 
     let run = {
@@ -167,7 +167,7 @@ async fn a_message_the_cancelled_run_never_consumed_is_discarded() {
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let h = harness();
+    let h = harness().await;
     let thread = "live-2";
 
     let run = {

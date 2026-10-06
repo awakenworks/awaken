@@ -34,7 +34,7 @@ pub(super) trait Timeline: Sized {
     fn warm(&self) -> &ManagedState;
     fn session_id(&self) -> &str;
     /// A fresh replica over the same Runtime and Session stores.
-    fn cold(&self) -> ManagedState;
+    async fn cold(&self) -> ManagedState;
 }
 
 pub(super) fn durable_history(state: &ManagedState, session_id: &str) -> Vec<DurableEvent> {
@@ -159,7 +159,7 @@ async fn compare_with_cold<T: Timeline>(
     refresh(timeline.warm(), timeline.session_id(), damaged)
         .await
         .map_err(|error| format!("{label}: warm {error}"))?;
-    let cold_state = timeline.cold();
+    let cold_state = timeline.cold().await;
     refresh(&cold_state, timeline.session_id(), damaged)
         .await
         .map_err(|error| format!("{label}: cold {error}"))?;
@@ -233,7 +233,7 @@ pub(super) async fn prefix_monotone<T: Timeline>(steps: &[T::Step]) -> Result<()
     let mut previous: Vec<DurableEvent> = Vec::new();
     for step in steps.iter().copied() {
         timeline.apply(step).await;
-        let cold = timeline.cold();
+        let cold = timeline.cold().await;
         let damaged = T::damaged_at(step);
         refresh(&cold, timeline.session_id(), damaged)
             .await
@@ -290,7 +290,7 @@ pub(super) async fn replica_switch_preserves_suffixes<T: Timeline>(
             .map_err(|error| format!("after {step:?}: warm {error}"))?;
     }
     let warm = durable_history(timeline.warm(), timeline.session_id());
-    let cold = timeline.cold();
+    let cold = timeline.cold().await;
     refresh(&cold, timeline.session_id(), false)
         .await
         .map_err(|error| format!("cold {error}"))?;
@@ -542,8 +542,10 @@ impl Timeline for RootTimeline {
             .max()
             .unwrap_or_default();
         let runtime = LifecycleRuntime::default();
-        let repository = Arc::new(ephemeral_session_repo());
-        let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+        let repository = Arc::new(ephemeral_session_repo().await);
+        let warm = ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repository.clone());
         // These properties compare every refreshed point with a fresh cold
         // replica themselves, and a scenario still on a known-divergence list
         // is asserted to diverge; the per-publication oracle would stop it
@@ -577,9 +579,10 @@ impl Timeline for RootTimeline {
         &self.session_id
     }
 
-    fn cold(&self) -> ManagedState {
-        let cold =
-            ManagedState::new(self.runtime.clone()).with_session_repo(self.repository.clone());
+    async fn cold(&self) -> ManagedState {
+        let cold = ManagedState::new(self.runtime.clone())
+            .await
+            .with_session_repo(self.repository.clone());
         cold.disable_warm_cold_oracle();
         cold
     }
@@ -870,11 +873,12 @@ pub(super) struct ChildTimeline {
 }
 
 impl ChildTimeline {
-    fn replica(
+    async fn replica(
         runtime: &RehydrateFake,
         repository: &Arc<awaken_session_store::SqliteManagedSessionRepository>,
     ) -> ManagedState {
         let state = ManagedState::new(runtime.clone())
+            .await
             .with_session_repo(repository.clone())
             .with_config_source(Arc::new(FrozenToolFamilyProfiles::uniform(
                 "coder",
@@ -940,8 +944,8 @@ impl Timeline for ChildTimeline {
 
     async fn new(_steps: &[ChildStep]) -> Self {
         let runtime = RehydrateFake::default();
-        let repository = Arc::new(ephemeral_session_repo());
-        let warm = Self::replica(&runtime, &repository);
+        let repository = Arc::new(ephemeral_session_repo().await);
+        let warm = Self::replica(&runtime, &repository).await;
         let session = warm
             .create_session(
                 serde_json::from_value(serde_json::json!({
@@ -970,8 +974,8 @@ impl Timeline for ChildTimeline {
         &self.session_id
     }
 
-    fn cold(&self) -> ManagedState {
-        Self::replica(&self.runtime, &self.repository)
+    async fn cold(&self) -> ManagedState {
+        Self::replica(&self.runtime, &self.repository).await
     }
 
     async fn apply(&mut self, step: ChildStep) {
@@ -1326,7 +1330,7 @@ async fn repeated_message_identity<T: Timeline>(
         after.same_projected_content(&before).unwrap(),
         "R3/E3 frame unchanged"
     );
-    let cold = timeline.cold();
+    let cold = timeline.cold().await;
     assert!(
         cold.refresh_committed_events(timeline.session_id())
             .await

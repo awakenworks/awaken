@@ -214,6 +214,7 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
                 )
             })?;
             let profile = get_workspace_profile(profiles.as_ref(), workspace.as_str(), profile_id)
+                .await
                 .map_err(|error| PublicationResolutionError::Invalid(error.to_string()))?;
             let profile = profile.ok_or_else(|| {
                 PublicationResolutionError::Invalid(format!(
@@ -770,6 +771,7 @@ mod tests {
                     disabled_endpoint_ids: Vec::new(),
                 },
             )
+            .await
             .unwrap();
         let resolver = direct_resolver(catalog, credentials).with_profiles(profiles);
 
@@ -885,6 +887,7 @@ mod tests {
                     disabled_endpoint_ids: Vec::new(),
                 },
             )
+            .await
             .unwrap();
         let resolver = direct_resolver(catalog(&["primary"]), credentials).with_profiles(profiles);
         let selected_id = |models: &ResolvedPublicationModels| match models.primary.provisioning() {
@@ -930,6 +933,7 @@ mod tests {
                     disabled_endpoint_ids: Vec::new(),
                 },
             )
+            .await
             .unwrap();
         let resolver = resolver.with_profiles(profiles);
 
@@ -963,6 +967,7 @@ mod tests {
                     disabled_endpoint_ids: vec!["ep1".into()],
                 },
             )
+            .await
             .unwrap();
 
         let error = resolver
@@ -1013,6 +1018,7 @@ mod tests {
                     disabled_endpoint_ids: Vec::new(),
                 },
             )
+            .await
             .unwrap();
 
         let error = direct_resolver(catalog(&["primary"]), credentials)
@@ -1044,6 +1050,7 @@ mod tests {
                     disabled_endpoint_ids: Vec::new(),
                 },
             )
+            .await
             .unwrap();
 
         let resolved = resolver
@@ -1085,6 +1092,7 @@ mod tests {
                     disabled_endpoint_ids: Vec::new(),
                 },
             )
+            .await
             .unwrap();
 
         let resolved = direct_resolver(catalog, credentials)
@@ -1143,6 +1151,7 @@ mod tests {
                     disabled_endpoint_ids: Vec::new(),
                 },
             )
+            .await
             .unwrap();
 
         let error = direct_resolver(catalog, credentials)
@@ -1177,6 +1186,7 @@ mod tests {
                     disabled_endpoint_ids: Vec::new(),
                 },
             )
+            .await
             .unwrap();
 
         let error = direct_resolver(catalog(&["primary"]), credentials)

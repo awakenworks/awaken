@@ -843,6 +843,7 @@ mod tests {
         // every boundary authority and the authentication gate.
         let audit = ManagementAuditPlane::new(Arc::new(
             awaken_config_store::SqliteConfigStore::open_in_memory()
+                .await
                 .expect("open audit test store"),
         ));
         let credential_repo =

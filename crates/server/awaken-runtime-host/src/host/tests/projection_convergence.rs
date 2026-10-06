@@ -91,9 +91,12 @@ async fn independent_coordinators_converge_after_binding_replacement_and_reject_
         *effect_id = Some("contradictory-effect".into());
     }
 
-    let hosts: Vec<_> = (0..3)
-        .map(|_| Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub")))
-        .collect();
+    let mut hosts = Vec::new();
+    for _ in 0..3 {
+        hosts.push(Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").await,
+        ));
+    }
     let managed: Vec<_> = hosts
         .iter()
         .map(|host| managed_test_host(host.clone()))

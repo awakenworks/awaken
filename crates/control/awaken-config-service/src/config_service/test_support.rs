@@ -239,12 +239,12 @@ impl ModelPublicationResolver for FakeProviderResolver {
 
 /// A config plane (the scope edge) over a fresh in-memory store, an optional
 /// resolver override, an optional resource store, and the given tool catalog.
-fn plane_with(
+async fn plane_with(
     tools: Arc<dyn ToolCatalogSource>,
     resolver: Option<Arc<dyn ModelPublicationResolver>>,
     resources: Option<Arc<dyn AgentInputBindingRepository>>,
 ) -> ConfigPlane {
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let mut service = ConfigService::new(
         resolver.unwrap_or_else(|| Arc::new(FakeResolver)),
         test_registrar(),
@@ -255,12 +255,13 @@ fn plane_with(
     ConfigPlane::new(Arc::new(service), store, tools)
 }
 
-fn static_plane(resolver: Option<Arc<dyn ModelPublicationResolver>>) -> ConfigPlane {
+async fn static_plane(resolver: Option<Arc<dyn ModelPublicationResolver>>) -> ConfigPlane {
     plane_with(
         Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
         resolver,
         None,
     )
+    .await
 }
 
 fn legacy_permission_config(id: &str) -> AgentConfig {

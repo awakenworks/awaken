@@ -47,7 +47,7 @@ async fn secret_write_survives_kill_and_is_compensated_from_the_intent() {
     if let Ok(phase) = std::env::var(CHILD_MODE) {
         let db = std::env::var(DB_PATH).unwrap();
         let marker = std::env::var(MARKER_PATH).unwrap();
-        let (repo, secrets) = crash_secrets::stores(&db, &KEY);
+        let (repo, secrets) = crash_secrets::stores(&db, &KEY).await;
         let intent = CredentialMutationIntent::prepare(None, source(), 1_000).unwrap();
         repo.begin_mutation(intent.clone(), 1_000).await.unwrap();
         secrets
@@ -96,7 +96,7 @@ async fn secret_write_survives_kill_and_is_compensated_from_the_intent() {
         .expect("child reaches the secret-write boundary and is killed");
         assert!(!status.success());
 
-        let (repo, secrets) = crash_secrets::stores(db.to_str().unwrap(), &KEY);
+        let (repo, secrets) = crash_secrets::stores(db.to_str().unwrap(), &KEY).await;
         assert!(
             matches!(
                 repo.get(&source().id).await,

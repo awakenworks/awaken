@@ -16,8 +16,8 @@ impl CurrentExecutionAuthority for Worker {
     }
 }
 
-fn host() -> SharedHost {
-    SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
+async fn host() -> SharedHost {
+    SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await
 }
 
 fn lease() -> SessionRealizationLease {
@@ -40,8 +40,8 @@ fn install(host: &SharedHost, lease: SessionRealizationLease) {
     });
 }
 
-#[test]
-fn provider_fence_source_decision_table_preserves_exact_live_authority() {
+#[tokio::test]
+async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
     // Causes: C1 registered/direct topology; C2 Worker live/zero/closed;
     // C3 Session live/expired/closed/uninstalled/absent; C4 captured slot's two
     // allocation identities unchanged; C5 exact owner/incarnation/epoch and
@@ -85,7 +85,7 @@ fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                 continue;
             }
             let worker = Arc::new(Worker(Mutex::new(Some(Duration::from_secs(30)))));
-            let mut host = host();
+            let mut host = host().await;
             if registered {
                 host = host.with_execution_authority(worker.clone());
             }
@@ -223,11 +223,11 @@ fn provider_fence_source_decision_table_preserves_exact_live_authority() {
     }
 }
 
-#[test]
-fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity() {
+#[tokio::test]
+async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity() {
     // P3 missing slot or invalid operation -> capture error, with no slot
     // creation. Empty identity is independent of existence: test both states.
-    let host = host();
+    let host = host().await;
     let valid = lease().sandbox_effect_fence("create").unwrap();
     assert!(
         host.session_environment_effect_fence_source("session", &valid)
@@ -254,7 +254,7 @@ fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity() {
         "epoch",
         "expiry",
     ] {
-        let host = self::host();
+        let host = self::host().await;
         install(&host, lease());
         let mut initial = lease().sandbox_effect_fence("create").unwrap();
         match rule {
@@ -278,13 +278,13 @@ fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity() {
     }
 }
 
-#[test]
-fn provider_fence_source_cannot_retain_the_host_or_authorize_after_its_drop() {
+#[tokio::test]
+async fn provider_fence_source_cannot_retain_the_host_or_authorize_after_its_drop() {
     // W1 capture a source while the exact Session exists; W2 drop its Host.
     // Both the fence query and synchronous effect must deny, with zero effects.
     // Owned opaque return + Weak slot reference makes this a real drop check,
     // not a source that merely borrows a Host kept alive by the test itself.
-    let host = host();
+    let host = host().await;
     install(&host, lease());
     let initial = lease().sandbox_effect_fence("create").unwrap();
     let source = host
@@ -299,8 +299,8 @@ fn provider_fence_source_cannot_retain_the_host_or_authorize_after_its_drop() {
     );
 }
 
-#[test]
-fn provider_fence_source_waiting_for_worker_rechecks_slot_after_revocation() {
+#[tokio::test]
+async fn provider_fence_source_waiting_for_worker_rechecks_slot_after_revocation() {
     // Temporal P4: request captured -> blocked acquiring Worker guard -> Session
     // closes/recreates -> Worker guard released -> callback must reject. P5 the
     // identical ordering with a same-generation renewal returns its new fence.
@@ -326,7 +326,7 @@ fn provider_fence_source_waiting_for_worker_rechecks_slot_after_revocation() {
             gate: Mutex::new(()),
             entered,
         });
-        let host = host().with_execution_authority(worker.clone());
+        let host = host().await.with_execution_authority(worker.clone());
         install(&host, lease());
         let initial = lease().sandbox_effect_fence("create").unwrap();
         let source = host
@@ -541,7 +541,7 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                     continue;
                 }
                 let worker = Arc::new(Worker(Mutex::new(Some(Duration::from_secs(30)))));
-                let mut host = host();
+                let mut host = host().await;
                 if registered {
                     host = host.with_execution_authority(worker.clone());
                 }
@@ -652,7 +652,7 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
         "provider_renewed",
         "provider_unfenced",
     ] {
-        let mut host = host();
+        let mut host = host().await;
         let warmup = Arc::new(Boundary::default());
         host.env.cache_volume_prewarmer =
             crate::cache_volume::CacheVolumePrewarmer::new(warmup.clone());
@@ -776,8 +776,8 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
     }
 }
 
-#[test]
-fn environment_receipt_refreshes_only_the_captured_live_generation() {
+#[tokio::test]
+async fn environment_receipt_refreshes_only_the_captured_live_generation() {
     // Cause/effect graph: C1 direct/registered Worker; C2 exact/renewed lease;
     // C3 owner/incarnation/epoch/expiry changed; C4 closed/removed/ABA slot;
     // C5 Worker closed/zero. E1 exact or monotonic renewal => fresh receipt,
@@ -801,7 +801,7 @@ fn environment_receipt_refreshes_only_the_captured_live_generation() {
                 continue;
             }
             let worker = Arc::new(Worker(Mutex::new(Some(Duration::from_secs(30)))));
-            let mut host = host();
+            let mut host = host().await;
             if registered {
                 host = host.with_execution_authority(worker.clone());
             }

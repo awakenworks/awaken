@@ -183,6 +183,7 @@ pub async fn build_acp_jsonrpc_router_with_deployment(
     let host_publication = publication.clone();
     let platform =
         resource_host_with_deployment(Arc::new(OversizedToolModel), "awaken", deployment)
+            .await
             .map_host_async(|host| async move {
                 awaken_execution_composition::with_acp_launch_source(
                     host.with_agent_publications(host_publication),
@@ -193,7 +194,7 @@ pub async fn build_acp_jsonrpc_router_with_deployment(
                 .expect("scenario Session environment must be available")
             })
             .await;
-    mount_with_agent_source(platform, publication)
+    mount_with_agent_source(platform, publication).await
 }
 
 /// Durable allow/deny coverage for ACP `session/request_permission`, through the
@@ -281,7 +282,7 @@ pub async fn build_acp_tool_bridge_router() -> Router {
     )
     .await
     .map_host(|host| host.with_agent_publications(host_publication));
-    mount_with_agent_source(platform, publication)
+    mount_with_agent_source(platform, publication).await
 }
 
 /// Compatibility entry point for the one SessionEnvironment-owned ACP fixture.
@@ -639,7 +640,7 @@ async fn build_acp_session_environment_router(
         .sandbox_dir
         .get_or_insert_with(|| storage_dir.join("sandboxes"));
     let platform = bind_acp_session_environment(
-        resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment),
+        resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment).await,
         source,
         secret_broker,
     )
@@ -667,7 +668,7 @@ async fn build_acp_session_environment_router(
     let platform = platform.map_host(|host| host.with_agent_publications(publication.clone()));
     // Mount `/v1/environments` over the same complete Managed state/resource
     // catalog used by every other scenario.
-    mount_with_environments_and_agent_source(platform, Some(publication))
+    mount_with_environments_and_agent_source(platform, Some(publication)).await
 }
 
 /// Install the one SessionEnvironment-bound ACP source on an existing Scenario
@@ -824,6 +825,7 @@ pub async fn build_acp_container_router() -> Router {
     };
     let host_publication = publication.clone();
     let platform = resource_host_with_deployment(model, "awaken", deployment)
+        .await
         .map_host_async(|host| async move {
             awaken_execution_composition::with_acp_launch_source(
                 host.with_agent_publications(host_publication),
@@ -836,5 +838,5 @@ pub async fn build_acp_container_router() -> Router {
         .await;
     // Use the same shared Resource Registry + Managed ACL assembly as every other
     // scenario, with the exact Environment Execution application mounted by the API.
-    mount_with_environments_and_agent_source(platform, Some(publication))
+    mount_with_environments_and_agent_source(platform, Some(publication)).await
 }

@@ -147,39 +147,47 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("resources.sqlite");
             let open = || {
-                let clock = awaken_time::system_clock();
-                let files = Arc::new(
-                    awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap())
-                        .unwrap(),
-                );
-                let lifecycle =
-                    Arc::new(awaken_resource_store::SqliteResourceStore::open(&path).unwrap());
-                let resources = crate::ResourcesApplication::new(crate::ResourceAuthorities::new(
-                    Arc::new(crate::RegistryApplication::new(
+                let path = path.clone();
+                async move {
+                    let clock = awaken_time::system_clock();
+                    let files = Arc::new(
+                        awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap())
+                            .await
+                            .unwrap(),
+                    );
+                    let lifecycle = Arc::new(
+                        awaken_resource_store::SqliteResourceStore::open(&path)
+                            .await
+                            .unwrap(),
+                    );
+                    let resources =
+                        crate::ResourcesApplication::new(crate::ResourceAuthorities::new(
+                            Arc::new(crate::RegistryApplication::new(
+                                lifecycle.clone(),
+                                clock.clone(),
+                            )),
+                            files.clone(),
+                            files.clone(),
+                            Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                                clock.clone(),
+                            )),
+                            Arc::new(awaken_skill_store::InMemorySkillStore::new()),
+                            lifecycle.clone(),
+                            clock,
+                        ));
+                    let reclaimer = awaken_resource_reclaimer::ResourceReclaimer::new(
+                        "file-recovery",
+                        100,
                         lifecycle.clone(),
-                        clock.clone(),
-                    )),
-                    files.clone(),
-                    files.clone(),
-                    Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
-                        clock.clone(),
-                    )),
-                    Arc::new(awaken_skill_store::InMemorySkillStore::new()),
-                    lifecycle.clone(),
-                    clock,
-                ));
-                let reclaimer = awaken_resource_reclaimer::ResourceReclaimer::new(
-                    "file-recovery",
-                    100,
-                    lifecycle.clone(),
-                    resources.physical_cleanup(),
-                )
-                .unwrap()
-                .with_preparation(resources.purge_preparation())
-                .with_guard(resources.lifecycle_guard());
-                (resources.files.clone(), files, lifecycle, reclaimer)
+                        resources.physical_cleanup(),
+                    )
+                    .unwrap()
+                    .with_preparation(resources.purge_preparation())
+                    .with_guard(resources.lifecycle_guard());
+                    (resources.files.clone(), files, lifecycle, reclaimer)
+                }
             };
-            let (app, files, lifecycle, reclaimer) = open();
+            let (app, files, lifecycle, reclaimer) = open().await;
             let file = if artifact {
                 app.create_artifact(&artifact_publication("a.txt", b"shared", None))
                     .await
@@ -264,7 +272,7 @@ mod tests {
             drop(lifecycle);
             drop(reclaimer);
 
-            let (app, files, lifecycle, reclaimer) = open();
+            let (app, files, lifecycle, reclaimer) = open().await;
             assert!(
                 app.delete("workspace-b", &file.id, 9)
                     .await
@@ -372,7 +380,7 @@ mod tests {
         // This checks why a generic physical purge is not logical-delete authority.
         for tombstoned in [false, true] {
             for drift in ["none", "id", "key", "workspace", "blob", "kind", "config"] {
-                let app = application();
+                let app = application().await;
                 let file = app
                     .create_artifact(&artifact_publication("a.txt", b"shared", None))
                     .await
@@ -437,7 +445,7 @@ mod tests {
         // ownership reference is removed;
         // C3 post-delete read -> E3 ordinary reads fail closed while physical blob
         // reclamation remains an independent, retryable reclamation operation.
-        let app = application();
+        let app = application().await;
         let file = app
             .create_uploaded_file("workspace-a", "input.txt".into(), "text/plain".into(), b"x")
             .await

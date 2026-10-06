@@ -244,7 +244,7 @@ async fn skill_tools_are_not_ambient_without_offering_a_skill() {
     // Constraints/invariants: store availability alone is never a capability
     // grant, and completion is observed only after the accepted receipt.
     // Decision rule: N1=C1+!C2 -> E1+E2.
-    let app = build_router(Arc::new(SkillUserModel), "scripted");
+    let app = build_router(Arc::new(SkillUserModel), "scripted").await;
     let id = create_session(&app).await;
 
     let list = send_message(&app, &id, "please deploy").await;

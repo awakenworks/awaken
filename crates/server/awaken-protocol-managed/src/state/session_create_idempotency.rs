@@ -168,9 +168,12 @@ mod tests {
         // fingerprint selects exactly one durable Session; cache rehydration may
         // project that truth but cannot create or replace another aggregate.
         let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-            Arc::new(ephemeral_session_repo());
-        let original =
-            Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));
+            Arc::new(ephemeral_session_repo().await);
+        let original = Arc::new(
+            ManagedState::new(RehydrateFake::default())
+                .await
+                .with_session_repo(repo.clone()),
+        );
         let created = original
             .create_session_idempotent(request("Project A"), "workspace-a", "issue-a")
             .await
@@ -181,8 +184,11 @@ mod tests {
         );
         drop(original);
 
-        let restarted =
-            Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));
+        let restarted = Arc::new(
+            ManagedState::new(RehydrateFake::default())
+                .await
+                .with_session_repo(repo.clone()),
+        );
         assert!(restarted.list_sessions().is_empty(), "R2 starts cold");
         let replayed = restarted
             .create_session_idempotent(request("Project A"), "workspace-a", "issue-a")

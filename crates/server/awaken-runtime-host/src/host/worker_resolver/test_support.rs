@@ -30,6 +30,17 @@ impl LlmExecutor for AdoptionModel {
     }
 }
 
+/// A Host over [`AdoptionModel`] with only its built-in volatile stores.
+pub(crate) async fn adoption_host() -> SharedHost {
+    SharedHost::new(Arc::new(AdoptionModel), "stub").await
+}
+
+/// [`adoption_host`] with its durable stores opened under `dir`; two calls
+/// over one `dir` are a restart of the same installation.
+pub(crate) async fn adoption_host_at(dir: impl Into<std::path::PathBuf>) -> SharedHost {
+    adoption_host().await.with_store_dir(dir).await
+}
+
 pub(crate) fn test_activation(thread: &str, run: &str) -> RunActivation {
     let fingerprint = CatalogFingerprint(format!("catalog-{run}"));
     RunActivation::new(

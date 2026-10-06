@@ -20,11 +20,12 @@ use crate::sqlite::SqliteDispatchStore;
 /// expiry, retry due, reservation lapse — and is required for the reason
 /// given on [`SqliteDispatchStore::open`].
 #[cfg(feature = "durable")]
-pub fn open_sqlite(
+pub async fn open_sqlite(
     path: &str,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<AnyDispatchStore, String> {
     SqliteDispatchStore::open(path, clock)
+        .await
         .map(|store| AnyDispatchStore::from_durable_store(store, None))
         .map_err(|e| e.to_string())
 }
@@ -34,10 +35,11 @@ pub fn open_sqlite(
 /// judges its rows against.
 #[cfg(feature = "durable")]
 #[cfg(any(test, feature = "test-support"))]
-pub fn open_sqlite_in_memory(
+pub async fn open_sqlite_in_memory(
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<AnyDispatchStore, String> {
     SqliteDispatchStore::open_in_memory(clock)
+        .await
         .map(|store| AnyDispatchStore::from_durable_store(store, None))
         .map_err(|e| e.to_string())
 }

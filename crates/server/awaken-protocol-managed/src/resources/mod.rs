@@ -116,7 +116,9 @@ mod tests {
         let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
         let clock = awaken_time::system_clock();
         let storage = Arc::new(
-            awaken_resource_store::SqliteResourceStore::in_memory().expect("resource registry"),
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
+                .expect("resource registry"),
         );
         let registry = Arc::new(awaken_resource_application::RegistryApplication::new(
             storage.clone(),

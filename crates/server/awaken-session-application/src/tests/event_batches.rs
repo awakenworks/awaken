@@ -1180,7 +1180,9 @@ async fn preferred_user_drive_accelerates_only_the_canonical_fifo_head() {
             "preferred-user-head"
         };
         let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         let mut session = planned_session(
             session_id,
@@ -1254,8 +1256,11 @@ async fn preferred_user_drive_failure_retains_receipt_and_recovery_wake() {
     // remains the crash-between-accept-and-drive fallback and owns no second
     // receipt or execution path.
     let session_id = "preferred-user-drive-failure";
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(repository.as_ref(), persisted(session_id, false, "idle")).await;
     let runtime = Arc::new(EventBatchRuntime::default());
     runtime.fail_activation_once.store(true, Ordering::SeqCst);
@@ -1412,7 +1417,9 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
             "running-no-input"
         };
         let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         let session = planned_session(
             session_id,
@@ -1585,6 +1592,7 @@ async fn unreplayed_user_run_anchors_its_receipt_without_inventing_a_message() {
     ] {
         let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
                 .expect("U1-U3 repository"),
         );
         let session = planned_session(
@@ -1677,7 +1685,9 @@ async fn running_input_requires_exact_content_and_a_valid_committed_coordinate()
         "valid",
     ] {
         let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         let session_id = "running-input-evidence";
         let session = planned_session(
@@ -1771,7 +1781,9 @@ async fn running_input_anchor_recovers_root_write_faults_without_reexecution() {
     // R3=C1+lost ack -> E1+E2; R4=R1-R3+C3 -> E1-E3; R5=R4+C4 -> E4.
     for fault in ["none", "unavailable", "lost_ack"] {
         let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         let faulting = Arc::new(FaultingSessionRepository::new(repository.clone()));
         let session_id = "running-input-anchor";
@@ -1909,7 +1921,9 @@ async fn unreplayed_receipt_requires_its_exact_terminal_user_run() {
     ] {
         for committed_input in [false, true] {
             let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-                awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                    .await
+                    .unwrap(),
             );
             let session_id = "exact-anchor-session";
             let session = planned_session(
@@ -2024,6 +2038,7 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
     // | I4 | K2/F1 | any | E4 |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("idempotency repository"),
     );
     create(
@@ -2140,6 +2155,7 @@ async fn event_batch_lost_cas_ack_reloads_the_retained_admission_plan() {
     // retry loop; database atomicity/durability remains repository TCB.
     let durable: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("lost acknowledgement repository"),
     );
     create(durable.as_ref(), persisted("event-lost-ack", false, "idle")).await;
@@ -2192,6 +2208,7 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
             awaken_session_store::SqliteManagedSessionRepository::open(
                 database_path.to_str().unwrap(),
             )
+            .await
             .unwrap(),
         );
         let session = "final-admission";
@@ -2247,6 +2264,7 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
             awaken_session_store::SqliteManagedSessionRepository::open(
                 database_path.to_str().unwrap(),
             )
+            .await
             .unwrap(),
         );
         let restarted = application_with_runtime(
@@ -2324,8 +2342,11 @@ async fn final_event_admission_close_competes_atomically_with_acceptance() {
     // F5: two replicas race accept versus final close under the existing root
     // CAS. Exactly one retained identity wins. Accepted=>close returns accepted;
     // closed=>accept rejects. An absent read alone is deliberately not a proof.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(
         repository.as_ref(),
         persisted("admission-race", false, "idle"),
@@ -2393,7 +2414,9 @@ async fn final_event_admission_close_competes_atomically_with_acceptance() {
 #[tokio::test]
 async fn competing_tool_replies_recheck_occupancy_after_root_cas_conflict() {
     competing_tool_reply_admission_table(Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
     ))
     .await;
 }
@@ -2543,6 +2566,7 @@ async fn concurrent_event_batch_idempotency_converges_under_root_cas() {
     // | C2 | two | same | different | E2+E3 |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("concurrent idempotency repository"),
     );
     for session_id in ["event-race-equal", "event-race-conflict"] {
@@ -2659,7 +2683,9 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
     for cleanup in ["requested", "legacy", "fenced"] {
         for fault in ["none", "unavailable", "lost_ack"] {
             let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-                awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                    .await
+                    .unwrap(),
             );
             let faulting = Arc::new(FaultingSessionRepository::new(repository.clone()));
             let session_id = format!("terminal-batch-{cleanup}-{fault}");
@@ -2935,6 +2961,7 @@ async fn deleting_tombstone_waits_for_terminal_batch_provenance_case() {
     // admission and the supervisor share the existing Session root authority.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("deleting batch repository"),
     );
     let mut session = planned_session(
@@ -3029,6 +3056,7 @@ async fn immediate_commands_bypass_queued_user_and_reply_system_observation_is_n
     // | P3 | yes | yes | exact System committed | E5; User still E3 |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -3186,6 +3214,7 @@ async fn recover_failed_reply_with_interrupt() -> (
 ) {
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("CR1 repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -3383,6 +3412,7 @@ async fn cold_recovery_interrupt_failure_preserves_failed_reply_and_activity() {
     // harness does not place two complete reconciliation scenarios on one stack.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("CR2 repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -3490,6 +3520,7 @@ async fn cold_recovery_interrupt_must_include_the_failed_reply_target() {
     // | TF2 | primary | child T + primary | E3 (covered by CR1 above) |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("TF1 repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -3587,6 +3618,7 @@ async fn legacy_processed_interrupt_without_anchor_cannot_starve_later_recovery(
     // | LA1 | pending/unavailable | processed, no anchor | unprocessed | E1+E2+E3 |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("LA1 repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -3753,6 +3785,7 @@ async fn cold_recovery_reuses_a_processed_interrupt_anchor_to_close_the_failed_r
     // | PA1 | fails/unprocessed | processed+anchored | cold | E1+E2+E3 |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("PA1 repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -3884,6 +3917,7 @@ async fn failed_interrupt_root_cas_cannot_supersede_the_failed_reply() {
     // | CF2 | exact retry unavailable | idempotent | no-op | succeeds | E3+E4 |
     let inner: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("CF1 durable repository"),
     );
     let faulting = Arc::new(FaultingSessionRepository::new(inner.clone()));
@@ -4040,6 +4074,7 @@ async fn failed_reply_activity_settlement_cannot_close_pending_supersession() {
     // | SF2 | exact retry unavailable | idempotent | succeeds | succeeds | E3+E4 |
     let inner: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("SF1 durable repository"),
     );
     let faulting = Arc::new(FaultingSessionRepository::new(inner.clone()));
@@ -4197,6 +4232,7 @@ async fn preferred_interrupt_does_not_reenter_an_older_active_outcome() {
     // | OI2 | active/unprocessed | User only | no request-local effect |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -4304,6 +4340,7 @@ async fn reply_stage_response_loss_replays_one_durable_effect_after_restart() {
     // | R3 | retained | true | any | E4 skip |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -4419,6 +4456,7 @@ async fn interrupt_frozen_targets_recover_idempotently_after_partial_failure() {
     // | I4 | unavailable | success | false | E1+E2, then I2 |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -4534,6 +4572,7 @@ async fn interrupt_frozen_targets_recover_idempotently_after_partial_failure() {
 
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("primary-failure repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -4670,6 +4709,7 @@ async fn user_system_batch_case() {
     // | R4 | Ended target | committed | cold | advance both, settle, Idle |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -4844,6 +4884,7 @@ async fn fresh_user_reservation_snapshots_the_recovered_resource_generation() {
     // | G2 | existing | any later policy | any | receipt replay; covered by `exact_activity_receipt_precedes_fresh_budget_policy` |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("generation-order repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -4930,6 +4971,7 @@ async fn reserved_run_without_activity_recovers_through_the_same_operation_recei
     // cold recovery C2 and require E1-E3.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("reservation-repair repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -5045,6 +5087,7 @@ async fn exact_activity_receipt_precedes_fresh_budget_policy() {
     // then execute P2 after budget closure and require E1-E3.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("receipt-policy repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -5177,6 +5220,7 @@ async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() 
     // | A5 | Completed | op-c | E3 identity-only, no root CAS |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -5343,8 +5387,11 @@ async fn user_run_activity_rejects_a_root_changed_after_projection_recovery() {
     // | P1 | R | R | ordinary admission (existing A1) |
     // | P2 | R | R+1 | E1-E3, no stale execution |
     let session_id = "projection-revision-race";
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let mut session = persisted(session_id, false, "idle");
     session.environment.set_resident("binding-a");
     create(repository.as_ref(), session).await;
@@ -5421,6 +5468,7 @@ async fn rejected_user_reservation_cannot_orphan_an_accompanying_system_case() {
     // Decision rule S1=C1+C2+C3=>E1+E2+E3+E4.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -5509,6 +5557,7 @@ async fn activity_repair_replays_the_same_complete_system_user_reservation_case(
     // | C2 | exact Reserved | existing | succeeds | E3+E4 |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -5654,6 +5703,7 @@ async fn event_traceparent_survives_root_persistence_and_crash_recovery_case() {
         let session_id = format!("event-trace-{case}");
         let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
                 .expect("trace recovery repository"),
         );
         create(repository.as_ref(), persisted(&session_id, false, "idle")).await;
@@ -5737,6 +5787,7 @@ async fn ordinary_active_active_append_is_atomic_revision_ordered_and_activity_f
     // its complete entry count; A3 queued acceptance keeps Session Idle.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     create(
@@ -5883,6 +5934,7 @@ async fn queued_input_before_awaiting_boundary(with_system: bool, legacy: bool) 
     // (C2 AFTER C3); both orders must retain the same actionability and queue.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("AQ1 repository"),
     );
     let id = "queued-before-awaiting";
@@ -6017,6 +6069,7 @@ async fn outcome_crosses_awaiting_user_while_next_user_stays_queued_after_restar
     // execute Q1-Q3 and require one Outcome plus retained later User.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     create(
@@ -6123,6 +6176,7 @@ async fn outcome_receipt_is_processed_on_stable_prepare_and_cold_replay_skips_it
     // O2 present+processed+cold=>skip every effect and retain provenance.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -6213,6 +6267,7 @@ async fn outcome_busy_is_retryable_and_cannot_mark_the_root_entry_processed() {
     // | B2 | same retained command | available | E3 |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
@@ -6335,6 +6390,7 @@ async fn cold_supervisor_continues_only_the_thread_owned_outcome_truth() {
     // | C3 | retained+processed | inactive | E4 |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let runtime = Arc::new(EventBatchRuntime::default());

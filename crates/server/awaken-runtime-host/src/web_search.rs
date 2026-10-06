@@ -465,8 +465,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn configured_acp_web_pair_keeps_one_owner_and_rejects_provider_approval() {
+    #[tokio::test]
+    async fn configured_acp_web_pair_keeps_one_owner_and_rejects_provider_approval() {
         // Causes: C1 configured pair/owner, C2 exact tool permission, C3 the
         // one installed ACP factory supplies CLI projection support. Effects: Host exports, provider launch tools,
         // or a closed configuration error. A failed pair returns no partial
@@ -482,10 +482,13 @@ mod tests {
             AgentBindings, ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride,
             ToolsetPolicy, ToolsetSource,
         };
-        let host = crate::acp_backend::with_fixture_acp(crate::host::SharedHost::new(
-            Arc::new(crate::no_model::NoModelConfiguredExecutor),
-            "stub",
-        ));
+        let host = crate::acp_backend::with_fixture_acp(
+            crate::host::SharedHost::new(
+                Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                "stub",
+            )
+            .await,
+        );
         let host_fetch = (
             awaken_ext_builtin_tools::web_fetch_descriptor(),
             Arc::new(ProbeTool(awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID))
@@ -773,6 +776,7 @@ mod tests {
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )
+        .await
         .with_local_workspace("workspace-a")
         .with_credential_materializer(materializer.clone())
         .with_web_search_provider_registry(providers.clone());
@@ -791,6 +795,7 @@ mod tests {
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )
+        .await
         .with_local_workspace("workspace-a")
         .with_web_search_provider_registry(providers.clone());
         assert!(
@@ -812,6 +817,7 @@ mod tests {
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )
+        .await
         .with_local_workspace("workspace-b")
         .with_credential_materializer(materializer.clone())
         .with_web_search_provider_registry(providers);

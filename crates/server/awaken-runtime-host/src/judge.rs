@@ -160,8 +160,8 @@ mod tests {
 
     /// Complete ordinary Host composition for real Judge Run tests. The Judge
     /// remains toolless and owns no alternate Session or dispatch path.
-    fn judge_test_host(model: Arc<dyn LlmExecutor>) -> Arc<SharedHost> {
-        let host = Arc::new(SharedHost::new(model, "stub"));
+    async fn judge_test_host(model: Arc<dyn LlmExecutor>) -> Arc<SharedHost> {
+        let host = Arc::new(SharedHost::new(model, "stub").await);
         let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         host
     }
@@ -256,7 +256,7 @@ mod tests {
             reply: r#"{"result":"needs_revision","explanation":"add coverage"}"#.into(),
             requests: Mutex::new(Vec::new()),
         });
-        let host = judge_test_host(model.clone());
+        let host = judge_test_host(model.clone()).await;
         host.register_thread_workspace("worker", "workspace-judge-source");
         let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
             .expect("literal model reference");
@@ -320,7 +320,7 @@ mod tests {
             reply: r#"{"result":"satisfied","explanation":"ok"}"#.into(),
             requests: Mutex::new(Vec::new()),
         });
-        let host = judge_test_host(model.clone());
+        let host = judge_test_host(model.clone()).await;
         host.register_thread_workspace("worker", "workspace-a");
         let input = grading_input("grader-workspace-conflict");
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
@@ -350,7 +350,7 @@ mod tests {
             reply: r#"Result: {"result":"satisfied","explanation":"ok"}"#.into(),
             requests: Mutex::new(Vec::new()),
         });
-        let host = judge_test_host(model);
+        let host = judge_test_host(model).await;
         let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
             .expect("literal model reference");
         let input = grading_input("agent-grade-prose-json");

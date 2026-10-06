@@ -8,8 +8,11 @@ async fn profiled_context_admission_freezes_once_and_rejects_invalid_authoring()
     // trusted interactive seed, UTC/explicit zone; E2 reject before root; E3
     // replay retains the exact baseline and does not append another seed.
     // Rules C1 valid/absent+C3=>E1; C1 invalid or C2=>E2; C4=>E3.
-    let repository =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repository = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let mut app = application(repository.clone(), Arc::new(AdmissionEnvironment));
     app.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
     for (id, zone) in [

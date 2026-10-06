@@ -55,22 +55,22 @@ impl CapturedContentBackend for InMemoryCapturedContentStore {
 #[async_trait]
 impl CapturedContentBackend for SqliteCapturedContentStore {
     async fn insert(&self, subject: &DataSubjectId, purpose: Purpose, content: &str, now: i64) {
-        SqliteCapturedContentStore::insert(self, subject, purpose, content, now);
+        SqliteCapturedContentStore::insert(self, subject, purpose, content, now).await;
     }
     async fn restrict(&self, subject: &DataSubjectId) -> usize {
-        SqliteCapturedContentStore::restrict(self, subject)
+        SqliteCapturedContentStore::restrict(self, subject).await
     }
     async fn release(&self, subject: &DataSubjectId) -> usize {
-        SqliteCapturedContentStore::release(self, subject)
+        SqliteCapturedContentStore::release(self, subject).await
     }
     async fn sweep_expired(&self, ttl_millis: i64, now: i64) -> usize {
-        SqliteCapturedContentStore::sweep_expired(self, ttl_millis, now)
+        SqliteCapturedContentStore::sweep_expired(self, ttl_millis, now).await
     }
     async fn erase_subject(&self, subject: &DataSubjectId) -> usize {
         ContentEraser::erase_subject(self, subject).await.unwrap()
     }
     async fn len(&self) -> usize {
-        SqliteCapturedContentStore::len(self)
+        SqliteCapturedContentStore::len(self).await
     }
     async fn record(
         &self,
@@ -139,6 +139,7 @@ async fn sqlite_captured_content_conforms() {
         &SqliteCapturedContentStore::open_in_memory(std::sync::Arc::new(
             awaken_lease_testkit::ManualClock::new(500),
         ))
+        .await
         .unwrap(),
     )
     .await;

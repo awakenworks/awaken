@@ -917,6 +917,7 @@ async fn resolve_profile_candidates_route(
         return Err(resource_workspace_problem(&rid));
     }
     let profile = get_workspace_profile(state.profiles.as_ref(), &workspace, &id)
+        .await
         .map_err(|error| config_repository_problem(&error, &rid))?
         .ok_or_else(|| profile_missing(&id, &rid))?;
     if profile.workspace_id != workspace {
@@ -1125,9 +1126,9 @@ async fn put_profile(
         ))
     })?;
     if let Some(workspace) = &scoped_workspace {
-        put_workspace_profile(state.profiles.as_ref(), workspace, &id, profile.clone())
+        put_workspace_profile(state.profiles.as_ref(), workspace, &id, profile.clone()).await
     } else {
-        state.profiles.put(id, profile.clone())
+        state.profiles.put(id, profile.clone()).await
     }
     .map_err(|error| config_repository_problem(&error, &rid))?;
     Ok(Json(profile))
@@ -1177,9 +1178,9 @@ async fn get_profile(
 ) -> Result<Json<InferenceProfile>, Problem> {
     let workspace = Some(workspace_id);
     let profile = if let Some(workspace) = &workspace {
-        get_workspace_profile(state.profiles.as_ref(), workspace, &id)
+        get_workspace_profile(state.profiles.as_ref(), workspace, &id).await
     } else {
-        state.profiles.get(&id)
+        state.profiles.get(&id).await
     }
     .map_err(|error| config_repository_problem(&error, &req_id(&headers)))?
     .ok_or_else(|| profile_missing(&id, &req_id(&headers)))?;
@@ -1208,6 +1209,7 @@ async fn resolve_profile_route(
         return Err(resource_workspace_problem(&rid));
     }
     let profile = get_workspace_profile(state.profiles.as_ref(), &workspace, &id)
+        .await
         .map_err(|error| config_repository_problem(&error, &rid))?
         .ok_or_else(|| profile_missing(&id, &rid))?;
     if profile.workspace_id != workspace {
@@ -1253,6 +1255,7 @@ async fn put_agent_inputs(
     state
         .resources
         .put_agent_inputs(&workspace, config.clone())
+        .await
         .map_err(|error| agent_input_write_problem(error, &rid))?;
     Ok(Json(config))
 }
@@ -1298,6 +1301,7 @@ async fn get_agent_inputs(
     state
         .resources
         .get_agent_inputs(&workspace, &agent_id)
+        .await
         .map_err(|error| agent_input_write_problem(error, &rid))?
         .map(Json)
         .ok_or_else(|| agent_inputs_missing(&agent_id, &rid))

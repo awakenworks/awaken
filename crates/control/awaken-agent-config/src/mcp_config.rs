@@ -237,17 +237,18 @@ pub enum McpConfigError {
     Storage(String),
 }
 
+#[async_trait::async_trait]
 pub trait McpConfigurationRepository: Send + Sync {
-    fn get_mcp_configuration(
+    async fn get_mcp_configuration(
         &self,
         workspace: &str,
     ) -> Result<Option<McpConfiguration>, McpConfigError>;
-    fn put_mcp_configuration(
+    async fn put_mcp_configuration(
         &self,
         expected_revision: u64,
         next: &McpConfiguration,
     ) -> Result<(), McpConfigError>;
-    fn mcp_configuration_workspaces(&self) -> Result<Vec<String>, McpConfigError>;
+    async fn mcp_configuration_workspaces(&self) -> Result<Vec<String>, McpConfigError>;
 }
 
 /// Same write predicate for every storage backend. The database CAS remains

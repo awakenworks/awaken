@@ -8,7 +8,7 @@ use super::*;
 #[tokio::test]
 async fn install_test_session_init_mounts_an_effective_memory_resource() {
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
 
     // Seed a memory store with known bytes. The control plane has already resolved
     // this resource into the SessionInit passed across the runtime boundary.
@@ -158,7 +158,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
     let model = Arc::new(SemanticMemoryModel {
         fetch_url: Mutex::new(None),
     });
-    let host = Arc::new(SharedHost::new(model.clone(), "stub"));
+    let host = Arc::new(SharedHost::new(model.clone(), "stub").await);
     let managed = managed_with_resource_source(host.clone());
     let store_a = "semantic-store-a";
     let store_b = "semantic-store-b";
@@ -448,9 +448,9 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
         RegisterMemoryStore, ResourceAdministration as _, ResourceState,
     };
 
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let store_id = test_memory_store_id();
-    let catalog = resource_registry();
+    let catalog = resource_registry().await;
     catalog
         .register_memory_store(RegisterMemoryStore {
             definition: MemoryStoreDefinition {
@@ -508,9 +508,9 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
         ResourceAdministration as _, ResourceState,
     };
 
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let store_id = test_memory_store_id();
-    let catalog = resource_registry();
+    let catalog = resource_registry().await;
     catalog
         .register_memory_store(RegisterMemoryStore {
             definition: MemoryStoreDefinition {
@@ -558,7 +558,7 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
 async fn install_test_session_init_mounts_effective_file_and_stages_effective_repo() {
     use awaken_provisioning_contract::{MountAccess, MountSource};
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
 
     // Seed a file blob and pass the already-resolved File and Repository inputs.
     let binary = vec![0, 0xff, b'R', 0x80, b'\n'];
@@ -661,7 +661,7 @@ async fn install_test_session_init_mounts_effective_file_and_stages_effective_re
 async fn complete_projection_preserves_the_canonical_repository_path_without_relocation() {
     use awaken_session_configuration_contract::SessionInit;
 
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let verifier = Arc::new(FixedRepositoryTransport(
         awaken_resource_contract::RepositoryTransport::Direct,
     ));
@@ -793,8 +793,9 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     git(&seed, &["push", "-u", "origin", "HEAD"]);
 
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let mut raw_host =
-        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone());
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
+        .with_session_recovery_control(control.clone());
     raw_host.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root.clone(),
@@ -1357,6 +1358,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     drop(host);
 
     let mut raw_replacement = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
         .with_session_recovery_control(control.clone())
         .with_local_workspace(workspace_id);
     raw_replacement.env.session_provider =
@@ -1498,7 +1500,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
     }
 
     let declared_blob_id = awaken_sandbox_local::content_fingerprint(b"declared bytes");
-    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub").await;
     let corrupt_store = Arc::new(CorruptFileStore);
     raw_host.resources.file_store = corrupt_store.clone();
     let application = Arc::new(awaken_resource_application::FileApplication::new(
@@ -1564,7 +1566,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
 
 #[tokio::test]
 async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic() {
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let file_id = host
         .file_application()
         .expect("test startup installs File application")

@@ -12,7 +12,12 @@ use awaken_store_conformance::resource_registry::run_suite;
 
 #[tokio::test]
 async fn sqlite_in_memory_backend_conforms() {
-    run_suite(|| async { SqliteResourceStore::open(":memory:").expect("open Registry") }).await;
+    run_suite(|| async {
+        SqliteResourceStore::open(":memory:")
+            .await
+            .expect("open Registry")
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -24,10 +29,16 @@ async fn sqlite_file_backend_conforms_and_survives_reopen() {
     let path = directory.path().join("registry.sqlite");
     run_suite(|| {
         let path = path.clone();
-        async move { SqliteResourceStore::open(&path).expect("open Registry") }
+        async move {
+            SqliteResourceStore::open(&path)
+                .await
+                .expect("open Registry")
+        }
     })
     .await;
-    let reopened = SqliteResourceStore::open(&path).expect("reopen Registry");
+    let reopened = SqliteResourceStore::open(&path)
+        .await
+        .expect("reopen Registry");
     let listed =
         awaken_resource_contract::ResourceRegistryRepository::list_memory_stores(&reopened, "ws-a")
             .await

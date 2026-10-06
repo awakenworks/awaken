@@ -342,6 +342,7 @@ async fn session_carries_the_exact_frozen_environment_network() {
         support::state_with_mcp(CapturingFake {
             egress: egress.clone(),
         })
+        .await
         .with_environments(environment_execution.clone()),
     );
     // Mounted the way the composition root does: one trusted edge stamp in
@@ -450,6 +451,7 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
         support::state_with_mcp(CapturingFake {
             egress: egress.clone(),
         })
+        .await
         .with_environments(environment_execution.clone()),
     );
     // Mounted the way the composition root does: one trusted edge stamp in

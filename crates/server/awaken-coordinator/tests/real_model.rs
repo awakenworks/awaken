@@ -62,7 +62,7 @@ async fn a2a_message_send_over_a_live_kimi_model() {
         key,
     )
     .expect("explicit client construction");
-    let app = build_router(Arc::new(executor), model);
+    let app = build_router(Arc::new(executor), model).await;
 
     // One A2A Run against the live model. The prompt steers a short, tool-free
     // reply so the assertion is stable across models.

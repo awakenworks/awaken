@@ -4902,8 +4902,8 @@ fn application_with_runtime(
     SessionApplication::new(runtime, mcp, repo, environments, system_clock())
 }
 
-#[test]
-fn complete_runtime_composition_does_not_require_optional_role_discovery() {
+#[tokio::test]
+async fn complete_runtime_composition_does_not_require_optional_role_discovery() {
     // Causes: C1 all required role traits are implemented; C2 the old
     // realization accessor returns None; C3 clock or repository is replaced.
     // Effects: construction and both binding updates succeed through the real
@@ -4911,8 +4911,11 @@ fn complete_runtime_composition_does_not_require_optional_role_discovery() {
     // the CompleteSessionRuntime constructor parameter at compile time.
     let runtime = Arc::new(NoopRuntime);
     assert!(SessionRuntime::realization(runtime.as_ref()).is_none());
-    let repository =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repository = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let mut app = application_with_runtime(
         runtime,
         repository.clone(),

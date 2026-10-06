@@ -1,5 +1,5 @@
 // @formal evidence agent_inputs.rejected_revision_does_not_mutate
-//! Live Postgres admin-store conformance (feature `postgres`): the same sync
+//! Live Postgres admin-store conformance (feature `postgres`): the same
 //! store ports the sqlite backend serves, exercised against a real Postgres.
 //! Isolated in its own schema (baked into the connection URL's `search_path`), so
 //! it coexists with any other schema in the test database. Skips when no Postgres
@@ -25,8 +25,8 @@ async fn postgres_agent_input_ambiguous_keys_fail_closed() {
     let Some(url) = schema_url("t_admin_input_key_admission").await else {
         return;
     };
-    let store = PostgresAdminStore::connect(&url).unwrap();
-    input_admission::ambiguous_keys_fail_closed(&store);
+    let store = PostgresAdminStore::connect(&url).await.unwrap();
+    input_admission::ambiguous_keys_fail_closed(&store).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -34,7 +34,7 @@ async fn postgres_agent_input_rollback_replay_and_corrupt_key_readback() {
     let Some(url) = schema_url("t_admin_input_failure_admission").await else {
         return;
     };
-    let store = PostgresAdminStore::connect(&url).unwrap();
+    let store = PostgresAdminStore::connect(&url).await.unwrap();
     let control = PgPool::connect(&url).await.unwrap();
     control.execute("CREATE FUNCTION reject_input_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected write failure'; END $$").await.unwrap();
     input_admission::rollback_and_lost_response(&store, |reject| {
@@ -46,10 +46,11 @@ async fn postgres_agent_input_rollback_replay_and_corrupt_key_readback() {
         }
     }).await;
     drop(store);
-    let store = PostgresAdminStore::connect_existing(&url).unwrap();
+    let store = PostgresAdminStore::connect_existing(&url).await.unwrap();
     assert_eq!(
         store
             .get_agent_inputs("retry-workspace", "retry-agent")
+            .await
             .unwrap()
             .unwrap()
             .revision,
@@ -64,9 +65,10 @@ async fn postgres_agent_input_rollback_replay_and_corrupt_key_readback() {
     assert!(
         store
             .get_agent_inputs("retry-workspace", "wrong-agent")
+            .await
             .is_err()
     );
-    assert!(store.list_agent_inputs("retry-workspace").is_err());
+    assert!(store.list_agent_inputs("retry-workspace").await.is_err());
 }
 
 fn base_url() -> String {
@@ -118,11 +120,11 @@ fn profile(model: &str) -> InferenceProfile {
     }
 }
 
-fn commit_webhook(store: &dyn WebhookStore, definition: WebhookEndpointDef) {
+async fn commit_webhook(store: &dyn WebhookStore, definition: WebhookEndpointDef) {
     let intent = WebhookMutationIntent::create(definition);
-    store.begin_mutation(intent.clone()).unwrap();
-    store.apply_mutation(&intent).unwrap();
-    store.complete_mutation(&intent).unwrap();
+    store.begin_mutation(intent.clone()).await.unwrap();
+    store.apply_mutation(&intent).await.unwrap();
+    store.complete_mutation(&intent).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -144,7 +146,7 @@ async fn postgres_agent_input_first_writers_have_one_authoritative_winner() {
     };
     let control = PgPool::connect(&url).await.unwrap();
     let writer_url = format!("{url}&application_name=awaken_input_first_writers");
-    let store = std::sync::Arc::new(PostgresAdminStore::connect(&writer_url).unwrap());
+    let store = std::sync::Arc::new(PostgresAdminStore::connect(&writer_url).await.unwrap());
     control.execute("CREATE FUNCTION hold_input_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(89142761); RETURN NEW; END $$").await.unwrap();
     control.execute("CREATE TRIGGER hold_input_insert BEFORE INSERT ON admin_agent_resource FOR EACH ROW EXECUTE FUNCTION hold_input_insert()").await.unwrap();
     let mut gate = control.begin().await.unwrap();
@@ -155,7 +157,7 @@ async fn postgres_agent_input_first_writers_have_one_authoritative_winner() {
     let writers: Vec<_> = (0..8)
         .map(|i| {
             let store = store.clone();
-            tokio::task::spawn_blocking(move || {
+            tokio::spawn(async move {
                 let config = AgentInputConfig {
                     agent_id: "agent".into(),
                     environment: Some(awaken_config_resolver::AgentEnvironmentBinding {
@@ -165,7 +167,7 @@ async fn postgres_agent_input_first_writers_have_one_authoritative_winner() {
                     inputs: Vec::new(),
                     revision: 1,
                 };
-                let result = store.put_agent_inputs("workspace", config.clone());
+                let result = store.put_agent_inputs("workspace", config.clone()).await;
                 (config, result)
             })
         })
@@ -207,12 +209,15 @@ async fn postgres_agent_input_first_writers_have_one_authoritative_winner() {
         );
     }
     assert_eq!(
-        store.get_agent_inputs("workspace", "agent").unwrap(),
+        store.get_agent_inputs("workspace", "agent").await.unwrap(),
         Some(winner.clone())
     );
-    store.put_agent_inputs("workspace", winner.clone()).unwrap();
+    store
+        .put_agent_inputs("workspace", winner.clone())
+        .await
+        .unwrap();
     assert_eq!(
-        store.get_agent_inputs("workspace", "agent").unwrap(),
+        store.get_agent_inputs("workspace", "agent").await.unwrap(),
         Some(winner)
     );
     control.close().await;
@@ -223,17 +228,21 @@ async fn postgres_admin_store_serves_every_port() {
     let Some(url) = schema_url("t_admin_store").await else {
         return;
     };
-    // `connect` is sync (it composes with the sync ports); run it off the async
-    // test thread so its internal `block_on` never nests in this runtime.
-    let store = tokio::task::spawn_blocking(move || PostgresAdminStore::connect(&url).unwrap())
-        .await
-        .unwrap();
+    let store = PostgresAdminStore::connect(&url).await.unwrap();
 
     // InferenceProfileStore: round-trip + overwrite.
-    assert!(InferenceProfileStore::get(&store, "p1").unwrap().is_none());
-    InferenceProfileStore::put(&store, "p1".into(), profile("m1")).unwrap();
+    assert!(
+        InferenceProfileStore::get(&store, "p1")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    InferenceProfileStore::put(&store, "p1".into(), profile("m1"))
+        .await
+        .unwrap();
     assert_eq!(
         InferenceProfileStore::get(&store, "p1")
+            .await
             .unwrap()
             .unwrap()
             .primary
@@ -241,9 +250,12 @@ async fn postgres_admin_store_serves_every_port() {
             .model_id,
         "m1"
     );
-    InferenceProfileStore::put(&store, "p1".into(), profile("m2")).unwrap();
+    InferenceProfileStore::put(&store, "p1".into(), profile("m2"))
+        .await
+        .unwrap();
     assert_eq!(
         InferenceProfileStore::get(&store, "p1")
+            .await
             .unwrap()
             .unwrap()
             .primary
@@ -253,7 +265,13 @@ async fn postgres_admin_store_serves_every_port() {
     );
 
     // AgentInputBindingRepository: Workspace-scoped round-trip + overwrite.
-    assert!(store.get_agent_inputs("ws", "agent-1").unwrap().is_none());
+    assert!(
+        store
+            .get_agent_inputs("ws", "agent-1")
+            .await
+            .unwrap()
+            .is_none()
+    );
     let rc = AgentInputConfig {
         agent_id: "agent-1".into(),
         environment: None,
@@ -266,19 +284,23 @@ async fn postgres_admin_store_serves_every_port() {
         }],
         revision: 1,
     };
-    store.put_agent_inputs("ws", rc.clone()).unwrap();
+    store.put_agent_inputs("ws", rc.clone()).await.unwrap();
     assert_eq!(
-        store.get_agent_inputs("ws", "agent-1").unwrap(),
+        store.get_agent_inputs("ws", "agent-1").await.unwrap(),
         Some(rc.clone())
     );
     let mut v2 = rc.clone();
     v2.revision = 2;
     v2.inputs.clear();
-    store.put_agent_inputs("ws", v2.clone()).unwrap();
-    assert_eq!(store.get_agent_inputs("ws", "agent-1").unwrap(), Some(v2));
+    store.put_agent_inputs("ws", v2.clone()).await.unwrap();
+    assert_eq!(
+        store.get_agent_inputs("ws", "agent-1").await.unwrap(),
+        Some(v2)
+    );
     assert!(
         store
             .get_agent_inputs("other", "agent-1")
+            .await
             .unwrap()
             .is_none()
     );
@@ -298,10 +320,12 @@ async fn postgres_admin_store_serves_every_port() {
             consecutive_failures: 0,
             secret_ref: SecretRef("whsec:wh1".into()),
         },
-    );
+    )
+    .await;
     assert_eq!(
         store
             .record_delivery("wh1", WebhookDeliveryOutcome::Failed, 2)
+            .await
             .unwrap(),
         WebhookDeliveryState::Active {
             consecutive_failures: 1
@@ -311,6 +335,7 @@ async fn postgres_admin_store_serves_every_port() {
     assert_eq!(
         store
             .record_delivery("wh1", WebhookDeliveryOutcome::Failed, 2)
+            .await
             .unwrap(),
         WebhookDeliveryState::Disabled {
             consecutive_failures: 2
@@ -328,10 +353,10 @@ async fn postgres_admin_rows_survive_a_reconnect() {
     };
     {
         let u = url.clone();
-        let store = tokio::task::spawn_blocking(move || PostgresAdminStore::connect(&u).unwrap())
+        let store = PostgresAdminStore::connect(&u).await.unwrap();
+        InferenceProfileStore::put(&store, "p1".into(), profile("m1"))
             .await
             .unwrap();
-        InferenceProfileStore::put(&store, "p1".into(), profile("m1")).unwrap();
         commit_webhook(
             &store,
             WebhookEndpointDef {
@@ -343,9 +368,11 @@ async fn postgres_admin_rows_survive_a_reconnect() {
                 consecutive_failures: 0,
                 secret_ref: SecretRef("whsec:wh1".into()),
             },
-        );
+        )
+        .await;
         store
             .record_delivery("wh1", WebhookDeliveryOutcome::Failed, 20)
+            .await
             .unwrap();
         let pending = WebhookMutationIntent::create(WebhookEndpointDef {
             id: "wh_pending".into(),
@@ -356,13 +383,12 @@ async fn postgres_admin_rows_survive_a_reconnect() {
             consecutive_failures: 0,
             secret_ref: SecretRef("sec:webhook:pending".into()),
         });
-        store.begin_mutation(pending).unwrap();
+        store.begin_mutation(pending).await.unwrap();
     }
-    let store = tokio::task::spawn_blocking(move || PostgresAdminStore::connect(&url).unwrap())
-        .await
-        .unwrap();
+    let store = PostgresAdminStore::connect(&url).await.unwrap();
     assert_eq!(
         InferenceProfileStore::get(&store, "p1")
+            .await
             .unwrap()
             .unwrap()
             .primary
@@ -372,13 +398,14 @@ async fn postgres_admin_rows_survive_a_reconnect() {
     );
     assert_eq!(
         WebhookStore::get(&store, "wh1")
+            .await
             .unwrap()
             .unwrap()
             .consecutive_failures,
         1,
         "the failure counter survives a Postgres reconnect"
     );
-    let pending = store.pending_mutations().unwrap();
+    let pending = store.pending_mutations().await.unwrap();
     assert_eq!(pending.len(), 1, "the material intent survives reconnect");
     assert_eq!(pending[0].id().unwrap(), "wh_pending");
 }
@@ -395,7 +422,7 @@ async fn postgres_mcp_configuration_cas_and_restart() {
     let Some(url) = schema_url("t_admin_mcp_config").await else {
         return;
     };
-    let store = Arc::new(PostgresAdminStore::connect(&url).unwrap());
+    let store = Arc::new(PostgresAdminStore::connect(&url).await.unwrap());
     let mut first = McpConfiguration::new(
         "w".into(),
         McpCatalogSnapshot {
@@ -405,8 +432,8 @@ async fn postgres_mcp_configuration_cas_and_restart() {
         },
     );
     first.advance(0).unwrap();
-    store.put_mcp_configuration(0, &first).unwrap();
-    let barrier = Arc::new(std::sync::Barrier::new(2));
+    store.put_mcp_configuration(0, &first).await.unwrap();
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let writers = (0..2)
         .map(|i| {
             let store = store.clone();
@@ -414,20 +441,29 @@ async fn postgres_mcp_configuration_cas_and_restart() {
             let mut next = first.clone();
             next.advance(1).unwrap();
             next.catalog_url = Some(format!("https://source-{i}.example.test/catalog"));
-            std::thread::spawn(move || {
-                barrier.wait();
-                store.put_mcp_configuration(1, &next)
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store.put_mcp_configuration(1, &next).await
             })
         })
         .collect::<Vec<_>>();
-    let results = writers
-        .into_iter()
-        .map(|w| w.join().unwrap())
-        .collect::<Vec<_>>();
+    let mut results = Vec::new();
+    for writer in writers {
+        results.push(writer.await.unwrap());
+    }
     assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
-    let current = store.get_mcp_configuration("w").unwrap().unwrap();
+    let current = store.get_mcp_configuration("w").await.unwrap().unwrap();
     assert_eq!(current.revision, 2);
-    let reopened = PostgresAdminStore::connect_existing(&url).unwrap();
-    assert_eq!(reopened.get_mcp_configuration("w").unwrap(), Some(current));
-    assert!(reopened.get_mcp_configuration("other").unwrap().is_none());
+    let reopened = PostgresAdminStore::connect_existing(&url).await.unwrap();
+    assert_eq!(
+        reopened.get_mcp_configuration("w").await.unwrap(),
+        Some(current)
+    );
+    assert!(
+        reopened
+            .get_mcp_configuration("other")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }

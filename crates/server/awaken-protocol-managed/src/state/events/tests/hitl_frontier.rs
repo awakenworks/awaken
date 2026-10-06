@@ -336,7 +336,7 @@ async fn late_hitl_activity_cannot_rewrite_issued_usage_or_old_cursors() {
     // =>E4+E5; R3=R2+H7=>E6. The committed ticket audit, not a live cache,
     // classifies the old ToolUse while Session CAS owns activity settlement.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     assert_late_hitl_frontier(repository.clone(), repository, false).await;
 }
 
@@ -352,7 +352,7 @@ async fn legacy_hitl_interval_then_new_activity_preserves_the_public_frontier() 
     // rows L1=>E1, L1+L2=>E1+E2, L1+L2+L3=>E1+E2+E3. This is the reachable
     // mixed-version case: old lineage exists before its first public read.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     assert_late_hitl_frontier(repository.clone(), repository, true).await;
 }
 
@@ -388,7 +388,9 @@ async fn assert_late_hitl_frontier(
     legacy_closed_interval: bool,
 ) {
     let runtime = LifecycleRuntime::default();
-    let warm = ManagedState::new(runtime.clone()).with_session_repo(first);
+    let warm = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(first);
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -558,7 +560,7 @@ async fn assert_late_hitl_frontier(
         "R2/E4-E5 complete previously issued prefix"
     );
 
-    let cold = ManagedState::new(runtime).with_session_repo(second);
+    let cold = ManagedState::new(runtime).await.with_session_repo(second);
     cold.refresh_committed_events(id).await.unwrap();
     assert_eq!(
         serde_json::to_value(cold.list_events(id, None, None, false).unwrap().data).unwrap(),

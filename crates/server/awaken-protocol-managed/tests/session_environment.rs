@@ -436,7 +436,9 @@ async fn app() -> (Router, String) {
         .expect("publish Environment through the Control application");
     (
         support::edge_stamped(awaken_protocol_managed::router(std::sync::Arc::new(
-            support::state(AcceptingFake).with_environments(environment_execution),
+            support::state(AcceptingFake)
+                .await
+                .with_environments(environment_execution),
         ))),
         environment.id,
     )

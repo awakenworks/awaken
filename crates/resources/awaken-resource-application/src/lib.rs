@@ -433,11 +433,12 @@ mod tests {
     use super::*;
     use awaken_resource_contract::ResourceKind;
 
-    fn application() -> ResourcesApplication {
+    async fn application() -> ResourcesApplication {
         let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
         let clock = awaken_time::system_clock();
         let resources = Arc::new(
             awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
                 .expect("open resource authority"),
         );
         let registry = Arc::new(RegistryApplication::new(resources.clone(), clock.clone()));
@@ -456,7 +457,7 @@ mod tests {
 
     #[tokio::test]
     async fn memory_store_creation_keys_are_workspace_scoped_and_optional() {
-        let application = application();
+        let application = application().await;
         let stores = application.memory_stores();
         let command = CreateMemoryStoreCommand {
             workspace_id: "workspace".into(),
@@ -525,7 +526,7 @@ mod tests {
         // | R4   | one         | delete/exists | E4     |
         // | R5   | one         | any/missing   | E5     |
         // HTTP and Dream both drive the same application ports proven by R0.
-        let application = application();
+        let application = application().await;
         let stores = application.memory_stores();
         assert!(
             Arc::ptr_eq(&stores, &application.memory_stores()),
@@ -618,7 +619,7 @@ mod tests {
         // R1 a valid logical-delete fact -> one durable pending intent; R2 the
         // same target/config fact is retried -> Existing and no parallel intent;
         // R3 an invalid empty coordinate -> Invalid and no intent.
-        let application = application();
+        let application = application().await;
         let target = ResourceTarget::new("workspace", ResourceKind::MemoryStore, "memory");
         assert_eq!(
             application

@@ -20,7 +20,9 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
     // boundary is a separate fail-closed rule in interval_admission.rs.
     for legacy in [false, true] {
         let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         let runtime = Arc::new(EventBatchRuntime::default());
         let id = "resumed-user-dispatch";

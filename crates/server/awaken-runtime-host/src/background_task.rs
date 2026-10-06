@@ -1127,17 +1127,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn session_background_application_composition_is_single_assignment_and_weak() {
+    #[tokio::test]
+    async fn session_background_application_composition_is_single_assignment_and_weak() {
         // Cause/effect decision table: R8 vacant slot + application -> one weak
         // executable edge; R9 occupied slot + another install -> reject without
         // replacement; R10 all external strong owners drop -> SharedHost does
         // not retain the Session application. This prevents both a second Run
         // admission owner and an Arc ownership cycle.
-        let host = Arc::new(crate::SharedHost::new(
-            Arc::new(crate::NoModelConfiguredExecutor),
-            "stub",
-        ));
+        let host = Arc::new(
+            crate::SharedHost::new(Arc::new(crate::NoModelConfiguredExecutor), "stub").await,
+        );
         let managed = crate::ManagedHost::new(host.clone());
         let application = Arc::new(RecordingAttentionApplication::accepting(0));
         let port: Arc<dyn SessionRunBackgroundApplication> = application.clone();

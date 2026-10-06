@@ -133,17 +133,21 @@ async fn durable_child_run_scenario() {
     ];
     let host = Arc::new(
         awaken_runtime_host_testkit::with_durable_store_dir(
-            Arc::into_inner(awaken_scenario_host::build_unmounted_host(
-                Arc::new(ParentChildModel {
-                    parent_calls: AtomicUsize::new(0),
-                    child_calls: AtomicUsize::new(0),
-                }),
-                "stub",
-            ))
+            Arc::into_inner(
+                awaken_scenario_host::build_unmounted_host(
+                    Arc::new(ParentChildModel {
+                        parent_calls: AtomicUsize::new(0),
+                        child_calls: AtomicUsize::new(0),
+                    }),
+                    "stub",
+                )
+                .await,
+            )
             .expect("unmounted scenario host has one owner")
             .with_dispatch_store(dispatch),
             storage.path(),
         )
+        .await
         .with_agent_publications(Arc::new(
             StaticPublishedAgentSnapshots::try_new([assistant, researcher])
                 .expect("valid test Agent publications"),

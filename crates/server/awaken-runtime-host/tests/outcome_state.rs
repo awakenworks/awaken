@@ -208,6 +208,7 @@ async fn sqlite_restart_recovers_the_extension_aggregate() {
         let store = awaken_store_sqlite::SqliteCommitCoordinator::open(
             path.to_str().expect("utf-8 test path"),
         )
+        .await
         .unwrap();
         let adapter = ThreadOutcomeState::new(&thread, &store, &store);
         adapter.create(&definition, &binding, &state).await.unwrap();
@@ -221,6 +222,7 @@ async fn sqlite_restart_recovers_the_extension_aggregate() {
 
     let reopened =
         awaken_store_sqlite::SqliteCommitCoordinator::open(path.to_str().expect("utf-8 test path"))
+            .await
             .unwrap();
     let recovered = ThreadOutcomeState::new(&thread, &reopened, &reopened)
         .active()

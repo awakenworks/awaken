@@ -364,7 +364,11 @@ impl FileStore for FailingFileStore {
 #[tokio::test]
 async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-    let lifecycle = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+    let lifecycle = Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .await
+            .unwrap(),
+    );
     let application = Arc::new(awaken_resource_application::FileApplication::new(
         files.clone(),
         files,
@@ -669,7 +673,11 @@ async fn embedded_and_raw_http_artifact_admission_have_the_same_resource_effects
     let application = Arc::new(awaken_resource_application::FileApplication::new(
         files.clone(),
         files.clone(),
-        Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap()),
+        Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
+                .unwrap(),
+        ),
         awaken_time::system_clock(),
     ));
     let (directory, identity) = support::ready_worker("worker-admission").await;
@@ -829,7 +837,11 @@ async fn embedded_and_raw_http_artifact_admission_have_the_same_resource_effects
 #[tokio::test]
 async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation() {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-    let lifecycle = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+    let lifecycle = Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .await
+            .unwrap(),
+    );
     let application = Arc::new(awaken_resource_application::FileApplication::new(
         files.clone(),
         files,
@@ -1046,7 +1058,11 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
 #[tokio::test]
 async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-    let lifecycle = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+    let lifecycle = Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .await
+            .unwrap(),
+    );
     let application = Arc::new(awaken_resource_application::FileApplication::new(
         files.clone(),
         files,
@@ -1254,7 +1270,11 @@ async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
 #[tokio::test]
 async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_evidence() {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-    let lifecycle = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+    let lifecycle = Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .await
+            .unwrap(),
+    );
     let application = Arc::new(awaken_resource_application::FileApplication::new(
         files.clone(),
         files,
@@ -1465,7 +1485,11 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
     let app = Arc::new(awaken_resource_application::FileApplication::new(
         files.clone(),
         files,
-        Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap()),
+        Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
+                .unwrap(),
+        ),
         awaken_time::system_clock(),
     ));
     let counting = Arc::new(CountingFileApplication::new(app.clone()));

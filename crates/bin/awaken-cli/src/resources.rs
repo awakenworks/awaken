@@ -3,10 +3,12 @@
 use super::{PostgresSchemaMode, config};
 
 #[cfg(any(test, feature = "test-support"))]
-pub(super) fn ephemeral_resources_application(
+pub(super) async fn ephemeral_resources_application(
     clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> awaken_resource_application::ResourcesApplication {
-    awaken_resource_persistence::ephemeral(clock).expect("open ephemeral Resources application")
+    awaken_resource_persistence::ephemeral(clock)
+        .await
+        .expect("open ephemeral Resources application")
 }
 
 /// `clock` is the process's one wall clock; the Resources application stamps
@@ -20,6 +22,7 @@ pub(super) async fn open_resources_application(
     let application = match backend {
         config::ResourceStoreBackend::Embedded(root) => {
             awaken_resource_persistence::open_embedded(&root, clock)
+                .await
                 .map_err(|error| error.to_string())
         }
         config::ResourceStoreBackend::Postgres(url) => {
@@ -89,7 +92,7 @@ mod tests {
                 &application.purge_scheduler()
             ));
         };
-        assert_complete(&ephemeral_resources_application(awaken_time::system_clock()));
+        assert_complete(&ephemeral_resources_application(awaken_time::system_clock()).await);
 
         let root = tempfile::tempdir().expect("resource application root");
         let embedded = open_resources_application(

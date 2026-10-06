@@ -206,7 +206,7 @@ async fn open_with(
             "Coordinator SQLite Worker registry requires runtime.storage_dir; refusing volatile Worker identity and generation state"
                 .to_owned()
         })?;
-        super::worker_registry::open_sqlite(storage_dir)?
+        super::worker_registry::open_sqlite(storage_dir).await?
     };
     Ok(CoordinatorPersistence {
         worker_directory,

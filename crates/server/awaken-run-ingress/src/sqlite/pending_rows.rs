@@ -5,50 +5,42 @@
 // @formal reason: tests; this is a product-requirement classification, not a direct proof claim.
 // SQLite pending-row serialization and optimistic-revision helpers. These are
 // the one helper set used by the parent adapter's Inbox/Outbox implementation.
-fn current_revision(
-    tx: &rusqlite::Transaction<'_>,
+async fn current_revision(
+    tx: &mut SqliteConnection,
     prefix: &str,
     message_id: &str,
 ) -> Result<Option<u64>, DispatchError> {
-    tx.query_row(
-        &format!("SELECT revision FROM {prefix}_pending WHERE message_id = ?1"),
-        params![message_id],
-        |r| r.get::<_, i64>(0),
-    )
-    .optional()
+    sqlx::query_scalar::<_, i64>(&format!(
+        "SELECT revision FROM {prefix}_pending WHERE message_id = ?1"
+    ))
+    .bind(message_id)
+    .fetch_optional(&mut *tx)
+    .await
     .map_err(store_error)?
     .map(|revision| durable_u64("pending input revision", revision))
     .transpose()
 }
-fn pending_for_run(
-    tx: &rusqlite::Transaction<'_>,
+
+type PendingForRunRow = (String, String, String, String, Option<String>, Option<i64>);
+
+async fn pending_for_run(
+    tx: &mut SqliteConnection,
     prefix: &str,
     run_id: &str,
     now_ms: u64,
 ) -> Result<Vec<PendingInput>, DispatchError> {
-    let mut stmt = tx
-        .prepare(&format!(
-            "SELECT message_id, thread_id, correlation_id, result, context_messages, available_at \
-             FROM {prefix}_pending WHERE run_id = ?1 \
-             AND (available_at IS NULL OR available_at <= ?2) ORDER BY created_at"
-        ))
-        .map_err(store_error)?;
-    let rows = stmt
-        .query_map(params![run_id, crate::clock::db_millis(now_ms)], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<i64>>(5)?,
-            ))
-        })
-        .map_err(store_error)?;
+    let rows = sqlx::query_as::<_, PendingForRunRow>(&format!(
+        "SELECT message_id, thread_id, correlation_id, result, context_messages, available_at \
+         FROM {prefix}_pending WHERE run_id = ?1 \
+         AND (available_at IS NULL OR available_at <= ?2) ORDER BY created_at"
+    ))
+    .bind(run_id)
+    .bind(crate::clock::db_millis(now_ms))
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(store_error)?;
     let mut pending = Vec::new();
-    for row in rows {
-        let (message_id, thread_id, correlation_id, result, context_messages, available_at) =
-            row.map_err(store_error)?;
+    for (message_id, thread_id, correlation_id, result, context_messages, available_at) in rows {
         pending.push(PendingInput {
             message_id,
             run_id: RunId(run_id.to_string()),
@@ -71,20 +63,22 @@ fn pending_for_run(
 
 /// Record `operation` at `recorded_at_ms`: the store clock's reading for the
 /// transition it records, the same reading that transition was judged on.
-fn insert_operation(
-    tx: &rusqlite::Transaction<'_>,
+async fn insert_operation(
+    tx: &mut SqliteConnection,
     prefix: &str,
     operation: &DispatchOperation,
     recorded_at_ms: u64,
 ) -> Result<(), DispatchError> {
     let recorded_at_ms = crate::clock::db_millis(recorded_at_ms);
-    tx.execute(
-        &format!(
-            "INSERT INTO {prefix}_dispatch_operation \
-             (run_id, operation, recorded_at_ms) VALUES (?1, ?2, ?3)"
-        ),
-        params![operation.run_id().0, json(operation)?, recorded_at_ms],
-    )
+    sqlx::query(&format!(
+        "INSERT INTO {prefix}_dispatch_operation \
+         (run_id, operation, recorded_at_ms) VALUES (?1, ?2, ?3)"
+    ))
+    .bind(&operation.run_id().0)
+    .bind(json(operation)?)
+    .bind(recorded_at_ms)
+    .execute(&mut *tx)
+    .await
     .map_err(store_error)?;
     Ok(())
 }
@@ -95,33 +89,31 @@ fn json<T: serde::Serialize>(value: &T) -> Result<String, DispatchError> {
 
 /// The one SQLite pending insert path, reused by direct delivery, Inbox append,
 /// and outbox relay so exact retries and identity conflicts cannot diverge.
-fn append_pending_row(
-    conn: &Connection,
+async fn append_pending_row(
+    conn: &mut SqliteConnection,
     prefix: &str,
     input: &PendingInput,
 ) -> Result<bool, DispatchError> {
-    let changed = conn
-        .execute(
-            &format!(
-                "INSERT INTO {prefix}_pending \
-                 (message_id, run_id, thread_id, correlation_id, result, context_messages, available_at) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(message_id) DO NOTHING"
-            ),
-            params![
-                &input.message_id,
-                &input.run_id.0,
-                &input.thread_id.0,
-                &input.correlation_id,
-                json(&input.result)?,
-                json(&input.context_messages)?,
-                input.available_at_ms.map(crate::clock::db_millis)
-            ],
-        )
-        .map_err(store_error)?;
+    let changed = sqlx::query(&format!(
+        "INSERT INTO {prefix}_pending \
+         (message_id, run_id, thread_id, correlation_id, result, context_messages, available_at) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(message_id) DO NOTHING"
+    ))
+    .bind(&input.message_id)
+    .bind(&input.run_id.0)
+    .bind(&input.thread_id.0)
+    .bind(&input.correlation_id)
+    .bind(json(&input.result)?)
+    .bind(json(&input.context_messages)?)
+    .bind(input.available_at_ms.map(crate::clock::db_millis))
+    .execute(&mut *conn)
+    .await
+    .map_err(store_error)?
+    .rows_affected();
     if changed > 0 {
         return Ok(true);
     }
-    match load_pending_input(conn, prefix, &input.message_id)? {
+    match load_pending_input(conn, prefix, &input.message_id).await? {
         Some(existing) if existing == *input => Ok(false),
         Some(_) => Err(idempotency_conflict(&input.message_id, "pending-input")),
         None => Err(DispatchError::Rejected(format!(
@@ -131,29 +123,18 @@ fn append_pending_row(
     }
 }
 
-fn load_pending_input(
-    conn: &Connection,
+async fn load_pending_input(
+    conn: &mut SqliteConnection,
     prefix: &str,
     message_id: &str,
 ) -> Result<Option<PendingInput>, DispatchError> {
-    conn.query_row(
-        &format!(
-            "SELECT run_id, thread_id, correlation_id, result, context_messages, available_at \
-             FROM {prefix}_pending WHERE message_id = ?1"
-        ),
-        params![message_id],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<i64>>(5)?,
-            ))
-        },
-    )
-    .optional()
+    sqlx::query_as::<_, (String, String, String, String, Option<String>, Option<i64>)>(&format!(
+        "SELECT run_id, thread_id, correlation_id, result, context_messages, available_at \
+         FROM {prefix}_pending WHERE message_id = ?1"
+    ))
+    .bind(message_id)
+    .fetch_optional(&mut *conn)
+    .await
     .map_err(store_error)?
     .map(
         |(run_id, thread_id, correlation_id, result, context_messages, available_at)| {

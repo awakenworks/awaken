@@ -32,8 +32,9 @@ use tower::ServiceExt;
 
 use support::wait_for_session_events;
 
-fn resource_registry() -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
+async fn resource_registry() -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
     awaken_resource_persistence::ephemeral(awaken_time::system_clock())
+        .await
         .expect("open the Deployment test Resource application")
         .authorities()
         .resource_registry()
@@ -183,14 +184,16 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
         Arc::new(EchoModel),
         "claude-sonnet-5",
         runtime_publications.clone(),
-    );
+    )
+    .await;
     let workspace_id = host.local_workspace().to_string();
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
     let managed = awaken_coordinator::local_managed_state_with_agent_source(
         host,
-        resource_registry(),
+        resource_registry().await,
         catalog,
-    );
+    )
+    .await;
     let launcher = ManagedDeploymentSessionLauncher::new(managed.managed.clone());
     let request = DeploymentLaunch {
         deployment_id: "depl_failed_initial".into(),
@@ -303,15 +306,17 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
         Arc::new(EchoModel),
         "claude-sonnet-5",
         catalog.clone(),
-    );
+    )
+    .await;
     let workspace_id = host.local_workspace().to_string();
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
-    let resources = resource_registry();
+    let resources = resource_registry().await;
     let managed = awaken_coordinator::local_managed_state_with_agent_source(
         host.clone(),
         resources.clone(),
         catalog,
-    );
+    )
+    .await;
     // The public Session scope guard must observe the same trusted Workspace as
     // the internal Deployment launcher. Omitting this edge stamp proves only a
     // cross-tenant 404, not the launch or initial-Event contract.
@@ -320,6 +325,7 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
         managed.clone(),
         resources,
     )
+    .await
     .layer(axum::Extension(WorkspaceScope(workspace_id.clone())));
     let launcher = ManagedDeploymentSessionLauncher::new(managed.managed.clone());
     let request = DeploymentLaunch {
@@ -412,16 +418,18 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
         Arc::new(EchoModel),
         "claude-sonnet-5",
         catalog.clone(),
-    );
+    )
+    .await;
     let workspace_id = host.local_workspace().to_string();
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
-    let resources = resource_registry();
+    let resources = resource_registry().await;
     let managed = awaken_coordinator::local_managed_state_with_agent_source_and_list_prices(
         host.clone(),
         resources.clone(),
         catalog,
         Arc::new(DeploymentPriceProvider),
-    );
+    )
+    .await;
     let deployments = Arc::new(DeploymentApplication::new(awaken_time::system_clock()));
     deployments.bind_launcher(Arc::new(ManagedDeploymentSessionLauncher::new(
         managed.managed.clone(),
@@ -433,6 +441,7 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
         managed.clone(),
         resources,
     )
+    .await
     .merge(deployment_api)
     .layer(axum::Extension(WorkspaceScope(workspace_id)));
 

@@ -7,8 +7,11 @@ async fn invalid_worker_demand_projection_does_not_reject_the_session_root() {
     // R1=C1+C2 -> the root remains readable for operator recovery, while the
     // operational demand read fails closed instead of publishing zero. The
     // index is not a second admission authority for Session creation.
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let mut root = persisted("invalid-worker-owner", true, "idle");
     root.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
         owner: String::new(),
@@ -38,8 +41,11 @@ async fn session_worker_demand_counts_live_affinity_and_terminal_cleanup() {
     // live root present in the indexed scan; R2 +C5+C6 -> three. Expiry alone
     // never lowers demand. This covers the delayed-Dispatch gap without a
     // second Session index or Cloud-local state.
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     for (id, owner) in [
         ("terminal-a1", Some("worker-a")),
         ("terminal-a2", Some("worker-a")),
@@ -99,8 +105,11 @@ async fn terminal_cleanup_worker_demand_follows_the_verified_session_root() {
     // the contract test beside the predicate.
     let live = persisted("demand-live", true, "idle");
     assert!(!live.needs_terminal_cleanup_worker().unwrap(), "R1");
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let mut terminal = persisted("demand-terminal", false, "terminated");
     terminal.archive("2026-10-05T00:00:00Z", 1).unwrap();
     assert!(terminal.needs_terminal_cleanup_worker().unwrap(), "R2");
@@ -128,8 +137,11 @@ async fn worker_realization_owner_read_keeps_expired_unfinished_session_occupied
     // realization lease, C3 cleanup incomplete/completed. R1 exact+C2+
     // incomplete -> occupied; R2 different owner -> empty; R3 terminal
     // cleanup completed -> empty. Expiry cannot manufacture physical cleanup.
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let mut retained = persisted("affinity-expired", true, "idle");
     retained.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
         owner: "worker-affinity".into(),

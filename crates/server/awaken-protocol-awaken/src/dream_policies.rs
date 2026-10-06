@@ -67,6 +67,7 @@ async fn get_policy(
 ) -> Result<Json<DreamPolicy>, DreamPolicyRejection> {
     application
         .policy(&workspace, &memory_store_id)
+        .await
         .map(Json)
         .map_err(map_error)
 }
@@ -79,7 +80,11 @@ async fn put_policy(
 ) -> Result<Json<DreamPolicy>, DreamPolicyRejection> {
     application
         .set_policy(&workspace, &memory_store_id, config)
-        .and_then(|()| application.policy(&workspace, &memory_store_id))
+        .await
+        .map_err(map_error)?;
+    application
+        .policy(&workspace, &memory_store_id)
+        .await
         .map(Json)
         .map_err(map_error)
 }

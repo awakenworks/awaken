@@ -22,7 +22,7 @@ async fn outcome_queries_need_no_frozen_runtime_or_environment_and_preserve_comm
             reached: Arc::new(tokio::sync::Notify::new()),
             calls: AtomicUsize::new(0),
         });
-        let host = Arc::new(SharedHost::new(model.clone(), "stub"));
+        let host = Arc::new(SharedHost::new(model.clone(), "stub").await);
         let managed = install_test_dispatch_runtime(&host);
         let thread = ThreadId(format!("outcome-pure-query-cached-{cached}"));
         if cached {

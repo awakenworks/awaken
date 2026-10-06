@@ -193,6 +193,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     let realization_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub")
+            .await
             .with_database_less_worker_role_for_test()
             .with_memory_reference_encoder(Arc::new(RecordingTerminalMemoryReferenceEncoder {
                 events: events.clone(),
@@ -531,10 +532,12 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         fence_refresh_probe: None,
     });
     let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub").with_session_container_provider(
-            provider,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
-        ),
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_session_container_provider(
+                provider,
+                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            ),
     );
     let managed = install_test_dispatch_runtime(&host);
     install_test_session_application(&host);
@@ -762,8 +765,8 @@ impl
     }
 }
 
-#[test]
-fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
+#[tokio::test]
+async fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
     // Cause/effect graph: C1 a terminal effect was admitted more than 20s ago
     // and its asserted expiry elapsed; C2 the local slot either has a live
     // monotonic renewal, no renewal, or a successor epoch; C3 the boundary is
@@ -784,7 +787,7 @@ fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
     // both projections; a future UTC expiry plus exhausted proof denies both.
     // R6 closed/uninstalled slots deny even with matching retained lease bytes.
     // These are Host projection decisions, not async Provider commit grants.
-    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    let host = SharedHost::new(Arc::new(OkModel), "stub").await;
     let session_id = "terminal-renewed-provider-fence";
     let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
     let expired_lease = awaken_session_resource_contract::SessionRealizationLease {
@@ -968,6 +971,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         fence_refresh_probe: Some(probe.clone()),
     });
     let raw_host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
         .with_database_less_worker_role_for_test()
         .with_memory_reference_encoder(Arc::new(RecordingTerminalMemoryReferenceEncoder {
             events: events.clone(),
@@ -1189,10 +1193,12 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
         scenario: TerminalRecoveryScenario::TotalAbsence,
         fence_refresh_probe: None,
     });
-    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub").with_session_container_provider(
-        provider,
-        Arc::new(crate::session_environment::UnusedHandExecutorFactory),
-    );
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
+        .with_session_container_provider(
+            provider,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+        );
     raw_host.resources.artifact_publisher = Arc::new(RecordingTerminalArtifactRecovery {
         events: events.clone(),
         receipt: receipt.clone(),
@@ -1307,10 +1313,12 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
         scenario: TerminalRecoveryScenario::Disposing,
         fence_refresh_probe: None,
     });
-    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub").with_session_container_provider(
-        provider,
-        Arc::new(crate::session_environment::UnusedHandExecutorFactory),
-    );
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
+        .with_session_container_provider(
+            provider,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+        );
     raw_host.resources.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
         events: events.clone(),
         records: source_records.clone(),
@@ -1454,6 +1462,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
     });
     let checkpoint_id = "checkpoint-disposing-absent";
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
         .with_session_container_provider(
             provider,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
@@ -1594,10 +1603,12 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
             fence_refresh_probe: None,
         });
         let host = Arc::new(
-            SharedHost::new(Arc::new(OkModel), "stub").with_session_container_provider(
-                provider,
-                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
-            ),
+            SharedHost::new(Arc::new(OkModel), "stub")
+                .await
+                .with_session_container_provider(
+                    provider,
+                    Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+                ),
         );
         let managed = managed_with_resource_source(host.clone());
 
@@ -1744,7 +1755,7 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
      * ambiguous; the contract decision-table test owns that negative row. */
     let thread = "proved-absent-terminal-memory-evidence";
     let events = Arc::new(Mutex::new(Vec::new()));
-    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub").await;
     raw_host.resources.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
         events: events.clone(),
         records: Arc::new(Mutex::new(Vec::new())),
@@ -1892,6 +1903,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             fence_refresh_probe: None,
         });
         let raw_host = SharedHost::new(Arc::new(OkModel), "stub")
+            .await
             .with_database_less_worker_role_for_test()
             .with_memory_reference_encoder(Arc::new(RecordingTerminalMemoryReferenceEncoder {
                 events: events.clone(),

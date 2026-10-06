@@ -1,7 +1,7 @@
 // @formal evidence agent_inputs.rejected_revision_does_not_mutate
 use awaken_config_resolver::{AgentInputBindingRepository, AgentInputConfig};
 
-pub fn ambiguous_keys_fail_closed(store: &impl AgentInputBindingRepository) {
+pub async fn ambiguous_keys_fail_closed(store: &impl AgentInputBindingRepository) {
     // K1: delimiter in either coordinate can alias ("a", "b<sep>c") with
     // ("a<sep>b", "c"). K2: NUL cannot be represented by PostgreSQL TEXT.
     // Both reject before read/write/list, not just at the HTTP edge. K3: valid
@@ -13,7 +13,10 @@ pub fn ambiguous_keys_fail_closed(store: &impl AgentInputBindingRepository) {
         inputs: Vec::new(),
         revision: 1,
     };
-    store.put_agent_inputs("owner", config("agent")).unwrap();
+    store
+        .put_agent_inputs("owner", config("agent"))
+        .await
+        .unwrap();
     for (workspace, agent) in [
         ("a", "b\u{1f}c"),
         ("a\u{1f}b", "c"),
@@ -21,26 +24,33 @@ pub fn ambiguous_keys_fail_closed(store: &impl AgentInputBindingRepository) {
         ("a", "b\0c"),
     ] {
         assert!(
-            store.put_agent_inputs(workspace, config(agent)).is_err(),
+            store
+                .put_agent_inputs(workspace, config(agent))
+                .await
+                .is_err(),
             "K1/K2 write"
         );
         assert!(
-            store.get_agent_inputs(workspace, agent).is_err(),
+            store.get_agent_inputs(workspace, agent).await.is_err(),
             "K1/K2 read"
         );
     }
     for workspace in ["a\u{1f}b", "a\0b"] {
-        assert!(store.list_agent_inputs(workspace).is_err(), "K1/K2 list");
+        assert!(
+            store.list_agent_inputs(workspace).await.is_err(),
+            "K1/K2 list"
+        );
     }
     assert_eq!(
-        store.get_agent_inputs("owner", "agent").unwrap(),
+        store.get_agent_inputs("owner", "agent").await.unwrap(),
         Some(config("agent"))
     );
     store
         .put_agent_inputs("工作区:one", config("agent:two"))
+        .await
         .unwrap();
     assert_eq!(
-        store.list_agent_inputs("工作区:one").unwrap(),
+        store.list_agent_inputs("工作区:one").await.unwrap(),
         vec![config("agent:two")]
     );
 }
@@ -69,22 +79,26 @@ pub async fn rollback_and_lost_response<F, Fut>(
     assert!(
         store
             .put_agent_inputs("retry-workspace", config.clone())
+            .await
             .is_err(),
         "B1"
     );
     assert_eq!(
         store
             .get_agent_inputs("retry-workspace", &config.agent_id)
+            .await
             .unwrap(),
         None
     );
     reject_writes(false).await;
     store
         .put_agent_inputs("retry-workspace", config.clone())
+        .await
         .unwrap();
     reject_writes(true).await;
     store
         .put_agent_inputs("retry-workspace", config.clone())
+        .await
         .expect("B2 replay must not execute a write");
     let mut changed = config.clone();
     changed.environment = Some(awaken_config_resolver::AgentEnvironmentBinding {
@@ -93,7 +107,9 @@ pub async fn rollback_and_lost_response<F, Fut>(
     });
     assert!(
         matches!(
-            store.put_agent_inputs("retry-workspace", changed.clone()),
+            store
+                .put_agent_inputs("retry-workspace", changed.clone())
+                .await,
             Err(awaken_config_resolver::AgentInputRepositoryError::RevisionConflict { .. })
         ),
         "B3"
@@ -102,22 +118,26 @@ pub async fn rollback_and_lost_response<F, Fut>(
     assert!(
         store
             .put_agent_inputs("retry-workspace", changed.clone())
+            .await
             .is_err(),
         "B4"
     );
     assert_eq!(
         store
             .get_agent_inputs("retry-workspace", &config.agent_id)
+            .await
             .unwrap(),
         Some(config)
     );
     reject_writes(false).await;
     store
         .put_agent_inputs("retry-workspace", changed.clone())
+        .await
         .unwrap();
     assert_eq!(
         store
             .get_agent_inputs("retry-workspace", &changed.agent_id)
+            .await
             .unwrap(),
         Some(changed)
     );

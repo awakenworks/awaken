@@ -422,7 +422,9 @@ mod tests {
         Arc<dyn awaken_session_repository_contract::SessionStore>,
     ) {
         let repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         let id = session.session_id.clone();
         let payload =
@@ -440,7 +442,9 @@ mod tests {
         .await
         .unwrap();
         (
-            ManagedState::new_with_mcp(NoopRuntime).with_session_repo(repo.clone()),
+            ManagedState::new_with_mcp(NoopRuntime)
+                .await
+                .with_session_repo(repo.clone()),
             repo,
         )
     }
@@ -461,7 +465,7 @@ mod tests {
         // Effects: E1 C1 claims the sole recovery/timer owner; E2 C1+C2 rejects
         // the duplicate before it can reconcile; E3 C1+C3 exits cooperatively.
         // The protocol state never spawns or retains a parallel lifecycle path.
-        let state = Arc::new(ManagedState::new_with_mcp(NoopRuntime));
+        let state = Arc::new(ManagedState::new_with_mcp(NoopRuntime).await);
         let cancellation = awaken_runtime_contract::CancellationToken::new();
         let supervisor = tokio::spawn(
             state

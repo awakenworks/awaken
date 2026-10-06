@@ -16,7 +16,7 @@ async fn later_await_owns_its_target_without_repairing_an_earlier_missing_target
     // The lifecycle and audit rows share the production cursor encoder. An
     // extra committed message gives the second audit its own source commit.
     let runtime = LifecycleRuntime::default();
-    let state = ManagedState::new(runtime.clone());
+    let state = ManagedState::new(runtime.clone()).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({

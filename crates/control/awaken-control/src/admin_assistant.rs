@@ -509,9 +509,11 @@ async fn apply_pending_resource_effects(
         let ManagementEffect::UpsertAgentInputs { config } = &effect;
         resources
             .put_agent_inputs(scope.as_str(), config.clone())
+            .await
             .map_err(|error| error.to_string())?;
         let observed = resources
             .get_agent_inputs(scope.as_str(), &config.agent_id)
+            .await
             .map_err(|error| error.to_string())?;
         let receipt = effect
             .confirm_readback(scope, observed.as_ref())
@@ -604,6 +606,7 @@ impl DraftStore for ConfigServiceDraftStore {
         let current = self
             .resources
             .get_agent_inputs(scope.as_str(), &draft.id)
+            .await
             .map_err(|error| error.to_string())?;
         let revision = current.as_ref().map_or(1, |current| current.revision + 1);
         let environment = current.and_then(|current| current.environment);
@@ -810,7 +813,7 @@ mod tests {
     enum ReadbackHook {
         Pause(
             tokio::sync::oneshot::Sender<()>,
-            std::sync::mpsc::Receiver<()>,
+            tokio::sync::oneshot::Receiver<()>,
         ),
         Missing,
         Changed,
@@ -822,28 +825,34 @@ mod tests {
         hook: std::sync::Mutex<Option<ReadbackHook>>,
     }
 
+    #[async_trait::async_trait]
     impl AgentInputBindingRepository for ObservedInputRepository {
-        fn put_agent_inputs(
+        async fn put_agent_inputs(
             &self,
             workspace: &str,
             config: AgentInputConfig,
         ) -> Result<(), awaken_config_resolver::AgentInputRepositoryError> {
-            self.inner.put_agent_inputs(workspace, config)
+            self.inner.put_agent_inputs(workspace, config).await
         }
 
-        fn get_agent_inputs(
+        async fn get_agent_inputs(
             &self,
             workspace: &str,
             agent: &str,
         ) -> Result<Option<AgentInputConfig>, awaken_config_resolver::AgentInputRepositoryError>
         {
-            let mut observed = self.inner.get_agent_inputs(workspace, agent)?;
+            let mut observed = self.inner.get_agent_inputs(workspace, agent).await?;
             let hook = self.hook.lock().unwrap().take();
             match hook {
                 Some(ReadbackHook::Pause(ready, resume)) => {
                     ready.send(()).unwrap();
-                    resume
-                        .recv_timeout(std::time::Duration::from_secs(10))
+                    tokio::time::timeout(std::time::Duration::from_secs(10), resume)
+                        .await
+                        .map_err(|e| {
+                            awaken_config_resolver::AgentInputRepositoryError::Storage(
+                                e.to_string(),
+                            )
+                        })?
                         .map_err(|e| {
                             awaken_config_resolver::AgentInputRepositoryError::Storage(
                                 e.to_string(),
@@ -866,12 +875,12 @@ mod tests {
             Ok(observed)
         }
 
-        fn list_agent_inputs(
+        async fn list_agent_inputs(
             &self,
             workspace: &str,
         ) -> Result<Vec<AgentInputConfig>, awaken_config_resolver::AgentInputRepositoryError>
         {
-            self.inner.list_agent_inputs(workspace)
+            self.inner.list_agent_inputs(workspace).await
         }
     }
 
@@ -914,13 +923,13 @@ mod tests {
         // revision 2. Real SQLite + the existing input reducer own both stores.
         let plane = ConfigPlane::new(
             Arc::new(test_config_service()),
-            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
             Arc::new(StaticToolCatalog(Vec::new())),
         );
         let scope = ScopeId::from("late-readback");
         let old = queue_test_effect(&plane, &scope, 1).await;
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
         let resources = Arc::new(ObservedInputRepository {
             inner: InMemoryAgentInputBindingRepository::new(),
             hook: std::sync::Mutex::new(Some(ReadbackHook::Pause(ready_tx, resume_rx))),
@@ -938,6 +947,7 @@ mod tests {
         let observed = resources
             .inner
             .get_agent_inputs(scope.as_str(), old.key())
+            .await
             .unwrap();
         let receipt = old.confirm_readback(&scope, observed.as_ref()).unwrap();
         assert!(plane.complete_management_effect(&receipt).await.unwrap());
@@ -959,6 +969,7 @@ mod tests {
         let actual = resources
             .inner
             .get_agent_inputs(scope.as_str(), next.key())
+            .await
             .unwrap();
         assert!(next.confirm_readback(&scope, actual.as_ref()).is_some());
         assert!(
@@ -982,7 +993,7 @@ mod tests {
         ] {
             let plane = ConfigPlane::new(
                 Arc::new(test_config_service()),
-                Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+                Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
                 Arc::new(StaticToolCatalog(Vec::new())),
             );
             let scope = ScopeId::from("readback-failure");
@@ -1081,7 +1092,7 @@ mod tests {
         // detached timer. Rules: R1=C1 -> E1; R2=C2 -> E2.
         let plane = ConfigPlane::new(
             Arc::new(test_config_service()),
-            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
             Arc::new(StaticToolCatalog(Vec::new())),
         );
         let resources = Arc::new(InMemoryAgentInputBindingRepository::new());
@@ -1133,6 +1144,7 @@ mod tests {
         assert_eq!(
             resources
                 .get_agent_inputs("workspace-a", "shared-agent")
+                .await
                 .unwrap()
                 .unwrap()
                 .inputs[0]
@@ -1143,6 +1155,7 @@ mod tests {
         assert_eq!(
             resources
                 .get_agent_inputs("workspace-b", "shared-agent")
+                .await
                 .unwrap()
                 .unwrap()
                 .inputs[0]
@@ -1165,7 +1178,7 @@ mod tests {
         // | E1   | committed    | pending         | reconcile        | readback present; journal empty |
         // The Assistant replay test owns invocation of this narrow projection; this
         // adapter test proves it delegates to the one existing effect reconciler.
-        let raw_store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let raw_store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
         let plane = ConfigPlane::new(
             Arc::new(test_config_service()),
             raw_store,
@@ -1217,6 +1230,7 @@ mod tests {
         assert!(
             resources
                 .get_agent_inputs(scope.as_str(), &draft.id)
+                .await
                 .unwrap()
                 .is_none()
         );
@@ -1234,6 +1248,7 @@ mod tests {
         assert_eq!(
             resources
                 .get_agent_inputs(scope.as_str(), &draft.id)
+                .await
                 .unwrap()
                 .unwrap()
                 .inputs[0]
@@ -1263,7 +1278,7 @@ mod tests {
         // workspace authority; absence cannot fall back to another tenant/store.
         let plane = ConfigPlane::new(
             Arc::new(test_config_service()),
-            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
             Arc::new(StaticToolCatalog(Vec::new())),
         );
         let store = ConfigServiceDraftStore::request_scoped(
@@ -1327,7 +1342,7 @@ mod tests {
     #[tokio::test]
     async fn seeding_uses_reserved_configuration_and_explicit_execution_workspace() {
         // A scope-keyed catalog + a resolver so the Auto assistant can publish.
-        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
         let tools = Arc::new(ScopedToolCatalog::new(
             Vec::new(),
             RESERVED_ADMIN_SCOPE,
@@ -1362,7 +1377,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_ensure_publishes_after_setup_becomes_available() {
-        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
         let tools = Arc::new(ScopedToolCatalog::new(
             Vec::new(),
             RESERVED_ADMIN_SCOPE,
@@ -1401,8 +1416,8 @@ mod tests {
         // | H1 | tenant | local | publish only into tenant |
         // | H2 | absent | local | publish into local (local composition) |
         // | H3 | absent | absent | reject without publication |
-        let make_state = || {
-            let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let make_state = || async {
+            let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
             let tools = Arc::new(ScopedToolCatalog::new(
                 Vec::new(),
                 RESERVED_ADMIN_SCOPE,
@@ -1418,7 +1433,7 @@ mod tests {
             )
         };
 
-        let (state, executable) = make_state();
+        let (state, executable) = make_state().await;
         let Json(result) = ensure_admin_assistant(
             State(state),
             RequiredExecutionWorkspace("workspace-tenant".into()),
@@ -1440,7 +1455,7 @@ mod tests {
         );
 
         // H2: the composition's own Workspace, supplied by the router layer.
-        let (state, executable) = make_state();
+        let (state, executable) = make_state().await;
         let Json(result) = ensure_admin_assistant(
             State(state),
             RequiredExecutionWorkspace("workspace-local".into()),
@@ -1458,7 +1473,7 @@ mod tests {
         // H3: no edge stamp AND no composed Workspace. The router — not the
         // handler — is the only place a composition may supply one, so this
         // drives the real mount with `None` and expects the extractor's refusal.
-        let (state, executable) = make_state();
+        let (state, executable) = make_state().await;
         let response = tower::ServiceExt::oneshot(
             with_composed_workspace(
                 Router::new()
@@ -1496,7 +1511,7 @@ mod tests {
     async fn lifecycle_ensure_reports_the_model_prerequisite() {
         let plane = ConfigPlane::new(
             Arc::new(test_config_service()),
-            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
             Arc::new(StaticToolCatalog(Vec::new())),
         );
         let state = AdminAssistantLifecycleState {
@@ -1522,7 +1537,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_ensure_recovers_from_a_stale_startup_backend() {
-        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
         let tools = Arc::new(ScopedToolCatalog::new(
             Vec::new(),
             RESERVED_ADMIN_SCOPE,
@@ -1563,7 +1578,7 @@ mod tests {
         // The Agent aggregate is the live MCP authoring truth.
         let plane = ConfigPlane::new(
             Arc::new(test_config_service()),
-            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
             Arc::new(StaticToolCatalog(vec![tool("read")])),
         );
         let mut support = admin_assistant_config();
@@ -1626,6 +1641,7 @@ mod tests {
 
         let storage = Arc::new(
             awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
                 .expect("open ephemeral Resource Registry"),
         );
         let registry = Arc::new(awaken_resource_application::RegistryApplication::new(
@@ -1707,7 +1723,7 @@ mod tests {
     /// assistant id, from the LIVE config plane.
     #[tokio::test]
     async fn capability_reader_lists_existing_agents_excluding_the_assistant() {
-        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
         let plane = ConfigPlane::new(
             Arc::new(test_config_service()),
             store,
@@ -1735,7 +1751,7 @@ mod tests {
 
     #[tokio::test]
     async fn capability_reader_lists_only_its_selected_execution_workspace() {
-        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
         let plane = ConfigPlane::new(
             Arc::new(test_config_service()),
             store,
@@ -1768,7 +1784,7 @@ mod tests {
 
     #[tokio::test]
     async fn draft_validator_rejects_an_unknown_tool_in_a_tenant_draft() {
-        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
         let plane = ConfigPlane::new(
             Arc::new(test_config_service()),
             store,
@@ -1792,7 +1808,7 @@ mod tests {
     /// `seed_admin_assistant` surfaces that error string verbatim.
     #[tokio::test]
     async fn seed_returns_the_publish_error_when_no_model_resolves() {
-        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
         let tools = Arc::new(ScopedToolCatalog::new(
             Vec::new(),
             RESERVED_ADMIN_SCOPE,
@@ -1816,7 +1832,7 @@ mod tests {
     /// F35(c): re-seeding recompiles to the same installed content (idempotent).
     #[tokio::test]
     async fn seeding_is_idempotent_recompiling_to_the_same_content() {
-        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
         let tools = Arc::new(ScopedToolCatalog::new(
             Vec::new(),
             RESERVED_ADMIN_SCOPE,
@@ -1860,7 +1876,7 @@ mod tests {
     /// F36(b): the validator flattens the field-routed issue to its human message.
     #[tokio::test]
     async fn draft_validator_error_carries_the_issue_message() {
-        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
         let plane = ConfigPlane::new(
             Arc::new(test_config_service()),
             store,

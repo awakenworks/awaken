@@ -26,6 +26,7 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
     // truth is covered by repository conformance; Q1 owns value projection.
     let inner: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("validation repository"),
     );
     let repository = Arc::new(FaultingSessionRepository::new(inner.clone()));

@@ -220,7 +220,7 @@ NON_PRODUCT_APIS = (
     (
         "SqliteMemoryRepository::open_in_memory",
         MEMORY_SQLITE_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
@@ -232,13 +232,13 @@ NON_PRODUCT_APIS = (
     (
         "SqliteSkillStore::open_in_memory",
         SKILL_SQLITE_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
         "SqliteResourceStore::in_memory",
         RESOURCE_STORE_SOURCE,
-        r"\bpub\s+fn\s+in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
@@ -250,7 +250,7 @@ NON_PRODUCT_APIS = (
     (
         "awaken_resource_persistence::ephemeral",
         RESOURCE_PERSISTENCE,
-        r"\bpub\s+fn\s+ephemeral\b",
+        r"\bpub\s+(?:async\s+)?fn\s+ephemeral\b",
         FEATURE_TEST_SUPPORT_GATE,
     ),
     (
@@ -268,7 +268,7 @@ NON_PRODUCT_APIS = (
     (
         "SqliteEnvRegistry::open_in_memory",
         ENV_STORE_SQLITE_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
@@ -292,7 +292,7 @@ NON_PRODUCT_APIS = (
     (
         "SqliteManagedSessionRepository::open_in_memory",
         SESSION_STORE_SQLITE_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
@@ -304,25 +304,25 @@ NON_PRODUCT_APIS = (
     (
         "SqliteWorkQueue::open_in_memory",
         WORK_STORE_BACKENDS_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
         "SqliteCommitCoordinator::open_in_memory",
         COMMIT_SQLITE_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
         "SqliteFileStore::open_in_memory",
         FILE_SQLITE_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
         "SqliteWorkerDirectory::open_in_memory",
         WORKER_REGISTRY_SQLITE_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
@@ -352,7 +352,7 @@ NON_PRODUCT_APIS = (
     (
         "open_sqlite_dispatch_store_in_memory",
         RUN_INGRESS_FACTORY_SOURCE,
-        r"\bpub\s+fn\s+open_sqlite_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_sqlite_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
@@ -370,7 +370,7 @@ NON_PRODUCT_APIS = (
     (
         "SqliteDispatchStore::open_in_memory",
         RUN_INGRESS_SQLITE_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
@@ -382,7 +382,7 @@ NON_PRODUCT_APIS = (
     (
         "SqliteCapturedContentStore::open_in_memory",
         CAPTURE_SQLITE_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
@@ -394,19 +394,19 @@ NON_PRODUCT_APIS = (
     (
         "SqliteDataSubjectRepo::open_in_memory",
         DATA_SUBJECT_SQLITE_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
         "SqliteConfigStore::open_in_memory",
         CONFIG_STORE_SQLITE_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
         "SqliteAdminStore::open_in_memory",
         ADMIN_CONFIG_SQLITE_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
@@ -418,7 +418,7 @@ NON_PRODUCT_APIS = (
     (
         "SqliteCatalogRepo::open_in_memory",
         MODEL_CATALOG_SQLITE_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
@@ -480,7 +480,7 @@ NON_PRODUCT_APIS = (
     (
         "SQLite credential open_in_memory methods",
         CREDENTIAL_SQLITE_SOURCE,
-        r"\bpub\s+fn\s+open_in_memory\b",
+        r"\bpub\s+(?:async\s+)?fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
     (
@@ -605,7 +605,7 @@ def volatile_runtime_host_surface_violations(source: str) -> list[str]:
     errors: list[str] = []
     for name in VOLATILE_RUNTIME_HOST_APIS:
         gated = _declaration_is_gated(
-            source, rf"\bpub\s+fn\s+{re.escape(name)}\b", NON_PRODUCT_GATE
+            source, rf"\bpub\s+(?:async\s+)?fn\s+{re.escape(name)}\b", NON_PRODUCT_GATE
         )
         if gated is None:
             errors.append(f"missing volatile Host API `{name}`")

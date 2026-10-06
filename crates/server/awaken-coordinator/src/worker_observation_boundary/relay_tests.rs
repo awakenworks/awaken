@@ -55,17 +55,23 @@ async fn destination_boundary_requires_exact_auth_root_registry_and_pod() {
     // Earlier refusal rows never call the Pod port. The test composes the same
     // Session application/repository and Registry owners as product startup.
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(100));
-    let host = Arc::new(awaken_runtime_host_testkit::volatile_host(
-        Arc::new(awaken_scenario_host::EchoModel),
-        "relay-test",
-    ));
+    let host = Arc::new(
+        awaken_runtime_host_testkit::volatile_host(
+            Arc::new(awaken_scenario_host::EchoModel),
+            "relay-test",
+        )
+        .await,
+    );
     let environments = crate::volatile_environment_execution(clock.clone());
-    let resources = awaken_resource_persistence::ephemeral(clock.clone()).unwrap();
+    let resources = awaken_resource_persistence::ephemeral(clock.clone())
+        .await
+        .unwrap();
     let sessions = crate::local_managed_state_with_environments(
         host.clone(),
         resources.authorities().resource_registry(),
         environments.clone(),
     )
+    .await
     .sessions;
     let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
     let registered = directory

@@ -129,7 +129,7 @@ async fn sqlite_signed_registration_rejects_historical_incarnation() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("worker.sqlite");
     assert_registration_history(
-        Arc::new(SqliteWorkerDirectory::open(path).unwrap()),
+        Arc::new(SqliteWorkerDirectory::open(path).await.unwrap()),
         "history-http-sqlite",
     )
     .await;

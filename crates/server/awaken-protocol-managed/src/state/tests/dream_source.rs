@@ -22,7 +22,7 @@ async fn dream_scans_durable_roots_that_this_replica_never_cached() {
     // | D6 | Deleted (hidden) | E2 |
     // | D7 | another Workspace | E2 |
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     let root = |id: &str, updated: Option<u64>| {
         let mut root = sample_persisted(id);
         root.execution = SessionExecutionState::Idle;
@@ -60,7 +60,9 @@ async fn dream_scans_durable_roots_that_this_replica_never_cached() {
         .await
         .expect("persist durable root");
     }
-    let replica = crate::ManagedState::new(RehydrateFake::default()).with_session_repo(repo);
+    let replica = crate::ManagedState::new(RehydrateFake::default())
+        .await
+        .with_session_repo(repo);
     assert!(replica.list_sessions().is_empty(), "C1 cold wire cache");
 
     let eligible = replica

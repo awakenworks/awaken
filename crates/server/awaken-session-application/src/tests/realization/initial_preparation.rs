@@ -55,8 +55,11 @@ async fn run_free_preparation_is_worker_demand_before_any_run_or_owner() {
     // Effects: R1=C1+C2 contributes one unbound Worker demand, enough for a
     // zero-Worker fleet to wake; R2=C3 contributes zero. This is only a
     // capacity hint: the existing root-CAS claim still owns admission.
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(
         repo.as_ref(),
         externally_placed("pending", "preparing", true),
@@ -107,8 +110,11 @@ async fn preparation_candidate_index_skips_a_saturated_live_owner_front() {
     // only C2, not the 256-root generic recovery front; R2=R1+C3 -> exact
     // root-CAS assignment of C2 without a model Run. Existing admission tests
     // own capability, incarnation, and competing-claim rejection.
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     for index in 0..300 {
         let mut root = externally_placed(&format!("retained-{index}"), "idle", false);
         root.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
@@ -164,8 +170,11 @@ async fn bound_incomplete_preparation_remains_a_candidate_without_extra_replica_
     // Preparing; C2 a later exact retry may need that same owner. R1=C1+C2 ->
     // the candidate index retains the root, while capacity counts only its
     // distinct retained owner and adds no second first-placement replica.
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let mut root = externally_placed("bound-preparation", "preparing", true);
     root.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
         owner: "worker-a".into(),
@@ -194,8 +203,11 @@ async fn preparation_claim_advances_one_candidate_page_per_poll() {
     // R4 follows end-of-index with a wrapped first page and no duplicate.
     // The cursor is a disposable per-incarnation hint;
     // every candidate still passes current-root and Worker eligibility checks.
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     for index in 0..300 {
         create(
             repo.as_ref(),
@@ -292,8 +304,11 @@ async fn run_free_request_is_one_idempotent_session_root_transition() {
     // R1=C1+C2+!C3=>E1; R2=C1+C2+C3=>E2;
     // R3=C4=>E3; R4=C1+!C2=>E4; R5=C5=>E5.
     // No rule creates a Run or work table.
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(
         repo.as_ref(),
         externally_placed("selected", "preparing", false),
@@ -418,8 +433,11 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
     // | R6 | yes | yes | yes | yes | no | yes | yes | E2 |
     // | R7 | yes | yes | yes | yes | yes | no | yes | unavailable |
     // | R9 | yes | yes | yes | yes | yes | yes | no | E2 |
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let mut local = persisted("local", false, "preparing");
     local.realization_progress.run_free_initial_preparation = true;
     create(repo.as_ref(), local).await;
@@ -569,8 +587,11 @@ async fn preparation_rechecks_worker_capability_after_root_assignment() {
     // eligibility read and the root CAS readback. E3 is no directive delivered
     // to a physical Worker; the assigned lease remains root-owned and expires
     // through its ordinary fence. R8=C1..C6 true + C7 withdrawn => E3.
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(repo.as_ref(), externally_placed("race", "preparing", true)).await;
     let application = application(
         repo.clone(),

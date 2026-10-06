@@ -5,7 +5,7 @@ async fn startup_reconciliation_reuses_registration_and_keeps_latest_current() {
     // submitted first and becomes current; R2 older publications remain exact
     // history; R3 a source-store failure is returned rather than reported as
     // a successful empty recovery.
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let scope = ScopeId::from("wrkspc_warm");
     let author = plane_over(store.clone());
 
@@ -73,7 +73,7 @@ async fn startup_reconciliation_uses_frozen_publication_inputs() {
     // F2 mutable draft advances to rev2; F3 a fresh Coordinator reconciles
     // -> the current Session profile still carries rev1's mount, with no
     // fallback read from the mutable Resource repository.
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let resources = Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new());
     let scope = ScopeId::from("wrkspc_frozen_inputs");
     let inputs = |revision, mount_path: &str| AgentInputConfig {
@@ -90,6 +90,7 @@ async fn startup_reconciliation_uses_frozen_publication_inputs() {
     };
     resources
         .put_agent_inputs(scope.as_str(), inputs(1, "/published"))
+        .await
         .unwrap();
     let author_service = test_service().with_resources(resources.clone());
     let author = ConfigPlane::new(
@@ -104,6 +105,7 @@ async fn startup_reconciliation_uses_frozen_publication_inputs() {
     author.publish(&scope, "frozen-agent").await.unwrap();
     resources
         .put_agent_inputs(scope.as_str(), inputs(2, "/draft-v2"))
+        .await
         .unwrap();
 
     let (cold, catalog) = test_service_and_catalog();
@@ -123,7 +125,7 @@ async fn startup_reconciliation_converges_legacy_duplicate_source_revisions() {
     // source revision keep the last persisted snapshot; R2 the older row
     // remains durable history; R3 the executable catalog receives one
     // registration, preserving the source-revision uniqueness invariant.
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let scope = ScopeId::from("wrkspc_legacy_duplicate");
     let author = plane_over(store.clone());
     author
@@ -181,7 +183,7 @@ async fn startup_reconciliation_quarantines_one_bad_history_without_blocking_goo
     // are registered, the bad row remains immutable, and recovery returns one
     // degraded aggregate for retry/alerting. It must neither delete history nor
     // fail before later Agents receive their last-known-good projection.
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let scope = ScopeId::from("wrkspc_quarantine");
     let author = plane_over(store.clone());
     for id in ["damaged-agent", "healthy-agent"] {
@@ -231,7 +233,7 @@ async fn registration_reconciliation_keeps_archived_publications_unavailable() {
     // Lifecycle decision table: R1 current Published + durable publication ->
     // register; R2 current Disabled/Archived + old publication -> withdraw and
     // skip every historical snapshot. Exact history remains a catalog concern.
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let scope = ScopeId::from("wrkspc_archived_warm");
     let author = plane_over(store.clone());
     let mut config = agent_config("archived-agent");
@@ -254,7 +256,7 @@ async fn registration_reconciliation_keeps_archived_publications_unavailable() {
 
 #[tokio::test]
 async fn publication_preview_is_write_free_and_matches_publish() {
-    let store = SqliteConfigStore::open_in_memory().unwrap();
+    let store = SqliteConfigStore::open_in_memory().await.unwrap();
     let workspace = scope("wrkspc_preview");
     let (service, catalog) = test_service_and_catalog();
     ConfigRegistry::put_config(&store, &agent_config("preview-agent"))
@@ -292,7 +294,7 @@ async fn publish_is_idempotent_by_fingerprint() {
     // Re-publishing an unchanged config is content-addressed: the same
     // fingerprint both times, and exactly one durable published row
     // (`ON CONFLICT(fingerprint) DO NOTHING`).
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let scope = ScopeId::from("wrkspc_idem");
     let plane = plane_over(store.clone());
     plane

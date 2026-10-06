@@ -186,7 +186,7 @@ pub async fn build_all_in_one_router() -> Router {
 /// volatile stores. It never consults the standard deployment config path.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn build_ephemeral_all_in_one_router() -> Router {
-    let stores = in_memory_process_stores();
+    let stores = in_memory_process_stores().await;
     let options = exact_host_model::local_test_process_options(&stores);
     prepare_runtime_routers(
         stores,
@@ -350,7 +350,7 @@ pub async fn build_all_in_one_router_with_host_customizer(
     web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
     customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
 ) -> Router {
-    let stores = in_memory_process_stores();
+    let stores = in_memory_process_stores().await;
     let mut options = exact_host_model::local_test_process_options(&stores);
     options.deployment = Some(deployment);
     options.web_search_providers = web_search_providers;
@@ -415,7 +415,7 @@ pub async fn build_all_in_one_router_with_model(
     model: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
 ) -> Router {
-    let stores = in_memory_process_stores();
+    let stores = in_memory_process_stores().await;
     let options = exact_host_model::local_test_process_options(&stores);
     prepare_runtime_routers(
         stores,
@@ -724,7 +724,7 @@ mod runtime_session_store_tests {
     async fn runtime_storage_reopens_the_session_and_its_owner_fence() {
         let dir = tempfile::tempdir().expect("temporary runtime storage");
         {
-            let stores = process_stores_for_runtime_storage(Some(dir.path()));
+            let stores = process_stores_for_runtime_storage(Some(dir.path())).await;
             let execution = stores
                 .coordinator
                 .as_ref()
@@ -746,7 +746,7 @@ mod runtime_session_store_tests {
                 .unwrap();
         }
 
-        let reopened = process_stores_for_runtime_storage(Some(dir.path()));
+        let reopened = process_stores_for_runtime_storage(Some(dir.path())).await;
         let execution = reopened
             .coordinator
             .as_ref()
@@ -785,12 +785,13 @@ mod runtime_session_store_tests {
             let directory = tempfile::tempdir().unwrap();
             let sessions = directory.path().join("sessions.db");
             if preopen_session {
-                drop(
-                    awaken_session_store::SqliteManagedSessionRepository::open(
-                        &sessions.to_string_lossy(),
-                    )
-                    .unwrap(),
-                );
+                awaken_session_store::SqliteManagedSessionRepository::open(
+                    &sessions.to_string_lossy(),
+                )
+                .await
+                .unwrap()
+                .close()
+                .await;
             }
             let marker = directory.path().join("platform-workspace-id");
             assert!(!marker.exists(), "{rule} precondition");
@@ -804,15 +805,15 @@ mod runtime_session_store_tests {
         }
     }
 
-    #[test]
-    fn session_and_deployment_ports_share_one_physical_repository() {
+    #[tokio::test]
+    async fn session_and_deployment_ports_share_one_physical_repository() {
         // Cause/effect decision table: D1 durable runtime storage -> Session and
         // Deployment typed ports point at one concrete repository allocation;
         // D2 ephemeral startup -> the same single-allocation invariant holds.
         // A different address would expose a parallel Deployment truth before
         // the repository-backed Deployment component is prepared.
         let dir = tempfile::tempdir().expect("temporary runtime storage");
-        let durable = process_stores_for_runtime_storage(Some(dir.path()));
+        let durable = process_stores_for_runtime_storage(Some(dir.path())).await;
         let durable = durable
             .coordinator
             .as_ref()
@@ -823,7 +824,7 @@ mod runtime_session_store_tests {
             "D1"
         );
 
-        let ephemeral = process_stores_for_runtime_storage(None);
+        let ephemeral = process_stores_for_runtime_storage(None).await;
         let ephemeral = ephemeral
             .coordinator
             .as_ref()
@@ -995,7 +996,7 @@ mod process_role_surface_tests {
     #[tokio::test]
     async fn service_roles_expose_only_their_owned_api() {
         let control_routers = prepare_control_routers(
-            in_memory_control_stores(),
+            in_memory_control_stores().await,
             None,
             None,
             None,
@@ -1128,7 +1129,7 @@ mod process_role_surface_tests {
         assert_ne!(authenticated.status(), StatusCode::UNAUTHORIZED);
         assert_ne!(authenticated.status(), StatusCode::NOT_FOUND);
 
-        let (coordinator_stores, control_service) = in_memory_split_coordinator();
+        let (coordinator_stores, control_service) = in_memory_split_coordinator().await;
         let coordinator_data = tempfile::tempdir().expect("coordinator test data");
         let mut coordinator_deployment =
             config::local_test_deployment(coordinator_data.path().to_owned());
@@ -1675,7 +1676,7 @@ mod process_role_surface_tests {
     async fn hosted_control_uses_the_injected_publication_resolver() {
         let called = Arc::new(AtomicBool::new(false));
         let app = prepare_control_routers(
-            in_memory_control_stores(),
+            in_memory_control_stores().await,
             None,
             None,
             None,

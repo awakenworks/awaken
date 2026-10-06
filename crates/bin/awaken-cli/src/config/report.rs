@@ -312,12 +312,13 @@ mod tests {
         // R3 non-directory path=>blocked; R4 bound storage+occupied listener=>
         // listener blocked.
         let directory = tempfile::tempdir().unwrap();
-        drop(
-            awaken_session_store::SqliteManagedSessionRepository::open(
-                &directory.path().join("sessions.db").to_string_lossy(),
-            )
-            .unwrap(),
-        );
+        awaken_session_store::SqliteManagedSessionRepository::open(
+            &directory.path().join("sessions.db").to_string_lossy(),
+        )
+        .await
+        .unwrap()
+        .close()
+        .await;
         std::fs::write(
             directory.path().join("platform-workspace-id"),
             "workspace-local",
@@ -472,10 +473,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let marker = directory.path().join("platform-workspace-id");
         let sessions = directory.path().join("sessions.db");
-        drop(
-            awaken_session_store::SqliteManagedSessionRepository::open(&sessions.to_string_lossy())
-                .unwrap(),
-        );
+        awaken_session_store::SqliteManagedSessionRepository::open(&sessions.to_string_lossy())
+            .await
+            .unwrap()
+            .close()
+            .await;
         let before = snapshot(directory.path());
         let mut deployment = crate::config::local_test_deployment(directory.path().to_path_buf());
         deployment.bind = "127.0.0.1:0".to_owned();

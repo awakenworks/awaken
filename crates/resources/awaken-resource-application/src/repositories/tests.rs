@@ -22,8 +22,12 @@ impl RepositoryCredentialValidator for Credentials {
     }
 }
 
-fn application() -> RepositoryApplication {
-    let storage = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+async fn application() -> RepositoryApplication {
+    let storage = Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .await
+            .unwrap(),
+    );
     RepositoryApplication::new(
         Arc::new(crate::RegistryApplication::new(
             storage,
@@ -51,7 +55,7 @@ fn command() -> CreateRepositoryCommand {
 async fn exact_retry_survives_config_changes_but_changed_payload_and_retirement_do_not() {
     // R1 same key+payload -> same identity; R2 payload change -> conflict;
     // R3 later config -> preserve current config; R4 retired -> never revive.
-    let app = application();
+    let app = application().await;
     let original = app.create_idempotent(command(), "request-1").await.unwrap();
     assert_eq!(
         original.definition,
@@ -126,7 +130,7 @@ async fn exact_retry_survives_config_changes_but_changed_payload_and_retirement_
 
 #[tokio::test]
 async fn workspace_scoping_and_session_ownership_apply_to_both_list_and_get() {
-    let app = application();
+    let app = application().await;
     let own = app.create_idempotent(command(), "same-key").await.unwrap();
     let mut foreign = command();
     foreign.workspace_id = "workspace-b".into();
@@ -171,7 +175,7 @@ async fn workspace_scoping_and_session_ownership_apply_to_both_list_and_get() {
 
 #[tokio::test]
 async fn private_repository_admission_happens_before_any_registry_write() {
-    let app = application();
+    let app = application().await;
     let mut private = command();
     private.credential_binding = Some("foreign-or-expired".into());
     assert!(

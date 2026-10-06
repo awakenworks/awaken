@@ -38,14 +38,12 @@ awaken-ext-memory = { workspace = true }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-rusqlite = { workspace = true }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }
 tokio.workspace = true
 tracing = "0.1"
 tempfile = "3"
 # The portable scoped-migration bundle (one `managed_session` schema, both backends).
-awaken-scoped-migration = { workspace = true, features = ["postgres"] }
-awaken-scoped-migration-sqlite.workspace = true
+awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] }
 
 [dev-dependencies]
 uuid = { version = "1", features = ["v4"] }

@@ -284,7 +284,8 @@ async fn exercise_background_attention(
         model,
         model_ref,
         [background_snapshot(model_ref)],
-    );
+    )
+    .await;
     let session = ok(
         &app,
         "POST",

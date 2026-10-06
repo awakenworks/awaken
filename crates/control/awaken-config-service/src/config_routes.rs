@@ -828,7 +828,7 @@ mod publication_projection_tests {
 
         let plane = ConfigPlane::new(
             Arc::new(test_service()),
-            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
             Arc::new(crate::tool_catalog::StaticToolCatalog(vec![
                 ToolDescriptor::pinned(
                     "managed",
@@ -1029,7 +1029,7 @@ mod publication_projection_tests {
 
         let plane = ConfigPlane::new(
             Arc::new(test_service()),
-            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
             Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
         );
         let scope = ScopeId::from("workspace-preset");
@@ -1132,7 +1132,7 @@ mod publication_projection_tests {
     async fn a_put_refuses_an_unaddressable_key_instead_of_blanking_its_section() {
         let plane = ConfigPlane::new(
             Arc::new(test_service()),
-            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
             Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
         );
         let scope = ScopeId::from("workspace-unknown-key");
@@ -1218,7 +1218,7 @@ mod publication_projection_tests {
     async fn exact_scoped_and_fail_closed() {
         let plane = ConfigPlane::new(
             Arc::new(test_service()),
-            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
             Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
         );
         let owner = ScopeId::from("workspace-owner");
@@ -1261,7 +1261,7 @@ mod publication_projection_tests {
     async fn export_is_scoped_and_returns_the_existing_snapshot_contract() {
         let plane = ConfigPlane::new(
             Arc::new(test_service()),
-            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
             Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
         );
         let owner = ScopeId::from("workspace-owner");

@@ -776,22 +776,24 @@ pub async fn environment_instants_are_the_injected_clock<R: EnvRegistry>(
 /// Run the whole contract. The factory takes the clock so the observation rules
 /// can name the instants they expect; `clock` is the caller's timeline for every
 /// rule that does not.
-pub async fn run_suite<R: EnvRegistry>(
+/// `fresh_with` is asynchronous because opening a durable backend (an sqlx pool
+/// plus its migrations) is.
+pub async fn run_suite<R: EnvRegistry, F: std::future::Future<Output = R>>(
     clock: Arc<dyn WallClock>,
-    fresh_with: impl Fn(Arc<dyn WallClock>) -> R,
+    fresh_with: impl Fn(Arc<dyn WallClock>) -> F,
 ) {
     let fresh = || fresh_with(clock.clone());
-    unique_ids(&fresh()).await;
-    archive_preserves_authoritative_history(&fresh()).await;
-    missing_id_fails_closed(&fresh()).await;
-    revision_decision_table(&fresh()).await;
-    scope_round_trips_and_updates(&fresh()).await;
-    nested_config_patch_is_atomic_and_durable(&fresh()).await;
-    package_network_invariant_is_atomic(&fresh()).await;
-    idempotent_create_decision_table(&fresh()).await;
-    sandbox_binding_is_one_environment_revision(&fresh()).await;
+    unique_ids(&fresh().await).await;
+    archive_preserves_authoritative_history(&fresh().await).await;
+    missing_id_fails_closed(&fresh().await).await;
+    revision_decision_table(&fresh().await).await;
+    scope_round_trips_and_updates(&fresh().await).await;
+    nested_config_patch_is_atomic_and_durable(&fresh().await).await;
+    package_network_invariant_is_atomic(&fresh().await).await;
+    idempotent_create_decision_table(&fresh().await).await;
+    sandbox_binding_is_one_environment_revision(&fresh().await).await;
     let clock = Arc::new(ManualClock::new(0));
-    let registry = fresh_with(clock.clone());
+    let registry = fresh_with(clock.clone()).await;
     environment_instants_are_the_injected_clock(&registry, &clock).await;
 }
 

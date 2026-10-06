@@ -584,7 +584,7 @@ mod tests {
         sqlx::query(
             "INSERT INTO thread_goals VALUES (?1, 'g', 'ship', 'complete', NULL, 0, 0, 0, 0)",
         )
-        .bind(&thread_id)
+        .bind(thread_id)
         .execute(&owner)
         .await
         .unwrap();

@@ -458,12 +458,13 @@ mod startup_tests {
         path
     }
 
-    fn host(deployment: DeploymentConfig) -> SharedHost {
+    async fn host(deployment: DeploymentConfig) -> SharedHost {
         awaken_runtime_host_testkit::volatile_host_with_deployment(
             Arc::new(NoLlm),
             "test",
             deployment,
         )
+        .await
     }
 
     fn trusted_host_provider(host: &SharedHost) -> &SandboxEnvironmentProvider {
@@ -485,7 +486,7 @@ mod startup_tests {
         let expected = deployment.sandbox_support().0;
 
         let host = select_local_session_environment(
-            host(deployment),
+            host(deployment).await,
             Some(Arc::new(NoHandFactory)),
             deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER"),
         )
@@ -528,7 +529,7 @@ mod startup_tests {
                     deployment.sandbox_tier = SandboxTier::Local;
                     deployment.sandbox_dir = Some(base.path().into());
                     deployment.sandbox.trusted_host_scoped_execution = scoped;
-                    let mut host = host(deployment);
+                    let mut host = host(deployment).await;
                     if prior_acp {
                         host = crate::with_projected_acp(
                             host,
@@ -597,7 +598,7 @@ mod startup_tests {
         let mut deployment = DeploymentConfig::ephemeral();
         deployment.sandbox_tier = SandboxTier::Local;
         let message = select_local_session_environment(
-            host(deployment),
+            host(deployment).await,
             None,
             installed_namespace_hand_path(),
         )
@@ -614,7 +615,7 @@ mod startup_tests {
             let mut deployment = DeploymentConfig::ephemeral();
             deployment.sandbox_tier = SandboxTier::Local;
             let error = select_local_session_environment(
-                host(deployment),
+                host(deployment).await,
                 Some(Arc::new(NoHandFactory)),
                 artifact,
             )

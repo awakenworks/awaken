@@ -17,10 +17,12 @@ async fn colocated_process_stores_share_wal_and_wait_for_transient_writers() {
 
     let queue = Arc::new(
         awaken_work_store::SqliteWorkQueue::open(&path, awaken_time::system_clock())
+            .await
             .expect("WorkQueue"),
     );
-    let _sessions =
-        awaken_session_store::SqliteManagedSessionRepository::open(&path).expect("Sessions");
+    let _sessions = awaken_session_store::SqliteManagedSessionRepository::open(&path)
+        .await
+        .expect("Sessions");
     let _application_access =
         awaken_coordinator::application_access_store::ApplicationAccessStore::open_sqlite(
             &path,

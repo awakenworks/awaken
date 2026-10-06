@@ -249,7 +249,11 @@ async fn immutable_pod_registration_memory() {
 async fn immutable_pod_registration_sqlite() {
     let temp = tempfile::tempdir().unwrap();
     assert_immutable_registration(
-        Arc::new(SqliteWorkerDirectory::open(temp.path().join("registry.sqlite")).unwrap()),
+        Arc::new(
+            SqliteWorkerDirectory::open(temp.path().join("registry.sqlite"))
+                .await
+                .unwrap(),
+        ),
         "sqlite",
     )
     .await;

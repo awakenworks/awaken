@@ -260,8 +260,8 @@ mod tests {
     use awaken_runtime_contract::resolved::ModelBinding;
     use std::sync::Arc;
 
-    #[test]
-    fn fresh_and_resumed_root_dispatch_use_the_ticket_format() {
+    #[tokio::test]
+    async fn fresh_and_resumed_root_dispatch_use_the_ticket_format() {
         use awaken_agent_contract::agent::run::Id as RunId;
         use awaken_runtime_contract::RunActivation;
         use awaken_runtime_contract::activation::{
@@ -278,7 +278,7 @@ mod tests {
         // | R1 | yes | absent at admission | E1 |
         // | R2 | no | V1 empty | E2 |
         // | R3 | no | none | E3 |
-        let host = SharedHost::new(Arc::new(NoModelConfiguredExecutor), "model");
+        let host = SharedHost::new(Arc::new(NoModelConfiguredExecutor), "model").await;
         host.session_slots
             .update("format-root", |slot| slot.session_dispatch = true);
         let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")

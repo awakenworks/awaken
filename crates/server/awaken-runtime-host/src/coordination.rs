@@ -875,8 +875,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn dead_local_coordination_falls_through_to_the_remote_authority() {
+    #[tokio::test]
+    async fn dead_local_coordination_falls_through_to_the_remote_authority() {
         // Constraint/Invariant: the authoritative inputs and ownership boundaries
         // documented here remain the only decision source; no parallel path is admitted.
         // Decision rule: execute every reachable cause partition documented here and
@@ -893,6 +893,7 @@ mod tests {
         drop(local_port);
         drop(local);
         let host = crate::SharedHost::new(Arc::new(EndpointModel), "stub")
+            .await
             .with_session_control(Arc::new(RemoteControl::default()));
         *host
             .dispatch

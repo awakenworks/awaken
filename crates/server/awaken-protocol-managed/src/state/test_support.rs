@@ -206,8 +206,9 @@ fn scripted_read_failure(port: &'static str) -> RunError {
     RunError::unavailable(format!("scripted {port} read failure"))
 }
 
-pub(super) fn ephemeral_session_repo() -> SqliteManagedSessionRepository {
+pub(super) async fn ephemeral_session_repo() -> SqliteManagedSessionRepository {
     SqliteManagedSessionRepository::open_in_memory()
+        .await
         .expect("open ephemeral managed Session repository")
 }
 

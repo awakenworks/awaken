@@ -67,6 +67,7 @@ pub(super) async fn prepare_publication(
     let defaults = match service.resources.as_ref() {
         Some(store) => store
             .get_agent_inputs(workspace.as_str(), id)
+            .await
             .map_err(|error| PublishError::Store(error.to_string()))?,
         None => None,
     };

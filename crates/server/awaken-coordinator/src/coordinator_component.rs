@@ -336,7 +336,8 @@ pub async fn build_coordinator_component(
                 ai_sdk_browser_cors,
                 worker_clock: clock.clone(),
             },
-        )?;
+        )
+        .await?;
     let managed = crate::with_local_workspace_scope(managed, default_workspace.clone());
     let private_router = match service_authenticator {
         Some(authenticator) => private_router.merge(

@@ -122,12 +122,14 @@ impl ConfigService {
                     )
                 })
             } else if is_current {
-                let defaults = self.resources.as_ref().and_then(|store| {
-                    store
+                let defaults = match self.resources.as_ref() {
+                    Some(store) => store
                         .get_agent_inputs(execution_workspace, &publication.agent_id)
+                        .await
                         .ok()
-                        .flatten()
-                });
+                        .flatten(),
+                    None => None,
+                };
                 registered_session_profile(
                     &publication.snapshot,
                     &source.config,

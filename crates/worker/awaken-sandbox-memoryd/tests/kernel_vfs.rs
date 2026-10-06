@@ -58,8 +58,11 @@ fn kernel_reads_writes_renames_and_persists_across_remount() {
     let store = "memstore_1";
 
     let backend = Arc::new(
-        SqliteMemoryRepository::open(store_db.to_str().unwrap(), awaken_time::system_clock())
-            .unwrap(),
+        rt.block_on(SqliteMemoryRepository::open(
+            store_db.to_str().unwrap(),
+            awaken_time::system_clock(),
+        ))
+        .unwrap(),
     );
     rt.block_on(backend.create(store, "/seed.md", "hello"))
         .unwrap();
@@ -123,8 +126,11 @@ fn kernel_reads_writes_renames_and_persists_across_remount() {
     // A fresh handle over the same durable store re-exposes the writes — they were
     // in the store of record, not a first-mount cache artifact.
     let backend2 = Arc::new(
-        SqliteMemoryRepository::open(store_db.to_str().unwrap(), awaken_time::system_clock())
-            .unwrap(),
+        rt.block_on(SqliteMemoryRepository::open(
+            store_db.to_str().unwrap(),
+            awaken_time::system_clock(),
+        ))
+        .unwrap(),
     );
     let mut handle2 = spawn_mount(
         backend2,
@@ -162,8 +168,11 @@ fn independent_mounter_projections_invalidate_peer_caches_and_teardown_independe
     let store = "memstore_1";
 
     let backend = Arc::new(
-        SqliteMemoryRepository::open(store_db.to_str().unwrap(), awaken_time::system_clock())
-            .unwrap(),
+        rt.block_on(SqliteMemoryRepository::open(
+            store_db.to_str().unwrap(),
+            awaken_time::system_clock(),
+        ))
+        .unwrap(),
     );
     rt.block_on(backend.create(store, "/x.md", "one")).unwrap();
     let mounter = MemoryStoreMounter::new(backend.clone(), awaken_time::system_clock());
@@ -231,8 +240,11 @@ fn kernel_exercises_metadata_truncate_offsets_dirs_and_errors() {
     let store = "memstore_1";
 
     let backend = Arc::new(
-        SqliteMemoryRepository::open(store_db.to_str().unwrap(), awaken_time::system_clock())
-            .unwrap(),
+        rt.block_on(SqliteMemoryRepository::open(
+            store_db.to_str().unwrap(),
+            awaken_time::system_clock(),
+        ))
+        .unwrap(),
     );
     rt.block_on(backend.create(store, "/f.md", "0123456789"))
         .unwrap();

@@ -21,6 +21,21 @@ use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadV
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
+/// A raw fixture connection with SQLite's plain defaults (file created when
+/// missing, foreign keys off, journal mode untouched), outside the store policy.
+async fn raw_sqlite(path: &std::path::Path) -> sqlx::SqlitePool {
+    sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(true)
+                .foreign_keys(false),
+        )
+        .await
+        .expect("open raw SQLite fixture connection")
+}
+
 fn message(id: &str, text: &str) -> Message {
     Message {
         id: MessageId(id.to_string()),
@@ -56,7 +71,9 @@ fn empty_commit(thread: &str, run: RunDisposition) -> ThreadCommit {
 
 #[tokio::test]
 async fn commit_persists_facts_messages_and_serves_reads() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     let thread = ThreadId("thread-1".to_string());
 
     let commit = ThreadCommit {
@@ -91,7 +108,9 @@ async fn commit_persists_facts_messages_and_serves_reads() {
 
 #[tokio::test]
 async fn fence_increments_monotonically() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     // A distinct run per commit: the fence increments across successive commits,
     // which is what this pins. (Re-committing one terminal run would trip the
     // terminal-is-final guard, which fences a stale owner's duplicate post-terminal
@@ -108,7 +127,9 @@ async fn fence_increments_monotonically() {
 
 #[tokio::test]
 async fn resume_ticket_awaits_then_clears() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     let run = RunId("run-1".to_string());
 
     store
@@ -140,7 +161,7 @@ async fn projection_rehydrates_from_a_file_after_reopen() {
     let _ = std::fs::remove_file(&path);
 
     {
-        let store = SqliteCommitCoordinator::open(&path).expect("open a");
+        let store = SqliteCommitCoordinator::open(&path).await.expect("open a");
         store
             .commit(ThreadCommit {
                 thread_id: ThreadId("thread-1".to_string()),
@@ -153,7 +174,7 @@ async fn projection_rehydrates_from_a_file_after_reopen() {
             .expect("commit");
     } // store dropped — simulate a restart
 
-    let restarted = SqliteCommitCoordinator::open(&path).expect("open b");
+    let restarted = SqliteCommitCoordinator::open(&path).await.expect("open b");
     assert_eq!(restarted.commit_count(), 1, "the fence survives restart");
     assert_eq!(
         CommittedThreadView::committed_messages(&restarted, &ThreadId("thread-1".to_string()))[0]
@@ -204,7 +225,9 @@ async fn corrupt_waiting_ticket_does_not_poison_restart_or_thread_recovery() {
     let thread = ThreadId("corrupt-ticket-thread".into());
     let run = RunId("corrupt-ticket-run".into());
     {
-        let store = SqliteCommitCoordinator::open(database.to_str().unwrap()).expect("open");
+        let store = SqliteCommitCoordinator::open(database.to_str().unwrap())
+            .await
+            .expect("open");
         store
             .commit(ThreadCommit::assemble(
                 thread.clone(),
@@ -222,16 +245,18 @@ async fn corrupt_waiting_ticket_does_not_poison_restart_or_thread_recovery() {
             .await
             .expect("CT2 commit complete Awaiting prefix");
     }
-    let connection = rusqlite::Connection::open(&database).expect("open raw corruption seam");
-    connection
-        .execute(
-            "UPDATE runtime_waiting SET ticket = ?1 WHERE run_id = ?2",
-            rusqlite::params![r#"{"not":"a ResumeTicket"}"#, &run.0],
-        )
+    let connection = raw_sqlite(&database).await;
+    sqlx::query("UPDATE runtime_waiting SET ticket = ?1 WHERE run_id = ?2")
+        .bind(r#"{"not":"a ResumeTicket"}"#)
+        .bind(&run.0)
+        .execute(&connection)
+        .await
         .expect("isolate waiting ticket corruption");
-    drop(connection);
+    connection.close().await;
 
-    let reopened = SqliteCommitCoordinator::open(database.to_str().unwrap()).expect("CT2/E1");
+    let reopened = SqliteCommitCoordinator::open(database.to_str().unwrap())
+        .await
+        .expect("CT2/E1");
     assert!(
         CommittedThreadView::resume_ticket(&reopened, &run).is_none(),
         "CT2/E3 damaged ticket is not reply authority"
@@ -253,14 +278,14 @@ async fn corrupt_waiting_ticket_does_not_poison_restart_or_thread_recovery() {
     );
     assert!(snapshot.resume_tickets.is_empty(), "CT2/E3");
     assert_eq!(snapshot.thread_version, 1, "CT2/E2 fence");
-    let retained: String = rusqlite::Connection::open(&database)
-        .unwrap()
-        .query_row(
-            "SELECT ticket FROM runtime_waiting WHERE run_id = ?1",
-            rusqlite::params![&run.0],
-            |row| row.get(0),
-        )
-        .expect("CT2/E4 row retained");
+    let inspector = raw_sqlite(&database).await;
+    let retained: String =
+        sqlx::query_scalar("SELECT ticket FROM runtime_waiting WHERE run_id = ?1")
+            .bind(&run.0)
+            .fetch_one(&inspector)
+            .await
+            .expect("CT2/E4 row retained");
+    inspector.close().await;
     assert_eq!(retained, r#"{"not":"a ResumeTicket"}"#, "CT2/E4");
 }
 
@@ -285,7 +310,9 @@ async fn consumed_resume_ticket_and_applied_receipt_rehydrate_atomically() {
     let operation_id = "managed-tool-reply-operation-1";
     let correlation_id = "managed-tool-reply-correlation-1";
     {
-        let store = SqliteCommitCoordinator::open(database.to_str().unwrap()).expect("open");
+        let store = SqliteCommitCoordinator::open(database.to_str().unwrap())
+            .await
+            .expect("open");
         let active_ticket = ResumeTicket::new(
             correlation_id,
             run.clone(),
@@ -324,7 +351,9 @@ async fn consumed_resume_ticket_and_applied_receipt_rehydrate_atomically() {
             .expect("atomically consume ticket and commit receipt");
     }
 
-    let reopened = SqliteCommitCoordinator::open(database.to_str().unwrap()).expect("reopen");
+    let reopened = SqliteCommitCoordinator::open(database.to_str().unwrap())
+        .await
+        .expect("reopen");
     let snapshot = reopened
         .recovery_snapshot(&thread, &run)
         .await
@@ -352,7 +381,9 @@ async fn consumed_resume_ticket_and_applied_receipt_rehydrate_atomically() {
 // pre-visible from a staged but uncommitted plan.
 #[tokio::test]
 async fn g13_projection_absent_before_commit() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     assert!(
         CommittedThreadView::run(&store, &RunId("run-1".to_string())).is_none(),
         "projection must be empty before any commit"
@@ -364,7 +395,9 @@ async fn g13_projection_absent_before_commit() {
 // no partial state is observable after a failed `commit()` call.
 #[tokio::test]
 async fn g13_failed_commit_leaves_no_partial_state() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
 
     // Empty thread_id fails validate() before the SQLite transaction opens.
     let err = store
@@ -409,7 +442,9 @@ async fn operation_receipt_survives_reopen() {
         },
     };
     {
-        let store = SqliteCommitCoordinator::open(path.to_str().unwrap()).expect("open");
+        let store = SqliteCommitCoordinator::open(path.to_str().unwrap())
+            .await
+            .expect("open");
         assert!(
             !store
                 .commit_operation(operation.clone())
@@ -418,7 +453,9 @@ async fn operation_receipt_survives_reopen() {
                 .duplicate
         );
     }
-    let reopened = SqliteCommitCoordinator::open(path.to_str().unwrap()).expect("reopen");
+    let reopened = SqliteCommitCoordinator::open(path.to_str().unwrap())
+        .await
+        .expect("reopen");
     assert!(
         reopened
             .commit_operation(operation)

@@ -204,8 +204,11 @@ mod tests {
         // effect. The valid S1 path is covered below.
         for fault in 0..5 {
             let inner = Arc::new(awaken_skill_store::InMemorySkillStore::new());
-            let references =
-                Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+            let references = Arc::new(
+                awaken_resource_store::SqliteResourceStore::in_memory()
+                    .await
+                    .unwrap(),
+            );
             let store = ReferenceIndexedSkillStore::new(inner.clone(), references.clone());
             let (mut definition, mut version) = skill();
             match fault {
@@ -250,7 +253,11 @@ mod tests {
         // Skill recreate/purge TOCTOU has S=9,O=3,D=9,RPN=243. Rules:
         // S1=C1->E1; S2=C1+C2->E2; S3=C3+C1->E3; S4=C4->E4.
         let inner = Arc::new(awaken_skill_store::InMemorySkillStore::new());
-        let references = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+        let references = Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
+                .unwrap(),
+        );
         let store = ReferenceIndexedSkillStore::new(inner.clone(), references.clone());
         let target = ResourceTarget::new("workspace-a", ResourceKind::Skill, "skill-a");
         let (definition, version) = skill();
@@ -293,8 +300,11 @@ mod tests {
         let restored_inner = Arc::new(awaken_skill_store::InMemorySkillStore::new());
         let (definition, version) = skill();
         restored_inner.create(definition, version).await.unwrap();
-        let restored_references =
-            Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+        let restored_references = Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
+                .unwrap(),
+        );
         let restored = ReferenceIndexedSkillStore::new(restored_inner, restored_references.clone());
         restored.synchronize_all().await.unwrap();
         assert_eq!(
