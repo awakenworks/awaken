@@ -68,7 +68,6 @@
       "crates/server/awaken-protocol-managed/tests/dreams.rs": 1,
       "crates/server/awaken-dispatch-http/tests/active_active_postgres.rs": 2,
       "crates/server/awaken-dispatch/tests/durable_postgres.rs": 2,
-      "crates/server/awaken-dispatch/tests/pg_notify_wake.rs": 1,
       "crates/server/awaken-dispatch/tests/pool_memory.rs": 3,
       "crates/server/awaken-dispatch/tests/resilience_and_metrics.rs": 1,
       "crates/server/awaken-dispatch/tests/service_memory.rs": 1,
