@@ -173,3 +173,4 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0084-shared-worker-transport-assembly.md` | Decision record | Not required | n/a |
 | `adr/0085-acp-instructions-and-session-time-context.md` | Decision record | Not required | n/a |
 | `adr/0086-runtime-sdk-public-surface.md` | Decision record | Not required | n/a |
+| `adr/0087-sqlite-through-sqlx.md` | Decision record | Not required | n/a |
