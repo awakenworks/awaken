@@ -14,7 +14,6 @@ authority = "sqlite-connection"
 [dependencies]
 futures-core = { version = "0.3", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-rusqlite.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync"] }

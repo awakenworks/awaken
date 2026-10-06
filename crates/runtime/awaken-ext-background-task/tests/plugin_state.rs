@@ -392,7 +392,7 @@ async fn configuration_schema_and_persisted_state_fail_closed() {
 #[test]
 fn plugin_manifest_has_no_persistence_dependencies() {
     let manifest = include_str!("../Cargo.toml");
-    for forbidden in ["sqlx", "rusqlite", "migration", "background-task-store"] {
+    for forbidden in ["sqlx", "sqlite", "migration", "background-task-store"] {
         assert!(
             !manifest.contains(forbidden),
             "plugin must not depend on {forbidden}"

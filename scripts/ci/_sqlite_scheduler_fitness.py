@@ -1,10 +1,9 @@
 """Fitness rules for the one embedded SQLite connection policy (ADR-0087).
 
-An async SQLite adapter reaches the database either through the legacy rusqlite
-bridge (`SharedSqliteConnection` + `with_connection`) while it awaits migration,
-or through an sqlx pool opened by `awaken_sqlite_pool::EmbeddedSqlite`. Only
-`awaken-sqlite-pool` may construct sqlx SQLite pools or connect options, so no
-store can drift to its own busy wait, journal or admission policy.
+An async SQLite adapter reaches the database only through an sqlx pool opened by
+`awaken_sqlite_pool::EmbeddedSqlite`. Only `awaken-sqlite-pool` may construct
+sqlx SQLite pools or connect options, so no store can drift to its own busy
+wait, journal or admission policy.
 """
 
 from __future__ import annotations
@@ -21,47 +20,48 @@ POOL_CONSTRUCTION = re.compile(r"\b(SqlitePoolOptions|SqliteConnectOptions|Sqlit
 ASYNC_SQLITE_ADAPTERS = (
     "crates/stores/awaken-resource-store/src/lib.rs",
     "crates/server/awaken-environment-image-build/src/sqlite.rs",
+    "crates/server/awaken-coordinator/src/application_access_store/sqlite.rs",
 )
 
 
 def async_sqlite_scheduler_violations(source: str) -> list[str]:
-    """Reject async rusqlite adapters that recreate a blocking policy."""
+    """Reject async SQLite adapters that bypass the embedded pool policy."""
 
     production = _crate_boundary_workspace.production_rust(source)
     errors: list[str] = []
-    bridged = "SharedSqliteConnection" in production and "with_connection" in production
-    pooled = "EmbeddedSqlite" in production
-    if not (bridged or pooled):
+    if "EmbeddedSqlite" not in production:
         errors.append("async SQLite adapter bypasses the embedded SQLite policy")
-    if re.search(r"\bMutex\s*<\s*Connection\s*>", production):
+    if re.search(r"\bMutex\s*<\s*(?:Sqlite)?Connection\s*>", production):
         errors.append("async SQLite adapter blocks Tokio workers on Mutex<Connection>")
     return errors
 
 
 def selftest() -> None:
-    # Cause/effect decision table: C1 an async repository uses rusqlite; C2 it
-    # owns SharedSqliteConnection and calls with_connection; C3 a raw Mutex is
+    # Cause/effect decision table: C1 an async repository opens its pool through
+    # EmbeddedSqlite; C2 it holds a raw Mutex around a connection; C3 that Mutex is
     # provably test-only; C4 the same syntax can compile through a non-test
-    # feature. Effects: E1 accept the canonical scheduler; E2 reject a second
-    # scheduling authority with both observable defects; E3 ignore only C3;
-    # E4 retain and reject C4.
+    # feature; C5 it uses the removed blocking bridge instead of EmbeddedSqlite.
+    # Effects: E1 accept the canonical policy; E2 reject a second scheduling
+    # authority with both observable defects; E3 ignore only C3; E4 retain and
+    # reject C4; E5 reject the bridge as a bypass.
     #
-    # | Rule | C2 | raw Mutex | cfg(test)-only | feature-capable | Effect |
-    # | R1   | T  | F         | F              | F               | E1     |
-    # | R2   | F  | T         | F              | F               | E2     |
-    # | R3   | T  | T         | T              | F               | E3     |
-    # | R4   | F  | T         | F              | T               | E4     |
+    # | Rule | C1 | raw Mutex | cfg(test)-only | feature-capable | bridge | Effect |
+    # | R1   | T  | F         | F              | F               | F      | E1     |
+    # | R2   | F  | T         | F              | F               | F      | E2     |
+    # | R3   | T  | T         | T              | F               | F      | E3     |
+    # | R4   | F  | T         | F              | T               | F      | E4     |
+    # | R5   | F  | F         | F              | F               | T      | E5     |
     assert async_sqlite_scheduler_violations(
-        "struct Store { connection: SharedSqliteConnection } with_connection("
+        "struct Store { pool: EmbeddedPool } EmbeddedSqlite::file(path).open()"
     ) == []  # R1
     assert async_sqlite_scheduler_violations(
-        "use std::sync::Mutex; struct Store { connection: Mutex<Connection> }"
+        "use std::sync::Mutex; struct Store { connection: Mutex<SqliteConnection> }"
     ) == [
         "async SQLite adapter bypasses the embedded SQLite policy",
         "async SQLite adapter blocks Tokio workers on Mutex<Connection>",
     ]  # R2
     assert async_sqlite_scheduler_violations(
-        "struct Store { connection: SharedSqliteConnection } with_connection(\n"
+        "struct Store { pool: EmbeddedPool } EmbeddedSqlite::memory().open()\n"
         "#[cfg(test)] struct Fixture { connection: Mutex<Connection> }"
     ) == []  # R3
     assert async_sqlite_scheduler_violations(
@@ -71,10 +71,9 @@ def selftest() -> None:
         "async SQLite adapter bypasses the embedded SQLite policy",
         "async SQLite adapter blocks Tokio workers on Mutex<Connection>",
     ]  # R4
-    # R5 an adapter opened through the policy crate's EmbeddedSqlite is accepted.
     assert async_sqlite_scheduler_violations(
-        "struct Store { pool: SqlitePool } EmbeddedSqlite::file(path).open()"
-    ) == []  # R5
+        "struct Store { connection: SharedSqliteConnection } with_connection("
+    ) == ["async SQLite adapter bypasses the embedded SQLite policy"]  # R5
     # R6/R7 pool construction outside the policy crate is rejected in production
     # code and ignored in test-only code.
     assert pool_construction_violations("SqlitePoolOptions::new().connect(url)")

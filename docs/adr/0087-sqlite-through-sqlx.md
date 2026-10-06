@@ -18,7 +18,7 @@ PostgreSQL through sqlx, so most stores are maintained twice in two different
 styles.
 
 Bridging the synchronous driver into async code is the job of
-`awaken-sqlite-pool`. Each store holds one shared `rusqlite::Connection` behind a
+`awaken-sqlite-runtime`. Each store holds one shared `rusqlite::Connection` behind a
 fair one-permit semaphore, and every operation is moved onto a blocking thread.
 The same crate also owns the embedded connection policy: a 30-second busy wait,
 foreign keys enabled, and a process-serialized one-time switch to WAL. Schema
@@ -49,7 +49,7 @@ lockfile already resolves rusqlite 0.32.1, and awaken-cloud pins
    `begin_with("BEGIN IMMEDIATE")`. Widening read concurrency under WAL is a later,
    separately measured change.
 
-3. **One connection policy, one crate, one handle.** `awaken-sqlite-pool` is
+3. **One connection policy, one crate, one handle.** `awaken-sqlite-runtime` is
    rewritten on sqlx and renamed `awaken-sqlite-pool`. It owns only the embedded
    policy: the busy wait, foreign keys, and the serialized WAL switch, expressed
    as one `SqliteConnectOptions` constructor and one pool opener. The
@@ -149,9 +149,9 @@ lockfile already resolves rusqlite 0.32.1, and awaken-cloud pins
 
 - The PostgreSQL and SQLite adapters of each store have the same async shape, so
   shared conformance tests exercise both through one interface.
-- `awaken-sqlite-pool` shrinks to a connection-policy crate. Its blocking bridge,
+- `awaken-sqlite-runtime` shrinks to a connection-policy crate. Its blocking bridge,
   the synchronous ports and the matching `block_on` bridges disappear.
-- The plan's "delete `awaken-sqlite-pool`" becomes "rename to
+- The plan's "delete `awaken-sqlite-runtime`" becomes "rename to
   `awaken-sqlite-pool`, policy only".
 - Builds that include awaken's SQLite stores are capped at `libsqlite3-sys` 0.30
   until sqlx 0.9.

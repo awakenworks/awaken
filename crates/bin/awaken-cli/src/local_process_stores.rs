@@ -52,6 +52,7 @@ pub(super) async fn in_memory_process_stores() -> ProcessStores {
                 awaken_coordinator::application_access_store::ApplicationAccessStore::open_in_memory(
                     clock.clone(),
                 )
+                .await
                 .expect("open ephemeral application access repository"),
             ),
             deployments: sessions.clone(),
@@ -152,6 +153,7 @@ pub(super) async fn process_stores_for_runtime_storage(
             &dir.join("sessions.db").to_string_lossy(),
             stores.clock.clone(),
         )
+        .await
         .expect("open application access under runtime storage directory"),
     );
     coordinator.deployments = sessions.clone();

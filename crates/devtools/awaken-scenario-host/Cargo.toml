@@ -85,8 +85,7 @@ awaken-credential-materializer = { workspace = true, features = ["authority"] }
 # Embedded IAM (ADR-0042/0043 P1): typed self-managed identity gates management
 # plane behind bearer ApiTokens. contract = ids/scopes/requests, core = token
 # directory + minter + the default-deny PolicySet evaluator, preset = the seeded
-# Anthropic role catalog + the iam-server store (rusqlite range is links-safe
-# since iam adopted foundation ADR-0005).
+# Anthropic role catalog + the iam-server store.
 awaken-iam-contract = { workspace = true }
 awaken-iam-server = { workspace = true }
 awaken-iam-core = { workspace = true }
@@ -94,9 +93,6 @@ awaken-iam-preset = { workspace = true }
 # The IAM assembly layer (ADR-0048): IamGate (single authn/authz PDP) built over
 # our own LocalIamState, driving the management guard.
 awaken-iam-host = { workspace = true }
-# The embedded IAM token/binding rows persist under typed data_dir/iam.sqlite;
-# same rusqlite generation as every other sqlite store in the workspace.
-rusqlite = { version = "0.32", features = ["bundled"] }
 awaken-agent-contract.workspace = true
 awaken-executable-agent-contract.workspace = true
 awaken-resource-contract.workspace = true

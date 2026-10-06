@@ -131,14 +131,13 @@ awaken-control = { path = "crates/control/awaken-control" }
 # allowlisted ListQuery/QuerySchema the admin config API serves its CRUD on.
 awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "2643d3f1caa114d0c651d4c867e4deed1374801c" }
 awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "2643d3f1caa114d0c651d4c867e4deed1374801c" }
-awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "2643d3f1caa114d0c651d4c867e4deed1374801c" }
 # Embedded IAM for the management plane (ADR-0042/0043 P1): bearer ApiToken
 # authn (argon2id at rest) + grant-based authz gating /v1/config/* and
 # /v1/vaults/* in awaken-coordinator, opt-in via AWAKEN_MGMT_IAM=embedded.
-# All IAM crates pin ONE rev so the contract types line up. awaken-iam-server
-# became consumable once iam adopted foundation ADR-0005 (rusqlite as a
-# links-safe *range*, >=0.32 <0.41), so its SqlStore/migrations now back the
-# embedded authz rows instead of a hand-rolled schema.
+# All IAM crates pin ONE rev so the contract types line up. awaken-iam-server's
+# SqlStore/migrations back the embedded authz rows instead of a hand-rolled
+# schema; its SQLite driver links the same libsqlite3-sys 0.30 that sqlx links
+# (ADR-0087 item 6).
 awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "1faa2e30fb7bdca178817ee3e3989377c69f62b7", version = "=0.1.2-dev" }
 awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "1faa2e30fb7bdca178817ee3e3989377c69f62b7", version = "=0.1.2-dev" }
 awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "1faa2e30fb7bdca178817ee3e3989377c69f62b7", version = "=0.1.2-dev" }
@@ -229,15 +228,6 @@ axum = "0.8"
 # quantified invariants (tenant-isolation fence, lease-reclaim monotonicity, archive/
 # delete semantics) and checks them over generated inputs (ADR-0059 verification pass).
 proptest = "1"
-# rusqlite carries the native `links = "sqlite3"` crate libsqlite3-sys, of which a
-# binary graph may contain exactly one. Declared as a *range* (not a hard `^0.x`
-# pin) so an embedding graph — e.g. awaken-cloud, which resolves rusqlite 0.40 —
-# floats every sqlite store here up to the single version it already selected,
-# instead of colliding on two `sqlite3`-linking packages. The stores use only API
-# stable across the whole range; the `rusqlite-floor` CI job guards the floor.
-# Mirrors awaken-foundation ADR-0005 (awaken-scoped-migration-sqlite); move both
-# together.
-rusqlite = { version = ">=0.32, <0.41", features = ["bundled"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

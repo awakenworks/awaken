@@ -19,10 +19,8 @@ awaken-sql-storage.workspace = true
 # drives. The schema crate itself names no SQL driver; these harness deps (the two
 # migration runners and their drivers) live only in the test build.
 [dev-dependencies]
-awaken-scoped-migration = { workspace = true, features = ["postgres"] }
-awaken-scoped-migration-sqlite.workspace = true
-rusqlite = { workspace = true }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"] }
+awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite", "json"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]

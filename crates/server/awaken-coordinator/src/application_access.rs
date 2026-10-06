@@ -654,8 +654,12 @@ mod tests {
         test_sessions(rows, None)
     }
 
-    fn application_access() -> Arc<ApplicationAccessStore> {
-        Arc::new(ApplicationAccessStore::open_in_memory(awaken_time::system_clock()).unwrap())
+    async fn application_access() -> Arc<ApplicationAccessStore> {
+        Arc::new(
+            ApplicationAccessStore::open_in_memory(awaken_time::system_clock())
+                .await
+                .unwrap(),
+        )
     }
 
     /// Cause-effect serialization rules: R1 a complete canonical issuance
@@ -722,7 +726,7 @@ mod tests {
     /// and durable issuer rather than calling the repository or mint primitive.
     #[tokio::test]
     async fn transport_neutral_issuance_owns_session_validation_and_minting() {
-        let store = application_access();
+        let store = application_access().await;
         let repository = sessions(vec![(
             "sesn_1",
             "workspace-a",
@@ -850,7 +854,7 @@ mod tests {
     /// baseline Agent (E1). Rule T1: C1-C4 true -> 201/E1.
     #[tokio::test]
     async fn issues_an_exact_binding_from_the_managed_session_authority() {
-        let store = application_access();
+        let store = application_access().await;
         let response = issue(
             store.clone(),
             sessions(vec![(
@@ -895,7 +899,7 @@ mod tests {
         )]);
         for id in ["sesn_missing", "sesn_foreign"] {
             let response = issue(
-                application_access(),
+                application_access().await,
                 repository.clone(),
                 issue_body(id, json!(["thread.run"])),
             )
@@ -922,7 +926,7 @@ mod tests {
             ),
         ]);
         let preparing = issue(
-            application_access(),
+            application_access().await,
             repository.clone(),
             issue_body("sesn_preparing", json!(["thread.run"])),
         )
@@ -930,7 +934,7 @@ mod tests {
         assert_eq!(preparing.status(), StatusCode::CONFLICT);
 
         let terminal_run = issue(
-            application_access(),
+            application_access().await,
             repository.clone(),
             issue_body("sesn_terminal", json!(["thread.run"])),
         )
@@ -938,7 +942,7 @@ mod tests {
         assert_eq!(terminal_run.status(), StatusCode::CONFLICT);
 
         let terminal_read = issue(
-            application_access(),
+            application_access().await,
             repository,
             issue_body("sesn_terminal", json!(["thread.messages.read"])),
         )
@@ -999,7 +1003,7 @@ mod tests {
             }),
         ];
         for body in cases {
-            let response = issue(application_access(), repository.clone(), body).await;
+            let response = issue(application_access().await, repository.clone(), body).await;
             assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         }
     }
@@ -1080,7 +1084,7 @@ mod tests {
                 .unwrap()
                 .insert(field.into(), json!("legacy-dead-field"));
             assert_eq!(
-                issue(application_access(), repository.clone(), body)
+                issue(application_access().await, repository.clone(), body)
                     .await
                     .status(),
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -1090,7 +1094,9 @@ mod tests {
         let mut body = issue_body("sesn_1", json!(["thread.run"]));
         body["thread_bindings"][0]["agent_id"] = json!("caller-invented-agent");
         assert_eq!(
-            issue(application_access(), repository, body).await.status(),
+            issue(application_access().await, repository, body)
+                .await
+                .status(),
             StatusCode::UNPROCESSABLE_ENTITY,
             "B4 binding"
         );
@@ -1109,7 +1115,7 @@ mod tests {
                 Some(failure),
             );
             let response = issue(
-                application_access(),
+                application_access().await,
                 repository,
                 issue_body("sesn_1", json!(["thread.run"])),
             )
@@ -1137,7 +1143,7 @@ mod tests {
     /// read-before-delete/target the replica that minted the credential.
     #[tokio::test]
     async fn revoke_is_globally_idempotent() {
-        let store = application_access();
+        let store = application_access().await;
         let repository = sessions(vec![(
             "sesn_1",
             "workspace-a",
@@ -1257,16 +1263,19 @@ mod tests {
             }
         }
 
-        let malformed = stamped(router(application_access(), repository), "workspace-a")
-            .oneshot(
-                Request::builder()
-                    .method("DELETE")
-                    .uri("/v1/application-access-tokens/not-a-token-id")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let malformed = stamped(
+            router(application_access().await, repository),
+            "workspace-a",
+        )
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/v1/application-access-tokens/not-a-token-id")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
         assert_eq!(malformed.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let malformed_body = to_bytes(malformed.into_body(), usize::MAX).await.unwrap();
         assert_eq!(

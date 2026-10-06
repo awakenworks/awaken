@@ -220,12 +220,13 @@ awaken-store-inmem.workspace = true
 awaken-store-sqlite.workspace = true
 # mcp_sessions drives the VaultRefresher refresh grant + the ext-mcp tool-id shape.
 awaken-ext-mcp = { workspace = true }
-# management_authz drives a legacy iam.sqlite import: the contract ids + the sqlite driver.
+# management_authz drives a legacy iam.sqlite import: the contract ids.
 awaken-iam-contract = { workspace = true }
 awaken-iam-core = { workspace = true }
 awaken-lease-testkit.workspace = true
 awaken-runtime-host-testkit.workspace = true
-rusqlite = { version = "0.32", features = ["bundled"] }
+# sqlite_process_store_contract holds an independent writer on the shared file.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
