@@ -13,45 +13,6 @@ fn pg_url() -> Option<String> {
     std::env::var("AWAKEN_TEST_DATABASE_URL").ok()
 }
 
-/// Every backend whose last statement was this channel's LISTEN.
-///
-/// `btrim(query, \';\')` is load-bearing: the driver\'s first LISTEN is recorded
-/// as `LISTEN "c"` and its reconnect as `LISTEN "c";`. An exact-equality match
-/// therefore sees the first listener and never the re-established one, which is
-/// exactly why this file reached for a fixed sleep after the fault instead of
-/// asking whether the listener was back.
-const LISTENING_BACKENDS: &str = "SELECT pid FROM pg_stat_activity \
-     WHERE btrim(query, ';') = $1 AND datname = current_database()";
-
-/// Backends whose last statement names this channel. This identifies a
-/// listener's pool ownership, but does not prove LISTEN has committed or a
-/// local waiter has registered. Actual hint delivery is observed separately.
-async fn listening_pids(observer: &sqlx::PgPool, channel: &str) -> Vec<i32> {
-    sqlx::query_scalar::<_, i32>(LISTENING_BACKENDS)
-        .bind(format!("LISTEN \"{channel}\""))
-        .fetch_all(observer)
-        .await
-        .expect("read the listening backends")
-}
-
-/// Observe this lifecycle fixture's unique LISTEN query before testing pool
-/// ownership. Delivery tests use the actual completed waiter instead.
-async fn wait_for_listener(observer: &sqlx::PgPool, channel: &str) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let pids = listening_pids(observer, channel).await;
-        if !pids.is_empty() {
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "no backend issued LISTEN \"{channel}\"; \
-             currently listening: {pids:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
 /// One bounded delivery observation for both initial connection and reconnect.
 /// C1 LISTEN/local waiter may still be registering; C2 hints are lossy and
 /// duplicate-safe; C3 the real waiter completes or the whole budget expires.
@@ -250,16 +211,24 @@ async fn listener_ownership_releases_connection_on_shutdown_and_last_drop() {
         .connect(&url)
         .await
         .unwrap();
-    let observer = PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
-        .await
-        .unwrap();
     for explicit in [false, true] {
         let wake = std::sync::Arc::new(PgNotifyWake::new(pool.clone(), "awaken_wake_lifecycle"));
-        // Pool num_idle=0 also occurs while a prior connection is being
-        // returned. Observe the actual LISTEN, not that ambiguous count.
-        wait_for_listener(&observer, "awaken_wake_lifecycle").await;
+        // C1 the listener acquires the only pool connection; C2 a peer Arc
+        // remains; C3 last owner shuts down/drops. R1 C1+C2 => connection
+        // remains held; R2 C1+C3 => acquisition succeeds. The acquisition
+        // probe avoids a stale pg_stat_activity LISTEN statement.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match tokio::time::timeout(Duration::from_millis(20), pool.acquire()).await {
+                Err(_) => break,
+                Ok(Ok(connection)) => drop(connection),
+                Ok(Err(error)) => panic!("acquire lifecycle pool: {error}"),
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the listener did not hold the one-connection pool"
+            );
+        }
         let peer = wake.clone();
         drop(wake);
         assert!(
@@ -296,5 +265,4 @@ async fn listener_ownership_releases_connection_on_shutdown_and_last_drop() {
         .expect("R3");
     drop(held);
     pool.close().await;
-    observer.close().await;
 }

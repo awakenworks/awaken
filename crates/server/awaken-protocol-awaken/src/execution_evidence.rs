@@ -26,6 +26,11 @@ pub struct SessionExecutionEvidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend_ref: Option<String>,
     pub execution: SessionExecutionState,
+    /// Existing Session-command-bound publication outcome. Its presence does
+    /// not establish completed cleanup or root business delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_publication:
+        Option<awaken_session_state_contract::SessionRepositoryPublicationReceipt>,
     pub runs: Vec<SessionRunExecutionEvidence>,
 }
 
@@ -81,6 +86,7 @@ mod tests {
             execution_model_ref: "deepseek-v4-pro".into(),
             backend_ref: Some("acp:claude".into()),
             execution: SessionExecutionState::Idle,
+            repository_publication: None,
             runs: vec![SessionRunExecutionEvidence {
                 run_id: RunId("run-1".into()),
                 idempotency_key: Some("command-1".into()),
@@ -144,6 +150,7 @@ mod tests {
                 execution_model_ref: "model".into(),
                 backend_ref: None,
                 execution: SessionExecutionState::Idle,
+                repository_publication: None,
                 runs: Vec::new(),
             })
         }
