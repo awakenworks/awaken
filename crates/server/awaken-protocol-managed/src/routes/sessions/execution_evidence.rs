@@ -27,7 +27,6 @@ fn project_execution_evidence(
         execution_model_ref: observation.execution_model_ref,
         backend_ref: observation.backend_ref,
         execution: observation.execution,
-        repository_publication: observation.repository_publication,
         runs: observation
             .runs
             .into_iter()
@@ -88,22 +87,9 @@ mod tests {
     fn projection_is_lossless_and_adds_no_execution_claim() {
         // Cause/effect decision table: P1 one application observation carries
         // frozen selection plus two Run facts; P2 one Run has no completed
-        // model request; P3 the application supplies its verified publication
-        // receipt. Effects: E1 every coordinate is preserved; E2 the
+        // model request. Effects: E1 every coordinate is preserved; E2 the
         // empty Run stays empty rather than being reported as executed. Rules:
-        // R1=P1=>E1, R2=P2=>E2, R3=P3=>lossless receipt projection without
-        // a cleanup or root-delivery claim. This synthetic wire value does not
-        // stand in for the application's command-bound verification test.
-        let publication = awaken_session_state_contract::SessionRepositoryPublicationReceipt {
-            command_fingerprint: "opaque-command".into(),
-            effect_receipt: awaken_provisioning_contract::RepositoryPublicationReceipt {
-                repository_id: "repo".into(),
-                source_remote_url: "https://example.test/repo.git".into(),
-                branch: "awf/work".into(),
-                commit: "0123456789abcdef0123456789abcdef01234567".into(),
-            },
-            receipt_fingerprint: "opaque-receipt".into(),
-        };
+        // R1=P1=>E1 and R2=P2=>E2.
         let projected =
             project_execution_evidence(awaken_session_application::SessionExecutionObservation {
                 session_id: "session-1".into(),
@@ -114,7 +100,6 @@ mod tests {
                 execution_model_ref: "deepseek-v4-pro".into(),
                 backend_ref: Some("native".into()),
                 execution: awaken_session_state_contract::SessionExecutionState::Running,
-                repository_publication: Some(publication.clone()),
                 runs: vec![
                     awaken_session_application::SessionRunExecutionObservation {
                         run_id: RunId("run-observed".into()),
@@ -142,7 +127,6 @@ mod tests {
                 ],
             });
         assert_eq!(projected.backend_ref.as_deref(), Some("native"), "R1/E1");
-        assert_eq!(projected.repository_publication, Some(publication), "R3");
         assert_eq!(projected.runs[0].run_id.0, "run-observed", "R1/E1");
         assert_eq!(
             projected.runs[0].idempotency_key.as_deref(),
