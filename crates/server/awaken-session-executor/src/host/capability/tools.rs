@@ -58,17 +58,6 @@ impl ToolOffering {
 }
 
 impl SharedHost {
-    /// Add one externally owned WebSearch provider to the authoritative
-    /// registry. Duplicate ids fail at startup time instead of shadowing a
-    /// built-in or changing dispatch order at runtime.
-    pub fn with_web_search_provider(
-        mut self,
-        provider: Arc<dyn awaken_ext_builtin_tools::WebSearchProvider>,
-    ) -> Result<Self, awaken_ext_builtin_tools::WebSearchRegistryError> {
-        self.tools.web_search_providers.register(provider)?;
-        Ok(self)
-    }
-
     /// Replace the built-in registry with one process-owned registry. Use
     /// the same clone for capability projection and semantic publication
     /// validation to keep discovery, validation, and dispatch identical.
