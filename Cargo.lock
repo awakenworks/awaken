@@ -2997,7 +2997,6 @@ dependencies = [
  "awaken-mcp-wire",
  "awaken-memory-store",
  "awaken-observability",
- "awaken-outbound-http",
  "awaken-provisioning-contract",
  "awaken-reliability-testkit",
  "awaken-resource-application",
