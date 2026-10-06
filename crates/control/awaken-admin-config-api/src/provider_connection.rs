@@ -729,6 +729,13 @@ mod tests {
 
     #[test]
     fn built_in_protocol_filter_does_not_publish_incompatible_discovered_models() {
+        // Causes: C1 provider directory advertises deepseek-flash and Pro;
+        // C2 built-in Responses versus explicitly authored endpoint; C3 stale
+        // generation-qualified id. R1 C1+C2(default) -> only the advertised
+        // verified Flash id survives; R2 custom -> operator-owned directory;
+        // R3 absent verified id -> no invented offering. The live API directory
+        // returned deepseek-flash and deepseek-v4-pro, and Responses accepted
+        // deepseek-flash; matching only deepseek-v4-flash published no models.
         let deepseek = awaken_model_catalog::provider_driver_descriptors()
             .into_iter()
             .find(|descriptor| descriptor.provider_kind == "deepseek")
@@ -736,6 +743,10 @@ mod tests {
         let discovered = vec![
             DiscoveredModel {
                 model_id: "deepseek-v4-pro".into(),
+                upstream_model: None,
+            },
+            DiscoveredModel {
+                model_id: "deepseek-flash".into(),
                 upstream_model: None,
             },
             DiscoveredModel {
@@ -758,5 +769,15 @@ mod tests {
             discovered.clone(),
         );
         assert_eq!(custom, discovered, "explicit endpoint owns compatibility");
+        assert!(
+            provider_compatible_models(
+                ApiDialect::OpenAiResponses,
+                true,
+                Some(&deepseek),
+                vec![discovered[0].clone(), discovered[2].clone()],
+            )
+            .is_empty(),
+            "absent verified model is never synthesized"
+        );
     }
 }

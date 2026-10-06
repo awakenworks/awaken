@@ -365,7 +365,7 @@ pub fn provider_driver_descriptors() -> Vec<ProviderDriverDescriptor> {
                     dialect: ApiDialect::OpenAiResponses,
                     base_url: "https://api.deepseek.com/v1".into(),
                     model_discovery_base_url: Some("https://api.deepseek.com".into()),
-                    supported_model_ids: vec!["deepseek-v4-flash".into()],
+                    supported_model_ids: vec!["deepseek-flash".into()],
                 },
             ],
             supports_model_discovery: true,
@@ -1477,7 +1477,7 @@ mod tests {
         );
         assert_eq!(
             deepseek.default_endpoints[2].supported_model_ids,
-            ["deepseek-v4-flash"]
+            ["deepseek-flash"]
         );
         assert!(deepseek.supports_model_discovery);
     }
