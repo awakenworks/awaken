@@ -6,10 +6,12 @@
 
 use std::collections::BTreeMap;
 
+use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_session_work_contract::{WorkItem, WorkPayload, WorkState, next_heartbeat_receipt};
-use rusqlite::{Connection, OptionalExtension};
+use awaken_sqlite_pool::EmbeddedPool;
 use sqlx::postgres::PgPool;
+use sqlx::sqlite::SqliteRow;
 
 pub(super) const HEARTBEAT_TTL_SECONDS: u64 = 60;
 pub(super) const NS: &str = "work_queue";
@@ -178,23 +180,21 @@ pub(super) fn converged_work_bundle() -> Result<MigrationBundle, MigrationError>
     )
 }
 
-pub(super) fn apply_sqlite_migrations(conn: &Connection) -> Result<(), String> {
-    let ledger_exists = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-            [format!("{NS}_schema_migrations")],
-            |row| row.get::<_, bool>(0),
-        )
-        .map_err(|error| error.to_string())?;
-    let v1_checksum = if ledger_exists {
-        conn.query_row(
-            &format!(
-                "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id=?1 AND version=1"
-            ),
-            [BUNDLE_ID],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
+pub(super) async fn apply_sqlite_migrations(pool: &EmbeddedPool) -> Result<(), String> {
+    let ledger_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+    )
+    .bind(format!("{NS}_schema_migrations"))
+    .fetch_one(pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    let v1_checksum: Option<String> = if ledger_exists {
+        sqlx::query_scalar(&format!(
+            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id=?1 AND version=1"
+        ))
+        .bind(BUNDLE_ID)
+        .fetch_optional(pool)
+        .await
         .map_err(|error| error.to_string())?
     } else {
         None
@@ -202,11 +202,13 @@ pub(super) fn apply_sqlite_migrations(conn: &Connection) -> Result<(), String> {
     let (_, published) =
         selected_work_bundle(v1_checksum.as_deref()).map_err(|error| error.to_string())?;
     let converged = converged_work_bundle().map_err(|error| error.to_string())?;
-    let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+    let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
         .map_err(|error| error.to_string())?;
-    runner
-        .run_bundle(conn, &published)
-        .and_then(|_| runner.run_bundle(conn, &converged))
+    awaken_sqlite_pool::held(runner.run_bundle(&published))
+        .await
+        .map_err(|error| error.to_string())?;
+    awaken_sqlite_pool::held(runner.run_bundle(&converged))
+        .await
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
@@ -349,28 +351,28 @@ pub(super) fn build_item(
     })
 }
 
-pub(super) fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkItem> {
-    let metadata_json: String = row.get(4)?;
+pub(super) fn row_to_item(row: &SqliteRow) -> Result<WorkItem, sqlx::Error> {
+    use sqlx::Row;
+    let metadata_json: String = row.try_get(4)?;
     build_item(
-        row.get(0)?,
-        row.get(1)?,
-        &row.get::<_, String>(2)?,
-        row.get(3)?,
+        row.try_get(0)?,
+        row.try_get(1)?,
+        &row.try_get::<String, _>(2)?,
+        row.try_get(3)?,
         &metadata_json,
-        &row.get::<_, String>(5)?,
-        row.get(6)?,
-        row.get(7)?,
-        row.get(8)?,
-        row.get(9)?,
-        row.get(10)?,
-        row.get(11)?,
+        &row.try_get::<String, _>(5)?,
+        row.try_get(6)?,
+        row.try_get(7)?,
+        row.try_get(8)?,
+        row.try_get(9)?,
+        row.try_get(10)?,
+        row.try_get(11)?,
     )
     .map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Text,
-            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
-        )
+        sqlx::Error::Decode(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            error,
+        )))
     })
 }
 
@@ -494,8 +496,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use awaken_scoped_migration::{Dialect, MigrationBundle, MigrationError, plan};
-    use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
-    use rusqlite::Connection;
+    use awaken_sqlite_pool::EmbeddedSqlite;
 
     use super::*;
 
@@ -546,96 +547,103 @@ mod tests {
             .expect("E4");
     }
 
-    #[test]
-    fn sqlite_published_v3_converges_rows_and_constraints_atomically() {
+    #[tokio::test]
+    async fn sqlite_published_v3_converges_rows_and_constraints_atomically() {
         // Causes: M1 exact published V3; M2 duplicate Session projection; M3
         // valid durable fields. Effects: E1 earliest projection retained; E2
         // V6 and convergence receipts; E3 current CHECK constraints reject bad
         // writes. Rule W1=M1+M2+M3=>E1+E2+E3.
-        let conn = Connection::open_in_memory().expect("sqlite");
-        let runner = SqliteMigrationRunner::with_prefix(NS).expect("runner");
-        runner.run_bundle(&conn, &legacy_v3()).expect("M1");
-        for (id, seq) in [("oldest", 0), ("duplicate", 1)] {
-            conn.execute(
+        let pool = EmbeddedSqlite::memory().open().await.expect("sqlite");
+        let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS).expect("runner");
+        runner.run_bundle(&legacy_v3()).await.expect("M1");
+        for (id, seq) in [("oldest", 0_i64), ("duplicate", 1_i64)] {
+            sqlx::query(
                 "INSERT INTO work_queue_item \
                  (work_id,seq,environment_id,data_type,data_id,metadata_json,state) \
                  VALUES (?1,?2,'env','session','session-a','{}','queued')",
-                (id, seq),
             )
+            .bind(id)
+            .bind(seq)
+            .execute(&pool)
+            .await
             .expect("M2 seed");
         }
         let legacy = selected_work_bundle(Some(LEGACY_V1_CHECKSUM))
             .expect("legacy")
             .1;
-        runner.run_bundle(&conn, &legacy).expect("V6");
+        runner.run_bundle(&legacy).await.expect("V6");
         runner
-            .run_bundle(&conn, &converged_work_bundle().expect("converged"))
+            .run_bundle(&converged_work_bundle().expect("converged"))
+            .await
             .expect("convergence");
         assert_eq!(
-            conn.query_row("SELECT work_id FROM work_queue_item", [], |row| {
-                row.get::<_, String>(0)
-            })
-            .unwrap(),
+            sqlx::query_scalar::<_, String>("SELECT work_id FROM work_queue_item")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
             "oldest",
             "E1"
         );
         assert_eq!(
-            conn.query_row(
+            sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM work_queue_schema_migrations \
                  WHERE (bundle_id=?1 AND version=6) OR bundle_id=?2",
-                (BUNDLE_ID, CONVERGED_BUNDLE_ID),
-                |row| row.get::<_, i64>(0),
             )
+            .bind(BUNDLE_ID)
+            .bind(CONVERGED_BUNDLE_ID)
+            .fetch_one(&pool)
+            .await
             .unwrap(),
             2,
             "E2"
         );
         assert!(
-            conn.execute(
+            sqlx::query(
                 "INSERT INTO work_queue_item \
                  (work_id,seq,environment_id,data_type,data_id,metadata_json,state,lease_epoch) \
                  VALUES ('bad',-1,'env','session','bad','{}','queued',0)",
-                [],
             )
+            .execute(&pool)
+            .await
             .is_err(),
             "E3"
         );
     }
 
-    #[test]
-    fn sqlite_invalid_legacy_row_keeps_the_v6_cutover_uncommitted() {
+    #[tokio::test]
+    async fn sqlite_invalid_legacy_row_keeps_the_v6_cutover_uncommitted() {
         // Causes: F1 exact legacy V3; F2 a negative durable sequence. Effects:
         // E1 V6 rejects; E2 the row and pre-cutover table remain readable; E3
         // no convergence receipt. Rule W2=F1+F2=>E1+E2+E3.
-        let conn = Connection::open_in_memory().expect("sqlite");
-        let runner = SqliteMigrationRunner::with_prefix(NS).expect("runner");
-        runner.run_bundle(&conn, &legacy_v3()).expect("F1");
-        conn.execute(
+        let pool = EmbeddedSqlite::memory().open().await.expect("sqlite");
+        let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS).expect("runner");
+        runner.run_bundle(&legacy_v3()).await.expect("F1");
+        sqlx::query(
             "INSERT INTO work_queue_item \
              (work_id,seq,environment_id,data_type,data_id,metadata_json,state) \
              VALUES ('bad',-1,'env','session','bad','{}','queued')",
-            [],
         )
+        .execute(&pool)
+        .await
         .expect("F2");
         let legacy = legacy_work_bundle().expect("legacy");
-        assert!(runner.run_bundle(&conn, &legacy).is_err(), "E1");
+        assert!(runner.run_bundle(&legacy).await.is_err(), "E1");
         assert_eq!(
-            conn.query_row(
-                "SELECT seq FROM work_queue_item WHERE work_id='bad'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap(),
+            sqlx::query_scalar::<_, i64>("SELECT seq FROM work_queue_item WHERE work_id='bad'")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
             -1,
             "E2"
         );
         assert_eq!(
-            conn.query_row(
+            sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM work_queue_schema_migrations \
                  WHERE bundle_id=?1 AND version=6",
-                [BUNDLE_ID],
-                |row| row.get::<_, i64>(0),
             )
+            .bind(BUNDLE_ID)
+            .fetch_one(&pool)
+            .await
             .unwrap(),
             0,
             "E3"

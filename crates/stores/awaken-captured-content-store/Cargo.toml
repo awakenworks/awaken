@@ -15,13 +15,11 @@ authority = "captured-content"
 awaken-runtime-contract.workspace = true
 # The one wall-clock port: capture and erasure-fence stamps.
 awaken-time.workspace = true
-awaken-scoped-migration = { workspace = true, features = ["postgres"] }
-awaken-scoped-migration-sqlite.workspace = true
+awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] }
 awaken-sqlite-pool.workspace = true
 async-trait.workspace = true
-rusqlite.workspace = true
 serde_json.workspace = true
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -35,7 +33,7 @@ uuid = { version = "1", features = ["v4"] }
 default = []
 # Volatile privacy-state authority used only by tests and scenario fixtures.
 test-support = []
-postgres = ["dep:sqlx"]
+postgres = ["sqlx/postgres"]
 
 [[test]]
 name = "repo_conformance"

@@ -15,7 +15,7 @@ use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_reliability_testkit::CrashProcess;
 use awaken_store_sqlite::SqliteCommitCoordinator;
-use rusqlite::Connection;
+use sqlx::Connection as _;
 
 const CRASH_CHILD: &str = "AWAKEN_SQLITE_CRASH_CHILD";
 const DATABASE_PATH: &str = "AWAKEN_SQLITE_CRASH_DATABASE";
@@ -54,23 +54,33 @@ fn terminal_commit(text: String) -> ThreadCommit {
     }
 }
 
-fn run_uncommitted_child_if_requested() -> Result<bool, Box<dyn std::error::Error>> {
+async fn run_uncommitted_child_if_requested() -> Result<bool, Box<dyn std::error::Error>> {
     if std::env::var_os(CRASH_CHILD).is_none() {
         return Ok(false);
     }
     let database = std::env::var(DATABASE_PATH)?;
     let ready = std::env::var(READY_PATH)?;
     let sequence = std::env::var(CRASH_SEQUENCE)?.parse::<u64>()?;
-    let connection = Connection::open(database)?;
-    connection.execute_batch("PRAGMA journal_mode=WAL; BEGIN IMMEDIATE;")?;
-    connection.execute(
+    // A raw connection with SQLite's plain defaults, outside the store policy;
+    // it is never returned to a pool, so the transaction stays open until kill.
+    let mut connection = sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&database)
+            .create_if_missing(true)
+            .foreign_keys(false),
+    )
+    .await?;
+    sqlx::raw_sql("PRAGMA journal_mode=WAL; BEGIN IMMEDIATE;")
+        .execute(&mut connection)
+        .await?;
+    sqlx::query(
         "INSERT INTO runtime_commit(sequence,thread_id,run_id,phase) VALUES (?1,?2,?3,'{}')",
-        rusqlite::params![
-            sequence,
-            format!("partial-thread-{sequence}"),
-            format!("partial-run-{sequence}")
-        ],
-    )?;
+    )
+    .bind(i64::try_from(sequence)?)
+    .bind(format!("partial-thread-{sequence}"))
+    .bind(format!("partial-run-{sequence}"))
+    .execute(&mut connection)
+    .await?;
     let partial_thread = format!("partial-thread-{sequence}");
     let partial_state = serde_json::to_string(&StateCommand::set(
         Scope::Thread,
@@ -78,10 +88,14 @@ fn run_uncommitted_child_if_requested() -> Result<bool, Box<dyn std::error::Erro
         "partial.state",
         serde_json::json!(sequence),
     ))?;
-    connection.execute(
+    sqlx::query(
         "INSERT INTO runtime_state_command(commit_sequence,thread_id,data) VALUES (?1,?2,?3)",
-        rusqlite::params![sequence, partial_thread, partial_state],
-    )?;
+    )
+    .bind(i64::try_from(sequence)?)
+    .bind(partial_thread)
+    .bind(partial_state)
+    .execute(&mut connection)
+    .await?;
     std::fs::write(ready, b"transaction-open")?;
     std::thread::sleep(Duration::from_secs(60));
     Err("parent did not terminate SQLite crash child".into())
@@ -115,14 +129,17 @@ async fn uncommitted_transaction_is_rolled_back_after_process_kill()
     // second reopen. Decision table: R1=C1+C2+C3 -> E1; R2=R1+C4 -> E2+E3.
     // This exercises SQLite's actual WAL/rollback boundary rather than an
     // in-process error stub.
-    if run_uncommitted_child_if_requested()? {
+    if run_uncommitted_child_if_requested().await? {
         return Ok(());
     }
 
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("runtime.db");
     let ready = directory.path().join("transaction.ready");
-    drop(SqliteCommitCoordinator::open(path_text(&database)?)?);
+    SqliteCommitCoordinator::open(path_text(&database)?)
+        .await?
+        .close()
+        .await;
 
     crash_uncommitted_child(
         "uncommitted_transaction_is_rolled_back_after_process_kill",
@@ -131,7 +148,7 @@ async fn uncommitted_transaction_is_rolled_back_after_process_kill()
         1,
     )?;
 
-    let store = SqliteCommitCoordinator::open(path_text(&database)?)?;
+    let store = SqliteCommitCoordinator::open(path_text(&database)?).await?;
     assert_eq!(store.commit_count(), 0, "uncommitted row is invisible");
     assert!(
         store
@@ -141,8 +158,8 @@ async fn uncommitted_transaction_is_rolled_back_after_process_kill()
     );
     let record = store.commit(terminal_commit("committed".into())).await?;
     assert_eq!(record.sequence, 1);
-    drop(store);
-    let reopened = SqliteCommitCoordinator::open(path_text(&database)?)?;
+    store.close().await;
+    let reopened = SqliteCommitCoordinator::open(path_text(&database)?).await?;
     assert_eq!(reopened.commit_count(), 1);
     let replayed = reopened.committed_state(&ThreadId("failure-thread".into()));
     assert_eq!(replayed.len(), 2, "complete state batch replays");
@@ -163,17 +180,17 @@ async fn sqlite_read_only_rolls_back_the_complete_domain_commit()
     // completion cannot publish any region of the staged aggregate.
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("read-only.db");
-    let store = SqliteCommitCoordinator::open(path_text(&database)?)?;
-    store.make_read_only_for_test()?;
+    let store = SqliteCommitCoordinator::open(path_text(&database)?).await?;
+    store.make_read_only_for_test().await?;
     assert!(
         store
             .commit(terminal_commit("rejected".into()))
             .await
             .is_err()
     );
-    drop(store);
+    store.close().await;
 
-    let reopened = SqliteCommitCoordinator::open(path_text(&database)?)?;
+    let reopened = SqliteCommitCoordinator::open(path_text(&database)?).await?;
     assert_eq!(reopened.commit_count(), 0);
     assert!(
         reopened
@@ -196,13 +213,13 @@ async fn corrupt_uncommitted_wal_never_projects_a_partial_commit()
     // commands; R2=R1 + uncommitted commit/state rows B + process death + corrupt
     // WAL tail -> reopen either fails closed or exposes exactly A and none of B.
     // This distinguishes complete-prefix recovery from partial-state replay.
-    if run_uncommitted_child_if_requested()? {
+    if run_uncommitted_child_if_requested().await? {
         return Ok(());
     }
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("corrupt-wal.db");
     let ready = directory.path().join("corrupt-wal.ready");
-    let store = SqliteCommitCoordinator::open(path_text(&database)?)?;
+    let store = SqliteCommitCoordinator::open(path_text(&database)?).await?;
     assert_eq!(
         store
             .commit(terminal_commit("durable-prefix".into()))
@@ -210,7 +227,7 @@ async fn corrupt_uncommitted_wal_never_projects_a_partial_commit()
             .sequence,
         1
     );
-    drop(store);
+    store.close().await;
 
     crash_uncommitted_child(
         "corrupt_uncommitted_wal_never_projects_a_partial_commit",
@@ -232,7 +249,7 @@ async fn corrupt_uncommitted_wal_never_projects_a_partial_commit()
     file.write_all(b"corrupt-wal-tail")?;
     file.sync_all()?;
 
-    if let Ok(reopened) = SqliteCommitCoordinator::open(path_text(&database)?) {
+    if let Ok(reopened) = SqliteCommitCoordinator::open(path_text(&database)?).await {
         assert_eq!(reopened.commit_count(), 1);
         let messages = reopened.committed_messages(&ThreadId("failure-thread".into()));
         assert_eq!(messages.len(), 1);
@@ -265,18 +282,21 @@ async fn sqlite_full_rolls_back_the_complete_domain_commit()
     // rejection result instead of exposing a partially committed Thread.
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("full.db");
-    drop(SqliteCommitCoordinator::open(path_text(&database)?)?);
+    SqliteCommitCoordinator::open(path_text(&database)?)
+        .await?
+        .close()
+        .await;
 
-    let store = SqliteCommitCoordinator::open(path_text(&database)?)?;
-    store.exhaust_growth_capacity_for_test()?;
+    let store = SqliteCommitCoordinator::open(path_text(&database)?).await?;
+    store.exhaust_growth_capacity_for_test().await?;
     let result = store.commit(terminal_commit("x".repeat(1024 * 1024))).await;
     assert!(
         result.is_err(),
         "capacity exhaustion must reject the commit"
     );
-    drop(store);
+    store.close().await;
 
-    let reopened = SqliteCommitCoordinator::open(path_text(&database)?)?;
+    let reopened = SqliteCommitCoordinator::open(path_text(&database)?).await?;
     assert_eq!(reopened.commit_count(), 0);
     assert!(
         reopened

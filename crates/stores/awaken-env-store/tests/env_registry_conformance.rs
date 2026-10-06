@@ -17,6 +17,8 @@ use awaken_store_conformance::env_registry::run_suite;
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
+        // The sqlx pool bounds connection admission with a Tokio timer.
+        .enable_time()
         .build()
         .expect("current-thread runtime")
         .block_on(f)
@@ -24,15 +26,16 @@ fn block<F: std::future::Future>(f: F) -> F::Output {
 
 #[test]
 fn in_memory_backend_conforms() {
-    block(run_suite(
-        awaken_time::system_clock(),
-        InMemoryEnvRegistry::new,
-    ));
+    block(run_suite(awaken_time::system_clock(), |clock| {
+        std::future::ready(InMemoryEnvRegistry::new(clock))
+    }));
 }
 
 #[test]
 fn sqlite_backend_conforms() {
-    block(run_suite(awaken_time::system_clock(), |clock| {
-        SqliteEnvRegistry::open_in_memory(clock).expect("sqlite in-memory registry")
+    block(run_suite(awaken_time::system_clock(), |clock| async move {
+        SqliteEnvRegistry::open_in_memory(clock)
+            .await
+            .expect("sqlite in-memory registry")
     }));
 }

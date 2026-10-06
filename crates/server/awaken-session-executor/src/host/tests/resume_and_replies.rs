@@ -31,9 +31,12 @@ fn awaiting_tool_batch_state(
     awaken_runtime_contract::ActiveToolBatch::write(&Some(batch))
 }
 
-fn host_requiring_write_confirmation(model: Arc<dyn LlmExecutor>) -> Arc<SharedHost> {
-    let host =
-        Arc::new(SharedHost::new(model, "stub").with_gate_override(write_confirmation_gate()));
+async fn host_requiring_write_confirmation(model: Arc<dyn LlmExecutor>) -> Arc<SharedHost> {
+    let host = Arc::new(
+        SharedHost::new(model, "stub")
+            .await
+            .with_gate_override(write_confirmation_gate()),
+    );
     let _managed = install_test_dispatch_runtime(&host);
     host
 }
@@ -85,7 +88,7 @@ async fn run_on_an_awaiting_thread_fails_closed() {
     // Constraint/Invariant: a new foreground Run cannot bypass the existing
     // resume ticket or create a second active writer. Decision rule: submit under
     // C1 and require the documented fail-closed effect with no new Run.
-    let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel));
+    let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
     let r1 = host
         .run(None, "t-awaiting", user("hi"))
         .await
@@ -123,7 +126,7 @@ async fn run_on_an_awaiting_thread_fails_closed() {
 /// is no run to answer, so it fails closed with BadRequest.
 #[tokio::test]
 async fn resume_with_no_awaiting_run_fails_closed() {
-    let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel));
+    let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
     let err = host
         .resume(
             "t-idle",
@@ -150,7 +153,7 @@ async fn resume_with_a_wrong_tool_use_id_fails_closed() {
     // supplies foreign id B. Effects: E1 C2 is rejected and the Run remains
     // Awaiting. Constraint/Invariant: exact tool-use identity fences replies.
     // Decision rule: exercise B != A and require E1 with no tool result commit.
-    let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel));
+    let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
     let r1 = host
         .run(None, "t-wrongid", user("hi"))
         .await
@@ -195,7 +198,7 @@ async fn client_result_cannot_answer_a_builtin_tool() {
     // reply is committed and the exact ticket remains resumable. Constraint:
     // client results answer only client-owned targets. Decision rule: exercise
     // the mismatch, then resume the same ticket correctly to prove E1+E2.
-    let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel));
+    let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
     let r1 = host.run(None, "t-bind1", user("hi")).await.expect("Run 1");
     let pending = r1.pending.expect("awaiting on the built-in write");
     assert!(!pending.client_executed, "write is a built-in tool");
@@ -240,6 +243,7 @@ async fn confirm_cannot_answer_a_client_tool() {
     // exercise the inverse mismatch, then answer correctly to prove E1+E2.
     let (host, _managed) = dispatch_test_host(
         SharedHost::new(Arc::new(ClientLookupModel), "stub")
+            .await
             .with_client_tools(HashSet::from(["lookup".to_string()])),
     );
     let r1 = host.run(None, "t-bind2", user("hi")).await.expect("Run 1");
@@ -293,6 +297,7 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_run() {
     // | R1 | direct | valid client tool | exact result | E1+E2+E3 |
     let (host, _managed) = dispatch_test_host(
         SharedHost::new(Arc::new(ClientLookupModel), "stub")
+            .await
             .with_client_tools(HashSet::from(["lookup".to_string()])),
     );
     let r1 = host.run(None, "t-client", user("hi")).await.expect("Run 1");
@@ -341,10 +346,14 @@ async fn durable_foreground_run_relays_live_progress_before_committed_completion
     // | R3 | yes | yes | remote | E2 fallback; no false replay guarantee |
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
+            .await
             .expect("in-memory dispatch"),
     );
-    let host =
-        Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub").with_dispatch_store(dispatch));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(MemoryHostModel), "stub")
+            .await
+            .with_dispatch_store(dispatch),
+    );
     let _managed = install_test_dispatch_runtime(&host);
     host.ensure_dispatch_pool();
     let sink = Arc::new(awaken_store_inmem::MemoryStreamSink::new());
@@ -385,10 +394,13 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("in-memory dispatch"),
     );
     let host = Arc::new(
-        SharedHost::new(Arc::new(MemoryHostModel), "stub").with_dispatch_store(dispatch.clone()),
+        SharedHost::new(Arc::new(MemoryHostModel), "stub")
+            .await
+            .with_dispatch_store(dispatch.clone()),
     );
     let _managed = install_test_dispatch_runtime(&host);
     let child_run = RunId("child-report-run".into());
@@ -527,10 +539,13 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("coordinated reply dispatch"),
     );
     let (host, _managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(MemoryHostModel), "stub").with_dispatch_store(dispatch.clone()),
+        SharedHost::new(Arc::new(MemoryHostModel), "stub")
+            .await
+            .with_dispatch_store(dispatch.clone()),
     );
     let ctx = host
         .ctx_for(&parent.0, None)
@@ -1137,7 +1152,7 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
 
     let thread = ThreadId("remote-input-reply-session".into());
     let run_id = RunId("remote-input-reply-run".into());
-    let host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
+    let host = SharedHost::new(Arc::new(MemoryHostModel), "stub").await;
     let commit = host
         .commit_for_read(&thread.0)
         .await
@@ -1206,7 +1221,7 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
 
     let tool_thread = ThreadId("missing-tool-batch-session".into());
     let tool_run = RunId("missing-tool-batch-run".into());
-    let tool_host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
+    let tool_host = SharedHost::new(Arc::new(MemoryHostModel), "stub").await;
     let tool_commit = tool_host
         .commit_for_read(&tool_thread.0)
         .await
@@ -1306,10 +1321,12 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let dispatch = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+                .await
                 .expect("primary reply dispatch"),
         );
         let (host, _managed) = dispatch_test_host(
             SharedHost::new(Arc::new(MemoryHostModel), "stub")
+                .await
                 .with_dispatch_store(dispatch.clone()),
         );
         let ctx = host
@@ -1564,10 +1581,13 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("budget resume dispatch"),
     );
     let (host, _managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(MemoryHostModel), "stub").with_dispatch_store(dispatch.clone()),
+        SharedHost::new(Arc::new(MemoryHostModel), "stub")
+            .await
+            .with_dispatch_store(dispatch.clone()),
     );
 
     let root = ThreadId("budget-resume-root".into());
@@ -1976,10 +1996,12 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
     // test plus each Inbox backend's idempotency-conflict conformance suite.
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
+            .await
             .expect("in-memory dispatch"),
     );
     let host = Arc::new(
         SharedHost::new(Arc::new(ClientLookupModel), "stub")
+            .await
             .with_client_tools(HashSet::from(["lookup".to_string()]))
             .with_dispatch_store(dispatch.clone()),
     );
@@ -2051,10 +2073,12 @@ async fn coordinator_only_foreground_admission_survives_request_drop_without_a_p
     // | Q2 | yes | yes | yes | E1+E2+E3 |
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
+            .await
             .expect("in-memory dispatch"),
     );
     let host = Arc::new(
         SharedHost::new(Arc::new(ClientLookupModel), "stub")
+            .await
             .with_client_tools(HashSet::from(["lookup".to_string()]))
             .with_coordinator_dispatch_store(dispatch.clone()),
     );
@@ -2121,6 +2145,7 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
     // | R4   | F  | T/F| T  | F  | F  | E2 (resume_with_no_awaiting_run) |
     let (host, _managed) = dispatch_test_host(
         SharedHost::new(Arc::new(ClientLookupModel), "stub")
+            .await
             .with_client_tools(HashSet::from(["lookup".to_string()])),
     );
     let first = host
@@ -2179,7 +2204,7 @@ async fn supersede_run_without_durable_ingress_fails_closed() {
     // or starting any Run. Constraint/Invariant: supersession is a durable queue
     // mutation and has no in-memory fallback. Decision rule: execute C1 and
     // require fail-closed zero side effects.
-    let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel));
+    let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
     // Await first so the supersede path is not short-circuited by the awaiting guard
     // (supersede is allowed on an awaiting thread; the durable check is what must fire).
     let r1 = host.run(None, "t-sup", user("hi")).await.expect("Run 1");
@@ -2210,9 +2235,12 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
     // activity receipt remain the sole Managed-root ingress; no Host fallback.
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
+            .await
             .expect("managed ingress fence dispatch"),
     );
-    let host = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone());
+    let host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
+        .with_dispatch_store(dispatch.clone());
     host.session_slots
         .update("managed-root", |slot| slot.session_dispatch = true);
 

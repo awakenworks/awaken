@@ -24,7 +24,9 @@ async fn coordination_projects_the_current_desired_files_before_child_admission(
     ] {
         let id = format!("coordinate-files-{rule}");
         let repo = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([
             AgentAdmissionOutcome::Accepted,
@@ -122,7 +124,9 @@ async fn cold_child_report_projects_frozen_root_and_files_before_continuation() 
     for fail_projection in [false, true] {
         let id = format!("cold-report-files-{fail_projection}");
         let repo = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
         runtime

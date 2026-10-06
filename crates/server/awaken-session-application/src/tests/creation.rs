@@ -635,6 +635,7 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
     // already-resident rows retain their adjacent recovery behavior.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("worker projection recovery repository"),
     );
     let runtime = Arc::new(RecordingCreateRuntime::default());
@@ -713,6 +714,7 @@ async fn worker_checkpoint_retention_is_rejected_before_durable_creation() {
     // | T4 | Local | Resident | existing local creation |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("Session repository"),
     );
     let runtime = Arc::new(RecordingCreateRuntime::default());
@@ -786,9 +788,10 @@ async fn root_rejection_compensates_only_applied_repository_participants() {
         let session_id = format!("creation-participant-{rule}");
         let repository = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
                 .expect("participant repository"),
         );
-        let catalog = ephemeral_resource_registry();
+        let catalog = ephemeral_resource_registry().await;
         let mut application = application_with_runtime(
             Arc::new(RecordingCreateRuntime::default()),
             repository.clone(),
@@ -845,6 +848,7 @@ async fn root_rejection_compensates_only_applied_repository_participants() {
 async fn model_override_decision_reuses_only_an_equal_id_and_resolves_every_mismatch() {
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let mut app = application(repository, Arc::new(RecordingEnvironmentSource::default()));
@@ -927,6 +931,7 @@ async fn creation_driver_owns_finalize_realize_and_activation_order() {
     // failure mode. This proves protocols cannot reorder the shared sequence.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let app = application(
@@ -973,6 +978,7 @@ async fn create_response_contains_a_fully_durable_initial_batch() {
     // | I2 | exact replay | existing equal root | no | same durable payload |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let app = application(
@@ -1051,6 +1057,7 @@ async fn self_hosted_work_dispatch_is_durable_but_not_a_fabricated_readiness_ack
     // | W1   | T  | T  | T  | F  | E1+E2+E3 |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let environments = Arc::new(RecordingEnvironmentSource::default());
@@ -1149,6 +1156,7 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
                     Arc::new(
                         awaken_session_store::SqliteManagedSessionRepository::open(path)
+                            .await
                             .expect("open original authority"),
                     );
                 let runtime = Arc::new(RecordingCreateRuntime::default());
@@ -1215,6 +1223,7 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
             };
             let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
                 awaken_session_store::SqliteManagedSessionRepository::open(path)
+                    .await
                     .expect("reopen fresh authority connection"),
             );
             let frozen = serde_json::to_value(&accepted).unwrap();
@@ -1370,6 +1379,7 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     // | R4 | exact accept | same | ActivationFailed | E3+E5 |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("create replay repository"),
     );
     let runtime = Arc::new(RecordingCreateRuntime::default());
@@ -1566,6 +1576,7 @@ async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
     ] {
         let durable: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
                 .expect("post-create conflict repository"),
         );
         let faulting = Arc::new(FaultingSessionRepository::new(durable.clone()));
@@ -1666,6 +1677,7 @@ async fn create_failure_cleanup_is_authorized_only_by_a_terminal_durable_root() 
     for (rule, failure, terminal) in [("F1", 1, false), ("F2", 2, true)] {
         let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
                 .expect("cleanup admission repository"),
         );
         let runtime = Arc::new(RecordingCreateRuntime::default());
@@ -1716,6 +1728,7 @@ async fn creation_persists_only_a_complete_frozen_root_before_later_cas_failure(
      */
     let durable: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let faulting = Arc::new(FaultingSessionRepository::new(durable.clone()));
@@ -1756,6 +1769,7 @@ async fn session_application_admits_new_and_existing_protocol_threads() {
     // concrete application gate shared by AI SDK, AG-UI, and A2A.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("test repository"),
     );
     let app = application(repository.clone(), Arc::new(AdmissionEnvironment));
@@ -2200,6 +2214,7 @@ async fn assert_profiled_rejection_rules(
 async fn assert_profiled_direct_resource_rules() {
     let durable: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("direct resource repository"),
     );
     let capture = Arc::new(FaultingSessionRepository::new(durable.clone()));
@@ -2241,6 +2256,7 @@ async fn assert_profiled_direct_resource_rules() {
 
     let agent_repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("Agent collision repository"),
     );
     let agent_runtime = Arc::new(RecordingCreateRuntime::default());
@@ -2286,10 +2302,11 @@ async fn assert_profiled_direct_resource_rules() {
     // rejects the whole set before Registry or Runtime effects.
     let repository_repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("Repository path Session store"),
     );
     let repository_runtime = Arc::new(RecordingCreateRuntime::default());
-    let registry = ephemeral_resource_registry();
+    let registry = ephemeral_resource_registry().await;
     let mut repository_application = application_with_runtime(
         repository_runtime.clone(),
         repository_repo.clone(),
@@ -2443,6 +2460,7 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
     // frame without changing production stack limits or the decision oracles.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("profiled Session repository"),
     );
     Box::pin(assert_profiled_realization_and_environment_rules(
@@ -2464,8 +2482,11 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     // T2 identical command + later clock -> exact root, no repeated effects;
     // T3 genuine mutation -> update only; T4 response loss + same receipt ->
     // first mutation time; T5 clock rollback -> updated time never regresses.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let runtime = Arc::new(RecordingCreateRuntime::default());
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_800_000_000_123));
     let application = SessionApplication::new_with_configuration(
@@ -2534,8 +2555,10 @@ mod time_assurance;
 
 /// The Registry of an ephemeral Resources application, on the host clock: the
 /// one these Session tests register Repositories and Memory stores against.
-pub(super) fn ephemeral_resource_registry() -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
+pub(super) async fn ephemeral_resource_registry()
+-> Arc<dyn awaken_resource_contract::ResourceRegistry> {
     awaken_resource_persistence::ephemeral(awaken_time::system_clock())
+        .await
         .expect("Resource authorities")
         .authorities()
         .resource_registry()

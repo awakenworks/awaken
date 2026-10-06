@@ -112,7 +112,7 @@ async fn session_commit_survives_process_kill_before_notification() {
     if std::env::var_os(CHILD_MODE).is_some() {
         let db = std::env::var(DB_PATH).unwrap();
         let marker = std::env::var(MARKER_PATH).unwrap();
-        let repo = SqliteManagedSessionRepository::open(&db).unwrap();
+        let repo = SqliteManagedSessionRepository::open(&db).await.unwrap();
         let value = session();
         let payload = SessionMutationPayload::Replace(value.clone());
         repo.create(
@@ -145,7 +145,9 @@ async fn session_commit_survives_process_kill_before_notification() {
     .expect("child reaches the post-commit boundary and is killed");
     assert!(!status.success());
 
-    let repo = SqliteManagedSessionRepository::open(db.to_str().unwrap()).unwrap();
+    let repo = SqliteManagedSessionRepository::open(db.to_str().unwrap())
+        .await
+        .unwrap();
     let mut expected = session();
     expected.revision = awaken_session_types::SessionRevision(1);
     assert_eq!(

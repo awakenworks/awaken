@@ -1044,7 +1044,11 @@ mod tests {
         // E5 startup synchronization rebuilds active rows. Rules:
         // R3=C1+C3->E3; R4=C4+C1->E4; R5=C5->E5.
         let catalog = Arc::new(ExecutableAgentCatalog::new());
-        let store = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+        let store = Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
+                .unwrap(),
+        );
         let delegate = Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone()));
         let registrar =
             ReferenceIndexedExecutableAgentRegistrar::new(catalog.clone(), delegate, store.clone());
@@ -1167,8 +1171,11 @@ mod tests {
             .register(current)
             .await
             .unwrap();
-        let restored_store =
-            Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+        let restored_store = Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
+                .unwrap(),
+        );
         let restored = ReferenceIndexedExecutableAgentRegistrar::new(
             restored_catalog.clone(),
             Arc::new(LocalExecutableAgentRegistrar::new(restored_catalog)),

@@ -20,13 +20,13 @@
 //! authority and the `run_record` table is a derived cache equal to the latest
 //! fact (G32).
 //!
-//! SQLite's driver (`rusqlite`) is synchronous, so each `commit` runs the SQL
-//! transaction on a blocking thread; the async write boundary is preserved.
-//! Commits are serialized by a write lock, so the monotonic fence is assigned
-//! without a race, mirroring SQLite's own single-writer model. The synchronous
-//! read ports are served from an in-memory projection rebuilt from the log on
-//! construction (durable across restart) and advanced in lockstep with each
-//! commit — never an independent authority.
+//! The store reaches SQLite through one sqlx connection opened under the
+//! embedded policy (ADR-0087), so each `commit` is one async `BEGIN IMMEDIATE`
+//! transaction. Commits are serialized by a write lock, so the monotonic fence
+//! is assigned without a race, mirroring SQLite's own single-writer model. The
+//! synchronous read ports are served from an in-memory projection rebuilt from
+//! the log on construction (durable across restart) and advanced in lockstep
+//! with each commit — never an independent authority.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -58,8 +58,11 @@ use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
     decode_resume_ticket_json_for_owner, project_committed_run_records,
 };
+use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use awaken_store_schema::StoredU64;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use sqlx::SqliteConnection;
 
 pub use awaken_store_schema::{COMMIT_BUNDLE_ID as BUNDLE_ID, commit_bundle};
 
@@ -82,16 +85,10 @@ fn increment_authority(value: u64) -> Result<u64, Error> {
         .map_err(|error| Error::Rejected(error.to_string()))
 }
 
-fn sqlite_authority(value: i64) -> Result<u64, rusqlite::Error> {
+fn sqlite_authority(value: i64) -> Result<u64, String> {
     StoredU64::try_from(value)
         .map(StoredU64::domain_value)
-        .map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Integer,
-                Box::new(error),
-            )
-        })
+        .map_err(|error| error.to_string())
 }
 
 /// Errors from constructing or migrating the store. Commit-time failures use the
@@ -132,7 +129,7 @@ const NS: &str = "runtime";
 
 /// A SQLite-backed [`Coordinator`] plus the read ports it serves.
 pub struct SqliteCommitCoordinator {
-    conn: awaken_sqlite_pool::SharedSqliteConnection,
+    pool: EmbeddedPool,
     projection: Mutex<Projection>,
     /// Serializes commits so the fence is assigned without a race and the
     /// projection advances in commit order.
@@ -142,66 +139,88 @@ pub struct SqliteCommitCoordinator {
 impl SqliteCommitCoordinator {
     /// Open (or create) a database file, apply the commit migrations, and
     /// hydrate the projection.
-    pub fn open(path: &str) -> Result<Self, StoreError> {
-        let conn = awaken_sqlite_pool::SqliteConnectionFactory::file(path)
-            .open()
-            .map_err(|err| StoreError::Open(err.to_string()))?;
-        Self::from_connection(conn)
+    pub async fn open(path: &str) -> Result<Self, StoreError> {
+        Self::open_location(EmbeddedSqlite::file(path)).await
     }
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = awaken_sqlite_pool::SqliteConnectionFactory::memory()
-            .open()
-            .map_err(|err| StoreError::Open(err.to_string()))?;
-        Self::from_connection(conn)
+    pub async fn open_in_memory() -> Result<Self, StoreError> {
+        Self::open_location(EmbeddedSqlite::memory()).await
     }
 
     /// Constrain this connection to its current page count for deterministic
     /// SQLITE_FULL atomicity tests. Production composition never exposes or
     /// invokes this test-only fault injection seam.
     #[cfg(feature = "test-support")]
-    pub fn exhaust_growth_capacity_for_test(&self) -> Result<(), StoreError> {
-        let connection = self
-            .conn
-            .lock()
-            .map_err(|_| StoreError::Open("sqlite connection poisoned".into()))?;
-        let pages: i64 = connection
-            .query_row("PRAGMA page_count", [], |row| row.get(0))
+    pub async fn exhaust_growth_capacity_for_test(&self) -> Result<(), StoreError> {
+        // The store owns exactly one connection, so a connection-local pragma
+        // set through the pool stays on every later operation.
+        let mut connection = self
+            .pool
+            .acquire()
+            .await
             .map_err(|error| StoreError::Open(error.to_string()))?;
-        connection
-            .pragma_update(None, "max_page_count", pages)
+        let pages: i64 = sqlx::query_scalar("PRAGMA page_count")
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(|error| StoreError::Open(error.to_string()))?;
+        sqlx::query(&format!("PRAGMA max_page_count = {pages}"))
+            .execute(&mut *connection)
+            .await
+            .map(drop)
             .map_err(|error| StoreError::Open(error.to_string()))
     }
 
     /// Force deterministic SQLITE_READONLY failures without relying on host
     /// filesystem ownership (test runners commonly execute as root).
     #[cfg(feature = "test-support")]
-    pub fn make_read_only_for_test(&self) -> Result<(), StoreError> {
-        let connection = self
-            .conn
-            .lock()
-            .map_err(|_| StoreError::Open("sqlite connection poisoned".into()))?;
-        connection
-            .pragma_update(None, "query_only", true)
+    pub async fn make_read_only_for_test(&self) -> Result<(), StoreError> {
+        sqlx::query("PRAGMA query_only = 1")
+            .execute(&self.pool)
+            .await
+            .map(drop)
             .map_err(|error| StoreError::Open(error.to_string()))
     }
 
-    fn from_connection(conn: Connection) -> Result<Self, StoreError> {
-        let bundle = commit_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-            .map_err(|err| StoreError::Migrate(err.to_string()))?
-            .run_bundle(&conn, &bundle)
-            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+    async fn open_location(location: EmbeddedSqlite) -> Result<Self, StoreError> {
+        let pool = location
+            .open()
+            .await
+            .map_err(|err| StoreError::Open(err.to_string()))?;
+        match Self::from_pool(pool.clone()).await {
+            Ok(store) => Ok(store),
+            Err(error) => {
+                pool.close().await;
+                Err(error)
+            }
+        }
+    }
 
-        let projection = hydrate(&conn).map_err(|err| StoreError::Hydrate(err.to_string()))?;
+    async fn from_pool(pool: EmbeddedPool) -> Result<Self, StoreError> {
+        let bundle = commit_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
+        awaken_sqlite_pool::held(
+            SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
+                .map_err(|err| StoreError::Migrate(err.to_string()))?
+                .run_bundle(&bundle),
+        )
+        .await
+        .map_err(|err| StoreError::Migrate(err.to_string()))?;
+
+        let projection = hydrate(&pool).await.map_err(StoreError::Hydrate)?;
 
         Ok(Self {
-            conn: awaken_sqlite_pool::SharedSqliteConnection::new(conn),
+            pool,
             projection: Mutex::new(projection),
             write_lock: tokio::sync::Mutex::new(()),
         })
+    }
+
+    /// Close the store's connection and wait until SQLite has released the
+    /// file. Dropping the store also closes it, but in the background; a
+    /// caller that next inspects or rewrites the file closes it first.
+    pub async fn close(&self) {
+        self.pool.close().await;
     }
 
     /// Number of commits applied so far (the durable fence).
@@ -258,12 +277,7 @@ impl CommitCoordinator for SqliteCommitCoordinator {
         // Serialize commits: assign the fence and advance the projection without
         // a race, matching SQLite's single-writer model.
         let _writing = self.write_lock.lock().await;
-        let data = commit.clone();
-        let next = awaken_sqlite_pool::with_connection(self.conn.clone(), move |conn| {
-            write_commit(conn, &data)
-        })
-        .await
-        .map_err(|err| Error::Rejected(err.to_string()))??;
+        let next = write_commit(&self.pool, &commit).await?;
         let mut projection = lock(&self.projection)?;
         advance_projection(&mut projection, commit, next)?;
         Ok(CommitRecord { sequence: next })
@@ -278,12 +292,7 @@ impl OperationCoordinator for SqliteCommitCoordinator {
             .validate()
             .map_err(|error| Error::Rejected(error.to_string()))?;
         let _writing = self.write_lock.lock().await;
-        let data = operation.clone();
-        let outcome = awaken_sqlite_pool::with_connection(self.conn.clone(), move |conn| {
-            write_operation(conn, &data)
-        })
-        .await
-        .map_err(|error| Error::Rejected(error.to_string()))??;
+        let outcome = write_operation(&self.pool, &operation).await?;
         match outcome {
             OperationWrite::Duplicate(receipt) => Ok(receipt),
             OperationWrite::Applied(receipt) => {
@@ -398,45 +407,27 @@ impl RunLifecycleFeed for SqliteCommitCoordinator {
             RunLifecycleFeedError::Rejected("cursor exceeds SQLite INTEGER range".into())
         })?;
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows = awaken_sqlite_pool::with_connection(
-            self.conn.clone(),
-            move |conn| {
-                let mut statement = conn
-                    .prepare(&format!(
-                    "WITH lifecycle AS (\
-                         SELECT event.sequence, event.run_id, run.thread_id, event.kind, event.payload, \
-                                (SELECT prior.payload FROM {NS}_event AS prior \
-                                 WHERE prior.run_id = event.run_id \
-                                   AND prior.sequence < event.sequence \
-                                   AND prior.kind = '\"RunStateChanged\"' \
-                                 ORDER BY prior.sequence DESC LIMIT 1) AS previous_payload \
-                         FROM {NS}_event AS event \
-                         JOIN {NS}_run_record AS run ON run.run_id = event.run_id \
-                         WHERE event.kind IN ('\"RunStateChanged\"', '\"RunRescheduled\"')\
-                     ) \
-                     SELECT sequence, run_id, thread_id, kind, payload, previous_payload \
-                     FROM lifecycle WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
-                    ))
-                    .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
-                let mapped = statement
-                    .query_map(params![after, limit], |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                            row.get::<_, String>(4)?,
-                            row.get::<_, Option<String>>(5)?,
-                        ))
-                    })
-                    .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
-                mapped
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))
-            },
-        )
-        .await
-        .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))??;
+        let sql = format!(
+            "WITH lifecycle AS (\
+                 SELECT event.sequence, event.run_id, run.thread_id, event.kind, event.payload, \
+                        (SELECT prior.payload FROM {NS}_event AS prior \
+                         WHERE prior.run_id = event.run_id \
+                           AND prior.sequence < event.sequence \
+                           AND prior.kind = '\"RunStateChanged\"' \
+                         ORDER BY prior.sequence DESC LIMIT 1) AS previous_payload \
+                 FROM {NS}_event AS event \
+                 JOIN {NS}_run_record AS run ON run.run_id = event.run_id \
+                 WHERE event.kind IN ('\"RunStateChanged\"', '\"RunRescheduled\"')\
+             ) \
+             SELECT sequence, run_id, thread_id, kind, payload, previous_payload \
+             FROM lifecycle WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
+        );
+        let rows = sqlx::query_as::<_, (i64, String, String, String, String, Option<String>)>(&sql)
+            .bind(after)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
 
         let mut events = Vec::with_capacity(rows.len());
         for (sequence, run_id, thread_id, kind, payload, previous_payload) in rows {
@@ -501,63 +492,49 @@ impl RunRecoverySource for SqliteCommitCoordinator {
         thread_id: &ThreadId,
         claimed_run_id: &RunId,
     ) -> Result<RunRecoverySnapshot, RecoveryError> {
-        let connection = self.conn.clone();
-        let thread_id = thread_id.clone();
-        let claimed_run_id = claimed_run_id.clone();
-        awaken_sqlite_pool::with_connection(connection, move |conn| {
-            read_recovery_snapshot(conn, thread_id, claimed_run_id)
-        })
-        .await
-        .map_err(recovery_reject)?
+        read_recovery_snapshot(&self.pool, thread_id.clone(), claimed_run_id.clone()).await
     }
 }
 
-fn read_recovery_snapshot(
-    conn: &mut Connection,
+async fn read_recovery_snapshot(
+    pool: &EmbeddedPool,
     thread_id: ThreadId,
     claimed_run_id: RunId,
 ) -> Result<RunRecoverySnapshot, RecoveryError> {
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Deferred)
-        .map_err(recovery_reject)?;
-    let store_cursor: i64 = tx
-        .query_row(
-            &format!("SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"),
-            [],
-            |row| row.get(0),
-        )
-        .map_err(recovery_reject)?;
-    let thread_version: i64 = tx
-        .query_row(
-            &format!("SELECT COUNT(*) FROM {NS}_commit WHERE thread_id = ?1"),
-            params![&thread_id.0],
-            |row| row.get(0),
-        )
-        .map_err(recovery_reject)?;
-    let next_commit_ordinal: i64 = tx
-        .query_row(
-            &format!("SELECT COUNT(*) FROM {NS}_commit WHERE run_id = ?1"),
-            params![&claimed_run_id.0],
-            |row| row.get(0),
-        )
-        .map_err(recovery_reject)?;
+    let mut tx = pool.begin().await.map_err(recovery_reject)?;
+    let store_cursor: i64 = sqlx::query_scalar(&format!(
+        "SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"
+    ))
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(recovery_reject)?;
+    let thread_version: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM {NS}_commit WHERE thread_id = ?1"
+    ))
+    .bind(&thread_id.0)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(recovery_reject)?;
+    let next_commit_ordinal: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM {NS}_commit WHERE run_id = ?1"
+    ))
+    .bind(&claimed_run_id.0)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(recovery_reject)?;
 
     let (runs, latest_run_id) = {
-        let mut statement = tx
-            .prepare(&format!(
-                "SELECT run_id, phase FROM {NS}_commit \
-                     WHERE thread_id = ?1 ORDER BY sequence"
-            ))
-            .map_err(recovery_reject)?;
-        let rows = statement
-            .query_map(params![&thread_id.0], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(recovery_reject)?;
+        let rows = sqlx::query_as::<_, (String, String)>(&format!(
+            "SELECT run_id, phase FROM {NS}_commit \
+                 WHERE thread_id = ?1 ORDER BY sequence"
+        ))
+        .bind(&thread_id.0)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(recovery_reject)?;
         project_committed_run_records(
             &thread_id,
-            rows.map(|row| {
-                let (run_id, state) = row.map_err(recovery_reject)?;
+            rows.into_iter().map(|(run_id, state)| {
                 let state = serde_json::from_str::<RunState>(&state).map_err(recovery_reject)?;
                 Ok::<_, RecoveryError>((RunId(run_id), state))
             }),
@@ -565,33 +542,25 @@ fn read_recovery_snapshot(
     };
 
     let (message_commit_cursors, messages) =
-        read_thread_json_rows_with_commit::<Message>(&tx, "message", &thread_id)?;
+        read_thread_json_rows_with_commit::<Message>(&mut tx, "message", &thread_id).await?;
     let (state_commit_cursors, state) =
-        read_thread_json_rows_with_commit::<StateCommand>(&tx, "state_command", &thread_id)?;
+        read_thread_json_rows_with_commit::<StateCommand>(&mut tx, "state_command", &thread_id)
+            .await?;
     // The committed Run set owns this Thread's event/ticket scope. A subquery
     // uses the same transaction without one bind per Run or a cache-owner join.
     let mut events = Vec::new();
     {
-        let mut statement = tx
-            .prepare(&format!(
-                "SELECT event.sequence, event.run_id, event.kind, event.payload \
-                     FROM {NS}_event AS event \
-                     WHERE event.run_id IN (SELECT run_id FROM {NS}_commit WHERE thread_id = ?1) \
-                     ORDER BY event.sequence"
-            ))
-            .map_err(recovery_reject)?;
-        let rows = statement
-            .query_map(params![&thread_id.0], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            })
-            .map_err(recovery_reject)?;
-        for row in rows {
-            let (sequence, run_id, kind, payload) = row.map_err(recovery_reject)?;
+        let rows = sqlx::query_as::<_, (i64, String, String, String)>(&format!(
+            "SELECT event.sequence, event.run_id, event.kind, event.payload \
+                 FROM {NS}_event AS event \
+                 WHERE event.run_id IN (SELECT run_id FROM {NS}_commit WHERE thread_id = ?1) \
+                 ORDER BY event.sequence"
+        ))
+        .bind(&thread_id.0)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(recovery_reject)?;
+        for (sequence, run_id, kind, payload) in rows {
             events.push(EventRecord {
                 sequence: StoredU64::try_from(sequence)
                     .map(StoredU64::domain_value)
@@ -604,21 +573,17 @@ fn read_recovery_snapshot(
     }
     let mut resume_tickets = Vec::new();
     {
-        let mut statement = tx
-            .prepare(&format!(
-                "SELECT waiting.run_id, waiting.ticket \
-                     FROM {NS}_waiting AS waiting \
-                     WHERE waiting.run_id IN (SELECT run_id FROM {NS}_commit WHERE thread_id = ?1) \
-                     ORDER BY waiting.run_id"
-            ))
-            .map_err(recovery_reject)?;
-        let rows = statement
-            .query_map(params![&thread_id.0], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(recovery_reject)?;
-        for row in rows {
-            let (run_id, ticket) = row.map_err(recovery_reject)?;
+        let rows = sqlx::query_as::<_, (String, String)>(&format!(
+            "SELECT waiting.run_id, waiting.ticket \
+                 FROM {NS}_waiting AS waiting \
+                 WHERE waiting.run_id IN (SELECT run_id FROM {NS}_commit WHERE thread_id = ?1) \
+                 ORDER BY waiting.run_id"
+        ))
+        .bind(&thread_id.0)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(recovery_reject)?;
+        for (run_id, ticket) in rows {
             let run_id = RunId(run_id);
             let is_awaiting = runs
                 .iter()
@@ -636,19 +601,22 @@ fn read_recovery_snapshot(
             }
         }
     }
-    let commit_timestamps = {
-        let mut stmt = tx.prepare(&format!(
-            "SELECT sequence, CAST(strftime('%s', committed_at) AS INTEGER) * 1000 + CAST(substr(strftime('%f', committed_at), 4, 3) AS INTEGER) FROM {NS}_commit WHERE thread_id = ?1 ORDER BY sequence"
-        )).map_err(recovery_reject)?;
-        let rows = stmt
-            .query_map(params![&thread_id.0], |row| {
-                Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?))
-            })
-            .map_err(recovery_reject)?;
-        rows.collect::<Result<std::collections::BTreeMap<_, _>, _>>()
-            .map_err(recovery_reject)?
-    };
-    tx.commit().map_err(recovery_reject)?;
+    let commit_timestamps = sqlx::query_as::<_, (i64, i64)>(&format!(
+        "SELECT sequence, CAST(strftime('%s', committed_at) AS INTEGER) * 1000 + CAST(substr(strftime('%f', committed_at), 4, 3) AS INTEGER) FROM {NS}_commit WHERE thread_id = ?1 ORDER BY sequence"
+    ))
+    .bind(&thread_id.0)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(recovery_reject)?
+    .into_iter()
+    .map(|(sequence, committed_at)| {
+        Ok((
+            u64::try_from(sequence).map_err(recovery_reject)?,
+            u64::try_from(committed_at).map_err(recovery_reject)?,
+        ))
+    })
+    .collect::<Result<std::collections::BTreeMap<_, _>, RecoveryError>>()?;
+    tx.commit().await.map_err(recovery_reject)?;
     Ok(RunRecoverySnapshot {
         commit_timestamps,
         thread_id,
@@ -673,28 +641,24 @@ fn read_recovery_snapshot(
     })
 }
 
-fn read_thread_json_rows_with_commit<T>(
-    tx: &rusqlite::Transaction<'_>,
+async fn read_thread_json_rows_with_commit<T>(
+    tx: &mut SqliteConnection,
     table: &str,
     thread_id: &ThreadId,
 ) -> Result<(Vec<u64>, Vec<T>), RecoveryError>
 where
     T: serde::de::DeserializeOwned,
 {
-    let mut statement = tx
-        .prepare(&format!(
-            "SELECT commit_sequence, data FROM {NS}_{table} WHERE thread_id = ?1 ORDER BY id"
-        ))
-        .map_err(recovery_reject)?;
-    let rows = statement
-        .query_map(params![&thread_id.0], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(recovery_reject)?;
+    let rows = sqlx::query_as::<_, (i64, String)>(&format!(
+        "SELECT commit_sequence, data FROM {NS}_{table} WHERE thread_id = ?1 ORDER BY id"
+    ))
+    .bind(&thread_id.0)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(recovery_reject)?;
     let mut cursors = Vec::new();
     let mut values = Vec::new();
-    for row in rows {
-        let (cursor, value) = row.map_err(recovery_reject)?;
+    for (cursor, value) in rows {
         cursors.push(
             StoredU64::try_from(cursor)
                 .map(StoredU64::domain_value)
@@ -744,40 +708,40 @@ enum OperationWrite {
 }
 
 /// Write one staged commit in a single IMMEDIATE transaction (atomic, G1/G13).
-fn write_commit(conn: &mut Connection, commit: &ThreadCommit) -> Result<u64, Error> {
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(reject)?;
-    validate_transition_tx(&tx, commit)?;
-    ensure_thread_version(&tx, &commit.thread_id)?;
-    let current: i64 = tx
-        .query_row(
-            &format!("SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"),
-            [],
-            |row| row.get(0),
-        )
-        .map_err(reject)?;
-    let next = increment_authority(decode_authority(current)?)?;
-    write_commit_rows(&tx, next, commit)?;
-    let current_version: i64 = tx
-        .query_row(
-            &format!("SELECT version FROM {NS}_thread_version WHERE thread_id = ?1"),
-            params![&commit.thread_id.0],
-            |row| row.get(0),
-        )
-        .map_err(reject)?;
-    let next_version = increment_authority(decode_authority(current_version)?)?;
-    tx.execute(
-        &format!("UPDATE {NS}_thread_version SET version = ?2 WHERE thread_id = ?1"),
-        params![&commit.thread_id.0, encode_authority(next_version)?],
-    )
+async fn write_commit(pool: &EmbeddedPool, commit: &ThreadCommit) -> Result<u64, Error> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(reject)?;
+    validate_transition_tx(&mut tx, commit).await?;
+    ensure_thread_version(&mut tx, &commit.thread_id).await?;
+    let current: i64 = sqlx::query_scalar(&format!(
+        "SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"
+    ))
+    .fetch_one(&mut *tx)
+    .await
     .map_err(reject)?;
-    tx.commit().map_err(reject)?;
+    let next = increment_authority(decode_authority(current)?)?;
+    write_commit_rows(&mut tx, next, commit).await?;
+    let current_version: i64 = sqlx::query_scalar(&format!(
+        "SELECT version FROM {NS}_thread_version WHERE thread_id = ?1"
+    ))
+    .bind(&commit.thread_id.0)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(reject)?;
+    let next_version = increment_authority(decode_authority(current_version)?)?;
+    sqlx::query(&format!(
+        "UPDATE {NS}_thread_version SET version = ?2 WHERE thread_id = ?1"
+    ))
+    .bind(&commit.thread_id.0)
+    .bind(encode_authority(next_version)?)
+    .execute(&mut *tx)
+    .await
+    .map_err(reject)?;
+    tx.commit().await.map_err(reject)?;
     Ok(next)
 }
 
-fn write_operation(
-    conn: &mut Connection,
+async fn write_operation(
+    pool: &EmbeddedPool,
     operation: &CommitOperation,
 ) -> Result<OperationWrite, Error> {
     require_commit_operation_identity(operation)
@@ -785,27 +749,17 @@ fn write_operation(
     let operation_ordinal = i64::try_from(operation.operation_id.ordinal).map_err(|_| {
         Error::Rejected("commit operation ordinal exceeds backend range".to_string())
     })?;
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(reject)?;
-    let existing = tx
-        .query_row(
-            &format!(
-                "SELECT payload_hash, commit_sequence, thread_version \
-                 FROM {NS}_commit_receipt \
-                 WHERE operation_run_id = ?1 AND operation_ordinal = ?2"
-            ),
-            params![&operation.operation_id.run_id.0, operation_ordinal],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(reject)?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(reject)?;
+    let existing = sqlx::query_as::<_, (String, i64, i64)>(&format!(
+        "SELECT payload_hash, commit_sequence, thread_version \
+         FROM {NS}_commit_receipt \
+         WHERE operation_run_id = ?1 AND operation_ordinal = ?2"
+    ))
+    .bind(&operation.operation_id.run_id.0)
+    .bind(operation_ordinal)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(reject)?;
     let existing = existing
         .map(|(payload_hash, commit_sequence, thread_version)| {
             Ok(CommitReceipt {
@@ -823,57 +777,58 @@ fn write_operation(
         return Ok(OperationWrite::Duplicate(receipt));
     }
 
-    ensure_thread_version(&tx, &operation.commit.thread_id)?;
-    let current_version: i64 = tx
-        .query_row(
-            &format!("SELECT version FROM {NS}_thread_version WHERE thread_id = ?1"),
-            params![&operation.commit.thread_id.0],
-            |row| row.get(0),
-        )
-        .map_err(reject)?;
+    ensure_thread_version(&mut tx, &operation.commit.thread_id).await?;
+    let current_version: i64 = sqlx::query_scalar(&format!(
+        "SELECT version FROM {NS}_thread_version WHERE thread_id = ?1"
+    ))
+    .bind(&operation.commit.thread_id.0)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(reject)?;
     let current_version = decode_authority(current_version)?;
-    let current_ordinal: i64 = tx
-        .query_row(
-            &format!("SELECT COUNT(*) FROM {NS}_commit WHERE run_id = ?1"),
-            params![&operation.operation_id.run_id.0],
-            |row| row.get(0),
-        )
-        .map_err(reject)?;
+    let current_ordinal: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM {NS}_commit WHERE run_id = ?1"
+    ))
+    .bind(&operation.operation_id.run_id.0)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(reject)?;
     let current_ordinal = decode_authority(current_ordinal)?;
     let thread_version = admit_commit_operation_append(operation, current_version, current_ordinal)
         .map_err(|error| Error::Rejected(error.to_string()))?;
-    validate_transition_tx(&tx, &operation.commit)?;
-    let current_sequence: i64 = tx
-        .query_row(
-            &format!("SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"),
-            [],
-            |row| row.get(0),
-        )
-        .map_err(reject)?;
+    validate_transition_tx(&mut tx, &operation.commit).await?;
+    let current_sequence: i64 = sqlx::query_scalar(&format!(
+        "SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"
+    ))
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(reject)?;
     let next = increment_authority(decode_authority(current_sequence)?)?;
-    write_commit_rows(&tx, next, &operation.commit)?;
-    tx.execute(
-        &format!("UPDATE {NS}_thread_version SET version = ?2 WHERE thread_id = ?1"),
-        params![&operation.commit.thread_id.0, thread_version],
-    )
+    write_commit_rows(&mut tx, next, &operation.commit).await?;
+    sqlx::query(&format!(
+        "UPDATE {NS}_thread_version SET version = ?2 WHERE thread_id = ?1"
+    ))
+    .bind(&operation.commit.thread_id.0)
+    // SQLite INTEGER is signed: a version beyond i64 is refused, never wrapped.
+    .bind(i64::try_from(thread_version).map_err(|error| Error::Rejected(error.to_string()))?)
+    .execute(&mut *tx)
+    .await
     .map_err(reject)?;
-    tx.execute(
-        &format!(
-            "INSERT INTO {NS}_commit_receipt \
-             (operation_run_id, operation_ordinal, thread_id, payload_hash, \
-              commit_sequence, thread_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
-        ),
-        params![
-            &operation.operation_id.run_id.0,
-            operation_ordinal,
-            &operation.commit.thread_id.0,
-            &operation.payload_hash.0,
-            encode_authority(next)?,
-            encode_authority(thread_version)?
-        ],
-    )
+    sqlx::query(&format!(
+        "INSERT INTO {NS}_commit_receipt \
+         (operation_run_id, operation_ordinal, thread_id, payload_hash, \
+          commit_sequence, thread_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+    ))
+    .bind(&operation.operation_id.run_id.0)
+    .bind(operation_ordinal)
+    .bind(&operation.commit.thread_id.0)
+    .bind(&operation.payload_hash.0)
+    .bind(encode_authority(next)?)
+    .bind(encode_authority(thread_version)?)
+    .execute(&mut *tx)
+    .await
     .map_err(reject)?;
-    tx.commit().map_err(reject)?;
+    tx.commit().await.map_err(reject)?;
     Ok(OperationWrite::Applied(applied_commit_receipt(
         operation.operation_id.clone(),
         operation.payload_hash.clone(),
@@ -882,33 +837,32 @@ fn write_operation(
     )))
 }
 
-fn ensure_thread_version(
-    tx: &rusqlite::Transaction<'_>,
+async fn ensure_thread_version(
+    tx: &mut SqliteConnection,
     thread_id: &ThreadId,
 ) -> Result<(), Error> {
-    tx.execute(
-        &format!(
-            "INSERT OR IGNORE INTO {NS}_thread_version (thread_id, version) \
-             SELECT ?1, COUNT(*) FROM {NS}_commit WHERE thread_id = ?1"
-        ),
-        params![&thread_id.0],
-    )
+    sqlx::query(&format!(
+        "INSERT OR IGNORE INTO {NS}_thread_version (thread_id, version) \
+         SELECT ?1, COUNT(*) FROM {NS}_commit WHERE thread_id = ?1"
+    ))
+    .bind(&thread_id.0)
+    .execute(&mut *tx)
+    .await
     .map_err(reject)?;
     Ok(())
 }
 
-fn validate_transition_tx(
-    tx: &rusqlite::Transaction<'_>,
+async fn validate_transition_tx(
+    tx: &mut SqliteConnection,
     commit: &ThreadCommit,
 ) -> Result<(), Error> {
-    let phase: Option<String> = tx
-        .query_row(
-            &format!("SELECT phase FROM {NS}_run_record WHERE run_id = ?1"),
-            params![&commit.run_id().0],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(reject)?;
+    let phase: Option<String> = sqlx::query_scalar(&format!(
+        "SELECT phase FROM {NS}_run_record WHERE run_id = ?1"
+    ))
+    .bind(&commit.run_id().0)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(reject)?;
     let existing = phase
         .as_deref()
         .map(serde_json::from_str::<RunState>)
@@ -930,8 +884,8 @@ fn validate_transition_tx(
 
 /// JSON columns are stored as serialized text — the schema renders `{json}` to
 /// TEXT on SQLite.
-fn write_commit_rows(
-    tx: &rusqlite::Transaction<'_>,
+async fn write_commit_rows(
+    tx: &mut SqliteConnection,
     next: u64,
     commit: &ThreadCommit,
 ) -> Result<(), Error> {
@@ -941,59 +895,66 @@ fn write_commit_rows(
     let run_state = commit.run_state();
     let state_json = json(&run_state)?;
 
-    tx.execute(
-        &format!(
-            "INSERT INTO {p}_commit (sequence, thread_id, run_id, phase) VALUES (?1,?2,?3,?4)"
-        ),
-        params![encode_authority(next)?, thread_id, run_id, state_json],
-    )
+    sqlx::query(&format!(
+        "INSERT INTO {p}_commit (sequence, thread_id, run_id, phase) VALUES (?1,?2,?3,?4)"
+    ))
+    .bind(encode_authority(next)?)
+    .bind(thread_id)
+    .bind(run_id)
+    .bind(&state_json)
+    .execute(&mut *tx)
+    .await
     .map_err(reject)?;
 
     for message in &commit.messages {
-        tx.execute(
-            &format!(
-                "INSERT INTO {p}_message (commit_sequence, thread_id, data) VALUES (?1,?2,?3)"
-            ),
-            params![encode_authority(next)?, thread_id, json(message)?],
-        )
+        sqlx::query(&format!(
+            "INSERT INTO {p}_message (commit_sequence, thread_id, data) VALUES (?1,?2,?3)"
+        ))
+        .bind(encode_authority(next)?)
+        .bind(thread_id)
+        .bind(json(message)?)
+        .execute(&mut *tx)
+        .await
         .map_err(reject)?;
     }
 
     for command in &commit.state {
-        tx.execute(
-            &format!(
-                "INSERT INTO {p}_state_command (commit_sequence, thread_id, data) VALUES (?1,?2,?3)"
-            ),
-            params![encode_authority(next)?, thread_id, json(command)?],
-        )
+        sqlx::query(&format!(
+            "INSERT INTO {p}_state_command (commit_sequence, thread_id, data) VALUES (?1,?2,?3)"
+        ))
+        .bind(encode_authority(next)?)
+        .bind(thread_id)
+        .bind(json(command)?)
+        .execute(&mut *tx)
+        .await
         .map_err(reject)?;
     }
 
     for (offset, draft) in commit.events.iter().enumerate() {
         let sequence = encode_run_lifecycle_cursor(next, offset)
             .map_err(|error| Error::Rejected(error.to_string()))?;
-        tx.execute(
-            &format!(
-                "INSERT INTO {p}_event (sequence, run_id, kind, payload) VALUES (?1,?2,?3,?4)"
-            ),
-            params![
-                encode_authority(sequence.0)?,
-                run_id,
-                json(&draft.kind)?,
-                json(&draft.payload)?
-            ],
-        )
+        sqlx::query(&format!(
+            "INSERT INTO {p}_event (sequence, run_id, kind, payload) VALUES (?1,?2,?3,?4)"
+        ))
+        .bind(encode_authority(sequence.0)?)
+        .bind(run_id)
+        .bind(json(&draft.kind)?)
+        .bind(json(&draft.payload)?)
+        .execute(&mut *tx)
+        .await
         .map_err(reject)?;
     }
 
-    tx.execute(
-        &format!(
-            "INSERT INTO {p}_run_record (run_id, thread_id, phase) VALUES (?1,?2,?3) \
-             ON CONFLICT(run_id) DO UPDATE SET thread_id = excluded.thread_id, \
-             phase = excluded.phase, updated_at = CURRENT_TIMESTAMP"
-        ),
-        params![run_id, thread_id, state_json],
-    )
+    sqlx::query(&format!(
+        "INSERT INTO {p}_run_record (run_id, thread_id, phase) VALUES (?1,?2,?3) \
+         ON CONFLICT(run_id) DO UPDATE SET thread_id = excluded.thread_id, \
+         phase = excluded.phase, updated_at = CURRENT_TIMESTAMP"
+    ))
+    .bind(run_id)
+    .bind(thread_id)
+    .bind(&state_json)
+    .execute(&mut *tx)
+    .await
     .map_err(reject)?;
 
     // Await or clear the awaiting ticket atomically with the checkpoint (G5).
@@ -1002,20 +963,21 @@ fn write_commit_rows(
         let ticket = commit
             .resume_ticket()
             .expect("awaiting checkpoint has a ticket");
-        tx.execute(
-            &format!(
-                "INSERT INTO {p}_waiting (run_id, ticket) VALUES (?1,?2) \
-                 ON CONFLICT(run_id) DO UPDATE SET ticket = excluded.ticket"
-            ),
-            params![run_id, json(ticket)?],
-        )
+        sqlx::query(&format!(
+            "INSERT INTO {p}_waiting (run_id, ticket) VALUES (?1,?2) \
+             ON CONFLICT(run_id) DO UPDATE SET ticket = excluded.ticket"
+        ))
+        .bind(run_id)
+        .bind(json(ticket)?)
+        .execute(&mut *tx)
+        .await
         .map_err(reject)?;
     } else {
-        tx.execute(
-            &format!("DELETE FROM {p}_waiting WHERE run_id = ?1"),
-            params![run_id],
-        )
-        .map_err(reject)?;
+        sqlx::query(&format!("DELETE FROM {p}_waiting WHERE run_id = ?1"))
+            .bind(run_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(reject)?;
     }
 
     Ok(())
@@ -1079,26 +1041,27 @@ fn advance_projection(
 }
 
 /// Rebuild the read projection from the committed log in SQLite.
-fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
-    let sequence = conn.query_row(
-        &format!("SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"),
-        [],
-        |row| row.get::<_, i64>(0),
-    )?;
+async fn hydrate(pool: &EmbeddedPool) -> Result<Projection, String> {
+    let mut conn = pool.acquire().await.map_err(|error| error.to_string())?;
+    let sequence: i64 = sqlx::query_scalar(&format!(
+        "SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"
+    ))
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(|error| error.to_string())?;
     let sequence = sqlite_authority(sequence)?;
     let mut projection = Projection {
         sequence,
         ..Default::default()
     };
 
-    let mut stmt = conn.prepare(&format!(
+    let rows = sqlx::query_as::<_, (String, String)>(&format!(
         "SELECT thread_id, data FROM {NS}_message ORDER BY id"
-    ))?;
-    let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    for row in rows {
-        let (thread_id, data) = row?;
+    ))
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| error.to_string())?;
+    for (thread_id, data) in rows {
         if let Ok(message) = serde_json::from_str::<Message>(&data) {
             projection.messages.push((ThreadId(thread_id), message));
         }
@@ -1106,32 +1069,26 @@ fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
 
     // Rebuild the committed state-command log per thread, in commit order, so a
     // resumed run replays its accumulated state from durable truth (G1/G13).
-    let mut stmt = conn.prepare(&format!(
+    let rows = sqlx::query_as::<_, (String, String)>(&format!(
         "SELECT thread_id, data FROM {NS}_state_command ORDER BY id"
-    ))?;
-    let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    for row in rows {
-        let (thread_id, data) = row?;
+    ))
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| error.to_string())?;
+    for (thread_id, data) in rows {
         if let Ok(command) = serde_json::from_str::<StateCommand>(&data) {
             projection.state.push((ThreadId(thread_id), command));
         }
     }
 
     // Fold the commit log in order so the latest fact per run wins (G32).
-    let mut stmt = conn.prepare(&format!(
+    let rows = sqlx::query_as::<_, (String, String, String)>(&format!(
         "SELECT run_id, thread_id, phase FROM {NS}_commit ORDER BY sequence"
-    ))?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    })?;
-    for row in rows {
-        let (run_id, thread_id, state_json) = row?;
+    ))
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| error.to_string())?;
+    for (run_id, thread_id, state_json) in rows {
         if let Ok(state) = serde_json::from_str::<RunState>(&state_json) {
             let thread_version = projection
                 .thread_versions
@@ -1140,13 +1097,7 @@ fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
             *thread_version = StoredU64::try_from(*thread_version)
                 .and_then(|value| value.checked_add(1))
                 .map(StoredU64::domain_value)
-                .map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Integer,
-                        Box::new(error),
-                    )
-                })?;
+                .map_err(|error| error.to_string())?;
             let run_commit_count = projection
                 .run_commit_counts
                 .entry(RunId(run_id.clone()))
@@ -1154,13 +1105,7 @@ fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
             *run_commit_count = StoredU64::try_from(*run_commit_count)
                 .and_then(|value| value.checked_add(1))
                 .map(StoredU64::domain_value)
-                .map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Integer,
-                        Box::new(error),
-                    )
-                })?;
+                .map_err(|error| error.to_string())?;
             let record = RunRecord {
                 id: RunId(run_id.clone()),
                 thread_id: ThreadId(thread_id.clone()),
@@ -1175,19 +1120,13 @@ fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
     }
 
     // Rebuild the committed event cache from the durable event log, in order.
-    let mut stmt = conn.prepare(&format!(
+    let rows = sqlx::query_as::<_, (i64, String, String, String)>(&format!(
         "SELECT sequence, run_id, kind, payload FROM {NS}_event ORDER BY sequence"
-    ))?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-        ))
-    })?;
-    for row in rows {
-        let (sequence, run_id, kind, payload) = row?;
+    ))
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| error.to_string())?;
+    for (sequence, run_id, kind, payload) in rows {
         if let (Ok(kind), Ok(payload)) = (
             serde_json::from_str(&kind),
             serde_json::from_str::<serde_json::Value>(&payload),
@@ -1201,12 +1140,12 @@ fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
         }
     }
 
-    let mut stmt = conn.prepare(&format!("SELECT run_id, ticket FROM {NS}_waiting"))?;
-    let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    for row in rows {
-        let (run_id, ticket) = row?;
+    let rows =
+        sqlx::query_as::<_, (String, String)>(&format!("SELECT run_id, ticket FROM {NS}_waiting"))
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|error| error.to_string())?;
+    for (run_id, ticket) in rows {
         let run_id = RunId(run_id);
         let Some(record) = projection.run_records.get(&run_id) else {
             tracing::error!(
@@ -1235,7 +1174,7 @@ fn json<T: serde::Serialize>(value: &T) -> Result<String, Error> {
     serde_json::to_string(value).map_err(|err| Error::Rejected(err.to_string()))
 }
 
-fn reject(err: rusqlite::Error) -> Error {
+fn reject(err: sqlx::Error) -> Error {
     Error::Rejected(err.to_string())
 }
 
@@ -1254,7 +1193,9 @@ mod scheduler_isolation_tests {
         // original one-record history remains unchanged. Rules S1=C1=>E1 and
         // S2=C2+C3=>E2+E3. A decode failure must never be normalized to an
         // absent/nonterminal state that widens the transition relation.
-        let store = SqliteCommitCoordinator::open_in_memory().expect("store");
+        let store = SqliteCommitCoordinator::open_in_memory()
+            .await
+            .expect("store");
         let thread_id = ThreadId("corrupt-state-thread".into());
         let run_id = RunId("corrupt-state-run".into());
         store
@@ -1269,15 +1210,14 @@ mod scheduler_isolation_tests {
             })
             .await
             .expect("S1/E1");
-        store
-            .conn
-            .lock()
-            .expect("connection")
-            .execute(
-                &format!("UPDATE {NS}_run_record SET phase = ?1 WHERE run_id = ?2"),
-                params!["not-json", &run_id.0],
-            )
-            .expect("inject corrupt durable state");
+        sqlx::query(&format!(
+            "UPDATE {NS}_run_record SET phase = ?1 WHERE run_id = ?2"
+        ))
+        .bind("not-json")
+        .bind(&run_id.0)
+        .execute(&store.pool)
+        .await
+        .expect("inject corrupt durable state");
 
         let error = store
             .commit(ThreadCommit {
@@ -1293,25 +1233,22 @@ mod scheduler_isolation_tests {
         assert_eq!(store.commit_count(), 1, "S2/E3");
     }
 
-    /// Commit-read scheduler-isolation cause/effect graph: C1 a synchronous
-    /// owner holds the SQLite commit connection; C2 lifecycle delivery and
-    /// recovery concurrently queue on a two-worker Tokio runtime. Effects: E1
-    /// neither read blocks a runtime worker; E2 an authority timer fires before
-    /// the owner releases at 250 ms; E3 both authoritative reads finish after
+    /// Commit-read scheduler-isolation cause/effect graph: C1 an owner holds
+    /// the SQLite commit connection; C2 lifecycle delivery and recovery
+    /// concurrently queue on a two-worker Tokio runtime. Effects: E1 neither
+    /// read blocks a runtime worker; E2 an authority timer fires while the owner
+    /// still holds the connection; E3 both authoritative reads finish after
     /// release without inventing durable facts. Rule C1=C1+C2=>E1+E2+E3.
     /// This adapter rule prevents either recovery read port from bypassing the
     /// workspace's single canonical SQLite scheduling boundary.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn recovery_reads_cannot_starve_authority_timers() {
-        let store = Arc::new(SqliteCommitCoordinator::open_in_memory().expect("store"));
-        let held = store.conn.clone();
-        let (held_tx, held_rx) = std::sync::mpsc::sync_channel(1);
-        let holder = std::thread::spawn(move || {
-            let _guard = held.lock().expect("C1 connection lock");
-            held_tx.send(()).expect("C1 announce held connection");
-            std::thread::sleep(Duration::from_millis(250));
-        });
-        held_rx.recv().expect("C1 connection held");
+        let store = Arc::new(
+            SqliteCommitCoordinator::open_in_memory()
+                .await
+                .expect("store"),
+        );
+        let held = store.pool.acquire().await.expect("C1 connection held");
 
         let started = Instant::now();
         let timer = tokio::spawn(async move {
@@ -1342,7 +1279,7 @@ mod scheduler_isolation_tests {
             "C1/E2 timer fired after {elapsed:?}; recovery reads blocked runtime workers"
         );
 
-        holder.join().expect("C1 release connection");
+        drop(held);
         let lifecycle = lifecycle.await.expect("lifecycle task").expect("C1/E3");
         assert!(lifecycle.events.is_empty(), "C1/E3 no invented events");
         let recovery = recovery.await.expect("recovery task").expect("C1/E3");

@@ -113,7 +113,7 @@ async fn exhausted_projection_cache_revision_preserves_complete_warm_frame() {
     // private reducer, not a claim that a practical workload reaches 2^64
     // publications. Earlier IO and correlation failures have separate rules.
     let runtime = LifecycleRuntime::default();
-    let state = ManagedState::new(runtime.clone());
+    let state = ManagedState::new(runtime.clone()).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -181,13 +181,17 @@ async fn read_cut_fixture(with_child: bool) -> (RehydrateFake, Arc<ManagedState>
         .lock()
         .unwrap()
         .push("researcher".into());
-    let inner = Arc::new(ephemeral_session_repo());
+    let inner = Arc::new(ephemeral_session_repo().await);
     let repository = Arc::new(ConflictInjectingRepo::new(
         inner.clone(),
         0,
         runtime.reads.clone(),
     ));
-    let state = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository));
+    let state = Arc::new(
+        ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repository),
+    );
     let id = if with_child {
         let session = state
             .create_session(

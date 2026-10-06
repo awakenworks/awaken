@@ -148,12 +148,9 @@ impl ResourcePorts {
                 Arc::new(crate::unavailable_worker::UnavailableWorkerExtractions)
                     as Arc<dyn awaken_ext_memory::MemoryExtractionRepository>
             }
+            // Every construction, test fixtures included, injects its extraction
+            // repository; the local test constructors open theirs before building.
             None => {
-                #[cfg(test)]
-                {
-                    local_memory_extraction_repository(store_dir)
-                }
-                #[cfg(not(test))]
                 unreachable!("Host construction requires an explicit Memory extraction repository")
             }
         };
@@ -274,10 +271,10 @@ impl SharedHost {
     /// fixtures use. Other compositions obtain theirs from
     /// `awaken-runtime-host-testkit` or inject a role-owned one.
     #[cfg(test)]
-    pub fn test_memory_extraction_repository(
+    pub async fn test_memory_extraction_repository(
         storage_dir: Option<&std::path::Path>,
     ) -> Arc<dyn awaken_ext_memory::MemoryExtractionRepository> {
-        local_memory_extraction_repository(storage_dir)
+        local_memory_extraction_repository(storage_dir).await
     }
 
     /// Install the one Resources-owned File command application. Runtime stores
@@ -345,8 +342,10 @@ impl SharedHost {
     }
 }
 
+/// The local extraction repository of this crate's own unit-test Hosts: the
+/// canonical Session store at `storage_dir/sessions.db`, or in memory.
 #[cfg(test)]
-fn local_memory_extraction_repository(
+pub(in crate::host) async fn local_memory_extraction_repository(
     storage_dir: Option<&std::path::Path>,
 ) -> Arc<dyn awaken_ext_memory::MemoryExtractionRepository> {
     match storage_dir {
@@ -357,11 +356,13 @@ fn local_memory_extraction_repository(
                 awaken_session_store::SqliteManagedSessionRepository::open(
                     &dir.join("sessions.db").to_string_lossy(),
                 )
+                .await
                 .expect("open durable Memory extraction repository"),
             )
         }
         None => Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
                 .expect("open ephemeral Memory extraction repository"),
         ),
     }

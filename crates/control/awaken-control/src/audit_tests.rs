@@ -42,7 +42,7 @@ impl ModelPublicationResolver for TestModelResolver {
     }
 }
 
-fn audit_plane() -> ManagementAuditPlane {
+async fn audit_plane() -> ManagementAuditPlane {
     ConfigPlane::new(
         Arc::new(ConfigService::new(
             Arc::new(TestModelResolver),
@@ -50,7 +50,7 @@ fn audit_plane() -> ManagementAuditPlane {
                 ExecutableAgentCatalog::new(),
             ))),
         )),
-        Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+        Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
         Arc::new(StaticToolCatalog(vec![])),
     )
     .management_audit_plane()
@@ -149,7 +149,7 @@ async fn durable_audit_failure_blocks_business_through_canonical_management_rout
     // C1+C2+C3 => E1+E2+E3. Applied/replay/conflict/body-limit and IAM rules stay
     // owned by the adjacent tests instead of creating another audit workflow.
     let repository = Arc::new(FaultInjectingAuditRepository::new(
-        audit_plane(),
+        audit_plane().await,
         true,
         false,
     ));
@@ -197,7 +197,7 @@ async fn management_audit_completion_marks_successful_write_in_authenticated_par
     // E2 the exact audit is marked committed in the authenticated partition;
     // E3 no default-partition record is created.
     // Decision rule: C1+C2+C3 => E1+E2+E3 through protect_management_router.
-    let durable = audit_plane();
+    let durable = audit_plane().await;
     let repository = Arc::new(FaultInjectingAuditRepository::new(
         durable.clone(),
         false,
@@ -264,7 +264,7 @@ async fn management_audit_completion_failure_keeps_successful_write_pending() {
     // E2 record, business, and completion are each attempted once; E3 the exact
     // durable audit remains pending. Decision rule: C1+C2+C3 => E1+E2+E3. The
     // pending record is ambiguous and does not authorize blind business replay.
-    let durable = audit_plane();
+    let durable = audit_plane().await;
     let repository = Arc::new(FaultInjectingAuditRepository::new(
         durable.clone(),
         false,
@@ -319,7 +319,7 @@ async fn rejected_outer_authentication_cannot_create_an_audit_intent() {
         StatusCode::UNAUTHORIZED.into_response()
     }
 
-    let plane = audit_plane();
+    let plane = audit_plane().await;
     let app = Router::new()
         .route("/v1/mutate", post(|| async { StatusCode::NO_CONTENT }))
         .layer(axum::middleware::from_fn_with_state(
@@ -351,7 +351,7 @@ async fn replayed_or_conflicting_call_id_fails_closed_without_repeating_business
     // audit replay without repeating business; A3 fail closed on conflicting
     // audit identity. Domain Idempotency-Key ownership is covered separately.
     // Rules: C1->A1; C1+C2->A2; C1+C3->A3.
-    let plane = audit_plane();
+    let plane = audit_plane().await;
     let business_calls = Arc::new(AtomicUsize::new(0));
     let app = Router::new()
         .route(
@@ -399,7 +399,7 @@ async fn domain_idempotency_key_is_not_reinterpreted_as_an_audit_call_identity()
     // domain handler remains the sole owner of replay/response semantics. The
     // Managed MCP E2E supplies D2's real aggregate and proves one domain effect.
     // Rule D1: C1+C2 -> both attempts reach the handler, never an audit 409.
-    let plane = audit_plane();
+    let plane = audit_plane().await;
     let business_calls = Arc::new(AtomicUsize::new(0));
     let app = Router::new()
         .route(
@@ -442,7 +442,7 @@ async fn domain_idempotency_key_is_not_reinterpreted_as_an_audit_call_identity()
 
 #[tokio::test]
 async fn oversized_audit_body_is_rejected_before_business_or_audit() {
-    let plane = audit_plane();
+    let plane = audit_plane().await;
     let business_calls = Arc::new(AtomicUsize::new(0));
     let app = Router::new()
         .route(

@@ -154,7 +154,7 @@ impl awaken_session_configuration_contract::SessionModelPublicationResolver
 /// A router whose Session-scoped selection routes to distinct labeled
 /// executors and whose Managed event schema remains strict (R1/R2/R5/R6).
 /// `AWAKEN_MODEL_MODE=model-route`.
-pub fn build_model_route_router() -> Router {
+pub async fn build_model_route_router() -> Router {
     let (default_model, _) = scenario_model(Arc::new(LabelModel("default")), "default");
     // Literal-equivalent: the closure is only ever applied to the three
     // string literals below, never to operator or wire input.
@@ -169,6 +169,7 @@ pub fn build_model_route_router() -> Router {
         vec![candidate("fast"), candidate("slow")],
     );
     let platform = resource_host(default_model, "default")
+        .await
         .map_host(|host| host.with_agent_publications(publication.clone()))
         .map_host(|host| host.with_inference_materializer(Arc::new(RouteProvider)));
     let (host, resources) = platform.into_parts();
@@ -180,6 +181,7 @@ pub fn build_model_route_router() -> Router {
             catalog.clone(),
             publication,
             Arc::new(RoutePublicationResolver),
-        );
-    awaken_coordinator::mount_with_managed_and_resource_registry(host, managed, catalog)
+        )
+        .await;
+    awaken_coordinator::mount_with_managed_and_resource_registry(host, managed, catalog).await
 }

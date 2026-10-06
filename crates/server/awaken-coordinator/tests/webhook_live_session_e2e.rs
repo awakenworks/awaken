@@ -83,7 +83,11 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     // vault, exactly the shape the CRUD front door writes.
     let store = Arc::new(InMemoryWebhookStore::new());
     let secrets = Arc::new(InMemorySecretStore::new());
-    let sessions = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let sessions = Arc::new(
+        SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     // The same repository read back as the lifecycle-outbox authority: its
     // pending rows are the durable fact each delivery assertion settles on.
     let facts: Arc<dyn awaken_session_repository_contract::LifecycleOutbox> = sessions.clone();
@@ -107,9 +111,9 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         consecutive_failures: 0,
         secret_ref: SecretRef("whsec:wh_live".into()),
     });
-    store.begin_mutation(intent.clone()).unwrap();
-    store.apply_mutation(&intent).unwrap();
-    store.complete_mutation(&intent).unwrap();
+    store.begin_mutation(intent.clone()).await.unwrap();
+    store.apply_mutation(&intent).await.unwrap();
+    store.complete_mutation(&intent).await.unwrap();
     // 3. A managed surface over the canonical lifecycle composition. Only the
     // delivery transport admits this in-process loopback receiver; notifier and
     // replay ownership remain identical to production.
@@ -119,9 +123,10 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         ),
         None,
     );
-    let host = awaken_scenario_host::build_unmounted_host(Arc::new(DeadModel), "test");
+    let host = awaken_scenario_host::build_unmounted_host(Arc::new(DeadModel), "test").await;
     let managed = Arc::new(
         ManagedState::new(ManagedHost::new(host).install_dispatch_session_runtime())
+            .await
             .with_session_repo(sessions),
     );
     install_managed_lifecycle_delivery(

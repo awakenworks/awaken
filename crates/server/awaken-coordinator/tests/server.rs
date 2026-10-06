@@ -38,7 +38,7 @@ async fn build_local_delegation_router() -> Router {
     build_delegation_router_with_deployment(deployment).await
 }
 
-fn build_write_confirmation_router(
+async fn build_write_confirmation_router(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
 ) -> Router {
@@ -61,7 +61,9 @@ fn build_write_confirmation_router(
             ..Default::default()
         })
         .build();
-    build_router_and_host_with_agent_publications(llm, model_ref, [publication]).0
+    build_router_and_host_with_agent_publications(llm, model_ref, [publication])
+        .await
+        .0
 }
 
 async fn json_call(
@@ -216,7 +218,7 @@ async fn echo_run_end_to_end() {
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = build_router(Arc::new(EchoModel), "echo-model");
+    let app = build_router(Arc::new(EchoModel), "echo-model").await;
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "hi there").await;
     // Cause/effect rule: accepting a user.message first persists that exact
@@ -320,7 +322,7 @@ async fn hitl_write_awaits_then_confirms_and_reads_rooted() {
     // Decision rule: a committed custom result on the default test stack must
     // traverse the one Host context-realization owner and reach end_turn; a
     // protocol-specific stack override or alternate resume path is forbidden.
-    let app = build_write_confirmation_router(Arc::new(WriteReadProbe), "scripted");
+    let app = build_write_confirmation_router(Arc::new(WriteReadProbe), "scripted").await;
     let id = create_session(&app).await;
 
     // The write is asked -> the Run awaits.
@@ -383,7 +385,7 @@ async fn define_outcome(app: &Router, session: &str, rubric: &str) -> serde_json
 
 #[tokio::test]
 async fn outcome_iterates_until_satisfied() {
-    let app = build_router(Arc::new(ReviseModel), "scripted");
+    let app = build_router(Arc::new(ReviseModel), "scripted").await;
     let id = create_session(&app).await;
 
     // A draft, then define an outcome the draft misses -> revise -> satisfied.
@@ -484,7 +486,7 @@ async fn outcome_hitl_awaits_without_failure_then_resumes_the_active_aggregate()
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = build_write_confirmation_router(Arc::new(OutcomeHitlModel), "outcome-hitl");
+    let app = build_write_confirmation_router(Arc::new(OutcomeHitlModel), "outcome-hitl").await;
     let id = create_session(&app).await;
 
     // Cause/effect decision table for the changed Outcome/HITL boundary:
@@ -644,7 +646,7 @@ async fn outcome_graded_by_a_judge_subagent() {
     // The rubric is prose, not a keyword — a keyword grader would never match it
     // and would exhaust the budget. The judge sub-agent grades it instead, so the
     // revision that adds the FINAL marker is accepted.
-    let app = build_graded_router(Arc::new(GradedModel), "scripted", "judge");
+    let app = build_graded_router(Arc::new(GradedModel), "scripted", "judge").await;
     let id = create_session(&app).await;
 
     send_message(&app, &id, "write something").await;
@@ -680,7 +682,7 @@ async fn custom_tool_use_through_real_kernel() {
     // Invariant: Runtime transcript truth and public Managed wire vocabulary have
     // one projection owner; the adapter never asks consumers to reconcile two
     // result families for one tool occurrence.
-    let app = build_custom_router();
+    let app = build_custom_router().await;
     let id = create_session(&app).await;
 
     // The model calls the client-executed tool `submit_answer` -> awaits as custom.
@@ -815,7 +817,7 @@ async fn system_message_reaches_accompanying_and_later_runs() {
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = build_router(Arc::new(SystemEchoModel), "sys");
+    let app = build_router(Arc::new(SystemEchoModel), "sys").await;
     let id = create_session(&app).await;
 
     // Cause/effect graph: C1=one text System event; C2=it is final and follows
@@ -912,7 +914,7 @@ async fn custom_result_fails_closed_on_mismatch() {
     // Coverage rationale: `custom result` is one independent branch selecting `fails closed on
     // mismatch`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
-    let app = build_custom_router();
+    let app = build_custom_router().await;
     let id = create_session(&app).await;
     let awaiting = send_message(&app, &id, "solve it").await;
     let tool_use_id = last_event_of_type(
@@ -999,7 +1001,7 @@ async fn custom_result_cannot_fabricate_a_builtin_tools_output() {
     // alternate causes.
     // A Run awaiting on the *built-in* `write` (HITL) must not be resumable with a
     // `user.custom_tool_result`: that would bypass execution and the approval gate.
-    let app = build_write_confirmation_router(Arc::new(WriteReadProbe), "scripted");
+    let app = build_write_confirmation_router(Arc::new(WriteReadProbe), "scripted").await;
     let id = create_session(&app).await;
     let awaiting = send_message(&app, &id, "HELLO").await;
     let tool_use_id =
@@ -1174,7 +1176,7 @@ impl LlmExecutor for ToolCatalogProbe {
 
 #[tokio::test]
 async fn advertises_only_runnable_tools() {
-    let app = build_router(Arc::new(ToolCatalogProbe), "probe");
+    let app = build_router(Arc::new(ToolCatalogProbe), "probe").await;
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "which tools do you have?").await;
     let offered = list["data"]
@@ -1239,7 +1241,7 @@ async fn max_steps_maps_to_retries_exhausted() {
     // supervisor's committed projection and never drives the Run itself.
     // Decision rule: M1=unbounded tool calls + reached step ceiling -> one
     // terminal `retries_exhausted`; ordinary natural-end coverage is `echo_run_end_to_end`.
-    let app = build_router(Arc::new(LoopModel), "loop");
+    let app = build_router(Arc::new(LoopModel), "loop").await;
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "loop forever").await;
     assert!(
@@ -1264,7 +1266,7 @@ async fn sessions_are_isolated() {
     // Each Session publishes a distinct public tool Event id even when the
     // model reuses its private call-id `w`; confirmations therefore use the
     // public correlation id and cannot cross Session boundaries.
-    let app = build_write_confirmation_router(Arc::new(WriteReadProbe), "scripted");
+    let app = build_write_confirmation_router(Arc::new(WriteReadProbe), "scripted").await;
     let one = create_session(&app).await;
     let two = create_session(&app).await;
 
@@ -1361,7 +1363,8 @@ async fn managed_user_interrupt_reports_interrupted() {
             calls: std::sync::atomic::AtomicUsize::new(0),
         }),
         "scripted",
-    );
+    )
+    .await;
     let id = create_session(&app).await;
 
     // The model blocks the first Agent-backed grading run. Drive it on a task so

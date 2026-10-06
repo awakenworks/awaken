@@ -24,51 +24,82 @@ use awaken_agent_contract::thread::read::lifecycle::{
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
+/// A raw fixture connection with SQLite's plain defaults (file created when
+/// missing, foreign keys off, journal mode untouched), outside the store policy.
+async fn raw_sqlite(path: &std::path::Path) -> sqlx::SqlitePool {
+    sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(true)
+                .foreign_keys(false),
+        )
+        .await
+        .expect("open raw SQLite fixture connection")
+}
+
 #[tokio::test]
 async fn conformance_commit_then_read() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     awaken_store_conformance::commit_then_read(&store).await;
 }
 
 #[tokio::test]
 async fn conformance_events_ordered_and_paged() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     awaken_store_conformance::events_ordered_and_paged(&store).await;
 }
 
 #[tokio::test]
 async fn conformance_commits_accumulate() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     awaken_store_conformance::commits_accumulate(&store).await;
 }
 
 #[tokio::test]
 async fn conformance_transcript_snapshots_freeze_append_only_prefix() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     awaken_store_conformance::transcript_snapshots_freeze_append_only_prefix(&store).await;
 }
 
 #[tokio::test]
 async fn conformance_terminal_run_is_fenced() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     awaken_store_conformance::terminal_run_is_fenced(&store).await;
 }
 
 #[tokio::test]
 async fn conformance_resume_ticket_awaits_then_clears() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     awaken_store_conformance::resume_ticket_awaits_then_clears(&store).await;
 }
 
 #[tokio::test]
 async fn conformance_open_wait_selects_only_the_latest_run() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     awaken_store_conformance::open_wait_selects_only_the_latest_run(&store).await;
 }
 
 #[tokio::test]
 async fn conformance_concurrent_appends_are_dense_and_distinct() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     awaken_store_conformance::concurrent_appends_are_dense_and_distinct(&store).await;
 }
 
@@ -77,31 +108,41 @@ async fn conformance_concurrent_appends_are_dense_and_distinct() {
 // backends cannot, and skip it).
 #[tokio::test]
 async fn conformance_two_threads_in_one_store_are_isolated() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     awaken_store_conformance::two_threads_in_one_store_are_isolated(&store).await;
 }
 
 #[tokio::test]
 async fn conformance_recovery_snapshot_is_consistent() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     awaken_store_conformance::recovery_snapshot_is_consistent(&store).await;
 }
 
 #[tokio::test]
 async fn conformance_commit_operation_is_idempotent_and_cas() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     awaken_store_conformance::commit_operation_is_idempotent_and_cas(&store).await;
 }
 
 #[tokio::test]
 async fn conformance_concurrent_operations_cas_one_winner() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     awaken_store_conformance::concurrent_operations_cas_one_winner(&store).await;
 }
 
 #[tokio::test]
 async fn conformance_empty_store_reads_are_absent() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     awaken_store_conformance::empty_store_reads_are_absent(&store).await;
 }
 
@@ -111,13 +152,17 @@ async fn conformance_empty_store_reads_are_absent() {
 // `committed_state_replays` conformance case.
 #[tokio::test]
 async fn conformance_committed_state_replays() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     awaken_store_conformance::committed_state_replays(&store).await;
 }
 
 #[tokio::test]
 async fn conformance_delegation_and_tool_state_commit_atomically() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     awaken_store_conformance::delegation_and_tool_state_commit_atomically(&store).await;
 }
 
@@ -134,7 +179,7 @@ async fn reopen_file_resumes_from_committed_facts() {
 
     let original_times;
     {
-        let store = SqliteCommitCoordinator::open(path).expect("open");
+        let store = SqliteCommitCoordinator::open(path).await.expect("open");
         store
             .commit(ThreadCommit {
                 thread_id: thread.clone(),
@@ -163,7 +208,7 @@ async fn reopen_file_resumes_from_committed_facts() {
         // store dropped — the in-memory projection is gone; only the DB file remains
     }
 
-    let store = SqliteCommitCoordinator::open(path).expect("reopen");
+    let store = SqliteCommitCoordinator::open(path).await.expect("reopen");
     assert_eq!(
         store
             .recovery_snapshot(&thread, &run)
@@ -224,7 +269,7 @@ async fn reopen_file_replays_committed_state() {
     ];
 
     {
-        let store = SqliteCommitCoordinator::open(path).expect("open");
+        let store = SqliteCommitCoordinator::open(path).await.expect("open");
         store
             .commit(ThreadCommit {
                 thread_id: thread.clone(),
@@ -238,7 +283,7 @@ async fn reopen_file_replays_committed_state() {
         // store dropped — the in-memory projection is gone; only the DB file remains
     }
 
-    let store = SqliteCommitCoordinator::open(path).expect("reopen");
+    let store = SqliteCommitCoordinator::open(path).await.expect("reopen");
     assert_eq!(
         CommittedThreadView::committed_state(&store, &thread),
         commands,
@@ -279,8 +324,12 @@ async fn lifecycle_feed_observes_peer_commits_and_backfills_exclusively() {
     let path = path.to_str().expect("utf8 path");
     let thread = ThreadId("lifecycle-thread".into());
     let run = RunId("lifecycle-run".into());
-    let feed = SqliteCommitCoordinator::open(path).expect("open feed before peer");
-    let writer = SqliteCommitCoordinator::open(path).expect("open peer writer");
+    let feed = SqliteCommitCoordinator::open(path)
+        .await
+        .expect("open feed before peer");
+    let writer = SqliteCommitCoordinator::open(path)
+        .await
+        .expect("open peer writer");
     let awaiting = RunDisposition::awaiting(ResumeTicket::new(
         "lifecycle-correlation",
         run.clone(),
@@ -382,8 +431,12 @@ async fn recovery_snapshot_observes_peer_committed_transcript_and_state() {
     let path = path.to_str().expect("utf8 path");
     let thread = ThreadId("peer-recovery-thread".into());
     let run = RunId("peer-recovery-run".into());
-    let reader = SqliteCommitCoordinator::open(path).expect("open reader before peer");
-    let writer = SqliteCommitCoordinator::open(path).expect("open peer writer");
+    let reader = SqliteCommitCoordinator::open(path)
+        .await
+        .expect("open reader before peer");
+    let writer = SqliteCommitCoordinator::open(path)
+        .await
+        .expect("open peer writer");
     writer
         .commit(ThreadCommit {
             thread_id: thread.clone(),
@@ -455,7 +508,7 @@ async fn open_wait_tracks_only_the_latest_run_across_reopen() {
     );
 
     {
-        let store = SqliteCommitCoordinator::open(path).expect("open");
+        let store = SqliteCommitCoordinator::open(path).await.expect("open");
         store
             .commit(ThreadCommit::assemble(
                 thread.clone(),
@@ -495,7 +548,7 @@ async fn open_wait_tracks_only_the_latest_run_across_reopen() {
         );
     }
 
-    let reopened = SqliteCommitCoordinator::open(path).expect("reopen");
+    let reopened = SqliteCommitCoordinator::open(path).await.expect("reopen");
     assert_eq!(
         reopened.open_wait_for_thread(&thread),
         None,
@@ -540,7 +593,9 @@ async fn recovery_time_preserves_sqlite_milliseconds_and_timezone() {
     // reopening must read SQL truth, never a cached commit-clock value.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("precision.db");
-    let store = SqliteCommitCoordinator::open(path.to_str().unwrap()).unwrap();
+    let store = SqliteCommitCoordinator::open(path.to_str().unwrap())
+        .await
+        .unwrap();
     let thread = ThreadId("precision".into());
     let run = RunId("precision".into());
     store
@@ -553,17 +608,19 @@ async fn recovery_time_preserves_sqlite_milliseconds_and_timezone() {
         })
         .await
         .unwrap();
-    drop(store);
-    let sql = rusqlite::Connection::open(&path).unwrap();
+    store.close().await;
+    let sql = raw_sqlite(&path).await;
     for fraction in [0, 1, 999] {
         for (hour, offset) in [("00", "Z"), ("08", "+08:00")] {
             let observation = format!("1970-01-01T{hour}:00:01.{fraction:03}{offset}");
-            sql.execute(
-                "UPDATE runtime_commit SET committed_at = ?1",
-                [&observation],
-            )
-            .unwrap();
-            let reopened = SqliteCommitCoordinator::open(path.to_str().unwrap()).unwrap();
+            sqlx::query("UPDATE runtime_commit SET committed_at = ?1")
+                .bind(&observation)
+                .execute(&sql)
+                .await
+                .unwrap();
+            let reopened = SqliteCommitCoordinator::open(path.to_str().unwrap())
+                .await
+                .unwrap();
             let snapshot = reopened.recovery_snapshot(&thread, &run).await.unwrap();
             assert_eq!(
                 snapshot.commit_timestamps.get(&1),
@@ -591,7 +648,9 @@ async fn recovery_scope_uses_committed_run_ownership_when_cache_is_damaged() {
             .unwrap()
             .as_nanos()
     ));
-    let store = SqliteCommitCoordinator::open(path.to_str().unwrap()).unwrap();
+    let store = SqliteCommitCoordinator::open(path.to_str().unwrap())
+        .await
+        .unwrap();
     let mut snapshots = Vec::new();
     for i in 0..2 {
         let thread = ThreadId(format!("scope-thread-{i}"));
@@ -631,12 +690,12 @@ async fn recovery_scope_uses_committed_run_ownership_when_cache_is_damaged() {
                 .unwrap(),
         );
     }
-    let conn = rusqlite::Connection::open(&path).unwrap();
+    let conn = raw_sqlite(&path).await;
     for mutation in [
         "UPDATE runtime_run_record SET thread_id=CASE WHEN thread_id='scope-thread-0' THEN 'scope-thread-1' ELSE 'scope-thread-0' END",
         "DELETE FROM runtime_run_record",
     ] {
-        conn.execute(mutation, []).unwrap();
+        sqlx::query(mutation).execute(&conn).await.unwrap();
         for (i, expected) in snapshots.iter().enumerate() {
             let actual = store
                 .recovery_snapshot(
@@ -662,7 +721,7 @@ async fn recovery_scope_uses_committed_run_ownership_when_cache_is_damaged() {
             "R3"
         );
     }
-    drop(conn);
-    drop(store);
+    conn.close().await;
+    store.close().await;
     std::fs::remove_file(path).unwrap();
 }

@@ -6,9 +6,10 @@ use awaken_service_lifecycle::run_composed_async_test;
 use awaken_session_execution_contract::ToolPermissionDecision;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn ephemeral_resource_registry() -> awaken_resource_application::RegistryApplication {
+async fn ephemeral_resource_registry() -> awaken_resource_application::RegistryApplication {
     let storage = Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()
+            .await
             .expect("open ephemeral Resource Registry"),
     );
     awaken_resource_application::RegistryApplication::new(storage, awaken_time::system_clock())

@@ -46,12 +46,13 @@ impl SharedHost {
     /// compositions use `awaken-runtime-host-testkit`, which owns the
     /// concrete volatile Resource adapters this crate does not link.
     #[cfg(test)]
-    pub fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
+    pub async fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
         Self::new_with_deployment(
             llm,
             model_ref,
             crate::deployment_config::DeploymentConfig::ephemeral(),
         )
+        .await
     }
 
     /// Test/scenario construction without an injected Resource component.
@@ -59,7 +60,7 @@ impl SharedHost {
     /// storage root; a fixture that needs a durable coordinate installs it with
     /// [`Self::with_local_workspace`].
     #[cfg(test)]
-    pub fn new_with_deployment(
+    pub async fn new_with_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
         deployment: crate::DeploymentConfig,
@@ -67,6 +68,8 @@ impl SharedHost {
         // A test or Scenario fixture is its own composition: it chooses the
         // host clock and installs the volatile Runtime authority here.
         let clock = awaken_time::system_clock();
+        let extraction_repository =
+            capability::local_memory_extraction_repository(deployment.storage_dir.as_deref()).await;
         Self::build(
             llm,
             model_ref.into(),
@@ -74,7 +77,7 @@ impl SharedHost {
                 #[cfg(any(test, feature = "test-support"))]
                 local: None,
                 worker_content: None,
-                extraction_repository: None,
+                extraction_repository: Some(extraction_repository),
             },
             HostProcess {
                 local_workspace: Self::mint_local_workspace(),
@@ -480,16 +483,9 @@ impl SharedHost {
     /// repository at `dir/sessions.db` and the sandbox-backed relocation, for
     /// this crate's own unit tests.
     #[cfg(test)]
-    pub fn with_store_dir(self, dir: impl Into<PathBuf>) -> Self {
+    pub async fn with_store_dir(self, dir: impl Into<PathBuf>) -> Self {
         let dir = dir.into();
-        std::fs::create_dir_all(&dir)
-            .expect("create durable Memory extraction repository directory");
-        let repository = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open(
-                &dir.join("sessions.db").to_string_lossy(),
-            )
-            .expect("open durable Memory extraction repository"),
-        );
+        let repository = capability::local_memory_extraction_repository(Some(&dir)).await;
         self.with_durable_store_dir(dir, repository, |provider, base| {
             crate::session_environment::relocated_provider(provider, base)
         })
@@ -576,8 +572,8 @@ impl SharedHost {
 mod startup_tests {
     use super::*;
 
-    #[test]
-    fn explicit_extraction_repository_is_the_initial_authority() {
+    #[tokio::test]
+    async fn explicit_extraction_repository_is_the_initial_authority() {
         // Cause/effect graph: C1 an extraction repository is explicit; C2 local
         // storage is configured. Effects: E1 exact injected identity is installed;
         // E2 a local SQLite repository is derived; E3 volatile fixture is derived.
@@ -592,6 +588,7 @@ mod startup_tests {
         // prevents the former construct-then-replace duplicate authority.
         let expected: Arc<dyn awaken_ext_memory::MemoryExtractionRepository> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
                 .expect("test extraction repository"),
         );
         let host = SharedHost::build(
@@ -617,8 +614,8 @@ mod startup_tests {
         );
     }
 
-    #[test]
-    fn constructor_selects_worker_role_without_a_transport_marker() {
+    #[tokio::test]
+    async fn constructor_selects_worker_role_without_a_transport_marker() {
         // C1 constructor={database-less Worker, Coordinator-local}; C2 both
         // receive the same File/Memory content ports; C3 claimed-commit port
         // is absent. R1 Worker => remote role and fail-closed missing commit;
@@ -633,6 +630,7 @@ mod startup_tests {
         );
         let extraction: Arc<dyn awaken_ext_memory::MemoryExtractionRepository> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
                 .expect("test extraction repository"),
         );
         let process = || HostProcess {

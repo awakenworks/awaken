@@ -676,7 +676,7 @@ async fn blocked_http_closes_exact_expired_worker_but_local_exit_never_clears_re
     // R5 late observation after normal finish/new begin must leave successor intact.
     let mut directories: Vec<Arc<dyn WorkerDirectory>> = vec![
         Arc::new(MemoryWorkerDirectory::new()) as Arc<dyn WorkerDirectory>,
-        Arc::new(SqliteWorkerDirectory::open_in_memory().unwrap()),
+        Arc::new(SqliteWorkerDirectory::open_in_memory().await.unwrap()),
     ];
     if let Some(url) = postgres_support::database_url() {
         directories.push(Arc::new(
@@ -986,7 +986,11 @@ async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidenc
 async fn dispatch_stores() -> Vec<Arc<dyn ControlDispatchQueue>> {
     let mut stores: Vec<Arc<dyn ControlDispatchQueue>> = vec![
         Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
-        Arc::new(SqliteDispatchStore::open_in_memory(awaken_time::system_clock()).unwrap()),
+        Arc::new(
+            SqliteDispatchStore::open_in_memory(awaken_time::system_clock())
+                .await
+                .unwrap(),
+        ),
     ];
     if let Some(url) = postgres_support::database_url() {
         stores.push(Arc::new(

@@ -55,7 +55,7 @@ pub fn local_skill_ports(store: Arc<dyn SkillStore>, clock: Arc<dyn WallClock>) 
 /// When the directory or the SQLite database cannot be opened; a fixture
 /// that cannot open its storage has no meaningful Host to build.
 #[must_use]
-pub fn memory_extraction_repository(
+pub async fn memory_extraction_repository(
     storage_dir: Option<&Path>,
 ) -> Arc<dyn MemoryExtractionRepository> {
     match storage_dir {
@@ -66,11 +66,13 @@ pub fn memory_extraction_repository(
                 awaken_session_store::SqliteManagedSessionRepository::open(
                     &dir.join("sessions.db").to_string_lossy(),
                 )
+                .await
                 .expect("open durable Memory extraction repository"),
             )
         }
         None => Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
                 .expect("open ephemeral Memory extraction repository"),
         ),
     }
@@ -84,12 +86,12 @@ pub fn memory_extraction_repository(
 /// # Panics
 /// When an ephemeral database cannot be opened.
 #[must_use]
-pub fn volatile_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> SharedHost {
+pub async fn volatile_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> SharedHost {
     with_workdir_fallback(SharedHost::new_with_resources(
         llm,
         model_ref,
-        volatile_resource_ports(),
-        memory_extraction_repository(None),
+        volatile_resource_ports().await,
+        memory_extraction_repository(None).await,
     ))
 }
 
@@ -99,7 +101,7 @@ pub fn volatile_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) ->
 /// # Panics
 /// When an ephemeral database cannot be opened.
 #[must_use]
-pub fn volatile_host_with_deployment(
+pub async fn volatile_host_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     deployment: DeploymentConfig,
@@ -107,8 +109,8 @@ pub fn volatile_host_with_deployment(
     with_workdir_fallback(SharedHost::new_with_resources_and_deployment(
         llm,
         model_ref,
-        volatile_resource_ports(),
-        memory_extraction_repository(None),
+        volatile_resource_ports().await,
+        memory_extraction_repository(None).await,
         SharedHost::mint_local_workspace(),
         deployment,
     ))
@@ -151,22 +153,23 @@ pub fn with_volatile_runtime_authority(host: SharedHost) -> SharedHost {
 /// # Panics
 /// When `dir` or its extraction database cannot be opened.
 #[must_use]
-pub fn with_durable_store_dir(host: SharedHost, dir: &Path) -> SharedHost {
+pub async fn with_durable_store_dir(host: SharedHost, dir: &Path) -> SharedHost {
     host.with_durable_store_dir(
         dir,
-        memory_extraction_repository(Some(dir)),
+        memory_extraction_repository(Some(dir)).await,
         |provider, base| {
             awaken_session_environment::test_support::relocated_provider(provider, base)
         },
     )
 }
 
-fn volatile_resource_ports() -> LocalResourcePorts {
+async fn volatile_resource_ports() -> LocalResourcePorts {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
     let clock = awaken_time::system_clock();
     LocalResourcePorts {
         memory_repository: Arc::new(
             awaken_memory_store::SqliteMemoryRepository::open_in_memory(clock.clone())
+                .await
                 .expect("open ephemeral memory-fs sqlite store"),
         ),
         file_store: files.clone(),
@@ -186,10 +189,10 @@ mod tests {
     /// | Case | storage dir | Effect                                     |
     /// | E1   | none        | in-memory; nothing written to disk         |
     /// | E2   | some(dir)   | `dir` created, `dir/sessions.db` opened    |
-    #[test]
-    fn extraction_repository_follows_the_storage_dir_rule() {
+    #[tokio::test]
+    async fn extraction_repository_follows_the_storage_dir_rule() {
         let root = tempfile::tempdir().expect("tempdir");
-        let _ = memory_extraction_repository(None);
+        let _ = memory_extraction_repository(None).await;
         assert_eq!(
             std::fs::read_dir(root.path()).expect("read root").count(),
             0,
@@ -197,7 +200,7 @@ mod tests {
         );
 
         let dir = root.path().join("nested");
-        let _ = memory_extraction_repository(Some(&dir));
+        let _ = memory_extraction_repository(Some(&dir)).await;
         assert!(
             dir.join("sessions.db").is_file(),
             "E2 opens dir/sessions.db"
@@ -208,10 +211,12 @@ mod tests {
     /// reads comes from the one selected set of authorities, so a Skill,
     /// reclamation state and clock are always present together; P2 the Host's
     /// clock is the exact Resources handle used to stamp and judge records.
-    #[test]
-    fn resource_ports_carry_every_authority_of_one_selection() {
+    #[tokio::test]
+    async fn resource_ports_carry_every_authority_of_one_selection() {
         let clock = awaken_time::system_clock();
-        let resources = awaken_resource_persistence::ephemeral(clock).expect("ephemeral Resources");
+        let resources = awaken_resource_persistence::ephemeral(clock)
+            .await
+            .expect("ephemeral Resources");
         let authorities = resources.authorities();
         let ports = local_resource_ports(&authorities);
         assert!(ports.skills.is_some(), "P1 Skill catalog present");

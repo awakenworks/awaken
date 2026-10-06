@@ -48,7 +48,7 @@ async fn scenario_worker_warmup_matches_private_transport_topology_and_identity_
     // | W4   | no          | any                      | E5 (404) |
     let mut remote = awaken_session_executor::DeploymentConfig::ephemeral();
     remote.disable_local_pool = true;
-    let remote = build_router_with_deployment(Arc::new(EchoModel), "warmup-parity", remote);
+    let remote = build_router_with_deployment(Arc::new(EchoModel), "warmup-parity", remote).await;
     let (address, server) = serve(remote).await;
 
     let exact = WorkerControlClient::new(
@@ -103,7 +103,8 @@ async fn scenario_worker_warmup_matches_private_transport_topology_and_identity_
         Arc::new(EchoModel),
         "warmup-parity",
         awaken_session_executor::DeploymentConfig::ephemeral(),
-    );
+    )
+    .await;
     let response = local
         .oneshot(
             Request::post("/v1/worker/environment/warmups")

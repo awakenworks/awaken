@@ -97,7 +97,7 @@ async fn echo_factory_drives_a_run_and_reflects_the_user() {
     // Constraints/invariants: the factory selects the existing shared mount and
     // EchoModel; it owns no parallel Run or response path. Decision rule F1:
     // C1+C2 -> E1+E2 with the exact reflected text.
-    let frames = drive_run(build_echo_router(), "probe-42").await;
+    let frames = drive_run(build_echo_router().await, "probe-42").await;
     assert_eq!(assistant_text(&frames), "Echo: probe-42");
 }
 
@@ -108,7 +108,7 @@ async fn vision_factory_wires_the_media_reporting_model() {
     // Constraints/invariants: the factory must select VisionProbeModel through
     // the shared mount, never substitute the echo fixture. Decision rule F2:
     // C1 -> E1=`saw no media; text: what color`.
-    let frames = drive_run(build_vision_router(), "what color").await;
+    let frames = drive_run(build_vision_router().await, "what color").await;
     assert_eq!(assistant_text(&frames), "saw no media; text: what color");
 }
 
@@ -120,7 +120,7 @@ async fn custom_factory_exposes_the_client_executed_submit_answer_tool() {
     // Constraints/invariants: `with_client_tools` is the sole execution-policy
     // source; the factory cannot host-execute or synthesize the result. Decision
     // rule F3: C1 -> E1 with one surfaced `submit_answer` call.
-    let frames = drive_run(build_custom_router(), "solve it").await;
+    let frames = drive_run(build_custom_router().await, "solve it").await;
     assert!(
         tool_names(&frames).iter().any(|n| n == "submit_answer"),
         "the Run awaiting on the client-executed submit_answer tool: {frames:?}"
@@ -158,12 +158,12 @@ async fn worker_factory_mounts_the_environments_surface_absent_from_a_plain_moun
     // the mount; the plain echo mount has no such route. The differential (200 here,
     // 404 there) proves the environments merge — the topology the mode's name claims.
     assert_eq!(
-        get_status(build_worker_router(), "/v1/environments").await,
+        get_status(build_worker_router().await, "/v1/environments").await,
         StatusCode::OK,
         "the worker factory mounts /v1/environments"
     );
     assert_eq!(
-        get_status(build_echo_router(), "/v1/environments").await,
+        get_status(build_echo_router().await, "/v1/environments").await,
         StatusCode::NOT_FOUND,
         "the plain echo mount does not"
     );
@@ -202,7 +202,7 @@ async fn config_factory_mounts_the_config_agents_plane_absent_from_a_plain_mount
         "the config factory mounts /v1/config/agents"
     );
     assert_eq!(
-        get_status(build_echo_router(), "/v1/config/agents").await,
+        get_status(build_echo_router().await, "/v1/config/agents").await,
         StatusCode::NOT_FOUND,
         "the plain echo mount does not",
     );

@@ -224,6 +224,7 @@ mod tests {
         );
         let host = Arc::new(
             SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
+                .await
                 .with_runtime_authority(authority),
         );
         let managed = crate::ManagedHost::new(host.clone());
@@ -426,13 +427,14 @@ mod tests {
                     )),
                 ),
             );
-            let make_host = || {
+            let make_host = || async {
                 Arc::new(
                     SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
+                        .await
                         .with_runtime_authority(authority.clone()),
                 )
             };
-            let host = make_host();
+            let host = make_host().await;
             let managed = crate::ManagedHost::new(host.clone());
             assert_eq!(
                 managed
@@ -486,7 +488,7 @@ mod tests {
                     awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY,
                     serde_json::to_value(usage).unwrap(),
                 )]));
-                let restarted = crate::ManagedHost::new(make_host());
+                let restarted = crate::ManagedHost::new(make_host().await);
                 let actual = restarted
                     .session_thread_usage(
                         &awaken_session_types::SessionId::from(session_id),
@@ -546,10 +548,7 @@ mod tests {
         let session_id = "snapshot-parent-session";
         let child_id = ThreadId("snapshot-logical-child".into());
         let child_run = RunId("snapshot-child-run".into());
-        let host = Arc::new(SharedHost::new(
-            Arc::new(crate::host::MemoryHostModel),
-            "stub",
-        ));
+        let host = Arc::new(SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub").await);
 
         assert_eq!(
             host.session_thread_recovery_snapshot(session_id, &child_id)

@@ -40,7 +40,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     // | R3 | create/adopt | any | stale | n/a | E3; fail closed |
     //
     // This test owns R2. Run-ingress sandbox-binding conformance owns R3.
-    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub").await;
     raw_host.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             std::env::temp_dir().join(format!(
@@ -255,7 +255,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     use awaken_session_execution_contract::SessionRuntime;
 
     let storage = tempfile::tempdir().unwrap();
-    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub").await;
     raw_host.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             storage.path().join("sandboxes"),
@@ -428,7 +428,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
     git(&["add", "README.md"]);
     git(&["commit", "-q", "-m", "seed"]);
 
-    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub").await;
     raw_host.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             fixture.path().join("sandboxes"),
@@ -566,11 +566,8 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
 
     let mut deployment = crate::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = crate::SandboxTier::Local;
-    let host = Arc::new(SharedHost::new_with_deployment(
-        Arc::new(OkModel),
-        "stub",
-        deployment,
-    ));
+    let host =
+        Arc::new(SharedHost::new_with_deployment(Arc::new(OkModel), "stub", deployment).await);
     let managed = managed_with_resource_source(host.clone());
     host.run(
         None,
@@ -671,11 +668,8 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
 async fn committed_queries_do_not_provision_a_failed_session_environment() {
     let mut deployment = crate::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = crate::SandboxTier::Local;
-    let host = Arc::new(SharedHost::new_with_deployment(
-        Arc::new(OkModel),
-        "stub",
-        deployment,
-    ));
+    let host =
+        Arc::new(SharedHost::new_with_deployment(Arc::new(OkModel), "stub", deployment).await);
     let managed = managed_with_resource_source(host.clone());
     let file_id = host
         .file_application()
@@ -795,7 +789,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
 #[tokio::test]
 async fn frozen_environment_network_follows_the_decision_table() {
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let managed = managed_with_resource_source(host.clone());
     let denies = |spec: awaken_provisioning_contract::SandboxSpec| spec.deny_tool_egress;
     let rules = [
@@ -859,7 +853,7 @@ async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spe
     // require its stated effects, including each fail-closed outcome.
     use awaken_provisioning_contract::{IsolationClass, NetworkPolicy};
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     install_test_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
 
@@ -969,7 +963,7 @@ async fn install_test_session_init_is_lazy_and_first_run_materializes_the_enviro
     // executable Run may create the Environment. Decision rule: observe zero live
     // effects after prepare, then exactly one materialization on first Run.
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     install_test_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
     managed
@@ -1032,7 +1026,7 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
     // the dispatch context and require the zero-materialization effects below.
     use awaken_session_configuration_contract::SessionInit;
     use awaken_skill_store::{SkillBundleFile, SkillVersion, bundle_sha256};
-    let mut host = SharedHost::new(Arc::new(OkModel), "stub");
+    let mut host = SharedHost::new(Arc::new(OkModel), "stub").await;
     host.deployment.disable_local_pool = true;
     let host = Arc::new(host);
     install_test_session_application(&host);
@@ -1136,7 +1130,8 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     // The absent provider in B1/B2 is the physical Environment provider. The
     // exact ACP executor factory remains installed so this test isolates the
     // Coordinator-versus-Worker placement decision.
-    let mut host = crate::acp_backend::with_fixture_acp(SharedHost::new(Arc::new(OkModel), "stub"));
+    let mut host =
+        crate::acp_backend::with_fixture_acp(SharedHost::new(Arc::new(OkModel), "stub").await);
     host.deployment.disable_local_pool = true;
     let host = Arc::new(host);
     let candidate = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
@@ -1357,7 +1352,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         "P5/E2"
     );
 
-    let physical_without_provider = SharedHost::new(Arc::new(OkModel), "stub");
+    let physical_without_provider = SharedHost::new(Arc::new(OkModel), "stub").await;
     let realization_error = physical_without_provider
         .install_frozen_session_projection(
             "worker-realization-missing-provider",
@@ -1377,7 +1372,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
             .contains("BackendOwned provisioning requires a trusted-host Session provider"),
         "P6: {realization_error:?}"
     );
-    let mut physical = SharedHost::new(Arc::new(OkModel), "stub");
+    let mut physical = SharedHost::new(Arc::new(OkModel), "stub").await;
     physical.env.backend_owned_session_provider = Some(
         crate::session_environment::SandboxEnvironmentProvider::workdir_with_agent_stderr(
             std::env::temp_dir().join("awaken-worker-layout-provider"),
@@ -1399,7 +1394,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         .await
         .expect("P7 claimed Worker validates its exact trusted provider");
 
-    let local = SharedHost::new(Arc::new(OkModel), "stub");
+    let local = SharedHost::new(Arc::new(OkModel), "stub").await;
     let error = match local
         .ctx_for_snapshot("local-backend-owned", Some("local-codex"), Some(snapshot))
         .await
@@ -1422,8 +1417,8 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     );
 }
 
-#[test]
-fn frozen_environment_selects_trusted_host_exactly() {
+#[tokio::test]
+async fn frozen_environment_selects_trusted_host_exactly() {
     // Cause/effect graph: C1 host_access={trusted_host,isolated}; C2 requested
     // isolation={workdir,namespace}; C3 local Workdir provider={present,absent};
     // C4 provisioning={HostExecutor,BackendOwned}. Effects: E1 trusted_host
@@ -1435,7 +1430,7 @@ fn frozen_environment_selects_trusted_host_exactly() {
     // provider strength cannot substitute for the exact trust decision.
     let namespace_root = tempfile::tempdir().unwrap();
     let trusted_root = tempfile::tempdir().unwrap();
-    let mut host = SharedHost::new(Arc::new(OkModel), "stub");
+    let mut host = SharedHost::new(Arc::new(OkModel), "stub").await;
     host.deployment.sandbox.trusted_host_enabled = true;
     host.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
@@ -1468,7 +1463,7 @@ fn frozen_environment_selects_trusted_host_exactly() {
         .unwrap();
     assert!(selected.realizer().supports_host_identity(), "T1/E1");
 
-    let mut absent = SharedHost::new(Arc::new(OkModel), "stub");
+    let mut absent = SharedHost::new(Arc::new(OkModel), "stub").await;
     absent.deployment.sandbox.trusted_host_enabled = true;
     absent.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
@@ -1527,7 +1522,7 @@ async fn on_tool_use_text_only_run_keeps_the_environment_absent() {
     // Invariant: tool demand, not Run existence, owns lazy materialization.
     // Decision rule: complete the text-only partition and require E1.
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     install_test_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
     managed
@@ -1596,7 +1591,9 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
     let publications = StaticPublishedAgentSnapshots::try_new([parent, child])
         .expect("one authoritative publication catalog");
     let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications)),
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_agent_publications(Arc::new(publications)),
     );
     let managed = install_test_dispatch_runtime(&host);
     managed
@@ -1678,7 +1675,7 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
     // | G3   | yes| yes| E1     |
     // | G4   | yes| no | E3     |
     // | G5   | inherited child of G3 | yes | E1 with the same authority |
-    let direct = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let direct = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let _direct_runtime = install_test_dispatch_runtime(&direct);
     let direct_context = direct.ctx_for("gate-direct-absent", None).await.unwrap();
     assert!(
@@ -1688,7 +1685,7 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
 
     let coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
         Arc::new(RejectingSessionAgentCoordination);
-    let direct_with_endpoint = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let direct_with_endpoint = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     install_test_dispatch_runtime(&direct_with_endpoint)
         .install_agent_coordination_application(Arc::downgrade(&coordination))
         .unwrap();
@@ -1712,7 +1709,7 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         runtime: None,
         environment: on_tool_use_environment(),
     };
-    let managed = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let managed = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let managed_runtime = install_test_dispatch_runtime(&managed);
     managed_runtime
         .install_test_session_init("gate-managed-present", session_init())
@@ -1744,7 +1741,7 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         "G5 a synchronous child inherits the exact Session request authority"
     );
 
-    let missing = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let missing = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     install_test_dispatch_runtime(&missing)
         .install_test_session_init("gate-managed-absent", session_init())
         .await

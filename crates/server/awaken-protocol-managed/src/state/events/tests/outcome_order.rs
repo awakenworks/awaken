@@ -17,8 +17,10 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
     // event time, while the terminal commit owns its first public position;
     // DefineOutcome admission is not reused as a fallback.
     let runtime = LifecycleRuntime::default();
-    let repository = Arc::new(ephemeral_session_repo());
-    let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+    let repository = Arc::new(ephemeral_session_repo().await);
+    let warm = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repository.clone());
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -147,7 +149,9 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
         "O3/E3"
     );
 
-    let cold = ManagedState::new(runtime).with_session_repo(repository);
+    let cold = ManagedState::new(runtime)
+        .await
+        .with_session_repo(repository);
     cold.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
         cold.list_events(&session.id, None, None, false)
@@ -179,8 +183,12 @@ async fn terminal_committing_between_outcome_query_and_root_read_cannot_backfill
     // R5=O5+O6=>E5+E6; R6=R5+O7=>E7; R7=R5+O8=>E8. The existing recovery pause
     // is the query/read race; no test-only Outcome cache or second source.
     let runtime = LifecycleRuntime::default();
-    let repository = Arc::new(ephemeral_session_repo());
-    let warm = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository.clone()));
+    let repository = Arc::new(ephemeral_session_repo().await);
+    let warm = Arc::new(
+        ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repository.clone()),
+    );
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -381,7 +389,9 @@ async fn terminal_committing_between_outcome_query_and_root_read_cannot_backfill
         serde_json::to_value(&after).unwrap(),
         "R7/E8 exact terminal query recovery"
     );
-    let cold = ManagedState::new(runtime).with_session_repo(repository);
+    let cold = ManagedState::new(runtime)
+        .await
+        .with_session_repo(repository);
     cold.refresh_committed_events(&session_id).await.unwrap();
     assert_eq!(
         serde_json::to_value(

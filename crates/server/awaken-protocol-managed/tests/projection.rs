@@ -112,9 +112,9 @@ async fn send_user(app: &Router, id: &str, text: &str) -> serde_json::Value {
 type CompletedDispatches =
     Arc<Mutex<Vec<awaken_session_execution_contract::SessionAgentBoundaryCommand>>>;
 
-fn app_with_runtime(runtime: ScriptFake) -> (Arc<ManagedState>, Router, CompletedDispatches) {
+async fn app_with_runtime(runtime: ScriptFake) -> (Arc<ManagedState>, Router, CompletedDispatches) {
     let completions = runtime.completions.clone();
-    let state = Arc::new(support::state(runtime));
+    let state = Arc::new(support::state(runtime).await);
     let app = router(state.clone());
     (state, app, completions)
 }
@@ -1285,7 +1285,8 @@ async fn a_terminal_run_fault_projects_session_error_before_idle() {
             )
         })
         .with_committed_evidence(CommittedEvidence::Terminal),
-    );
+    )
+    .await;
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
     support::drive_completed_user_dispatches(&state, &id, &completions).await;
@@ -1401,7 +1402,8 @@ async fn a_classified_fault_projects_the_matching_sdk_error_variant() {
         let (state, app, completions) = app_with_runtime(
             ScriptFake::new(move || failed(vec![assistant_text("a", "partial")], code, message))
                 .with_committed_evidence(CommittedEvidence::Terminal),
-        );
+        )
+        .await;
         let id = create(&app).await;
         send_user(&app, &id, "go").await;
         support::drive_completed_user_dispatches(&state, &id, &completions).await;
@@ -1437,7 +1439,7 @@ async fn a_rescheduled_run_projects_the_complete_thread_status_sequence() {
     // selects only its stated effect and preserves the authority constraint.
     let runtime = ScriptFake::new(|| ended(vec![assistant_text("a", "after a retry")]))
         .with_committed_evidence(CommittedEvidence::Reschedule);
-    let (state, app, completions) = app_with_runtime(runtime);
+    let (state, app, completions) = app_with_runtime(runtime).await;
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
     support::drive_completed_user_dispatches(&state, &id, &completions).await;
@@ -1509,7 +1511,7 @@ async fn a_compacted_run_projects_the_compaction_marker() {
     // alternate causes.
     let runtime = ScriptFake::new(|| ended(vec![assistant_text("a", "after compaction")]))
         .with_committed_evidence(CommittedEvidence::Compaction);
-    let (state, app, completions) = app_with_runtime(runtime);
+    let (state, app, completions) = app_with_runtime(runtime).await;
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
     support::drive_completed_user_dispatches(&state, &id, &completions).await;
@@ -1571,7 +1573,8 @@ async fn session_usage_reflects_the_runtime_tally() {
         ScriptFake::new(|| ended(vec![assistant_text("a", "hi")]))
             .with_usage(usage)
             .with_committed_evidence(CommittedEvidence::Terminal),
-    );
+    )
+    .await;
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
     support::drive_completed_user_dispatches(&state, &id, &completions).await;
@@ -1630,7 +1633,8 @@ async fn session_usage_event_keeps_zero_counters_instead_of_omitting_the_snapsho
     let (state, app, completions) = app_with_runtime(
         ScriptFake::new(|| ended(vec![assistant_text("a", "unmetered")]))
             .with_committed_evidence(CommittedEvidence::Terminal),
-    );
+    )
+    .await;
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
     support::drive_completed_user_dispatches(&state, &id, &completions).await;
@@ -1669,7 +1673,8 @@ async fn an_all_empty_text_assistant_message_is_dropped() {
     let (state, app, completions) = app_with_runtime(
         ScriptFake::new(|| ended(vec![assistant_text("a", "")]))
             .with_committed_evidence(CommittedEvidence::Terminal),
-    );
+    )
+    .await;
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
     support::drive_completed_user_dispatches(&state, &id, &completions).await;
@@ -1744,7 +1749,8 @@ async fn an_mcp_tool_call_projects_mcp_events() {
             call_id: "mc1",
             decision: "allow",
         }),
-    );
+    )
+    .await;
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
     support::drive_completed_user_dispatches(&state, &id, &completions).await;
@@ -1802,7 +1808,8 @@ async fn a_retries_exhausted_run_idles_with_that_stop_reason() {
             StepOutcome::ended(vec![assistant_text("a", "gave up")], EndCause::MaxSteps)
         })
         .with_committed_evidence(CommittedEvidence::Terminal),
-    );
+    )
+    .await;
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
     support::drive_completed_user_dispatches(&state, &id, &completions).await;
@@ -1851,7 +1858,7 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
     // selects only its stated effect and preserves the authority constraint.
     let runtime = CoordinatedRuntimeFake::default();
     let completions = runtime.completed_user_dispatches();
-    let state = Arc::new(support::state(runtime));
+    let state = Arc::new(support::state(runtime).await);
     let app = router(state.clone());
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
@@ -2074,9 +2081,9 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
 // Decision table: omitted=preserve; null=clear where allowed; value=replace; invalid/terminal=reject.
 #[tokio::test]
 async fn updating_a_session_commits_a_session_updated_event() {
-    let app = router(Arc::new(support::state(ScriptFake::new(|| {
-        ended(vec![assistant_text("a", "hi")])
-    }))));
+    let app = router(Arc::new(
+        support::state(ScriptFake::new(|| ended(vec![assistant_text("a", "hi")]))).await,
+    ));
     let id = create(&app).await;
     json_call(
         &app,
@@ -2158,9 +2165,9 @@ async fn updating_a_session_commits_a_session_updated_event() {
 /// projection and replay may neither reopen it nor mint another terminal fact.
 #[tokio::test]
 async fn archiving_commits_a_terminal_event_and_fences_writes() {
-    let app = router(Arc::new(support::state(ScriptFake::new(|| {
-        ended(vec![assistant_text("a", "hi")])
-    }))));
+    let app = router(Arc::new(
+        support::state(ScriptFake::new(|| ended(vec![assistant_text("a", "hi")]))).await,
+    ));
     let id = create(&app).await;
 
     let archived = json_call(
@@ -2248,7 +2255,8 @@ async fn a_call_the_gate_refused_is_reported_as_denied_not_allowed() {
             call_id: "blocked-1",
             decision: "deny",
         }),
-    );
+    )
+    .await;
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
     support::drive_completed_user_dispatches(&state, &id, &completions).await;
@@ -2302,7 +2310,8 @@ async fn a_decision_label_this_version_does_not_know_is_never_read_as_permitted(
             call_id: "future-1",
             decision: "escalate_to_owner",
         }),
-    );
+    )
+    .await;
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
     support::drive_completed_user_dispatches(&state, &id, &completions).await;
@@ -2356,7 +2365,8 @@ async fn a_recorded_ask_is_reported_even_though_the_transcript_shows_a_result() 
             call_id: "asked-1",
             decision: "ask",
         }),
-    );
+    )
+    .await;
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
     support::drive_completed_user_dispatches(&state, &id, &completions).await;
@@ -2655,7 +2665,8 @@ async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events()
                 ])
             })
             .with_committed_evidence(CommittedEvidence::PermissionDecisions(rows)),
-        );
+        )
+        .await;
         let id = create(&app).await;
         send_user(&app, &id, "go").await;
         support::drive_completed_user_dispatches(&state, &id, &completions).await;

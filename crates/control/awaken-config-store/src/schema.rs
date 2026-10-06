@@ -78,17 +78,26 @@ pub(crate) fn converged_config_bundle() -> Result<MigrationBundle, MigrationErro
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
+    use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
     use awaken_scoped_migration::{Dialect, Migration, MigrationBundle, MigrationError, plan};
-    use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
-    use rusqlite::Connection;
+    use awaken_sqlite_pool::EmbeddedPool;
+    use awaken_sqlite_pool::EmbeddedSqlite;
 
     use super::{
         BUNDLE_ID, compact_baseline, config_bundle, converged_config_bundle, expanded,
         selected_config_bundle, with_current_migrations,
     };
 
-    #[test]
-    fn current_baseline_has_one_history_and_captures_exact_revisions() {
+    /// A private in-memory database and the config-prefixed runner over it.
+    async fn memory() -> (EmbeddedPool, SqliteMigrationRunner) {
+        let conn = EmbeddedSqlite::memory().open().await.expect("sqlite");
+        let runner =
+            SqliteMigrationRunner::with_prefix(conn.sqlx().clone(), "config").expect("runner");
+        (conn, runner)
+    }
+
+    #[tokio::test]
+    async fn current_baseline_has_one_history_and_captures_exact_revisions() {
         /* Causes: C1 empty ledger; C2 insert generation 1; C3 update to
          * generation 2; C4 exact V1/V11/V12 receipts on replay. Effects: E1 create only
          * the five active Control tables; E2 append revision 1; E3 append
@@ -103,19 +112,17 @@ mod tests {
                 .collect::<Vec<_>>(),
             [1, 11, 12]
         );
-        let conn = Connection::open_in_memory().expect("sqlite");
-        let runner = SqliteMigrationRunner::with_prefix("config").expect("runner");
-        assert_eq!(runner.run_bundle(&conn, &bundle).expect("G1").len(), 3);
-        let tables = conn
-            .prepare(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'config_%' \
-                 AND name NOT LIKE 'config_schema_migrations%' ORDER BY name",
-            )
-            .unwrap()
-            .query_map([], |row| row.get::<_, String>(0))
-            .unwrap()
-            .collect::<Result<BTreeSet<_>, _>>()
-            .unwrap();
+        let (conn, runner) = memory().await;
+        assert_eq!(runner.run_bundle(&bundle).await.expect("G1").len(), 3);
+        let tables = sqlx::query_scalar::<_, String>(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'config_%' \
+             AND name NOT LIKE 'config_schema_migrations%' ORDER BY name",
+        )
+        .fetch_all(&conn)
+        .await
+        .unwrap()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
         assert_eq!(
             tables,
             BTreeSet::from([
@@ -127,34 +134,33 @@ mod tests {
             ]),
             "G1/E1"
         );
-        conn.execute(
+        sqlx::query(
             "INSERT INTO config_agent(id,data,scope_id,generation) VALUES('agent','{}','ws',1)",
-            [],
         )
+        .execute(&conn)
+        .await
         .expect("G2");
-        conn.execute(
+        sqlx::query(
             r#"UPDATE config_agent SET data='{"v":2}', generation=2
                WHERE scope_id='ws' AND id='agent'"#,
-            [],
         )
+        .execute(&conn)
+        .await
         .expect("G3");
-        let revisions = conn
-            .prepare(
-                "SELECT generation FROM config_agent_revision \
-                 WHERE scope_id='ws' AND id='agent' ORDER BY generation",
-            )
-            .unwrap()
-            .query_map([], |row| row.get::<_, i64>(0))
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
+        let revisions = sqlx::query_scalar::<_, i64>(
+            "SELECT generation FROM config_agent_revision \
+             WHERE scope_id='ws' AND id='agent' ORDER BY generation",
+        )
+        .fetch_all(&conn)
+        .await
+        .unwrap();
         assert_eq!(revisions, [1, 2], "G2/E2 + G3/E3");
-        assert!(runner.run_bundle(&conn, &bundle).expect("G4").is_empty());
+        assert!(runner.run_bundle(&bundle).await.expect("G4").is_empty());
         assert_eq!(bundle.bundle_id(), BUNDLE_ID);
     }
 
-    #[test]
-    fn sqlite_publication_order_migration_marks_old_rows_verified() {
+    #[tokio::test]
+    async fn sqlite_publication_order_migration_marks_old_rows_verified() {
         // Causes: S1 a V11 SQLite publication predates the marker column;
         // S2 V12 is applied; S3 migration is replayed. Effects: E1 the old
         // row receives verified order because SQLite writes were serialized;
@@ -162,29 +168,28 @@ mod tests {
         // Rules S1+S2=>E1, S1+S2+S3=>E2.
         let current = config_bundle().unwrap();
         let old = MigrationBundle::new(BUNDLE_ID, current.migrations()[..2].to_vec()).unwrap();
-        let conn = Connection::open_in_memory().unwrap();
-        let runner = SqliteMigrationRunner::with_prefix("config").unwrap();
-        runner.run_bundle(&conn, &old).unwrap();
-        conn.execute(
+        let (conn, runner) = memory().await;
+        runner.run_bundle(&old).await.unwrap();
+        sqlx::query(
             "INSERT INTO config_publication (fingerprint, agent_id, state, record, scope_id) \
              VALUES ('fp', 'agent', 'published', '{}', 'ws')",
-            [],
         )
+        .execute(&conn)
+        .await
         .unwrap();
-        assert_eq!(runner.run_bundle(&conn, &current).unwrap().len(), 1, "E1");
-        let verified: i64 = conn
-            .query_row(
-                "SELECT order_verified FROM config_publication WHERE fingerprint = 'fp'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+        assert_eq!(runner.run_bundle(&current).await.unwrap().len(), 1, "E1");
+        let verified: i64 = sqlx::query_scalar(
+            "SELECT order_verified FROM config_publication WHERE fingerprint = 'fp'",
+        )
+        .fetch_one(&conn)
+        .await
+        .unwrap();
         assert_eq!(verified, 1, "E1");
-        assert!(runner.run_bundle(&conn, &current).unwrap().is_empty(), "E2");
+        assert!(runner.run_bundle(&current).await.unwrap().is_empty(), "E2");
     }
 
-    #[test]
-    fn audit_identity_migration_preserves_both_histories_and_rejects_corruption() {
+    #[tokio::test]
+    async fn audit_identity_migration_preserves_both_histories_and_rejects_corruption() {
         // M1 compact/expanded history x pending/committed => preserve record,
         // state and timestamp; replay migration => no SQL. M2 alternate tuple
         // with the same legacy key => independent row. M3 mismatched indexed
@@ -199,42 +204,40 @@ mod tests {
                 (0, false, false),
                 (0, true, true),
             ] {
-                let conn = Connection::open_in_memory().unwrap();
-                let runner = SqliteMigrationRunner::with_prefix("config").unwrap();
-                runner.run_bundle(&conn, &history).unwrap();
+                let (conn, runner) = memory().await;
+                runner.run_bundle(&history).await.unwrap();
                 let record =
                     r#"{ "summary":"body_sha256=one", "call_id":"b:调用", "tool":"http:POST:a" }"#;
                 let record = if valid_record { record } else { "{}" };
-                conn.execute("INSERT INTO config_management_audit(scope_id,call_id,record,business_committed,created_at) VALUES('ws','http:POST:a:b:调用',?1,?2,'2026-01-01 00:00:00')", rusqlite::params![record, state]).unwrap();
+                sqlx::query("INSERT INTO config_management_audit(scope_id,call_id,record,business_committed,created_at) VALUES('ws','http:POST:a:b:调用',?1,?2,'2026-01-01 00:00:00')").bind(record).bind(state).execute(&conn).await.unwrap();
                 if duplicate {
-                    conn.execute("INSERT INTO config_management_audit(scope_id,call_id,record) VALUES('ws','other-legacy-key',?1)", [record]).unwrap();
+                    sqlx::query("INSERT INTO config_management_audit(scope_id,call_id,record) VALUES('ws','other-legacy-key',?1)").bind(record).execute(&conn).await.unwrap();
                 }
-                let result = runner.run_bundle(&conn, &current);
+                let result = runner.run_bundle(&current).await;
                 if state == 2 || !valid_record || duplicate {
                     assert!(result.is_err(), "M4");
-                    let (key, unchanged): (String, String) = conn
-                        .query_row(
-                            "SELECT call_id,record FROM config_management_audit WHERE call_id='http:POST:a:b:调用'",
-                            [],
-                            |r| Ok((r.get(0)?, r.get(1)?)),
-                        )
-                        .unwrap();
+                    let (key, unchanged): (String, String) = sqlx::query_as(
+                        "SELECT call_id,record FROM config_management_audit WHERE call_id='http:POST:a:b:调用'",
+                    )
+                    .fetch_one(&conn)
+                    .await
+                    .unwrap();
                     assert_eq!(key, "http:POST:a:b:调用");
                     assert_eq!(unchanged, record);
-                    let rows: i64 = conn
-                        .query_row("SELECT COUNT(*) FROM config_management_audit", [], |r| {
-                            r.get(0)
-                        })
-                        .unwrap();
+                    let rows: i64 =
+                        sqlx::query_scalar("SELECT COUNT(*) FROM config_management_audit")
+                            .fetch_one(&conn)
+                            .await
+                            .unwrap();
                     assert_eq!(rows, 1 + i64::from(duplicate));
-                    let receipt: i64 = conn.query_row("SELECT COUNT(*) FROM config_schema_migrations WHERE bundle_id='awaken.config' AND version=11", [], |r| r.get(0)).unwrap();
+                    let receipt: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM config_schema_migrations WHERE bundle_id='awaken.config' AND version=11").fetch_one(&conn).await.unwrap();
                     assert_eq!(receipt, 0);
-                    let shadow: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name='config_management_audit_identity'", [], |r| r.get(0)).unwrap();
+                    let shadow: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name='config_management_audit_identity'").fetch_one(&conn).await.unwrap();
                     assert_eq!(shadow, 0);
                     continue;
                 }
                 result.unwrap();
-                let row: (String, String, String, i64, String) = conn.query_row("SELECT tool,call_id,record,business_committed,created_at FROM config_management_audit", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
+                let row: (String, String, String, i64, String) = sqlx::query_as("SELECT tool,call_id,record,business_committed,created_at FROM config_management_audit").fetch_one(&conn).await.unwrap();
                 assert_eq!(
                     row,
                     (
@@ -246,15 +249,15 @@ mod tests {
                     ),
                     "M1"
                 );
-                assert!(runner.run_bundle(&conn, &current).unwrap().is_empty());
-                conn.execute("INSERT INTO config_management_audit(scope_id,tool,call_id,record) VALUES('ws','http:POST','a:b:调用',?1)", [r#"{"tool":"http:POST","call_id":"a:b:调用","summary":"different"}"#]).expect("M2");
+                assert!(runner.run_bundle(&current).await.unwrap().is_empty());
+                sqlx::query("INSERT INTO config_management_audit(scope_id,tool,call_id,record) VALUES('ws','http:POST','a:b:调用',?1)").bind(r#"{"tool":"http:POST","call_id":"a:b:调用","summary":"different"}"#).execute(&conn).await.expect("M2");
                 for sql in [
                     "UPDATE config_management_audit SET tool='wrong'",
                     "UPDATE config_management_audit SET call_id='wrong'",
                     "UPDATE config_management_audit SET business_committed=-1",
                     "UPDATE config_management_audit SET record='{}'",
                 ] {
-                    assert!(conn.execute(sql, []).is_err(), "M3: {sql}");
+                    assert!(sqlx::query(sql).execute(&conn).await.is_err(), "M3: {sql}");
                 }
             }
         }

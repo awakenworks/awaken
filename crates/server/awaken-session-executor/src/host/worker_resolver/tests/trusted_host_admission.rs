@@ -1,8 +1,8 @@
 //! Trusted-host Session environment admission: a permanent refusal is classified before any provider effect.
 use super::*;
 
-#[test]
-fn trusted_host_admission_rejection_preserves_permanent_class_without_effects() {
+#[tokio::test]
+async fn trusted_host_admission_rejection_preserves_permanent_class_without_effects() {
     // Cause/effect graph: explicit trusted-host provider + Namespace spec ->
     // deterministic PrepareError; exact trusted-host Workdir spec -> admission.
     // T1 the incompatible spec must be BadRequest (never endlessly retried),
@@ -10,7 +10,7 @@ fn trusted_host_admission_rejection_preserves_permanent_class_without_effects() 
     // Sandbox or calls a model. Runtime/transport failures are covered by the
     // existing realization disposition table and the claim projection below.
     let root = tempfile::tempdir().expect("provider root");
-    let host = SharedHost::new(Arc::new(AdoptionModel), "stub");
+    let host = adoption_host().await;
     let provider = crate::session_environment::SandboxEnvironmentProvider::
         trusted_host_workdir_with_agent_stderr(root.path(), false)
         .into_session_provider();

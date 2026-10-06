@@ -111,11 +111,18 @@ async fn coordinator(
             files.join("dispatch.sqlite").to_str().unwrap(),
             Arc::new(awaken_lease_testkit::ManualClock::new(clock.now_ms())),
         )
+        .await
         .unwrap(),
     );
-    let directory = Arc::new(SqliteWorkerDirectory::open(files.join("registry.sqlite")).unwrap());
+    let directory = Arc::new(
+        SqliteWorkerDirectory::open(files.join("registry.sqlite"))
+            .await
+            .unwrap(),
+    );
     let recovery = Arc::new(
-        SqliteCommitCoordinator::open(files.join("runtime.sqlite").to_str().unwrap()).unwrap(),
+        SqliteCommitCoordinator::open(files.join("runtime.sqlite").to_str().unwrap())
+            .await
+            .unwrap(),
     );
     let service = WorkerDispatchService::new(
         store.clone(),
@@ -335,6 +342,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     );
     let recovery = Arc::new(
         SqliteCommitCoordinator::open(files.path().join("runtime.sqlite").to_str().unwrap())
+            .await
             .unwrap(),
     );
     commit_actual_model_only_result(recovery.clone(), model_activation).await;
@@ -403,7 +411,9 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         next_dispatch.begin_attempt(&next, None).await.unwrap(),
         AttemptAdmission::Blocked
     );
-    let directory = SqliteWorkerDirectory::open(files.path().join("registry.sqlite")).unwrap();
+    let directory = SqliteWorkerDirectory::open(files.path().join("registry.sqlite"))
+        .await
+        .unwrap();
     assert_eq!(
         directory
             .current(&worker.snapshot.identity.worker_id)
@@ -418,6 +428,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     let stop = transport.stop_source().unwrap();
     let recovery =
         SqliteCommitCoordinator::open(files.path().join("runtime.sqlite").to_str().unwrap())
+            .await
             .unwrap();
     let receipt = tokio::time::timeout(Duration::from_secs(60), async {
         loop {

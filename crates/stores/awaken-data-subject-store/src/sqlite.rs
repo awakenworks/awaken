@@ -7,7 +7,9 @@
 //! aggregate serializes into the `data {json}` column; `id`/`org` are keyed
 //! columns for lookups.
 
-use rusqlite::{Connection, OptionalExtension, params};
+use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 
 use crate::schema::{CONTROL_PREFIX, control_data_subject_bundle};
 use awaken_data_subject_application::{
@@ -30,71 +32,54 @@ fn storage(err: impl std::fmt::Display) -> DataSubjectError {
     DataSubjectError::Storage(err.to_string())
 }
 
-async fn with_conn<T, F>(
-    conn: &awaken_sqlite_pool::SharedSqliteConnection,
-    f: F,
-) -> Result<T, DataSubjectError>
-where
-    T: Send + 'static,
-    F: FnOnce(&mut Connection, &str) -> Result<T, DataSubjectError> + Send + 'static,
-{
-    awaken_sqlite_pool::with_connection(conn.clone(), move |connection| f(connection, NS))
-        .await
-        .map_err(storage)?
-}
-
 /// A SQLite-backed [`DataSubjectRepo`].
 pub struct SqliteDataSubjectRepo {
-    conn: awaken_sqlite_pool::SharedSqliteConnection,
+    pool: EmbeddedPool,
 }
 
 impl SqliteDataSubjectRepo {
     /// Open (or create) a database file and apply the data-subject migrations
     /// (one-step convenience for a store-owned database).
-    pub fn open(path: &str) -> Result<Self, StoreError> {
-        let store = Self::over(
-            awaken_sqlite_pool::SqliteConnectionFactory::file(path)
-                .open()
-                .map_err(|err| StoreError::Open(err.to_string()))?,
-        );
-        store.ensure_schema()?;
-        Ok(store)
+    pub async fn open(path: &str) -> Result<Self, StoreError> {
+        Self::open_at(EmbeddedSqlite::file(path)).await
     }
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory() -> Result<Self, StoreError> {
+    pub async fn open_in_memory() -> Result<Self, StoreError> {
+        Self::open_at(EmbeddedSqlite::memory()).await
+    }
+
+    async fn open_at(location: EmbeddedSqlite) -> Result<Self, StoreError> {
         let store = Self::over(
-            awaken_sqlite_pool::SqliteConnectionFactory::memory()
+            location
                 .open()
+                .await
                 .map_err(|err| StoreError::Open(err.to_string()))?,
         );
-        store.ensure_schema()?;
+        store.ensure_schema().await?;
         Ok(store)
     }
 
-    /// Wrap an existing connection **without migrating**. Call [`Self::ensure_schema`],
+    /// Wrap an existing pool **without migrating**. Call [`Self::ensure_schema`],
     /// or let a unified migration pipeline own the `data_subject` scope so this store
     /// shares the caller's database.
-    pub fn over(conn: Connection) -> Self {
-        Self {
-            conn: awaken_sqlite_pool::SharedSqliteConnection::new(conn),
-        }
+    pub fn over(pool: EmbeddedPool) -> Self {
+        Self { pool }
     }
 
     /// Apply the `data_subject` scoped migration bundle (idempotent). Optional: skip
     /// it when the schema is owned externally.
-    pub fn ensure_schema(&self) -> Result<(), StoreError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| StoreError::Migrate("data_subject connection poisoned".to_string()))?;
+    pub async fn ensure_schema(&self) -> Result<(), StoreError> {
         let bundle =
             control_data_subject_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-            .map_err(|err| StoreError::Migrate(err.to_string()))?
-            .run_bundle(&conn, &bundle)
-            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        awaken_sqlite_pool::held(
+            SqliteMigrationRunner::with_prefix(self.pool.sqlx().clone(), NS)
+                .map_err(|err| StoreError::Migrate(err.to_string()))?
+                .run_bundle(&bundle),
+        )
+        .await
+        .map_err(|err| StoreError::Migrate(err.to_string()))?;
         Ok(())
     }
 }
@@ -103,27 +88,25 @@ impl SqliteDataSubjectRepo {
 impl DataSubjectRepo for SqliteDataSubjectRepo {
     async fn create(&self, subject: DataSubject) -> Result<(), DataSubjectError> {
         let id = subject.id.0.clone();
-        let org = subject.org.clone();
         let revision = i64::try_from(subject.revision)
             .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
         let data = serde_json::to_string(&subject).map_err(storage)?;
-        with_conn(&self.conn, move |conn, p| {
-            let inserted = conn
-                .execute(
-                    &format!(
-                        "INSERT OR IGNORE INTO {p}_subject (id, org, data, revision) \
-                     VALUES (?1, ?2, ?3, ?4)"
-                    ),
-                    params![id, org, data, revision],
-                )
-                .map_err(storage)?;
-            if inserted == 1 {
-                Ok(())
-            } else {
-                Err(DataSubjectError::AlreadyExists(id))
-            }
-        })
+        let inserted = sqlx::query(&format!(
+            "INSERT OR IGNORE INTO {NS}_subject (id, org, data, revision) \
+             VALUES (?1, ?2, ?3, ?4)"
+        ))
+        .bind(&id)
+        .bind(&subject.org)
+        .bind(&data)
+        .bind(revision)
+        .execute(&self.pool)
         .await
+        .map_err(storage)?;
+        if inserted.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(DataSubjectError::AlreadyExists(id))
+        }
     }
 
     async fn compare_and_swap(
@@ -132,7 +115,6 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
         subject: DataSubject,
     ) -> Result<(), DataSubjectError> {
         let id = subject.id.0.clone();
-        let org = subject.org.clone();
         let revision = subject.revision;
         if !subject.is_successor_of(expected_revision) {
             return Err(DataSubjectError::Conflict(id));
@@ -142,99 +124,86 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
         let stored_expected = i64::try_from(expected_revision)
             .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
         let data = serde_json::to_string(&subject).map_err(storage)?;
-        with_conn(&self.conn, move |conn, p| {
-            let tx = conn
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .map_err(storage)?;
-            let current: Option<(String, i64)> = tx
-                .query_row(
-                    &format!("SELECT data, revision FROM {p}_subject WHERE id = ?1"),
-                    params![id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(storage)?;
-            let Some((current_data, current_revision)) = current else {
-                return Err(DataSubjectError::Conflict(id));
-            };
-            let current: DataSubject = serde_json::from_str(&current_data).map_err(storage)?;
-            if i64::try_from(current.revision).ok() != Some(current_revision) {
-                return Err(storage("data subject revision mismatch"));
-            }
-            if !subject.follows_revision(expected_revision, current.revision) {
-                return Err(DataSubjectError::Conflict(id));
-            }
-            let updated = tx
-                .execute(
-                    &format!(
-                        "UPDATE {p}_subject SET org = ?1, data = ?2, revision = ?3 \
-                         WHERE id = ?4 AND revision = ?5"
-                    ),
-                    params![org, data, stored_revision, id, stored_expected],
-                )
-                .map_err(storage)?;
-            if updated == 1 {
-                tx.commit().map_err(storage)?;
-                Ok(())
-            } else {
-                Err(DataSubjectError::Conflict(id))
-            }
-        })
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage)?;
+        let current = sqlx::query_as::<_, (String, i64)>(&format!(
+            "SELECT data, revision FROM {NS}_subject WHERE id = ?1"
+        ))
+        .bind(&id)
+        .fetch_optional(&mut *tx)
         .await
+        .map_err(storage)?;
+        let Some((current_data, current_revision)) = current else {
+            return Err(DataSubjectError::Conflict(id));
+        };
+        let current: DataSubject = serde_json::from_str(&current_data).map_err(storage)?;
+        if i64::try_from(current.revision).ok() != Some(current_revision) {
+            return Err(storage("data subject revision mismatch"));
+        }
+        if !subject.follows_revision(expected_revision, current.revision) {
+            return Err(DataSubjectError::Conflict(id));
+        }
+        let updated = sqlx::query(&format!(
+            "UPDATE {NS}_subject SET org = ?1, data = ?2, revision = ?3 \
+             WHERE id = ?4 AND revision = ?5"
+        ))
+        .bind(&subject.org)
+        .bind(&data)
+        .bind(stored_revision)
+        .bind(&id)
+        .bind(stored_expected)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        if updated.rows_affected() == 1 {
+            tx.commit().await.map_err(storage)?;
+            Ok(())
+        } else {
+            Err(DataSubjectError::Conflict(id))
+        }
     }
 
     async fn get(&self, id: &DataSubjectId) -> Result<DataSubject, DataSubjectError> {
-        let id = id.0.clone();
-        with_conn(&self.conn, move |conn, p| {
-            let data: Option<String> = conn
-                .query_row(
-                    &format!("SELECT data FROM {p}_subject WHERE id = ?1"),
-                    params![id],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(storage)?;
-            let data = data.ok_or_else(|| DataSubjectError::NotFound(id.clone()))?;
-            serde_json::from_str(&data).map_err(storage)
-        })
+        let data = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT data FROM {NS}_subject WHERE id = ?1"
+        ))
+        .bind(&id.0)
+        .fetch_optional(&self.pool)
         .await
+        .map_err(storage)?;
+        let data = data.ok_or_else(|| DataSubjectError::NotFound(id.0.clone()))?;
+        serde_json::from_str(&data).map_err(storage)
     }
 
     async fn list(&self, org: &str) -> Result<Vec<DataSubject>, DataSubjectError> {
-        let org = org.to_string();
-        with_conn(&self.conn, move |conn, p| {
-            let mut stmt = conn
-                .prepare(&format!(
-                    "SELECT data FROM {p}_subject WHERE org = ?1 ORDER BY rowid"
-                ))
-                .map_err(storage)?;
-            let rows = stmt
-                .query_map(params![org], |r| r.get::<_, String>(0))
-                .map_err(storage)?;
-            rows.map(|data| serde_json::from_str(&data.map_err(storage)?).map_err(storage))
-                .collect()
-        })
+        let rows = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT data FROM {NS}_subject WHERE org = ?1 ORDER BY rowid"
+        ))
+        .bind(org)
+        .fetch_all(&self.pool)
         .await
+        .map_err(storage)?;
+        rows.iter()
+            .map(|data| serde_json::from_str(data).map_err(storage))
+            .collect()
     }
 }
 
 #[async_trait::async_trait]
 impl ErasureJobRepo for SqliteDataSubjectRepo {
     async fn load(&self, id: &DataSubjectId) -> Result<Option<ErasureProgress>, DataSubjectError> {
-        let id = id.0.clone();
-        with_conn(&self.conn, move |conn, p| {
-            let data: Option<String> = conn
-                .query_row(
-                    &format!("SELECT data FROM {p}_erasure_job WHERE subject_id = ?1"),
-                    params![id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(storage)?;
-            data.map(|value| serde_json::from_str(&value).map_err(storage))
-                .transpose()
-        })
+        let data = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT data FROM {NS}_erasure_job WHERE subject_id = ?1"
+        ))
+        .bind(&id.0)
+        .fetch_optional(&self.pool)
         .await
+        .map_err(storage)?;
+        data.map(|value| serde_json::from_str(&value).map_err(storage))
+            .transpose()
     }
 
     async fn compare_and_swap_progress(
@@ -244,67 +213,73 @@ impl ErasureJobRepo for SqliteDataSubjectRepo {
         progress: &ErasureProgress,
     ) -> Result<(), DataSubjectError> {
         let id = id.0.clone();
-        let progress = progress.clone();
-        with_conn(&self.conn, move |conn, p| {
-            // IMMEDIATE reserves the writer before reading. The old JSON and
-            // revision, admission, and conditional update share this transaction;
-            // neither another connection nor this connection can replace the
-            // observed checkpoint between admission and publication.
-            let tx = conn
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .map_err(storage)?;
-            let current: Option<(String, i64)> = tx
-                .query_row(
-                    &format!("SELECT data, revision FROM {p}_erasure_job WHERE subject_id = ?1"),
-                    params![id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(storage)?;
-            let current = current
-                .map(|(data, revision)| {
-                    let current: ErasureProgress = serde_json::from_str(&data).map_err(storage)?;
-                    if i64::try_from(current.revision).ok() != Some(revision) {
-                        return Err(storage("erasure checkpoint revision mismatch"));
-                    }
-                    Ok(current)
-                })
-                .transpose()?;
-            if !progress.follows(expected_revision, current.as_ref()) {
-                return Err(DataSubjectError::Conflict(id));
-            }
-            let revision = i64::try_from(progress.revision)
-                .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
-            let expected = expected_revision
-                .map(i64::try_from)
-                .transpose()
-                .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
-            let data = serde_json::to_string(&progress).map_err(storage)?;
-            let changed = match expected {
-                None => tx.execute(
-                    &format!(
-                        "INSERT OR IGNORE INTO {p}_erasure_job (subject_id, data, revision) \
-                         VALUES (?1, ?2, ?3)"
-                    ),
-                    params![id, data, revision],
-                ),
-                Some(expected) => tx.execute(
-                    &format!(
-                        "UPDATE {p}_erasure_job SET data = ?2, revision = ?3, \
-                         updated_at = CURRENT_TIMESTAMP WHERE subject_id = ?1 AND revision = ?4"
-                    ),
-                    params![id, data, revision, expected],
-                ),
-            }
+        // IMMEDIATE reserves the writer before reading. The old JSON and
+        // revision, admission, and conditional update share this transaction;
+        // neither another connection nor this connection can replace the
+        // observed checkpoint between admission and publication.
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
             .map_err(storage)?;
-            if changed == 1 {
-                tx.commit().map_err(storage)?;
-                Ok(())
-            } else {
-                Err(DataSubjectError::Conflict(id))
-            }
-        })
+        let current = sqlx::query_as::<_, (String, i64)>(&format!(
+            "SELECT data, revision FROM {NS}_erasure_job WHERE subject_id = ?1"
+        ))
+        .bind(&id)
+        .fetch_optional(&mut *tx)
         .await
+        .map_err(storage)?;
+        let current = current
+            .map(|(data, revision)| {
+                let current: ErasureProgress = serde_json::from_str(&data).map_err(storage)?;
+                if i64::try_from(current.revision).ok() != Some(revision) {
+                    return Err(storage("erasure checkpoint revision mismatch"));
+                }
+                Ok(current)
+            })
+            .transpose()?;
+        if !progress.follows(expected_revision, current.as_ref()) {
+            return Err(DataSubjectError::Conflict(id));
+        }
+        let revision = i64::try_from(progress.revision)
+            .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
+        let expected = expected_revision
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
+        let data = serde_json::to_string(progress).map_err(storage)?;
+        let changed = match expected {
+            None => {
+                sqlx::query(&format!(
+                    "INSERT OR IGNORE INTO {NS}_erasure_job (subject_id, data, revision) \
+                     VALUES (?1, ?2, ?3)"
+                ))
+                .bind(&id)
+                .bind(&data)
+                .bind(revision)
+                .execute(&mut *tx)
+                .await
+            }
+            Some(expected) => {
+                sqlx::query(&format!(
+                    "UPDATE {NS}_erasure_job SET data = ?2, revision = ?3, \
+                     updated_at = CURRENT_TIMESTAMP WHERE subject_id = ?1 AND revision = ?4"
+                ))
+                .bind(&id)
+                .bind(&data)
+                .bind(revision)
+                .bind(expected)
+                .execute(&mut *tx)
+                .await
+            }
+        }
+        .map_err(storage)?;
+        if changed.rows_affected() == 1 {
+            tx.commit().await.map_err(storage)?;
+            Ok(())
+        } else {
+            Err(DataSubjectError::Conflict(id))
+        }
     }
 }
 
@@ -318,9 +293,9 @@ mod tests {
     /// caller's database (mirrors the resource-family stores' `over`/`ensure_schema`).
     #[tokio::test]
     async fn over_then_ensure_schema_round_trips_on_a_caller_owned_connection() {
-        let conn = Connection::open_in_memory().unwrap();
-        let repo = SqliteDataSubjectRepo::over(conn);
-        repo.ensure_schema().unwrap();
+        let pool = EmbeddedSqlite::memory().open().await.unwrap();
+        let repo = SqliteDataSubjectRepo::over(pool);
+        repo.ensure_schema().await.unwrap();
         repo.create(DataSubject::new(
             DataSubjectId("dsub_a".into()),
             "org_1",
@@ -346,15 +321,17 @@ mod tests {
             (serde_json::to_string(&old).unwrap(), 1_i64),
             ("not json".to_string(), 0_i64),
         ] {
-            let repo = SqliteDataSubjectRepo::open_in_memory().unwrap();
-            repo.conn
-                .lock()
-                .unwrap()
-                .execute(
-                    &format!("INSERT INTO {NS}_subject(id,org,data,revision) VALUES (?1,?2,?3,?4)"),
-                    params![&old.id.0, &old.org, &data, stored_revision],
-                )
-                .unwrap();
+            let repo = SqliteDataSubjectRepo::open_in_memory().await.unwrap();
+            sqlx::query(&format!(
+                "INSERT INTO {NS}_subject(id,org,data,revision) VALUES (?1,?2,?3,?4)"
+            ))
+            .bind(&old.id.0)
+            .bind(&old.org)
+            .bind(&data)
+            .bind(stored_revision)
+            .execute(&repo.pool)
+            .await
+            .unwrap();
             let mut candidate = old.clone();
             candidate.revision = 1;
             candidate.name = Some("must-not-apply".into());
@@ -362,16 +339,13 @@ mod tests {
                 repo.compare_and_swap(0, candidate).await,
                 Err(DataSubjectError::Storage(_))
             ));
-            let raw: (String, i64) = repo
-                .conn
-                .lock()
-                .unwrap()
-                .query_row(
-                    &format!("SELECT data,revision FROM {NS}_subject WHERE id=?1"),
-                    params![&old.id.0],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .unwrap();
+            let raw: (String, i64) = sqlx::query_as(&format!(
+                "SELECT data,revision FROM {NS}_subject WHERE id=?1"
+            ))
+            .bind(&old.id.0)
+            .fetch_one(&repo.pool)
+            .await
+            .unwrap();
             assert_eq!(raw, (data, stored_revision));
         }
     }
@@ -405,18 +379,17 @@ mod tests {
                 true,
             ),
         ] {
-            let repo = SqliteDataSubjectRepo::open_in_memory().unwrap();
+            let repo = SqliteDataSubjectRepo::open_in_memory().await.unwrap();
             let id = DataSubjectId("corrupt-erasure".into());
-            repo.conn
-                .lock()
-                .unwrap()
-                .execute(
-                    &format!(
-                        "INSERT INTO {NS}_erasure_job(subject_id,data,revision) VALUES (?1,?2,?3)"
-                    ),
-                    params![id.0, data, stored_revision],
-                )
-                .unwrap();
+            sqlx::query(&format!(
+                "INSERT INTO {NS}_erasure_job(subject_id,data,revision) VALUES (?1,?2,?3)"
+            ))
+            .bind(&id.0)
+            .bind(&data)
+            .bind(stored_revision)
+            .execute(&repo.pool)
+            .await
+            .unwrap();
             let candidate = ErasureProgress {
                 revision: candidate_revision,
                 completed_targets: vec![
@@ -435,16 +408,13 @@ mod tests {
             } else {
                 assert!(matches!(error, DataSubjectError::Storage(_)));
             }
-            let raw: (String, i64) = repo
-                .conn
-                .lock()
-                .unwrap()
-                .query_row(
-                    &format!("SELECT data,revision FROM {NS}_erasure_job WHERE subject_id=?1"),
-                    params![id.0],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .unwrap();
+            let raw: (String, i64) = sqlx::query_as(&format!(
+                "SELECT data,revision FROM {NS}_erasure_job WHERE subject_id=?1"
+            ))
+            .bind(&id.0)
+            .fetch_one(&repo.pool)
+            .await
+            .unwrap();
             assert_eq!(raw, (data, stored_revision));
         }
     }

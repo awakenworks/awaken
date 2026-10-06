@@ -21,8 +21,8 @@ use tower::ServiceExt;
 
 mod support;
 
-fn router() -> Router {
-    let resources = support::resources::ephemeral_resources();
+async fn router() -> Router {
+    let resources = support::resources::ephemeral_resources().await;
     memory_stores_router(
         resources.authorities().memory_repository(),
         resources.memory_stores(),
@@ -55,7 +55,7 @@ async fn memory_creation_replays_a_lost_response_and_rejects_changed_payloads() 
             .unwrap();
         support::Call::new(status, serde_json::from_slice(&bytes).unwrap())
     }
-    let router = router();
+    let router = router().await;
     let body = json!({"name": "Lost response", "description": "Keep exactly one", "metadata": {"owner": "workshop"}});
     // The first POST reaches the real application. Discard its response as a
     // disconnected client would, then submit the exact request again.
@@ -102,7 +102,7 @@ async fn retained_copy_candidates_use_store_visibility_and_explicit_content_view
     // stable identities, with content only under full; foreign/missing/archived
     // is 404. Invalid view/page is 400; reads never mutate heads or history.
     // This is an Awaken extension, not an assertion about the Anthropic schema.
-    let resources = support::resources::ephemeral_resources();
+    let resources = support::resources::ephemeral_resources().await;
     let memories = resources.authorities().memory_repository();
     let router = memory_stores_router(
         memories.clone(),
@@ -257,7 +257,7 @@ async fn call(
 
 #[tokio::test]
 async fn resource_routes_require_a_preselected_workspace() {
-    let router = router();
+    let router = router().await;
     for (method, body) in [
         ("GET", Body::empty()),
         ("POST", Body::from(r#"{"name":"must-not-exist"}"#)),
@@ -334,7 +334,7 @@ async fn create_store(router: &Router, name: &str) -> String {
 // Decision table: absent=create/404; active=read/update/archive; archived=filtered; deleted=404.
 #[tokio::test]
 async fn store_lifecycle_create_get_list_update_archive_delete() {
-    let router = router();
+    let router = router().await;
 
     // Create with the SDK body (name/description/metadata) mints a durable id.
     let created = call(
@@ -422,7 +422,7 @@ async fn store_lifecycle_create_get_list_update_archive_delete() {
 
 #[tokio::test]
 async fn unknown_store_is_fail_closed_on_every_verb() {
-    let router = router();
+    let router = router().await;
     let missing = "memstore_does_not_exist";
 
     // GET on a store with no Resource Registry identity → 404.
@@ -454,7 +454,7 @@ async fn unknown_store_is_fail_closed_on_every_verb() {
 
 #[tokio::test]
 async fn workspace_and_lifecycle_are_intrinsic_resource_guards() {
-    let resources = support::resources::ephemeral_resources();
+    let resources = support::resources::ephemeral_resources().await;
     let router = memory_stores_router(
         resources.authorities().memory_repository(),
         resources.memory_stores(),
@@ -515,7 +515,7 @@ async fn workspace_and_lifecycle_are_intrinsic_resource_guards() {
 // Decision table: fresh precondition=advance; stale=409; missing parent/path/version=404; redact=immutable marker.
 #[tokio::test]
 async fn memory_crud_with_precondition_and_version_log() {
-    let router = router();
+    let router = router().await;
     let store = create_store(&router, "mem-host").await;
 
     // Create a memory (path-addressed head in the durable store).
@@ -1021,7 +1021,7 @@ async fn memory_crud_with_precondition_and_version_log() {
 
 #[tokio::test]
 async fn memory_error_arms_are_fail_closed() {
-    let router = router();
+    let router = router().await;
     let store = create_store(&router, "errs").await;
 
     // A create without a `path` is a 400.
@@ -1091,7 +1091,7 @@ async fn memory_store_router_does_not_reintroduce_a_parallel_store_configuration
     // an owner; R2 the former Store-policy endpoint and R3 its historical
     // config-version endpoint have no owner (404). Recall/extraction settings
     // belong to ordinary Agent plugin configuration, not a second Store API.
-    let router = router();
+    let router = router().await;
     let store = create_store(&router, "compatible-only").await;
     assert_ne!(
         call(&router, "GET", "/v1/memory_stores", None)
@@ -1128,7 +1128,7 @@ async fn store_time_filters_match_wire_precision_before_pagination_and_lifecycle
     // lifecycle states; E3 no page omissions/duplicates. Cross C1*C2*C3, then drain
     // every page. Seed through the canonical Registry port with literal timestamps
     // so the former second-truncating implementation deterministically fails.
-    let resources = support::resources::ephemeral_resources();
+    let resources = support::resources::ephemeral_resources().await;
     let registry = resources.authorities().resource_registry();
     for millis in [100_u64, 101] {
         for (label, state) in [
@@ -1389,7 +1389,7 @@ async fn store_found_conflicts_answer_the_contract_only_when_already_at_the_requ
             "R6d an unsatisfied path move is still a conflict",
         ),
     ] {
-        let resources = support::resources::ephemeral_resources();
+        let resources = support::resources::ephemeral_resources().await;
         let router = memory_stores_router(
             std::sync::Arc::new(RaceLosingRepository {
                 inner: resources.authorities().memory_repository(),

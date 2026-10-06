@@ -87,8 +87,8 @@ async fn sqlite_incarnation_exclusion_serializes_independent_connections() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("guards.sqlite");
     assert_incarnation_exclusion(
-        Arc::new(SqliteWorkerDirectory::open(&path).unwrap()),
-        Arc::new(SqliteWorkerDirectory::open(&path).unwrap()),
+        Arc::new(SqliteWorkerDirectory::open(&path).await.unwrap()),
+        Arc::new(SqliteWorkerDirectory::open(&path).await.unwrap()),
         "sqlite",
     )
     .await;
@@ -104,10 +104,10 @@ async fn sqlite_registry_conforms_and_reopens() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("workers.sqlite");
     let path = path.to_str().unwrap();
-    let store = Arc::new(SqliteWorkerDirectory::open(path).unwrap());
+    let store = Arc::new(SqliteWorkerDirectory::open(path).await.unwrap());
     assert_registry(store.clone(), "dwr-sqlite").await;
     let process_identity = assert_process_exit_receipt(store, "sqlite").await;
-    let reopened = SqliteWorkerDirectory::open(path).unwrap();
+    let reopened = SqliteWorkerDirectory::open(path).await.unwrap();
     let record: RegisteredWorker = reopened
         .current("dwr-sqlite")
         .await
@@ -130,12 +130,12 @@ async fn sqlite_registry_conforms_and_reopens() {
     let reopened = Arc::new(reopened);
     assert_registration_history(
         reopened.clone(),
-        Arc::new(SqliteWorkerDirectory::open(path).unwrap()),
+        Arc::new(SqliteWorkerDirectory::open(path).await.unwrap()),
         "sqlite",
     )
     .await;
     drop(reopened);
-    let reopened = SqliteWorkerDirectory::open(path).unwrap();
+    let reopened = SqliteWorkerDirectory::open(path).await.unwrap();
     assert!(
         matches!(
             reopened
@@ -154,7 +154,7 @@ async fn sqlite_registry_conforms_and_reopens() {
     );
     assert_expiry_race(
         Arc::new(reopened),
-        Arc::new(SqliteWorkerDirectory::open(path).unwrap()),
+        Arc::new(SqliteWorkerDirectory::open(path).await.unwrap()),
         "sqlite",
     )
     .await;

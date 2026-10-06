@@ -432,7 +432,9 @@ mod tests {
         // DeploymentRepository transaction. Rules D1=C1+C2=>E1+E2;
         // D2=C1+C2+C3=>E3. Spring-gap absence is owned by Cron's adjacent table.
         let repository = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         let application =
             DeploymentApplication::from_repository(repository.clone(), awaken_time::system_clock())

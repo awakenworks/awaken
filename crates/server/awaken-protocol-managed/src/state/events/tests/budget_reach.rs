@@ -169,8 +169,9 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
         }
     };
     let runtime = LifecycleRuntime::default();
-    let repository = Arc::new(ephemeral_session_repo());
+    let repository = Arc::new(ephemeral_session_repo().await);
     let warm = ManagedState::new(runtime.clone())
+        .await
         .with_session_repo(repository.clone())
         .with_managed_list_price_provider(Arc::new(ThreadPriceProvider));
     let session = warm
@@ -308,6 +309,7 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
     );
 
     let cold = ManagedState::new(runtime)
+        .await
         .with_session_repo(repository)
         .with_managed_list_price_provider(Arc::new(ThreadPriceProvider));
     cold.refresh_committed_events(&session.id).await.unwrap();

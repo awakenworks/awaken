@@ -389,7 +389,9 @@ async fn terminal_reclaim_rejects_then_recovers_from_committed_thread_truth() {
             )
             .expect("requested task starts");
 
-        let store = SqliteCommitCoordinator::open(database).expect("open SQLite commit store");
+        let store = SqliteCommitCoordinator::open(database)
+            .await
+            .expect("open SQLite commit store");
         store
             .commit(ThreadCommit {
                 thread_id: thread_id.clone(),
@@ -435,6 +437,7 @@ async fn terminal_reclaim_rejects_then_recovers_from_committed_thread_truth() {
 
         store
             .make_read_only_for_test()
+            .await
             .expect("enable deterministic SQLite rejection");
         assert!(
             store
@@ -455,7 +458,9 @@ async fn terminal_reclaim_rejects_then_recovers_from_committed_thread_truth() {
         );
         drop(store);
 
-        let store = SqliteCommitCoordinator::open(database).expect("reopen after rejection");
+        let store = SqliteCommitCoordinator::open(database)
+            .await
+            .expect("reopen after rejection");
         let recovered_state =
             Store::rebuild(&CommittedThreadView::committed_state(&store, &thread_id));
         let mut recovered = task_state_cell(&running.id)
@@ -485,7 +490,9 @@ async fn terminal_reclaim_rejects_then_recovers_from_committed_thread_truth() {
             .expect("fresh-Run terminal retry commits");
         drop(store);
 
-        let reopened = SqliteCommitCoordinator::open(database).expect("reopen after success");
+        let reopened = SqliteCommitCoordinator::open(database)
+            .await
+            .expect("reopen after success");
         let final_state =
             Store::rebuild(&CommittedThreadView::committed_state(&reopened, &thread_id));
         let final_task = task_state_cell(&terminal.id)

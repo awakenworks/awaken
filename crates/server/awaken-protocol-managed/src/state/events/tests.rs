@@ -52,8 +52,10 @@ async fn indeterminate_root_projects_one_standard_error_across_warm_and_cold_rea
     // E2 identical event identity and payload, without resending the Run.
     // This closes the silent end_turn projection of a watchdog-abandoned model.
     let runtime = LifecycleRuntime::default();
-    let repository = Arc::new(ephemeral_session_repo());
-    let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+    let repository = Arc::new(ephemeral_session_repo().await);
+    let warm = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repository.clone());
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -102,7 +104,9 @@ async fn indeterminate_root_projects_one_standard_error_across_warm_and_cold_rea
         )
         .await
         .unwrap();
-    let cold = ManagedState::new(runtime).with_session_repo(repository);
+    let cold = ManagedState::new(runtime)
+        .await
+        .with_session_repo(repository);
     let mut previous = None;
     for state in [&warm, &warm, &cold] {
         state.refresh_committed_events(&session.id).await.unwrap();
@@ -142,7 +146,7 @@ async fn shared_history_page_preserves_filtered_cursor_contract_with_large_paylo
     // cursor is an error; E4 primary Thread and Session use one projection.
     // P1=C1*C2*C4=>E1+E2; P2=unknown=>E3; P3=filtered-out=>E3; P4=>E4.
     // Large payloads complement the borrowed-allocation assertion in threads.rs.
-    let state = ManagedState::new(LifecycleRuntime::default());
+    let state = ManagedState::new(LifecycleRuntime::default()).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -410,7 +414,7 @@ async fn interrupt_freezes_a_committed_child_before_the_managed_projection_catch
     // covers the same window while the provider request is in flight.
     let runtime = crate::test_support::CoordinatedRuntimeFake::default();
     runtime.defer_child_completion();
-    let state = ManagedState::new(runtime.clone());
+    let state = ManagedState::new(runtime.clone()).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -578,8 +582,10 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
     // | P1 | T | T | warm | E1 + E2 + E3 |
     // | P2 | T | T | cold | E1 + E2 + E3 + E4 |
     let runtime = LifecycleRuntime::default();
-    let repository = Arc::new(ephemeral_session_repo());
-    let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+    let repository = Arc::new(ephemeral_session_repo().await);
+    let warm = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repository.clone());
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -704,7 +710,9 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
         "P1/E2 processed marker"
     );
 
-    let cold = ManagedState::new(runtime).with_session_repo(repository);
+    let cold = ManagedState::new(runtime)
+        .await
+        .with_session_repo(repository);
     cold.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
         cold.list_events(&session.id, None, None, false)
@@ -1925,8 +1933,12 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
     // IR1=C1+C2+C3+same(C4)=>E1; IR2=C1+C2+C3+different(C4)=>E2. New or
     // unkeyed requests remain owned by the ordinary cold-admission table.
     let runtime = LifecycleRuntime::default();
-    let repository = Arc::new(ephemeral_session_repo());
-    let state = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository));
+    let repository = Arc::new(ephemeral_session_repo().await);
+    let state = Arc::new(
+        ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repository),
+    );
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -2046,9 +2058,12 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
         "absent",
     ] {
         let runtime = LifecycleRuntime::default();
-        let repository = Arc::new(ephemeral_session_repo());
-        let state =
-            Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository.clone()));
+        let repository = Arc::new(ephemeral_session_repo().await);
+        let state = Arc::new(
+            ManagedState::new(runtime.clone())
+                .await
+                .with_session_repo(repository.clone()),
+        );
         let session = state
             .create_session(
                 serde_json::from_value(serde_json::json!({
@@ -2317,7 +2332,7 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
         initial_lifecycle: Vec<RunLifecycleEvent>,
         late_lifecycle: Vec<RunLifecycleEvent>,
     ) -> Vec<(String, String, Option<String>)> {
-        let repository = Arc::new(ephemeral_session_repo());
+        let repository = Arc::new(ephemeral_session_repo().await);
         let mut persisted = crate::state::tests::sample_persisted(session_id);
         persisted.execution =
             awaken_session_state_contract::SessionExecutionState::ActivationFailed;
@@ -2336,7 +2351,9 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
         .await;
         let runtime = RehydrateFake::default();
         runtime.lifecycle.lock().unwrap().extend(initial_lifecycle);
-        let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+        let warm = ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repository.clone());
         if !late_lifecycle.is_empty() {
             // AF3/AF4: the first source prefix cannot publish a parent error
             // or terminal that its later exact Run commit would reorder.
@@ -2389,7 +2406,9 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
             }
         }
         let projected = observe(&warm);
-        let cold = ManagedState::new(runtime).with_session_repo(repository);
+        let cold = ManagedState::new(runtime)
+            .await
+            .with_session_repo(repository);
         cold.refresh_committed_events(session_id).await.unwrap();
         assert_eq!(observe(&cold), projected, "E4 warm/cold parity");
         projected
@@ -2671,7 +2690,7 @@ async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
     // existing non-2xx Events response is the Web projection-health seam; no
     // second pending store or browser-only damage flag is introduced.
     let runtime = LifecycleRuntime::default();
-    let state = Arc::new(ManagedState::new(runtime.clone()));
+    let state = Arc::new(ManagedState::new(runtime.clone()).await);
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -2901,14 +2920,14 @@ async fn pending_without_transcript_uses_awaiting_lifecycle_anchor() {
     // the global unanchored-event fail-closed guard and acquires no guessed
     // cursor.
     let runtime = LifecycleRuntime::default();
-    let state = ManagedState::new(runtime.clone()).with_config_source(Arc::new(
-        FrozenToolFamilyProfiles::uniform(
+    let state = ManagedState::new(runtime.clone())
+        .await
+        .with_config_source(Arc::new(FrozenToolFamilyProfiles::uniform(
             "coder",
             &[],
             FrozenTestToolFamily::Custom,
             "client_lookup",
-        ),
-    ));
+        )));
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -3019,14 +3038,14 @@ async fn root_projection_and_reply_admission_share_one_recovery_prefix() {
     // a nonexistent prefix. Decision table: S1=C0+C1+projection=>E1+E2;
     // S2=C0+C1+reply admission=>E1+E2.
     let runtime = LifecycleRuntime::default();
-    let state = ManagedState::new(runtime.clone()).with_config_source(Arc::new(
-        FrozenToolFamilyProfiles::uniform(
+    let state = ManagedState::new(runtime.clone())
+        .await
+        .with_config_source(Arc::new(FrozenToolFamilyProfiles::uniform(
             "coder",
             &[],
             FrozenTestToolFamily::Custom,
             "client_lookup",
-        ),
-    ));
+        )));
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -3483,9 +3502,14 @@ async fn pending_child_reply_fixture(
         "bash"
     };
     let state = Arc::new(
-        ManagedState::new(runtime.clone()).with_config_source(Arc::new(
-            FrozenToolFamilyProfiles::uniform("coder", &["researcher"], family, tool_name),
-        )),
+        ManagedState::new(runtime.clone())
+            .await
+            .with_config_source(Arc::new(FrozenToolFamilyProfiles::uniform(
+                "coder",
+                &["researcher"],
+                family,
+                tool_name,
+            ))),
     );
     let session = state
         .create_session(
@@ -3592,7 +3616,7 @@ async fn client_result_index_is_occurrence_exact_when_runtime_call_ids_repeat() 
     // retained and binds to C2, never C1. Decision table: R1=C1+!C2=>E1;
     // R2=C1+C2=>E2. This is the alias boundary omitted by family-only tests:
     // settlement is indexed by full public occurrence identity, not raw call id.
-    let state = ManagedState::new(RehydrateFake::default());
+    let state = ManagedState::new(RehydrateFake::default()).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -4370,7 +4394,7 @@ async fn running_dto_and_aggregate_event_publish_as_one_candidate() {
     // | O1 | Running | previous | latest Running | first | E1,E2 |
     // | O2 | Running | Running | same prefix | repeat | E3,E4 |
     let runtime = LifecycleRuntime::default();
-    let state = ManagedState::new(runtime.clone());
+    let state = ManagedState::new(runtime.clone()).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -4471,7 +4495,7 @@ async fn concurrent_stable_projection_readers_are_all_no_ops() {
     // exhaust the read budget because another read published an equal source.
     // Decision rule P1=C1+C2+C3=>E1+E2+E3. Source advance and overlay races are
     // covered by the adjacent reverse-writer and overlay-fence tests.
-    let state = Arc::new(ManagedState::new(LifecycleRuntime::default()));
+    let state = Arc::new(ManagedState::new(LifecycleRuntime::default()).await);
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -4524,7 +4548,7 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
     use tracing::instrument::WithSubscriber;
     for case in ["stable", "burst", "continuous", "error", "stall"] {
         let runtime = LifecycleRuntime::default();
-        let state = ManagedState::new(runtime.clone());
+        let state = ManagedState::new(runtime.clone()).await;
         // This test counts the source reads of each refresh; the warm/cold
         // oracle would read the prefix a second time.
         state.disable_warm_cold_oracle();
@@ -4728,10 +4752,15 @@ async fn cross_replica_pagination_never_rejects_a_cursor_using_an_older_prefix()
     // normalization before the prior-prefix availability check, even under churn.
     for thread in [false, true] {
         let runtime = LifecycleRuntime::default();
-        let repository = Arc::new(ephemeral_session_repo());
-        let lagging =
-            Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository.clone()));
-        let leading = ManagedState::new(runtime.clone()).with_session_repo(repository);
+        let repository = Arc::new(ephemeral_session_repo().await);
+        let lagging = Arc::new(
+            ManagedState::new(runtime.clone())
+                .await
+                .with_session_repo(repository.clone()),
+        );
+        let leading = ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repository);
         let session = lagging
             .create_session(
                 serde_json::from_value(serde_json::json!({
@@ -4873,7 +4902,7 @@ async fn read_only_observation_serves_the_last_complete_prefix_during_continuous
     // This catches both a lost reuse argument and reusing the initial root for
     // final validation instead of observing current truth.
     let runtime = LifecycleRuntime::default();
-    let state = ManagedState::new(runtime.clone());
+    let state = ManagedState::new(runtime.clone()).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -4976,7 +5005,7 @@ async fn committed_completion_is_broadcast_and_indexed_once_without_payload_repl
     // broadcasts and indexes the same id once; E2 C3 has no delivery or cache
     // change; E3 C4 rejects the whole candidate and preserves every frame field.
     // R1=C1+C2=>E1; R2=R1+C3=>E2; R3=R1+C4(each axis)=>E3.
-    let state = ManagedState::new(LifecycleRuntime::default());
+    let state = ManagedState::new(LifecycleRuntime::default()).await;
     let session = state
         .create_session(
             serde_json::from_value(
@@ -5107,7 +5136,7 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
     // non-newer root snapshot. A genuinely newer root is covered by the adjacent
     // running-projection test. Constraint: only monotonically newer Session root
     // truth may mutate the disposable cache.
-    let state = ManagedState::new(LifecycleRuntime::default());
+    let state = ManagedState::new(LifecycleRuntime::default()).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -5215,7 +5244,7 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
     // | A2 | text + use + result | yes | yes | E3 |
     // | A3 | same valid prefix | recovered | unchanged | E4 |
     let runtime = LifecycleRuntime::default();
-    let state = ManagedState::new(runtime.clone());
+    let state = ManagedState::new(runtime.clone()).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -5395,7 +5424,7 @@ async fn root_terminal_defers_idle_until_the_session_activity_cas_settles() {
     // | R2   | T  | F  | T  | T  | E3      |
     // | R3   | T  | F  | T  | T  | E4      |
     let runtime = LifecycleRuntime::default();
-    let state = ManagedState::new(runtime.clone());
+    let state = ManagedState::new(runtime.clone()).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -5484,7 +5513,7 @@ async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
     // | S2 | NaturalEnd | yes | Running | none | E2 |
     // | S3 | already projected | yes | Idle | none | E3 |
     let runtime = LifecycleRuntime::default();
-    let state = ManagedState::new(runtime.clone());
+    let state = ManagedState::new(runtime.clone()).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -5633,8 +5662,10 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
     // | C1 | T | F | T | T | F | E1-E5 |
     // | X1 | T | T | T | T | T | E6 |
     let runtime = LifecycleRuntime::default();
-    let repository = Arc::new(ephemeral_session_repo());
-    let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+    let repository = Arc::new(ephemeral_session_repo().await);
+    let warm = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repository.clone());
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -5723,7 +5754,9 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
         "session.usage",
         "session.status_idle",
     ];
-    let cold = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+    let cold = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repository.clone());
     for _ in 0..7 {
         cold.next_event_id();
     }
@@ -5821,7 +5854,7 @@ async fn terminal_only_recovery_brackets_primary_output_with_one_aggregate_runni
     // by the adjacent warm/cold test; opening absent + terminal present =>
     // exactly one terminal-prefix aggregate bracket; neither fact => no bracket.
     let runtime = LifecycleRuntime::default();
-    let state = ManagedState::new(runtime.clone());
+    let state = ManagedState::new(runtime.clone()).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -5918,8 +5951,10 @@ async fn first_interval_lineage_preserves_the_issued_legacy_lifecycle_prefix() {
     // This is the lineage cutover floor; no guessed revision or process-local
     // watermark participates.
     let runtime = LifecycleRuntime::default();
-    let repository = Arc::new(ephemeral_session_repo());
-    let state = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+    let repository = Arc::new(ephemeral_session_repo().await);
+    let state = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repository.clone());
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -6087,8 +6122,10 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
     let (runtime, repository, warm, session_id, first_visible_prefix, first_turn_cursor) =
         Box::pin(async move {
             let runtime = LifecycleRuntime::default();
-            let repository = Arc::new(ephemeral_session_repo());
-            let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+            let repository = Arc::new(ephemeral_session_repo().await);
+            let warm = ManagedState::new(runtime.clone())
+                .await
+                .with_session_repo(repository.clone());
             let session = warm
                 .create_session(
                     serde_json::from_value(serde_json::json!({
@@ -6346,7 +6383,9 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
         warm.refresh_committed_events(&session_id).await.unwrap();
         warm.refresh_committed_events(&session_id).await.unwrap();
 
-        let cold = ManagedState::new(runtime).with_session_repo(repository);
+        let cold = ManagedState::new(runtime)
+            .await
+            .with_session_repo(repository);
         cold.refresh_committed_events(&session_id).await.unwrap();
         let warm_events = warm
             .list_events(&session_id, None, None, false)
@@ -6430,8 +6469,10 @@ async fn late_compaction_uses_its_state_commit_and_preserves_an_issued_prefix() 
     // commit_sequence is the only marker anchor; lifecycle opening is never a
     // fallback.
     let runtime = LifecycleRuntime::default();
-    let repository = Arc::new(ephemeral_session_repo());
-    let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+    let repository = Arc::new(ephemeral_session_repo().await);
+    let warm = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repository.clone());
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -6495,7 +6536,9 @@ async fn late_compaction_uses_its_state_commit_and_preserves_an_issued_prefix() 
         "L2/E2 suffix: {warm_suffix:?}"
     );
 
-    let cold = ManagedState::new(runtime).with_session_repo(repository);
+    let cold = ManagedState::new(runtime)
+        .await
+        .with_session_repo(repository);
     cold.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
         cold.list_events(&session.id, None, None, false)
@@ -6621,8 +6664,10 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
     // test-only anchor; exercise the real application CAS and existing projector
     // together. Neither GET nor recovery executes a model or invents a Message.
     let runtime = LifecycleRuntime::default();
-    let repository = Arc::new(ephemeral_session_repo());
-    let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+    let repository = Arc::new(ephemeral_session_repo().await);
+    let warm = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repository.clone());
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -6736,7 +6781,9 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
             .any(|event| event.type_str() == "agent.message"),
         "V2 old cursor observes new output"
     );
-    let cold = ManagedState::new(runtime).with_session_repo(repository);
+    let cold = ManagedState::new(runtime)
+        .await
+        .with_session_repo(repository);
     cold.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
         cold.list_events(&session.id, None, None, false)
@@ -6776,8 +6823,10 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
     // session.updated remains explicitly out of scope; this test preserves the
     // pre-existing same-process behavior without minting another durable log.
     let runtime = LifecycleRuntime::default();
-    let repository = Arc::new(ephemeral_session_repo());
-    let state = ManagedState::new(runtime.clone()).with_session_repo(repository);
+    let repository = Arc::new(ephemeral_session_repo().await);
+    let state = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repository);
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -6908,8 +6957,10 @@ async fn primary_reschedule_projects_one_complete_sequence_warm_and_after_restar
     // | R3 | T | T | T | warm/replay | E1-E5 |
     // | R4 | T | T | T | cold restart | E1-E5 |
     let runtime = LifecycleRuntime::default();
-    let repository = Arc::new(ephemeral_session_repo());
-    let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+    let repository = Arc::new(ephemeral_session_repo().await);
+    let warm = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repository.clone());
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -7039,7 +7090,9 @@ async fn primary_reschedule_projects_one_complete_sequence_warm_and_after_restar
     warm.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(status_projection(&warm).1, warm_statuses, "R3/E4 replay");
 
-    let cold = ManagedState::new(runtime).with_session_repo(repository);
+    let cold = ManagedState::new(runtime)
+        .await
+        .with_session_repo(repository);
     cold.refresh_committed_events(&session.id).await.unwrap();
     let (cold_primary, cold_statuses) = status_projection(&cold);
     assert_eq!(cold_primary, warm_primary, "R4/E5");
@@ -7064,8 +7117,10 @@ async fn ordinary_root_failure_keeps_its_event_id_and_cursor_across_restart() {
     // R3(C1+C2+C3+C4)->E3. Ordinary and coordinated root lifecycle now share
     // one deterministic event-id owner; there is no process-local fallback.
     let runtime = RehydrateFake::default();
-    let repo = Arc::new(ephemeral_session_repo());
-    let state = ManagedState::new(runtime.clone()).with_session_repo(repo.clone());
+    let repo = Arc::new(ephemeral_session_repo().await);
+    let state = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repo.clone());
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -7121,7 +7176,7 @@ async fn ordinary_root_failure_keeps_its_event_id_and_cursor_across_restart() {
         .list_events(&session.id, Some(&warm_error_id), Some(3), false)
         .expect("R1 warm error cursor");
 
-    let restarted = ManagedState::new(runtime).with_session_repo(repo);
+    let restarted = ManagedState::new(runtime).await.with_session_repo(repo);
     for _ in 0..5 {
         restarted.next_event_id();
     }
@@ -7185,8 +7240,12 @@ async fn child_reschedule_projects_running_rescheduled_running_idle_live_warm_an
         .lock()
         .unwrap()
         .push("researcher".into());
-    let repo = Arc::new(ephemeral_session_repo());
-    let state = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repo.clone()));
+    let repo = Arc::new(ephemeral_session_repo().await);
+    let state = Arc::new(
+        ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repo.clone()),
+    );
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -7341,7 +7400,7 @@ async fn child_reschedule_projects_running_rescheduled_running_idle_live_warm_an
         "R3/E4"
     );
 
-    let restarted = ManagedState::new(runtime).with_session_repo(repo);
+    let restarted = ManagedState::new(runtime).await.with_session_repo(repo);
     restarted
         .ensure_session(&session.id)
         .await
@@ -7395,13 +7454,14 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
         "reviewer".into(),
         "critic".into(),
     ]);
-    let repo = Arc::new(ephemeral_session_repo());
+    let repo = Arc::new(ephemeral_session_repo().await);
     let profiles = Arc::new(FrozenToolFamilyProfiles::native_roster(
         "coder",
         &["researcher", "reviewer", "critic"],
     ));
     let state = Arc::new(
         ManagedState::new(runtime.clone())
+            .await
             .with_config_source(profiles.clone())
             .with_session_repo(repo.clone())
             .with_managed_list_price_provider(Arc::new(ThreadPriceProvider)),
@@ -7645,6 +7705,7 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
     assert_eq!(stable_projection(&state).len(), warm_count, "B4/E5");
 
     let restarted = ManagedState::new(runtime)
+        .await
         .with_config_source(profiles)
         .with_session_repo(repo);
     restarted
@@ -7699,8 +7760,12 @@ async fn ordinary_child_failure_is_error_then_terminated_live_warm_and_cold() {
         .lock()
         .unwrap()
         .push("researcher".into());
-    let repo = Arc::new(ephemeral_session_repo());
-    let state = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repo.clone()));
+    let repo = Arc::new(ephemeral_session_repo().await);
+    let state = Arc::new(
+        ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repo.clone()),
+    );
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -7871,7 +7936,7 @@ async fn ordinary_child_failure_is_error_then_terminated_live_warm_and_cold() {
         "F3/E4"
     );
 
-    let restarted = ManagedState::new(runtime).with_session_repo(repo);
+    let restarted = ManagedState::new(runtime).await.with_session_repo(repo);
     restarted
         .ensure_session(&session.id)
         .await
@@ -7943,16 +8008,14 @@ async fn child_pending_tool_projects_and_replies_through_the_parent_partition() 
     // | P6 | present | yes | consumed | repeat | yes | E6 |
     let (runtime, state, session_id, child_id, call_id, public_call_id) = Box::pin(async {
         let runtime = RehydrateFake::default();
-        let state = Arc::new(
-            ManagedState::new(runtime.clone()).with_config_source(Arc::new(
-                FrozenToolFamilyProfiles::uniform(
-                    "coder",
-                    &["researcher"],
-                    FrozenTestToolFamily::Custom,
-                    "client_lookup",
-                ),
+        let state = Arc::new(ManagedState::new(runtime.clone()).await.with_config_source(
+            Arc::new(FrozenToolFamilyProfiles::uniform(
+                "coder",
+                &["researcher"],
+                FrozenTestToolFamily::Custom,
+                "client_lookup",
             )),
-        );
+        ));
         let session = state
             .create_session(
                 serde_json::from_value(serde_json::json!({
@@ -8264,8 +8327,9 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
         FrozenTestToolFamily::AgentAlwaysAsk,
         "write",
     ));
-    let repo = Arc::new(ephemeral_session_repo());
+    let repo = Arc::new(ephemeral_session_repo().await);
     let warm = ManagedState::new(runtime.clone())
+        .await
         .with_config_source(profiles.clone())
         .with_session_repo(repo.clone());
     let session = warm
@@ -8513,6 +8577,7 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
     );
 
     let cold = ManagedState::new(runtime)
+        .await
         .with_config_source(profiles)
         .with_session_repo(repo);
     cold.ensure_session(&session.id).await.unwrap();
@@ -8578,9 +8643,10 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
         FrozenTestToolFamily::Custom,
         "client_lookup",
     ));
-    let repo = Arc::new(ephemeral_session_repo());
+    let repo = Arc::new(ephemeral_session_repo().await);
     let state = Arc::new(
         ManagedState::new(runtime.clone())
+            .await
             .with_config_source(profiles.clone())
             .with_session_repo(repo.clone()),
     );
@@ -8843,6 +8909,7 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
 
     let restarted = Arc::new(
         ManagedState::new(runtime.clone())
+            .await
             .with_config_source(profiles)
             .with_session_repo(repo.clone()),
     );
@@ -8967,7 +9034,7 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
     // order and suffix match. Decision table: A1=C1=>E1/no link events;
     // A2=C1+C2=>E1+E2; A3=C1+C2+C3=>E3. ToolUse is intent only: the existing
     // accepted ToolResult message commit is the immutable cross-post anchor.
-    let repository = Arc::new(ephemeral_session_repo());
+    let repository = Arc::new(ephemeral_session_repo().await);
     let runtime = RehydrateFake::default();
     runtime
         .delegate_ids
@@ -8979,6 +9046,7 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
         &["researcher"],
     ));
     let warm = ManagedState::new(runtime.clone())
+        .await
         .with_config_source(profiles.clone())
         .with_session_repo(repository.clone());
     let session = warm
@@ -9151,6 +9219,7 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
     }
 
     let cold = ManagedState::new(runtime)
+        .await
         .with_config_source(profiles)
         .with_session_repo(repository);
     cold.refresh_committed_events(&session.id).await.unwrap();
@@ -9208,7 +9277,7 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
     // | B0 | call-only prefix | first warm read | pending | T | E0 |
     // | B1 | same + C9 | prefix then full | yes | T | E0,E1,E2,E3,E4,E5,E6,E7(R4 warm/replay) |
     // | B2 | same + C9 | full cold read | yes | T | E1,E2,E3,E4,E5,E6,E7(R4 cold) |
-    let repo = Arc::new(ephemeral_session_repo());
+    let repo = Arc::new(ephemeral_session_repo().await);
     let runtime = RehydrateFake::default();
     runtime
         .delegate_ids
@@ -9220,6 +9289,7 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
         &["researcher"],
     ));
     let warm = ManagedState::new(runtime.clone())
+        .await
         .with_config_source(profiles.clone())
         .with_session_repo(repo.clone())
         .with_managed_list_price_provider(Arc::new(ThreadPriceProvider));
@@ -9562,6 +9632,7 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
     );
 
     let cold = ManagedState::new(runtime)
+        .await
         .with_config_source(profiles)
         .with_session_repo(repo);
     cold.ensure_session(&session.id).await.unwrap();
@@ -9633,14 +9704,16 @@ async fn child_assistant_identity_rebuilds_from_committed_coordinates() {
     // E3 C4 rebuilds E1 exactly. Constraint: no preview receipt/cache is
     // persisted. Decision table: P1=C1+C2+C3 warm=>E1,E2;
     // P2=C1+C2+C3+C4 cold=>E3.
-    let repo = Arc::new(ephemeral_session_repo());
+    let repo = Arc::new(ephemeral_session_repo().await);
     let runtime = RehydrateFake::default();
     runtime
         .delegate_ids
         .lock()
         .unwrap()
         .push("researcher".into());
-    let warm = ManagedState::new(runtime.clone()).with_session_repo(repo.clone());
+    let warm = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repo.clone());
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -9726,7 +9799,7 @@ async fn child_assistant_identity_rebuilds_from_committed_coordinates() {
         managed_assistant_event_id(&session.id, child_id, &child_run.0, 0, 0, "agent.message");
     assert_eq!(projected_id(&warm), expected, "P1/E1");
 
-    let cold = ManagedState::new(runtime).with_session_repo(repo);
+    let cold = ManagedState::new(runtime).await.with_session_repo(repo);
     cold.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(projected_id(&cold), expected, "P2/E2");
 }
@@ -9761,9 +9834,11 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
     // | R2 | C1-C3 | repeated warm | 1 | E2,E3 |
     // | R3 | C1-C3 | cold/restart | 1 | E2 |
     // | R4 | C1-C3 | cold | 2 active | E2,E3 |
-    let repo = Arc::new(ephemeral_session_repo());
+    let repo = Arc::new(ephemeral_session_repo().await);
     let runtime = RehydrateFake::default();
-    let warm = ManagedState::new(runtime.clone()).with_session_repo(repo.clone());
+    let warm = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repo.clone());
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -9891,7 +9966,9 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
     warm.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(assistant_signature(&warm), expected, "R2/E2-E3");
 
-    let restarted = ManagedState::new(runtime.clone()).with_session_repo(repo.clone());
+    let restarted = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repo.clone());
     restarted.ensure_session(&session.id).await.unwrap();
     assert_eq!(assistant_signature(&restarted), expected, "R3/E2");
 
@@ -9914,7 +9991,7 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
         "T1"
     );
     assert_eq!(wire(&restarted), timed, "T1/T2 cold full payload");
-    let peer = ManagedState::new(runtime).with_session_repo(repo);
+    let peer = ManagedState::new(runtime).await.with_session_repo(repo);
     peer.ensure_session(&session.id).await.unwrap();
     peer.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(wire(&peer), timed, "T1/T2 peer full payload");
@@ -9994,7 +10071,9 @@ async fn advisor_link_projects_the_closed_union_and_self_terminal_lifecycle_warm
     // | A3 | T | T | T | T | T | F | F | T | T | E4,E7,E8,E9(receive) |
     // | A4 | T | T | T | F | T | T | T | T | T | E1,E3-E9 |
     let runtime = RehydrateFake::default();
-    let state = ManagedState::new(runtime.clone()).with_config_source(Arc::new(AdvisorProfile));
+    let state = ManagedState::new(runtime.clone())
+        .await
+        .with_config_source(Arc::new(AdvisorProfile));
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -10339,7 +10418,9 @@ async fn advisor_failed_or_cancelled_terminal_never_delivers_partial_advice() {
     // | T2   | yes     | Cancelled | no   | E1,E3         |
     // | T3   | yes     | either    | yes  | E1,E2?,E3,E4  |
     let runtime = RehydrateFake::default();
-    let state = ManagedState::new(runtime.clone()).with_config_source(Arc::new(AdvisorProfile));
+    let state = ManagedState::new(runtime.clone())
+        .await
+        .with_config_source(Arc::new(AdvisorProfile));
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -10559,7 +10640,9 @@ async fn lifecycle_scope_uses_the_root_fence_and_later_relationship_snapshot() {
     // | L2 | T | T | T | F | F | E2 |
     // | L3 | F | T | F | T | T | E3,E4,E5 |
     let runtime = RehydrateFake::default();
-    let state = ManagedState::new(runtime.clone()).with_config_source(Arc::new(AdvisorProfile));
+    let state = ManagedState::new(runtime.clone())
+        .await
+        .with_config_source(Arc::new(AdvisorProfile));
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -10749,7 +10832,7 @@ async fn terminal_read_cannot_overtake_the_child_transcript_snapshot() {
         .lock()
         .unwrap()
         .push("researcher".into());
-    let state = ManagedState::new(runtime.clone());
+    let state = ManagedState::new(runtime.clone()).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -11020,14 +11103,16 @@ async fn cold_historical_awaiting_never_fabricates_empty_requires_action() {
     // | Rule | Historical await | Current ticket | Later terminal | Effect |
     // |---|---|---|---|---|
     // | H1 | yes | absent | Completed | E1,E2,E3 |
-    let repo = Arc::new(ephemeral_session_repo());
+    let repo = Arc::new(ephemeral_session_repo().await);
     let runtime = RehydrateFake::default();
     runtime
         .delegate_ids
         .lock()
         .unwrap()
         .push("researcher".into());
-    let original = ManagedState::new(runtime.clone()).with_session_repo(repo.clone());
+    let original = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repo.clone());
     let session = original
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -11120,7 +11205,7 @@ async fn cold_historical_awaiting_never_fabricates_empty_requires_action() {
         ),
     ]);
 
-    let restarted = ManagedState::new(runtime).with_session_repo(repo);
+    let restarted = ManagedState::new(runtime).await.with_session_repo(repo);
     restarted.ensure_session(&session.id).await.unwrap();
     assert_eq!(
         restarted.lifecycle_cursor(&session.id).unwrap(),
@@ -11158,14 +11243,14 @@ async fn synthetic_pending_tool_uses_the_awaiting_commit_as_its_projection_ancho
     // | S2 | exact | exact | absent | cold | E1+E2+E3 |
     // | S3 | exact | absent | absent | any | withhold (neighboring fence test) |
     let runtime = LifecycleRuntime::default();
-    let state = ManagedState::new(runtime.clone()).with_config_source(Arc::new(
-        FrozenToolFamilyProfiles::uniform(
+    let state = ManagedState::new(runtime.clone())
+        .await
+        .with_config_source(Arc::new(FrozenToolFamilyProfiles::uniform(
             "coder",
             &[],
             FrozenTestToolFamily::Custom,
             "agent_input",
-        ),
-    ));
+        )));
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -11258,8 +11343,10 @@ async fn closed_permission_wait_retains_aliased_call_on_warm_and_cold_reads() {
         for failed in [false, true] {
             for observed_before_close in [false, true] {
                 let runtime = LifecycleRuntime::default();
-                let repository = Arc::new(ephemeral_session_repo());
-                let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+                let repository = Arc::new(ephemeral_session_repo().await);
+                let warm = ManagedState::new(runtime.clone())
+                    .await
+                    .with_session_repo(repository.clone());
                 let session = warm
                     .create_session(
                         serde_json::from_value(serde_json::json!({
@@ -11355,7 +11442,9 @@ async fn closed_permission_wait_retains_aliased_call_on_warm_and_cold_reads() {
                     *runtime.pending.lock().unwrap() = None;
                     runtime.lifecycle.lock().unwrap().push(terminal);
                 }
-                let cold = ManagedState::new(runtime).with_session_repo(repository);
+                let cold = ManagedState::new(runtime)
+                    .await
+                    .with_session_repo(repository);
                 let mut prior = None;
                 for state in [&warm, &warm, &cold] {
                     state.refresh_committed_events(&session.id).await.unwrap();
@@ -11420,14 +11509,14 @@ async fn closed_remote_wait_projects_its_answerable_event_before_terminal_histor
     // | H1 | no | yes | no | E1+E2+E3 |
     // | H2 | yes | any | no | existing synthetic-pending test |
     let runtime = LifecycleRuntime::default();
-    let state = ManagedState::new(runtime.clone()).with_config_source(Arc::new(
-        FrozenToolFamilyProfiles::uniform(
+    let state = ManagedState::new(runtime.clone())
+        .await
+        .with_config_source(Arc::new(FrozenToolFamilyProfiles::uniform(
             "coder",
             &[],
             FrozenTestToolFamily::Custom,
             "agent_input",
-        ),
-    ));
+        )));
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -11575,14 +11664,14 @@ async fn committed_lifecycle_closes_cross_protocol_managed_projection_once() {
     // | R5 | cold | Awaiting-ticket | no | no | E5,E6 |
     // | R6 | cold | Awaiting+ticket | yes | no | E2,E4,E5,E6,E8 |
     let runtime = LifecycleRuntime::default();
-    let state = ManagedState::new(runtime.clone()).with_config_source(Arc::new(
-        FrozenToolFamilyProfiles::uniform(
+    let state = ManagedState::new(runtime.clone())
+        .await
+        .with_config_source(Arc::new(FrozenToolFamilyProfiles::uniform(
             "coder",
             &[],
             FrozenTestToolFamily::Custom,
             "design_submit_artifact",
-        ),
-    ));
+        )));
     let request = serde_json::from_value(serde_json::json!({
         "agent":"coder", "environment_id":"env_local"
     }))
@@ -11883,7 +11972,7 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
     // | O3 | no | exact | no | cold | E3 |
     // | O4 | yes | consumed | exact | warm replay | E4 |
     // | O5 | yes | no | absent | cold/full | E5 |
-    let repo = Arc::new(ephemeral_session_repo());
+    let repo = Arc::new(ephemeral_session_repo().await);
     let runtime = LifecycleRuntime::default();
     let profiles = Arc::new(FrozenToolFamilyProfiles::uniform(
         "coder",
@@ -11892,6 +11981,7 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         "write",
     ));
     let state = ManagedState::new(runtime.clone())
+        .await
         .with_config_source(profiles.clone())
         .with_session_repo(repo.clone());
     let session = state
@@ -12047,6 +12137,7 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
     );
 
     let cold = ManagedState::new(runtime.clone())
+        .await
         .with_config_source(profiles.clone())
         .with_session_repo(repo.clone());
     cold.ensure_session(&session.id).await.unwrap();
@@ -12164,6 +12255,7 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
     );
 
     let cold_sibling = ManagedState::new(runtime.clone())
+        .await
         .with_config_source(profiles.clone())
         .with_session_repo(repo);
     cold_sibling.ensure_session(&session.id).await.unwrap();
@@ -12188,7 +12280,9 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
     );
 
     let completed_runtime = LifecycleRuntime::default();
-    let completed = ManagedState::new(completed_runtime.clone()).with_config_source(profiles);
+    let completed = ManagedState::new(completed_runtime.clone())
+        .await
+        .with_config_source(profiles);
     let completed_session = completed
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -12317,7 +12411,7 @@ async fn model_request_spans_are_paired_and_keep_required_zero_usage_on_error() 
     use awaken_runtime_contract::compaction::RunCompactionMarker;
     use awaken_runtime_contract::llm::{ModelRequestObservation, TokenUsage};
 
-    let state = ManagedState::new(LifecycleRuntime::default());
+    let state = ManagedState::new(LifecycleRuntime::default()).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -12542,7 +12636,7 @@ async fn durable_outcome_projector_is_warm_cold_restart_and_active_active_stable
     // P1=C1+C2=>E1; P2=C1+C3=>E2+E5; P3=C1+C3+C4=>E3;
     // P4=C1+C3+C5=>E4+E5.
     let session_id = "session-durable-outcome";
-    let repository = Arc::new(ephemeral_session_repo());
+    let repository = Arc::new(ephemeral_session_repo().await);
     let runtime = RehydrateFake::default();
     let (persisted, outcome_id) =
         retained_outcome_fixture(session_id, "outcome-projector-batch", 2);
@@ -12553,7 +12647,11 @@ async fn durable_outcome_projector_is_warm_cold_restart_and_active_active_stable
     )
     .await;
 
-    let warm = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository.clone()));
+    let warm = Arc::new(
+        ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repository.clone()),
+    );
     warm.refresh_committed_events(session_id).await.unwrap();
     assert!(
         warm.list_events(session_id, None, None, false)
@@ -12691,7 +12789,9 @@ async fn durable_outcome_projector_is_warm_cold_restart_and_active_active_stable
     );
 
     for label in ["cold", "restart"] {
-        let rebuilt = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+        let rebuilt = ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repository.clone());
         rebuilt.refresh_committed_events(session_id).await.unwrap();
         let rebuilt_observation = outcome_observation(&rebuilt);
         assert_eq!(rebuilt_observation, warm_observation, "P4/E4-E5 {label}");
@@ -12726,7 +12826,7 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
     // the injected lifecycle below starts at 2 rather than retroactively
     // introducing another cursor-1 fact after the first public read.
     let session_id = "session-errored-outcome";
-    let repository = Arc::new(ephemeral_session_repo());
+    let repository = Arc::new(ephemeral_session_repo().await);
     let runtime = RehydrateFake::default();
     let (persisted, outcome_id) = retained_outcome_fixture(session_id, "errored-outcome-batch", 1);
     crate::state::test_support::create_session_fixture(
@@ -12744,7 +12844,11 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
             source_run_id: Some(source_run_id.clone()),
         }),
     );
-    let warm = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository.clone()));
+    let warm = Arc::new(
+        ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repository.clone()),
+    );
 
     let observe = |state: &ManagedState| {
         let session_events = state
@@ -12834,13 +12938,15 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
     assert_eq!(observe(&warm), initial, "R2/E1-E3");
 
     for label in ["cold", "restart"] {
-        let rebuilt = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+        let rebuilt = ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repository.clone());
         rebuilt.refresh_committed_events(session_id).await.unwrap();
         assert_eq!(observe(&rebuilt), initial, "R3/E1-E4 {label}");
     }
 
     let ordinary_session_id = "session-ordinary-root-error";
-    let ordinary_repository = Arc::new(ephemeral_session_repo());
+    let ordinary_repository = Arc::new(ephemeral_session_repo().await);
     crate::state::test_support::create_session_fixture(
         ordinary_repository.as_ref(),
         DEFAULT_SCOPE,
@@ -12870,7 +12976,9 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
             )),
         ),
     ]);
-    let ordinary = ManagedState::new(ordinary_runtime).with_session_repo(ordinary_repository);
+    let ordinary = ManagedState::new(ordinary_runtime)
+        .await
+        .with_session_repo(ordinary_repository);
     ordinary
         .refresh_committed_events(ordinary_session_id)
         .await
@@ -12926,9 +13034,10 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                 ),
             ] {
                 let runtime = LifecycleRuntime::default();
-                let repository = Arc::new(ephemeral_session_repo());
-                let state =
-                    ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+                let repository = Arc::new(ephemeral_session_repo().await);
+                let state = ManagedState::new(runtime.clone())
+                    .await
+                    .with_session_repo(repository.clone());
                 let session = state
                     .create_session(
                         serde_json::from_value(serde_json::json!({
@@ -13166,8 +13275,9 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                             event.id,
                         );
                     }
-                    let cold =
-                        ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+                    let cold = ManagedState::new(runtime.clone())
+                        .await
+                        .with_session_repo(repository.clone());
                     cold.refresh_committed_events(&session.id).await.unwrap();
                     assert_eq!(
                         cold.list_events(&session.id, None, Some(1000), false)
@@ -13250,7 +13360,7 @@ async fn recovered_terminal_errors_are_visible_once_without_releasing_active_ses
             (EndCause::NaturalEnd, false),
         ] {
             let session_id = "uncertain-terminal";
-            let repository = Arc::new(ephemeral_session_repo());
+            let repository = Arc::new(ephemeral_session_repo().await);
             let mut persisted = crate::state::tests::sample_persisted(session_id);
             persisted.execution = execution;
             crate::state::test_support::create_session_fixture(
@@ -13277,7 +13387,9 @@ async fn recovered_terminal_errors_are_visible_once_without_releasing_active_ses
                     RunState::Ended(cause.clone()),
                 ),
             ]);
-            let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+            let warm = ManagedState::new(runtime.clone())
+                .await
+                .with_session_repo(repository.clone());
             let observe = |state: &ManagedState| {
                 state
                     .list_events(session_id, None, None, false)
@@ -13304,7 +13416,9 @@ async fn recovered_terminal_errors_are_visible_once_without_releasing_active_ses
             }
             warm.refresh_committed_events(session_id).await.unwrap();
             assert_eq!(observe(&warm), original);
-            let cold = ManagedState::new(runtime).with_session_repo(repository);
+            let cold = ManagedState::new(runtime)
+                .await
+                .with_session_repo(repository);
             cold.refresh_committed_events(session_id).await.unwrap();
             assert_eq!(observe(&cold), original);
             assert_eq!(

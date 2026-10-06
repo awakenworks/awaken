@@ -173,11 +173,11 @@ pub async fn build_delegation_router_with_deployment(
         vec![],
     );
     let platform = crate::acp_scenarios::bind_acp_session_environment(
-        resource_host_with_deployment(model, model_ref, deployment),
+        resource_host_with_deployment(model, model_ref, deployment).await,
         awaken_execution_composition::LaunchSource::FixedAcp(Box::new(launch)),
         None,
     )
     .await
     .map_host(|host| host.with_agent_publications(publication.clone()));
-    mount_with_agent_source(platform, publication)
+    mount_with_agent_source(platform, publication).await
 }

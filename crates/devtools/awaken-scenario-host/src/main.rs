@@ -145,16 +145,19 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     let mut scenario_lifecycle = None;
     let app = match model_mode.as_deref() {
-        Ok("probe") => awaken_scenario_host::build_probe_router(),
-        Ok("revise") => awaken_scenario_host::build_router(
-            Arc::new(awaken_scenario_host::ReviseModel),
-            "revise",
-        ),
+        Ok("probe") => awaken_scenario_host::build_probe_router().await,
+        Ok("revise") => {
+            awaken_scenario_host::build_router(
+                Arc::new(awaken_scenario_host::ReviseModel),
+                "revise",
+            )
+            .await
+        }
         Ok("outcome-matrix") => awaken_scenario_host::build_outcome_matrix_router().await,
-        Ok("custom") => awaken_scenario_host::build_custom_router(),
+        Ok("custom") => awaken_scenario_host::build_custom_router().await,
         Ok("delegate") => awaken_scenario_host::build_delegation_router().await,
-        Ok("statemachine") => awaken_scenario_host::build_statemachine_router(),
-        Ok("statemachine-rich") => awaken_scenario_host::build_statemachine_rich_router(),
+        Ok("statemachine") => awaken_scenario_host::build_statemachine_router().await,
+        Ok("statemachine-rich") => awaken_scenario_host::build_statemachine_rich_router().await,
         Ok("config") => awaken_scenario_host::build_config_router().await,
         // The management scenario drives the REAL management router but with the
         // deterministic MCP scenario model as an explicit HostExecutor selection;
@@ -217,12 +220,12 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok("real-gemini") => awaken_scenario_host::build_real_gemini_router().await,
         Ok("real-resolved") => awaken_scenario_host::build_resolved_real_router().await,
         Ok("oauth-resolved") => awaken_scenario_host::build_oauth_resolved_router().await,
-        Ok("schedule") => awaken_scenario_host::build_schedule_router(),
+        Ok("schedule") => awaken_scenario_host::build_schedule_router().await,
         Ok("skills") => awaken_scenario_host::build_skills_router().await,
         Ok("skills-durable") => awaken_scenario_host::build_skills_durable_router().await,
-        Ok("delegate-remote") => awaken_scenario_host::build_remote_delegation_router(),
-        Ok("vision") => awaken_scenario_host::build_vision_router(),
-        Ok("model-route") => awaken_scenario_host::build_model_route_router(),
+        Ok("delegate-remote") => awaken_scenario_host::build_remote_delegation_router().await,
+        Ok("vision") => awaken_scenario_host::build_vision_router().await,
+        Ok("model-route") => awaken_scenario_host::build_model_route_router().await,
         // Compatibility name only: both `acp` and `acp-sandboxed` resolve to
         // the one SessionEnvironment-owned ACP fixture. Keeping a direct Host
         // subprocess here would reopen the placement authority ADR-0073 removed.
@@ -244,20 +247,22 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             scenario_lifecycle = Some(lifecycle);
             router
         }
-        Ok("memory-resource") => awaken_scenario_host::build_memory_resource_router(),
+        Ok("memory-resource") => awaken_scenario_host::build_memory_resource_router().await,
         Ok("dream") => awaken_scenario_host::build_dream_runtime_router().await,
-        Ok("resource-scope-boundary") => awaken_scenario_host::build_unscoped_resource_router(),
-        Ok("resource-ephemeral") => awaken_scenario_host::build_ephemeral_resource_router(),
+        Ok("resource-scope-boundary") => {
+            awaken_scenario_host::build_unscoped_resource_router().await
+        }
+        Ok("resource-ephemeral") => awaken_scenario_host::build_ephemeral_resource_router().await,
         Ok("git-repo") => {
             awaken_scenario_host::build_git_repo_router(awaken_scenario_host::scenario_deployment())
                 .await
         }
-        Ok("compaction") => awaken_scenario_host::build_compaction_router(),
-        Ok("error") => awaken_scenario_host::build_error_router(),
-        Ok("worker") => awaken_scenario_host::build_worker_router(),
-        Ok("environment-matrix") => awaken_scenario_host::build_environment_matrix_router(),
+        Ok("compaction") => awaken_scenario_host::build_compaction_router().await,
+        Ok("error") => awaken_scenario_host::build_error_router().await,
+        Ok("worker") => awaken_scenario_host::build_worker_router().await,
+        Ok("environment-matrix") => awaken_scenario_host::build_environment_matrix_router().await,
         Ok("full-chain") => awaken_scenario_host::build_full_chain_router().await,
-        _ => awaken_scenario_host::build_echo_router(),
+        _ => awaken_scenario_host::build_echo_router().await,
     };
     // Brain admin surface (ADR-0022 D7): the connection-count metric that KEDA
     // autoscales on, plus /admin/drain + /readyz for graceful, stream-preserving
@@ -479,23 +484,26 @@ mod dispatch_tests {
         let mut local_test_deployment = awaken_session_executor::DeploymentConfig::ephemeral();
         local_test_deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
         let dispatch: Vec<(&str, axum::Router)> = vec![
-            ("probe", sh::build_probe_router()),
+            ("probe", sh::build_probe_router().await),
             (
                 "revise",
-                sh::build_router(std::sync::Arc::new(sh::ReviseModel), "revise"),
+                sh::build_router(std::sync::Arc::new(sh::ReviseModel), "revise").await,
             ),
-            ("custom", sh::build_custom_router()),
+            ("custom", sh::build_custom_router().await),
             (
                 "delegate",
                 sh::build_delegation_router_with_deployment(local_test_deployment.clone()).await,
             ),
-            ("statemachine", sh::build_statemachine_router()),
-            ("statemachine-rich", sh::build_statemachine_rich_router()),
-            ("schedule", sh::build_schedule_router()),
+            ("statemachine", sh::build_statemachine_router().await),
+            (
+                "statemachine-rich",
+                sh::build_statemachine_rich_router().await,
+            ),
+            ("schedule", sh::build_schedule_router().await),
             ("skills", sh::build_skills_router().await),
             ("skills-durable", sh::build_skills_durable_router().await),
-            ("vision", sh::build_vision_router()),
-            ("model-route", sh::build_model_route_router()),
+            ("vision", sh::build_vision_router().await),
+            ("model-route", sh::build_model_route_router().await),
             (
                 "acp",
                 sh::build_acp_sandboxed_router_with_deployment(local_test_deployment.clone()).await,
@@ -518,21 +526,24 @@ mod dispatch_tests {
                 sh::build_acp_gateway_router_with_deployment(local_test_deployment.clone()).await,
             ),
             ("memory", sh::build_memory_router().await),
-            ("memory-resource", sh::build_memory_resource_router()),
+            ("memory-resource", sh::build_memory_resource_router().await),
             (
                 "git-repo",
                 sh::build_git_repo_router(local_test_deployment.clone()).await,
             ),
-            ("compaction", sh::build_compaction_router()),
-            ("error", sh::build_error_router()),
-            ("worker", sh::build_worker_router()),
-            ("environment-matrix", sh::build_environment_matrix_router()),
+            ("compaction", sh::build_compaction_router().await),
+            ("error", sh::build_error_router().await),
+            ("worker", sh::build_worker_router().await),
+            (
+                "environment-matrix",
+                sh::build_environment_matrix_router().await,
+            ),
             (
                 "full-chain",
                 sh::build_full_chain_router_with_deployment(local_test_deployment).await,
             ),
             // The `_ =>` fallback: any unrecognized mode routes to the echo router.
-            ("<default/unknown>", sh::build_echo_router()),
+            ("<default/unknown>", sh::build_echo_router().await),
         ];
         for (mode, app) in dispatch {
             assert!(
@@ -545,6 +556,7 @@ mod dispatch_tests {
     #[tokio::test]
     async fn resource_scope_boundary_mode_intentionally_mounts_only_raw_resource_routes() {
         let response = sh::build_unscoped_resource_router()
+            .await
             .oneshot(
                 Request::builder()
                     .uri("/v1/files")

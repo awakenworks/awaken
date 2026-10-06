@@ -939,8 +939,11 @@ pub(super) fn hibernated_session(id: &str, expires_at_unix_ms: u64) -> Persisted
 // facts that the disposal API no longer accepts.
 #[tokio::test]
 async fn due_idle_environment_suspends_once_in_order() {
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(repo.as_ref(), generated_session("suspend")).await;
     let runtime = Arc::new(ContinuationRuntime::default());
     let app = application_with_runtime(
@@ -1058,7 +1061,9 @@ async fn suspend_admission_reuses_the_closed_memory_evidence_decision() {
         ]
     } {
         let repo = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         session.session_id = id.into();
         create(repo.as_ref(), session).await;
@@ -1093,8 +1098,11 @@ async fn suspend_admission_reuses_the_closed_memory_evidence_decision() {
 
 #[tokio::test]
 async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let mut session = generated_session("suspend-with-mcp");
     let generation = add_acknowledged_active_mcp(&mut session, "browser", 3);
     create(repo.as_ref(), session).await;
@@ -1270,8 +1278,11 @@ async fn continuation_phases_gate_direct_and_recovery_realization_effects() {
     // | G1 | Suspending | NotReady | skip | E1 |
     // | G2 | Hibernated | NotReady | skip | E1 |
     // | G3 | Restoring | NotReady | skip | E1 |
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     for (rule, mut session) in [
         ("G1", generated_session("gate-suspending")),
         ("G2", hibernated_session("gate-hibernated", 100_000)),
@@ -1408,7 +1419,9 @@ async fn inexact_quiescence_receipts_leave_the_complete_root_unchanged() {
             _ => unreachable!(),
         };
         let repo = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         create(repo.as_ref(), session).await;
         let before = repo.get(&SessionId::from(&session_id)).await.unwrap();
@@ -1439,8 +1452,11 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
     // + current realization => canonical Workspace; C2 altered operation/lease
     // => StaleOwnership; C3 Resident/Uploading/Hibernated or terminal takeover
     // => NotReady/Terminal. The read grants no receipt or state transition.
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let mut session = generated_session("checkpoint-artifact-auth");
     session.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
         owner: "worker".into(),
@@ -1494,8 +1510,11 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
         "C2"
     );
 
-    let resident_repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let resident_repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let mut resident = generated_session("checkpoint-artifact-not-ready");
     resident.realization = ready.realization.clone();
     create(resident_repo.as_ref(), resident).await;
@@ -1523,8 +1542,11 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
 // second logical checkpoint, or disposing early.
 #[tokio::test]
 async fn checkpoint_failure_retains_source_and_retries_from_committed_phase() {
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(repo.as_ref(), generated_session("retry")).await;
     let runtime = Arc::new(ContinuationRuntime::default());
     runtime.fail_checkpoint_once.store(true, Ordering::SeqCst);
@@ -1565,8 +1587,11 @@ async fn checkpoint_failure_retains_source_and_retries_from_committed_phase() {
 // proceeds through checkpoint/dispose once.
 #[tokio::test]
 async fn quiescence_failure_retains_resident_source_for_retry() {
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(repo.as_ref(), generated_session("quiesce-retry")).await;
     let runtime = Arc::new(ContinuationRuntime::default());
     runtime.fail_quiesce_once.store(true, Ordering::SeqCst);
@@ -1610,8 +1635,11 @@ async fn quiescence_failure_retains_resident_source_for_retry() {
 // its preparation fingerprint, use current B, and keep one physical operation.
 #[tokio::test]
 async fn disposal_failure_retries_without_recheckpointing() {
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(repo.as_ref(), generated_session("dispose-retry")).await;
     let runtime = Arc::new(ContinuationRuntime::default());
     runtime.fail_dispose_once.store(true, Ordering::SeqCst);
@@ -1688,8 +1716,11 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
     // Constraints: root admits the receipt only when its current generation
     // authorizes the embedded preparation lease; the Runtime never rebuilds A
     // from the mutable slot or the older suspend operation.
-    let durable =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let durable = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let repo = Arc::new(FaultingSessionRepository::new(durable));
     let mut session = generated_session("prep-response-loss");
     // P1 exercises exact logical fences, not a new runtime time grant.
@@ -1793,8 +1824,11 @@ async fn preparation_failure_has_zero_physical_disposal_and_retries_before_dispo
     // checkpoint, E2 zero physical disposal; C2 retry => E3 one more prep,
     // durable Disposing, then one disposal and Hibernated. Checkpoint remains
     // single and no caller can collapse prep+delete into one authority edge.
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(repo.as_ref(), generated_session("prepare-retry")).await;
     let runtime = Arc::new(ContinuationRuntime::default());
     runtime.fail_prepare_once.store(true, Ordering::SeqCst);
@@ -1851,8 +1885,11 @@ async fn preparation_failure_has_zero_physical_disposal_and_retries_before_dispo
 // | R2 | Resident | n/a | already committed | yes | E3 |
 #[tokio::test]
 async fn driving_ingress_restores_once_before_activity() {
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(repo.as_ref(), hibernated_session("restore", 100_000)).await;
     let runtime = Arc::new(ContinuationRuntime::default());
     let app = application_with_runtime(
@@ -1924,8 +1961,11 @@ async fn driving_ingress_restores_once_before_activity() {
 // | F3 | not repeated | Resident | succeeds on retry | E3 |
 #[tokio::test]
 async fn restore_failure_retries_the_committed_restore_operation() {
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(repo.as_ref(), hibernated_session("restore-retry", 100_000)).await;
     let runtime = Arc::new(ContinuationRuntime::default());
     runtime.fail_restore_once.store(true, Ordering::SeqCst);
@@ -1975,8 +2015,11 @@ async fn resident_projection_failure_retries_without_restoring_again() {
     // This is F2/F3 from the adjacent decision table. The failed Runtime call
     // occurs after the root is already Resident, making that durable phase the
     // sole retry fact; no projection receipt, slot flag, or resume queue exists.
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(
         repo.as_ref(),
         hibernated_session("projection-retry", 100_000),
@@ -2057,8 +2100,11 @@ async fn external_checkpoint_retention_never_invokes_the_coordinator_runtime() {
     // | X1 | Worker | Resident | none | Resident |
     // | X2 | Worker | Hibernated | none | Hibernated |
     // | X3 | Local | either | canonical continuation | adjacent tests |
-    let resident_repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let resident_repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(
         resident_repo.as_ref(),
         externally_placed(generated_session("external-resident")),
@@ -2093,8 +2139,11 @@ async fn external_checkpoint_retention_never_invokes_the_coordinator_runtime() {
         "X1/E1"
     );
 
-    let hibernated_repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let hibernated_repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(
         hibernated_repo.as_ref(),
         externally_placed(hibernated_session("external-hibernated", 100_000)),
@@ -2145,8 +2194,11 @@ async fn external_checkpoint_retention_never_invokes_the_coordinator_runtime() {
 // cancellation branch or second resume queue exists.
 #[tokio::test]
 async fn driving_ingress_during_upload_completes_suspend_then_restores() {
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let mut session = generated_session("during-upload");
     let realization = session.realization.clone();
     let operation = session
@@ -2195,8 +2247,11 @@ async fn driving_ingress_during_upload_completes_suspend_then_restores() {
 // Unmaterialized generation, and never call restore.
 #[tokio::test]
 async fn expired_checkpoint_is_deleted_then_rebuilt_from_frozen_environment() {
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(repo.as_ref(), hibernated_session("expired", 100)).await;
     let runtime = Arc::new(ContinuationRuntime::default());
     let app = application_with_runtime(
@@ -2223,8 +2278,11 @@ async fn expired_checkpoint_is_deleted_then_rebuilt_from_frozen_environment() {
 // replays delete, then and only then transitions to Unmaterialized.
 #[tokio::test]
 async fn expired_checkpoint_delete_failure_retains_reference_for_retry() {
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(repo.as_ref(), hibernated_session("delete-retry", 100)).await;
     let runtime = Arc::new(ContinuationRuntime::default());
     runtime.fail_delete_once.store(true, Ordering::SeqCst);
@@ -2266,8 +2324,11 @@ async fn expired_checkpoint_delete_failure_retains_reference_for_retry() {
 // channel, and commit terminal cleanup through the two-stage protocol.
 #[tokio::test]
 async fn terminal_cleanup_delegates_checkpoint_to_the_one_runtime_effect() {
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let mut session = hibernated_session("terminal", 100_000);
     // C3 the previous owner has expired; the local cleanup claim may take
     // ownership. A live foreign fixture would correctly defer all effects.

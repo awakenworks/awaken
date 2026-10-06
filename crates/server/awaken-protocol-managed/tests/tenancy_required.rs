@@ -401,8 +401,8 @@ impl awaken_session_execution_contract::OutcomeRuntime for AcceptingFake {
     }
 }
 
-fn managed() -> Router {
-    router(Arc::new(support::state(AcceptingFake)))
+async fn managed() -> Router {
+    router(Arc::new(support::state(AcceptingFake).await))
 }
 
 async fn status_of(app: &Router, method: &str, uri: &str, body: Option<&str>) -> StatusCode {
@@ -441,7 +441,7 @@ const CREATE_SESSION: &str = r#"{"agent":"coder","environment_id":"env_local"}"#
 /// silently resolved to `DEFAULT_SCOPE` and answered `200`/`201` instead.
 #[tokio::test]
 async fn an_unstamped_request_is_refused_on_every_tenant_owned_route() {
-    let managed = managed();
+    let managed = managed().await;
     let tunnels = tunnels_router(Arc::new(EmptyManagedTunnelApplication));
 
     // R1 — no edge stamp anywhere. Each route is refused.
@@ -494,18 +494,22 @@ async fn an_empty_edge_stamp_is_indistinguishable_from_an_absent_one() {
     // Same table as above with C1 refined: C1a absent, C1b present-but-blank,
     // C1c present and non-empty. R1a/R1b => E1; R1c => E2.
     for blank in ["", "   ", "\t"] {
-        let app = managed().layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-            blank.to_string(),
-        )));
+        let app = managed()
+            .await
+            .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+                blank.to_string(),
+            )));
         assert_eq!(
             status_of(&app, "GET", "/v1/sessions", None).await,
             StatusCode::NOT_FOUND,
             "R1b a blank stamp ({blank:?}) is refused"
         );
     }
-    let app = managed().layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-        "wrkspc_real".into(),
-    )));
+    let app = managed()
+        .await
+        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+            "wrkspc_real".into(),
+        )));
     assert_ne!(
         status_of(&app, "GET", "/v1/sessions", None).await,
         StatusCode::NOT_FOUND,

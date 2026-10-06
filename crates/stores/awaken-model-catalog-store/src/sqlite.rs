@@ -9,7 +9,10 @@
 //! re-validates the whole catalog inside a transaction (a rejected write leaves
 //! no trace), and `snapshot()` runs [`ProviderCatalog::validate`] on the reload.
 
-use rusqlite::{Connection, OptionalExtension, params};
+use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
+use sqlx::SqliteConnection;
 
 use crate::schema::catalog_bundle;
 use awaken_model_catalog::repo::{CatalogRepo, RepoError};
@@ -33,66 +36,52 @@ pub enum StoreError {
 
 /// A SQLite-backed [`CatalogRepo`].
 pub struct SqliteCatalogRepo {
-    conn: awaken_sqlite_pool::SharedSqliteConnection,
+    pool: EmbeddedPool,
 }
 
 impl SqliteCatalogRepo {
     /// Open (or create) a database file and apply the catalog migrations
     /// (one-step convenience for a store-owned database).
-    pub fn open(path: &str) -> Result<Self, StoreError> {
-        let store = Self::over(
-            awaken_sqlite_pool::SqliteConnectionFactory::file(path)
-                .open()
-                .map_err(|err| StoreError::Open(err.to_string()))?,
-        );
-        store.ensure_schema()?;
-        Ok(store)
+    pub async fn open(path: &str) -> Result<Self, StoreError> {
+        Self::open_at(EmbeddedSqlite::file(path)).await
     }
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory() -> Result<Self, StoreError> {
+    pub async fn open_in_memory() -> Result<Self, StoreError> {
+        Self::open_at(EmbeddedSqlite::memory()).await
+    }
+
+    async fn open_at(location: EmbeddedSqlite) -> Result<Self, StoreError> {
         let store = Self::over(
-            awaken_sqlite_pool::SqliteConnectionFactory::memory()
+            location
                 .open()
+                .await
                 .map_err(|err| StoreError::Open(err.to_string()))?,
         );
-        store.ensure_schema()?;
+        store.ensure_schema().await?;
         Ok(store)
     }
 
-    /// Wrap an existing connection **without migrating**. Call [`Self::ensure_schema`],
+    /// Wrap an existing pool **without migrating**. Call [`Self::ensure_schema`],
     /// or let a unified migration pipeline own the `catalog` scope so this store
     /// shares the caller's database.
-    pub fn over(conn: Connection) -> Self {
-        Self {
-            conn: awaken_sqlite_pool::SharedSqliteConnection::new(conn),
-        }
+    pub fn over(pool: EmbeddedPool) -> Self {
+        Self { pool }
     }
 
     /// Apply the `catalog` scoped migration bundle (idempotent). Optional: skip it
     /// when the schema is owned externally.
-    pub fn ensure_schema(&self) -> Result<(), StoreError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| StoreError::Migrate("catalog connection poisoned".to_string()))?;
+    pub async fn ensure_schema(&self) -> Result<(), StoreError> {
         let bundle = catalog_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-            .map_err(|err| StoreError::Migrate(err.to_string()))?
-            .run_bundle(&conn, &bundle)
-            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        awaken_sqlite_pool::held(
+            SqliteMigrationRunner::with_prefix(self.pool.sqlx().clone(), NS)
+                .map_err(|err| StoreError::Migrate(err.to_string()))?
+                .run_bundle(&bundle),
+        )
+        .await
+        .map_err(|err| StoreError::Migrate(err.to_string()))?;
         Ok(())
-    }
-
-    async fn with_conn<T, F>(&self, f: F) -> Result<T, RepoError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut Connection, &str) -> Result<T, RepoError> + Send + 'static,
-    {
-        awaken_sqlite_pool::with_connection(self.conn.clone(), move |conn| f(conn, NS))
-            .await
-            .map_err(storage)?
     }
 }
 
@@ -102,64 +91,129 @@ fn storage(err: impl std::fmt::Display) -> RepoError {
     RepoError::Invariant(CatalogError::Storage(err.to_string()))
 }
 
-fn row_exists(conn: &Connection, table: &str, id: &str) -> Result<bool, RepoError> {
-    conn.query_row(
-        &format!("SELECT 1 FROM {table} WHERE id = ?1"),
-        params![id],
-        |_| Ok(()),
-    )
-    .optional()
-    .map(|found| found.is_some())
-    .map_err(storage)
+async fn row_exists(conn: &mut SqliteConnection, table: &str, id: &str) -> Result<bool, RepoError> {
+    sqlx::query_scalar::<_, i64>(&format!("SELECT 1 FROM {table} WHERE id = ?1"))
+        .bind(id)
+        .fetch_optional(conn)
+        .await
+        .map(|found| found.is_some())
+        .map_err(storage)
 }
 
 /// Reload the full catalog projection from the tables. Offerings come back in a
 /// deterministic order keyed on `(model_id, protocol_endpoint_id)` — the same
 /// order the Postgres backend uses, so `resolve_offering`'s first-match is
 /// reproducible and identical on both backends (portable, not rowid-dependent).
-fn load_catalog(conn: &Connection, p: &str) -> Result<ProviderCatalog, RepoError> {
+async fn load_catalog(conn: &mut SqliteConnection) -> Result<ProviderCatalog, RepoError> {
     let mut cat = ProviderCatalog::default();
-    for data in select_data(conn, &format!("SELECT data FROM {p}_provider"))? {
+    for data in select_data(&mut *conn, &format!("SELECT data FROM {NS}_provider")).await? {
         let provider: Provider = serde_json::from_str(&data).map_err(storage)?;
         cat.providers.insert(provider.id.0.clone(), provider);
     }
-    for data in select_data(conn, &format!("SELECT data FROM {p}_protocol_endpoint"))? {
+    for data in select_data(
+        &mut *conn,
+        &format!("SELECT data FROM {NS}_protocol_endpoint"),
+    )
+    .await?
+    {
         let endpoint: ProtocolEndpoint = serde_json::from_str(&data).map_err(storage)?;
         cat.endpoints.insert(endpoint.id.0.clone(), endpoint);
     }
     for data in select_data(
-        conn,
-        &format!("SELECT data FROM {p}_offering ORDER BY model_id, protocol_endpoint_id"),
-    )? {
+        &mut *conn,
+        &format!("SELECT data FROM {NS}_offering ORDER BY model_id, protocol_endpoint_id"),
+    )
+    .await?
+    {
         cat.offerings
             .push(serde_json::from_str(&data).map_err(storage)?);
     }
     for (model_id, data) in select_keyed(
-        conn,
-        &format!("SELECT model_id, data FROM {p}_model_attributes"),
-    )? {
+        &mut *conn,
+        &format!("SELECT model_id, data FROM {NS}_model_attributes"),
+    )
+    .await?
+    {
         let attrs: ModelAttributes = serde_json::from_str(&data).map_err(storage)?;
         cat.model_attributes.insert(model_id, attrs);
     }
     Ok(cat)
 }
 
-fn select_data(conn: &Connection, sql: &str) -> Result<Vec<String>, RepoError> {
-    let mut stmt = conn.prepare(sql).map_err(storage)?;
-    let rows = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(storage)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(storage)
+async fn select_data(conn: &mut SqliteConnection, sql: &str) -> Result<Vec<String>, RepoError> {
+    sqlx::query_scalar::<_, String>(sql)
+        .fetch_all(conn)
+        .await
+        .map_err(storage)
 }
 
 /// Like [`select_data`] but reads a `(key, data)` pair per row — for tables keyed
 /// on their own id column (e.g. `_model_attributes` keyed on `model_id`).
-fn select_keyed(conn: &Connection, sql: &str) -> Result<Vec<(String, String)>, RepoError> {
-    let mut stmt = conn.prepare(sql).map_err(storage)?;
-    let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-        .map_err(storage)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(storage)
+async fn select_keyed(
+    conn: &mut SqliteConnection,
+    sql: &str,
+) -> Result<Vec<(String, String)>, RepoError> {
+    sqlx::query_as::<_, (String, String)>(sql)
+        .fetch_all(conn)
+        .await
+        .map_err(storage)
+}
+
+async fn upsert_provider(
+    conn: &mut SqliteConnection,
+    id: &str,
+    data: &str,
+) -> Result<(), RepoError> {
+    sqlx::query(&format!(
+        "INSERT INTO {NS}_provider (id, data) VALUES (?1, ?2) \
+         ON CONFLICT(id) DO UPDATE SET data = excluded.data"
+    ))
+    .bind(id)
+    .bind(data)
+    .execute(conn)
+    .await
+    .map_err(storage)?;
+    Ok(())
+}
+
+async fn upsert_endpoint(
+    conn: &mut SqliteConnection,
+    id: &str,
+    provider_id: &str,
+    data: &str,
+) -> Result<(), RepoError> {
+    sqlx::query(&format!(
+        "INSERT INTO {NS}_protocol_endpoint (id, provider_id, data) \
+         VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET \
+         provider_id = excluded.provider_id, data = excluded.data"
+    ))
+    .bind(id)
+    .bind(provider_id)
+    .bind(data)
+    .execute(conn)
+    .await
+    .map_err(storage)?;
+    Ok(())
+}
+
+async fn upsert_offering(
+    conn: &mut SqliteConnection,
+    model_id: &str,
+    endpoint_id: &str,
+    data: &str,
+) -> Result<(), RepoError> {
+    sqlx::query(&format!(
+        "INSERT INTO {NS}_offering (model_id, protocol_endpoint_id, data) \
+         VALUES (?1, ?2, ?3) ON CONFLICT(model_id, protocol_endpoint_id) \
+         DO UPDATE SET data = excluded.data"
+    ))
+    .bind(model_id)
+    .bind(endpoint_id)
+    .bind(data)
+    .execute(conn)
+    .await
+    .map_err(storage)?;
+    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -178,124 +232,63 @@ impl CatalogRepo for SqliteCatalogRepo {
         let endpoint_id = endpoint.id.0.clone();
         let provider_data = serde_json::to_string(&provider).map_err(storage)?;
         let endpoint_data = serde_json::to_string(&endpoint).map_err(storage)?;
-        self.with_conn(move |conn, p| {
-            let tx = conn.transaction().map_err(storage)?;
-            tx.execute(
-                &format!(
-                    "INSERT INTO {p}_provider (id, data) VALUES (?1, ?2) \
-                     ON CONFLICT(id) DO UPDATE SET data = excluded.data"
-                ),
-                params![provider_id, provider_data],
-            )
-            .map_err(storage)?;
-            tx.execute(
-                &format!(
-                    "INSERT INTO {p}_protocol_endpoint (id, provider_id, data) \
-                     VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET \
-                     provider_id = excluded.provider_id, data = excluded.data"
-                ),
-                params![endpoint_id, provider_id, endpoint_data],
-            )
-            .map_err(storage)?;
-            let mut catalog = load_catalog(&tx, p)?;
-            let result = catalog.reconcile_discovered_models(
-                &ProtocolEndpointId::new(endpoint_id.clone()),
-                models,
-                observed_at_unix_ms,
-            )?;
-            for offering in catalog
-                .offerings
-                .iter()
-                .filter(|offering| offering.protocol_endpoint_id.as_str() == endpoint_id)
-            {
-                let data = serde_json::to_string(offering).map_err(storage)?;
-                tx.execute(
-                    &format!(
-                        "INSERT INTO {p}_offering (model_id, protocol_endpoint_id, data) \
-                         VALUES (?1, ?2, ?3) ON CONFLICT(model_id, protocol_endpoint_id) \
-                         DO UPDATE SET data = excluded.data"
-                    ),
-                    params![offering.model_id, endpoint_id, data],
-                )
-                .map_err(storage)?;
-            }
-            ValidCatalog::parse(load_catalog(&tx, p)?)?;
-            tx.commit().map_err(storage)?;
-            Ok(result)
-        })
-        .await
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        upsert_provider(&mut tx, &provider_id, &provider_data).await?;
+        upsert_endpoint(&mut tx, &endpoint_id, &provider_id, &endpoint_data).await?;
+        let mut catalog = load_catalog(&mut tx).await?;
+        let result = catalog.reconcile_discovered_models(
+            &ProtocolEndpointId::new(endpoint_id.clone()),
+            models,
+            observed_at_unix_ms,
+        )?;
+        for offering in catalog
+            .offerings
+            .iter()
+            .filter(|offering| offering.protocol_endpoint_id.as_str() == endpoint_id)
+        {
+            let data = serde_json::to_string(offering).map_err(storage)?;
+            upsert_offering(&mut tx, &offering.model_id, &endpoint_id, &data).await?;
+        }
+        ValidCatalog::parse(load_catalog(&mut tx).await?)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(result)
     }
 
     async fn put_provider(&self, provider: Provider) -> Result<(), RepoError> {
-        let id = provider.id.0.clone();
         let data = serde_json::to_string(&provider).map_err(storage)?;
-        self.with_conn(move |conn, p| {
-            conn.execute(
-                &format!(
-                    "INSERT INTO {p}_provider (id, data) VALUES (?1, ?2) \
-                     ON CONFLICT(id) DO UPDATE SET data = excluded.data"
-                ),
-                params![id, data],
-            )
-            .map_err(storage)?;
-            Ok(())
-        })
-        .await
+        let mut conn = self.pool.acquire().await.map_err(storage)?;
+        upsert_provider(&mut conn, &provider.id.0, &data).await
     }
 
     async fn put_endpoint(&self, endpoint: ProtocolEndpoint) -> Result<(), RepoError> {
-        let id = endpoint.id.0.clone();
         let provider_id = endpoint.provider_id.0.clone();
         let data = serde_json::to_string(&endpoint).map_err(storage)?;
-        self.with_conn(move |conn, p| {
-            if !row_exists(conn, &format!("{p}_provider"), &provider_id)? {
-                return Err(RepoError::ProviderNotFound(provider_id));
-            }
-            conn.execute(
-                &format!(
-                    "INSERT INTO {p}_protocol_endpoint (id, provider_id, data) \
-                     VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET \
-                     provider_id = excluded.provider_id, data = excluded.data"
-                ),
-                params![id, provider_id, data],
-            )
-            .map_err(storage)?;
-            Ok(())
-        })
-        .await
+        let mut conn = self.pool.acquire().await.map_err(storage)?;
+        if !row_exists(&mut conn, &format!("{NS}_provider"), &provider_id).await? {
+            return Err(RepoError::ProviderNotFound(provider_id));
+        }
+        upsert_endpoint(&mut conn, &endpoint.id.0, &provider_id, &data).await
     }
 
     async fn put_offering(&self, mut offering: Offering) -> Result<(), RepoError> {
         offering.source = awaken_model_catalog::OfferingSource::Manual;
         offering.status = awaken_model_catalog::OfferingStatus::Active;
         offering.last_seen_at_unix_ms = None;
-        let model_id = offering.model_id.clone();
         let endpoint_id = offering.protocol_endpoint_id.0.clone();
         let data = serde_json::to_string(&offering).map_err(storage)?;
-        self.with_conn(move |conn, p| {
-            // Insert + whole-catalog re-validation in one transaction (fail-closed):
-            // a rejected offering rolls back and leaves no trace — same no-trace
-            // semantics as the in-memory repo's push-then-pop.
-            let tx = conn.transaction().map_err(storage)?;
-            if !row_exists(&tx, &format!("{p}_protocol_endpoint"), &endpoint_id)? {
-                return Err(RepoError::EndpointNotFound(endpoint_id));
-            }
-            tx.execute(
-                &format!(
-                    "INSERT INTO {p}_offering (model_id, protocol_endpoint_id, data) \
-                     VALUES (?1, ?2, ?3) ON CONFLICT(model_id, protocol_endpoint_id) \
-                     DO UPDATE SET data = excluded.data"
-                ),
-                params![model_id, endpoint_id, data],
-            )
-            .map_err(storage)?;
-            // Route the whole-catalog re-validation through the single construction
-            // boundary (`ValidCatalog::parse`) — same fail-closed check, funneled.
-            ValidCatalog::parse(load_catalog(&tx, p)?)?;
-            tx.commit().map_err(storage)?;
-            Ok(())
-        })
-        .await
+        // Insert + whole-catalog re-validation in one transaction (fail-closed):
+        // a rejected offering rolls back and leaves no trace — same no-trace
+        // semantics as the in-memory repo's push-then-pop.
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        if !row_exists(&mut tx, &format!("{NS}_protocol_endpoint"), &endpoint_id).await? {
+            return Err(RepoError::EndpointNotFound(endpoint_id));
+        }
+        upsert_offering(&mut tx, &offering.model_id, &endpoint_id, &data).await?;
+        // Route the whole-catalog re-validation through the single construction
+        // boundary (`ValidCatalog::parse`) — same fail-closed check, funneled.
+        ValidCatalog::parse(load_catalog(&mut tx).await?)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(())
     }
 
     async fn reconcile_discovered_models(
@@ -305,38 +298,27 @@ impl CatalogRepo for SqliteCatalogRepo {
         observed_at_unix_ms: u64,
     ) -> Result<CatalogSyncResult, RepoError> {
         let endpoint_id = endpoint_id.0.clone();
-        self.with_conn(move |conn, p| {
-            let tx = conn.transaction().map_err(storage)?;
-            if !row_exists(&tx, &format!("{p}_protocol_endpoint"), &endpoint_id)? {
-                return Err(RepoError::EndpointNotFound(endpoint_id));
-            }
-            let mut catalog = load_catalog(&tx, p)?;
-            let result = catalog.reconcile_discovered_models(
-                &ProtocolEndpointId::new(endpoint_id.clone()),
-                models,
-                observed_at_unix_ms,
-            )?;
-            for offering in catalog
-                .offerings
-                .iter()
-                .filter(|offering| offering.protocol_endpoint_id.as_str() == endpoint_id)
-            {
-                let data = serde_json::to_string(offering).map_err(storage)?;
-                tx.execute(
-                    &format!(
-                        "INSERT INTO {p}_offering (model_id, protocol_endpoint_id, data) \
-                         VALUES (?1, ?2, ?3) ON CONFLICT(model_id, protocol_endpoint_id) \
-                         DO UPDATE SET data = excluded.data"
-                    ),
-                    params![offering.model_id, endpoint_id, data],
-                )
-                .map_err(storage)?;
-            }
-            ValidCatalog::parse(load_catalog(&tx, p)?)?;
-            tx.commit().map_err(storage)?;
-            Ok(result)
-        })
-        .await
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        if !row_exists(&mut tx, &format!("{NS}_protocol_endpoint"), &endpoint_id).await? {
+            return Err(RepoError::EndpointNotFound(endpoint_id));
+        }
+        let mut catalog = load_catalog(&mut tx).await?;
+        let result = catalog.reconcile_discovered_models(
+            &ProtocolEndpointId::new(endpoint_id.clone()),
+            models,
+            observed_at_unix_ms,
+        )?;
+        for offering in catalog
+            .offerings
+            .iter()
+            .filter(|offering| offering.protocol_endpoint_id.as_str() == endpoint_id)
+        {
+            let data = serde_json::to_string(offering).map_err(storage)?;
+            upsert_offering(&mut tx, &offering.model_id, &endpoint_id, &data).await?;
+        }
+        ValidCatalog::parse(load_catalog(&mut tx).await?)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(result)
     }
 
     async fn reconcile_brokered_projection(
@@ -344,74 +326,59 @@ impl CatalogRepo for SqliteCatalogRepo {
         projection: BrokeredCatalogProjection,
     ) -> Result<CatalogSyncResult, RepoError> {
         let endpoint_prefix = format!("brokered:{}:", projection.broker_id.trim());
-        self.with_conn(move |conn, p| {
-            let tx = conn.transaction().map_err(storage)?;
-            let mut catalog = load_catalog(&tx, p)?;
-            let result = catalog.reconcile_brokered_projection(projection)?;
-            for provider in catalog.providers.values() {
-                let data = serde_json::to_string(provider).map_err(storage)?;
-                tx.execute(
-                    &format!(
-                        "INSERT INTO {p}_provider (id, data) VALUES (?1, ?2) \
-                         ON CONFLICT(id) DO UPDATE SET data = excluded.data"
-                    ),
-                    params![provider.id.0, data],
-                )
-                .map_err(storage)?;
-            }
-            for endpoint in catalog
-                .endpoints
-                .values()
-                .filter(|endpoint| endpoint.id.0.starts_with(&endpoint_prefix))
-            {
-                let data = serde_json::to_string(endpoint).map_err(storage)?;
-                tx.execute(
-                    &format!(
-                        "INSERT INTO {p}_protocol_endpoint (id, provider_id, data) \
-                         VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET \
-                         provider_id = excluded.provider_id, data = excluded.data"
-                    ),
-                    params![endpoint.id.0, endpoint.provider_id.0, data],
-                )
-                .map_err(storage)?;
-            }
-            for offering in catalog.offerings.iter().filter(|offering| {
-                offering.source == awaken_model_catalog::OfferingSource::Brokered
-                    && offering
-                        .protocol_endpoint_id
-                        .0
-                        .starts_with(&endpoint_prefix)
-            }) {
-                let data = serde_json::to_string(offering).map_err(storage)?;
-                tx.execute(
-                    &format!(
-                        "INSERT INTO {p}_offering (model_id, protocol_endpoint_id, data) \
-                         VALUES (?1, ?2, ?3) ON CONFLICT(model_id, protocol_endpoint_id) \
-                         DO UPDATE SET data = excluded.data"
-                    ),
-                    params![offering.model_id, offering.protocol_endpoint_id.0, data],
-                )
-                .map_err(storage)?;
-            }
-            // The aggregate has already merged Brokered observations with any
-            // authoritative local facts. Persist that complete attribute view in
-            // the same transaction so stale Brokered-only values disappear while
-            // Manual/Provider API values survive the refresh.
-            tx.execute(&format!("DELETE FROM {p}_model_attributes"), [])
-                .map_err(storage)?;
-            for (model_id, attributes) in &catalog.model_attributes {
-                let data = serde_json::to_string(attributes).map_err(storage)?;
-                tx.execute(
-                    &format!("INSERT INTO {p}_model_attributes (model_id, data) VALUES (?1, ?2)"),
-                    params![model_id, data],
-                )
-                .map_err(storage)?;
-            }
-            ValidCatalog::parse(load_catalog(&tx, p)?)?;
-            tx.commit().map_err(storage)?;
-            Ok(result)
-        })
-        .await
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let mut catalog = load_catalog(&mut tx).await?;
+        let result = catalog.reconcile_brokered_projection(projection)?;
+        for provider in catalog.providers.values() {
+            let data = serde_json::to_string(provider).map_err(storage)?;
+            upsert_provider(&mut tx, &provider.id.0, &data).await?;
+        }
+        for endpoint in catalog
+            .endpoints
+            .values()
+            .filter(|endpoint| endpoint.id.0.starts_with(&endpoint_prefix))
+        {
+            let data = serde_json::to_string(endpoint).map_err(storage)?;
+            upsert_endpoint(&mut tx, &endpoint.id.0, &endpoint.provider_id.0, &data).await?;
+        }
+        for offering in catalog.offerings.iter().filter(|offering| {
+            offering.source == awaken_model_catalog::OfferingSource::Brokered
+                && offering
+                    .protocol_endpoint_id
+                    .0
+                    .starts_with(&endpoint_prefix)
+        }) {
+            let data = serde_json::to_string(offering).map_err(storage)?;
+            upsert_offering(
+                &mut tx,
+                &offering.model_id,
+                &offering.protocol_endpoint_id.0,
+                &data,
+            )
+            .await?;
+        }
+        // The aggregate has already merged Brokered observations with any
+        // authoritative local facts. Persist that complete attribute view in
+        // the same transaction so stale Brokered-only values disappear while
+        // Manual/Provider API values survive the refresh.
+        sqlx::query(&format!("DELETE FROM {NS}_model_attributes"))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        for (model_id, attributes) in &catalog.model_attributes {
+            let data = serde_json::to_string(attributes).map_err(storage)?;
+            sqlx::query(&format!(
+                "INSERT INTO {NS}_model_attributes (model_id, data) VALUES (?1, ?2)"
+            ))
+            .bind(model_id)
+            .bind(&data)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        }
+        ValidCatalog::parse(load_catalog(&mut tx).await?)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(result)
     }
 
     async fn put_model_attributes(
@@ -421,61 +388,47 @@ impl CatalogRepo for SqliteCatalogRepo {
     ) -> Result<(), RepoError> {
         attrs.validate(&model_id)?;
         let data = serde_json::to_string(&attrs).map_err(storage)?;
-        self.with_conn(move |conn, p| {
-            conn.execute(
-                &format!(
-                    "INSERT INTO {p}_model_attributes (model_id, data) VALUES (?1, ?2) \
-                     ON CONFLICT(model_id) DO UPDATE SET data = excluded.data"
-                ),
-                params![model_id, data],
-            )
-            .map_err(storage)?;
-            Ok(())
-        })
+        sqlx::query(&format!(
+            "INSERT INTO {NS}_model_attributes (model_id, data) VALUES (?1, ?2) \
+             ON CONFLICT(model_id) DO UPDATE SET data = excluded.data"
+        ))
+        .bind(&model_id)
+        .bind(&data)
+        .execute(&self.pool)
         .await
+        .map_err(storage)?;
+        Ok(())
     }
 
     async fn get_provider(&self, id: &ProviderId) -> Result<Provider, RepoError> {
-        let id = id.0.clone();
-        self.with_conn(move |conn, p| {
-            let data: Option<String> = conn
-                .query_row(
-                    &format!("SELECT data FROM {p}_provider WHERE id = ?1"),
-                    params![id],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(storage)?;
-            let data = data.ok_or(RepoError::ProviderNotFound(id))?;
-            serde_json::from_str(&data).map_err(storage)
-        })
+        let data = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT data FROM {NS}_provider WHERE id = ?1"
+        ))
+        .bind(&id.0)
+        .fetch_optional(&self.pool)
         .await
+        .map_err(storage)?;
+        let data = data.ok_or_else(|| RepoError::ProviderNotFound(id.0.clone()))?;
+        serde_json::from_str(&data).map_err(storage)
     }
 
     async fn get_endpoint(&self, id: &ProtocolEndpointId) -> Result<ProtocolEndpoint, RepoError> {
-        let id = id.0.clone();
-        self.with_conn(move |conn, p| {
-            let data: Option<String> = conn
-                .query_row(
-                    &format!("SELECT data FROM {p}_protocol_endpoint WHERE id = ?1"),
-                    params![id],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(storage)?;
-            let data = data.ok_or(RepoError::EndpointNotFound(id))?;
-            serde_json::from_str(&data).map_err(storage)
-        })
+        let data = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT data FROM {NS}_protocol_endpoint WHERE id = ?1"
+        ))
+        .bind(&id.0)
+        .fetch_optional(&self.pool)
         .await
+        .map_err(storage)?;
+        let data = data.ok_or_else(|| RepoError::EndpointNotFound(id.0.clone()))?;
+        serde_json::from_str(&data).map_err(storage)
     }
 
     async fn snapshot(&self) -> Result<ProviderCatalog, RepoError> {
-        self.with_conn(move |conn, p| {
-            // Load-time integrity guard against corrupt rows, funneled through the
-            // same `ValidCatalog::parse` boundary; hand back the checked inner.
-            Ok(ValidCatalog::parse(load_catalog(conn, p)?)?.into_inner())
-        })
-        .await
+        let mut conn = self.pool.acquire().await.map_err(storage)?;
+        // Load-time integrity guard against corrupt rows, funneled through the
+        // same `ValidCatalog::parse` boundary; hand back the checked inner.
+        Ok(ValidCatalog::parse(load_catalog(&mut conn).await?)?.into_inner())
     }
 }
 
@@ -489,9 +442,9 @@ mod tests {
     /// caller's database (mirrors the resource-family stores' `over`/`ensure_schema`).
     #[tokio::test]
     async fn over_then_ensure_schema_round_trips_on_a_caller_owned_connection() {
-        let conn = Connection::open_in_memory().unwrap();
-        let repo = SqliteCatalogRepo::over(conn);
-        repo.ensure_schema().unwrap();
+        let pool = EmbeddedSqlite::memory().open().await.unwrap();
+        let repo = SqliteCatalogRepo::over(pool);
+        repo.ensure_schema().await.unwrap();
         repo.put_provider(Provider {
             id: ProviderId::new("anthropic"),
             slug: "anthropic".into(),
@@ -513,7 +466,7 @@ mod tests {
     /// reference) and round-trip through the durable table into the snapshot.
     #[tokio::test]
     async fn put_model_attributes_round_trips_through_the_durable_snapshot() {
-        let repo = SqliteCatalogRepo::open_in_memory().unwrap();
+        let repo = SqliteCatalogRepo::open_in_memory().await.unwrap();
         repo.put_model_attributes(
             "claude-opus-4-8".into(),
             ModelAttributes {

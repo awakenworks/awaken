@@ -526,21 +526,25 @@ async fn discovered_connection_is_atomic(repo: &dyn CatalogRepo) {
 }
 
 /// Run every suite, each on a fresh repo from `make`.
-async fn run_all(make: impl Fn() -> Box<dyn CatalogRepo>) {
-    crud_round_trip_and_snapshot(&*make()).await;
-    missing_rows_are_not_found(&*make()).await;
-    endpoint_needs_existing_provider(&*make()).await;
-    offering_needs_existing_endpoint(&*make()).await;
-    rejected_offering_leaves_no_trace(&*make()).await;
-    put_is_upsert(&*make()).await;
-    offering_put_is_upsert(&*make()).await;
-    explicit_offering_authoring_owns_provenance(&*make()).await;
-    put_model_attributes_round_trips(&*make()).await;
-    brokered_projection_persists_attributes_without_deleting_manual_truth(&*make()).await;
-    resolve_first_match_follows_stored_order_deterministically(&*make()).await;
-    provider_discovery_reconciles_without_deleting_manual_truth(&*make()).await;
-    rejected_discovery_is_atomic(&*make()).await;
-    discovered_connection_is_atomic(&*make()).await;
+async fn run_all<F, Fut>(make: F)
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Box<dyn CatalogRepo>>,
+{
+    crud_round_trip_and_snapshot(&*make().await).await;
+    missing_rows_are_not_found(&*make().await).await;
+    endpoint_needs_existing_provider(&*make().await).await;
+    offering_needs_existing_endpoint(&*make().await).await;
+    rejected_offering_leaves_no_trace(&*make().await).await;
+    put_is_upsert(&*make().await).await;
+    offering_put_is_upsert(&*make().await).await;
+    explicit_offering_authoring_owns_provenance(&*make().await).await;
+    put_model_attributes_round_trips(&*make().await).await;
+    brokered_projection_persists_attributes_without_deleting_manual_truth(&*make().await).await;
+    resolve_first_match_follows_stored_order_deterministically(&*make().await).await;
+    provider_discovery_reconciles_without_deleting_manual_truth(&*make().await).await;
+    rejected_discovery_is_atomic(&*make().await).await;
+    discovered_connection_is_atomic(&*make().await).await;
 }
 
 /// Reload-time integrity guard, at the pure `ValidCatalog::parse` boundary: the
@@ -562,7 +566,7 @@ fn valid_catalog_parse_rejects_a_dangling_endpoint_provider() {
 
 #[tokio::test]
 async fn in_memory_repo_conforms() {
-    run_all(|| Box::new(InMemoryCatalogRepo::new())).await;
+    run_all(|| async { Box::new(InMemoryCatalogRepo::new()) as Box<dyn CatalogRepo> }).await;
 }
 
 /// Live Postgres conformance: the same suites as the other backends, each on a
@@ -735,7 +739,10 @@ mod sqlite {
 
     #[tokio::test]
     async fn sqlite_repo_conforms() {
-        run_all(|| Box::new(SqliteCatalogRepo::open_in_memory().unwrap())).await;
+        run_all(|| async {
+            Box::new(SqliteCatalogRepo::open_in_memory().await.unwrap()) as Box<dyn CatalogRepo>
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -744,7 +751,7 @@ mod sqlite {
         let path = dir.path().join("catalog.db");
         let path = path.to_str().unwrap();
         {
-            let repo = SqliteCatalogRepo::open(path).unwrap();
+            let repo = SqliteCatalogRepo::open(path).await.unwrap();
             repo.put_provider(provider("anthropic")).await.unwrap();
             repo.put_endpoint(endpoint("ep1", "anthropic", ApiDialect::AnthropicMessages))
                 .await
@@ -758,7 +765,7 @@ mod sqlite {
             .unwrap();
         }
         // A fresh handle on the same file sees the identical validated catalog.
-        let repo = SqliteCatalogRepo::open(path).unwrap();
+        let repo = SqliteCatalogRepo::open(path).await.unwrap();
         let snap = repo.snapshot().await.unwrap();
         assert_eq!(snap.providers.len(), 1);
         assert_eq!(snap.endpoints.len(), 1);
@@ -799,7 +806,7 @@ mod sqlite {
         }
         let mem = InMemoryCatalogRepo::new();
         setup(&mem).await;
-        let sql = SqliteCatalogRepo::open_in_memory().unwrap();
+        let sql = SqliteCatalogRepo::open_in_memory().await.unwrap();
         setup(&sql).await;
 
         let mem_first = mem
@@ -840,19 +847,27 @@ mod sqlite {
         let path = dir.path().join("catalog.db");
         let path = path.to_str().unwrap();
         // Create the `catalog` schema (empty, valid) through the repo.
-        SqliteCatalogRepo::open(path).unwrap();
+        SqliteCatalogRepo::open(path).await.unwrap();
         // Inject the dangling offering directly, bypassing the fail-closed write path.
         {
-            let raw = rusqlite::Connection::open(path).unwrap();
+            let raw = awaken_sqlite_pool::EmbeddedSqlite::file(path)
+                .open()
+                .await
+                .unwrap();
             let off = offering("orphan", "ghost", ApiDialect::AnthropicMessages);
-            raw.execute(
+            sqlx::query(
                 "INSERT INTO catalog_offering (model_id, protocol_endpoint_id, data) \
                  VALUES (?1, ?2, ?3)",
-                rusqlite::params!["orphan", "ghost", serde_json::to_string(&off).unwrap()],
             )
+            .bind("orphan")
+            .bind("ghost")
+            .bind(serde_json::to_string(&off).unwrap())
+            .execute(&raw)
+            .await
             .unwrap();
+            raw.close().await;
         }
-        let repo = SqliteCatalogRepo::open(path).unwrap();
+        let repo = SqliteCatalogRepo::open(path).await.unwrap();
         let err = repo.snapshot().await.unwrap_err();
         assert!(
             matches!(
@@ -872,16 +887,21 @@ mod sqlite {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("catalog.db");
         let path = path.to_str().unwrap();
-        SqliteCatalogRepo::open(path).unwrap();
+        SqliteCatalogRepo::open(path).await.unwrap();
         {
-            let raw = rusqlite::Connection::open(path).unwrap();
-            raw.execute(
-                "INSERT INTO catalog_provider (id, data) VALUES (?1, ?2)",
-                rusqlite::params!["x", "this is not json"],
-            )
-            .unwrap();
+            let raw = awaken_sqlite_pool::EmbeddedSqlite::file(path)
+                .open()
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO catalog_provider (id, data) VALUES (?1, ?2)")
+                .bind("x")
+                .bind("this is not json")
+                .execute(&raw)
+                .await
+                .unwrap();
+            raw.close().await;
         }
-        let repo = SqliteCatalogRepo::open(path).unwrap();
+        let repo = SqliteCatalogRepo::open(path).await.unwrap();
         let err = repo.snapshot().await.unwrap_err();
         assert!(
             matches!(err, RepoError::Invariant(CatalogError::Storage(_))),

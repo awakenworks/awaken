@@ -18,10 +18,15 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
     use awaken_dispatch::{DispatchOutcome, Outbox as _};
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
-    let dispatch =
-        Arc::new(awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone()).unwrap());
+    let dispatch = Arc::new(
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
+            .unwrap(),
+    );
     let (host, _managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(MemoryHostModel), "stub").with_dispatch_store(dispatch.clone()),
+        SharedHost::new(Arc::new(MemoryHostModel), "stub")
+            .await
+            .with_dispatch_store(dispatch.clone()),
     );
     let thread = ThreadId("native-input-session".into());
     let run = RunId("native-input-run".into());
@@ -611,8 +616,9 @@ fn install_recording_session_application(host: &Arc<SharedHost>) {
         .expect("install recording Session application authority");
 }
 
-fn resource_registry() -> Arc<awaken_resource_application::RegistryApplication> {
+async fn resource_registry() -> Arc<awaken_resource_application::RegistryApplication> {
     let storage = awaken_resource_store::SqliteResourceStore::in_memory()
+        .await
         .expect("open ephemeral Resource Registry");
     let clock = system_clock();
     awaken_resource_application::RegistryApplication::new(Arc::new(storage), clock).into()

@@ -55,10 +55,9 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
                 effect: crate::session_slot::LegacyEnvironmentEffect::Absent,
             },
         );
-        let host = Arc::new(SharedHost::new(
-            Arc::new(crate::no_model::NoModelConfiguredExecutor),
-            "stub",
-        ));
+        let host = Arc::new(
+            SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await,
+        );
         host.install_session_environment_owner_projection(
             &thread,
             "workspace",
@@ -120,7 +119,8 @@ async fn ordinary_candidate_without_a_sink_gets_an_explicit_direct_receipt() {
     ] {
         let environment = environment(&provider, thread).await;
         let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
-        let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+        let host =
+            SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
         let candidate = match kind {
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create => host
                 .begin_session_environment_preparation(thread, environment)
@@ -163,7 +163,7 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
     let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
     let candidate = host
         .begin_session_environment_preparation(thread, environment.clone())
         .expect("C1 Candidate");
@@ -217,7 +217,8 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
         let environment = environment(&provider, thread).await;
         let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let source = identity(thread);
-        let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+        let host =
+            SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
         host.install_session_environment_owner_projection(
             thread,
             "workspace",
@@ -334,10 +335,13 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
-            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone()).unwrap(),
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+                .await
+                .unwrap(),
         );
         let host = Arc::new(
             SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
+                .await
                 .with_dispatch_store(store.clone()),
         );
         let sink = Arc::new(BlockingBindingSink::blocked());
@@ -482,7 +486,7 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
     let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
     let candidate = host
         .begin_session_environment_preparation(thread, environment.clone())
         .expect("C1 hidden Create Candidate");
@@ -739,7 +743,7 @@ async fn unacknowledged_candidate_adoption_requires_aggregate_authority() {
         .into_session_provider();
     let thread = "unacknowledged-no-authority";
     let environment = environment(&provider, thread).await;
-    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
     let candidate = host
         .begin_session_environment_preparation(thread, environment.clone())
         .unwrap();
@@ -791,7 +795,7 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
     let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
     let candidate = host
         .begin_session_environment_preparation(thread, environment.clone())
         .expect("S1 Candidate");

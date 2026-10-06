@@ -310,7 +310,11 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
     let (directory, identity) = support::ready_worker("worker-file").await;
     let dispatch = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let claim = claimed_dispatch(&dispatch, "file-public", &identity.lease_owner()).await;
-    let lifecycle = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+    let lifecycle = Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .await
+            .unwrap(),
+    );
     let application = Arc::new(awaken_resource_application::FileApplication::new(
         store.clone(),
         store.clone(),
@@ -589,8 +593,11 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
         "session-application-file",
     )
     .await;
-    let sessions =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let sessions = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let session =
         frozen_application_session("session-application-file", "file-application", &identity);
     sessions
@@ -605,7 +612,11 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
         )
         .await
         .unwrap();
-    let lifecycle = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+    let lifecycle = Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .await
+            .unwrap(),
+    );
     let application = Arc::new(awaken_resource_application::FileApplication::new(
         store.clone(),
         store,
@@ -695,7 +706,11 @@ async fn model_content_file_requires_its_claimed_thread_and_strong_input_referen
     let (directory, identity) = support::ready_worker("worker-model-content").await;
     let dispatch = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
     let claim = claimed_model_dispatch(&dispatch, "file-model", &identity.lease_owner()).await;
-    let lifecycle = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+    let lifecycle = Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .await
+            .unwrap(),
+    );
     let application = Arc::new(awaken_resource_application::FileApplication::new(
         store.clone(),
         store,
@@ -833,7 +848,11 @@ async fn model_content_recovery_uses_parent_partition_for_a_child_thread() {
         legacy_calls: AtomicUsize::new(0),
         in_session_calls: Mutex::new(Vec::new()),
     });
-    let lifecycle = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+    let lifecycle = Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .await
+            .unwrap(),
+    );
     let application = Arc::new(awaken_resource_application::FileApplication::new(
         store.clone(),
         store,

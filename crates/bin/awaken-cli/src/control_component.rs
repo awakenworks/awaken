@@ -445,7 +445,7 @@ async fn standalone_control_uses_the_authored_capture_ceiling() {
     // Decision rule R1 = C1+C2+C3+C4 -> E1+E2. This pins the policy input that
     // standalone Control must carry independently of Runtime deployment state.
     let app = prepare_control_routers(
-        in_memory_control_stores(),
+        in_memory_control_stores().await,
         None,
         None,
         None,
@@ -512,7 +512,7 @@ async fn standalone_control_projects_the_exact_model_supply_posture() {
 
     for (rule, expected) in cases {
         let app = prepare_control_routers(
-            in_memory_control_stores(),
+            in_memory_control_stores().await,
             None,
             None,
             None,
@@ -566,7 +566,7 @@ async fn standalone_control_rejects_missing_environment_registration_wiring() {
     // Decision rule W1 = C1+C3 -> E1. The positive configured rules are owned by
     // the adjacent standalone Control tests.
     let _ = prepare_control_routers(
-        in_memory_control_stores(),
+        in_memory_control_stores().await,
         None,
         None,
         None,

@@ -14,6 +14,7 @@ async fn publication_race_fixture(
 ) {
     let durable = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("publication race repository"),
     );
     let repo = Arc::new(FaultingSessionRepository::new(durable.clone()));
@@ -225,7 +226,9 @@ async fn every_disposition_command_reports_a_lost_root_cas_as_a_replay() {
     ] {
         let session_id = format!("disposition-race-{case}");
         let durable = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         let repo = Arc::new(FaultingSessionRepository::new(durable.clone()));
         create(repo.as_ref(), persisted(&session_id, false, initial)).await;

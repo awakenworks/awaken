@@ -8,11 +8,9 @@ use super::*;
 use awaken_sql_storage::postgres_pool_options as pool_options;
 
 /// A Postgres-backed [`SessionRepository`] — the network-DB sibling over
-/// the same `managed` migration scope. The Session port is async; the retained
-/// synchronous Dream port uses the canonical store-runtime bridge on `handle`.
+/// the same `managed` migration scope.
 pub struct PostgresManagedSessionRepository {
     pub(crate) pool: PgPool,
-    pub(crate) handle: tokio::runtime::Handle,
 }
 
 impl PostgresManagedSessionRepository {
@@ -62,10 +60,7 @@ impl PostgresManagedSessionRepository {
         Self::normalize_session_aggregates(&pool, true)
             .await
             .map_err(|error| error.to_string())?;
-        Ok(Self {
-            pool,
-            handle: tokio::runtime::Handle::current(),
-        })
+        Ok(Self { pool })
     }
 
     /// Connect to a schema migrated by an operational command without DDL or
@@ -102,10 +97,7 @@ impl PostgresManagedSessionRepository {
         Self::verify_session_state(&pool)
             .await
             .map_err(|error| error.to_string())?;
-        Ok(Self {
-            pool,
-            handle: tokio::runtime::Handle::current(),
-        })
+        Ok(Self { pool })
     }
 
     async fn migration_receipts(pool: &PgPool) -> Result<BTreeMap<i64, String>, String> {

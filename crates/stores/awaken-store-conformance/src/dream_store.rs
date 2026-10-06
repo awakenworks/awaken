@@ -45,7 +45,7 @@ pub fn process(process_id: &str) -> DreamProcessRecord {
     }
 }
 
-pub fn dream_store_conformance(repository: &dyn DreamProcessStore) {
+pub async fn dream_store_conformance(repository: &dyn DreamProcessStore) {
     // Persistence decision table: R1 absent job/policy + insert -> accepted;
     // R2 stale expected typed value -> rejected without mutation; R3 exact policy
     // version + fresh job -> both commit; R4 stale policy + fresh job ->
@@ -54,6 +54,7 @@ pub fn dream_store_conformance(repository: &dyn DreamProcessStore) {
     assert!(
         repository
             .compare_and_swap_dream_policy(None, policy.clone())
+            .await
             .unwrap()
     );
     assert!(
@@ -65,6 +66,7 @@ pub fn dream_store_conformance(repository: &dyn DreamProcessStore) {
                     ..policy.clone()
                 },
             )
+            .await
             .unwrap()
     );
     let policy_v2 = DreamPolicyRecord {
@@ -74,6 +76,7 @@ pub fn dream_store_conformance(repository: &dyn DreamProcessStore) {
     assert!(
         repository
             .claim_dream_policy(&policy, policy_v2.clone(), process("dream-1"),)
+            .await
             .unwrap()
     );
     assert!(
@@ -86,10 +89,11 @@ pub fn dream_store_conformance(repository: &dyn DreamProcessStore) {
                 },
                 process("dream-2"),
             )
+            .await
             .unwrap()
     );
-    assert_eq!(repository.dream_processes().unwrap().len(), 1);
-    assert_eq!(repository.dream_policies().unwrap()[0], policy_v2);
+    assert_eq!(repository.dream_processes().await.unwrap().len(), 1);
+    assert_eq!(repository.dream_policies().await.unwrap()[0], policy_v2);
 
     // R5 independent process insert/exact CAS succeeds; a stale expected
     // process cannot overwrite the successor. R6 a colliding process id
@@ -98,11 +102,13 @@ pub fn dream_store_conformance(repository: &dyn DreamProcessStore) {
     assert!(
         repository
             .compare_and_swap_dream_process(None, original.clone())
+            .await
             .unwrap()
     );
     assert!(
         !repository
             .compare_and_swap_dream_process(None, original.clone())
+            .await
             .unwrap()
     );
     let mut running = original.clone();
@@ -110,22 +116,25 @@ pub fn dream_store_conformance(repository: &dyn DreamProcessStore) {
     assert!(
         repository
             .compare_and_swap_dream_process(Some(&original), running.clone())
+            .await
             .unwrap()
     );
     assert!(
         !repository
             .compare_and_swap_dream_process(Some(&original), original.clone())
+            .await
             .unwrap()
     );
-    let before_jobs = repository.dream_processes().unwrap();
-    let before_policies = repository.dream_policies().unwrap();
+    let before_jobs = repository.dream_processes().await.unwrap();
+    let before_policies = repository.dream_policies().await.unwrap();
     let mut next_policy = policy_v2.clone();
     next_policy.next_due_ms += 1;
     assert!(
         !repository
             .claim_dream_policy(&policy_v2, next_policy, original)
+            .await
             .unwrap()
     );
-    assert_eq!(repository.dream_processes().unwrap(), before_jobs);
-    assert_eq!(repository.dream_policies().unwrap(), before_policies);
+    assert_eq!(repository.dream_processes().await.unwrap(), before_jobs);
+    assert_eq!(repository.dream_policies().await.unwrap(), before_policies);
 }

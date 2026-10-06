@@ -163,9 +163,15 @@ mod tests {
         // X4=C4+C1->E4; X5=C5->rebuild its blocker. Conservative stale rows are
         // safe on partial failure.
         let inner = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
-        let references = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+        let references = Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
+                .unwrap(),
+        );
         let repository = ReferenceIndexedMemoryExtractions::new(inner.clone(), references.clone());
         let target = ResourceTarget::new("workspace-a", ResourceKind::MemoryStore, "memory-a");
         let pending = intent("intent-a", "memory-a");
@@ -220,14 +226,19 @@ mod tests {
         );
 
         let restored_inner = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         restored_inner
             .put_extraction_if_absent(intent("intent-restored", "memory-restored"))
             .await
             .unwrap();
-        let restored_references =
-            Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+        let restored_references = Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
+                .unwrap(),
+        );
         let restored =
             ReferenceIndexedMemoryExtractions::new(restored_inner, restored_references.clone());
         restored.synchronize_recoverable_references().await.unwrap();

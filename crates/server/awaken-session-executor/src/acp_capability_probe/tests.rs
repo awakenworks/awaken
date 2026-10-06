@@ -54,12 +54,12 @@ impl AcpCapabilityHandshake for ReadyHandshake {
 /// A Workdir Session provider rooted in `base`. The Workdir tier is the one
 /// that needs no daemon, and it stamps the scope on the resource the same way
 /// every other tier does: the environment *is* the directory named by it.
-fn probe_negotiator(
+async fn probe_negotiator(
     base: &Path,
     owner: &str,
     handshake: Arc<dyn AcpCapabilityHandshake>,
 ) -> SessionAcpCapabilityNegotiator {
-    let mut host = SharedHost::new(Arc::new(NoLlm), "stub");
+    let mut host = SharedHost::new(Arc::new(NoLlm), "stub").await;
     host.local_workspace = owner.to_string();
     host.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::workdir(base)
@@ -113,7 +113,8 @@ async fn a_cancelled_probe_strands_an_environment_that_its_own_scope_still_names
     // R1 — cancel while the handshake stalls. `timeout` dropping the future is
     // the ordinary cancellation; nothing in the probe gets to run a tail.
     let stranded_base = tempfile::tempdir().unwrap();
-    let negotiator = probe_negotiator(stranded_base.path(), "ws-alpha", Arc::new(StalledHandshake));
+    let negotiator =
+        probe_negotiator(stranded_base.path(), "ws-alpha", Arc::new(StalledHandshake)).await;
     let cancelled = tokio::time::timeout(
         Duration::from_millis(1500),
         AcpCapabilityNegotiator::negotiate(&negotiator, &argv, probe_cwd(), None),
@@ -146,7 +147,7 @@ async fn a_cancelled_probe_strands_an_environment_that_its_own_scope_still_names
     // from nothing but the same owner and inputs, addresses that exact
     // environment; a random-UUID scope could only ever create a second orphan
     // beside it and never mention the first again.
-    let later = probe_negotiator(stranded_base.path(), "ws-alpha", Arc::new(ReadyHandshake));
+    let later = probe_negotiator(stranded_base.path(), "ws-alpha", Arc::new(ReadyHandshake)).await;
     let refusal = AcpCapabilityNegotiator::negotiate(&later, &argv, probe_cwd(), None)
         .await
         .expect_err("E4 the stranded environment occupies the scope");
@@ -172,7 +173,7 @@ async fn a_cancelled_probe_strands_an_environment_that_its_own_scope_still_names
     // R4 — a probe that completes disposes its own environment, so a settled
     // claim never leaves a false strand behind for an operator to chase.
     let clean_base = tempfile::tempdir().unwrap();
-    let clean = probe_negotiator(clean_base.path(), "ws-alpha", Arc::new(ReadyHandshake));
+    let clean = probe_negotiator(clean_base.path(), "ws-alpha", Arc::new(ReadyHandshake)).await;
     AcpCapabilityNegotiator::negotiate(&clean, &argv, probe_cwd(), None)
         .await
         .expect("E3 a completed probe negotiates");

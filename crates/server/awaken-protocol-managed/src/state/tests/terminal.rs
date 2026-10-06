@@ -62,7 +62,9 @@ async fn cloud_create_returns_durable_root_before_sandbox_realization() {
         let prepared = runtime.prepared.clone();
         let block_prepare = runtime.block_prepare.clone();
         block_prepare.store(true, std::sync::atomic::Ordering::SeqCst);
-        let state = ManagedState::new(runtime).with_environments(environment_execution);
+        let state = ManagedState::new(runtime)
+            .await
+            .with_environments(environment_execution);
         let request = || {
             serde_json::from_value(serde_json::json!({
                 "agent": "assistant",
@@ -170,7 +172,7 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
     let runtime = EndSessionRecorder::default();
     let prepared = runtime.prepared.clone();
     let runtime = Arc::new(runtime);
-    let repo = Arc::new(ephemeral_session_repo());
+    let repo = Arc::new(ephemeral_session_repo().await);
     let environments = crate::test_support::environment_components().1;
     let application = awaken_session_application::SessionApplication::new_with_configuration(
         runtime.clone(),
@@ -259,8 +261,12 @@ async fn child_thread_archive_uses_durable_disposition_and_survives_cache_loss()
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     let runtime = crate::test_support::CoordinatedRuntimeFake::default();
-    let repo = Arc::new(ephemeral_session_repo());
-    let state = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repo.clone()));
+    let repo = Arc::new(ephemeral_session_repo().await);
+    let state = Arc::new(
+        ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repo.clone()),
+    );
     let request = serde_json::from_value(serde_json::json!({
         "agent": "coder", "environment_id": "env_local"
     }))
@@ -338,7 +344,9 @@ async fn child_thread_archive_uses_durable_disposition_and_survives_cache_loss()
         "A5/E5"
     );
 
-    let restarted = ManagedState::new(runtime.clone()).with_session_repo(repo);
+    let restarted = ManagedState::new(runtime.clone())
+        .await
+        .with_session_repo(repo);
     restarted.ensure_session(&session.id).await.unwrap();
     assert_eq!(
         restarted.get_thread(&session.id, child_id).unwrap().status,
@@ -367,7 +375,7 @@ async fn child_thread_archive_rejects_a_committed_running_child() {
     // in the adjacent test instead refreshes back to committed Idle.
     let runtime = crate::test_support::CoordinatedRuntimeFake::default();
     runtime.defer_child_completion();
-    let state = ManagedState::new(runtime.clone());
+    let state = ManagedState::new(runtime.clone()).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -447,7 +455,7 @@ async fn child_thread_archive_failure_commits_no_terminal_projection() {
     // unchanged. Decision rule F1 is C1+C2+C3=>E1; command-success/retry/restart
     // rules are covered by the archive decision table above.
     let runtime = crate::test_support::CoordinatedRuntimeFake::default();
-    let state = Arc::new(ManagedState::new(runtime.clone()));
+    let state = Arc::new(ManagedState::new(runtime.clone()).await);
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -537,7 +545,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     // cannot insert previously unseen child facts before its issued cursor.
     let runtime = crate::test_support::CoordinatedRuntimeFake::default();
     runtime.defer_child_completion();
-    let state = Arc::new(ManagedState::new(runtime.clone()));
+    let state = Arc::new(ManagedState::new(runtime.clone()).await);
     let request = serde_json::from_value(serde_json::json!({
         "agent": "coder", "environment_id": "env_local"
     }))
@@ -824,8 +832,8 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
 async fn delete_session_disposes_the_host_sandbox() {
     let rt = EndSessionRecorder::default();
     let ended = rt.ended.clone();
-    let repo = Arc::new(ephemeral_session_repo());
-    let state = ManagedState::new(rt).with_session_repo(repo.clone());
+    let repo = Arc::new(ephemeral_session_repo().await);
+    let state = ManagedState::new(rt).await.with_session_repo(repo.clone());
     let id = state
         .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
@@ -862,7 +870,7 @@ async fn delete_session_disposes_the_host_sandbox() {
 async fn archive_session_disposes_on_the_terminal_transition_only() {
     let rt = EndSessionRecorder::default();
     let ended = rt.ended.clone();
-    let state = ManagedState::new(rt);
+    let state = ManagedState::new(rt).await;
     let id = state
         .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
@@ -947,14 +955,18 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
             SessionThreadStatus::Idle,
         ),
     ] {
-        let repo = Arc::new(ephemeral_session_repo());
+        let repo = Arc::new(ephemeral_session_repo().await);
         let runtime = RehydrateFake::default();
         runtime
             .delegate_ids
             .lock()
             .unwrap()
             .push("researcher".into());
-        let state = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repo.clone()));
+        let state = Arc::new(
+            ManagedState::new(runtime.clone())
+                .await
+                .with_session_repo(repo.clone()),
+        );
         let session = state
             .create_session(
                 serde_json::from_value(serde_json::json!({
@@ -1165,7 +1177,9 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
             "{rule}/E6 terminal appends after the issued prefix"
         );
 
-        let restarted = ManagedState::new(runtime.clone()).with_session_repo(repo.clone());
+        let restarted = ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repo.clone());
         restarted.ensure_session(&session.id).await.expect(rule);
         let cold_thread = restarted.get_thread(&session.id, &child_id).unwrap();
         assert_eq!(
@@ -1278,8 +1292,10 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
 
 #[tokio::test]
 async fn archived_session_can_be_deleted_after_projection_cache_loss() {
-    let repo = Arc::new(ephemeral_session_repo());
-    let state = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
+    let repo = Arc::new(ephemeral_session_repo().await);
+    let state = ManagedState::new(EndSessionRecorder::default())
+        .await
+        .with_session_repo(repo.clone());
     let id = state
         .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
@@ -1291,8 +1307,9 @@ async fn archived_session_can_be_deleted_after_projection_cache_loss() {
         SessionDisposition::Archived { .. }
     ));
 
-    let restarted =
-        ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
+    let restarted = ManagedState::new(EndSessionRecorder::default())
+        .await
+        .with_session_repo(repo.clone());
     restarted
         .delete_session(&id)
         .await
@@ -1314,12 +1331,14 @@ async fn archived_session_can_be_deleted_after_projection_cache_loss() {
 #[tokio::test]
 async fn activation_failure_remains_deletable_after_projection_cache_loss() {
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     let mut failed = sample_persisted("sesn_failed_delete");
     failed.execution = SessionExecutionState::ActivationFailed;
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, failed).await;
 
-    let restarted = ManagedState::new(EndSessionFailer).with_session_repo(repo.clone());
+    let restarted = ManagedState::new(EndSessionFailer)
+        .await
+        .with_session_repo(repo.clone());
     restarted
         .delete_session("sesn_failed_delete")
         .await
@@ -1357,7 +1376,7 @@ async fn archive_terminal_cleanup_tears_down_each_unique_runtime_once() {
     let runtime = EndSessionRecorder::default();
     let ended = runtime.ended.clone();
     let delegated = runtime.delegated.clone();
-    let state = ManagedState::new(runtime);
+    let state = ManagedState::new(runtime).await;
     let id = state
         .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
@@ -1427,8 +1446,10 @@ async fn archive_session_rehydrates_after_process_restart() {
     // E2 cold control never prepares a Runtime; E3 it invents no teardown. Rule
     // R1=C1+C2+C3+C4=>E1+E2+E3.
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
-    let original = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
+        Arc::new(ephemeral_session_repo().await);
+    let original = ManagedState::new(EndSessionRecorder::default())
+        .await
+        .with_session_repo(repo.clone());
     let id = original
         .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
@@ -1438,7 +1459,9 @@ async fn archive_session_rehydrates_after_process_restart() {
     let runtime = EndSessionRecorder::default();
     let ended = runtime.ended.clone();
     let prepared = runtime.prepared.clone();
-    let restarted = ManagedState::new(runtime).with_session_repo(repo.clone());
+    let restarted = ManagedState::new(runtime)
+        .await
+        .with_session_repo(repo.clone());
     let archived = restarted
         .archive_session(&id)
         .await
@@ -1464,7 +1487,7 @@ async fn archive_session_does_not_require_a_retired_agent_publication_after_rest
     // C3 leaks every already-terminal Run and hot-loops its downstream inbox.
     // Decision rule R1=C1+C2+C3+C4=>E1+E2+E3.
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     let mut persisted = sample_persisted("sesn_retired_agent_cleanup");
     let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
         &persisted.baseline
@@ -1496,7 +1519,9 @@ async fn archive_session_does_not_require_a_retired_agent_publication_after_rest
     let runtime = EndSessionRecorder::default();
     let ended = runtime.ended.clone();
     let prepared = runtime.prepared.clone();
-    let restarted = ManagedState::new(runtime).with_session_repo(repo.clone());
+    let restarted = ManagedState::new(runtime)
+        .await
+        .with_session_repo(repo.clone());
     let archived = restarted
         .archive_session("sesn_retired_agent_cleanup")
         .await
@@ -1533,8 +1558,10 @@ async fn archive_session_does_not_require_a_retired_agent_publication_after_rest
 
 #[tokio::test]
 async fn archive_persists_release_before_and_after_sandbox_teardown() {
-    let repo = Arc::new(ephemeral_session_repo());
-    let state = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
+    let repo = Arc::new(ephemeral_session_repo().await);
+    let state = ManagedState::new(EndSessionRecorder::default())
+        .await
+        .with_session_repo(repo.clone());
     let request = serde_json::from_value(serde_json::json!({
         "agent": "assistant",
         "environment_id": "env_local",
@@ -1598,7 +1625,7 @@ async fn session_create_enforces_the_500_file_boundary() {
         }))
         .unwrap()
     };
-    let state = ManagedState::new(EndSessionRecorder::default());
+    let state = ManagedState::new(EndSessionRecorder::default()).await;
     assert!(
         state
             .create_session(request(500), awaken_tenancy::DEFAULT_WORKSPACE_ID)
@@ -2345,8 +2372,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for EndSessionFailer {
 /// state, not authority to resurrect the public Session.
 #[tokio::test]
 async fn delete_is_best_effort_when_sandbox_teardown_fails() {
-    let repo = Arc::new(ephemeral_session_repo());
-    let state = ManagedState::new(EndSessionFailer).with_session_repo(repo.clone());
+    let repo = Arc::new(ephemeral_session_repo().await);
+    let state = ManagedState::new(EndSessionFailer)
+        .await
+        .with_session_repo(repo.clone());
     let request = serde_json::from_value(serde_json::json!({
         "agent": "assistant",
         "environment_id": "env_local",
@@ -2406,8 +2435,10 @@ async fn delete_is_best_effort_when_sandbox_teardown_fails() {
 /// lifecycle-recoverable effect instead of changing the command result.
 #[tokio::test]
 async fn archive_commits_while_sandbox_teardown_remains_recoverable() {
-    let repo = Arc::new(ephemeral_session_repo());
-    let state = ManagedState::new(EndSessionFailer).with_session_repo(repo.clone());
+    let repo = Arc::new(ephemeral_session_repo().await);
+    let state = ManagedState::new(EndSessionFailer)
+        .await
+        .with_session_repo(repo.clone());
     let request = serde_json::from_value(serde_json::json!({
         "agent": "assistant",
         "environment_id": "env_local",

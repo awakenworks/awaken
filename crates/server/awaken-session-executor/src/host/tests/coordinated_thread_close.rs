@@ -28,9 +28,11 @@ async fn failed_child_boundary_cancels_raced_follow_up_without_fencing_its_own_s
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("failed follow-up race dispatch"),
     );
     let host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
         .with_coordinator_dispatch_store(dispatch.clone());
     let parent = ThreadId("failed-race-parent".into());
     let child = ThreadId("failed-race-child".into());
@@ -165,7 +167,7 @@ async fn follow_up_close_fence_applies_the_contract_rule_for_each_thread_kind() 
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
     use awaken_session_execution_contract::CoordinatedThreadKind;
 
-    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    let host = SharedHost::new(Arc::new(OkModel), "stub").await;
     let parent = ThreadId("close-rule-parent".into());
     let commit = host
         .commit_for_read(&parent.0)

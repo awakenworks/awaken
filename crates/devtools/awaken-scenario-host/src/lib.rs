@@ -45,9 +45,9 @@ use deployment::{
 };
 use scenario_platform::{
     fixed_agent_publication, fixed_host_backend_publication,
-    fixed_host_backend_publication_with_acp_mcp, fixed_host_backend_publication_with_mcp, mount,
-    mount_with_agent_source, mount_with_environments, mount_with_environments_and_agent_source,
-    mount_with_memory_publication,
+    fixed_host_backend_publication_with_acp_mcp, fixed_host_backend_publication_with_mcp,
+    mount_platform, mount_with_agent_source, mount_with_environments,
+    mount_with_environments_and_agent_source, mount_with_memory_publication,
 };
 use scenario_shell::{scenario_argv, scenario_host_acp_cli, scenario_shell_argv};
 
@@ -125,7 +125,7 @@ pub async fn build_outcome_matrix_router() -> Router {
         .build();
     let publication = fixed_host_backend_publication("acp-agent", "acp:claude", Vec::new());
     let platform = acp_scenarios::bind_acp_session_environment(
-        resource_host(model, model_ref),
+        resource_host(model, model_ref).await,
         awaken_execution_composition::LaunchSource::Fixed(Box::new(launch)),
         None,
     )
@@ -134,7 +134,7 @@ pub async fn build_outcome_matrix_router() -> Router {
         host.with_agent_publications(publication.clone())
             .with_judge_snapshot(judge)
     });
-    mount_with_agent_source(platform, publication)
+    mount_with_agent_source(platform, publication).await
 }
 
 /// A router with out-of-band memory extraction + bounded recall (the memory
@@ -151,7 +151,7 @@ pub async fn build_memory_router() -> Router {
 /// exact auxiliary Runtime work whose spans and durable effects it serves.
 pub async fn build_memory_service() -> (Router, awaken_service_lifecycle::ServiceLifecycle) {
     let (model, model_ref) = scenario_model(Arc::new(MemoryProbeModel), "memory");
-    let host = resource_host(model, model_ref);
+    let host = resource_host(model, model_ref).await;
     let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let router = scenario_platform::mount_with_memory_publication_on_lifecycle(
         host,
@@ -169,13 +169,13 @@ pub async fn build_memory_service() -> (Router, awaken_service_lifecycle::Servic
 /// [`build_memory_router`]'s cross-session *extraction* memory — this exercises the
 /// `resources[{type:"memory_store"}]` mount + write-back + `/v1/memory_stores` API.
 /// `AWAKEN_MODEL_MODE=memory-resource`.
-pub fn build_memory_resource_router() -> Router {
+pub async fn build_memory_resource_router() -> Router {
     let (model, model_ref) = scenario_model(
         Arc::new(crate::models::MemoryResourceModel),
         "memory-resource",
     );
-    let host = resource_host(model, model_ref);
-    mount(host)
+    let host = resource_host(model, model_ref).await;
+    mount_platform(host).await
 }
 
 /// A router for the github_repository RESOURCE e2e (ADR-0038): a deterministic model
@@ -186,7 +186,7 @@ pub fn build_memory_resource_router() -> Router {
 /// provider-backed scenarios. `AWAKEN_MODEL_MODE=git-repo`.
 pub async fn build_git_repo_router(deployment: awaken_session_executor::DeploymentConfig) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::GitRepoModel), "git-repo");
-    mount(runtime_resource_host_with_deployment(model, model_ref, deployment).await)
+    mount_platform(runtime_resource_host_with_deployment(model, model_ref, deployment).await).await
 }
 
 /// The combined-chain router (native full-chain e2e): one session configures a
@@ -223,12 +223,12 @@ pub async fn build_full_chain_router_with_deployment(
 /// model returns a fixed summary on the `compactor` sub-run and otherwise
 /// reports the compaction context it received, so an e2e can observe the folded
 /// summary being injected on a later Run. `AWAKEN_MODEL_MODE=compaction`.
-pub fn build_compaction_router() -> Router {
+pub async fn build_compaction_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::CompactionModel), "compaction");
     // Compaction changes run behavior, not deployment ownership. Reuse the
     // canonical Scenario platform so durable Session/resource identity is
     // reconstructed from the same storage root after restart.
-    let host = resource_host(model, model_ref);
+    let host = resource_host(model, model_ref).await;
     // `AWAKEN_COMPACT_MAX_TOKENS` is an exact effective trigger override, matching
     // the publication output rather than reopening a ratio decision in the Host.
     // Otherwise derive the typed default (3/4 of the model window); the fully
@@ -244,17 +244,17 @@ pub fn build_compaction_router() -> Router {
         .unwrap_or(1);
     let keep_last = env_u("AWAKEN_COMPACT_KEEP_LAST").unwrap_or(2) as usize;
     let host = host.map_host(|host| host.with_compaction_tokens(window, keep_last));
-    mount(host)
+    mount_platform(host).await
 }
 
 /// A router whose model fails a Run on the `BOOM` trigger (the session-error
 /// e2e): the failed Run surfaces an internal `RunError` (HTTP `api_error`) and
 /// commits a `session.error` event, while other Runs echo — proving the Session
 /// stays usable after a failure. `AWAKEN_MODEL_MODE=error`.
-pub fn build_error_router() -> Router {
+pub async fn build_error_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::ErrorModel), "error");
-    let host = resource_host(model, model_ref);
-    mount(host)
+    let host = resource_host(model, model_ref).await;
+    mount_platform(host).await
 }
 
 /// A router that mounts `/v1/environments` and shares its state with the session
@@ -264,21 +264,22 @@ pub fn build_error_router() -> Router {
 /// `submit_answer` tool — by **running the tool and posting the result back**, the
 /// way a self-hosted worker executes the session's tool calls. Heartbeats the lease
 /// and stops the work on completion. `AWAKEN_MODEL_MODE=worker`.
-pub fn build_worker_router() -> Router {
+pub async fn build_worker_router() -> Router {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "worker");
-    let host =
-        resource_host(model, model_ref).map_host(|host| host.with_client_tools(client_tools));
-    mount_with_environments(host)
+    let host = resource_host(model, model_ref)
+        .await
+        .map_host(|host| host.with_client_tools(client_tools));
+    mount_with_environments(host).await
 }
 
 /// Echo-model Scenario platform with the official Environment API, exact sandbox-policy
 /// store, Resource Registry, Managed Sessions, and all protocol adapters. It exists
 /// solely to drive the orthogonal configuration matrix without application-auth
 /// concerns obscuring the baseline/provisioning behavior under test.
-pub fn build_environment_matrix_router() -> Router {
+pub async fn build_environment_matrix_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "environment-matrix");
-    mount_with_environments(resource_host(model, model_ref))
+    mount_with_environments(resource_host(model, model_ref).await).await
 }
 
 fn ask_tool_bindings(tool_name: &str) -> AgentBindings {
@@ -302,7 +303,7 @@ fn ask_tool_bindings(tool_name: &str) -> AgentBindings {
 /// model's `write` call is the mutating edge used by Managed, A2A, and
 /// cross-protocol HITL tests; leaving its policy implicit would make those tests
 /// follow whichever neutral default the runtime currently uses.
-pub fn build_probe_router() -> Router {
+pub async fn build_probe_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(ProbeModel), "probe");
     let binding = ModelBinding::parse("scenario", &model_ref, "native")
         .unwrap_or_else(|error| panic!("scenario model `{model_ref}`: {error}"));
@@ -319,8 +320,9 @@ pub fn build_probe_router() -> Router {
         .build();
     let publication = fixed_agent_publication([snapshot]);
     let platform = resource_host(model, model_ref)
+        .await
         .map_host(|host| host.with_agent_publications(publication.clone()));
-    mount_with_agent_source(platform, publication)
+    mount_with_agent_source(platform, publication).await
 }
 
 /// The one deterministic ACP JSON-RPC fixture. It exercises the canonical codec
@@ -395,53 +397,54 @@ const FAKE_ACP_JSONRPC_SCRIPT: &str = "runtime=${AWAKEN_MATRIX_RUNTIME:-unknown}
 // ── Router assembly ─────────────────────────────────────────────────────────
 
 /// Build the server router backed by the kernel with the given model.
-pub fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Router {
-    build_router_and_host(llm, model_ref).0
+pub async fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Router {
+    build_router_and_host(llm, model_ref).await.0
 }
 
 /// The same single scenario assembly as [`build_router`], with the shared Host
 /// returned for cross-module tests that must replace a neutral infrastructure
 /// port (for example, a deterministic write-through Memory mounter). This is not
 /// a second router path: [`build_router`] delegates here.
-pub fn build_router_and_host(
+pub async fn build_router_and_host(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
 ) -> (Router, Arc<SharedHost>) {
-    build_router_and_host_from(resource_host(llm, model_ref))
+    build_router_and_host_from(resource_host(llm, model_ref).await).await
 }
 
 /// Build an unmounted Host for a test that owns the outer product composition.
 ///
 /// Unlike [`build_router_and_host`], this function starts no lifecycle and binds
 /// no Session application authority. The caller must mount the Host exactly once.
-pub fn build_unmounted_host(
+pub async fn build_unmounted_host(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
 ) -> Arc<SharedHost> {
-    build_unmounted_host_with_deployment(llm, model_ref, scenario_deployment())
+    build_unmounted_host_with_deployment(llm, model_ref, scenario_deployment()).await
 }
 
 /// The unmounted scenario composition with an explicit deployment. Resources
 /// and Runtime consume the same deployment before any stores or sandboxes open.
 /// No lifecycle or Session application is installed until the caller mounts it.
-pub fn build_unmounted_host_with_deployment(
+pub async fn build_unmounted_host_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     deployment: awaken_session_executor::DeploymentConfig,
 ) -> Arc<SharedHost> {
-    build_unmounted_host_from(resource_host_with_deployment(llm, model_ref, deployment))
+    build_unmounted_host_from(resource_host_with_deployment(llm, model_ref, deployment).await)
 }
 
 /// Scenario assembly whose Runtime and Managed adapters can share the exact
 /// immutable Agent publication authority. The catalog may be populated after
 /// construction once the generated local workspace id is known.
-pub fn build_router_and_host_with_agent_publications(
+pub async fn build_router_and_host_with_agent_publications(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     publications: impl IntoIterator<Item = awaken_runtime_contract::ExecutableAgentSnapshot>,
 ) -> (Router, Arc<SharedHost>) {
     let publication = scenario_platform::fixed_agent_publication(publications);
     let (host, resources) = resource_host(llm, model_ref)
+        .await
         .map_host(|host| host.with_agent_publications(publication.clone()))
         .into_parts();
     let host = Arc::new(host);
@@ -450,20 +453,23 @@ pub fn build_router_and_host_with_agent_publications(
         resources,
         publication,
         awaken_service_lifecycle::ServiceLifecycle::new(),
-    );
+    )
+    .await;
     (router, host)
 }
 
 /// Build an unmounted Host with one immutable Agent publication authority.
 /// Cross-module product-composition tests use this seam to avoid mounting a
 /// disposable Session application before installing their real composition.
-pub fn build_unmounted_host_with_agent_publications(
+pub async fn build_unmounted_host_with_agent_publications(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     publications: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
 ) -> Arc<SharedHost> {
     build_unmounted_host_from(
-        resource_host(llm, model_ref).map_host(|host| host.with_agent_publications(publications)),
+        resource_host(llm, model_ref)
+            .await
+            .map_host(|host| host.with_agent_publications(publications)),
     )
 }
 
@@ -472,21 +478,23 @@ fn build_unmounted_host_from(platform: deployment::ScenarioPlatform) -> Arc<Shar
     Arc::new(host)
 }
 
-fn build_router_and_host_from(platform: deployment::ScenarioPlatform) -> (Router, Arc<SharedHost>) {
+async fn build_router_and_host_from(
+    platform: deployment::ScenarioPlatform,
+) -> (Router, Arc<SharedHost>) {
     let (host, resources) = platform.into_parts();
     let host = Arc::new(host);
     (
-        scenario_platform::mount_parts(host.clone(), resources),
+        scenario_platform::mount_parts(host.clone(), resources).await,
         host,
     )
 }
 
-pub(crate) fn build_router_and_host_with_model_publication_resolver(
+pub(crate) async fn build_router_and_host_with_model_publication_resolver(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
 ) -> (Router, Arc<SharedHost>) {
-    let platform = resource_host(llm, model_ref);
+    let platform = resource_host(llm, model_ref).await;
     let (host, resources) = platform.into_parts();
     let host = Arc::new(host);
     (
@@ -495,7 +503,8 @@ pub(crate) fn build_router_and_host_with_model_publication_resolver(
             resources,
             resolver,
             None,
-        ),
+        )
+        .await,
         host,
     )
 }
@@ -503,13 +512,13 @@ pub(crate) fn build_router_and_host_with_model_publication_resolver(
 /// Test/embedder platform with one explicitly resolved deployment snapshot.
 /// Production callers resolve this snapshot from typed configuration before
 /// constructing the host.
-pub fn build_router_with_deployment(
+pub async fn build_router_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     deployment: awaken_session_executor::DeploymentConfig,
 ) -> Router {
-    let host = resource_host_with_deployment(llm, model_ref, deployment);
-    mount(host)
+    let host = resource_host_with_deployment(llm, model_ref, deployment).await;
+    mount_platform(host).await
 }
 
 /// Choose a usable model only when an operator omitted the explicit model. Kimi
@@ -571,14 +580,15 @@ async fn real_platform() -> deployment::ScenarioPlatform {
 }
 
 pub async fn build_real_router() -> Router {
-    mount(real_platform().await)
+    mount_platform(real_platform().await).await
 }
 
 /// Real-model scenario with an outer-owned lifecycle, matching production's
 /// graceful Runtime drain before the process flushes its trace provider.
 pub async fn build_real_service() -> (Router, awaken_service_lifecycle::ServiceLifecycle) {
     let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
-    let router = scenario_platform::mount_on_lifecycle(real_platform().await, lifecycle.clone());
+    let router =
+        scenario_platform::mount_on_lifecycle(real_platform().await, lifecycle.clone()).await;
     (router, lifecycle)
 }
 
@@ -618,10 +628,11 @@ pub async fn build_real_gemini_router() -> Router {
         token,
     )
     .expect("explicit Vertex client construction");
-    mount(
+    mount_platform(
         runtime_resource_host_with_deployment(Arc::new(executor), model, scenario_deployment())
             .await,
     )
+    .await
 }
 
 /// A live-model server whose executor is built through the production
@@ -738,7 +749,7 @@ pub async fn build_resolved_real_router() -> Router {
         .materialize_candidate(&published.primary, &context)
         .await
         .expect("materialize published model candidate");
-    mount(
+    mount_platform(
         runtime_resource_host_with_deployment(
             executor,
             published.primary.binding().identity().1.to_owned(),
@@ -746,6 +757,7 @@ pub async fn build_resolved_real_router() -> Router {
         )
         .await,
     )
+    .await
 }
 
 /// The resolved path with an **OAuth** credential (#5): the credential source is
@@ -879,7 +891,7 @@ pub async fn build_oauth_resolved_router() -> Router {
         .materialize_candidate(&published.primary, &context)
         .await
         .expect("materialize published OAuth candidate");
-    mount(
+    mount_platform(
         runtime_resource_host_with_deployment(
             executor,
             published.primary.binding().identity().1.to_owned(),
@@ -887,17 +899,23 @@ pub async fn build_oauth_resolved_router() -> Router {
         )
         .await,
     )
+    .await
 }
 
 /// Build a direct/non-Managed compatibility router from host-static Skills.
 /// Managed-Agent scenarios must use [`build_router_with_managed_skills`] so the
 /// Resources binding and immutable version bytes remain the sole authority.
-pub fn build_router_with_skills(
+pub async fn build_router_with_skills(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     skills: Vec<SkillSpec>,
 ) -> Router {
-    mount(resource_host(llm, model_ref).map_host(|host| host.with_skills(skills)))
+    mount_platform(
+        resource_host(llm, model_ref)
+            .await
+            .map_host(|host| host.with_skills(skills)),
+    )
+    .await
 }
 
 /// Build a Managed-Agent router whose deterministic Skill fixtures travel the
@@ -910,65 +928,67 @@ pub async fn build_router_with_managed_skills(
     skills: Vec<SkillSpec>,
 ) -> Router {
     let model_ref = model_ref.into();
-    let platform = resource_host(llm, model_ref.clone());
+    let platform = resource_host(llm, model_ref.clone()).await;
     let bindings = platform.publish_managed_skills(&skills).await;
     let publication = fixed_host_backend_publication("assistant", &model_ref, bindings);
     let platform = platform.map_host(|host| host.with_agent_publications(publication.clone()));
-    mount_with_agent_source(platform, publication)
+    mount_with_agent_source(platform, publication).await
 }
 
 /// A router whose Outcomes are graded by the named Judge Agent through the
 /// ordinary Run boundary.
-pub fn build_graded_router(
+pub async fn build_graded_router(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     judge_agent_id: impl Into<String>,
 ) -> Router {
-    mount(resource_host(llm, model_ref).map_host(|host| {
+    mount_platform(resource_host(llm, model_ref).await.map_host(|host| {
         host.with_judge(judge_agent_id)
             .unwrap_or_else(|error| panic!("scenario host model reference: {error}"))
     }))
+    .await
 }
 
 /// The default deterministic router (echo model) — the CI / e2e server.
-pub fn build_echo_router() -> Router {
-    build_router(Arc::new(EchoModel), "echo-model")
+pub async fn build_echo_router() -> Router {
+    build_router(Arc::new(EchoModel), "echo-model").await
 }
 
 /// Ephemeral Resource authorities behind the production workspace-path adapter. This
 /// is the sole multi-workspace process fixture for volatile resource semantics;
 /// it decorates the canonical scenario Host instead of defining another store.
-pub fn build_ephemeral_resource_router() -> Router {
-    let flat = mount(resource_host(Arc::new(EchoModel), "echo-model"));
+pub async fn build_ephemeral_resource_router() -> Router {
+    let flat = mount_platform(resource_host(Arc::new(EchoModel), "echo-model").await).await;
     awaken_coordinator::workspace_path::with_workspace_path_addressing(flat)
 }
 
 /// A router whose model reports the media it received (the multimodal e2e): every
 /// protocol adapter must carry an image block through to the model for the probe
 /// reply to name its media type.
-pub fn build_vision_router() -> Router {
-    build_router(Arc::new(VisionProbeModel), "vision-probe")
+pub async fn build_vision_router() -> Router {
+    build_router(Arc::new(VisionProbeModel), "vision-probe").await
 }
 
 /// A router with a client-executed tool `submit_answer` (the custom-tool e2e).
-pub fn build_custom_router() -> Router {
-    build_custom_router_and_host().0
+pub async fn build_custom_router() -> Router {
+    build_custom_router_and_host().await.0
 }
 
 /// The same custom-tool scenario with its owning Host for scope-aware tests.
-pub fn build_custom_router_and_host() -> (Router, Arc<SharedHost>) {
+pub async fn build_custom_router_and_host() -> (Router, Arc<SharedHost>) {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "custom");
-    let host =
-        resource_host(model, model_ref).map_host(|host| host.with_client_tools(client_tools));
-    build_router_and_host_from(host)
+    let host = resource_host(model, model_ref)
+        .await
+        .map_host(|host| host.with_client_tools(client_tools));
+    build_router_and_host_from(host).await
 }
 
 /// A router whose agent activates the tool state machine (the state-machine e2e).
 /// The machine defines `glob` as a single transition out of the initial state, so
 /// the driving model's first `glob` advances it (emitting a context message) and
 /// the second is a precondition violation the gate denies.
-pub fn build_statemachine_router() -> Router {
+pub async fn build_statemachine_router() -> Router {
     let machine = serde_json::json!({
         "machines": [{
             "name": "walk",
@@ -984,8 +1004,10 @@ pub fn build_statemachine_router() -> Router {
         }]
     });
     let (model, model_ref) = scenario_model(Arc::new(StateMachineModel), "statemachine");
-    let host = resource_host(model, model_ref).map_host(|host| host.with_state_machine(machine));
-    mount(host)
+    let host = resource_host(model, model_ref)
+        .await
+        .map_host(|host| host.with_state_machine(machine));
+    mount_platform(host).await
 }
 
 /// A richer tool state machine (coverage): a per-key machine (`key`/`key_normalizer`)
@@ -994,7 +1016,7 @@ pub fn build_statemachine_router() -> Router {
 /// driving model calls `glob` twice with the same pattern: the first advances
 /// `s0 -> s1` on a `success` result (its emit fires), the second advances `s1 -> s2`
 /// (terminal) on `any` result (a second emit). No violation — both calls advance.
-pub fn build_statemachine_rich_router() -> Router {
+pub async fn build_statemachine_rich_router() -> Router {
     let machine = serde_json::json!({
         "machines": [{
             "name": "keyed",
@@ -1121,8 +1143,10 @@ pub fn build_statemachine_rich_router() -> Router {
         }]
     });
     let (model, model_ref) = scenario_model(Arc::new(StateMachineModel), "statemachine-rich");
-    let host = resource_host(model, model_ref).map_host(|host| host.with_state_machine(machine));
-    mount(host)
+    let host = resource_host(model, model_ref)
+        .await
+        .map_host(|host| host.with_state_machine(machine));
+    mount_platform(host).await
 }
 
 /// A router with the config data plane (`/v1/config/agents/*`) over an in-memory
@@ -1152,18 +1176,19 @@ impl awaken_runtime_contract::permission::ToolGateHook for ScheduleGate {
 /// worker performs the deferred actions out of band: the probe model's
 /// write→read tool calls are each scheduled and auto-performed, so the run
 /// completes without any human confirmation.
-pub fn build_schedule_router() -> Router {
+pub async fn build_schedule_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(ProbeModel), "schedule");
     let host = resource_host_with_deployment(model, model_ref, scenario_deployment())
+        .await
         .map_host(|host| host.with_gate_override(Arc::new(ScheduleGate)));
-    mount(host)
+    mount_platform(host).await
 }
 
 /// A router that routes a fixed Managed `send_message` command for `researcher`
 /// to a REMOTE A2A Agent at `AWAKEN_REMOTE_AGENT_URL`. The ordinary child Run
 /// crosses `message:send` → poll `get_task`, then projects its reply on the child
 /// Thread independently from the parent's admission receipt.
-pub fn build_remote_delegation_router() -> Router {
+pub async fn build_remote_delegation_router() -> Router {
     let url = std::env::var("AWAKEN_REMOTE_AGENT_URL")
         .expect("AWAKEN_REMOTE_AGENT_URL must be set for delegate-remote mode");
     let security_fingerprint = std::env::var("AWAKEN_REMOTE_AGENT_SECURITY_FINGERPRINT")
@@ -1217,11 +1242,11 @@ pub fn build_remote_delegation_router() -> Router {
         })
         .build();
     let publication = fixed_agent_publication([assistant, researcher]);
-    let host = resource_host(model, model_ref).map_host(|host| {
+    let host = resource_host(model, model_ref).await.map_host(|host| {
         host.with_agent_publications(publication.clone())
             .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(None))
     });
-    mount_with_agent_source(host, publication)
+    mount_with_agent_source(host, publication).await
 }
 
 /// A deterministic model for the skills e2e (ADR-0036). A Managed-filesystem
@@ -1354,8 +1379,9 @@ pub async fn build_skills_durable_router() -> Router {
         vec![awaken_agent_contract::AgentSkillBinding::custom(skill_id)],
     );
     let host = resource_host_with_deployment(model, model_ref, deployment)
+        .await
         .map_host(|host| host.with_agent_publications(publication.clone()));
-    mount_with_agent_source(host, publication)
+    mount_with_agent_source(host, publication).await
 }
 pub async fn build_config_router() -> Router {
     // The MODEL is chosen by `scenario_model` (in-process echo, or the real provider
@@ -1374,8 +1400,10 @@ pub async fn build_config_router() -> Router {
                 .to_str()
                 .expect("scenario storage path is UTF-8"),
         )
+        .await
         .expect("open durable scenario config store"),
         None => awaken_config_store::SqliteConfigStore::open_in_memory()
+            .await
             .expect("open ephemeral scenario config store"),
     });
     // Scope-keyed tool visibility (ADR-0052 D3): every scope sees the advertised
@@ -1440,12 +1468,14 @@ pub async fn build_config_router() -> Router {
             .application(),
         Arc::new(awaken_admin_assistant::TracingAuditSink),
     );
-    let host = resource_host_with_deployment(model, model_ref, deployment).map_host(|host| {
-        host.with_local_workspace(platform_workspace.clone())
-            .with_agent_publications(executable_agent_catalog.clone())
-            .with_admin_tools(admin_execs)
-            .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(None))
-    });
+    let host = resource_host_with_deployment(model, model_ref, deployment)
+        .await
+        .map_host(|host| {
+            host.with_local_workspace(platform_workspace.clone())
+                .with_agent_publications(executable_agent_catalog.clone())
+                .with_admin_tools(admin_execs)
+                .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(None))
+        });
     let scenario_dispatch = host
         .dispatch_store()
         .expect("config scenario installs one Dispatch authority");
@@ -1484,9 +1514,10 @@ pub async fn build_config_router() -> Router {
     // supplies sessions.db beside runtime truth. The Agent source is an added port,
     // never a reason to rebuild ManagedState through a parallel in-memory path.
     let flat = mount_with_agent_source(host, executable_agent_catalog)
+        .await
         .merge(config_router(plane))
         .merge(agents)
-        .merge(session_reservation_scenario_router(scenario_dispatch));
+        .merge(session_reservation_scenario_router(scenario_dispatch).await);
     let flat =
         awaken_coordinator::workspace_path::with_platform_workspace(flat, platform_workspace);
     awaken_coordinator::workspace_path::with_workspace_path_addressing(flat)
@@ -1501,7 +1532,7 @@ struct SessionReservationScenarioRequest {
 /// Scenario-only adapter for stopping at the real persistence-before-activity
 /// crash boundary. It delegates the production Dispatch command and owns no
 /// state, transition, clock, or SQL mutation of its own.
-fn session_reservation_scenario_router(
+async fn session_reservation_scenario_router(
     dispatch: Arc<awaken_dispatch::AnyDispatchStore>,
 ) -> Router {
     async fn reserve(

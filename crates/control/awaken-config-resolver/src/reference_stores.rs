@@ -30,8 +30,13 @@ impl InMemoryProfileStore {
     }
 }
 
+#[async_trait::async_trait]
 impl InferenceProfileStore for InMemoryProfileStore {
-    fn put(&self, id: String, profile: InferenceProfile) -> Result<(), ConfigRepositoryError> {
+    async fn put(
+        &self,
+        id: String,
+        profile: InferenceProfile,
+    ) -> Result<(), ConfigRepositoryError> {
         self.0
             .lock()
             .map_err(|_| ConfigRepositoryError::Storage("profile store mutex poisoned".into()))?
@@ -39,7 +44,7 @@ impl InferenceProfileStore for InMemoryProfileStore {
         Ok(())
     }
 
-    fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError> {
+    async fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError> {
         Ok(self
             .0
             .lock()
@@ -68,8 +73,9 @@ impl InMemoryWebhookStore {
     }
 }
 
+#[async_trait::async_trait]
 impl WebhookStore for InMemoryWebhookStore {
-    fn get(&self, id: &str) -> Result<Option<WebhookEndpointDef>, ConfigRepositoryError> {
+    async fn get(&self, id: &str) -> Result<Option<WebhookEndpointDef>, ConfigRepositoryError> {
         Ok(self
             .state
             .lock()
@@ -79,7 +85,10 @@ impl WebhookStore for InMemoryWebhookStore {
             .cloned())
     }
 
-    fn list(&self, workspace_id: &str) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError> {
+    async fn list(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError> {
         let mut rows: Vec<WebhookEndpointDef> = self
             .state
             .lock()
@@ -93,7 +102,7 @@ impl WebhookStore for InMemoryWebhookStore {
         Ok(rows)
     }
 
-    fn update_authored(
+    async fn update_authored(
         &self,
         patch: WebhookAuthoringPatch,
     ) -> Result<WebhookAuthoringState, ConfigRepositoryError> {
@@ -124,7 +133,10 @@ impl WebhookStore for InMemoryWebhookStore {
         Ok(WebhookAuthoringState::Updated(definition.clone()))
     }
 
-    fn begin_mutation(&self, intent: WebhookMutationIntent) -> Result<(), ConfigRepositoryError> {
+    async fn begin_mutation(
+        &self,
+        intent: WebhookMutationIntent,
+    ) -> Result<(), ConfigRepositoryError> {
         let id = intent.id()?.to_string();
         let mut state = self
             .state
@@ -148,7 +160,10 @@ impl WebhookStore for InMemoryWebhookStore {
         Ok(())
     }
 
-    fn apply_mutation(&self, intent: &WebhookMutationIntent) -> Result<(), ConfigRepositoryError> {
+    async fn apply_mutation(
+        &self,
+        intent: &WebhookMutationIntent,
+    ) -> Result<(), ConfigRepositoryError> {
         let id = intent.id()?.to_string();
         let mut state = self
             .state
@@ -172,7 +187,7 @@ impl WebhookStore for InMemoryWebhookStore {
         Ok(())
     }
 
-    fn pending_mutations(&self) -> Result<Vec<WebhookMutationIntent>, ConfigRepositoryError> {
+    async fn pending_mutations(&self) -> Result<Vec<WebhookMutationIntent>, ConfigRepositoryError> {
         let mut intents: Vec<_> = self
             .state
             .lock()
@@ -185,7 +200,7 @@ impl WebhookStore for InMemoryWebhookStore {
         Ok(intents)
     }
 
-    fn complete_mutation(
+    async fn complete_mutation(
         &self,
         intent: &WebhookMutationIntent,
     ) -> Result<(), ConfigRepositoryError> {
@@ -207,7 +222,7 @@ impl WebhookStore for InMemoryWebhookStore {
         Ok(())
     }
 
-    fn material_refs(
+    async fn material_refs(
         &self,
     ) -> Result<Vec<awaken_credential_vault::SecretRef>, ConfigRepositoryError> {
         let mut refs: Vec<_> = self
@@ -222,7 +237,7 @@ impl WebhookStore for InMemoryWebhookStore {
         Ok(refs)
     }
 
-    fn record_delivery(
+    async fn record_delivery(
         &self,
         id: &str,
         outcome: WebhookDeliveryOutcome,
@@ -257,8 +272,9 @@ impl InMemoryAgentInputBindingRepository {
     }
 }
 
+#[async_trait::async_trait]
 impl AgentInputBindingRepository for InMemoryAgentInputBindingRepository {
-    fn put_agent_inputs(
+    async fn put_agent_inputs(
         &self,
         workspace_id: &str,
         config: AgentInputConfig,
@@ -277,7 +293,7 @@ impl AgentInputBindingRepository for InMemoryAgentInputBindingRepository {
         Ok(())
     }
 
-    fn get_agent_inputs(
+    async fn get_agent_inputs(
         &self,
         workspace_id: &str,
         agent_id: &str,
@@ -293,7 +309,7 @@ impl AgentInputBindingRepository for InMemoryAgentInputBindingRepository {
             .cloned())
     }
 
-    fn list_agent_inputs(
+    async fn list_agent_inputs(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<AgentInputConfig>, AgentInputRepositoryError> {
@@ -341,8 +357,8 @@ mod profile_tenancy_tests {
         }
     }
 
-    #[test]
-    fn t1_common_default_id_is_isolated_by_workspace() {
+    #[tokio::test]
+    async fn t1_common_default_id_is_isolated_by_workspace() {
         let store = InMemoryProfileStore::new();
         put_workspace_profile(
             &store,
@@ -350,6 +366,7 @@ mod profile_tenancy_tests {
             "shared-profile",
             profile("workspace-a", "a"),
         )
+        .await
         .unwrap();
         put_workspace_profile(
             &store,
@@ -357,10 +374,12 @@ mod profile_tenancy_tests {
             "shared-profile",
             profile("workspace-b", "b"),
         )
+        .await
         .unwrap();
 
         assert_eq!(
             get_workspace_profile(&store, "workspace-a", "shared-profile")
+                .await
                 .unwrap()
                 .unwrap()
                 .primary
@@ -370,6 +389,7 @@ mod profile_tenancy_tests {
         );
         assert_eq!(
             get_workspace_profile(&store, "workspace-b", "shared-profile")
+                .await
                 .unwrap()
                 .unwrap()
                 .primary

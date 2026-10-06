@@ -49,12 +49,15 @@ lockfile already resolves rusqlite 0.32.1, and awaken-cloud pins
    `begin_with("BEGIN IMMEDIATE")`. Widening read concurrency under WAL is a later,
    separately measured change.
 
-3. **One connection policy, one crate.** `awaken-sqlite-pool` is rewritten on
-   sqlx and renamed `awaken-sqlite-pool`. It owns only the embedded policy: the
-   busy wait, foreign keys, and the serialized WAL switch, expressed as one
-   `SqliteConnectOptions` constructor and one pool opener. The blocking-thread
-   bridge and the shared-connection type are deleted. It stays in the `storage`
-   bounded context.
+3. **One connection policy, one crate, one handle.** `awaken-sqlite-pool` is
+   rewritten on sqlx and renamed `awaken-sqlite-pool`. It owns only the embedded
+   policy: the busy wait, foreign keys, and the serialized WAL switch, expressed
+   as one `SqliteConnectOptions` constructor and one pool opener. The
+   blocking-thread bridge and the shared-connection type are deleted. It stays in
+   the `storage` bounded context. Stores hold its `EmbeddedPool` handle, not a bare
+   `SqlitePool`. The handle is an sqlx executor with `begin`, `begin_with` and
+   `acquire`, so store code reads like plain sqlx, and it carries the two
+   guarantees below that a bare pool cannot.
 
 4. **Synchronous ports become asynchronous.** `WebhookStore`, `DreamProcessStore`
    and the synchronous functions of `awaken-store-sqlite` become async. Their
@@ -68,12 +71,8 @@ lockfile already resolves rusqlite 0.32.1, and awaken-cloud pins
    `postgres` feature, with the same validation tests and a cross-driver test
    showing that a ledger written by either SQLite runner is accepted by the other
    (awaken-foundation ADR-0007, which partly reverses its ADR-0005 removal of the
-   sqlx SQLite shell now that a consumer exists). Until a foundation revision
-   with that feature is published, adapters run migrations through the existing
-   `awaken-scoped-migration-sqlite` on a short-lived rusqlite connection opened
-   just before the pool, through `awaken-sqlite-pool`. rusqlite is then a
-   migration-only dependency. It is removed when awaken moves to the new
-   foundation revision.
+   sqlx SQLite shell now that a consumer exists). Each store migrates through its
+   own pool; there is no second driver or second connection to the same file.
 
 6. **Version consequence, accepted.** While sqlx 0.8 is in use, any build graph
    that contains awaken's SQLite stores resolves `libsqlite3-sys` 0.30 and,
@@ -96,6 +95,39 @@ lockfile already resolves rusqlite 0.32.1, and awaken-cloud pins
    - **Then the foundation switch.** Finally, migrations move to the foundation
      `sqlite` feature, and rusqlite and the `awaken-sql-storage` bridges are
      removed.
+
+9. **A paused test clock stands still while SQLite works.** sqlx runs SQLite on
+   its own thread, which a paused Tokio clock cannot see: the clock jumps to the
+   next timer whenever the runtime looks idle, including sqlx's own 24-hour
+   admission bound. The bridge's blocking task hid this, because a running
+   blocking task stops that jump. `EmbeddedPool` keeps the guarantee by holding
+   a blocking task for the span of each query, transaction and acquired
+   connection, measured from the request. The span therefore also covers the
+   wait for the one connection, which includes the moment sqlx spends returning
+   the previous caller's connection. A hold per lent-out connection, from pool
+   hooks, leaves that moment open and also leaks at runtime shutdown, so it was
+   rejected. Migrations run on the underlying pool inside `held`. Only a
+   current-thread runtime can pause its clock, so other runtimes skip the hold.
+
+10. **A dropped store's file settles before it is inspected.** Dropping a
+    synchronous connection closed it at once. sqlx closes a dropped pool's
+    connection later, on its own thread, and the last close checkpoints the WAL
+    into the main file. `EmbeddedSqlite::settled` waits until every pool this
+    process dropped on a file has finished closing; pools still in use do not
+    delay it. A guard kept in a collation tells the pool's connections apart from
+    its handles, because SQLite releases a collation's state exactly when it
+    closes the connection. Read-only inspections of a file, such as the Session
+    store's existing-database probe, settle first.
+
+## Consequences of moving off the bridge
+
+- Cancelling a write before `COMMIT` now rolls it back. The bridge's detached
+  blocking task finished the commit anyway.
+- A panic no longer poisons the connection. The transaction is rolled back and
+  the next caller gets a clean connection.
+- rusqlite stays in the build graph through awaken-iam until that repository
+  moves to the same sqlx migration runner. Its `libsqlite3-sys` is the one sqlx
+  links (item 6).
 
 ## Alternatives
 

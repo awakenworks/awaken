@@ -2,7 +2,7 @@
 // @formal evidence session_resources.explicit_empty_manifest_revokes_runtime_projection
 use super::claimed_dispatch::adopt_bound_sandbox;
 use super::test_support::{
-    AdoptionModel, ToggleBindingSink, available_local_environment_binding, claim,
+    ToggleBindingSink, adoption_host, adoption_host_at, available_local_environment_binding, claim,
     complete_managed_test_host, deferred_environment, eager_environment, empty_frozen_projection,
     empty_frozen_projection_for_snapshot, frozen_projection_for_manifest,
     install_complete_projection_for_snapshot, managed_test_host, prepare_deferred_session,
@@ -35,6 +35,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("dispatch store"),
     );
     let session_id = "reservation-repair";
@@ -78,8 +79,8 @@ async fn session_run_reservation_repair_skips_execution_realization() {
 
     let storage = tempfile::tempdir().expect("storage");
     let host = Arc::new(
-        SharedHost::new(Arc::new(AdoptionModel), "stub")
-            .with_store_dir(storage.path())
+        adoption_host_at(storage.path())
+            .await
             .with_dispatch_store(store),
     );
     HostWorkerResolver {
@@ -114,7 +115,7 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
     // | E1 | ephemeral | direct | child != parent, C4 | E1+E2 |
     use awaken_dispatch::{DispatchQueue as _, WorkerResolver as _};
 
-    let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+    let host = Arc::new(adoption_host().await);
     let managed = managed_test_host(host.clone());
     let parent = awaken_agent_contract::agent::thread::Id("ephemeral-parent".into());
     let child = awaken_agent_contract::agent::thread::Id("ephemeral-child".into());
@@ -179,7 +180,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     // | R3 | durable | no | yes | E4 |
     use awaken_dispatch::{DispatchQueue as _, WorkerResolver as _};
 
-    let ephemeral = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+    let ephemeral = Arc::new(adoption_host().await);
     let ephemeral_managed = managed_test_host(ephemeral.clone());
     let session_id = "ephemeral-report-root";
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
@@ -256,11 +257,10 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let durable_store = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("R2 dispatch store"),
     );
-    let durable = Arc::new(
-        SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(durable_store),
-    );
+    let durable = Arc::new(adoption_host().await.with_dispatch_store(durable_store));
     let _durable_managed = managed_test_host(durable.clone());
     let durable_thread = ThreadId("durable-claimed-root".into());
     let durable_ctx = durable
@@ -282,10 +282,12 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
 
     let coordinator_store = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("R3 dispatch store"),
     );
     let coordinator = Arc::new(
-        SharedHost::new(Arc::new(AdoptionModel), "stub")
+        adoption_host()
+            .await
             .with_coordinator_dispatch_store(coordinator_store.clone()),
     );
     let coordinator_thread = "coordinator-only-claimed-root";
@@ -343,11 +345,10 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("dispatch store"),
     );
-    let host = Arc::new(
-        SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
-    );
+    let host = Arc::new(adoption_host().await.with_dispatch_store(store.clone()));
     let managed = managed_test_host(host.clone());
     let resolver = HostWorkerResolver {
         host: Arc::downgrade(&host),
@@ -423,10 +424,13 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
 
     let missing_store = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("missing dispatch store"),
     );
     let missing_host = Arc::new(
-        SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(missing_store.clone()),
+        adoption_host()
+            .await
+            .with_dispatch_store(missing_store.clone()),
     );
     let _missing_managed =
         crate::ManagedHost::new(missing_host.clone()).install_dispatch_session_runtime();
@@ -516,10 +520,12 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("dispatch store"),
     );
     let host = Arc::new(
-        SharedHost::new(Arc::new(AdoptionModel), "stub")
+        adoption_host()
+            .await
             .with_dispatch_store(store.clone())
             .with_agent_publications(Arc::new(catalog)),
     );
@@ -642,11 +648,12 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("dispatch store"),
     );
     let host = Arc::new(
-        SharedHost::new(Arc::new(AdoptionModel), "stub")
-            .with_store_dir(storage.path())
+        adoption_host_at(storage.path())
+            .await
             .with_dispatch_store(store.clone()),
     );
     let sink = Arc::new(ToggleBindingSink {
@@ -717,11 +724,12 @@ async fn durable_deferred_sandbox_publication_decision_table() {
 
     let loss_store = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("loss dispatch store"),
     );
     let loss_host = Arc::new(
-        SharedHost::new(Arc::new(AdoptionModel), "stub")
-            .with_store_dir(storage.path().join("response-loss"))
+        adoption_host_at(storage.path().join("response-loss"))
+            .await
             .with_dispatch_store(loss_store.clone()),
     );
     let loss_sink = Arc::new(ToggleBindingSink {
@@ -905,11 +913,10 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("dispatch store"),
     );
-    let host = Arc::new(
-        SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
-    );
+    let host = Arc::new(adoption_host().await.with_dispatch_store(store.clone()));
     let thread = "cold-stdio-recovery";
     let realizer = Arc::new(RecordingMcpRealizer {
         required_physical_environment: Some((Arc::downgrade(&host), thread.into())),
@@ -1193,13 +1200,15 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("in-memory dispatch"),
     );
     let resume_calls = Arc::new(AtomicUsize::new(0));
     let continuations = Arc::new(std::sync::Mutex::new(Vec::new()));
     let projection = Arc::new(std::sync::Mutex::new(Some(ordinary_frozen_projection())));
     let host = Arc::new(
-        SharedHost::new(Arc::new(AdoptionModel), "stub")
+        adoption_host()
+            .await
             .with_dispatch_store(dispatch.clone())
             .with_session_realization_control(Arc::new(RecordingSessionControl {
                 resume_calls: resume_calls.clone(),
@@ -1374,7 +1383,9 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
     for rule in ["workspace", "revision", "bindings"] {
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let dispatch = Arc::new(
-            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone()).unwrap(),
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+                .await
+                .unwrap(),
         );
         let mut projection = ordinary_frozen_projection();
         match rule {
@@ -1403,7 +1414,8 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
         let resume_calls = Arc::new(AtomicUsize::new(0));
         let phases = Arc::new(std::sync::Mutex::new(Vec::new()));
         let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub")
+            adoption_host()
+                .await
                 .with_dispatch_store(dispatch.clone())
                 .with_session_realization_control(Arc::new(RecordingSessionControl {
                     resume_calls: resume_calls.clone(),
@@ -1467,8 +1479,7 @@ async fn resource_manifest_must_match_the_durable_execution_scope() {
     // Constraint/Invariant: durable execution scope owns Resource tenancy.
     // Decision rule: exercise the unequal-scope partition and require E1/E2.
     let storage = tempfile::tempdir().expect("storage");
-    let host =
-        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
+    let host = Arc::new(adoption_host_at(storage.path()).await);
     let run = RunId("run-scope-mismatch".to_string());
     let request = ingress::RunDispatch::new(test_activation("thread-scope-mismatch", &run.0))
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
@@ -1521,8 +1532,7 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
     // precedes every live effect. Decision rule: exercise malformed input and
     // require fail-closed zero creation.
     let storage = tempfile::tempdir().expect("storage");
-    let host =
-        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
+    let host = Arc::new(adoption_host_at(storage.path()).await);
     let run = RunId("run-malformed-resources".to_string());
     let request = ingress::RunDispatch::new(test_activation("thread-malformed-resources", &run.0))
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
@@ -1577,8 +1587,7 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
 )]
 async fn live_file_replacement_requires_the_exact_resource_transition() {
     let storage = tempfile::tempdir().expect("storage");
-    let mut raw_host =
-        SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+    let mut raw_host = adoption_host_at(storage.path()).await;
     // Cause/effect decision table. Causes: C1 the Session is physically empty;
     // C2 the complete Dispatch projection supplies the exact Empty->desired
     // transition; C3 a following desired-only manifest is exact/different; C4
@@ -1782,7 +1791,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     // | R1 | rev1→rev1 | absent | exact rev1 | E1, active absent |
     // | R2 | rev1→rev2 | active rev1 | exact rev2 | E1, active rev1 |
     // | R3 | rev1→rev1 | absent | rev2 | E2 |
-    let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+    let host = Arc::new(adoption_host().await);
     let managed = managed_test_host(host.clone());
     let revision_one = awaken_session_resource_contract::SessionResourceManifest::at_revision(
         "workspace-a",
@@ -1923,7 +1932,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
 /// substitute for the aggregate transition.
 #[tokio::test]
 async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
-    let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+    let host = Arc::new(adoption_host().await);
     let managed = managed_test_host(host.clone());
     let claim = ingress::RunClaim {
         run_id: RunId("run-generation-fence".into()),
@@ -2039,7 +2048,7 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
     // | Rule | C1 | C2 | C3 | Effect |
     // | L1 | T | T | F | E1 |
     // | L2 | F | T | T | E2 |
-    let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+    let host = Arc::new(adoption_host().await);
     let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     let thread = "resource-projection-guard";
     let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
@@ -2110,7 +2119,8 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     // | P3 | previous/desired | any | F | F | E4 |
     let storage = tempfile::tempdir().expect("Skill storage");
     let host = Arc::new(
-        SharedHost::new(Arc::new(AdoptionModel), "stub")
+        adoption_host()
+            .await
             .with_skill_store(storage.path().join("skills")),
     );
     let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
@@ -2287,7 +2297,8 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
     }
 
     let host = Arc::new(
-        SharedHost::new(Arc::new(AdoptionModel), "stub")
+        adoption_host()
+            .await
             .with_file_content_source(Arc::new(ClaimFileSource)),
     );
     let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
@@ -2355,7 +2366,7 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
 #[tokio::test]
 async fn sandbox_binding_is_validated_before_provider_adoption() {
     let storage = tempfile::tempdir().expect("storage");
-    let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+    let host = adoption_host_at(storage.path()).await;
     assert!(
         host.adopt_bound_session_environment(
             "thread-a",
@@ -2401,16 +2412,14 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
     // aggregation must preserve these existing typed observations and effects.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-adoption";
-    let first =
-        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
+    let first = Arc::new(adoption_host_at(storage.path()).await);
     let projection = empty_frozen_projection(first.local_workspace(), eager_environment());
     let encoded = available_local_environment_binding(&first, thread, &projection).await;
     let handle: awaken_provisioning_contract::SandboxHandle =
         serde_json::from_str(&encoded).expect("A1 exact ready handle");
     drop(first);
 
-    let replacement =
-        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
+    let replacement = Arc::new(adoption_host_at(storage.path()).await);
     let _replacement_managed = managed_test_host(replacement.clone());
     replacement
         .install_frozen_session_projection(thread, projection, None, true, None)
@@ -2508,7 +2517,7 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
     let mut activation = test_activation(thread, "fixture-backend-owned-adoption");
     activation.snapshot.resolved_spec.model_binding = candidate;
 
-    let mut first = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+    let mut first = adoption_host_at(storage.path()).await;
     first.env.backend_owned_session_provider = Some(
         crate::session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
             .into_session_provider(),
@@ -2532,8 +2541,7 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
         "A2 ordinary provider root cannot satisfy this handle"
     );
 
-    let mut replacement =
-        SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+    let mut replacement = adoption_host_at(storage.path()).await;
     replacement.env.backend_owned_session_provider = Some(
         crate::session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
             .into_session_provider(),
@@ -2575,8 +2583,7 @@ async fn a_resident_environment_is_reused_without_a_second_adoption() {
     // resident Environment; matching binding adoption reuses that exact owner.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-resident-adoption";
-    let host =
-        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
+    let host = Arc::new(adoption_host_at(storage.path()).await);
     let _managed = managed_test_host(host.clone());
     let ctx = host.ctx_for(thread, None).await.expect("resident session");
     let handle = ctx
@@ -2612,8 +2619,7 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
     // retained by continuity mode and discarded only by explicit rebuild.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-dead-resident";
-    let host =
-        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
+    let host = Arc::new(adoption_host_at(storage.path()).await);
     let _managed = managed_test_host(host.clone());
     let ctx = host.ctx_for(thread, None).await.expect("resident session");
     let handle = ctx
@@ -2675,8 +2681,7 @@ async fn a_stale_binding_cannot_evict_a_different_resident_environment() {
     // retain both the exact Environment owner and Runtime.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-binding-fence";
-    let host =
-        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
+    let host = Arc::new(adoption_host_at(storage.path()).await);
     let _managed = managed_test_host(host.clone());
     let ctx = host.ctx_for(thread, None).await.expect("resident session");
     let resident = ctx
@@ -2723,8 +2728,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
     // remains Resident. A legacy V1 fixture cannot prove C2 and is excluded.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-environment-aba";
-    let host =
-        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
+    let host = Arc::new(adoption_host_at(storage.path()).await);
     let _managed = managed_test_host(host.clone());
     let projection = empty_frozen_projection(host.local_workspace(), eager_environment());
     let binding = available_local_environment_binding(&host, thread, &projection).await;
@@ -2784,8 +2788,7 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
     // Constraint/Invariant: terminal control does not require execution
     // realization. Decision rule: exercise C1 and require control-only success.
     let storage = tempfile::tempdir().expect("storage");
-    let host =
-        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
+    let host = Arc::new(adoption_host_at(storage.path()).await);
     let thread = ThreadId("thread-control-only".to_string());
     let run = RunId("run-control-only".to_string());
     let fingerprint = CatalogFingerprint("control-only-catalog".to_string());
@@ -2868,11 +2871,14 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
         );
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let dispatch = Arc::new(
-            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone()).unwrap(),
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+                .await
+                .unwrap(),
         );
         let calls = Arc::new(AtomicUsize::new(0));
         let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub")
+            adoption_host()
+                .await
                 .with_dispatch_store(dispatch.clone())
                 .with_session_realization_control(Arc::new(RecordingSessionControl {
                     resume_calls: calls.clone(),
@@ -2968,7 +2974,7 @@ async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
         generation: None,
         idle_since_unix_ms: None,
     };
-    let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+    let host = Arc::new(adoption_host().await);
     let managed = managed_test_host(host.clone());
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,

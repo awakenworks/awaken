@@ -18,8 +18,11 @@ async fn scan_interests_skip_only_phases_absent_from_the_observed_prefix() {
     // row is owned by the existing phase success/failure tests, which require a
     // fresh root before effects. A false hint can skip scheduling only; it
     // carries no payload, receipt or durable cursor.
-    let durable =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let durable = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(durable.as_ref(), persisted("hint-skip", true, "idle")).await;
     let observed = Arc::new(FaultingSessionRepository::new(durable));
     let app = application(
@@ -200,8 +203,11 @@ async fn slow_background_resource_cleanup_cannot_block_startup_activations() {
     // roots complete their real repository read; E2 only one background root is
     // attempted; E3 cancellation owns and drops the held future. RP4 proves the
     // selector and existing bounded sweep compose without a detached scheduler.
-    let durable =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let durable = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     for id in [
         "background-a",
         "activation-a",
@@ -344,7 +350,9 @@ async fn recovery_sweeps_isolate_slow_sessions_with_a_bounded_owned_sweep() {
         };
         for held in [1, bound] {
             let durable = Arc::new(
-                awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                    .await
+                    .unwrap(),
             );
             let ids = (0..=bound)
                 .map(|n| format!("sweep-{n}"))
@@ -456,8 +464,11 @@ async fn event_sweep_keeps_the_measured_fleet_and_existing_session_in_one_wave()
         crate::recovery_sweep::EVENT_RECOVERY_CONCURRENCY >= count,
         "F3 requires one Event wave for the measured topology"
     );
-    let durable =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let durable = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let ids = (0..count)
         .map(|index| format!("fleet-wave-{index}"))
         .collect::<Vec<_>>();
@@ -528,7 +539,9 @@ async fn recovery_sweeps_retain_read_failures_and_missing_root_semantics() {
     // sibling may stop later candidates or manufacture a settlement.
     for phase in [Phase::Events, Phase::Resources] {
         let durable = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         create(durable.as_ref(), persisted("ready", true, "idle")).await;
         let observed = Arc::new(FaultingSessionRepository::new(durable));

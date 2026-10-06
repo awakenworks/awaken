@@ -21,11 +21,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing = "0.1"
 chacha20poly1305 = { version = "0.10", optional = true }
-rusqlite = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
-awaken-scoped-migration = { workspace = true, features = ["postgres"] }
-awaken-scoped-migration-sqlite.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json", "sqlite"], optional = true }
+awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] }
 awaken-sqlite-pool = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -37,13 +35,13 @@ awaken-time.workspace = true
 awaken-lease-contract.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process"] }
 tempfile = "3"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }
 
 [features]
 default = []
 test-support = ["awaken-credential-vault/test-support"]
 sealed-aead = ["dep:chacha20poly1305"]
-sqlite = ["dep:rusqlite", "dep:tokio", "dep:awaken-sqlite-pool"]
+sqlite = ["dep:sqlx", "dep:tokio", "dep:awaken-sqlite-pool"]
 postgres = ["dep:sqlx"]
 
 [[test]]

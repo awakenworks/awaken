@@ -19,13 +19,17 @@ fn memory_test_snapshot(agent: &str) -> awaken_runtime_contract::ExecutableAgent
     .expect("literal model reference")
 }
 
-fn memory_test_host(model: Arc<dyn LlmExecutor>, agent: &str) -> Arc<SharedHost> {
+async fn memory_test_host(model: Arc<dyn LlmExecutor>, agent: &str) -> Arc<SharedHost> {
     let publications =
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([memory_test_snapshot(
             agent,
         )])
         .expect("valid Memory Agent publication");
-    Arc::new(SharedHost::new(model, "stub").with_agent_publications(Arc::new(publications)))
+    Arc::new(
+        SharedHost::new(model, "stub")
+            .await
+            .with_agent_publications(Arc::new(publications)),
+    )
 }
 
 /// Install one complete Memory-enabled Session through the immutable Agent and
@@ -130,7 +134,9 @@ async fn compaction_summary_reaches_the_same_long_run() {
     // it must remain model-visible while contributing no conversational prefix
     // to compaction. C1+C3 => still E1; C2+C3 => E2 over actual Thread history.
     let (host, _managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction_tokens(1, 1),
+        SharedHost::new(Arc::new(CompactHostModel), "stub")
+            .await
+            .with_compaction_tokens(1, 1),
     );
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, "hello")];
 
@@ -167,7 +173,9 @@ async fn compaction_keeps_full_history_until_a_summary_activates_the_window() {
     // coverage from a summary. Decision rule: keep C1 false for summary activation
     // and require both user messages remain visible.
     let (host, _managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction_tokens(100, 1),
+        SharedHost::new(Arc::new(CompactHostModel), "stub")
+            .await
+            .with_compaction_tokens(100, 1),
     );
     let user = |id: &str| vec![Message::text(MessageId(id.into()), Role::User, id)];
 
@@ -205,8 +213,11 @@ async fn compaction_keeps_full_history_until_a_summary_activates_the_window() {
 /// | C8 | 2/1 | claimed rebuild | 2/1 | preserve exact config |
 #[tokio::test]
 async fn generated_compaction_config_survives_claimed_rebuild() {
-    let host =
-        Arc::new(SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction_tokens(2, 1));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(CompactHostModel), "stub")
+            .await
+            .with_compaction_tokens(2, 1),
+    );
     let _managed = install_test_dispatch_runtime(&host);
 
     let provisional = host
@@ -271,7 +282,9 @@ async fn published_compact_plugin_is_installed_from_the_immutable_agent() {
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot.clone()])
             .expect("one immutable published Agent");
     let (host, managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications)),
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_agent_publications(Arc::new(publications)),
     );
     install_test_session_application(&host);
     crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
@@ -373,7 +386,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     // the preference; E2 C2 recalls and uses it. Constraint/Invariant: transfer is
     // only through the Memory store, never copied Thread transcript. Decision rule:
     // write on A, drain extraction, then require recall-derived output on B.
-    let host = memory_test_host(Arc::new(MemLoopModel), "memory-agent");
+    let host = memory_test_host(Arc::new(MemLoopModel), "memory-agent").await;
     install_test_memory_mounter(&host);
     let managed = managed_with_resource_source(host.clone());
     let store = test_memory_store_id();
@@ -446,7 +459,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
         let parent = format!("child-memory-parent-{warm}");
         let child = ThreadId(format!("child-memory-thread-{warm}"));
         let run = RunId(format!("child-memory-run-{warm}"));
-        let host = memory_test_host(Arc::new(MemLoopModel), "memory-agent");
+        let host = memory_test_host(Arc::new(MemLoopModel), "memory-agent").await;
         install_test_memory_mounter(&host);
         let managed =
             managed_with_resource_source_using(host.clone(), install_recording_session_application);
@@ -598,7 +611,9 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
     // longer opens a commit Store.
     let (first, first_managed) = dispatch_test_host(
         SharedHost::new(Arc::new(MemoryHostModel), "stub")
+            .await
             .with_store_dir(&dir)
+            .await
             .with_runtime_authority(authority.clone()),
     );
     first
@@ -624,7 +639,9 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
     // the same durable intent normal after-commit delivery would have produced.
     let (second, second_managed) = dispatch_test_host(
         SharedHost::new(Arc::new(MemoryHostModel), "stub")
+            .await
             .with_store_dir(&dir)
+            .await
             .with_runtime_authority(authority),
     );
     bind_test_memory(&second, thread, "outbox-store", true);
@@ -651,6 +668,7 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
     let repository = awaken_session_store::SqliteManagedSessionRepository::open(
         &dir.join("sessions.db").to_string_lossy(),
     )
+    .await
     .unwrap();
     let intent = repository
         .get_extraction(&format!("memory-extraction:{thread}:{}", run.id.0))
@@ -703,6 +721,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
         .expect("valid publication");
     let host = Arc::new(
         SharedHost::new(Arc::new(MemLoopModel), "stub")
+            .await
             .with_agent_publications(Arc::new(publications)),
     );
     let unbound_store = test_memory_store_id();
@@ -861,7 +880,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     use awaken_session_configuration_contract::SessionInit;
 
     let sandbox_roots = tempfile::tempdir().unwrap();
-    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub").await;
     raw_host.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_roots.path().to_path_buf(),
@@ -1149,6 +1168,7 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
         .expect("valid publication");
     let host = Arc::new(
         SharedHost::new(Arc::new(MemLoopModel), "stub")
+            .await
             .with_agent_publications(Arc::new(publications)),
     );
     install_test_memory_mounter(&host);
@@ -1276,6 +1296,7 @@ async fn resume_ended_run_triggers_memory_extraction() {
         .expect("valid Memory Agent publication");
     let host = Arc::new(
         SharedHost::new(Arc::new(ResumeMemModel), "stub")
+            .await
             .with_gate_override(write_confirmation_gate())
             .with_agent_publications(Arc::new(publications)),
     );
@@ -1389,7 +1410,7 @@ async fn extraction_cursor_only_processes_new_messages() {
     // previously processed messages must never re-enter a later seed. Decision rule:
     // advance the cursor once, append new messages, and require only the
     // suffix effect documented below.
-    let host = memory_test_host(Arc::new(CursorModel), "memory-agent");
+    let host = memory_test_host(Arc::new(CursorModel), "memory-agent").await;
     install_test_memory_mounter(&host);
     let managed = managed_with_resource_source(host.clone());
     let store = test_memory_store_id();
@@ -1429,7 +1450,7 @@ async fn run_end_fires_background_memory_extraction() {
     // blocking the Run response; E2 draining background work persists the result.
     // Constraint/Invariant: committed Run end triggers exactly one background job.
     // Decision rule: end one Run, observe prompt return, then drain and require E2.
-    let host = memory_test_host(Arc::new(MemoryHostModel), "memory-agent");
+    let host = memory_test_host(Arc::new(MemoryHostModel), "memory-agent").await;
     install_test_memory_mounter(&host);
     let managed = managed_with_resource_source(host.clone());
     let store = test_memory_store_id();

@@ -1,7 +1,10 @@
 // @formal evidence skill.pinned_version_survives_retirement
 //! SQLite [`SkillStore`] over the crate's `skill_store` migration scope.
 
-use rusqlite::{Connection, OptionalExtension, params};
+use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
+use sqlx::SqliteConnection;
 
 use crate::schema::{BUNDLE_ID, converged_skill_store_bundle, selected_skill_store_bundle};
 #[cfg(test)]
@@ -13,6 +16,10 @@ use crate::{
 
 const NS: &str = "skill_store";
 
+/// SQLite extended result codes that identify a uniqueness violation.
+const SQLITE_CONSTRAINT_PRIMARYKEY: i32 = 1555;
+const SQLITE_CONSTRAINT_UNIQUE: i32 = 2067;
+
 /// Errors from opening or migrating the store.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -22,29 +29,23 @@ pub enum StoreError {
     Migrate(String),
 }
 
-/// Apply the `skill_store` scoped migration bundle to the guarded connection.
-fn migrate_guarded(conn: &awaken_sqlite_pool::SharedSqliteConnection) -> Result<(), StoreError> {
-    let guard = conn
-        .lock()
-        .map_err(|_| StoreError::Migrate("skill_store connection poisoned".into()))?;
-    let ledger_exists = guard
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-            [format!("{NS}_schema_migrations")],
-            |row| row.get::<_, bool>(0),
-        )
-        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+/// Apply the `skill_store` scoped migration bundle to the store's pool.
+async fn migrate(pool: &EmbeddedPool) -> Result<(), StoreError> {
+    let ledger_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+    )
+    .bind(format!("{NS}_schema_migrations"))
+    .fetch_one(pool)
+    .await
+    .map_err(|error| StoreError::Migrate(error.to_string()))?;
     let v1_checksum = if ledger_exists {
-        guard
-            .query_row(
-                &format!(
-                    "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
-                ),
-                [BUNDLE_ID],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|error| StoreError::Migrate(error.to_string()))?
+        sqlx::query_scalar::<_, String>(&format!(
+            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
+        ))
+        .bind(BUNDLE_ID)
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| StoreError::Migrate(error.to_string()))?
     } else {
         None
     };
@@ -52,11 +53,15 @@ fn migrate_guarded(conn: &awaken_sqlite_pool::SharedSqliteConnection) -> Result<
         .map_err(|error| StoreError::Migrate(error.to_string()))?;
     let converged =
         converged_skill_store_bundle().map_err(|error| StoreError::Migrate(error.to_string()))?;
-    let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+    let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
         .map_err(|error| StoreError::Migrate(error.to_string()))?;
     runner
-        .run_bundle(&guard, &published)
-        .and_then(|_| runner.run_bundle(&guard, &converged))
+        .run_bundle(&published)
+        .await
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    runner
+        .run_bundle(&converged)
+        .await
         .map_err(|error| StoreError::Migrate(error.to_string()))?;
     Ok(())
 }
@@ -67,122 +72,130 @@ fn storage(err: impl std::fmt::Display) -> SkillStoreError {
     }
 }
 
-fn create_error(error: rusqlite::Error, id: String) -> SkillStoreError {
-    match &error {
-        rusqlite::Error::SqliteFailure(code, _)
-            if matches!(
-                code.extended_code,
-                rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
-                    | rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
-            ) =>
-        {
-            SkillStoreError::AlreadyExists(id)
-        }
-        _ => storage(error),
+fn create_error(error: sqlx::Error, id: String) -> SkillStoreError {
+    let duplicate = match &error {
+        sqlx::Error::Database(database) => database
+            .code()
+            .and_then(|code| code.parse::<i32>().ok())
+            .is_some_and(|code| {
+                matches!(
+                    code,
+                    SQLITE_CONSTRAINT_UNIQUE | SQLITE_CONSTRAINT_PRIMARYKEY
+                )
+            }),
+        _ => false,
+    };
+    if duplicate {
+        SkillStoreError::AlreadyExists(id)
+    } else {
+        storage(error)
     }
 }
 
-async fn with_conn<T, F>(
-    conn: &awaken_sqlite_pool::SharedSqliteConnection,
-    f: F,
-) -> Result<T, SkillStoreError>
-where
-    T: Send + 'static,
-    F: FnOnce(&Connection) -> Result<T, SkillStoreError> + Send + 'static,
-{
-    awaken_sqlite_pool::with_connection(conn.clone(), move |connection| f(connection))
-        .await
-        .map_err(storage)?
+async fn aggregate_data(
+    conn: &mut SqliteConnection,
+    workspace_id: &str,
+    skill_id: &str,
+) -> Result<Option<String>, SkillStoreError> {
+    sqlx::query_scalar::<_, String>(&format!(
+        "SELECT data FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"
+    ))
+    .bind(workspace_id)
+    .bind(skill_id)
+    .fetch_optional(conn)
+    .await
+    .map_err(storage)
+}
+
+async fn update_aggregate_data(
+    conn: &mut SqliteConnection,
+    workspace_id: &str,
+    skill_id: &str,
+    data: &str,
+) -> Result<(), SkillStoreError> {
+    sqlx::query(&format!(
+        "UPDATE {NS}_aggregate SET data = ?3 WHERE workspace_id = ?1 AND id = ?2"
+    ))
+    .bind(workspace_id)
+    .bind(skill_id)
+    .bind(data)
+    .execute(conn)
+    .await
+    .map_err(storage)?;
+    Ok(())
 }
 
 /// A SQLite-backed [`SkillStore`].
 pub struct SqliteSkillStore {
-    conn: awaken_sqlite_pool::SharedSqliteConnection,
+    pool: EmbeddedPool,
 }
 
 impl SqliteSkillStore {
     /// Open (or create) a database file and apply the skill-store migrations
     /// (one-step convenience for a store-owned database).
-    pub fn open(path: &str) -> Result<Self, StoreError> {
-        let conn = awaken_sqlite_pool::SqliteConnectionFactory::file(path)
-            .open()
-            .map_err(|e| StoreError::Open(e.to_string()))?;
-        let store = Self::over(conn);
-        store.ensure_schema()?;
-        Ok(store)
+    pub async fn open(path: &str) -> Result<Self, StoreError> {
+        Self::open_at(EmbeddedSqlite::file(path)).await
     }
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = awaken_sqlite_pool::SqliteConnectionFactory::memory()
+    pub async fn open_in_memory() -> Result<Self, StoreError> {
+        Self::open_at(EmbeddedSqlite::memory()).await
+    }
+
+    async fn open_at(location: EmbeddedSqlite) -> Result<Self, StoreError> {
+        let pool = location
             .open()
+            .await
             .map_err(|e| StoreError::Open(e.to_string()))?;
-        let store = Self::over(conn);
-        store.ensure_schema()?;
+        let store = Self::over(pool);
+        store.ensure_schema().await?;
         Ok(store)
     }
 
-    /// Wrap an existing connection **without migrating**. Call
+    /// Wrap an existing pool **without migrating**. Call
     /// [`Self::ensure_schema`], or let a unified migration pipeline own the
     /// `skill_store` scope so this store shares the caller's database.
-    pub fn over(conn: Connection) -> Self {
-        Self {
-            conn: awaken_sqlite_pool::SharedSqliteConnection::new(conn),
-        }
+    pub fn over(pool: EmbeddedPool) -> Self {
+        Self { pool }
     }
 
     /// Apply the `skill_store` scoped migration bundle (idempotent). Optional.
-    pub fn ensure_schema(&self) -> Result<(), StoreError> {
-        migrate_guarded(&self.conn)
+    pub async fn ensure_schema(&self) -> Result<(), StoreError> {
+        migrate(&self.pool).await
     }
 
     async fn workspace_snapshot(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<SkillAggregate>, SkillStoreError> {
-        let ws = workspace_id.to_string();
-        with_conn(&self.conn, move |conn| {
-            let mut statement = conn
-                .prepare(&format!(
-                    "SELECT id, data FROM {NS}_aggregate WHERE workspace_id = ?1 ORDER BY id"
-                ))
-                .map_err(storage)?;
-            let rows = statement
-                .query_map(params![ws], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(storage)?;
-            let mut aggregates = Vec::new();
-            for row in rows {
-                let (id, data) = row.map_err(storage)?;
-                let aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
-                if !aggregate.deleted {
-                    aggregates.push(aggregate);
-                }
-            }
-            Ok(aggregates)
-        })
+        let rows = sqlx::query_as::<_, (String, String)>(&format!(
+            "SELECT id, data FROM {NS}_aggregate WHERE workspace_id = ?1 ORDER BY id"
+        ))
+        .bind(workspace_id)
+        .fetch_all(&self.pool)
         .await
+        .map_err(storage)?;
+        let mut aggregates = Vec::new();
+        for (id, data) in rows {
+            let aggregate = decode_aggregate(data.as_bytes(), workspace_id, &id)?;
+            if !aggregate.deleted {
+                aggregates.push(aggregate);
+            }
+        }
+        Ok(aggregates)
     }
 }
 
 #[async_trait::async_trait]
 impl SkillStore for SqliteSkillStore {
     async fn workspace_ids(&self) -> Result<Vec<String>, SkillStoreError> {
-        with_conn(&self.conn, move |conn| {
-            let mut statement = conn
-                .prepare(&format!(
-                    "SELECT DISTINCT workspace_id FROM {NS}_aggregate ORDER BY workspace_id"
-                ))
-                .map_err(storage)?;
-            statement
-                .query_map([], |row| row.get::<_, String>(0))
-                .map_err(storage)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(storage)
-        })
+        sqlx::query_scalar::<_, String>(&format!(
+            "SELECT DISTINCT workspace_id FROM {NS}_aggregate ORDER BY workspace_id"
+        ))
+        .fetch_all(&self.pool)
         .await
+        .map_err(storage)
     }
 
     async fn create(
@@ -203,15 +216,16 @@ impl SkillStore for SqliteSkillStore {
         let ws = aggregate.definition.workspace_id.to_string();
         let id = aggregate.definition.id.to_string();
         let data = encode_aggregate(&aggregate)?;
-        with_conn(&self.conn, move |conn| {
-            conn.execute(
-                &format!("INSERT INTO {NS}_aggregate (workspace_id, id, data) VALUES (?1, ?2, ?3)"),
-                params![ws, id, data],
-            )
-            .map(|_| ())
-            .map_err(|error| create_error(error, id))
-        })
+        sqlx::query(&format!(
+            "INSERT INTO {NS}_aggregate (workspace_id, id, data) VALUES (?1, ?2, ?3)"
+        ))
+        .bind(&ws)
+        .bind(&id)
+        .bind(&data)
+        .execute(&self.pool)
         .await
+        .map(|_| ())
+        .map_err(|error| create_error(error, id))
     }
 
     async fn append_version(
@@ -220,33 +234,15 @@ impl SkillStore for SqliteSkillStore {
         skill_id: &str,
         version: SkillVersion,
     ) -> Result<(), SkillStoreError> {
-        let ws = workspace_id.to_string();
-        let id = skill_id.to_string();
-        with_conn(&self.conn, move |conn| {
-            let transaction = conn.unchecked_transaction().map_err(storage)?;
-            let data = transaction
-                .query_row(
-                    &format!("SELECT data FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"),
-                    params![ws, id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-                .ok_or_else(|| SkillStoreError::NotFound(id.clone()))?;
-            let mut aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
-            append_to(&mut aggregate, version)?;
-            let data = encode_aggregate(&aggregate)?;
-            transaction
-                .execute(
-                    &format!(
-                        "UPDATE {NS}_aggregate SET data = ?3 WHERE workspace_id = ?1 AND id = ?2"
-                    ),
-                    params![ws, id, data],
-                )
-                .map_err(storage)?;
-            transaction.commit().map_err(storage)
-        })
-        .await
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let data = aggregate_data(&mut transaction, workspace_id, skill_id)
+            .await?
+            .ok_or_else(|| SkillStoreError::NotFound(skill_id.to_string()))?;
+        let mut aggregate = decode_aggregate(data.as_bytes(), workspace_id, skill_id)?;
+        append_to(&mut aggregate, version)?;
+        let data = encode_aggregate(&aggregate)?;
+        update_aggregate_data(&mut transaction, workspace_id, skill_id, &data).await?;
+        transaction.commit().await.map_err(storage)
     }
 
     async fn definition(
@@ -254,24 +250,15 @@ impl SkillStore for SqliteSkillStore {
         workspace_id: &str,
         skill_id: &str,
     ) -> Result<Option<SkillDefinition>, SkillStoreError> {
-        let ws = workspace_id.to_string();
-        let id = skill_id.to_string();
-        with_conn(&self.conn, move |conn| {
-            conn.query_row(
-                &format!("SELECT data FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"),
-                params![ws, id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(storage)?
+        let mut conn = self.pool.acquire().await.map_err(storage)?;
+        aggregate_data(&mut conn, workspace_id, skill_id)
+            .await?
             .map(|data| {
-                decode_aggregate(data.as_bytes(), &ws, &id)
+                decode_aggregate(data.as_bytes(), workspace_id, skill_id)
                     .map(|value| (!value.deleted).then_some(value.definition))
             })
             .transpose()
             .map(Option::flatten)
-        })
-        .await
     }
 
     async fn list_definitions(
@@ -341,42 +328,24 @@ impl SkillStore for SqliteSkillStore {
         skill_id: &str,
         version: u64,
     ) -> Result<bool, SkillStoreError> {
-        let ws = workspace_id.to_string();
-        let id = skill_id.to_string();
-        with_conn(&self.conn, move |conn| {
-            let transaction = conn.unchecked_transaction().map_err(storage)?;
-            let Some(data) = transaction
-                .query_row(
-                    &format!("SELECT data FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"),
-                    params![ws, id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-            else {
-                return Ok(false);
-            };
-            let mut aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
-            let removed = remove_version_from(
-                &mut aggregate.definition,
-                &aggregate.versions,
-                &mut aggregate.retired_versions,
-                aggregate.deleted,
-                version,
-            )?;
-            if removed {
-                let data = encode_aggregate(&aggregate)?;
-                transaction
-                    .execute(
-                        &format!("UPDATE {NS}_aggregate SET data = ?3 WHERE workspace_id = ?1 AND id = ?2"),
-                        params![ws, id, data],
-                    )
-                    .map_err(storage)?;
-            }
-            transaction.commit().map_err(storage)?;
-            Ok(removed)
-        })
-        .await
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let Some(data) = aggregate_data(&mut transaction, workspace_id, skill_id).await? else {
+            return Ok(false);
+        };
+        let mut aggregate = decode_aggregate(data.as_bytes(), workspace_id, skill_id)?;
+        let removed = remove_version_from(
+            &mut aggregate.definition,
+            &aggregate.versions,
+            &mut aggregate.retired_versions,
+            aggregate.deleted,
+            version,
+        )?;
+        if removed {
+            let data = encode_aggregate(&aggregate)?;
+            update_aggregate_data(&mut transaction, workspace_id, skill_id, &data).await?;
+        }
+        transaction.commit().await.map_err(storage)?;
+        Ok(removed)
     }
 
     async fn delete_skill(
@@ -384,34 +353,18 @@ impl SkillStore for SqliteSkillStore {
         workspace_id: &str,
         skill_id: &str,
     ) -> Result<bool, SkillStoreError> {
-        let ws = workspace_id.to_string();
-        let id = skill_id.to_string();
-        with_conn(&self.conn, move |conn| {
-            let Some(data) = conn
-                .query_row(
-                    &format!("SELECT data FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"),
-                    params![ws, id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-            else {
-                return Ok(false);
-            };
-            let mut aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
-            if aggregate.deleted {
-                return Ok(false);
-            }
-            aggregate.deleted = true;
-            let data = encode_aggregate(&aggregate)?;
-            conn.execute(
-                &format!("UPDATE {NS}_aggregate SET data = ?3 WHERE workspace_id = ?1 AND id = ?2"),
-                params![ws, id, data],
-            )
-            .map_err(storage)?;
-            Ok(true)
-        })
-        .await
+        let mut conn = self.pool.acquire().await.map_err(storage)?;
+        let Some(data) = aggregate_data(&mut conn, workspace_id, skill_id).await? else {
+            return Ok(false);
+        };
+        let mut aggregate = decode_aggregate(data.as_bytes(), workspace_id, skill_id)?;
+        if aggregate.deleted {
+            return Ok(false);
+        }
+        aggregate.deleted = true;
+        let data = encode_aggregate(&aggregate)?;
+        update_aggregate_data(&mut conn, workspace_id, skill_id, &data).await?;
+        Ok(true)
     }
 
     async fn purge_skill(
@@ -419,34 +372,25 @@ impl SkillStore for SqliteSkillStore {
         workspace_id: &str,
         skill_id: &str,
     ) -> Result<u64, SkillStoreError> {
-        let ws = workspace_id.to_string();
-        let id = skill_id.to_string();
-        with_conn(&self.conn, move |conn| {
-            let Some(data) = conn
-                .query_row(
-                    &format!("SELECT data FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"),
-                    params![ws, id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-            else {
-                return Ok(0);
-            };
-            let aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
-            if !aggregate.deleted {
-                return Err(SkillStoreError::LifecycleConflict {
-                    detail: "an active Skill cannot be physically reclaimed".into(),
-                });
-            }
-            conn.execute(
-                &format!("DELETE FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"),
-                params![ws, id],
-            )
-            .map_err(storage)?;
-            u64::try_from(aggregate.versions.len()).map_err(storage)
-        })
+        let mut conn = self.pool.acquire().await.map_err(storage)?;
+        let Some(data) = aggregate_data(&mut conn, workspace_id, skill_id).await? else {
+            return Ok(0);
+        };
+        let aggregate = decode_aggregate(data.as_bytes(), workspace_id, skill_id)?;
+        if !aggregate.deleted {
+            return Err(SkillStoreError::LifecycleConflict {
+                detail: "an active Skill cannot be physically reclaimed".into(),
+            });
+        }
+        sqlx::query(&format!(
+            "DELETE FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"
+        ))
+        .bind(workspace_id)
+        .bind(skill_id)
+        .execute(&mut *conn)
         .await
+        .map_err(storage)?;
+        u64::try_from(aggregate.versions.len()).map_err(storage)
     }
 }
 
@@ -456,20 +400,11 @@ impl SqliteSkillStore {
         workspace_id: &str,
         skill_id: &str,
     ) -> Result<Option<SkillAggregate>, SkillStoreError> {
-        let ws = workspace_id.to_string();
-        let id = skill_id.to_string();
-        with_conn(&self.conn, move |conn| {
-            conn.query_row(
-                &format!("SELECT data FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"),
-                params![ws, id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(storage)?
-            .map(|data| decode_aggregate(data.as_bytes(), &ws, &id))
+        let mut conn = self.pool.acquire().await.map_err(storage)?;
+        aggregate_data(&mut conn, workspace_id, skill_id)
+            .await?
+            .map(|data| decode_aggregate(data.as_bytes(), workspace_id, skill_id))
             .transpose()
-        })
-        .await
     }
 }
 
@@ -477,22 +412,63 @@ impl SqliteSkillStore {
 mod tests {
     use super::*;
 
+    /// A driver error carrying only an extended result code and a message, so
+    /// the mapping can be exercised for codes a test cannot easily provoke.
+    #[derive(Debug)]
+    struct CodedError {
+        code: i32,
+        message: &'static str,
+    }
+
+    impl std::fmt::Display for CodedError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(self.message)
+        }
+    }
+
+    impl std::error::Error for CodedError {}
+
+    impl sqlx::error::DatabaseError for CodedError {
+        fn message(&self) -> &str {
+            self.message
+        }
+
+        fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+            Some(self.code.to_string().into())
+        }
+
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+    }
+
     #[test]
     fn create_failure_uses_constraint_identity_not_diagnostic_text() {
         // C1 UNIQUE/PRIMARYKEY => AlreadyExists; C2 BUSY/IO => unknown outcome.
         // R1/R2 cross both innocuous and misleading diagnostic strings; text
         // cannot manufacture a uniqueness receipt or erase the true conflict.
+        const SQLITE_BUSY: i32 = 5;
+        const SQLITE_IOERR: i32 = 10;
         for (code, duplicate) in [
-            (rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE, true),
-            (rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY, true),
-            (rusqlite::ffi::SQLITE_BUSY, false),
-            (rusqlite::ffi::SQLITE_IOERR, false),
+            (SQLITE_CONSTRAINT_UNIQUE, true),
+            (SQLITE_CONSTRAINT_PRIMARYKEY, true),
+            (SQLITE_BUSY, false),
+            (SQLITE_IOERR, false),
         ] {
             for message in ["different language", "UNIQUE constraint failed"] {
-                let error = rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(code),
-                    Some(message.into()),
-                );
+                let error = sqlx::Error::Database(Box::new(CodedError { code, message }));
                 let mapped = create_error(error, "skill".into());
                 assert_eq!(
                     matches!(mapped, SkillStoreError::AlreadyExists(_)),
@@ -506,16 +482,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn current_baseline_exposes_only_the_skill_aggregate() {
+    #[tokio::test]
+    async fn create_failure_maps_a_real_duplicate_to_already_exists() {
+        // The driver reports a real duplicate key with the extended code the
+        // mapping above keys on.
+        let store = SqliteSkillStore::open_in_memory().await.unwrap();
+        let (definition, version) = aggregate();
+        store.create(definition, version).await.unwrap();
+        let (definition, version) = aggregate();
+        assert!(matches!(
+            store.create(definition, version).await,
+            Err(SkillStoreError::AlreadyExists(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn current_baseline_exposes_only_the_skill_aggregate() {
         // Causes: C1 empty ledger; C2 exact V1 replay. Effects: E1 create the
         // aggregate table without the retired current-body projection; E2 apply
         // once; E3 replay no SQL. Decision rules S1=C1=>E1+E2; S2=C2=>E3.
-        let conn = Connection::open_in_memory().expect("open sqlite");
+        let pool = EmbeddedSqlite::memory().open().await.expect("open sqlite");
         let full = skill_store_bundle().expect("bundle builds");
-        let runner =
-            awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS).expect("runner");
-        let applied = runner.run_bundle(&conn, &full).expect("S1");
+        let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS).expect("runner");
+        let applied = runner.run_bundle(&full).await.expect("S1");
         assert_eq!(
             applied
                 .iter()
@@ -524,22 +513,20 @@ mod tests {
             vec![1],
             "S1/E2"
         );
-        let active: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='skill_store_aggregate'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let retired: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='skill_store_skill'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let active: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='skill_store_aggregate'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let retired: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='skill_store_skill'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!((active, retired), (1, 0), "S1/E1");
-        assert!(runner.run_bundle(&conn, &full).expect("S2").is_empty());
+        assert!(runner.run_bundle(&full).await.expect("S2").is_empty());
     }
 
     #[tokio::test]
@@ -549,35 +536,35 @@ mod tests {
         // only the common receipt; E2 preserve but never read/write V1 data;
         // E3 persist and read the aggregate through the sole SkillStore API.
         // Decision rule X1=H1+H2+H3 => E1+E2+E3.
-        let conn = Connection::open_in_memory().expect("open sqlite");
+        let pool = EmbeddedSqlite::memory().open().await.expect("open sqlite");
         let expanded = expanded_skill_store_bundle().expect("expanded");
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+        SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
             .expect("runner")
-            .run_bundle(&conn, &expanded)
+            .run_bundle(&expanded)
+            .await
             .expect("H1");
-        conn.execute(
+        sqlx::query(
             "INSERT INTO skill_store_skill(workspace_id,id,content) VALUES('ws','retired','legacy')",
-            [],
         )
+        .execute(&pool)
+        .await
         .expect("H2");
 
-        let store = SqliteSkillStore::over(conn);
-        store.ensure_schema().expect("E1");
+        let store = SqliteSkillStore::over(pool);
+        store.ensure_schema().await.expect("E1");
         let (definition, version) = aggregate();
         store.create(definition, version).await.expect("H3/E3");
         assert!(store.definition("ws", "greet").await.unwrap().is_some());
 
-        let guard = store.conn.lock().unwrap();
-        let counts: (i64, i64, i64) = guard
-            .query_row(
-                "SELECT \
-                   (SELECT COUNT(*) FROM skill_store_schema_migrations WHERE bundle_id='awaken.skill_store'), \
-                   (SELECT COUNT(*) FROM skill_store_schema_migrations WHERE bundle_id='awaken.skill_store.converged'), \
-                   (SELECT COUNT(*) FROM skill_store_skill)",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
+        let counts: (i64, i64, i64) = sqlx::query_as(
+            "SELECT \
+               (SELECT COUNT(*) FROM skill_store_schema_migrations WHERE bundle_id='awaken.skill_store'), \
+               (SELECT COUNT(*) FROM skill_store_schema_migrations WHERE bundle_id='awaken.skill_store.converged'), \
+               (SELECT COUNT(*) FROM skill_store_skill)",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
         assert_eq!(counts, (2, 1, 1), "X1 -> E1+E2");
     }
 
@@ -614,15 +601,15 @@ mod tests {
     /// caller opts into the `skill_store` scope via `ensure_schema`.
     #[tokio::test]
     async fn over_does_not_migrate_but_ensure_schema_does() {
-        let store = SqliteSkillStore::over(Connection::open_in_memory().unwrap());
+        let store = SqliteSkillStore::over(EmbeddedSqlite::memory().open().await.unwrap());
         let (definition, version) = aggregate();
         assert!(store.create(definition, version).await.is_err());
 
-        store.ensure_schema().unwrap();
+        store.ensure_schema().await.unwrap();
         let (definition, version) = aggregate();
         store.create(definition, version).await.unwrap();
         assert!(store.definition("ws", "greet").await.unwrap().is_some());
 
-        store.ensure_schema().unwrap(); // idempotent
+        store.ensure_schema().await.unwrap(); // idempotent
     }
 }

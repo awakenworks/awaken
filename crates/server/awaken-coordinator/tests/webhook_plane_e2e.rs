@@ -131,12 +131,18 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     // workspace onto the CRUD router as the guarded edge would.
     let store = Arc::new(InMemoryWebhookStore::new());
     let secrets = Arc::new(InMemorySecretStore::new());
-    let sessions = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let sessions = Arc::new(
+        SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     // The same repository read back as the lifecycle-outbox authority: its
     // pending rows are the durable fact each delivery assertion settles on.
     let facts: Arc<dyn awaken_session_repository_contract::LifecycleOutbox> = sessions.clone();
     let state = Arc::new(
-        ManagedState::new(CoordinatedRuntimeFake::default()).with_session_repo(sessions.clone()),
+        ManagedState::new(CoordinatedRuntimeFake::default())
+            .await
+            .with_session_repo(sessions.clone()),
     );
     let deployments = Arc::new(
         DeploymentApplication::from_repository(sessions, awaken_time::system_clock())

@@ -12,21 +12,39 @@ pub fn vault(
 
 /// A volatile `ManagedState` over the testkit's stores behind their ports.
 #[allow(dead_code)] // This shared module is compiled independently by each integration binary.
-pub fn state(
+pub async fn state(
     runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
 ) -> awaken_protocol_managed::ManagedState {
-    <awaken_protocol_managed::ManagedState as awaken_protocol_managed_testkit::ManagedStateFixture>::new(runtime)
+    <awaken_protocol_managed::ManagedState as awaken_protocol_managed_testkit::ManagedStateFixture>::new(runtime).await
+}
+
+/// [`state`] shared behind the `Arc` every router and supervisor takes.
+#[allow(dead_code)] // This shared module is compiled independently by each integration binary.
+pub async fn shared_state(
+    runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
+) -> std::sync::Arc<awaken_protocol_managed::ManagedState> {
+    std::sync::Arc::new(state(runtime).await)
+}
+
+/// As [`shared_state`], with `repository` as the explicit Session store (a
+/// restart over the same store is a second call with the same repository).
+#[allow(dead_code)] // This shared module is compiled independently by each integration binary.
+pub async fn shared_state_over(
+    runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
+    repository: std::sync::Arc<dyn awaken_session_repository_contract::SessionStore>,
+) -> std::sync::Arc<awaken_protocol_managed::ManagedState> {
+    std::sync::Arc::new(state(runtime).await.with_session_repo(repository))
 }
 
 /// As [`state`], with the one fixture object also realizing MCP attachments.
 #[allow(dead_code)] // This shared module is compiled independently by each integration binary.
-pub fn state_with_mcp<R>(runtime: R) -> awaken_protocol_managed::ManagedState
+pub async fn state_with_mcp<R>(runtime: R) -> awaken_protocol_managed::ManagedState
 where
     R: awaken_session_execution_contract::CompleteSessionRuntime
         + awaken_session_execution_contract::McpAttachmentRealizer
         + 'static,
 {
-    <awaken_protocol_managed::ManagedState as awaken_protocol_managed_testkit::ManagedStateFixture>::new_with_mcp(runtime)
+    <awaken_protocol_managed::ManagedState as awaken_protocol_managed_testkit::ManagedStateFixture>::new_with_mcp(runtime).await
 }
 
 use awaken_session_types::SessionId;
@@ -340,6 +358,17 @@ impl ScheduledConflictRepository {
     pub fn commit_call_count(&self) -> usize {
         self.commit_calls.load(Ordering::SeqCst)
     }
+}
+
+/// A fresh ephemeral SQLite Session repository; `expect` names the repository
+/// in the failure message when the in-memory database cannot be opened.
+#[allow(dead_code)] // This shared module is compiled independently by each integration binary.
+pub async fn session_repository(expect: &str) -> Arc<SqliteManagedSessionRepository> {
+    Arc::new(
+        SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .expect(expect),
+    )
 }
 
 #[allow(dead_code)]

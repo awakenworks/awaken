@@ -15,12 +15,14 @@ pub const PHASES: [&str; 5] = [
     "retired",
 ];
 
-pub fn stores(path: &str, key: &[u8; 32]) -> (SqliteCredentialRepo, SealedAeadSecretStore) {
-    let repo = SqliteCredentialRepo::open(path).unwrap();
+pub async fn stores(path: &str, key: &[u8; 32]) -> (SqliteCredentialRepo, SealedAeadSecretStore) {
+    let repo = SqliteCredentialRepo::open(path).await.unwrap();
     // Separate durability domains: metadata and encrypted bytes cannot share
     // an accidental SQLite transaction or connection lifecycle.
     let material = Path::new(path).with_extension("secrets.db");
-    let blob = SqliteSealedBlobStore::open(material.to_str().unwrap()).unwrap();
+    let blob = SqliteSealedBlobStore::open(material.to_str().unwrap())
+        .await
+        .unwrap();
     (repo, SealedAeadSecretStore::over(key, Arc::new(blob)))
 }
 
@@ -92,7 +94,7 @@ pub async fn published_retirement(
         let root = Path::new(&root);
         let phase = std::env::var(PHASE).unwrap();
         let marker = root.join("marker");
-        let (repo, secrets) = stores(root.join("metadata.db").to_str().unwrap(), key);
+        let (repo, secrets) = stores(root.join("metadata.db").to_str().unwrap(), key).await;
         if let Some(child) = &child {
             repo.insert_vault(
                 &source.workspace_id,
@@ -203,7 +205,7 @@ pub async fn published_retirement(
                 .run()
                 .unwrap();
         assert!(!status.success());
-        let (repo, secrets) = stores(root.path().join("metadata.db").to_str().unwrap(), key);
+        let (repo, secrets) = stores(root.path().join("metadata.db").to_str().unwrap(), key).await;
         let retired = SecretRef(std::fs::read_to_string(root.path().join("retired-ref")).unwrap());
         let published = repo.get(&source.id).await.unwrap();
         assert_eq!(published.version, 2);

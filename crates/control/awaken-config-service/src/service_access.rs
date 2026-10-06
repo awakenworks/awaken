@@ -23,22 +23,21 @@ impl ConfigService {
 
     /// Agent ids whose current default-input configuration references `target` in
     /// one Workspace. This is resource lifecycle evidence, not authorization.
-    pub fn agents_referencing_input(
+    pub async fn agents_referencing_input(
         &self,
         workspace_id: &str,
         target: &awaken_config_resolver::InputResourceId,
     ) -> Vec<String> {
-        self.resources
-            .as_ref()
-            .map(|store| {
-                store
-                    .list_agent_inputs(workspace_id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|config| config.inputs.iter().any(|input| &input.target == target))
-                    .map(|config| config.agent_id)
-                    .collect()
-            })
+        let Some(store) = self.resources.as_ref() else {
+            return Vec::new();
+        };
+        store
+            .list_agent_inputs(workspace_id)
+            .await
             .unwrap_or_default()
+            .into_iter()
+            .filter(|config| config.inputs.iter().any(|input| &input.target == target))
+            .map(|config| config.agent_id)
+            .collect()
     }
 }

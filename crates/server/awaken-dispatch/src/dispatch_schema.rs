@@ -447,10 +447,10 @@ mod tests {
         awaken_scoped_migration::lint(&[lineage]).expect("converged lineage lints");
     }
 
-    #[test]
-    fn scoped_operation_index_upgrades_both_histories_without_rewriting_facts() {
-        use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
-        use rusqlite::{Connection, params};
+    #[tokio::test]
+    async fn scoped_operation_index_upgrades_both_histories_without_rewriting_facts() {
+        use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+        use awaken_sqlite_pool::EmbeddedSqlite;
 
         // Migration decision table I1-I3. Causes: C1 compact/expanded published
         // history; C2 converged V6 already applied; C3 one original operation;
@@ -462,57 +462,56 @@ mod tests {
             dispatch_bundle().unwrap(),
             expanded_dispatch_bundle().unwrap(),
         ] {
-            let connection = Connection::open_in_memory().unwrap();
-            let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
-            runner.run_bundle(&connection, &historical).unwrap();
+            let connection = EmbeddedSqlite::memory().open().await.unwrap();
+            let runner = SqliteMigrationRunner::with_prefix(connection.sqlx().clone(), NS).unwrap();
+            runner.run_bundle(&historical).await.unwrap();
             let full = converged_dispatch_bundle().unwrap();
             let previous =
                 MigrationBundle::new(CONVERGED_BUNDLE_ID, full.migrations()[..6].to_vec()).unwrap();
-            runner.run_bundle(&connection, &previous).unwrap();
+            runner.run_bundle(&previous).await.unwrap();
             let operation =
                 r#"{"type":"claimed","claim":{"run_id":"history","owner":"old","epoch":1}}"#;
-            connection
-                .execute(
-                    "INSERT INTO runtime_dispatch_operation \
-                     (sequence,run_id,operation,recorded_at_ms) VALUES (42,'history',?1,123)",
-                    params![operation],
-                )
-                .unwrap();
-            let applied = runner.run_bundle(&connection, &full).unwrap();
+            sqlx::query(
+                "INSERT INTO runtime_dispatch_operation \
+                 (sequence,run_id,operation,recorded_at_ms) VALUES (42,'history',?1,123)",
+            )
+            .bind(operation)
+            .execute(&connection)
+            .await
+            .unwrap();
+            let applied = runner.run_bundle(&full).await.unwrap();
             assert_eq!(
                 applied.iter().map(|row| row.version).collect::<Vec<_>>(),
                 [7, 8],
                 "I1"
             );
-            let observed: (i64, String, i64) = connection
-                .query_row(
-                    "SELECT sequence,operation,recorded_at_ms FROM runtime_dispatch_operation",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .unwrap();
+            let observed: (i64, String, i64) = sqlx::query_as(
+                "SELECT sequence,operation,recorded_at_ms FROM runtime_dispatch_operation",
+            )
+            .fetch_one(&connection)
+            .await
+            .unwrap();
             assert_eq!(observed, (42, operation.to_string(), 123), "I1");
-            let mut statement = connection
-                .prepare(
-                    "EXPLAIN QUERY PLAN SELECT sequence,recorded_at_ms,operation \
-                     FROM runtime_dispatch_operation WHERE sequence > ?1 AND run_id = ?3 \
-                     ORDER BY sequence LIMIT ?2",
-                )
-                .unwrap();
-            let plan = statement
-                .query_map(params![0, 1, "history"], |row| row.get::<_, String>(3))
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap();
+            let plan: Vec<String> = sqlx::query(
+                "EXPLAIN QUERY PLAN SELECT sequence,recorded_at_ms,operation \
+                 FROM runtime_dispatch_operation WHERE sequence > ?1 AND run_id = ?3 \
+                 ORDER BY sequence LIMIT ?2",
+            )
+            .bind(0_i64)
+            .bind(1_i64)
+            .bind("history")
+            .fetch_all(&connection)
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| sqlx::Row::get::<String, _>(row, 3))
+            .collect();
             assert!(
                 plan.iter()
                     .any(|row| row.contains("runtime_dispatch_operation_run_sequence")),
                 "I2: {plan:?}"
             );
-            assert!(
-                runner.run_bundle(&connection, &full).unwrap().is_empty(),
-                "I3"
-            );
+            assert!(runner.run_bundle(&full).await.unwrap().is_empty(), "I3");
         }
     }
 
@@ -606,11 +605,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn expanded_sqlite_history_reaches_the_converged_schema_and_reopens() {
+    #[tokio::test]
+    async fn expanded_sqlite_history_reaches_the_converged_schema_and_reopens() {
         use awaken_scoped_migration::MigrationBundle;
-        use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
-        use rusqlite::Connection;
+        use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+        use awaken_sqlite_pool::EmbeddedSqlite;
 
         /* Real-storage cause/effect table:
          * E1 exact expanded V1..V24 ledger -> append V25..V29 and convergence;
@@ -620,18 +619,21 @@ mod tests {
          * context, and non-negative authority enforcement.
          * Rules S1=expanded-prefix=>E1+E3; S2=terminal=>E2.
          */
-        let connection = Connection::open_in_memory().expect("sqlite");
+        let connection = EmbeddedSqlite::memory().open().await.expect("sqlite");
         let expanded = expanded_dispatch_bundle().expect("expanded");
         let published = MigrationBundle::new(BUNDLE_ID, expanded.migrations()[..24].to_vec())
             .expect("published expanded prefix");
-        let runner = SqliteMigrationRunner::with_prefix(NS).expect("runner");
+        let runner =
+            SqliteMigrationRunner::with_prefix(connection.sqlx().clone(), NS).expect("runner");
         runner
-            .run_bundle(&connection, &published)
+            .run_bundle(&published)
+            .await
             .expect("seed expanded V1..V24");
         let selected = selected_dispatch_bundle(Some(EXPANDED_V15_CHECKSUM)).expect("S1 select");
         assert_eq!(
             runner
-                .run_bundle(&connection, &selected)
+                .run_bundle(&selected)
+                .await
                 .expect("S1 finish")
                 .iter()
                 .map(|migration| migration.version)
@@ -641,10 +643,8 @@ mod tests {
         );
         assert_eq!(
             runner
-                .run_bundle(
-                    &connection,
-                    &converged_dispatch_bundle().expect("converged"),
-                )
+                .run_bundle(&converged_dispatch_bundle().expect("converged"))
+                .await
                 .expect("S1 convergence")
                 .iter()
                 .map(|migration| migration.version)
@@ -660,48 +660,43 @@ mod tests {
             ("runtime_dispatch", "active_attempt_binding"),
             ("runtime_dispatch", "retry_not_before"),
         ] {
-            let present = connection
-                .prepare(&format!("PRAGMA table_info({table})"))
-                .and_then(|mut statement| {
-                    statement
-                        .query_map([], |row| row.get::<_, String>(1))?
-                        .collect::<Result<Vec<_>, _>>()
-                })
+            let present = sqlx::query(&format!("PRAGMA table_info({table})"))
+                .fetch_all(&connection)
+                .await
                 .expect("S1 inspect schema")
                 .iter()
+                .map(|row| sqlx::Row::get::<String, _>(row, 1))
                 .any(|observed| observed == column);
             assert!(present, "S1/E3 {table}.{column}");
         }
-        let running_index: String = connection
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'runtime_dispatch_one_running_idx'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("S1 inspect reservation claim fence");
+        let running_index: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'runtime_dispatch_one_running_idx'",
+        )
+        .fetch_one(&connection)
+        .await
+        .expect("S1 inspect reservation claim fence");
         assert!(
             running_index.contains("reservation_running"),
             "S1/E3 reservation claim fence"
         );
         assert!(
-            connection
-                .execute(
-                    "INSERT INTO runtime_dispatch (run_id, thread_id, request, status, attempt_count) VALUES ('negative', 'thread', '{}', 'pending', -1)",
-                    [],
-                )
-                .is_err(),
+            sqlx::query(
+                "INSERT INTO runtime_dispatch (run_id, thread_id, request, status, attempt_count) VALUES ('negative', 'thread', '{}', 'pending', -1)",
+            )
+            .execute(&connection)
+            .await
+            .is_err(),
             "S1/E3 non-negative authority"
         );
         assert!(
             runner
-                .run_bundle(&connection, &selected)
+                .run_bundle(&selected)
+                .await
                 .expect("S2 published")
                 .is_empty()
                 && runner
-                    .run_bundle(
-                        &connection,
-                        &converged_dispatch_bundle().expect("converged"),
-                    )
+                    .run_bundle(&converged_dispatch_bundle().expect("converged"))
+                    .await
                     .expect("S2 converged")
                     .is_empty(),
             "S2/E2"
@@ -723,9 +718,10 @@ mod tests {
         assert_eq!(versions, (1..=27).collect::<Vec<_>>());
     }
 
-    #[test]
-    fn retired_epoch_upgrade_preserves_occupied_history_and_retires_ambiguous_empty_slots() {
-        use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
+    #[tokio::test]
+    async fn retired_epoch_upgrade_preserves_occupied_history_and_retires_ambiguous_empty_slots() {
+        use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+        use awaken_sqlite_pool::EmbeddedSqlite;
         // M1 compact/expanded history + empty leased row => retire its epoch,
         // never infer stop. M2 occupied predecessor => preserve its exact pair
         // and allow its later ACK. M3 reopen => no repeat migration or reset.
@@ -736,38 +732,42 @@ mod tests {
             dispatch_bundle().unwrap(),
             expanded_dispatch_bundle().unwrap(),
         ] {
-            let conn = rusqlite::Connection::open_in_memory().unwrap();
-            let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
-            runner.run_bundle(&conn, &history).unwrap();
+            let conn = EmbeddedSqlite::memory().open().await.unwrap();
+            let runner = SqliteMigrationRunner::with_prefix(conn.sqlx().clone(), NS).unwrap();
+            runner.run_bundle(&history).await.unwrap();
             let full = converged_dispatch_bundle().unwrap();
             let previous =
                 MigrationBundle::new(CONVERGED_BUNDLE_ID, full.migrations()[..3].to_vec()).unwrap();
-            runner.run_bundle(&conn, &previous).unwrap();
-            conn.execute_batch("INSERT INTO runtime_dispatch (run_id, thread_id, request, status, lease_epoch, lease_owner, lease_until) VALUES ('empty', 't1', '{}', 'running', 3, 'a', 100), ('occupied', 't2', '{}', 'running', 3, 'b', 100); UPDATE runtime_dispatch SET active_attempt_owner = 'old', active_attempt_epoch = 2 WHERE run_id = 'occupied';").unwrap();
+            runner.run_bundle(&previous).await.unwrap();
+            sqlx::raw_sql("INSERT INTO runtime_dispatch (run_id, thread_id, request, status, lease_epoch, lease_owner, lease_until) VALUES ('empty', 't1', '{}', 'running', 3, 'a', 100), ('occupied', 't2', '{}', 'running', 3, 'b', 100); UPDATE runtime_dispatch SET active_attempt_owner = 'old', active_attempt_epoch = 2 WHERE run_id = 'occupied';").execute(&conn).await.unwrap();
             let v4 =
                 MigrationBundle::new(CONVERGED_BUNDLE_ID, full.migrations()[..4].to_vec()).unwrap();
-            runner.run_bundle(&conn, &v4).unwrap();
-            runner.run_bundle(&conn, &full).unwrap();
-            let bound: i64 = conn.query_row("SELECT COUNT(*) FROM runtime_dispatch WHERE active_attempt_binding IS NOT NULL", [], |row| row.get(0)).unwrap();
+            runner.run_bundle(&v4).await.unwrap();
+            runner.run_bundle(&full).await.unwrap();
+            let bound: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM runtime_dispatch WHERE active_attempt_binding IS NOT NULL",
+            )
+            .fetch_one(&conn)
+            .await
+            .unwrap();
             assert_eq!(bound, 0, "B22 no backfill");
-            let empty: i64 = conn
-                .query_row(
-                    "SELECT retired_attempt_epoch FROM runtime_dispatch WHERE run_id = 'empty'",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
+            let empty: i64 = sqlx::query_scalar(
+                "SELECT retired_attempt_epoch FROM runtime_dispatch WHERE run_id = 'empty'",
+            )
+            .fetch_one(&conn)
+            .await
+            .unwrap();
             assert_eq!(empty, 3, "M1");
-            let occupied: (i64, String, i64) = conn.query_row("SELECT retired_attempt_epoch, active_attempt_owner, active_attempt_epoch FROM runtime_dispatch WHERE run_id = 'occupied'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+            let occupied: (i64, String, i64) = sqlx::query_as("SELECT retired_attempt_epoch, active_attempt_owner, active_attempt_epoch FROM runtime_dispatch WHERE run_id = 'occupied'").fetch_one(&conn).await.unwrap();
             assert_eq!(occupied, (0, "old".into(), 2), "M2");
-            assert!(runner.run_bundle(&conn, &full).unwrap().is_empty(), "M3");
+            assert!(runner.run_bundle(&full).await.unwrap().is_empty(), "M3");
         }
     }
 
-    #[test]
-    fn physical_thread_constraint_preserves_history_and_rejects_conflicting_upgrade() {
-        use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
-        use rusqlite::Connection;
+    #[tokio::test]
+    async fn physical_thread_constraint_preserves_history_and_rejects_conflicting_upgrade() {
+        use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+        use awaken_sqlite_pool::EmbeddedSqlite;
         // Causes: C1 compact/expanded history; C2 clean/duplicate occupied
         // Thread at V2; C3 empty/occupied peer, same/different Thread at V3.
         // Effects: M1 clean history upgrades and reopens; M2 corrupt history
@@ -779,83 +779,91 @@ mod tests {
             expanded_dispatch_bundle().unwrap(),
         ] {
             for conflicting in [false, true] {
-                let conn = Connection::open_in_memory().unwrap();
-                let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
-                runner.run_bundle(&conn, &history).unwrap();
+                let conn = EmbeddedSqlite::memory().open().await.unwrap();
+                let runner = SqliteMigrationRunner::with_prefix(conn.sqlx().clone(), NS).unwrap();
+                runner.run_bundle(&history).await.unwrap();
                 let full = converged_dispatch_bundle().unwrap();
                 let old =
                     MigrationBundle::new(CONVERGED_BUNDLE_ID, full.migrations()[..2].to_vec())
                         .unwrap();
-                runner.run_bundle(&conn, &old).unwrap();
-                conn.execute_batch(
+                runner.run_bundle(&old).await.unwrap();
+                sqlx::raw_sql(
                     "INSERT INTO runtime_dispatch
                     (run_id, thread_id, request, status, active_attempt_owner, active_attempt_epoch)
                     VALUES ('a', 't', '{}', 'pending', 'a', 1);
                     INSERT INTO runtime_dispatch (run_id, thread_id, request, status)
                     VALUES ('b', 't', '{}', 'pending'), ('c', 'other', '{}', 'pending');",
                 )
+                .execute(&conn)
+                .await
                 .unwrap();
                 if conflicting {
-                    conn.execute(
+                    sqlx::query(
                         "UPDATE runtime_dispatch SET active_attempt_owner='b',
                         active_attempt_epoch=2 WHERE run_id='b'",
-                        [],
                     )
+                    .execute(&conn)
+                    .await
                     .unwrap();
-                    assert!(runner.run_bundle(&conn, &full).is_err(), "M2");
-                    let retained: i64 = conn
-                        .query_row(
-                            "SELECT COUNT(*) FROM runtime_dispatch
+                    assert!(runner.run_bundle(&full).await.is_err(), "M2");
+                    let retained: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM runtime_dispatch
                         WHERE active_attempt_owner IS NOT NULL",
-                            [],
-                            |r| r.get(0),
-                        )
-                        .unwrap();
+                    )
+                    .fetch_one(&conn)
+                    .await
+                    .unwrap();
                     assert_eq!(retained, 2, "M2 neither owner erased");
-                    let applied: i64 = conn
-                        .query_row(
-                            "SELECT MAX(version) FROM runtime_schema_migrations
+                    let applied: i64 = sqlx::query_scalar(
+                        "SELECT MAX(version) FROM runtime_schema_migrations
                         WHERE bundle_id=?1",
-                            [CONVERGED_BUNDLE_ID],
-                            |r| r.get(0),
-                        )
-                        .unwrap();
+                    )
+                    .bind(CONVERGED_BUNDLE_ID)
+                    .fetch_one(&conn)
+                    .await
+                    .unwrap();
                     assert_eq!(applied, 2, "M2 no success receipt");
                 } else {
-                    runner.run_bundle(&conn, &full).unwrap();
-                    assert!(runner.run_bundle(&conn, &full).unwrap().is_empty(), "M1");
+                    runner.run_bundle(&full).await.unwrap();
+                    assert!(runner.run_bundle(&full).await.unwrap().is_empty(), "M1");
                     assert!(
-                        conn.execute(
+                        sqlx::query(
                             "UPDATE runtime_dispatch SET active_attempt_owner='b',
                         active_attempt_epoch=2 WHERE run_id='b'",
-                            []
                         )
+                        .execute(&conn)
+                        .await
                         .is_err(),
                         "M3"
                     );
                     assert_eq!(
-                        conn.execute(
+                        sqlx::query(
                             "UPDATE runtime_dispatch SET active_attempt_owner='c',
                         active_attempt_epoch=1 WHERE run_id='c'",
-                            []
                         )
-                        .unwrap(),
+                        .execute(&conn)
+                        .await
+                        .unwrap()
+                        .rows_affected(),
                         1,
                         "M4"
                     );
-                    conn.execute(
+                    sqlx::query(
                         "UPDATE runtime_dispatch SET active_attempt_owner=NULL,
                         active_attempt_epoch=NULL WHERE run_id='a'",
-                        [],
                     )
+                    .execute(&conn)
+                    .await
                     .unwrap();
                     assert_eq!(
-                        conn.execute(
+                        sqlx::query(
                             "UPDATE runtime_dispatch SET active_attempt_owner='b',
                         active_attempt_epoch=2 WHERE run_id='b'",
-                            []
                         )
-                        .unwrap(),
+                        .execute(&conn)
+                        .await
+                        .unwrap()
+                        .rows_affected(),
                         1,
                         "M3 after release"
                     );
@@ -864,11 +872,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn v22_normalizes_legacy_negative_millis_during_forward_migration() {
+    #[tokio::test]
+    async fn v22_normalizes_legacy_negative_millis_during_forward_migration() {
         use awaken_scoped_migration::MigrationBundle;
-        use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
-        use rusqlite::Connection;
+        use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+        use awaken_sqlite_pool::EmbeddedSqlite;
 
         // CE-TM10 decision rules:
         // R1 published V1..V21 + non-negative millis -> V22 preserves the value;
@@ -880,16 +888,17 @@ mod tests {
         // reopen. Constraint/Invariant: a forward migration may repair legacy
         // sentinel values but never change already-valid time. Decision rule:
         // execute R1-R3 to cover both value classes and idempotent reopening.
-        let conn = Connection::open_in_memory().expect("open sqlite");
+        let conn = EmbeddedSqlite::memory().open().await.expect("open sqlite");
         let full = dispatch_bundle().expect("bundle builds");
         let published = MigrationBundle::new(BUNDLE_ID, full.migrations()[..21].to_vec())
             .expect("published bundle");
-        let runner = SqliteMigrationRunner::with_prefix(NS).expect("runner");
+        let runner = SqliteMigrationRunner::with_prefix(conn.sqlx().clone(), NS).expect("runner");
         runner
-            .run_bundle(&conn, &published)
+            .run_bundle(&published)
+            .await
             .expect("apply published prefix");
 
-        conn.execute_batch(
+        sqlx::raw_sql(
             "INSERT INTO runtime_dispatch
                  (run_id, thread_id, request, status, lease_until, dead_lettered_at)
                  VALUES ('negative', 'thread', '{}', 'pending', -1, -2),
@@ -901,9 +910,11 @@ mod tests {
              INSERT INTO runtime_dispatch_operation (run_id, operation, recorded_at_ms)
                  VALUES ('negative', '{}', -4), ('positive', '{}', 10);",
         )
+        .execute(&conn)
+        .await
         .expect("seed legacy rows");
 
-        let applied = runner.run_bundle(&conn, &full).expect("apply V22-V27");
+        let applied = runner.run_bundle(&full).await.expect("apply V22-V27");
         assert_eq!(
             applied
                 .iter()
@@ -912,117 +923,104 @@ mod tests {
             [22, 23, 24, 25, 26, 27]
         );
         let maximum = i64::MAX;
-        assert_eq!(
-            conn.query_row(
+        for (sql, expected) in [
+            (
                 "SELECT lease_until FROM runtime_dispatch WHERE run_id = 'negative'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap(),
-            maximum
-        );
-        assert_eq!(
-            conn.query_row(
+                maximum,
+            ),
+            (
                 "SELECT dead_lettered_at FROM runtime_dispatch WHERE run_id = 'negative'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap(),
-            maximum
-        );
-        assert_eq!(
-            conn.query_row(
+                maximum,
+            ),
+            (
                 "SELECT available_at FROM runtime_pending WHERE message_id = 'negative'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap(),
-            maximum
-        );
-        assert_eq!(
-            conn.query_row(
+                maximum,
+            ),
+            (
                 "SELECT recorded_at_ms FROM runtime_dispatch_operation WHERE run_id = 'negative'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap(),
-            maximum
-        );
-        assert_eq!(
-            conn.query_row(
+                maximum,
+            ),
+            (
                 "SELECT lease_until + dead_lettered_at FROM runtime_dispatch WHERE run_id = 'positive'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap(),
-            15
-        );
-        assert!(runner.run_bundle(&conn, &full).expect("reopen").is_empty());
+                15,
+            ),
+        ] {
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>(sql)
+                    .fetch_one(&conn)
+                    .await
+                    .unwrap(),
+                expected
+            );
+        }
+        assert!(runner.run_bundle(&full).await.expect("reopen").is_empty());
     }
 
-    #[test]
-    fn v23_rejects_negative_authority_on_insert_and_update() {
-        use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
-        use rusqlite::Connection;
+    #[tokio::test]
+    async fn v23_rejects_negative_authority_on_insert_and_update() {
+        use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+        use awaken_sqlite_pool::EmbeddedSqlite;
 
-        let conn = Connection::open_in_memory().expect("open sqlite");
+        let conn = EmbeddedSqlite::memory().open().await.expect("open sqlite");
         let full = dispatch_bundle().expect("bundle builds");
-        let runner = SqliteMigrationRunner::with_prefix(NS).expect("runner");
-        runner.run_bundle(&conn, &full).expect("apply full bundle");
+        let runner = SqliteMigrationRunner::with_prefix(conn.sqlx().clone(), NS).expect("runner");
+        runner.run_bundle(&full).await.expect("apply full bundle");
 
-        let negative_dispatch = conn.execute(
+        let negative_dispatch = sqlx::query(
             "INSERT INTO runtime_dispatch
                  (run_id, thread_id, request, status, attempt_count)
              VALUES ('negative', 'thread', '{}', 'pending', -1)",
-            [],
-        );
+        )
+        .execute(&conn)
+        .await;
         assert!(negative_dispatch.is_err(), "negative insert must fail");
 
-        conn.execute(
+        sqlx::query(
             "INSERT INTO runtime_dispatch (run_id, thread_id, request, status)
              VALUES ('valid', 'thread', '{}', 'pending')",
-            [],
         )
+        .execute(&conn)
+        .await
         .expect("seed valid dispatch");
         assert!(
-            conn.execute(
-                "UPDATE runtime_dispatch SET lease_epoch = -1 WHERE run_id = 'valid'",
-                [],
-            )
-            .is_err(),
+            sqlx::query("UPDATE runtime_dispatch SET lease_epoch = -1 WHERE run_id = 'valid'")
+                .execute(&conn)
+                .await
+                .is_err(),
             "negative update must fail"
         );
 
-        let negative_pending = conn.execute(
+        let negative_pending = sqlx::query(
             "INSERT INTO runtime_pending
                  (message_id, run_id, thread_id, correlation_id, result, revision)
              VALUES ('negative', 'valid', 'thread', 'correlation', '{}', -1)",
-            [],
-        );
+        )
+        .execute(&conn)
+        .await;
         assert!(negative_pending.is_err(), "negative insert must fail");
 
-        conn.execute(
+        sqlx::query(
             "INSERT INTO runtime_pending
                  (message_id, run_id, thread_id, correlation_id, result)
              VALUES ('valid', 'valid', 'thread', 'correlation', '{}')",
-            [],
         )
+        .execute(&conn)
+        .await
         .expect("seed valid pending input");
         assert!(
-            conn.execute(
-                "UPDATE runtime_pending SET revision = -1 WHERE message_id = 'valid'",
-                [],
-            )
-            .is_err(),
+            sqlx::query("UPDATE runtime_pending SET revision = -1 WHERE message_id = 'valid'")
+                .execute(&conn)
+                .await
+                .is_err(),
             "negative update must fail"
         );
     }
 
-    #[test]
-    fn v23_fails_closed_and_rolls_back_for_corrupt_existing_rows() {
+    #[tokio::test]
+    async fn v23_fails_closed_and_rolls_back_for_corrupt_existing_rows() {
         use awaken_scoped_migration::MigrationBundle;
-        use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
-        use rusqlite::Connection;
+        use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+        use awaken_sqlite_pool::EmbeddedSqlite;
 
         // Test design. Causes: C1 a pre-V23 authority row has a negative epoch;
         // C2 the V23 constraint migration runs. Effects: E1 the migration fails;
@@ -1030,34 +1028,36 @@ mod tests {
         // corrupt fencing authority must never be coerced into a valid epoch.
         // Decision rule: seed the invalid legacy partition, require failure, then
         // prove both the old ledger and row remain intact.
-        let conn = Connection::open_in_memory().expect("open sqlite");
+        let conn = EmbeddedSqlite::memory().open().await.expect("open sqlite");
         let full = dispatch_bundle().expect("bundle builds");
         let published = MigrationBundle::new(BUNDLE_ID, full.migrations()[..22].to_vec())
             .expect("published bundle");
-        let runner = SqliteMigrationRunner::with_prefix(NS).expect("runner");
+        let runner = SqliteMigrationRunner::with_prefix(conn.sqlx().clone(), NS).expect("runner");
         runner
-            .run_bundle(&conn, &published)
+            .run_bundle(&published)
+            .await
             .expect("apply published prefix");
-        conn.execute(
+        sqlx::query(
             "INSERT INTO runtime_dispatch
                  (run_id, thread_id, request, status, epoch)
              VALUES ('corrupt', 'thread', '{}', 'pending', -1)",
-            [],
         )
+        .execute(&conn)
+        .await
         .expect("seed corrupt legacy row");
 
         assert!(
-            runner.run_bundle(&conn, &full).is_err(),
+            runner.run_bundle(&full).await.is_err(),
             "migration must reject corrupt legacy authority"
         );
 
-        conn.execute(
-            "UPDATE runtime_dispatch SET epoch = 0 WHERE run_id = 'corrupt'",
-            [],
-        )
-        .expect("repair legacy row after rolled-back migration");
+        sqlx::query("UPDATE runtime_dispatch SET epoch = 0 WHERE run_id = 'corrupt'")
+            .execute(&conn)
+            .await
+            .expect("repair legacy row after rolled-back migration");
         let applied = runner
-            .run_bundle(&conn, &full)
+            .run_bundle(&full)
+            .await
             .expect("apply invariant after repair");
         assert_eq!(
             applied

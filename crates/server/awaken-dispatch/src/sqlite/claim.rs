@@ -14,8 +14,8 @@
 
 use super::*;
 
-pub(super) fn claim_retry_exhausted_transaction(
-    conn: &mut Connection,
+pub(super) async fn claim_retry_exhausted_transaction(
+    conn: &mut SqliteConnection,
     prefix: &str,
     owner: &str,
     lease_ms: u64,
@@ -23,29 +23,25 @@ pub(super) fn claim_retry_exhausted_transaction(
     max_attempts: u64,
 ) -> Result<Option<Claimed>, DispatchError> {
     let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(store_error)?;
-    let run_id = tx
-        .query_row(
-            &format!(
-                "SELECT run_id FROM {prefix}_dispatch \
-                 WHERE status = 'running' AND lease_until IS NOT NULL \
-                 AND lease_until <= ?1 AND attempt_count >= ?2 \
-                 AND active_attempt_epoch IS NULL \
-                 ORDER BY created_at LIMIT 1"
-            ),
-            params![crate::clock::db_millis(now_ms), max_attempts_i64],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(store_error)?;
+    let mut tx = immediate(conn).await?;
+    let run_id = sqlx::query_scalar::<_, String>(&format!(
+        "SELECT run_id FROM {prefix}_dispatch \
+         WHERE status = 'running' AND lease_until IS NOT NULL \
+         AND lease_until <= ?1 AND attempt_count >= ?2 \
+         AND active_attempt_epoch IS NULL \
+         ORDER BY created_at LIMIT 1"
+    ))
+    .bind(crate::clock::db_millis(now_ms))
+    .bind(max_attempts_i64)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(store_error)?;
     let Some(run_id) = run_id else {
-        tx.commit().map_err(store_error)?;
+        tx.commit().await.map_err(store_error)?;
         return Ok(None);
     };
     let claimed = claim_exact_transaction_with_mode(
-        &tx,
+        &mut tx,
         &run_id,
         owner,
         lease_ms,
@@ -53,13 +49,14 @@ pub(super) fn claim_retry_exhausted_transaction(
         None,
         &Default::default(),
         ExactClaimMode::RetryExhausted { max_attempts },
-    )?;
-    tx.commit().map_err(store_error)?;
+    )
+    .await?;
+    tx.commit().await.map_err(store_error)?;
     Ok(claimed)
 }
 
-pub(super) fn claim_exact_transaction(
-    tx: &rusqlite::Transaction<'_>,
+pub(super) async fn claim_exact_transaction(
+    tx: &mut SqliteConnection,
     requested_run: &str,
     owner: &str,
     lease_ms: u64,
@@ -67,14 +64,13 @@ pub(super) fn claim_exact_transaction(
     worker: Option<&WorkerSnapshot>,
     capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
-    let phase: Option<(String, Option<i64>)> = tx
-        .query_row(
-            &format!("SELECT status, lease_until FROM {NS}_dispatch WHERE run_id = ?1"),
-            params![requested_run],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(store_error)?;
+    let phase: Option<(String, Option<i64>)> = sqlx::query_as(&format!(
+        "SELECT status, lease_until FROM {NS}_dispatch WHERE run_id = ?1"
+    ))
+    .bind(requested_run)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(store_error)?;
     let mode = phase
         .map(|(status, deadline)| {
             let state = DispatchState::from_db(&status).ok_or_else(|| {
@@ -98,11 +94,12 @@ pub(super) fn claim_exact_transaction(
         capabilities,
         mode,
     )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn claim_exact_transaction_with_mode(
-    tx: &rusqlite::Transaction<'_>,
+pub(super) async fn claim_exact_transaction_with_mode(
+    tx: &mut SqliteConnection,
     requested_run: &str,
     owner: &str,
     lease_ms: u64,
@@ -170,25 +167,12 @@ pub(super) fn claim_exact_transaction_with_mode(
         .retry_limit()
         .map(|limit| durable_i64("dispatch retry limit", limit))
         .transpose()?;
-    let picked: Option<PickedDispatch> = tx
-        .query_row(
-            &sql,
-            params![requested_run, crate::clock::db_millis(now_ms), retry_limit],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                    row.get(7)?,
-                    row.get(8)?,
-                ))
-            },
-        )
-        .optional()
+    let picked: Option<PickedDispatch> = sqlx::query_as(&sql)
+        .bind(requested_run)
+        .bind(crate::clock::db_millis(now_ms))
+        .bind(retry_limit)
+        .fetch_optional(&mut *tx)
+        .await
         .map_err(store_error)?;
     let Some((
         request_json,
@@ -260,31 +244,33 @@ pub(super) fn claim_exact_transaction_with_mode(
     })?;
     let expires = crate::clock::deadline_millis(now_ms, lease_ms);
     let claimed_status = crate::dispatch_state_db(claimed_transition.state);
-    tx.execute(
-        &format!(
-            "UPDATE {prefix}_dispatch SET status = ?9, lease_owner = ?1, \
-             lease_until = ?2, attempt_count = attempt_count + ?3, \
-             lease_epoch = ?5, worker_assignment = ?6, credential_bindings = ?7, \
-             credential_receipts = ?8, retry_not_before = NULL WHERE run_id = ?4"
-        ),
-        params![
-            owner,
-            crate::clock::db_millis(expires),
-            i64::from(status == "running"),
-            requested_run,
-            i64::try_from(claim_epoch).map_err(|_| DispatchError::Rejected(
-                "dispatch claim epoch exceeds the SQLite authority range".to_string()
-            ))?,
-            (!terminal_resolution)
-                .then(|| worker.map(WorkerAssignment::from))
-                .flatten()
-                .map(|value| json(&value))
-                .transpose()?,
-            json(&credential_bindings)?,
-            json(&Vec::<CredentialRealizationReceipt>::new())?,
-            claimed_status,
-        ],
-    )
+    let claim_epoch_db = i64::try_from(claim_epoch).map_err(|_| {
+        DispatchError::Rejected(
+            "dispatch claim epoch exceeds the SQLite authority range".to_string(),
+        )
+    })?;
+    let assignment_json = (!terminal_resolution)
+        .then(|| worker.map(WorkerAssignment::from))
+        .flatten()
+        .map(|value| json(&value))
+        .transpose()?;
+    sqlx::query(&format!(
+        "UPDATE {prefix}_dispatch SET status = ?9, lease_owner = ?1, \
+         lease_until = ?2, attempt_count = attempt_count + ?3, \
+         lease_epoch = ?5, worker_assignment = ?6, credential_bindings = ?7, \
+         credential_receipts = ?8, retry_not_before = NULL WHERE run_id = ?4"
+    ))
+    .bind(owner)
+    .bind(crate::clock::db_millis(expires))
+    .bind(i64::from(status == "running"))
+    .bind(requested_run)
+    .bind(claim_epoch_db)
+    .bind(assignment_json)
+    .bind(json(&credential_bindings)?)
+    .bind(json(&Vec::<CredentialRealizationReceipt>::new())?)
+    .bind(claimed_status)
+    .execute(&mut *tx)
+    .await
     .map_err(store_error)?;
     let claim = RunClaim {
         run_id: RunId(requested_run.to_string()),
@@ -316,7 +302,8 @@ pub(super) fn claim_exact_transaction_with_mode(
                 reason,
             },
             now_ms,
-        )?;
+        )
+        .await?;
         insert_operation(
             tx,
             prefix,
@@ -325,7 +312,8 @@ pub(super) fn claim_exact_transaction_with_mode(
                 claim: claim.clone(),
             },
             now_ms,
-        )?;
+        )
+        .await?;
     } else {
         insert_operation(
             tx,
@@ -334,8 +322,10 @@ pub(super) fn claim_exact_transaction_with_mode(
                 claim: claim.clone(),
             },
             now_ms,
-        )?;
+        )
+        .await?;
     }
+    let pending = pending_for_run(tx, prefix, requested_run, now_ms).await?;
     Ok(Some(Claimed {
         session_work_authority: None,
         request,
@@ -348,7 +338,7 @@ pub(super) fn claim_exact_transaction_with_mode(
         credential_bindings,
         credential_deliveries: Vec::new(),
         cancellation_requested: cancellation_requested != 0,
-        pending: pending_for_run(tx, prefix, requested_run, now_ms)?,
+        pending,
         recovered: status == "running",
         session_activity_admission_required: mode == ExactClaimMode::ReservationRecovery,
         sandbox,

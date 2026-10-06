@@ -262,6 +262,7 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
         let clock = Arc::new(ManualClock::new(0));
         let store =
             SqliteDispatchStore::open(root.join("dispatch.db").to_str().unwrap(), clock.clone())
+                .await
                 .expect("PCR1 open child store");
         let run = RunId("run-process-crash".to_string());
         store
@@ -332,6 +333,7 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
             root.path().join("dispatch.db").to_str().unwrap(),
             clock.clone(),
         )
+        .await
         .expect("PCR1 reopen after crash");
         clock.set(LEASE + 1);
         let recovered = reopened
@@ -375,6 +377,7 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
         root.path().join("dispatch.db").to_str().unwrap(),
         clock.clone(),
     )
+    .await
     .expect("PCR3 second reopen");
     assert!(
         reopened
@@ -863,9 +866,11 @@ async fn commit_is_atomic_and_survives_replay_with_no_orphans() {
     let (fence, messages, state) = {
         let (runtime, ran) = tool_runtime();
         let store = Arc::new(
-            SqliteDispatchStore::open_in_memory(awaken_time::system_clock()).expect("dispatch"),
+            SqliteDispatchStore::open_in_memory(awaken_time::system_clock())
+                .await
+                .expect("dispatch"),
         );
-        let commit = Arc::new(SqliteCommitCoordinator::open(&path).expect("commit"));
+        let commit = Arc::new(SqliteCommitCoordinator::open(&path).await.expect("commit"));
         let worker =
             DispatchWorker::new(runtime, store.clone(), commit.clone(), "w").with_lease_ms(LEASE);
 
@@ -955,7 +960,7 @@ async fn commit_is_atomic_and_survives_replay_with_no_orphans() {
 
     // Re-open from the same file: the projection is rebuilt PURELY from the durable
     // log. If the commit were torn, the re-hydrated truth would diverge.
-    let reopened = SqliteCommitCoordinator::open(&path).expect("re-open");
+    let reopened = SqliteCommitCoordinator::open(&path).await.expect("re-open");
     assert_eq!(
         reopened.commit_count(),
         fence,

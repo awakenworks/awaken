@@ -119,7 +119,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
         initial_commit: None,
     }]);
     for rule in rules {
-        let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+        let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
         let _runtime = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let thread = format!("direct-resource-guard-{}", rule.id);
         let previous = if rule.previous_nonempty {
@@ -374,7 +374,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // E2 B2 preserves the same projection; E3 B3-B5 publish no conflicting
         // projection; E4 B6 installs the baseline and evicts only the stale
         // coordination envelope so a later File attachment can be realized.
-        let baseline_host = Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub"));
+        let baseline_host = Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub").await);
         let _baseline_runtime =
             crate::ManagedHost::new(baseline_host.clone()).install_dispatch_session_runtime();
         let first_projection = projection("baseline-a", true);
@@ -526,7 +526,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // Agent, manifest, prompt, or lease fragment may survive independently. An
         // empty process-local coordination slot is not Session truth and may remain
         // to serialize a concurrent retry.
-        let failed_host = Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub"));
+        let failed_host = Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub").await);
         let _failed_runtime = crate::ManagedHost::new(failed_host.clone())
             .with_repository_binding_verifier(Arc::new(FailingRepositoryVerifier))
             .install_dispatch_session_runtime();
@@ -569,7 +569,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
 
     let recorder = PromptRecorder::default();
     let observed = recorder.0.clone();
-    let host = Arc::new(SharedHost::new(Arc::new(recorder), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(recorder), "stub").await);
     install_test_session_application(&host);
     let repository_claims = Arc::new(RepositoryClaimRecorder::default());
     let managed = crate::ManagedHost::new(host.clone())
@@ -595,7 +595,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // | A0 | T | F | F | Coordinator Dispatch | E0 |
         // | A1 | T | T | T | Worker claim | E2 |
         // | A2 | T | T | T | Coordinator Dispatch | E1 |
-        let amendment_host = Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub"));
+        let amendment_host = Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub").await);
         let amendment_managed = crate::ManagedHost::new(amendment_host.clone())
             .with_repository_binding_verifier(Arc::new(RepositoryClaimRecorder::default()))
             .install_dispatch_session_runtime();
@@ -764,7 +764,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     // | Rule | C1 | C2 changed | C3 replay | Effect |
     // | B1   | T  | T          | F         | E1+E3  |
     // | B2   | T  | F          | T         | E2+E3  |
-    let branch_host = Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub"));
+    let branch_host = Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub").await);
     install_test_session_application(&branch_host);
     let committed_environment = Arc::new(Mutex::new(None));
     let branch_sink = Arc::new(BindingOrderSink {
@@ -1123,10 +1123,14 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("reservation dispatch"),
     );
-    let host =
-        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone()));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_dispatch_store(dispatch.clone()),
+    );
     install_test_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
     let command = awaken_session_execution_contract::AdmitSessionRun {
@@ -1605,6 +1609,7 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
     let sandbox_root = tempfile::tempdir().expect("Namespace fixture root");
     let exporter = Arc::new(crate::acp_tool_export::RecordingAcpToolExporter::default());
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
         .with_agent_publications(Arc::new(publications))
         .with_acp(Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(
             source,
@@ -1670,10 +1675,14 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
             awaken_lease_testkit::ManualClock::new(0),
         ))
+        .await
         .expect("report continuation queue"),
     );
-    let host =
-        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone()));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_dispatch_store(dispatch.clone()),
+    );
     install_test_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
     managed
@@ -1784,7 +1793,7 @@ async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
     // of truth. Rules: R1=C1+C2+coordination=>E1;
     // R2=C1+C2+execution=>E2.
     let thread = "retained-environment-coordination";
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     install_test_session_application(&host);
     let _managed = install_test_dispatch_runtime(&host);
 
@@ -1833,7 +1842,7 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
     // or fabricated Resource transition, retaining Execution purpose; R2 dispatch still carries Workspace
     // scope even without resource bytes. The live template Outcome E2E verifies
     // the same path through the remote Worker and official Managed API.
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "model"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "model").await);
     install_test_session_application(&host);
     let _managed = install_test_dispatch_runtime(&host);
     let thread = "inference-only-claimed";

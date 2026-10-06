@@ -13,7 +13,9 @@ async fn late_boundary_settles_activity_without_claiming_a_pre_admission_commit(
     for (source, expected_observations) in [(6, 0), (7, 0), (8, 1)] {
         let id = format!("late-boundary-{source}");
         let repo = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         let mut session = persisted(&id, false, "idle");
         let epoch = SessionApplication::open_activity_on_snapshot(
@@ -89,7 +91,9 @@ async fn user_event_boundary_before_admission_refuses_without_settlement() {
     for source in [6, 7] {
         let id = format!("user-pre-admission-{source}");
         let repo = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
         );
         let mut session = persisted(&id, false, "idle");
         let epoch = SessionApplication::open_activity_on_snapshot(
@@ -145,6 +149,7 @@ async fn transferred_activity_fences_a_late_distinct_boundary_before_conflict_va
     let session_id = "stale-transferred-boundary";
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("activity fence repository"),
     );
     create(repo.as_ref(), persisted(session_id, false, "idle")).await;

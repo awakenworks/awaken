@@ -33,7 +33,9 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
 
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone()),
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_session_recovery_control(control.clone()),
     );
     let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     let mut projection = remote_terminal_cleanup_projection();
@@ -210,7 +212,9 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     // | R2 | yes | renewed | renewed | yes | E4 |
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone()),
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_session_recovery_control(control.clone()),
     );
     let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
@@ -412,7 +416,9 @@ async fn cold_terminal_cleanup_replenishes_a_slot_while_one_sibling_is_blocked()
     // | R2 | five | released | yes | E4 + E5 |
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone()),
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_session_recovery_control(control.clone()),
     );
     let lease = completed_terminal_test_lease();
     let target = terminal_target_for(&lease);
@@ -473,7 +479,9 @@ async fn cold_terminal_cleanup_never_drives_more_than_four_assignments() {
     // B2=B1+C3->E2+E3. The gate changes only test I/O timing, not lease truth.
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone()),
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_session_recovery_control(control.clone()),
     );
     let lease = completed_terminal_test_lease();
     let target = terminal_target_for(&lease);
@@ -539,8 +547,9 @@ async fn cold_terminal_claim_failure_drains_claimed_work_and_retries_the_remaind
     // finishes once on C3, with no replay of E1. Rules P1=C1+C2->E1+E2 and
     // P2=P1+C3->E3. A failed claim never removes an assignment from Control.
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host =
-        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone());
+    let host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
+        .with_session_recovery_control(control.clone());
     let lease = completed_terminal_test_lease();
     let target = terminal_target_for(&lease);
     enqueue_completed_terminal_assignments(&control, &lease, "partial-claim", 3);
@@ -583,8 +592,9 @@ async fn cold_terminal_recovery_preserves_the_sixty_four_assignment_sweep_cap() 
     // resets the cursor, claims the final assignment, and reaches the empty
     // queue. R1=C1+C2->E1, R2=R1+C3->E2. The cursor grants no ownership.
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host =
-        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone());
+    let host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
+        .with_session_recovery_control(control.clone());
     let lease = completed_terminal_test_lease();
     let target = terminal_target_for(&lease);
     enqueue_completed_terminal_assignments(&control, &lease, "sweep-cap", 65);
@@ -631,8 +641,9 @@ async fn cold_terminal_recovery_rejects_a_nonadvancing_legacy_cursor_reply() {
     // report protocol nonprogress, drain the first in-flight cleanup once,
     // and never execute a second physical effect under the duplicate lease.
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host =
-        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone());
+    let host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
+        .with_session_recovery_control(control.clone());
     let lease = completed_terminal_test_lease();
     enqueue_completed_terminal_assignments(&control, &lease, "legacy-cursor", 1);
     let duplicate = control.assignments.lock().unwrap().front().unwrap().clone();
@@ -682,7 +693,9 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     *control.authorization_barrier.lock().unwrap() =
         Some((authorization_started.clone(), authorization_proceed.clone()));
     let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone()),
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_session_recovery_control(control.clone()),
     );
     let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     let session_id = "cold-terminal-worker";
@@ -821,10 +834,12 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("archive saga dispatch"),
     );
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub")
+            .await
             .with_coordinator_dispatch_store(dispatch.clone()),
     );
     let parent = ThreadId("archive-saga-parent".into());

@@ -19,13 +19,9 @@ awaken-data-subject-application.workspace = true
 async-trait.workspace = true
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-rusqlite = { workspace = true }
-# `spawn_blocking` for the sqlite adapter's off-thread connection work.
-tokio = { workspace = true, features = ["rt"] }
-# Feature `postgres`: network-DB Control DataSubjectRepo adapter.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
-awaken-scoped-migration = { workspace = true, features = ["postgres"] }
-awaken-scoped-migration-sqlite.workspace = true
+# SQLite adapter; feature `postgres` adds the network-DB Control DataSubjectRepo adapter.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] }
 awaken-sqlite-pool.workspace = true
 
 [dev-dependencies]
@@ -41,7 +37,7 @@ default = []
 # Volatile consent/erasure authority used only by tests and scenario fixtures.
 test-support = []
 # Postgres-backed Control DataSubjectRepo (ADR-0050 D7, Org-partitioned).
-postgres = ["dep:sqlx"]
+postgres = ["sqlx/postgres", "sqlx/json"]
 
 [[test]]
 name = "repo_conformance"

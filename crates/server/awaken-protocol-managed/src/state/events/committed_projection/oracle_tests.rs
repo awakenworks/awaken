@@ -199,7 +199,7 @@ async fn candidate_uses_committed_prefix_even_when_warm_progress_is_poisoned() {
         "committed answer",
     );
     *runtime.committed.lock().unwrap() = Some(vec![message.clone()]);
-    let state = ManagedState::new(runtime);
+    let state = ManagedState::new(runtime).await;
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({

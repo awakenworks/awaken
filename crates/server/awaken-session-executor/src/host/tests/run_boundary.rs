@@ -91,7 +91,7 @@ async fn interrupt_cancels_the_run_and_reports_interrupted() {
         reached: reached.clone(),
         calls: AtomicUsize::new(0),
     });
-    let host = Arc::new(SharedHost::new(model, "scripted"));
+    let host = Arc::new(SharedHost::new(model, "scripted").await);
     let _managed = install_test_dispatch_runtime(&host);
 
     // Cause/effect rule: C0 the canonical Dispatch runtime is installed; C1 an
@@ -142,7 +142,7 @@ async fn interrupting_acknowledgment_replaces_the_budget_terminal() {
         reached: reached.clone(),
         calls: AtomicUsize::new(0),
     });
-    let host = Arc::new(SharedHost::new(model, "scripted"));
+    let host = Arc::new(SharedHost::new(model, "scripted").await);
     let _managed = install_test_dispatch_runtime(&host);
 
     let driver = host.clone();
@@ -178,7 +178,7 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
         reached: reached.clone(),
         calls: AtomicUsize::new(0),
     });
-    let host = Arc::new(SharedHost::new(model, "scripted"));
+    let host = Arc::new(SharedHost::new(model, "scripted").await);
     let _managed = install_test_dispatch_runtime(&host);
 
     let driver = host.clone();
@@ -226,11 +226,12 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
     // D3 D1/D2 + C3 -> unrelated token unchanged; no physical ACK fabricated.
     // D4 C4 -> idempotent no-op, no cold Runtime or Session materialization.
     // Coordinator user interruption keeps its existing durable-intent tests.
-    let local = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let local = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let _managed = install_test_dispatch_runtime(&local);
     let ctx = local.ctx_for("worker-stop", None).await.unwrap();
-    let worker =
-        SharedHost::new(Arc::new(OkModel), "stub").with_database_less_worker_role_for_test();
+    let worker = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
+        .with_database_less_worker_role_for_test();
     for direct in [true, false] {
         let run_id = RunId(format!("worker-stop-{direct}"));
         let cancelled = awaken_runtime_contract::CancellationToken::new();
@@ -288,7 +289,8 @@ async fn interrupt_is_a_noop_when_nothing_runs() {
             calls: AtomicUsize::new(0),
         }),
         "scripted",
-    );
+    )
+    .await;
     // No run in flight → interrupt succeeds and does nothing.
     host.interrupt("idle-thread")
         .await
@@ -337,9 +339,10 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
                 ":memory:",
                 awaken_time::system_clock(),
             )
+            .await
             .expect("open test Memory repository"),
         ),
-        SharedHost::test_memory_extraction_repository(None),
+        SharedHost::test_memory_extraction_repository(None).await,
         crate::HostProcess {
             local_workspace: SharedHost::mint_local_workspace(),
             deployment: crate::DeploymentConfig::ephemeral(),
@@ -406,6 +409,7 @@ async fn attributed_run_meets_deployment_capture_with_control_consent() {
     let captured = Arc::new(CountingCaptureSink::default());
     let (host, _managed) = dispatch_test_host(
         SharedHost::new_with_deployment(Arc::new(MemoryHostModel), "stub", deployment)
+            .await
             .with_capture_sink(captured.clone())
             .with_data_subject_consent_source(Arc::new(SubjectConsent)),
     );
@@ -441,7 +445,8 @@ async fn bound_executor_is_the_ordinary_run_execution_boundary() {
     use crate::run_exec::BoundRunExecutor;
     use awaken_runtime_contract::execution::RunExecutor;
 
-    let (host, _managed) = dispatch_test_host(SharedHost::new(Arc::new(MemoryHostModel), "stub"));
+    let (host, _managed) =
+        dispatch_test_host(SharedHost::new(Arc::new(MemoryHostModel), "stub").await);
     let ctx = host.ctx_for("snapshot-run", None).await.expect("context");
     let before = ctx.commit.committed_messages(&ctx.thread_id).len();
     let activation = RunActivation::new(
@@ -513,14 +518,14 @@ async fn host_application_decorator_wraps_the_complete_session_boundary() {
     let calls = Arc::new(AtomicUsize::new(0));
     let decorator_calls = calls.clone();
     let (host, _managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(MemoryHostModel), "stub").with_attempt_decorator(Arc::new(
-            move |inner| {
+        SharedHost::new(Arc::new(MemoryHostModel), "stub")
+            .await
+            .with_attempt_decorator(Arc::new(move |inner| {
                 Arc::new(ObservingAttemptExecutor {
                     calls: decorator_calls.clone(),
                     inner,
                 })
-            },
-        )),
+            })),
     );
     let ctx = host.ctx_for("injected-attempt", None).await.unwrap();
     let activation = RunActivation::new(
@@ -544,7 +549,8 @@ async fn tool_bearing_snapshot_can_be_restricted_at_the_run_boundary() {
     use awaken_runtime_contract::execution::RunExecutor;
     use awaken_runtime_contract::resolved::ToolDescriptor;
 
-    let (host, _managed) = dispatch_test_host(SharedHost::new(Arc::new(MemoryHostModel), "stub"));
+    let (host, _managed) =
+        dispatch_test_host(SharedHost::new(Arc::new(MemoryHostModel), "stub").await);
     let ctx = host.ctx_for("unsafe-grader", None).await.expect("context");
     let mut snapshot = ctx.config.clone();
     snapshot
@@ -615,13 +621,16 @@ async fn interrupt_ends_an_in_flight_run_as_cancelled() {
     // only. Decision rule: C0, block, interrupt, release inference, require E0+E1.
     let reached = Arc::new(tokio::sync::Notify::new());
     let gate = Arc::new(tokio::sync::Notify::new());
-    let host = Arc::new(SharedHost::new(
-        Arc::new(BlockOnceModel {
-            reached: reached.clone(),
-            gate: gate.clone(),
-        }),
-        "scripted",
-    ));
+    let host = Arc::new(
+        SharedHost::new(
+            Arc::new(BlockOnceModel {
+                reached: reached.clone(),
+                gate: gate.clone(),
+            }),
+            "scripted",
+        )
+        .await,
+    );
     let _managed = install_test_dispatch_runtime(&host);
 
     let driver = host.clone();
@@ -661,6 +670,7 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
     let gate = Arc::new(tokio::sync::Notify::new());
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
+            .await
             .expect("dispatch store"),
     );
     let host = Arc::new(
@@ -671,6 +681,7 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
             }),
             "scripted",
         )
+        .await
         .with_dispatch_store(dispatch.clone()),
     );
     let _managed = install_test_dispatch_runtime(&host);
@@ -754,7 +765,7 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
     // tests retain W2/W3, so this Host test adds no parallel attempt registry.
     let cold_thread = "cold-live-only-control";
     let run_id = "cold-live-only-run";
-    let direct = SharedHost::new(Arc::new(OkModel), "stub");
+    let direct = SharedHost::new(Arc::new(OkModel), "stub").await;
     let unsupported = direct
         .wake_durable(cold_thread, run_id)
         .await
@@ -772,9 +783,12 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
 
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
+            .await
             .expect("live-control dispatch store"),
     );
-    let durable = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone());
+    let durable = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
+        .with_dispatch_store(dispatch.clone());
     let wake = durable
         .wake_durable(cold_thread, run_id)
         .await
@@ -838,6 +852,7 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("dispatch store"),
     );
     dispatch
@@ -864,7 +879,9 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
         1,
         "C1 exact dead letter"
     );
-    let host = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone());
+    let host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
+        .with_dispatch_store(dispatch.clone());
     assert!(
         host.session_slots
             .read(thread, |slot| slot.runtime.clone())
@@ -988,6 +1005,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+            .await
             .expect("dispatch store"),
     );
     dispatch
@@ -1011,6 +1029,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
     });
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub")
+            .await
             .with_dispatch_store(dispatch.clone())
             .with_remote_attempt_executor(RemoteAttemptInstallation {
                 executor: remote.clone(),
@@ -1086,6 +1105,7 @@ async fn managed_primary_interrupt_cancels_every_exact_session_dispatch() {
     let thread = "queued-managed-primary-interrupt";
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
+            .await
             .expect("dispatch store"),
     );
     for run in ["awaiting-primary", "queued-report"] {
@@ -1136,7 +1156,9 @@ async fn managed_primary_interrupt_cancels_every_exact_session_dispatch() {
             .await
             .expect("A1 foreign admission");
     }
-    let host = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone());
+    let host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
+        .with_dispatch_store(dispatch.clone());
     host.interrupt(thread)
         .await
         .expect("A1 exact Session interrupt");

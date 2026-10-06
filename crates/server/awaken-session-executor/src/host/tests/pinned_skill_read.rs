@@ -107,8 +107,10 @@ async fn pinned_reads_during_concurrent_first_hand_calls_do_not_join_sandbox_sta
     let storage = tempfile::tempdir().unwrap();
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub")
+            .await
             .with_skill_store(storage.path().join("skills"))
-            .with_store_dir(storage.path()),
+            .with_store_dir(storage.path())
+            .await,
     );
     let managed = managed_with_resource_source(host.clone());
     let version = frozen_skill_version(
@@ -221,8 +223,10 @@ async fn cold_resource_replacement_and_revocation_never_return_old_skill_bytes()
     let storage = tempfile::tempdir().unwrap();
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub")
+            .await
             .with_skill_store(storage.path().join("skills"))
-            .with_store_dir(storage.path()),
+            .with_store_dir(storage.path())
+            .await,
     );
     let managed = managed_with_resource_source(host.clone());
     let v1 = frozen_skill_version("change", "Change", "change", "OLD-SECRET", &[]);
@@ -330,8 +334,10 @@ async fn read_disabled_or_awaiting_permission_never_leaks_pinned_content() {
         });
         let host = Arc::new(
             SharedHost::new(model.clone(), "stub")
+                .await
                 .with_skill_store(storage.path().join("skills"))
-                .with_store_dir(storage.path()),
+                .with_store_dir(storage.path())
+                .await,
         );
         let managed = managed_with_resource_source(host.clone());
         let version = frozen_skill_version(
@@ -436,8 +442,10 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
     let storage = tempfile::tempdir().unwrap();
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub")
+            .await
             .with_skill_store(storage.path().join("skills"))
-            .with_store_dir(storage.path()),
+            .with_store_dir(storage.path())
+            .await,
     );
     let managed = managed_with_resource_source(host.clone());
     let bad_name = "a".repeat(4096);
@@ -562,8 +570,10 @@ async fn managed_on_tool_use_reads_instruction_and_reference_before_reply_withou
     let model = Arc::new(PinnedReadModel::default());
     let host = Arc::new(
         SharedHost::new(model.clone(), "stub")
+            .await
             .with_skill_store(storage.path().join("skills"))
-            .with_store_dir(storage.path()),
+            .with_store_dir(storage.path())
+            .await,
     );
     let managed = managed_with_resource_source(host.clone());
     let version = frozen_skill_version(
@@ -649,8 +659,10 @@ async fn pinned_read_path_and_text_decision_table() {
     let storage = tempfile::tempdir().unwrap();
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub")
+            .await
             .with_skill_store(storage.path().join("skills"))
-            .with_store_dir(storage.path()),
+            .with_store_dir(storage.path())
+            .await,
     );
     let managed = managed_with_resource_source(host.clone());
     let mut version = frozen_skill_version(
@@ -765,15 +777,17 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
     // P9 two exact bindings share a projected stem => fail, never choose first.
     // Missing/corrupt Store bytes at admission use existing S2 registry tests.
     let storage = tempfile::tempdir().unwrap();
-    let make_host = || {
+    let make_host = || async {
         Arc::new(
             SharedHost::new(Arc::new(OkModel), "stub")
+                .await
                 .with_skill_store(storage.path().join("skills"))
                 .with_store_dir(storage.path())
+                .await
                 .with_local_workspace("workspace-pinned-read"),
         )
     };
-    let original = make_host();
+    let original = make_host().await;
     let managed = managed_with_resource_source(original.clone());
     let v1 = frozen_skill_version("pinned", "Pinned", "pinned", "VERSION ONE", &[]);
     install_pinned_managed_skill_session(
@@ -799,7 +813,7 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
         .unwrap();
     drop(managed);
     drop(original);
-    let host = make_host();
+    let host = make_host().await;
     let managed = managed_with_resource_source(host.clone());
     install_pinned_managed_skill_session(
         &host,
@@ -890,8 +904,10 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
     let storage = tempfile::tempdir().unwrap();
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub")
+            .await
             .with_skill_store(storage.path().join("skills"))
-            .with_store_dir(storage.path()),
+            .with_store_dir(storage.path())
+            .await,
     );
     let managed = managed_with_resource_source(host.clone());
     let version = frozen_skill_version(

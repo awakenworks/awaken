@@ -72,11 +72,11 @@ impl McpCatalogService {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! { ()=cancel.cancelled()=>break, _=interval.tick()=>{} }
-                let scopes=match service.store.mcp_configuration_workspaces() {
+                let scopes=match service.store.mcp_configuration_workspaces().await {
                     Ok(scopes)=>scopes, Err(error)=>{tracing::warn!(%error,"MCP catalog scope lookup failed");continue;}
                 };
                 for scope in scopes {
-                    if !service.load(&scope).is_ok_and(|c|c.catalog_url.is_some()) {continue;}
+                    if !service.load(&scope).await.is_ok_and(|c|c.catalog_url.is_some()) {continue;}
                     let result=tokio::select! { ()=cancel.cancelled()=>return Ok(()), result=service.sync(&scope)=>result };
                     if result.is_err(){tracing::warn!(workspace=%scope,"MCP catalog refresh failed; retaining last accepted snapshot");}
                 }
@@ -85,24 +85,27 @@ impl McpCatalogService {
         });
     }
 
-    fn load(&self, workspace: &str) -> Result<McpConfiguration, McpConfigError> {
-        self.store.get_mcp_configuration(workspace)?.map_or_else(
-            || {
-                let catalog: McpCatalogSnapshot =
-                    serde_json::from_str(include_str!("mcp_catalog/builtin.json"))
-                        .map_err(|e| McpConfigError::Storage(e.to_string()))?;
-                catalog.validate()?;
-                Ok(McpConfiguration::new(workspace.into(), catalog))
-            },
-            Ok,
-        )
+    async fn load(&self, workspace: &str) -> Result<McpConfiguration, McpConfigError> {
+        self.store
+            .get_mcp_configuration(workspace)
+            .await?
+            .map_or_else(
+                || {
+                    let catalog: McpCatalogSnapshot =
+                        serde_json::from_str(include_str!("mcp_catalog/builtin.json"))
+                            .map_err(|e| McpConfigError::Storage(e.to_string()))?;
+                    catalog.validate()?;
+                    Ok(McpConfiguration::new(workspace.into(), catalog))
+                },
+                Ok,
+            )
     }
-    fn save(
+    async fn save(
         &self,
         expected: u64,
         mut next: McpConfiguration,
     ) -> Result<McpConfiguration, McpConfigError> {
-        let current = self.load(&next.workspace_id)?;
+        let current = self.load(&next.workspace_id).await?;
         if current.revision != expected {
             return Err(McpConfigError::Conflict);
         }
@@ -110,12 +113,12 @@ impl McpCatalogService {
             return Ok(current);
         }
         next.advance(expected)?;
-        self.store.put_mcp_configuration(expected, &next)?;
+        self.store.put_mcp_configuration(expected, &next).await?;
         Ok(next)
     }
     pub(crate) async fn sync(&self, workspace: &str) -> Result<McpConfiguration, McpConfigError> {
         use awaken_outbound_http::{ExternalHttpClient, JsonRequest};
-        let mut config = self.load(workspace)?;
+        let mut config = self.load(workspace).await?;
         let url = config.catalog_url.as_ref().ok_or_else(|| {
             McpConfigError::Invalid("configure a catalog source URL first".into())
         })?;
@@ -135,7 +138,7 @@ impl McpCatalogService {
         if !config.apply_catalog(snapshot)? {
             return Ok(config);
         }
-        self.save(config.revision, config)
+        self.save(config.revision, config).await
     }
 }
 fn view(config: &McpConfiguration) -> Result<Value, McpConfigError> {
@@ -176,7 +179,9 @@ async fn list(
     State(s): State<McpCatalogService>,
     Extension(ws): Extension<WorkspaceScope>,
 ) -> ApiResult {
-    Ok(Json(view(&s.load(&ws.0).map_err(domain)?).map_err(domain)?))
+    Ok(Json(
+        view(&s.load(&ws.0).await.map_err(domain)?).map_err(domain)?,
+    ))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -191,10 +196,15 @@ async fn save_server(
     Extension(ws): Extension<WorkspaceScope>,
     Json(request): Json<PutServer>,
 ) -> ApiResult {
-    let mut config = s.load(&ws.0).map_err(domain)?;
+    let mut config = s.load(&ws.0).await.map_err(domain)?;
     config.put_local(request.definition).map_err(domain)?;
     Ok(Json(
-        view(&s.save(request.expected_revision, config).map_err(domain)?).map_err(domain)?,
+        view(
+            &s.save(request.expected_revision, config)
+                .await
+                .map_err(domain)?,
+        )
+        .map_err(domain)?,
     ))
 }
 #[derive(Deserialize)]
@@ -213,13 +223,18 @@ async fn remove_server(
     let id = key
         .strip_prefix("local:")
         .ok_or_else(|| error("cloud catalog entries are read-only"))?;
-    let mut config = s.load(&ws.0).map_err(domain)?;
+    let mut config = s.load(&ws.0).await.map_err(domain)?;
     if config.server(&key).is_none() {
         return Err(missing());
     }
     config.remove_local(id);
     Ok(Json(
-        view(&s.save(request.expected_revision, config).map_err(domain)?).map_err(domain)?,
+        view(
+            &s.save(request.expected_revision, config)
+                .await
+                .map_err(domain)?,
+        )
+        .map_err(domain)?,
     ))
 }
 #[derive(Deserialize)]
@@ -250,7 +265,7 @@ async fn choices(
     Extension(ws): Extension<WorkspaceScope>,
     Path(key): Path<String>,
 ) -> ApiResult {
-    let config = s.load(&ws.0).map_err(domain)?;
+    let config = s.load(&ws.0).await.map_err(domain)?;
     let server = config.server(&key).ok_or_else(missing)?;
     let choices = match &server.transport {
         AgentMcpTransportBinding::Http(t) => s
@@ -279,7 +294,7 @@ async fn prepare(
     Path(key): Path<String>,
     Json(request): Json<Selection>,
 ) -> ApiResult {
-    let config = s.load(&ws.0).map_err(domain)?;
+    let config = s.load(&ws.0).await.map_err(domain)?;
     if config.revision != request.expected_revision {
         return Err(domain(McpConfigError::Conflict));
     }
@@ -323,11 +338,16 @@ async fn default_credential(
     Path(key): Path<String>,
     Json(request): Json<Selection>,
 ) -> ApiResult {
-    let mut config = s.load(&ws.0).map_err(domain)?;
+    let mut config = s.load(&ws.0).await.map_err(domain)?;
     if request.credential_id.is_none() {
         config.defaults.remove(&key);
         return Ok(Json(
-            view(&s.save(request.expected_revision, config).map_err(domain)?).map_err(domain)?,
+            view(
+                &s.save(request.expected_revision, config)
+                    .await
+                    .map_err(domain)?,
+            )
+            .map_err(domain)?,
         ));
     }
     let server = config.server(&key).ok_or_else(missing)?;
@@ -359,7 +379,12 @@ async fn default_credential(
         config.defaults.remove(&key);
     }
     Ok(Json(
-        view(&s.save(request.expected_revision, config).map_err(domain)?).map_err(domain)?,
+        view(
+            &s.save(request.expected_revision, config)
+                .await
+                .map_err(domain)?,
+        )
+        .map_err(domain)?,
     ))
 }
 async fn inspect(
@@ -368,7 +393,7 @@ async fn inspect(
     Path(key): Path<String>,
     Json(request): Json<Selection>,
 ) -> ApiResult {
-    let config = s.load(&ws.0).map_err(domain)?;
+    let config = s.load(&ws.0).await.map_err(domain)?;
     if config.revision != request.expected_revision {
         return Err(domain(McpConfigError::Conflict));
     }
@@ -422,10 +447,15 @@ async fn source(
             ));
         }
     }
-    let mut config = s.load(&ws.0).map_err(domain)?;
+    let mut config = s.load(&ws.0).await.map_err(domain)?;
     config.catalog_url = request.url;
     Ok(Json(
-        view(&s.save(request.expected_revision, config).map_err(domain)?).map_err(domain)?,
+        view(
+            &s.save(request.expected_revision, config)
+                .await
+                .map_err(domain)?,
+        )
+        .map_err(domain)?,
     ))
 }
 async fn sync(

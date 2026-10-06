@@ -21,7 +21,7 @@ mod support;
 
 /// A router over the canonical Resources component backed by a durable Skill store, so the
 /// SDK delivery (`store_put`) actually persists.
-fn router_with_store() -> (
+async fn router_with_store() -> (
     Router,
     std::sync::Arc<dyn awaken_resource_contract::SkillStore>,
     std::path::PathBuf,
@@ -32,7 +32,7 @@ fn router_with_store() -> (
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let store = support::resources::filesystem_skill_store(dir.join("store"));
-    let resources = support::resources::resources(store.clone());
+    let resources = support::resources::resources(store.clone()).await;
     (
         skills_router(
             Some(store.clone()),
@@ -199,7 +199,7 @@ async fn read(resp: axum::response::Response) -> support::Call<serde_json::Value
 // returns 400 JSON and leaves the Workspace definition set empty.
 #[tokio::test]
 async fn malformed_skill_multipart_is_atomic_and_sdk_decodable() {
-    let (router, store, dir) = router_with_store();
+    let (router, store, dir) = router_with_store().await;
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
     body.extend_from_slice(
@@ -235,7 +235,7 @@ async fn ga_skill_projection_and_query_only_selector_match_official_sdk() {
     // G3 C1+C4->E3; G4 C5->E1; G5 C4+C5->E4. The create/retrieve/list/delete Skill
     // operations and complete Version lifecycle all execute without a Skills
     // capability header, over one SkillStore aggregate.
-    let (router, _store, dir) = router_with_store();
+    let (router, _store, dir) = router_with_store().await;
     let body = multipart_files_with_fields(
         &[(
             "ga-skill/SKILL.md",
@@ -442,7 +442,7 @@ const SKILL_V2: &str = "---\nname: Greeter\ndescription: says hi\n---\nsay HELLO
 // instead of becoming parallel content models.
 #[tokio::test]
 async fn zip_and_directory_import_converge_on_one_canonical_bundle() {
-    let (router, store, dir) = router_with_store();
+    let (router, store, dir) = router_with_store().await;
     let zip_skill = b"---\nname: Zip Skill\ndescription: imported\n---\nUse scripts/run.sh";
     let zip = skill_zip(
         "zip-skill",
@@ -560,7 +560,7 @@ async fn zip_and_directory_import_converge_on_one_canonical_bundle() {
 // validator boundary; the final empty listing observes the no-write effect.
 #[tokio::test]
 async fn invalid_import_shapes_fail_before_the_skill_store_write() {
-    let (router, _store, dir) = router_with_store();
+    let (router, _store, dir) = router_with_store().await;
     let oversized = vec![b'x'; 2 * 1024 * 1024 + 1];
     let oversized_zip = skill_zip(
         "large",
@@ -607,7 +607,7 @@ async fn invalid_import_shapes_fail_before_the_skill_store_write() {
 // remains covered by the ordinary lifecycle test below.
 #[tokio::test]
 async fn browser_publish_rejects_a_stale_base_version_without_appending() {
-    let (router, _store, dir) = router_with_store();
+    let (router, _store, dir) = router_with_store().await;
     let created = post_multipart(&router, "/v1/skills", SKILL_V1)
         .await
         .expect_for(StatusCode::OK, "expected status");
@@ -639,7 +639,7 @@ async fn browser_publish_rejects_a_stale_base_version_without_appending() {
 // Decision table: valid unique bundle=round-trip; missing/duplicate/unsafe path=4xx before persistence.
 #[tokio::test]
 async fn multipart_bundle_preserves_binary_support_files() {
-    let (router, _store, dir) = router_with_store();
+    let (router, _store, dir) = router_with_store().await;
     let binary = vec![0, 159, 146, 150, 255];
     let mut body = multipart_skill(SKILL_V1);
     let closing = format!("--{BOUNDARY}--\r\n").into_bytes();
@@ -686,7 +686,7 @@ async fn multipart_bundle_preserves_binary_support_files() {
 // Decision table: live version=retrieve/download; retire non-sole=delete; sole/unknown=4xx/404; Skill delete=terminal.
 #[tokio::test]
 async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
-    let (router, _store, dir) = router_with_store();
+    let (router, _store, dir) = router_with_store().await;
 
     // Multipart create (SDK path) registers a v1 and returns the tagged catalog id.
     let created = post_multipart(&router, "/v1/skills", SKILL_V1)
@@ -786,7 +786,7 @@ async fn non_sdk_json_create_is_rejected_before_store_selection() {
     // Cause/effect rule: JSON content type is not the SDK multipart contract, so
     // admission returns 400 whether or not a durable store is configured. Store
     // availability must not revive a removed parallel create path.
-    let resources = support::resources::ephemeral_resources();
+    let resources = support::resources::ephemeral_resources().await;
     let router = skills_router(
         None,
         resources.purge_scheduler(),
@@ -806,7 +806,7 @@ async fn non_sdk_json_create_cannot_mutate_the_durable_store() {
     // Decision rule: valid-looking legacy payload + durable store -> 400 and an
     // empty official list. This proves deletion of the duplicate ingress rather
     // than merely hiding its response fields.
-    let (router, _store, dir) = router_with_store();
+    let (router, _store, dir) = router_with_store().await;
     let _v = post_json(
         &router,
         "/v1/skills",
@@ -822,7 +822,7 @@ async fn non_sdk_json_create_cannot_mutate_the_durable_store() {
 // The one SDK create path fails closed when its durable owner is unavailable.
 #[tokio::test]
 async fn sdk_multipart_create_fails_closed_without_a_durable_store() {
-    let resources = support::resources::ephemeral_resources();
+    let resources = support::resources::ephemeral_resources().await;
     let router = skills_router(
         None,
         resources.purge_scheduler(),
@@ -839,7 +839,7 @@ async fn sdk_multipart_create_fails_closed_without_a_durable_store() {
 
 #[tokio::test]
 async fn error_arms_are_fail_closed() {
-    let (router, _store, dir) = router_with_store();
+    let (router, _store, dir) = router_with_store().await;
 
     // Retrieve / delete an unknown skill → 404.
     let _ = get(&router, "/v1/skills/skill_missing")
@@ -890,7 +890,7 @@ async fn error_arms_are_fail_closed() {
 
 #[tokio::test]
 async fn skill_routes_require_a_preselected_workspace() {
-    let (router, _store, dir) = router_with_store();
+    let (router, _store, dir) = router_with_store().await;
     for request in [
         Request::builder()
             .uri("/v1/skills")

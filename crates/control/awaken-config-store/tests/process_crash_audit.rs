@@ -44,7 +44,9 @@ async fn durable_audit_survives_process_kill_before_business_commit() {
         },
     };
     if let Ok(phase) = std::env::var(CHILD_MODE) {
-        let store = SqliteConfigStore::open(&std::env::var(DB_PATH).unwrap()).unwrap();
+        let store = SqliteConfigStore::open(&std::env::var(DB_PATH).unwrap())
+            .await
+            .unwrap();
         for target in [&scope, &other] {
             assert_eq!(
                 store
@@ -92,7 +94,7 @@ async fn durable_audit_survives_process_kill_before_business_commit() {
         .run()
         .expect("child reaches the durable boundary and is killed");
         assert!(!status.success());
-        let store = SqliteConfigStore::open(db.to_str().unwrap()).unwrap();
+        let store = SqliteConfigStore::open(db.to_str().unwrap()).await.unwrap();
         let entry = store
             .get_management_audit_scoped(&scope, &audit().tool, &audit().call_id)
             .await

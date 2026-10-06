@@ -2,7 +2,7 @@
 
 #[tokio::test]
 async fn list_configs_publication_index_is_revision_exact_and_scope_bound() {
-    let plane = static_plane(None);
+    let plane = static_plane(None).await;
     let scope = ScopeId::from(DEFAULT_SCOPE);
     let foreign = ScopeId::from("other-workspace");
     for id in ["published", "edited", "draft", "foreign-only"] {
@@ -116,7 +116,7 @@ async fn handler_rejects_missing_scope_before_parsing_untrusted_config() {
     // Driven through the mounted router, because the handler signature no
     // longer admits an absent scope at all: the extractor answers first.
     let response = tower::ServiceExt::oneshot(
-        crate::config_routes::config_router(static_plane(None)),
+        crate::config_routes::config_router(static_plane(None).await),
         axum::http::Request::post("/v1/config/agents/mgmt/validate")
             .header("content-type", "application/json")
             .body(axum::body::Body::from("{}"))
@@ -136,7 +136,7 @@ fn default_workspace() -> crate::config_routes::RequiredScope {
 #[tokio::test]
 async fn get_config_handler_returns_200_when_present() {
     // F19a.
-    let plane = static_plane(None);
+    let plane = static_plane(None).await;
     let scope = ScopeId::from(DEFAULT_SCOPE);
     plane.put(&scope, &agent_config("mgmt")).await.unwrap();
     let (status, Json(body)) = super::get_config(
@@ -153,7 +153,7 @@ async fn get_config_handler_returns_200_when_present() {
 #[tokio::test]
 async fn get_config_handler_returns_404_when_absent() {
     // F19b: absent (or cross-tenant) → 404, never disclosed.
-    let plane = static_plane(None);
+    let plane = static_plane(None).await;
     let (status, _body) = super::get_config(
         State(plane),
         Path("ghost".to_string()),
@@ -169,7 +169,7 @@ async fn get_config_handler_returns_404_when_absent() {
 #[tokio::test]
 async fn validate_handler_returns_400_on_unparseable_body() {
     // F20a: a body the projection can't parse is a 400 (the one non-200 case).
-    let plane = static_plane(None);
+    let plane = static_plane(None).await;
     let (status, Json(body)) = super::validate(
         State(plane),
         default_workspace(),
@@ -185,7 +185,7 @@ async fn validate_handler_returns_400_on_unparseable_body() {
 #[tokio::test]
 async fn validate_handler_returns_200_valid_true() {
     // F20b: a parseable, valid config → 200 with valid:true.
-    let plane = static_plane(None);
+    let plane = static_plane(None).await;
     let (status, Json(body)) = super::validate(
         State(plane),
         default_workspace(),
@@ -202,7 +202,7 @@ async fn validate_handler_returns_200_valid_true() {
 async fn validate_handler_returns_200_valid_false_on_compile_failure() {
     // F20c (the F20 decoupling): validation is a query — an *invalid* config
     // still succeeds as a request (200) with valid:false + a routed issue.
-    let plane = static_plane(None);
+    let plane = static_plane(None).await;
     let (status, Json(body)) = super::validate(
         State(plane),
         default_workspace(),
@@ -221,7 +221,7 @@ async fn validate_handler_returns_200_valid_false_on_compile_failure() {
 #[tokio::test]
 async fn put_config_handler_returns_400_on_parse_failure() {
     // F21a.
-    let plane = static_plane(None);
+    let plane = static_plane(None).await;
     let (status, _body) = super::put_config(
         State(plane),
         default_workspace(),
@@ -235,7 +235,7 @@ async fn put_config_handler_returns_400_on_parse_failure() {
 #[tokio::test]
 async fn put_config_handler_returns_200_on_success() {
     // F21c: a well-formed body is stored → 200, and is then readable.
-    let plane = static_plane(None);
+    let plane = static_plane(None).await;
     let (status, Json(body)) = super::put_config(
         State(plane.clone()),
         default_workspace(),
@@ -257,7 +257,7 @@ async fn put_config_handler_returns_200_on_success() {
 #[tokio::test]
 async fn publish_handler_returns_200_on_success() {
     // F23a.
-    let plane = static_plane(None);
+    let plane = static_plane(None).await;
     let scope = ScopeId::from(DEFAULT_SCOPE);
     plane.put(&scope, &agent_config("mgmt")).await.unwrap();
     let (status, Json(body)) = super::publish(
@@ -275,7 +275,7 @@ async fn publish_handler_returns_200_on_success() {
 #[tokio::test]
 async fn publish_handler_returns_409_on_unresolvable() {
     // F23b (the status partition): an unresolvable Auto binding → 409.
-    let plane = static_plane(Some(Arc::new(ErrResolver)));
+    let plane = static_plane(Some(Arc::new(ErrResolver))).await;
     let scope = ScopeId::from(DEFAULT_SCOPE);
     plane.put(&scope, &auto_config("mgmt")).await.unwrap();
     let (status, _body) = super::publish(
@@ -292,7 +292,7 @@ async fn publish_handler_returns_409_on_unresolvable() {
 #[tokio::test]
 async fn publish_handler_returns_400_on_other_publish_error() {
     // F23c: any other publish failure (here NotStored) stays a 400.
-    let plane = static_plane(None);
+    let plane = static_plane(None).await;
     let (status, _body) = super::publish(
         State(plane),
         default_workspace(),
@@ -312,7 +312,7 @@ async fn reserved_publication_requires_an_explicit_execution_workspace() {
             Arc::new(FakeResolver),
             Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
         )),
-        Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+        Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
         Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
     );
     let scope = ScopeId::from(RESERVED_ADMIN_SCOPE);
@@ -339,7 +339,7 @@ async fn reserved_publication_requires_an_explicit_execution_workspace() {
 
 #[tokio::test]
 async fn config_registry_is_fenced_across_scopes() {
-    let plane = plane_over(Arc::new(SqliteConfigStore::open_in_memory().unwrap()));
+    let plane = plane_over(Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()));
     let scope_a = ScopeId::from("wrkspc_a");
     let scope_b = ScopeId::from("wrkspc_b");
 
@@ -376,8 +376,8 @@ async fn executable_catalog_is_keyed_by_workspace_and_agent_id() {
     // Separate scope-bound registries may legitimately reuse a local Agent id
     // (for example when a router shards configuration storage). The live index
     // must preserve that external Workspace coordinate rather than collapse it.
-    let registry_a = SqliteConfigStore::open_in_memory().unwrap();
-    let registry_b = SqliteConfigStore::open_in_memory().unwrap();
+    let registry_a = SqliteConfigStore::open_in_memory().await.unwrap();
+    let registry_b = SqliteConfigStore::open_in_memory().await.unwrap();
     let (service, catalog) = test_service_and_catalog();
 
     let mut a = agent_config("shared-id");

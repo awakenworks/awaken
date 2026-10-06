@@ -47,10 +47,12 @@ async fn volatile_memory_timestamps_use_the_injected_clock() {
 async fn sqlite_memory_timestamps_use_the_injected_clock_and_checked_sql_range() {
     use awaken_memory_store::SqliteMemoryRepository;
     let clock = Arc::new(ManualClock::new(0));
-    let fs = SqliteMemoryRepository::open_in_memory(clock.clone()).unwrap();
+    let fs = SqliteMemoryRepository::open_in_memory(clock.clone())
+        .await
+        .unwrap();
     shared::timestamp_mutation_conformance(&fs, &clock).await;
     let fixed = Arc::new(FixedClock::at(UtcTime::from_unix_nanos(PRECISE_NANOS)));
-    let precise = SqliteMemoryRepository::open_in_memory(fixed).unwrap();
+    let precise = SqliteMemoryRepository::open_in_memory(fixed).await.unwrap();
     shared::nanosecond_timestamp_conformance(&precise, PRECISE_NANOS).await;
 
     let dir = tempfile::tempdir().unwrap();
@@ -60,8 +62,8 @@ async fn sqlite_memory_timestamps_use_the_injected_clock_and_checked_sql_range()
     let overflow = Arc::new(FixedClock::at(UtcTime::from_unix_nanos(
         i64::MAX as u128 + 1,
     )));
-    let representable = SqliteMemoryRepository::open(path, max).unwrap();
-    let overflow = SqliteMemoryRepository::open(path, overflow).unwrap();
+    let representable = SqliteMemoryRepository::open(path, max).await.unwrap();
+    let overflow = SqliteMemoryRepository::open(path, overflow).await.unwrap();
     shared::sql_timestamp_range_conformance(&representable, &overflow).await;
 }
 
@@ -79,6 +81,7 @@ async fn volatile_materialized_path_cas() {
 async fn sqlite_materialized_path_cas() {
     let fs =
         awaken_memory_store::SqliteMemoryRepository::open_in_memory(awaken_time::system_clock())
+            .await
             .unwrap();
     shared::materialized_path_cas(&fs).await;
     shared::complete_generation_rejects_same_content_aba(&fs).await;
@@ -181,7 +184,9 @@ async fn in_memory_conditional_delete_is_atomic() {
 async fn sqlite_conditional_delete_is_atomic() {
     use awaken_memory_store::SqliteMemoryRepository;
     conditional_delete_never_removes_a_changed_or_recreated_head(
-        &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
+        &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock())
+            .await
+            .unwrap(),
     )
     .await;
 }
@@ -191,7 +196,9 @@ async fn sqlite_conditional_delete_is_atomic() {
 async fn sqlite_concurrent_create_has_exactly_one_winner() {
     use awaken_memory_store::SqliteMemoryRepository;
     concurrent_create_one_winner(Arc::new(
-        SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
+        SqliteMemoryRepository::open_in_memory(awaken_time::system_clock())
+            .await
+            .unwrap(),
     ))
     .await;
 }
@@ -206,8 +213,11 @@ async fn sqlite_concurrent_cas_has_exactly_one_winner() {
     // Separate repositories isolate the two rules; R2 deliberately shares its
     // repository across create and CAS so an empty-store assumption is exposed.
     for with_history in [false, true] {
-        let fs =
-            Arc::new(SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap());
+        let fs = Arc::new(
+            SqliteMemoryRepository::open_in_memory(awaken_time::system_clock())
+                .await
+                .unwrap(),
+        );
         if with_history {
             concurrent_create_one_winner(fs.clone()).await;
         }

@@ -168,8 +168,8 @@ mod tests {
     use super::*;
     use awaken_store_inmem::MemoryCommitCoordinator;
 
-    #[test]
-    fn parent_child_assembly_keeps_local_truth_and_isolates_remote_prefix() {
+    #[tokio::test]
+    async fn parent_child_assembly_keeps_local_truth_and_isolates_remote_prefix() {
         // Causes: C1 parent has local committed authority or a remote
         // claim-scoped projection; C2 the child is independently claimed.
         // Effects: E1 local child retains the exact Session-wide reader; E2
@@ -181,6 +181,7 @@ mod tests {
         let clock = awaken_time::system_clock();
         let store = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+                .await
                 .expect("test dispatch store"),
         );
         let commit = Arc::new(MemoryCommitCoordinator::new(clock.clone()));

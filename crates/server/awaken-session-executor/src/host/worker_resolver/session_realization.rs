@@ -139,10 +139,13 @@ mod tests {
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+                .await
                 .expect("dispatch store"),
         );
         let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_dispatch_store(store.clone()),
         );
         let managed = managed_test_host(host.clone());
         let resolver = HostWorkerResolver {
@@ -838,7 +841,7 @@ mod tests {
         use awaken_session_realization_contract::SessionProjectionSynchronizer as _;
 
         let thread = "resident-renewal-resources";
-        let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+        let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").await);
         let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let resident = frozen_projection();
         host.install_frozen_session_projection(thread, resident.clone(), None, true, None)
@@ -933,7 +936,7 @@ mod tests {
         use awaken_session_realization_contract::SessionProjectionSynchronizer as _;
 
         let thread = "dynamic-publication-renewal";
-        let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+        let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").await);
         let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let mut projection = frozen_projection();
         projection.baseline.agent_revision = Some(7);
@@ -1157,6 +1160,7 @@ mod tests {
         });
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .await
                 .with_session_realization_control(control.clone()),
         );
         let _managed = crate::ManagedHost::new(host.clone())
@@ -1263,6 +1267,7 @@ mod tests {
         let realizer = Arc::new(RecordingMcpRealizer::default());
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .await
                 .with_session_realization_control(control.clone()),
         );
         let _managed = crate::ManagedHost::new(host.clone())
@@ -1307,6 +1312,7 @@ mod tests {
         let realizer = Arc::new(RecordingMcpRealizer::default());
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .await
                 .with_session_realization_control(control.clone()),
         );
         let _managed = crate::ManagedHost::new(host.clone())
@@ -1382,7 +1388,10 @@ mod tests {
             expires_at_unix_ms: u64::MAX,
         };
         let original = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await,
         );
         let original_managed = managed_test_host(original.clone());
         let mut frozen = frozen_projection();
@@ -1459,7 +1468,10 @@ mod tests {
         };
         let control = RecoveryControl::fixed(frozen.clone());
         let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await,
         );
         let realizer = Arc::new(RecordingMcpRealizer {
             required_environment: Some((Arc::downgrade(&host), thread.into())),
@@ -1713,7 +1725,10 @@ mod tests {
                 },
             };
         let first_use_host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await,
         );
         let first_use_realizer = Arc::new(RecordingMcpRealizer {
             required_environment: Some((Arc::downgrade(&first_use_host), first_use_thread.into())),
@@ -1753,7 +1768,10 @@ mod tests {
         );
 
         let unpinned_host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await,
         );
         let unpinned_realizer = Arc::new(RecordingMcpRealizer::default());
         let unpinned_managed = crate::ManagedHost::new(unpinned_host.clone())
@@ -1794,7 +1812,10 @@ mod tests {
             "R8/E6: no unpinned Runtime may be installed"
         );
 
-        let cold = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+        let cold = SharedHost::new(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_store_dir(storage.path())
+            .await;
         let error = HostWorkerResolver::realize_session(
             &cold,
             &control,
@@ -1814,7 +1835,10 @@ mod tests {
         let rebuild_thread = "cold-missing-environment";
         let rebuild_activation = test_activation(rebuild_thread, "run-cold-missing-environment");
         let rebuild_fixture_host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await,
         );
         let mut rebuild_frozen = frozen_projection();
         rebuild_frozen.agent_publication = Some(rebuild_activation.snapshot.clone());
@@ -1843,7 +1867,10 @@ mod tests {
             action: awaken_session_realization_contract::SessionRealizationAction::Complete,
         };
         let rebuild_host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await,
         );
         let rebuild_managed =
             crate::ManagedHost::new(rebuild_host.clone()).install_dispatch_session_runtime();
@@ -1877,7 +1904,10 @@ mod tests {
         let continuity_activation =
             test_activation(continuity_thread, "run-cold-continuity-missing");
         let continuity_fixture_host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await,
         );
         let mut continuity_frozen = frozen_projection();
         continuity_frozen.agent_publication = Some(continuity_activation.snapshot.clone());
@@ -1905,7 +1935,10 @@ mod tests {
                 action: awaken_session_realization_contract::SessionRealizationAction::Complete,
             };
         let continuity_host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await,
         );
         let continuity_managed =
             crate::ManagedHost::new(continuity_host.clone()).install_dispatch_session_runtime();

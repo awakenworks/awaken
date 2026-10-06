@@ -137,6 +137,7 @@ async fn interrupt_with_admission_suspended(
     let run_id = RunId(format!("{thread}-run"));
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+            .await
             .expect("dispatch store"),
     );
     let attempt = Arc::new(BlockingManagedAttempt {
@@ -149,6 +150,7 @@ async fn interrupt_with_admission_suspended(
         release: tokio::sync::Notify::new(),
     });
     let mut host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
         .with_dispatch_store(dispatch.clone())
         .with_remote_attempt_executor(RemoteAttemptInstallation {
             executor: attempt.clone(),

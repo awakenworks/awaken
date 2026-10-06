@@ -1334,22 +1334,22 @@ mod tests {
 
         #[tokio::test]
         async fn sqlite_round_trip() {
-            round_trip(&SqliteFileStore::open_in_memory().unwrap()).await;
+            round_trip(&SqliteFileStore::open_in_memory().await.unwrap()).await;
         }
 
         #[tokio::test]
         async fn sqlite_list_sorted_and_dedup() {
-            list_sorted_and_dedup(&SqliteFileStore::open_in_memory().unwrap()).await;
+            list_sorted_and_dedup(&SqliteFileStore::open_in_memory().await.unwrap()).await;
         }
 
         #[tokio::test]
         async fn sqlite_empty_bytes_round_trip() {
-            empty_bytes_round_trip(&SqliteFileStore::open_in_memory().unwrap()).await;
+            empty_bytes_round_trip(&SqliteFileStore::open_in_memory().await.unwrap()).await;
         }
 
         #[tokio::test]
         async fn sqlite_catalog_obeys_identity_scope_idempotency_and_delete_contract() {
-            catalog_contract(&SqliteFileStore::open_in_memory().unwrap()).await;
+            catalog_contract(&SqliteFileStore::open_in_memory().await.unwrap()).await;
         }
 
         #[tokio::test]
@@ -1358,7 +1358,7 @@ mod tests {
             let path = tmp.path().join("blobs.db");
             let path = path.to_str().unwrap();
             let id = {
-                let store = SqliteFileStore::open(path).unwrap();
+                let store = SqliteFileStore::open(path).await.unwrap();
                 // Same id as the in-memory backend (computed in the core).
                 assert_eq!(
                     store.put(b"portable").await.unwrap(),
@@ -1367,7 +1367,7 @@ mod tests {
                 store.put(b"durable").await.unwrap()
             };
             // A fresh handle on the same file sees the blob (idempotent migration).
-            let reopened = SqliteFileStore::open(path).unwrap();
+            let reopened = SqliteFileStore::open(path).await.unwrap();
             assert_eq!(
                 reopened.get(&id).await.unwrap().as_deref(),
                 Some(&b"durable"[..])

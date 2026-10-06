@@ -10,7 +10,7 @@ async fn ctx_for_carries_one_self_consistent_snapshot_on_any_claiming_node() {
     // A durable run is driven by whichever pool node claims it (ADR-0019). Its
     // session config is already the complete execution authority and resolves
     // without manufacturing a second node-local catalog object.
-    let (host, _managed) = dispatch_test_host(SharedHost::new(Arc::new(OkModel), "stub"));
+    let (host, _managed) = dispatch_test_host(SharedHost::new(Arc::new(OkModel), "stub").await);
     let ctx = host
         .ctx_for("t-catalog", None)
         .await
@@ -32,7 +32,7 @@ async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandb
         awaken_ext_goal::grader::DEFAULT_JUDGE_INSTRUCTIONS,
     )
     .expect("literal model reference");
-    let (host, _managed) = dispatch_test_host(SharedHost::new(Arc::new(OkModel), "stub"));
+    let (host, _managed) = dispatch_test_host(SharedHost::new(Arc::new(OkModel), "stub").await);
     let thread = "claim-inference-only-judge";
     host.register_thread_workspace(thread, "workspace-judge");
     let identity = RuntimePublicationIdentity::from_publications(&published, &[], "stub");
@@ -88,7 +88,8 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
             serde_json::json!({"default": "deny", "rules": []}),
         )])
         .build();
-    let (host, managed) = dispatch_test_host(SharedHost::new(Arc::new(OkModel), "host-default"));
+    let (host, managed) =
+        dispatch_test_host(SharedHost::new(Arc::new(OkModel), "host-default").await);
     install_test_session_application(&host);
     crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
         &managed,
@@ -132,7 +133,8 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
         )])
         .build();
 
-    let (local, _local_managed) = dispatch_test_host(SharedHost::new(Arc::new(OkModel), "stub"));
+    let (local, _local_managed) =
+        dispatch_test_host(SharedHost::new(Arc::new(OkModel), "stub").await);
     local.register_thread_agent_projection("background-local", "background-agent");
     local
         .ctx_for_snapshot(
@@ -143,8 +145,9 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
         .await
         .expect("R1 co-located Native context");
 
-    let worker =
-        SharedHost::new(Arc::new(OkModel), "stub").with_database_less_worker_role_for_test();
+    let worker = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
+        .with_database_less_worker_role_for_test();
     let error = match worker
         .ctx_for_snapshot(
             "background-worker",
@@ -186,7 +189,8 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
             "a2a:https://agent.example.test",
         ))
         .build();
-    let (host, managed) = dispatch_test_host(SharedHost::new(Arc::new(OkModel), "host-default"));
+    let (host, managed) =
+        dispatch_test_host(SharedHost::new(Arc::new(OkModel), "host-default").await);
     install_test_session_application(&host);
     crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
         &managed,
@@ -284,8 +288,8 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
 
 /// Session Event recovery selects durable trace provenance before constructing
 /// the existing dispatch envelope; it never consults the recovery span.
-#[test]
-fn session_event_dispatch_uses_the_explicit_persisted_trace_source() {
+#[tokio::test]
+async fn session_event_dispatch_uses_the_explicit_persisted_trace_source() {
     // Cause/effect graph: C1 dispatch decoration receives the ordinary ambient
     // trace, a persisted Event trace, or an explicitly absent persisted trace;
     // C2 the execution payload is otherwise identical. Effects: E1 each present
@@ -302,7 +306,7 @@ fn session_event_dispatch_uses_the_explicit_persisted_trace_source() {
     // so recovery cannot manufacture a parent when root provenance stores None.
     const AMBIENT: &str = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
     const PERSISTED: &str = "00-11111111111111111111111111111111-2222222222222222-01";
-    let host = SharedHost::new(Arc::new(OkModel), "host-default");
+    let host = SharedHost::new(Arc::new(OkModel), "host-default").await;
     let activation = || {
         awaken_runtime_contract::RunActivation::new(
             awaken_agent_contract::agent::run::Id("run-explicit-trace-source".into()),
@@ -341,8 +345,8 @@ fn session_event_dispatch_uses_the_explicit_persisted_trace_source() {
 
 /// Dispatch Resource selection stays on the one Session-slot authority for both
 /// ordinary and Session-root durable requests.
-#[test]
-fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
+#[tokio::test]
+async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
     // Cause/effect graph: C1 the slot is/is-not a prepared Session; C2 the
     // canonical root/ordinary decorator is selected; C3 an aggregate-staged
     // Resource transition exists; C4 an active manifest exists; C5 an
@@ -381,7 +385,7 @@ fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
         ("R5", true, true, false, Some(4), None, 4),
         ("R6", true, true, true, Some(4), Some(7), 7),
     ] {
-        let host = SharedHost::new(Arc::new(OkModel), "host-default");
+        let host = SharedHost::new(Arc::new(OkModel), "host-default").await;
         let thread = format!("t-dispatch-resources-{rule}");
         let resources = |generation: &str| {
             effective_resources(vec![TestInput {
@@ -499,8 +503,8 @@ fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
 /// FMECA: omitting the snapshot strands every remote delegation (high severity,
 /// repeated claim failure); the assertion detects the omission at admission and
 /// the cold-Worker decision-table test verifies the receiving half.
-#[test]
-fn durable_dispatch_freezes_the_delegation_publication_closure() {
+#[tokio::test]
+async fn durable_dispatch_freezes_the_delegation_publication_closure() {
     use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
     use awaken_runtime_contract::snapshot::AgentId;
 
@@ -512,6 +516,7 @@ fn durable_dispatch_freezes_the_delegation_publication_closure() {
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([child.clone()])
             .expect("A1 publication source");
     let host = SharedHost::new(Arc::new(OkModel), "host-default")
+        .await
         .with_agent_publications(Arc::new(publications));
     let parent = awaken_runtime_contract::ExecutableAgentSnapshot::builder("coordinator")
         .model(test_model_binding())
@@ -535,8 +540,8 @@ fn durable_dispatch_freezes_the_delegation_publication_closure() {
     assert_eq!(dispatch.agent_publications, vec![child], "A1/E1+E2");
 }
 
-#[test]
-fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realization() {
+#[tokio::test]
+async fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realization() {
     // Cause/effect graph: C1 the request entered the Session application port;
     // C2 only a Resource manifest exists; C3 a child Run is parent-mediated.
     // Effects: E1 the root dispatch names its already-frozen Session; E2 an ordinary
@@ -551,7 +556,7 @@ fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realization() 
     //
     // This test owns R1. The adjacent resource-envelope test owns R2 and the
     // existing child-dispatch test owns R3, avoiding a parallel child builder.
-    let host = SharedHost::new(Arc::new(OkModel), "host-default");
+    let host = SharedHost::new(Arc::new(OkModel), "host-default").await;
     let thread = "prepared-root-session";
     host.session_slots
         .update(thread, |slot| slot.session_dispatch = true);
@@ -576,15 +581,15 @@ fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realization() 
     );
 }
 
-#[test]
-fn thread_extension_dispatch_reuses_frozen_inputs_without_session_admission() {
+#[tokio::test]
+async fn thread_extension_dispatch_reuses_frozen_inputs_without_session_admission() {
     // Cause/effect graph: C1 a prepared Session marks its public root Runs for
     // Session admission; C2 the Outcome bounded context owns an ordinary Run on
     // that same Thread. Effects: E1 C1 uses root Session affinity; E2 C1+C2
     // preserves the ordinary full-dispatch shape while reusing the canonical
     // decorator. Decision table: public root => E1 (adjacent test); Outcome
     // extension => E2. A structural self-affinity must never be inferred for C2.
-    let host = SharedHost::new(Arc::new(OkModel), "host-default");
+    let host = SharedHost::new(Arc::new(OkModel), "host-default").await;
     let thread = "prepared-outcome-thread";
     host.session_slots
         .update(thread, |slot| slot.session_dispatch = true);
@@ -610,8 +615,8 @@ fn thread_extension_dispatch_reuses_frozen_inputs_without_session_admission() {
     );
 }
 
-#[test]
-fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
+#[tokio::test]
+async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
     // Cause graph: C1=credential-bearing candidate; C2=Native; C3=ACP;
     // C4=mixed boundaries; C5=publication freezes one common holder;
     // C6=prepared Environment requests a different holder; C7=closed Remote
@@ -630,7 +635,7 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
     // | R7   | T  | T  | F  | F  | F  | T  | F  | F  | reject                   |
     // | R8   | T  | F  | F  | F  | F  | F  | T  | F  | Worker holder            |
     // | R9   | T  | T  | F  | F  | F  | F  | F  | T  | reject                   |
-    let host = SharedHost::new(Arc::new(OkModel), "host-default");
+    let host = SharedHost::new(Arc::new(OkModel), "host-default").await;
     let candidate_with_policy =
         |model: &str, backend: &str, policy: awaken_runtime_contract::CredentialExecutionPolicy| {
             let binding =
@@ -811,7 +816,7 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
     );
     conflicting_environment.credential_realization =
         awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp();
-    let conflicting_host = SharedHost::new(Arc::new(OkModel), "host-default");
+    let conflicting_host = SharedHost::new(Arc::new(OkModel), "host-default").await;
     conflicting_host
         .install_environment_projection("cold-thread", &conflicting_environment)
         .expect("replace the prepared Environment profile");
@@ -859,7 +864,10 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     let thread = "t-sandbox-recovery";
 
     let (first, first_managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(OkModel), "stub").with_store_dir(storage.path()),
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_store_dir(storage.path())
+            .await,
     );
     install_test_session_application(&first);
     install_complete_test_session_for_realization(
@@ -887,7 +895,10 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     drop(first);
 
     let (replacement, replacement_managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(OkModel), "stub").with_store_dir(storage.path()),
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_store_dir(storage.path())
+            .await,
     );
     install_test_session_application(&replacement);
     replacement_managed
@@ -932,7 +943,10 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
 async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     let storage = tempfile::tempdir().expect("storage dir");
     let (host, managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(OkModel), "stub").with_store_dir(storage.path()),
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_store_dir(storage.path())
+            .await,
     );
     install_test_session_application(&host);
     install_complete_test_session_for_realization(
@@ -1021,7 +1035,10 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
 async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     let storage = tempfile::tempdir().expect("storage dir");
     let (host, managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(OkModel), "stub").with_store_dir(storage.path()),
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_store_dir(storage.path())
+            .await,
     );
     install_test_session_application(&host);
     install_complete_test_session_for_realization(

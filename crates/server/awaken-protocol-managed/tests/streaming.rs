@@ -35,12 +35,23 @@ fn router(state: Arc<ManagedState>) -> axum::Router {
     support::edge_stamped(awaken_protocol_managed::router(state))
 }
 
-fn independent_replicas() -> (CoordinatedRuntimeFake, Arc<ManagedState>, Arc<ManagedState>) {
+async fn independent_replicas() -> (CoordinatedRuntimeFake, Arc<ManagedState>, Arc<ManagedState>) {
     let runtime = CoordinatedRuntimeFake::default();
-    let repository =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
-    let a = Arc::new(support::state(runtime.clone()).with_session_repo(repository.clone()));
-    let b = Arc::new(support::state(runtime.clone()).with_session_repo(repository));
+    let repository = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let a = Arc::new(
+        support::state(runtime.clone())
+            .await
+            .with_session_repo(repository.clone()),
+    );
+    let b = Arc::new(
+        support::state(runtime.clone())
+            .await
+            .with_session_repo(repository),
+    );
     (runtime, a, b)
 }
 use axum::Router;
@@ -269,7 +280,7 @@ async fn live_broadcast_delivers_one_runs_committed_frames_in_order() {
     // below hold together`; a multi-row decision table is not applicable, and sibling tests own
     // alternate causes.
     let runtime = CoordinatedRuntimeFake::default();
-    let state = Arc::new(support::state(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()).await);
     let id = state_create(&state).await;
 
     // Subscribe first: a fresh session has no committed events, so nothing is
@@ -338,7 +349,7 @@ async fn live_broadcast_preserves_order_across_two_runs() {
     // across two runs`; a multi-row decision table is not applicable, and sibling tests own
     // alternate causes.
     let runtime = CoordinatedRuntimeFake::default();
-    let state = Arc::new(support::state(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()).await);
     let id = state_create(&state).await;
     let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
 
@@ -397,9 +408,16 @@ async fn accepted_followup_running_keeps_its_get_cursor_when_child_run_commits_l
     use awaken_session_execution_contract::SessionAgentCoordination as _;
 
     let runtime = CoordinatedRuntimeFake::default();
-    let repository =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
-    let state = Arc::new(support::state(runtime.clone()).with_session_repo(repository.clone()));
+    let repository = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let state = Arc::new(
+        support::state(runtime.clone())
+            .await
+            .with_session_repo(repository.clone()),
+    );
     let id = state_create(&state).await;
     state_send_user(&state, &runtime, &id, "first").await;
     let prior = state.list_events(&id, None, None, false).unwrap().data;
@@ -484,7 +502,7 @@ async fn accepted_followup_running_keeps_its_get_cursor_when_child_run_commits_l
         "R2 no duplicate broadcast"
     );
 
-    let cold = Arc::new(support::state(runtime).with_session_repo(repository));
+    let cold = Arc::new(support::state(runtime).await.with_session_repo(repository));
     let cold_events = http_json(
         &router(cold.clone()),
         "GET",
@@ -529,7 +547,7 @@ async fn root_stream_immediately_projects_thread_live_observations_only() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     let runtime = CoordinatedRuntimeFake::default();
-    let state = Arc::new(support::state(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()).await);
     let app = router(state.clone());
     let id = http_create(&app).await;
     let (_snapshot, mut committed_rx) = state.stream_subscribe(&id).expect("R3 subscribe");
@@ -619,7 +637,7 @@ async fn child_thread_sse_is_isolated_and_archive_projects_durable_terminal() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     let runtime = CoordinatedRuntimeFake::default();
-    let state = Arc::new(support::state(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()).await);
     let app = router(state.clone());
     let id = http_create(&app).await;
 
@@ -761,7 +779,7 @@ async fn durable_child_archive_broadcasts_and_backfills_one_terminal_frame() {
     // assertions below hold together`; a multi-row decision table is not applicable, and sibling
     // tests own alternate causes.
     let runtime = CoordinatedRuntimeFake::default();
-    let state = Arc::new(support::state(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()).await);
     let id = state_create(&state).await;
     // Project the delegation, then subscribe: the returned snapshot owns backfill
     // while this receiver contains only facts committed after subscription.
@@ -823,7 +841,7 @@ async fn stream_thread_events_backfills_the_primary_thread() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     let runtime = CoordinatedRuntimeFake::default();
-    let state = Arc::new(support::state(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()).await);
     let app = router(state.clone());
     let id = http_create(&app).await;
     http_json(
@@ -881,7 +899,7 @@ async fn stream_thread_events_accepts_the_preview_opt_in() {
     // preview opt in`; a multi-row decision table is not applicable, and sibling tests own
     // alternate causes.
     let runtime = CoordinatedRuntimeFake::default();
-    let state = Arc::new(support::state(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()).await);
     let app = router(state.clone());
     let id = http_create(&app).await;
     http_json(
@@ -937,7 +955,7 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
     // selects only its stated effect and preserves the authority constraint.
     let runtime = CoordinatedRuntimeFake::default();
     runtime.defer_child_completion();
-    let state = Arc::new(support::state(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()).await);
     let app = router(state.clone());
     let id = http_create(&app).await;
     http_json(
@@ -1117,7 +1135,9 @@ async fn stream_thread_events_unknown_thread_is_404() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = router(Arc::new(support::state(CoordinatedRuntimeFake::default())));
+    let app = router(Arc::new(
+        support::state(CoordinatedRuntimeFake::default()).await,
+    ));
     let id = http_create(&app).await;
     for thread_id in ["nope".to_string(), format!("{id}:primary")] {
         let _ = http_sse(
@@ -1142,7 +1162,7 @@ async fn session_stream_event_deltas_follow_the_boundary_decision_rule() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     let runtime = CoordinatedRuntimeFake::default();
-    let state = Arc::new(support::state(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()).await);
     let app = router(state.clone());
     let id = http_create(&app).await;
     http_json(
@@ -1206,7 +1226,7 @@ async fn the_stream_full_replays_and_ignores_last_event_id() {
     // together`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
     let runtime = CoordinatedRuntimeFake::default();
-    let state = Arc::new(support::state(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()).await);
     let app = router(state.clone());
     let id = http_create(&app).await;
     http_json(
@@ -1265,7 +1285,7 @@ async fn a_lagging_subscriber_skips_frames_but_still_receives_later_ones() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     let runtime = CoordinatedRuntimeFake::default();
-    let state = Arc::new(support::state(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()).await);
     let id = state_create(&state).await;
     let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
 
@@ -1301,7 +1321,7 @@ async fn a_lagging_subscriber_skips_frames_but_still_receives_later_ones() {
 #[tokio::test]
 async fn slow_http_consumers_and_reconnect_storm_recover_from_durable_replay() {
     let runtime = CoordinatedRuntimeFake::default();
-    let state = Arc::new(support::state(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()).await);
     let app = router(state.clone());
     let id = http_create(&app).await;
     let uri = format!("/v1/sessions/{id}/events/stream");
@@ -1402,7 +1422,7 @@ async fn a_closed_sender_ends_the_subscription() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let state = support::state(CoordinatedRuntimeFake::default());
+    let state = support::state(CoordinatedRuntimeFake::default()).await;
     let id = state_create(&state).await;
     let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
 
@@ -1430,7 +1450,7 @@ async fn an_open_stream_reconciles_silent_commits_from_an_independent_replica() 
     // E3 root/child wire projection is identical to B's authoritative history.
     // Rule S1+S2+S3=>E1-E3. PostgreSQL multi-pool qualification reuses the same
     // production history and projection ports; this slice owns cache isolation.
-    let (runtime, a, b) = independent_replicas();
+    let (runtime, a, b) = independent_replicas().await;
     let id = state_create(&a).await;
     let response = router(a)
         .oneshot(
@@ -1504,7 +1524,7 @@ async fn deletion_after_sse_snapshot_delivers_the_exact_committed_terminal_witho
     // D3 the real body starts only after D2. D1+D2+D3 => snapshot still readable,
     // no NotFound body error, one terminal equal to the producer's receipt.
     // This deterministically covers the cache-vs-broadcast deletion race.
-    let state = Arc::new(support::state(CoordinatedRuntimeFake::default()));
+    let state = Arc::new(support::state(CoordinatedRuntimeFake::default()).await);
     let app = router(state.clone());
     let id = http_create(&app).await;
     let response = app
@@ -1563,7 +1583,7 @@ async fn an_open_stream_observes_another_replicas_durable_deletion_without_local
     // body stays connected. D4+D5+D6 => the retained hidden root or scoped
     // tombstone proves one logical deletion with the same producer identity.
     // No reconnect, history GET, command resend or second deletion admission.
-    let (_, a, b) = independent_replicas();
+    let (_, a, b) = independent_replicas().await;
     let id = state_create(&a).await;
     // Keep the aggregate's real activity fence open before subscribing. An
     // already-idle Session may legitimately finish SSE before a later delete.
@@ -1633,7 +1653,7 @@ async fn an_open_http_stream_delivers_processing_enrichment_of_its_issued_receip
     // the same immutable id/payload with its first processing observation and
     // closes on the correct aggregate Idle, without resending the command.
     let runtime = CoordinatedRuntimeFake::default();
-    let state = Arc::new(support::state(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()).await);
     let id = state_create(&state).await;
     let sent = state.send_events(&id, serde_json::from_value(serde_json::json!({
         "events": [{"type":"user.message", "content":[{"type":"text", "text":"observe processing"}]}]

@@ -1278,6 +1278,7 @@ mod tests {
         awaken_session_store::SqliteManagedSessionRepository::verify_existing(
             &data_dir.join("sessions.db").to_string_lossy(),
         )
+        .await
         .expect("LM2/E2 canonical Session store");
 
         migrate_service_with_request(ordinary)

@@ -55,12 +55,12 @@ async fn sources_and_pools_survive_a_reopen_from_file() {
         policy: SelectionPolicy::RotateSpread,
     };
     {
-        let repo = SqliteCredentialRepo::open(path).unwrap();
+        let repo = SqliteCredentialRepo::open(path).await.unwrap();
         repo.put(source("cred:a", "ws")).await.unwrap();
         repo.put_pool(pool.clone()).await.unwrap();
     }
     // A fresh handle on the same file sees identical rows.
-    let repo = SqliteCredentialRepo::open(path).unwrap();
+    let repo = SqliteCredentialRepo::open(path).await.unwrap();
     assert_eq!(
         repo.get(&CredentialSourceId("cred:a".into()))
             .await
@@ -93,13 +93,16 @@ mod sealed_secrets {
 
     const KEY: [u8; 32] = [7u8; 32];
 
-    fn sealed_store_on(path: &str, key: &[u8; 32]) -> SealedAeadSecretStore {
-        SealedAeadSecretStore::over(key, Arc::new(SqliteSealedBlobStore::open(path).unwrap()))
+    async fn sealed_store_on(path: &str, key: &[u8; 32]) -> SealedAeadSecretStore {
+        SealedAeadSecretStore::over(
+            key,
+            Arc::new(SqliteSealedBlobStore::open(path).await.unwrap()),
+        )
     }
 
     /// Seal a secret into `path` via the full create seam; returns the row.
     async fn enter(path: &str) -> CredentialSource {
-        let store = sealed_store_on(path, &KEY);
+        let store = sealed_store_on(path, &KEY).await;
         create_source(
             CredentialCreateParams {
                 workspace_id: "ws".into(),
@@ -123,7 +126,7 @@ mod sealed_secrets {
         let row = enter(path).await;
 
         // Reopen from file under the same key → the secret materializes.
-        let reopened = sealed_store_on(path, &KEY);
+        let reopened = sealed_store_on(path, &KEY).await;
         let secret = materialize(&row, &reopened).await.unwrap();
         assert_eq!(secret.expose_secret(), "sk-super-secret-value");
     }
@@ -135,7 +138,7 @@ mod sealed_secrets {
         let path = path.to_str().unwrap();
         let row = enter(path).await;
 
-        let wrong = sealed_store_on(path, &[8u8; 32]);
+        let wrong = sealed_store_on(path, &[8u8; 32]).await;
         assert!(matches!(
             materialize(&row, &wrong).await,
             Err(CredentialError::Seal)
@@ -153,22 +156,25 @@ mod sealed_secrets {
         // Flip one ciphertext byte (past the 12-byte nonce) straight in the
         // database — the AEAD tag must reject the doctored at-rest bytes.
         {
-            let conn = rusqlite::Connection::open(path).unwrap();
-            let mut blob: Vec<u8> = conn
-                .query_row(
-                    "SELECT sealed FROM credential_secret WHERE secret_ref = ?1",
-                    rusqlite::params![secret_ref.0],
-                    |r| r.get(0),
-                )
+            let conn = awaken_sqlite_pool::EmbeddedSqlite::file(path)
+                .open()
+                .await
                 .unwrap();
+            let mut blob: Vec<u8> =
+                sqlx::query_scalar("SELECT sealed FROM credential_secret WHERE secret_ref = ?1")
+                    .bind(&secret_ref.0)
+                    .fetch_one(&conn)
+                    .await
+                    .unwrap();
             blob[12] ^= 0x01;
-            conn.execute(
-                "UPDATE credential_secret SET sealed = ?1 WHERE secret_ref = ?2",
-                rusqlite::params![blob, secret_ref.0],
-            )
-            .unwrap();
+            sqlx::query("UPDATE credential_secret SET sealed = ?1 WHERE secret_ref = ?2")
+                .bind(blob)
+                .bind(&secret_ref.0)
+                .execute(&conn)
+                .await
+                .unwrap();
         }
-        let store = sealed_store_on(path, &KEY);
+        let store = sealed_store_on(path, &KEY).await;
         assert!(matches!(
             store.get(&secret_ref).await,
             Err(CredentialError::Seal)
@@ -183,14 +189,16 @@ mod sealed_secrets {
         let row = enter(path).await;
         let secret_ref = row.material_ref.unwrap();
 
-        let conn = rusqlite::Connection::open(path).unwrap();
-        let blob: Vec<u8> = conn
-            .query_row(
-                "SELECT sealed FROM credential_secret WHERE secret_ref = ?1",
-                rusqlite::params![secret_ref.0],
-                |r| r.get(0),
-            )
+        let conn = awaken_sqlite_pool::EmbeddedSqlite::file(path)
+            .open()
+            .await
             .unwrap();
+        let blob: Vec<u8> =
+            sqlx::query_scalar("SELECT sealed FROM credential_secret WHERE secret_ref = ?1")
+                .bind(&secret_ref.0)
+                .fetch_one(&conn)
+                .await
+                .unwrap();
         let plaintext = b"sk-super-secret-value";
         assert!(!blob.windows(plaintext.len()).any(|w| w == plaintext));
     }

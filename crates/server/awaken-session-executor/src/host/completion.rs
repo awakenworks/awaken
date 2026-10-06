@@ -1111,8 +1111,8 @@ mod completion_tests {
         );
     }
 
-    #[test]
-    fn exported_dispatch_completion_sink_is_the_host_owned_projection() {
+    #[tokio::test]
+    async fn exported_dispatch_completion_sink_is_the_host_owned_projection() {
         // Cause graph: one SharedHost owns one CompletionRegistry; an embedding
         // requests the Worker-settle projection; cloning must preserve that exact
         // registry rather than constructing a peer notification path.
@@ -1122,7 +1122,8 @@ mod completion_tests {
         // | coordinator-only | exact host registry | remote settle wakes Session |
         // Mode does not alter sink identity, so pointer identity covers both rules
         // without manufacturing two deployment configurations in this unit test.
-        let host = SharedHost::new(Arc::new(NoModelConfiguredExecutor), UNCONFIGURED_MODEL_REF);
+        let host =
+            SharedHost::new(Arc::new(NoModelConfiguredExecutor), UNCONFIGURED_MODEL_REF).await;
         let expected = host.completion.clone() as Arc<dyn CompletionSink>;
         let exported = host.dispatch_completion_sink();
 
@@ -1137,10 +1138,9 @@ mod completion_tests {
         // Cause/effect rule: C0 the ordinary Dispatch runtime composition is
         // present and C1 its frozen model is explicitly unconfigured. E1 context
         // creation succeeds through C0; E2 dispatch rejects C1 before enqueue.
-        let host = Arc::new(SharedHost::new(
-            Arc::new(NoModelConfiguredExecutor),
-            UNCONFIGURED_MODEL_REF,
-        ));
+        let host = Arc::new(
+            SharedHost::new(Arc::new(NoModelConfiguredExecutor), UNCONFIGURED_MODEL_REF).await,
+        );
         let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let ctx = host
             .ctx_for("unconfigured-model", None)

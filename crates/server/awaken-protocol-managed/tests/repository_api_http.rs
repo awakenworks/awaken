@@ -35,8 +35,8 @@ impl RepositoryCredentialValidator for Admission {
     }
 }
 
-fn setup() -> (Router, awaken_resource_application::ResourcesApplication) {
-    let resources = support::resources::ephemeral_resources();
+async fn setup() -> (Router, awaken_resource_application::ResourcesApplication) {
+    let resources = support::resources::ephemeral_resources().await;
     (
         repositories_router(resources.repositories(Arc::new(Admission))),
         resources,
@@ -85,7 +85,7 @@ fn body() -> Value {
 
 #[tokio::test]
 async fn committed_response_loss_replays_one_repository_and_workspace_isolation_holds() {
-    let (router, _) = setup();
+    let (router, _) = setup().await;
     let first = call(&router, "POST", PATH, Some("test"), Some("request"), body())
         .await
         .expect_for(StatusCode::CREATED, "expected status");
@@ -150,7 +150,7 @@ async fn committed_response_loss_replays_one_repository_and_workspace_isolation_
 
 #[tokio::test]
 async fn authoring_requires_trusted_workspace_key_and_secret_free_body() {
-    let (router, _) = setup();
+    let (router, _) = setup().await;
     for workspace in [None, Some("")] {
         assert_eq!(
             call(&router, "POST", PATH, workspace, Some("key"), body())
@@ -197,7 +197,7 @@ async fn authoring_requires_trusted_workspace_key_and_secret_free_body() {
 
 #[tokio::test]
 async fn private_admission_and_outage_are_distinct_and_failed_attempts_do_not_reserve_identity() {
-    let (router, _) = setup();
+    let (router, _) = setup().await;
     for (source, status) in [
         ("foreign-source", StatusCode::BAD_REQUEST),
         ("outage", StatusCode::SERVICE_UNAVAILABLE),
@@ -234,7 +234,7 @@ async fn private_admission_and_outage_are_distinct_and_failed_attempts_do_not_re
 #[tokio::test]
 async fn pagination_is_complete_and_retired_repository_cannot_be_recreated() {
     use awaken_resource_contract::{ChangeRepositoryState, ResourceState};
-    let (router, resources) = setup();
+    let (router, resources) = setup().await;
     let mut ids = Vec::new();
     for key in ["one", "two", "three"] {
         let result = call(&router, "POST", PATH, Some("test"), Some(key), body())

@@ -622,8 +622,8 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    #[test]
-    fn continuation_fence_keeps_control_coordinates_but_requires_current_local_proof() {
+    #[tokio::test]
+    async fn continuation_fence_keeps_control_coordinates_but_requires_current_local_proof() {
         use crate::session_slot::SessionRealizationAuthority as Authority;
         use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
         use awaken_session_resource_contract::SessionRealizationLease;
@@ -646,10 +646,13 @@ mod tests {
             ("F4", false),
             ("F5", false),
         ] {
-            let host = Arc::new(crate::SharedHost::new(
-                Arc::new(crate::no_model::NoModelConfiguredExecutor),
-                "stub",
-            ));
+            let host = Arc::new(
+                crate::SharedHost::new(
+                    Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                    "stub",
+                )
+                .await,
+            );
             let mut current = lease.clone();
             if rule == "F5" {
                 current.runtime_incarnation.push_str("-new");

@@ -25,7 +25,10 @@ use awaken_store_conformance::work_queue::run_suite;
 use awaken_work_store::{InMemoryWorkQueue, LEASE_TTL_MS, PostgresWorkQueue, SqliteWorkQueue};
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
+    // The SQLite backend's pool admission is a timed wait, so the runtime needs
+    // its timer and I/O drivers.
     tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("current-thread runtime")
         .block_on(f)
@@ -44,7 +47,11 @@ fn in_memory_backend_conforms() {
 fn sqlite_backend_conforms() {
     block(run_suite(
         awaken_time::system_clock(),
-        async |clock| SqliteWorkQueue::open_in_memory(clock).expect("sqlite in-memory queue"),
+        async |clock| {
+            SqliteWorkQueue::open_in_memory(clock)
+                .await
+                .expect("sqlite in-memory queue")
+        },
         LEASE_TTL_MS,
     ));
 }

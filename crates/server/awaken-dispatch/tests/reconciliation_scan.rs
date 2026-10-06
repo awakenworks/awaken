@@ -220,6 +220,7 @@ async fn sqlite_scan_counts_corrupt_payload_and_reaches_healthy_suffix() {
         path.to_str().unwrap(),
         awaken_time::system_clock(),
     )
+    .await
     .unwrap();
     for run in ["bad", "healthy"] {
         store
@@ -227,12 +228,13 @@ async fn sqlite_scan_counts_corrupt_payload_and_reaches_healthy_suffix() {
             .await
             .unwrap();
     }
-    let connection = rusqlite::Connection::open(path).unwrap();
-    connection
-        .execute(
-            "UPDATE runtime_dispatch SET request = '{}' WHERE run_id = 'bad'",
-            [],
-        )
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(path)
+        .open()
+        .await
+        .unwrap();
+    sqlx::query("UPDATE runtime_dispatch SET request = '{}' WHERE run_id = 'bad'")
+        .execute(&connection)
+        .await
         .unwrap();
     assert_corrupt_summary_scan_isolation(&store).await;
 }

@@ -206,7 +206,7 @@ async fn ai_sdk_echo_run_streams_text() {
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = build_echo_router();
+    let app = build_echo_router().await;
     let (status, body) = call(
         &app,
         "POST",
@@ -244,7 +244,7 @@ async fn ai_sdk_history_reflects_committed_run() {
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = build_echo_router();
+    let app = build_echo_router().await;
     call(
         &app,
         "POST",
@@ -292,7 +292,7 @@ async fn ai_sdk_awaits_then_managed_resumes_same_thread() {
     // one Thread transcript is the authority shared by both protocol adapters.
     // Decision rule: X2=C1 without C2 -> awaiting; X3=C1+C2 -> committed result
     // precedes committed answer in the same Thread history.
-    let app = build_custom_router();
+    let app = build_custom_router().await;
 
     // 1. Managed creates the session; its id is the shared thread id.
     let (_, created) = call(
@@ -391,7 +391,7 @@ async fn ag_ui_echo_run_streams_run_events() {
     // Coverage rationale: `ag ui echo run streams run events` is one independent branch selecting
     // `all output, state, side-effect, error, and terminal assertions below hold together`; a
     // multi-row decision table is not applicable, and sibling tests own alternate causes.
-    let app = build_echo_router();
+    let app = build_echo_router().await;
     let (status, body) = call(
         &app,
         "POST",
@@ -430,7 +430,7 @@ async fn ag_ui_echo_run_streams_run_events() {
 /// effects: this test crosses the guard, adapters, and committed Runtime.
 #[tokio::test(flavor = "multi_thread")]
 async fn guarded_application_protocols_keep_the_external_thread_identity() {
-    let (app, host) = build_router_and_host(Arc::new(EchoModel), "echo-model");
+    let (app, host) = build_router_and_host(Arc::new(EchoModel), "echo-model").await;
     let (status, created) = call(
         &app,
         "POST",
@@ -546,7 +546,7 @@ async fn guarded_application_protocols_keep_the_external_thread_identity() {
 /// proves presentation aliasing cannot change canonical pending-tool lookup.
 #[tokio::test(flavor = "multi_thread")]
 async fn guarded_ag_ui_resume_keeps_the_external_thread_identity() {
-    let (app, host) = build_custom_router_and_host();
+    let (app, host) = build_custom_router_and_host().await;
     let (status, created) = call(
         &app,
         "POST",
@@ -647,7 +647,7 @@ async fn ag_ui_awaits_then_managed_resumes_visible_via_ai_sdk() {
     // causality remains visible through the third protocol. X4=C1+C2 on the
     // default test stack -> the canonical Host context realization completes;
     // no adapter-specific stack override or resume path is permitted.
-    let app = build_custom_router();
+    let app = build_custom_router().await;
 
     let (_, created) = call(
         &app,
@@ -736,7 +736,7 @@ async fn ag_ui_awaits_then_managed_resumes_visible_via_ai_sdk() {
 async fn ai_sdk_malformed_body_returns_stream_error() {
     // A body that fails to decode must surface as a UI Message Stream error frame
     // (status 200, error in-stream), not axum's plain-text 400.
-    let app = build_echo_router();
+    let app = build_echo_router().await;
     let (status, body) = call(
         &app,
         "POST",
@@ -767,7 +767,7 @@ async fn ai_sdk_driver_error_returns_stream_error() {
     // normal finish(stop), and E4 close with exactly one transport sentinel.
     // Empty messages on a fresh thread fault-injects C1 at the admission/driver
     // boundary without inventing a second protocol-only completion path.
-    let app = build_echo_router();
+    let app = build_echo_router().await;
     let (status, body) = call(
         &app,
         "POST",
@@ -799,7 +799,7 @@ async fn ai_sdk_driver_error_returns_stream_error() {
 #[tokio::test(flavor = "multi_thread")]
 async fn ag_ui_malformed_body_returns_run_error() {
     // A body that fails to decode must surface as a bare RUN_ERROR event.
-    let app = build_echo_router();
+    let app = build_echo_router().await;
     let (status, body) = call(&app, "POST", "/v1/ag-ui", json!({ "messages": 5 })).await;
     assert_eq!(status, StatusCode::OK, "AG-UI streams the error: {body}");
     assert!(
@@ -814,7 +814,7 @@ async fn ag_ui_malformed_body_returns_run_error() {
 async fn ag_ui_driver_error_returns_run_error() {
     // A resume with no awaiting run is a driver error → RUN_ERROR (bracketed by the
     // RUN_STARTED the run began with).
-    let app = build_echo_router();
+    let app = build_echo_router().await;
     let (status, body) = call(
         &app,
         "POST",
@@ -876,7 +876,7 @@ async fn a2a_run_returns_completed_task() {
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = build_echo_router();
+    let app = build_echo_router().await;
     let (status, body) = call(
         &app,
         "POST",
@@ -917,7 +917,7 @@ async fn a2a_history_accumulates_across_runs() {
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = build_echo_router();
+    let app = build_echo_router().await;
     call(
         &app,
         "POST",
@@ -947,7 +947,7 @@ async fn a2a_history_accumulates_across_runs() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a2a_awaits_input_required_then_resumes_completed() {
-    let app = build_custom_router();
+    let app = build_custom_router().await;
     // A managed session fixes the shared context id.
     let (_, created) = call(
         &app,
@@ -1006,7 +1006,7 @@ async fn a2a_awaits_input_required_then_resumes_completed() {
 async fn a2a_malformed_body_returns_error_envelope() {
     // A2A is request/response, so a decode failure is an HTTP 400 + JSON error
     // envelope (like Managed), not an in-stream event.
-    let app = build_echo_router();
+    let app = build_echo_router().await;
     let (status, body) = call(
         &app,
         "POST",
@@ -1028,7 +1028,7 @@ async fn a2a_malformed_body_returns_error_envelope() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a2a_agent_card_advertises_the_protocol() {
-    let app = build_echo_router();
+    let app = build_echo_router().await;
     let (status, body) = call(&app, "GET", "/v1/a2a/agent-card", Value::Null).await;
     assert_eq!(status, StatusCode::OK);
     let card = serde_json::from_str::<Value>(&body).unwrap();

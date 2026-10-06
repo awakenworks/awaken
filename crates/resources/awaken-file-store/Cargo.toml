@@ -29,14 +29,13 @@ tokio = { workspace = true, features = ["fs", "io-util"] }
 
 # Network / durable relational backends over the same trait. Optional: the
 # default product build retains only the durable filesystem backend.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
-# Feature `sqlite`: embedded BLOB backend over the same `file_store` migration scope.
-rusqlite = { workspace = true, optional = true }
+# Feature `sqlite` uses the same driver for the embedded BLOB backend over the
+# same `file_store` migration scope.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"], optional = true }
 # Versioned schema via the foundation's scoped migration (never a raw CREATE TABLE):
 # the `file_store_blob` table is migration 1 of the `awaken.file_store` bundle. The
 # core migrator (schema) is shared; each backend pulls its own runner.
-awaken-scoped-migration = { workspace = true, features = ["postgres"], optional = true }
-awaken-scoped-migration-sqlite = { workspace = true, optional = true }
+awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"], optional = true }
 awaken-sqlite-pool = { workspace = true, optional = true }
 awaken-sql-storage = { workspace = true, optional = true }
 object_store = { version = "0.14", features = ["aws", "gcp"], optional = true }
@@ -49,7 +48,7 @@ test-support = []
 # running needs a database.
 postgres = ["dep:awaken-sql-storage", "dep:sqlx", "dep:awaken-scoped-migration"]
 # SQLite BLOB backend (`sqlite::SqliteFileStore`) over the same `file_store` scope.
-sqlite = ["dep:awaken-sql-storage", "dep:rusqlite", "dep:awaken-scoped-migration", "dep:awaken-scoped-migration-sqlite", "dep:awaken-sqlite-pool"]
+sqlite = ["dep:awaken-sql-storage", "dep:sqlx", "dep:awaken-scoped-migration", "dep:awaken-sqlite-pool"]
 # Object-store backend (S3-compatible/GCS via `object_store`; key = content id).
 object-store = ["dep:object_store", "dep:futures"]
 

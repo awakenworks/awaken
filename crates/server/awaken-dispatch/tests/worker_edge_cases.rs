@@ -109,7 +109,9 @@ async fn dedupe_key_blocks_a_duplicate_dispatch_on_sqlite() {
     // live dedupe key yield only ONE claimable dispatch — the second submit is a
     // no-op while the first is live.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
+    let store = SqliteDispatchStore::open_in_memory(clock.clock())
+        .await
+        .expect("open");
     let key = SubmitOptions {
         dedupe_key: Some("k".to_string()),
         ..Default::default()

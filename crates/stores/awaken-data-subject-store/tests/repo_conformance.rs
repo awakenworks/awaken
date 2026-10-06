@@ -359,12 +359,12 @@ async fn sqlite_erasure_independent_connections_preserve_winner_after_reopen() {
     let path = dir.path().join("erasure.db");
     let path = path.to_str().unwrap();
     let winner = {
-        let left = SqliteDataSubjectRepo::open(path).unwrap();
-        let right = SqliteDataSubjectRepo::open(path).unwrap();
-        let third = SqliteDataSubjectRepo::open(path).unwrap();
+        let left = SqliteDataSubjectRepo::open(path).await.unwrap();
+        let right = SqliteDataSubjectRepo::open(path).await.unwrap();
+        let third = SqliteDataSubjectRepo::open(path).await.unwrap();
         erasure_checkpoint_competing_candidates([&left, &right, &third]).await
     };
-    let reopened = SqliteDataSubjectRepo::open(path).unwrap();
+    let reopened = SqliteDataSubjectRepo::open(path).await.unwrap();
     assert_eq!(
         reopened
             .load(&DataSubjectId("dsub_erasure_race".into()))
@@ -374,11 +374,15 @@ async fn sqlite_erasure_independent_connections_preserve_winner_after_reopen() {
     );
 }
 
-async fn run_all(make: impl Fn() -> Box<dyn DataSubjectRepo>) {
-    round_trip_and_scope_by_org(&*make()).await;
-    compare_and_swap_preserves_consents(&*make()).await;
-    missing_is_not_found(&*make()).await;
-    create_and_cas_fence_stale_writers(&*make()).await;
+async fn run_all<F, Fut>(make: F)
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Box<dyn DataSubjectRepo>>,
+{
+    round_trip_and_scope_by_org(&*make().await).await;
+    compare_and_swap_preserves_consents(&*make().await).await;
+    missing_is_not_found(&*make().await).await;
+    create_and_cas_fence_stale_writers(&*make().await).await;
 }
 
 #[tokio::test]
@@ -390,7 +394,8 @@ async fn in_memory_repo_conforms() {
     // retains consent; E4 absent get fails; E5 duplicate create/stale CAS are
     // rejected without overwriting the committed row. Rule D1 selects volatile
     // and exercises every C2-C5 outcome through `run_all`.
-    run_all(|| Box::new(InMemoryDataSubjectRepo::new())).await;
+    run_all(|| async { Box::new(InMemoryDataSubjectRepo::new()) as Box<dyn DataSubjectRepo> })
+        .await;
     // Erasure causes: C6 checkpoint={absent,revision 0}; C7 writer={winner,
     // duplicate create,stale revision}; effects: E6 only one create/CAS wins;
     // E7 the committed target set/count never regress. Rule D3=C6+C7 -> E6+E7.
@@ -405,11 +410,16 @@ async fn sqlite_repo_conforms() {
     // Decision rule D2 selects SQLite for the same C2-C5/E1-E5 matrix as D1;
     // keeping both rules proves that the test double and durable authority obey
     // one repository contract rather than parallel semantics.
-    run_all(|| Box::new(SqliteDataSubjectRepo::open_in_memory().unwrap())).await;
-    erasure_checkpoint_fences_stale_writers(&SqliteDataSubjectRepo::open_in_memory().unwrap())
-        .await;
+    run_all(|| async {
+        Box::new(SqliteDataSubjectRepo::open_in_memory().await.unwrap()) as Box<dyn DataSubjectRepo>
+    })
+    .await;
+    erasure_checkpoint_fences_stale_writers(
+        &SqliteDataSubjectRepo::open_in_memory().await.unwrap(),
+    )
+    .await;
     erasure_checkpoint_preserves_completed_targets(
-        &SqliteDataSubjectRepo::open_in_memory().unwrap(),
+        &SqliteDataSubjectRepo::open_in_memory().await.unwrap(),
     )
     .await;
 }
@@ -424,7 +434,7 @@ async fn sqlite_survives_reopen() {
     let path = path.to_str().unwrap();
 
     {
-        let repo = SqliteDataSubjectRepo::open(path).unwrap();
+        let repo = SqliteDataSubjectRepo::open(path).await.unwrap();
         let mut s = subject("dsub_a", "org_1");
         s.upsert_consent(ConsentGrant {
             purpose: Purpose::TelemetryContent,
@@ -440,7 +450,7 @@ async fn sqlite_survives_reopen() {
         repo.compare_and_swap(0, updated).await.unwrap();
     }
     // A fresh instance over the same file sees the committed subject + grant.
-    let repo = SqliteDataSubjectRepo::open(path).unwrap();
+    let repo = SqliteDataSubjectRepo::open(path).await.unwrap();
     let got = repo.get(&DataSubjectId("dsub_a".into())).await.unwrap();
     assert_eq!(
         got.consent_ceiling(Purpose::TelemetryContent),

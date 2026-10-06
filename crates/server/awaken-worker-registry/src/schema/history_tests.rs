@@ -2,6 +2,8 @@
 //! The production migration is one portable SQL body for both durable backends.
 use super::*;
 use crate::{PostgresWorkerDirectory, SqliteWorkerDirectory};
+use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, WorkerDirectory, WorkerIdentity, WorkerManifest,
     WorkerRegistration, WorkerSnapshot, WorkerState,
@@ -135,57 +137,67 @@ async fn sqlite_retained_history_migrates_both_published_streams() {
         for generation in [1, 7] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("worker.sqlite");
-            let conn = rusqlite::Connection::open(&path).unwrap();
-            let runner =
-                awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS).unwrap();
-            runner.run_bundle(&conn, &published).unwrap();
-            conn.execute_batch(&seed_sql(generation)).unwrap();
-            conn.execute_batch("CREATE TABLE worker_registry_worker_history (obstruction INTEGER)")
+            let conn = EmbeddedSqlite::file(&path).open().await.unwrap();
+            let runner = SqliteMigrationRunner::with_prefix(conn.sqlx().clone(), NS).unwrap();
+            runner.run_bundle(&published).await.unwrap();
+            sqlx::raw_sql(&seed_sql(generation))
+                .execute(&conn)
+                .await
                 .unwrap();
-            drop(conn);
+            sqlx::raw_sql("CREATE TABLE worker_registry_worker_history (obstruction INTEGER)")
+                .execute(&conn)
+                .await
+                .unwrap();
+            conn.close().await;
             assert!(
-                SqliteWorkerDirectory::open(&path).is_err(),
+                SqliteWorkerDirectory::open(&path).await.is_err(),
                 "M6 migration failure"
             );
-            let conn = rusqlite::Connection::open(&path).unwrap();
-            let indices: i64 = conn.query_row("SELECT count(*) FROM sqlite_master WHERE type='index' AND name='worker_registry_expiry_idx'", [], |r| r.get(0)).unwrap();
+            let conn = EmbeddedSqlite::file(&path).open().await.unwrap();
+            let indices: i64 = sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type='index' AND name='worker_registry_expiry_idx'").fetch_one(&conn).await.unwrap();
             assert_eq!(indices, 1, "M6 DDL prefix rolled back");
-            let receipts: i64 = conn.query_row("SELECT count(*) FROM worker_registry_schema_migrations WHERE bundle_id=?1 AND version=2", [CONVERGED_BUNDLE_ID], |r| r.get(0)).unwrap();
+            let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM worker_registry_schema_migrations WHERE bundle_id=?1 AND version=2").bind(CONVERGED_BUNDLE_ID).fetch_one(&conn).await.unwrap();
             assert_eq!(receipts, 0, "M6 failed migration has no receipt");
-            conn.execute_batch("DROP TABLE worker_registry_worker_history")
+            sqlx::raw_sql("DROP TABLE worker_registry_worker_history")
+                .execute(&conn)
+                .await
                 .unwrap();
-            drop(conn);
-            let store = SqliteWorkerDirectory::open(&path).unwrap();
+            conn.close().await;
+            let store = SqliteWorkerDirectory::open(&path).await.unwrap();
             assert_migrated(&store, generation).await;
             let before = store.current("migrated").await.unwrap();
             drop(store);
-            let reopened = SqliteWorkerDirectory::open(&path).unwrap();
+            let reopened = SqliteWorkerDirectory::open(&path).await.unwrap();
             assert_eq!(
                 reopened.current("migrated").await.unwrap(),
                 before,
                 "M3 reopen"
             );
             drop(reopened);
-            let conn = rusqlite::Connection::open(&path).unwrap();
+            let conn = EmbeddedSqlite::file(&path).open().await.unwrap();
+            let runner = SqliteMigrationRunner::with_prefix(conn.sqlx().clone(), NS).unwrap();
             assert!(
-                conn.execute_batch(&format!(
+                sqlx::raw_sql(&format!(
                     "{} ON CONFLICT(worker_id) DO NOTHING",
                     seed_sql(99)
                 ))
+                .execute(&conn)
+                .await
                 .is_err(),
                 "M4 old writer cannot overwrite history"
             );
             assert!(
-                conn.execute_batch(&seed_sql(99)).is_err(),
+                sqlx::raw_sql(&seed_sql(99)).execute(&conn).await.is_err(),
                 "M5 incarnation unique across generations"
             );
             assert!(
-                runner.run_bundle(&conn, &published).unwrap().is_empty(),
+                runner.run_bundle(&published).await.unwrap().is_empty(),
                 "published receipts unchanged"
             );
             assert!(
                 runner
-                    .run_bundle(&conn, &converged_registry_bundle().unwrap())
+                    .run_bundle(&converged_registry_bundle().unwrap())
+                    .await
                     .unwrap()
                     .is_empty(),
                 "M3 no DDL replay"

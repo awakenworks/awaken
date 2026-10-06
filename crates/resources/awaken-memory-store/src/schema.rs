@@ -248,36 +248,40 @@ mod tests {
         );
     }
 
-    #[test]
-    fn expanded_sqlite_history_adds_actor_columns_and_reopens() {
+    #[tokio::test]
+    async fn expanded_sqlite_history_adds_actor_columns_and_reopens() {
         use awaken_scoped_migration::MigrationBundle;
-        use rusqlite::Connection;
+        use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 
         /* Storage decision table: S1 exact expanded V1..V3 -> append V4 actor
          * columns and convergence without touching rows; S2 terminal history ->
          * zero writes; S3 malformed/drifted receipt -> runner rejects atomically.
          */
-        let connection = Connection::open_in_memory().expect("sqlite");
+        let connection = awaken_sqlite_pool::EmbeddedSqlite::memory()
+            .open()
+            .await
+            .expect("sqlite");
         let expanded = expanded_memory_store_bundle().expect("expanded");
         let published = MigrationBundle::new(BUNDLE_ID, expanded.migrations()[..3].to_vec())
             .expect("published V1..V3");
-        let runner =
-            awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix("memory_store")
-                .expect("runner");
+        let runner = SqliteMigrationRunner::with_prefix(connection.sqlx().clone(), "memory_store")
+            .expect("runner");
         runner
-            .run_bundle(&connection, &published)
+            .run_bundle(&published)
+            .await
             .expect("seed published history");
-        connection
-            .execute(
-                "INSERT INTO memory_store_versions
+        sqlx::query(
+            "INSERT INTO memory_store_versions
                  (store_id, ordinal, id, memory_id, operation, path, content, created)
                  VALUES ('s', 1, 'v1', 'm1', 'created', '/a.md', X'61', 1)",
-                [],
-            )
-            .expect("seed version");
+        )
+        .execute(&connection)
+        .await
+        .expect("seed version");
         assert_eq!(
             runner
-                .run_bundle(&connection, &expanded)
+                .run_bundle(&expanded)
+                .await
                 .expect("S1 append V4")
                 .iter()
                 .map(|migration| migration.version)
@@ -286,44 +290,37 @@ mod tests {
             "S1"
         );
         runner
-            .run_bundle(
-                &connection,
-                &converged_memory_store_bundle().expect("converged"),
-            )
+            .run_bundle(&converged_memory_store_bundle().expect("converged"))
+            .await
             .expect("S1 convergence");
         // S4 both published histories converge on the SAME proposal table.
         // No previously successful version is reclassified as a conflict.
         assert_eq!(
-            connection
-                .query_row(
-                    "SELECT COUNT(*) FROM memory_store_copy_conflicts",
-                    [],
-                    |row| row.get::<_, i64>(0)
-                )
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM memory_store_copy_conflicts")
+                .fetch_one(&connection)
+                .await
                 .unwrap(),
             0
         );
-        let columns = connection
-            .prepare("PRAGMA table_info(memory_store_versions)")
-            .expect("columns")
-            .query_map([], |row| row.get::<_, String>(1))
-            .expect("column rows")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("column values");
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('memory_store_versions')")
+                .fetch_all(&connection)
+                .await
+                .expect("column values");
         assert!(columns.iter().any(|column| column == "created_by_json"));
         assert!(columns.iter().any(|column| column == "redacted_by_json"));
         assert!(
             runner
-                .run_bundle(&connection, &expanded)
+                .run_bundle(&expanded)
+                .await
                 .expect("S2 reopen")
                 .is_empty(),
             "S2"
         );
         assert_eq!(
-            connection
-                .query_row("SELECT COUNT(*) FROM memory_store_versions", [], |row| {
-                    row.get::<_, i64>(0)
-                })
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM memory_store_versions")
+                .fetch_one(&connection)
+                .await
                 .expect("preserved row"),
             1,
             "S1 preserves data"

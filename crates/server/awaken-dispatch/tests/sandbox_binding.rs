@@ -134,6 +134,7 @@ async fn memory_backend_binds_and_recovers() {
 async fn runtime_selected_store_delegates_the_sandbox_binding() {
     let clock = ManualStoreClock::new(0);
     let store = awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clock())
+        .await
         .expect("sqlite adapter");
     binding_survives_a_recovery_claim(&store, &clock).await;
 }

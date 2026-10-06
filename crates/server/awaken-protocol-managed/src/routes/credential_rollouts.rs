@@ -188,7 +188,7 @@ mod tests {
     #[tokio::test]
     async fn private_rollout_requires_service_authentication_before_delivery() {
         let router = credential_rollout_router_with_authenticator(
-            Arc::new(ManagedState::new(RehydrateFake::default())),
+            Arc::new(ManagedState::new(RehydrateFake::default()).await),
             awaken_service_auth_contract::static_token_authenticator("rollout-test").unwrap(),
         );
         let body = serde_json::to_vec(&event()).unwrap();
