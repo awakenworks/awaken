@@ -97,12 +97,6 @@ SILENT_SKIP_EXEMPTIONS: dict[str, str] = {
         "repository's own MCP server; what is uncovered is interoperability "
         "with a third-party implementation."
     ),
-    "crates/server/awaken-session-executor/src/mcp_relay.rs": (
-        "Needs AWAKEN_GITHUB_MCP_TOKEN and GitHub's live MCP endpoint. A live "
-        "third-party credential is not something a gate can supply. Relay "
-        "behaviour is covered against the repository's own MCP server; what is "
-        "uncovered is GitHub's specific responses."
-    ),
     "crates/worker/awaken-execution-composition/src/container.rs": (
         "L7 needs a rootless Podman that can start busybox, and no lane stands "
         "Podman up: the sandbox suite's container layer is Docker only. While "
@@ -496,6 +490,8 @@ def selftest() -> None:
           or bare `skipping`                     => rejected, every one of them
       C11 the "skip" is in a comment             => admitted; prose is not a skip
       C12 the file is outside crates/** (e2e/**, scripts/**) => still scanned
+      C17 an exemption names an explicitly ignored test with no successful skip => rejected
+      C18 the same ignored test without an exemption => admitted; missing credentials fail when selected
 
     R3, over the variable a skip names:
       C13 something in the repository sets it    => admitted
@@ -533,7 +529,13 @@ def selftest() -> None:
         assert silent_skip_violations(skipping, empty), "C6/E2"
         SILENT_SKIP_EXEMPTIONS = {"crates/a/b/src/x.rs": "test"}
         assert not silent_skip_violations(skipping, empty), "C5/E1"
+        ignored = {"crates/a/b/src/x.rs": (
+            '#[test]\n#[ignore = "requires live credentials"]\n'
+            'fn live() { std::env::var("AWAKEN_LIVE_TOKEN").expect("credential required"); }\n'
+        )}
+        assert silent_skip_violations(ignored, empty), "C17/E2 stale successful-skip exemption"
         SILENT_SKIP_EXEMPTIONS = {}
+        assert not silent_skip_violations(ignored, empty), "C18/E1 explicit ignored qualification"
 
         assert not silent_skip_violations(
             {"crates/a/awaken-thing/src/x.rs":
