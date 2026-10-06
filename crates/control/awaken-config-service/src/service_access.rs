@@ -1,5 +1,5 @@
-//! Construction and read-only projections of the config service. Mutation and
-//! publication orchestration stay in `config_plane`.
+//! Construction of the config service. Mutation and publication orchestration
+//! stay in `config_plane`; lifecycle references belong to the Resources index.
 
 use std::sync::Arc;
 
@@ -19,25 +19,5 @@ impl ConfigService {
             credential_reference_validator: None,
             plugin_publication_resolvers: Vec::new(),
         }
-    }
-
-    /// Agent ids whose current default-input configuration references `target` in
-    /// one Workspace. This is resource lifecycle evidence, not authorization.
-    pub async fn agents_referencing_input(
-        &self,
-        workspace_id: &str,
-        target: &awaken_config_resolver::InputResourceId,
-    ) -> Vec<String> {
-        let Some(store) = self.resources.as_ref() else {
-            return Vec::new();
-        };
-        store
-            .list_agent_inputs(workspace_id)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|config| config.inputs.iter().any(|input| &input.target == target))
-            .map(|config| config.agent_id)
-            .collect()
     }
 }
