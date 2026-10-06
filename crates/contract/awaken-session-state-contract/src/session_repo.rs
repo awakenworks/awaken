@@ -49,7 +49,9 @@ pub use recovery::{
     SessionRecoveryQuarantine, SessionRepositoryRecoveryAction, SessionScan, SessionScanCursor,
     SessionScanQuery,
 };
-pub use repository_publication::SessionArchiveWithRepositoryPublicationError;
+pub use repository_publication::{
+    SessionArchiveWithRepositoryPublicationError, SessionWorkerObligation,
+};
 
 #[cfg(test)]
 use crate::ManagedLifecycleFact;

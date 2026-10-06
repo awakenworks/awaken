@@ -18,6 +18,17 @@ pub enum SessionArchiveWithRepositoryPublicationError {
     Cleanup(#[from] crate::SessionCleanupError),
 }
 
+/// Operational capacity projection of one authoritative Session root. It is a
+/// read hint only: neither this value nor an index derived from it can grant a
+/// realization lease, Run claim, or physical effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionWorkerObligation<'a> {
+    None,
+    RetainedOwner(&'a str),
+    UnboundInitialPreparation,
+    UnboundTerminalCleanup,
+}
+
 #[must_use]
 fn publication_input_is_exactly_active(
     active_inputs: &[crate::ResolvedInput],
@@ -74,6 +85,58 @@ impl PersistedSession {
     pub fn has_unfinished_worker_realization(&self) -> Result<bool, crate::SessionCleanupError> {
         let cleanup = self.verified_terminal_cleanup()?;
         Ok(self.realization.is_some() && !cleanup.is_completed())
+    }
+
+    /// An explicitly requested, still-unbound Worker preparation needs one
+    /// resident Worker even though it has no Run or Dispatch claim to observe.
+    /// Exact placement and root-CAS admission remain with SessionApplication.
+    #[must_use]
+    pub fn is_run_free_initial_preparation_candidate(&self) -> bool {
+        self.realization_progress.run_free_initial_preparation
+            && self.needs_initial_realization_recovery()
+            && !self.is_terminal()
+            && self.requires_external_environment_owner()
+            && self
+                .frozen_baseline()
+                .is_some_and(|baseline| !baseline.environment.self_hosted)
+    }
+
+    #[must_use]
+    pub fn needs_run_free_initial_preparation_worker(&self) -> bool {
+        self.realization.is_none() && self.is_run_free_initial_preparation_candidate()
+    }
+
+    /// Classify the one Worker capacity cause retained by this root. A bound
+    /// owner wins over pending work because its exact physical identity must
+    /// survive a settled or delayed Run until verified cleanup completes.
+    pub fn worker_obligation(
+        &self,
+    ) -> Result<SessionWorkerObligation<'_>, crate::SessionCleanupError> {
+        if self.has_unfinished_worker_realization()? {
+            let owner = self
+                .realization
+                .as_ref()
+                .ok_or(crate::SessionCleanupError::MissingPhysicalOwner)?
+                .owner
+                .as_str();
+            if owner.trim().is_empty() {
+                return Err(crate::SessionCleanupError::InvalidWorkerOwner);
+            }
+            return Ok(SessionWorkerObligation::RetainedOwner(owner));
+        }
+        if self.needs_run_free_initial_preparation_worker() {
+            return Ok(SessionWorkerObligation::UnboundInitialPreparation);
+        }
+        if self.needs_terminal_cleanup_worker()? {
+            if !matches!(
+                self.environment,
+                crate::SessionEnvironmentState::Unmaterialized
+            ) {
+                return Err(crate::SessionCleanupError::MissingPhysicalOwner);
+            }
+            return Ok(SessionWorkerObligation::UnboundTerminalCleanup);
+        }
+        Ok(SessionWorkerObligation::None)
     }
 
     pub(super) fn has_verified_completed_cleanup(&self) -> bool {

@@ -194,19 +194,42 @@ impl PostgresManagedSessionRepository {
             .map_err(storage)?;
         }
         Self::sync_credential_source_index(tx, session).await?;
+        let obligation = worker_obligation_index(session);
         if session.needs_reconciliation() {
             sqlx::query(
                 "INSERT INTO managed_session_reconciliation_work \
-                    (session_id, observed_revision) VALUES ($1, $2) \
+                    (session_id, observed_revision, worker_owner, \
+                     preparation_candidate, unbound_preparation, unbound_terminal, demand_invalid) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7) \
                  ON CONFLICT (session_id) DO UPDATE SET \
-                    observed_revision = excluded.observed_revision",
+                    observed_revision = excluded.observed_revision, \
+                    worker_owner = excluded.worker_owner, \
+                    preparation_candidate = excluded.preparation_candidate, \
+                    unbound_preparation = excluded.unbound_preparation, \
+                    unbound_terminal = excluded.unbound_terminal, \
+                    demand_invalid = excluded.demand_invalid",
             )
             .bind(session.session_id.as_str())
             .bind(db_revision(session.revision)?)
+            .bind(obligation.owner)
+            .bind(i64::from(obligation.preparation_candidate))
+            .bind(i64::from(obligation.unbound_preparation))
+            .bind(i64::from(obligation.unbound_terminal))
+            .bind(i64::from(obligation.invalid))
             .execute(&mut **tx)
             .await
             .map_err(storage)?;
         } else {
+            if obligation.owner.is_some()
+                || obligation.preparation_candidate
+                || obligation.unbound_preparation
+                || obligation.unbound_terminal
+                || obligation.invalid
+            {
+                return Err(corrupt(
+                    "Worker demand root is absent from reconciliation index",
+                ));
+            }
             sqlx::query("DELETE FROM managed_session_reconciliation_work WHERE session_id = $1")
                 .bind(session.session_id.as_str())
                 .execute(&mut **tx)
@@ -249,98 +272,126 @@ impl PostgresManagedSessionRepository {
             .execute(&mut *tx)
             .await
             .map_err(storage)?;
-
-        let rows = sqlx::query(
-            "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id",
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(storage)?;
-        let mut session_ids = BTreeSet::new();
-        let mut expected_reconciliation = BTreeSet::new();
-        let mut expected_vaults = BTreeSet::new();
-        let mut expected_credential_sources = BTreeSet::new();
-        for row in rows {
-            let stored_session_id: String = row.try_get("session_id").map_err(storage)?;
-            if !session_ids.insert(stored_session_id.clone()) {
-                return Err(corrupt("duplicate managed Session root id"));
+        // A complete audit remains required, but each read is one bounded
+        // keyset page. The former fetch_all plus four global BTreeSets made
+        // Coordinator startup memory proportional to the entire Session DB.
+        let mut after: Option<String> = None;
+        loop {
+            let rows = sqlx::query(
+                "SELECT root.session_id, root.aggregate_json, root.revision, \
+                        work.observed_revision, work.worker_owner, \
+                        work.preparation_candidate::bigint AS preparation_candidate, \
+                        work.unbound_preparation::bigint AS unbound_preparation, \
+                        work.unbound_terminal::bigint AS unbound_terminal, \
+                        work.demand_invalid::bigint AS demand_invalid, \
+                        ARRAY(SELECT ref.vault_id FROM managed_session_vault_reference ref \
+                              WHERE ref.session_id = root.session_id ORDER BY ref.vault_id) AS vaults, \
+                        ARRAY(SELECT ref.credential_source_id \
+                              FROM managed_session_credential_source_reference ref \
+                              WHERE ref.session_id = root.session_id \
+                              ORDER BY ref.credential_source_id) AS credential_sources \
+                 FROM managed_session root \
+                 LEFT JOIN managed_session_reconciliation_work work \
+                   ON work.session_id = root.session_id \
+                 WHERE ($1::text IS NULL OR root.session_id > $1) \
+                 ORDER BY root.session_id LIMIT $2",
+            )
+            .bind(after.as_deref())
+            .bind(RECOVERY_BATCH_SIZE)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(storage)?;
+            if rows.is_empty() {
+                break;
             }
-            let aggregate_json: Option<String> = row.try_get("aggregate_json").map_err(storage)?;
-            let aggregate_json = aggregate_json.ok_or_else(|| {
-                corrupt("published managed Session row has no canonical aggregate")
-            })?;
-            let revision: i64 = row.try_get("revision").map_err(storage)?;
-            let session = decode(EncodedSessionRow {
-                aggregate_json: aggregate_json.clone(),
-                revision,
-            })
-            .map_err(corrupt)?;
-            if session.session_id != stored_session_id {
-                return Err(corrupt(
-                    "managed Session aggregate id does not match its index",
-                ));
+            for row in rows {
+                let stored_session_id: String = row.try_get("session_id").map_err(storage)?;
+                // PostgreSQL owns both keyset order and comparison. Rust's
+                // bytewise string order may differ from the database collation.
+                let aggregate_json: Option<String> =
+                    row.try_get("aggregate_json").map_err(storage)?;
+                let aggregate_json = aggregate_json.ok_or_else(|| {
+                    corrupt("published managed Session row has no canonical aggregate")
+                })?;
+                let revision: i64 = row.try_get("revision").map_err(storage)?;
+                let session = decode(EncodedSessionRow {
+                    aggregate_json: aggregate_json.clone(),
+                    revision,
+                })
+                .map_err(corrupt)?;
+                if session.session_id != stored_session_id {
+                    return Err(corrupt(
+                        "managed Session aggregate id does not match its index",
+                    ));
+                }
+                if aggregate_str(&session)? != aggregate_json {
+                    return Err(corrupt(
+                        "managed Session aggregate requires operational migration normalization",
+                    ));
+                }
+                let actual_revision: Option<i64> =
+                    row.try_get("observed_revision").map_err(storage)?;
+                let expected = session.needs_reconciliation().then(|| {
+                    let obligation = worker_obligation_index(&session);
+                    (
+                        revision,
+                        obligation.owner,
+                        i64::from(obligation.preparation_candidate),
+                        i64::from(obligation.unbound_preparation),
+                        i64::from(obligation.unbound_terminal),
+                        i64::from(obligation.invalid),
+                    )
+                });
+                let actual = if let Some(observed_revision) = actual_revision {
+                    Some((
+                        observed_revision,
+                        row.try_get::<Option<String>, _>("worker_owner")
+                            .map_err(storage)?,
+                        row.try_get::<Option<i64>, _>("preparation_candidate")
+                            .map_err(storage)?
+                            .unwrap_or(-1),
+                        row.try_get::<Option<i64>, _>("unbound_preparation")
+                            .map_err(storage)?
+                            .unwrap_or(-1),
+                        row.try_get::<Option<i64>, _>("unbound_terminal")
+                            .map_err(storage)?
+                            .unwrap_or(-1),
+                        row.try_get::<Option<i64>, _>("demand_invalid")
+                            .map_err(storage)?
+                            .unwrap_or(-1),
+                    ))
+                } else {
+                    None
+                };
+                if actual != expected {
+                    return Err(corrupt(
+                        "managed Session reconciliation index requires operational migration rebuild",
+                    ));
+                }
+                let actual_vaults: Vec<String> = row.try_get("vaults").map_err(storage)?;
+                if actual_vaults
+                    != referenced_vault_ids(&session)
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                {
+                    return Err(corrupt(
+                        "managed Session vault index requires operational migration rebuild",
+                    ));
+                }
+                let actual_sources: Vec<String> =
+                    row.try_get("credential_sources").map_err(storage)?;
+                if actual_sources
+                    != referenced_mcp_credential_source_ids(&session)
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                {
+                    return Err(corrupt(
+                        "managed Session credential-source index requires operational migration rebuild",
+                    ));
+                }
+                after = Some(stored_session_id);
             }
-            if aggregate_str(&session)? != aggregate_json {
-                return Err(corrupt(
-                    "managed Session aggregate requires operational migration normalization",
-                ));
-            }
-            if session.needs_reconciliation() {
-                expected_reconciliation.insert((stored_session_id.clone(), revision));
-            }
-            expected_vaults.extend(
-                referenced_vault_ids(&session)
-                    .into_iter()
-                    .map(|vault_id| (stored_session_id.clone(), vault_id)),
-            );
-            expected_credential_sources.extend(
-                referenced_mcp_credential_source_ids(&session)
-                    .into_iter()
-                    .map(|source_id| (stored_session_id.clone(), source_id)),
-            );
         }
-
-        let actual_reconciliation = sqlx::query_as::<_, (String, i64)>(
-            "SELECT session_id, observed_revision FROM managed_session_reconciliation_work \
-             ORDER BY session_id, observed_revision",
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(storage)?;
-        if actual_reconciliation != expected_reconciliation.into_iter().collect::<Vec<_>>() {
-            return Err(corrupt(
-                "managed Session reconciliation index requires operational migration rebuild",
-            ));
-        }
-
-        let actual_vaults = sqlx::query_as::<_, (String, String)>(
-            "SELECT session_id, vault_id FROM managed_session_vault_reference \
-             ORDER BY session_id, vault_id",
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(storage)?;
-        if actual_vaults != expected_vaults.into_iter().collect::<Vec<_>>() {
-            return Err(corrupt(
-                "managed Session vault index requires operational migration rebuild",
-            ));
-        }
-
-        let actual_credential_sources = sqlx::query_as::<_, (String, String)>(
-            "SELECT session_id, credential_source_id \
-             FROM managed_session_credential_source_reference \
-             ORDER BY session_id, credential_source_id",
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(storage)?;
-        if actual_credential_sources != expected_credential_sources.into_iter().collect::<Vec<_>>()
-        {
-            return Err(corrupt(
-                "managed Session credential-source index requires operational migration rebuild",
-            ));
-        }
-
         tx.commit().await.map_err(storage)
     }
 
@@ -765,13 +816,56 @@ impl SessionRepository for PostgresManagedSessionRepository {
         .map_err(corrupt)
     }
 
+    async fn worker_demand(&self) -> Result<u64, SessionRepositoryError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        let (owners, initial, terminal, invalid, drift): (i64, i64, i64, i64, i64) =
+            sqlx::query_as(
+                "SELECT COUNT(DISTINCT work.worker_owner)::bigint, \
+                    COALESCE(MAX(work.unbound_preparation), 0)::bigint, \
+                    COALESCE(MAX(work.unbound_terminal), 0)::bigint, \
+                    COALESCE(MAX(work.demand_invalid), 0)::bigint, \
+                    COUNT(*) FILTER (WHERE work.observed_revision <> root.revision)::bigint \
+             FROM managed_session_reconciliation_work work \
+             JOIN managed_session root ON root.session_id = work.session_id",
+            )
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(storage)?;
+        let quarantined: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM managed_session_quarantine LIMIT 1)")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
+        if drift != 0 || invalid != 0 || quarantined {
+            return Err(corrupt(
+                "Session Worker demand index is incomplete or quarantined",
+            ));
+        }
+        let owners = u64::try_from(owners).map_err(corrupt)?;
+        owners
+            .checked_add(u64::from(initial != 0 || terminal != 0))
+            .ok_or_else(|| storage("Session Worker demand count overflow"))
+    }
+
+    async fn preparation_candidates(
+        &self,
+        after: Option<&awaken_session_state_contract::SessionScanCursor>,
+    ) -> Result<SessionScan, SessionRepositoryError> {
+        self.scan_reconcilable(after, true).await
+    }
+
     async fn scan(
         &self,
         query: awaken_session_state_contract::SessionScanQuery<'_>,
     ) -> Result<SessionScan, SessionRepositoryError> {
         use awaken_session_state_contract::SessionScanQuery;
         match query {
-            SessionScanQuery::Reconcilable { after } => self.scan_reconcilable(after).await,
+            SessionScanQuery::Reconcilable { after } => self.scan_reconcilable(after, false).await,
             SessionScanQuery::WorkerRealizationOwner { worker_id } => {
                 self.scan_worker_realization_owner(worker_id).await
             }
@@ -902,24 +996,31 @@ impl PostgresManagedSessionRepository {
     async fn scan_reconcilable(
         &self,
         after: Option<&awaken_session_state_contract::SessionScanCursor>,
+        preparation_only: bool,
     ) -> Result<SessionScan, SessionRepositoryError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let page_size = usize::try_from(RECOVERY_BATCH_SIZE)
             .map_err(|error| storage(format!("invalid recovery batch size: {error}")))?;
         let mut scan = SessionScan::default();
-        let mut rows = sqlx::query(
+        let predicate = if preparation_only {
+            "work.preparation_candidate = 1 AND "
+        } else {
+            ""
+        };
+        let sql = format!(
             "SELECT session.scope_id, session.session_id, session.aggregate_json, \
                     session.revision, work.observed_revision \
              FROM managed_session_reconciliation_work work \
              JOIN managed_session session ON session.session_id = work.session_id \
-             WHERE ($1::text IS NULL OR session.session_id > $1) \
-             ORDER BY session.session_id LIMIT $2",
-        )
-        .bind(after.map(|cursor| cursor.session_id().as_str()))
-        .bind(RECOVERY_BATCH_SIZE + 1)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(storage)?;
+             WHERE {predicate}($1::text IS NULL OR work.session_id > $1) \
+             ORDER BY work.session_id LIMIT $2"
+        );
+        let mut rows = sqlx::query(&sql)
+            .bind(after.map(|cursor| cursor.session_id().as_str()))
+            .bind(RECOVERY_BATCH_SIZE + 1)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(storage)?;
         let has_more = rows.len() > page_size;
         rows.truncate(page_size);
         if has_more {
@@ -952,6 +1053,11 @@ impl PostgresManagedSessionRepository {
                         .execute(&mut *tx)
                         .await
                         .map_err(storage)?;
+                    if preparation_only && !session.is_run_free_initial_preparation_candidate() {
+                        return Err(corrupt(format!(
+                            "Session preparation candidate index disagrees with root {session_id}"
+                        )));
+                    }
                     if session.needs_reconciliation() {
                         scan.sessions.push(ScopedPersistedSession {
                             workspace_id: row.try_get("scope_id").map_err(storage)?,

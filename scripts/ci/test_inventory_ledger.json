@@ -1,6 +1,7 @@
 {
   "removed": {},
   "renamed": {
+    "session_schema_preserves_v1_and_adds_one_deterministic_dependency_index": "session_schema_preserves_v1_and_adds_owned_dependency_and_worker_indexes",
     "terminal_cleanup_capacity_counts_distinct_owners_from_one_root_scan": "session_worker_demand_counts_live_affinity_and_terminal_cleanup"
   }
 }

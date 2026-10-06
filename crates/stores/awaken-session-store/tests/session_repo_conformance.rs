@@ -30,12 +30,51 @@ use awaken_deployment_contract::{DeploymentRepository, DeploymentWriteOutcome};
 use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_store_conformance::session_store::*;
+use sqlx::Executor as _;
+use sqlx::postgres::PgPoolOptions;
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("current-thread runtime")
         .block_on(f)
+}
+
+async fn owned_postgres_pool(url: &str, tag: &str) -> (sqlx::PgPool, String) {
+    let admin = PgPoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .connect(url)
+        .await
+        .expect("explicit Session PostgreSQL fixture must connect");
+    let schema = format!("t_session_{tag}_{}", uuid::Uuid::new_v4().simple());
+    admin
+        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .await
+        .expect("create owned Session schema");
+    admin.close().await;
+    let owned_schema = schema.clone();
+    let pool = PgPoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .after_connect(move |connection, _| {
+            let schema = owned_schema.clone();
+            Box::pin(async move {
+                connection
+                    .execute(format!("SET search_path = {schema}").as_str())
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(url)
+        .await
+        .expect("connect owned Session schema");
+    (pool, schema)
+}
+
+async fn close_postgres_pool(pool: sqlx::PgPool, schema: &str) {
+    pool.execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        .await
+        .expect("drop exact owned Session schema");
+    pool.close().await;
 }
 
 #[test]
@@ -128,6 +167,32 @@ fn sqlite_backend_conforms() {
             "D8 exact durable capacity row/fact pair"
         );
     });
+}
+
+#[test]
+fn sqlite_unbound_preparation_demand_uses_one_shared_capacity_slot() {
+    block(async {
+        // Backend S1 runs shared R1-R3 over a fresh SQLite authority so a
+        // prior conformance table cannot mask first-placement demand.
+        let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+        unbound_preparation_demand_decision_table(&repo).await;
+    });
+}
+
+#[tokio::test]
+async fn postgres_unbound_preparation_demand_uses_one_shared_capacity_slot() {
+    // Backend P1 runs the same R1-R3 against an isolated real PostgreSQL
+    // schema. An unset explicit fixture URL is the existing visible skip.
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
+    let (pool, schema) = owned_postgres_pool(&url, "unbound").await;
+    let repo = awaken_session_store::PostgresManagedSessionRepository::with_pool(pool.clone())
+        .await
+        .unwrap();
+    unbound_preparation_demand_decision_table(&repo).await;
+    drop(repo);
+    close_postgres_pool(pool, &schema).await;
 }
 
 #[test]
@@ -233,8 +298,6 @@ fn sqlite_restores_and_canonically_rewrites_the_pre_typed_deployment_record() {
 #[tokio::test]
 async fn postgres_root_cas_conforms_to_the_same_decision_table() {
     use awaken_session_store::PostgresManagedSessionRepository;
-    use sqlx::Executor;
-    use sqlx::postgres::PgPoolOptions;
 
     // Fixture decision table: F1 no explicit URL -> canonical visible skip;
     // F2 configured connection/setup failure -> fail; F3 concurrent callers
@@ -247,32 +310,7 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
         !url.trim().is_empty(),
         "explicit Session PostgreSQL URL is empty"
     );
-    let admin = PgPoolOptions::new()
-        .acquire_timeout(std::time::Duration::from_secs(5))
-        .connect(&url)
-        .await
-        .expect("explicit Session PostgreSQL fixture must connect");
-    let schema = format!("t_session_root_cas_{}", uuid::Uuid::new_v4().simple());
-    admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
-        .await
-        .expect("create owned Session schema");
-    admin.close().await;
-    let owned_schema = schema.clone();
-    let pool = PgPoolOptions::new()
-        .acquire_timeout(std::time::Duration::from_secs(5))
-        .after_connect(move |connection, _| {
-            let schema = owned_schema.clone();
-            Box::pin(async move {
-                connection
-                    .execute(format!("SET search_path = {schema}").as_str())
-                    .await?;
-                Ok(())
-            })
-        })
-        .connect(&url)
-        .await
-        .expect("connect owned Session CAS schema");
+    let (pool, schema) = owned_postgres_pool(&url, "root_cas").await;
     let repo = std::sync::Arc::new(
         PostgresManagedSessionRepository::with_pool(pool.clone())
             .await
@@ -329,10 +367,168 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
         }
     })
     .await;
-    pool.execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+
+    // Startup audit decision table: C1 257 additional canonical roots cross
+    // the 256-row verification page; C2 a derived obligation flag on the last
+    // root drifts without changing its root revision. R1=C1+!C2 -> a complete
+    // read-only reopen; R2=C1+C2 -> reject with the existing rebuild reason;
+    // R3=R2+operational normalization -> exact repair and a successful reopen.
+    // The page boundary is an integrity oracle, not a latency threshold.
+    for index in 0..257 {
+        let id = format!("audit-page-{index:03}");
+        create_session(repo.as_ref(), "ws-audit", session(&id, &id), Vec::new()).await;
+    }
+    drop(
+        PostgresManagedSessionRepository::with_existing_pool(pool.clone())
+            .await
+            .expect("R1 bounded complete Server audit"),
+    );
+    sqlx::query(
+        "UPDATE managed_session_reconciliation_work \
+         SET unbound_preparation = 1 WHERE session_id = 'audit-page-256'",
+    )
+    .execute(&pool)
+    .await
+    .expect("R2 inject late-page index drift");
+    let error = match PostgresManagedSessionRepository::with_existing_pool(pool.clone()).await {
+        Ok(_) => panic!("R2 late-page index drift must fail closed"),
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("operational migration rebuild"),
+        "R2: {error}"
+    );
+    drop(
+        PostgresManagedSessionRepository::with_pool(pool.clone())
+            .await
+            .expect("R3 operational index repair"),
+    );
+    drop(
+        PostgresManagedSessionRepository::with_existing_pool(pool.clone())
+            .await
+            .expect("R3 repaired Server audit"),
+    );
+    close_postgres_pool(pool, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "explicit local PostgreSQL capacity observation; seeds many canonical Session roots"]
+async fn postgres_session_capacity_reference_and_indexed_observation() {
+    use awaken_session_repository_contract::SessionRepository as _;
+    use awaken_session_resource_contract::SessionRealizationLease;
+    use awaken_session_state_contract::{SessionScanQuery, SessionWorkerObligation};
+    use awaken_session_store::PostgresManagedSessionRepository;
+
+    // Causes: C1 10k..1M otherwise idle, canonical Session roots retain one
+    // physical owner; C2 their root-derived index rows have exact revisions;
+    // C3 the old paged/full-decode algorithm, indexed aggregate and cold Server
+    // audit read the same PostgreSQL schema. Effects: P1=C1+C2+C3 -> all three
+    // agree on one owner; P2 prints separate reference/index/startup times and
+    // process high-water RSS. This observation has no universal latency pass
+    // threshold and cannot establish a multi-Cell Agent-capacity claim.
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        panic!("explicit capacity run requires AWAKEN_TEST_DATABASE_URL");
+    };
+    let rows: i64 = std::env::var("AWAKEN_SESSION_PERF_ROOTS")
+        .ok()
+        .map(|value| value.parse().expect("capacity row count"))
+        .unwrap_or(100_000);
+    assert!((10_000..=1_000_000).contains(&rows));
+    let (pool, schema) = owned_postgres_pool(&url, "capacity").await;
+    let repo = PostgresManagedSessionRepository::with_pool(pool.clone())
         .await
-        .expect("drop exact owned Session schema");
-    pool.close().await;
+        .unwrap();
+    let mut template = session("capacity-template", "capacity-template");
+    template.resources = Default::default();
+    template.mcp = Default::default();
+    template.realization = Some(SessionRealizationLease {
+        owner: "capacity-owner".into(),
+        runtime_incarnation: "capacity-owner:pod".into(),
+        epoch: 1,
+        expires_at_unix_ms: 1,
+    });
+    create_session(&repo, "ws-capacity", template, Vec::new()).await;
+    let encoded: String = sqlx::query_scalar(
+        "SELECT aggregate_json FROM managed_session WHERE session_id='capacity-template'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO managed_session(session_id, scope_id, revision, aggregate_json) \
+         SELECT 'capacity-' || g, 'ws-capacity', 1, \
+                replace($1, 'capacity-template', 'capacity-' || g) \
+         FROM generate_series(1, $2::bigint) g",
+    )
+    .bind(encoded)
+    .bind(rows)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO managed_session_reconciliation_work \
+         (session_id, observed_revision, worker_owner, preparation_candidate, \
+          unbound_preparation, unbound_terminal, demand_invalid) \
+         SELECT 'capacity-' || g, 1, 'capacity-owner', 0, 0, 0, 0 \
+         FROM generate_series(1, $1::bigint) g",
+    )
+    .bind(rows)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let reference_started = std::time::Instant::now();
+    let mut cursor = None;
+    let mut owners = std::collections::HashSet::new();
+    let mut unbound = false;
+    loop {
+        let page = repo
+            .scan(SessionScanQuery::Reconcilable {
+                after: cursor.as_ref(),
+            })
+            .await
+            .unwrap();
+        assert!(page.quarantined.is_empty(), "P1 canonical fixture");
+        for scoped in page.sessions {
+            match scoped.session.worker_obligation().unwrap() {
+                SessionWorkerObligation::RetainedOwner(owner) => {
+                    owners.insert(owner.to_owned());
+                }
+                SessionWorkerObligation::UnboundInitialPreparation
+                | SessionWorkerObligation::UnboundTerminalCleanup => unbound = true,
+                SessionWorkerObligation::None => {}
+            }
+        }
+        let Some(next) = page.next_cursor else { break };
+        cursor = Some(next);
+    }
+    let reference_ms = reference_started.elapsed().as_secs_f64() * 1_000.0;
+    let indexed_started = std::time::Instant::now();
+    let indexed = repo.worker_demand().await.unwrap();
+    let indexed_ms = indexed_started.elapsed().as_secs_f64() * 1_000.0;
+    assert_eq!(indexed, owners.len() as u64 + u64::from(unbound), "P1");
+    let startup_started = std::time::Instant::now();
+    drop(
+        PostgresManagedSessionRepository::with_existing_pool(pool.clone())
+            .await
+            .unwrap(),
+    );
+    let startup_ms = startup_started.elapsed().as_secs_f64() * 1_000.0;
+    let high_water_kib = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find(|line| line.starts_with("VmHWM:"))
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or(0);
+    println!(
+        "session_capacity roots={rows} reference_ms={reference_ms:.3} indexed_ms={indexed_ms:.3} startup_ms={startup_ms:.3} high_water_kib={high_water_kib} owners={indexed}"
+    );
+    drop(repo);
+    close_postgres_pool(pool, &schema).await;
 }
 
 #[test]

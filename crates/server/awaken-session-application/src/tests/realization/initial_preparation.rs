@@ -3,6 +3,8 @@ use awaken_session_realization_contract::SessionPreparationControl;
 
 struct FixtureSessionPlacement;
 
+struct SelectiveSessionPlacement;
+
 impl awaken_session_realization_contract::SessionPreparationPlacement for FixtureSessionPlacement {
     fn requirements(
         &self,
@@ -12,6 +14,24 @@ impl awaken_session_realization_contract::SessionPreparationPlacement for Fixtur
         awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         Ok(awaken_worker_contract::PlacementRequirements::remote_required())
+    }
+}
+
+impl awaken_session_realization_contract::SessionPreparationPlacement
+    for SelectiveSessionPlacement
+{
+    fn requirements(
+        &self,
+        session: &PersistedSession,
+    ) -> Result<
+        awaken_worker_contract::PlacementRequirements,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
+    > {
+        let mut requirements = awaken_worker_contract::PlacementRequirements::remote_required();
+        if session.session_id.as_str().starts_with("gpu-") {
+            requirements.required_capabilities.insert("gpu".into());
+        }
+        Ok(requirements)
     }
 }
 
@@ -25,6 +45,239 @@ fn externally_placed(id: &str, state: &str, run_free: bool) -> PersistedSession 
     baseline.runtime_placement = SessionRuntimePlacement::Worker;
     session.realization_progress.run_free_initial_preparation = run_free;
     session
+}
+
+#[tokio::test]
+async fn run_free_preparation_is_worker_demand_before_any_run_or_owner() {
+    // Causes: C1 an external Preparing root explicitly requested Run-free
+    // preparation; C2 no realization owner or Dispatch exists; C3 the same
+    // root has not requested preparation or has already reached Idle.
+    // Effects: R1=C1+C2 contributes one unbound Worker demand, enough for a
+    // zero-Worker fleet to wake; R2=C3 contributes zero. This is only a
+    // capacity hint: the existing root-CAS claim still owns admission.
+    let repo =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    create(
+        repo.as_ref(),
+        externally_placed("pending", "preparing", true),
+    )
+    .await;
+    create(
+        repo.as_ref(),
+        externally_placed("ordinary", "preparing", false),
+    )
+    .await;
+    create(repo.as_ref(), externally_placed("finished", "idle", true)).await;
+    assert_eq!(
+        repo.worker_demand().await.unwrap(),
+        1,
+        "R1 one root-owned Run-free demand",
+    );
+    assert!(
+        repo.get(&SessionId::from("pending"))
+            .await
+            .unwrap()
+            .needs_run_free_initial_preparation_worker(),
+        "R1 retained root classified before Worker registration",
+    );
+    assert!(
+        !repo
+            .get(&SessionId::from("ordinary"))
+            .await
+            .unwrap()
+            .needs_run_free_initial_preparation_worker(),
+        "R2 ordinary Preparing root has no Run-free capacity request",
+    );
+    assert!(
+        !repo
+            .get(&SessionId::from("finished"))
+            .await
+            .unwrap()
+            .needs_run_free_initial_preparation_worker(),
+        "R2 completed preparation has no capacity request",
+    );
+}
+
+#[tokio::test]
+async fn preparation_candidate_index_skips_a_saturated_live_owner_front() {
+    // Causes: C1 300 otherwise idle roots retain distinct physical Worker
+    // owners but have no preparation intent; C2 one later external Preparing
+    // root requests Run-free preparation; C3 one Ready compatible Worker asks
+    // for the next assignment. Effects: R1=C1+C2 -> the candidate page contains
+    // only C2, not the 256-root generic recovery front; R2=R1+C3 -> exact
+    // root-CAS assignment of C2 without a model Run. Existing admission tests
+    // own capability, incarnation, and competing-claim rejection.
+    let repo =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    for index in 0..300 {
+        let mut root = externally_placed(&format!("retained-{index}"), "idle", false);
+        root.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+            owner: format!("old-worker-{index}"),
+            runtime_incarnation: format!("old-worker-{index}:pod"),
+            epoch: 1,
+            expires_at_unix_ms: 1,
+        });
+        create(repo.as_ref(), root).await;
+    }
+    create(
+        repo.as_ref(),
+        externally_placed("indexed-preparation", "preparing", true),
+    )
+    .await;
+    let page = repo.preparation_candidates(None).await.unwrap();
+    assert_eq!(page.sessions.len(), 1, "R1 one indexed candidate");
+    assert_eq!(
+        page.sessions[0].session.session_id.as_str(),
+        "indexed-preparation",
+        "R1 generic live-owner front is excluded"
+    );
+    assert!(page.next_cursor.is_none(), "R1 no hidden candidate page");
+    let application = application(repo, Arc::new(RecordingEnvironmentSource::default()));
+    let target = awaken_session_realization_contract::SessionRealizationTarget {
+        owner: "worker".into(),
+        runtime_incarnation: "worker:1:boot".into(),
+        lease_expires_at_unix_ms: u64::MAX,
+        reassign_existing_lease: false,
+    };
+    let observations = Arc::new(RecordingWorkerObservations::default());
+    observations.replace(vec![terminal_cleanup_worker(
+        &target,
+        terminal_cleanup_manifest(),
+    )]);
+    application
+        .set_worker_observation_source(observations)
+        .unwrap();
+    application
+        .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
+        .unwrap();
+    let assignment = application
+        .claim_next_session_preparation(target)
+        .await
+        .unwrap()
+        .expect("R2 indexed preparation assignment");
+    assert_eq!(assignment.session_id.as_str(), "indexed-preparation", "R2");
+}
+
+#[tokio::test]
+async fn bound_incomplete_preparation_remains_a_candidate_without_extra_replica_demand() {
+    // C1 an explicit preparation has a current physical owner but remains in
+    // Preparing; C2 a later exact retry may need that same owner. R1=C1+C2 ->
+    // the candidate index retains the root, while capacity counts only its
+    // distinct retained owner and adds no second first-placement replica.
+    let repo =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let mut root = externally_placed("bound-preparation", "preparing", true);
+    root.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+        owner: "worker-a".into(),
+        runtime_incarnation: "worker-a:pod".into(),
+        epoch: 1,
+        expires_at_unix_ms: 1,
+    });
+    create(repo.as_ref(), root).await;
+    let page = repo.preparation_candidates(None).await.unwrap();
+    assert_eq!(page.sessions.len(), 1, "R1 same-owner retry candidate");
+    assert_eq!(
+        page.sessions[0].session.session_id.as_str(),
+        "bound-preparation"
+    );
+    assert_eq!(repo.worker_demand().await.unwrap(), 1, "R1 no double count");
+}
+
+#[tokio::test]
+async fn preparation_claim_advances_one_candidate_page_per_poll() {
+    // Causes: C1 300 high-order explicit preparations require GPU; C2 the
+    // registered Worker lacks GPU; C3 one compatible preparation sorts after
+    // them; C4 a second, GPU-capable Worker starts after C2's first poll.
+    // R1=C1+C2 -> the first 256-candidate poll returns no assignment;
+    // R2=C1+C4 -> the GPU Worker starts at its own first page and claims its
+    // head; R3=R1+C3 -> the first Worker resumes at page two and claims C3;
+    // R4 follows end-of-index with a wrapped first page and no duplicate.
+    // The cursor is a disposable per-incarnation hint;
+    // every candidate still passes current-root and Worker eligibility checks.
+    let repo =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    for index in 0..300 {
+        create(
+            repo.as_ref(),
+            externally_placed(&format!("gpu-{index:03}"), "preparing", true),
+        )
+        .await;
+    }
+    create(
+        repo.as_ref(),
+        externally_placed("z-compatible", "preparing", true),
+    )
+    .await;
+    let application = application(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let target = awaken_session_realization_contract::SessionRealizationTarget {
+        owner: "worker".into(),
+        runtime_incarnation: "worker:1:boot".into(),
+        lease_expires_at_unix_ms: u64::MAX,
+        reassign_existing_lease: false,
+    };
+    let observations = Arc::new(RecordingWorkerObservations::default());
+    observations.replace(vec![terminal_cleanup_worker(
+        &target,
+        terminal_cleanup_manifest(),
+    )]);
+    application
+        .set_worker_observation_source(observations.clone())
+        .unwrap();
+    application
+        .set_session_preparation_placement(Arc::new(SelectiveSessionPlacement))
+        .unwrap();
+    assert!(
+        application
+            .claim_next_session_preparation(target.clone())
+            .await
+            .unwrap()
+            .is_none(),
+        "R1 bounded first page"
+    );
+    let gpu_target = awaken_session_realization_contract::SessionRealizationTarget {
+        owner: "gpu-worker".into(),
+        runtime_incarnation: "gpu-worker:1:boot".into(),
+        lease_expires_at_unix_ms: u64::MAX,
+        reassign_existing_lease: false,
+    };
+    let mut gpu_manifest = terminal_cleanup_manifest();
+    gpu_manifest.capabilities.insert("gpu".into());
+    observations.replace(vec![
+        terminal_cleanup_worker(&target, terminal_cleanup_manifest()),
+        terminal_cleanup_worker(&gpu_target, gpu_manifest),
+    ]);
+    let gpu_claimed = application
+        .claim_next_session_preparation(gpu_target)
+        .await
+        .unwrap()
+        .expect("R2 independent GPU cursor");
+    assert_eq!(gpu_claimed.session_id.as_str(), "gpu-000", "R2");
+    let claimed = application
+        .claim_next_session_preparation(target.clone())
+        .await
+        .unwrap()
+        .expect("R3 compatible tail claim");
+    assert_eq!(claimed.session_id.as_str(), "z-compatible", "R3");
+    assert!(
+        application
+            .claim_next_session_preparation(target)
+            .await
+            .unwrap()
+            .is_none(),
+        "R4 wrapped page has only incompatible work"
+    );
+    assert_eq!(
+        repo.get(&SessionId::from("gpu-001"))
+            .await
+            .unwrap()
+            .revision
+            .0,
+        1,
+        "R1 incompatible root unchanged"
+    );
 }
 
 #[tokio::test]
@@ -186,6 +439,9 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
         externally_placed("target", "preparing", true),
     )
     .await;
+    // R2/R3/R5: malformed local or self-hosted run-free flags and an ordinary
+    // Preparing root do not create Worker capacity demand; only R1 does.
+    assert_eq!(repo.worker_demand().await.unwrap(), 1);
     let application = application(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),

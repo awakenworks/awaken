@@ -673,6 +673,10 @@ pub enum SessionCleanupError {
     FrozenRepositoryPublicationMismatch,
     #[error("Session cleanup operation does not match its Session identity")]
     OperationMismatch,
+    #[error("unfinished Session realization has an empty Worker owner")]
+    InvalidWorkerOwner,
+    #[error("Session terminal cleanup has physical state without a Worker owner")]
+    MissingPhysicalOwner,
     #[error("Session terminal cleanup realization generation is stale")]
     RealizationMismatch,
     #[error("Session terminal cleanup command is not currently pending")]

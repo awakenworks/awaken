@@ -5,6 +5,7 @@
 //! Durable realization and terminal-cleanup control state machine.
 
 use super::*;
+use std::sync::Arc;
 
 enum TerminalCleanupWorkerRevalidation {
     Admitted,
@@ -1731,9 +1732,39 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionA
                 if worker.state != awaken_worker_contract::WorkerState::Ready {
                     return Ok(None);
                 }
-                let scan = crate::scan_all_reconcilable_sessions(self.session_repository())
-                    .await
-                    .map_err(repository_control)?;
+                let scan = {
+                    let mut cursors = self.session_preparation_cursors.lock().await;
+                    let key = target.runtime_incarnation.clone();
+                    if cursors.len() >= 4096 && !cursors.contains_key(&key) {
+                        // Positions are disposable hints. Cap abandoned Worker
+                        // incarnations without dropping Session/root authority.
+                        if let Some(evicted_key) = cursors.keys().next().cloned() {
+                            cursors.remove(&evicted_key);
+                        }
+                    }
+                    let cursor_state = Arc::clone(
+                        cursors
+                            .entry(key)
+                            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None))),
+                    );
+                    drop(cursors);
+                    let mut cursor = cursor_state.lock().await;
+                    let scan = self
+                        .session_repository()
+                        .preparation_candidates(cursor.as_ref())
+                        .await
+                        .map_err(repository_control)?;
+                    if let (Some(previous), Some(next)) =
+                        (cursor.as_ref(), scan.next_cursor.as_ref())
+                        && next.session_id() == previous.session_id()
+                    {
+                        return Err(SessionRealizationControlFailure::Unavailable(
+                            "Session preparation cursor did not advance".into(),
+                        ));
+                    }
+                    *cursor = scan.next_cursor.clone();
+                    scan
+                };
                 for scoped in scan.sessions {
                     let session_id = scoped.session.session_id;
                     // The scan is a wake hint only. Eligibility and the
@@ -1743,13 +1774,7 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionA
                         Err(SessionRepositoryError::NotFound) => continue,
                         Err(error) => return Err(repository_control(error)),
                     };
-                    if !current.realization_progress.run_free_initial_preparation
-                        || !current.needs_initial_realization_recovery()
-                        || !self.requires_external_realization(&current)
-                        || current
-                            .frozen_baseline()
-                            .is_none_or(|baseline| baseline.environment.self_hosted)
-                    {
+                    if !current.is_run_free_initial_preparation_candidate() {
                         continue;
                     }
                     let compiler = self.session_preparation_placement().ok_or_else(|| {
@@ -1791,14 +1816,7 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionA
                         .map_err(repository_control)?;
                     if current_worker.state != awaken_worker_contract::WorkerState::Ready
                         || current_root.revision != directive.projection.revision
-                        || !current_root
-                            .realization_progress
-                            .run_free_initial_preparation
-                        || !current_root.needs_initial_realization_recovery()
-                        || !self.requires_external_realization(&current_root)
-                        || current_root
-                            .frozen_baseline()
-                            .is_none_or(|baseline| baseline.environment.self_hosted)
+                        || !current_root.is_run_free_initial_preparation_candidate()
                         || awaken_worker_contract::can_claim(
                             &current_worker.manifest,
                             &compiler.requirements(&current_root)?,
