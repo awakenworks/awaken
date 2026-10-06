@@ -835,3 +835,13 @@
   remains occupied; observations neither release Work nor establish physical exit.
   The PostgreSQL adapter was split into a bounded source module while its
   schema, port and backend conformance ownership remained unchanged.
+
+## 2026-10-07 — Keep cancelled transactions out of PostgreSQL checkout
+
+- [ADR-0008](../adr/0008-durable-postgres-commit-backend.md#postgresql-checkout-and-cancellation-2026-10-07)
+  assigns PostgreSQL checkout health to the existing store-runtime policy. A
+  server-side check rejects open transactions before another borrower can use
+  them; connection capacity remains composition policy.
+- Domain commits, durable receipts, recovery snapshots and claim fences retain
+  their existing owners. Corrected the ownership index's retired whole-history
+  projection description to the current asynchronous read authority.
