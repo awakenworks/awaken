@@ -279,6 +279,7 @@ pub(crate) const fn allowlist_capability_advertised(
 pub(crate) fn container_capabilities(
     network_isolation: bool,
     enforced_network_allowlist: bool,
+    worker_relay_selected: bool,
     package_provisioning: bool,
     control_services: std::collections::BTreeSet<SandboxControlServiceKind>,
 ) -> pc::SandboxCapabilities {
@@ -290,7 +291,7 @@ pub(crate) fn container_capabilities(
         enforced_readonly: true,
         network_isolation,
         enforced_network_allowlist,
-        secret_egress_substitution: false,
+        secret_egress_substitution: worker_relay_selected && enforced_network_allowlist,
         resource_limits: true,
         custom_rootfs: true,
         package_provisioning,

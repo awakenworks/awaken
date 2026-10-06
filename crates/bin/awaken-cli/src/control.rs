@@ -400,6 +400,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
             control_service_authenticator: Some(
                 deployment.control_service.control_authenticator()?,
             ),
+            relay_destination_authenticator: None,
             control_service: None,
             additional_lifecycle_delivery,
             managed_services,

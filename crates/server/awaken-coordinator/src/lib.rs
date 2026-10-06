@@ -51,7 +51,7 @@ pub mod worker_observation_boundary;
 pub mod worker_placement;
 mod worker_registry;
 mod worker_transport;
-pub use worker_transport::WorkerTransport;
+pub use worker_transport::{WorkerRelayTargetError, WorkerRelayTargetObserver, WorkerTransport};
 pub mod workspace_path;
 
 pub use artifact_publication::ClaimFencedArtifactPublisher;

@@ -63,6 +63,7 @@ mod managed_resource_projection;
 mod mcp;
 mod mcp_material;
 mod mcp_relay;
+pub use mcp_relay::McpRelayOutboundProxy;
 mod memory;
 mod memory_stores;
 mod model_content_materializer;

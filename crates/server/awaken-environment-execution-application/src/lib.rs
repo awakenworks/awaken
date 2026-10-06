@@ -635,7 +635,6 @@ async fn snapshot_from_registration(
         return Ok(None);
     }
     let packages = item.config.packages();
-    let network = session_network_policy(&item.config, mcp_targets);
     let acp = runtime.is_some_and(|value| value.starts_with("acp:"));
     let credential_realization = match awaken_credential_contract::credential_realization_selection(
         acp,
@@ -654,6 +653,11 @@ async fn snapshot_from_registration(
             awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
         }
     };
+    let network = session_network_policy(
+        &item.config,
+        mcp_targets,
+        credential_realization.mcp_holder.boundary,
+    );
     let (sandbox, sandbox_provisioning, idle_retention) = match &registration.sandbox_policy {
         Some(policy) if policy.disabled => return Ok(None),
         Some(policy) => (
@@ -755,6 +759,7 @@ impl awaken_session_configuration_contract::EnvironmentWarmupSource
 fn session_network_policy(
     config: &EnvironmentConfig,
     mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+    mcp_holder: awaken_credential_contract::PlaintextBoundary,
 ) -> awaken_session_configuration_contract::SessionNetworkPolicy {
     use awaken_session_configuration_contract::SessionNetworkPolicy;
 
@@ -770,7 +775,10 @@ fn session_network_policy(
         return SessionNetworkPolicy::Unrestricted;
     };
     let mut hosts = allowed_hosts.clone();
-    if *allow_mcp_servers {
+    // Only a Workload-held MCP credential authorizes the Sandbox to dial its
+    // upstream host. Worker/Platform custody must use their mediated route;
+    // adding the upstream here would mint a signed direct CONNECT bypass.
+    if *allow_mcp_servers && mcp_holder == awaken_credential_contract::PlaintextBoundary::Workload {
         hosts.extend(mcp_targets.iter().filter_map(|target| {
             target.http_url().and_then(|url| {
                 awaken_session_mcp_contract::McpTarget::identity(url)
@@ -1053,17 +1061,20 @@ mod tests {
     async fn snapshot_compilation_follows_the_network_and_runtime_decision_table() {
         // Cause/effect graph: C1 Environment kind; C2 limited/unrestricted network;
         // C3 MCP exception and exact target; C4 package-manager exception; C5
-        // Native/ACP runtime; C6 an exact hosted Cloud Native profile is installed.
+        // Native/ACP runtime; C6 an exact hosted Cloud profile is installed.
         // Effects: E1 frozen network is canonical, E2 only exact allowed hosts are
-        // added, E3 self-hosted/default Native selects Worker, E4 ACP selects
-        // Workload, E5 Cloud Native selects the installed Platform holder only,
+        // added, E3 self-hosted/default Native selects Worker, E4 self-hosted
+        // ACP selects Workload and its upstream, E5 Cloud execution selects its
+        // installed profile without authorizing direct MCP upstream CONNECT,
         // E6 the exact holder changes the frozen fingerprint.
         //
         // | Rule | kind/network | runtime | hosted profile | effects |
         // | S1 | SelfHosted | Native | installed | unrestricted, E3 |
         // | S2 | Cloud limited | Native | absent | no network, E3 |
-        // | S3 | Cloud limited+exceptions | ACP | installed | exact allowlist, E4 |
+        // | S3 | Cloud limited+exceptions | ACP | installed | Gateway, no upstream, E5 |
         // | S4 | Cloud unrestricted | Native | installed | unrestricted, E5,E6 |
+        // | S5 | SelfHosted | ACP | installed | E4 |
+        // | S6 | Cloud limited+exceptions | ACP | absent | upstream, E4 |
         let (catalog, work, registrar, application) = fixture();
         registrar
             .register(registration("self", 1, EnvironmentConfig::SelfHosted))
@@ -1090,7 +1101,12 @@ mod tests {
                 1,
                 EnvironmentConfig::Cloud {
                     networking: EnvironmentNetworking::Limited {
-                        allowed_hosts: ["api.example.test".to_owned()].into_iter().collect(),
+                        allowed_hosts: [
+                            "api.example.test".to_owned(),
+                            "relay.awaken-cloud.svc".to_owned(),
+                        ]
+                        .into_iter()
+                        .collect(),
                         allow_mcp_servers: true,
                         allow_package_managers: true,
                     },
@@ -1165,17 +1181,47 @@ mod tests {
             "S3 explicit host"
         );
         assert!(
-            hosts.iter().any(|host| host == "mcp.example.test"),
-            "S3 exact MCP host"
+            hosts.iter().any(|host| host == "relay.awaken-cloud.svc"),
+            "S3 exact Gateway host"
+        );
+        assert!(
+            hosts.iter().all(|host| host != "mcp.example.test"),
+            "S3 upstream must not enter the Sandbox CONNECT grant"
         );
         assert!(
             hosts.iter().any(|host| host == "registry.npmjs.org"),
             "S3 package registry"
         );
+        assert_eq!(exceptions.credential_realization, platform_profile, "S3 E5");
+        let standalone_cloud_acp = application
+            .snapshot_for_session(
+                "exceptions",
+                Some("acp:stdio"),
+                &[awaken_session_mcp_contract::McpTarget::parse_http(
+                    "https://mcp.example.test/rpc",
+                )
+                .unwrap()],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                standalone_cloud_acp.network,
+                awaken_session_configuration_contract::SessionNetworkPolicy::Allowlist { ref hosts }
+                    if hosts.iter().any(|host| host == "mcp.example.test")
+            ),
+            "S6 Workload-held ACP keeps its exact direct MCP allowlist"
+        );
+        let standalone_acp = hosted_application
+            .snapshot_for_session("self", Some("acp:stdio"), &[])
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            exceptions.credential_realization,
+            standalone_acp.credential_realization,
             awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp(),
-            "S3 E4"
+            "S5 E4"
         );
         let open = hosted_application
             .snapshot("open", None)

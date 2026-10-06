@@ -30,6 +30,10 @@ fn durable_credential_material_source_has_no_inline_plaintext_class() {
 /// @obligation environment.cloud_native_credential_custody_selection_is_exact
 #[kani::proof]
 fn environment_credential_custody_selects_exactly_one_authorized_profile() {
+    // Causes: C1 ACP runtime, C2 Cloud Environment, C3 installed hosted
+    // profile. Effects: E1 Hosted wins when C2+C3, E2 otherwise ACP selects
+    // its standalone profile, E3 otherwise Native remains self-hosted.
+    // Decision rules: H1 C2+C3 -> E1; H2 !H1+C1 -> E2; H3 !H1+!C1 -> E3.
     let acp_runtime: bool = kani::any();
     let cloud_environment: bool = kani::any();
     let hosted_profile_installed: bool = kani::any();
@@ -38,11 +42,11 @@ fn environment_credential_custody_selects_exactly_one_authorized_profile() {
 
     assert_eq!(
         selection == CredentialRealizationSelection::SelfHostedAcp,
-        acp_runtime
+        acp_runtime && !(cloud_environment && hosted_profile_installed)
     );
     assert_eq!(
         selection == CredentialRealizationSelection::HostedCloud,
-        !acp_runtime && cloud_environment && hosted_profile_installed
+        cloud_environment && hosted_profile_installed
     );
     assert_eq!(
         selection == CredentialRealizationSelection::SelfHostedNative,

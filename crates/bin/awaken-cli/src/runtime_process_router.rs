@@ -41,6 +41,7 @@ pub(super) async fn prepare_runtime_routers(
     let worker_authenticator = worker_transport.authenticator();
     let worker_execution_bindings = worker_transport.binding_source();
     let worker_execution_stops = worker_transport.stop_source();
+    let worker_relay_targets = worker_transport.relay_target_source();
     let worker_placement_policy = process.worker_placement_policy;
     let cloud_native_credential_realization = process.cloud_native_credential_realization;
     let (
@@ -876,6 +877,7 @@ pub(super) async fn prepare_runtime_routers(
             worker_placement_policy,
             worker_execution_bindings,
             worker_execution_stops,
+            worker_relay_targets,
             credential_deliveries: attempt_credential_deliveries,
             repository_transport_authorizer: process.repository_transport_authorizer,
             worker_directory: worker_directory.clone(),
@@ -888,6 +890,7 @@ pub(super) async fn prepare_runtime_routers(
             default_workspace: platform_workspace.clone(),
             private_router,
             service_authenticator: coordinator_service_authenticator,
+            relay_destination_authenticator: process.relay_destination_authenticator,
             clock,
         },
     )

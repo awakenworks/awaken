@@ -1257,6 +1257,57 @@ impl PersistedSession {
         }
     }
 
+    /// Project only a published, live Worker-held MCP generation from this
+    /// aggregate. Transport adapters may route its opaque capability, but
+    /// cannot select a Worker or revive a stale generation from desired state.
+    #[must_use]
+    pub fn current_worker_relay_generation(
+        &self,
+        attachment_id: &awaken_session_mcp_contract::McpAttachmentId,
+        version: u64,
+        now_unix_ms: u64,
+    ) -> Option<(String, awaken_session_mcp_contract::McpGenerationRef)> {
+        if self.is_terminal() || self.is_hidden() {
+            return None;
+        }
+        let current = self.realization.as_ref()?;
+        if current.owner.trim().is_empty() {
+            return None;
+        }
+        let mut matches = self.mcp.visible().into_iter().filter(|attachment| {
+            &attachment.attachment_id == attachment_id && attachment.generation.version() == version
+        });
+        let attachment = matches.next()?;
+        if matches.next().is_some()
+            || !attachment.publication_acknowledged
+            || attachment.credential.is_none()
+            || !attachment
+                .selected_plaintext_holder
+                .as_ref()
+                .is_some_and(|holder| {
+                    holder.boundary == awaken_credential_contract::PlaintextBoundary::Worker
+                })
+        {
+            return None;
+        }
+        let claim = attachment.realization.as_ref()?;
+        let asserted = SessionRealizationLease {
+            owner: current.owner.clone(),
+            runtime_incarnation: claim.runtime_incarnation.clone(),
+            epoch: claim.lease_epoch,
+            expires_at_unix_ms: claim.lease_expires_at_unix_ms,
+        };
+        if !crate::realization_lease_authorizes(current, &asserted, now_unix_ms) {
+            return None;
+        }
+        let generation = awaken_session_mcp_contract::McpGenerationRef::from_claim(
+            &self.session_id,
+            &attachment.generation,
+            claim,
+        )?;
+        Some((current.owner.clone(), generation))
+    }
+
     /// Managed wire projection derived from durably active generations only.
     #[must_use]
     pub fn visible_mcp_servers(&self) -> Vec<VisibleMcpServer> {
@@ -1287,5 +1338,131 @@ impl PersistedSession {
                 prompts_as_skills: attachment.prompts_as_skills,
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod worker_relay_route_tests {
+    use super::*;
+    use crate::session_repo::mutation_tests::session;
+    use awaken_credential_contract::{
+        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+        CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    };
+    use awaken_session_mcp_contract::{
+        McpAttachmentDraft, McpAttachmentId, McpAttachmentOrigin, McpAttachmentState,
+        McpRealizationClaim, SessionMcpAttachmentSet,
+    };
+
+    #[test]
+    fn only_the_published_live_worker_generation_has_a_route_owner() {
+        // Causes: C1 one active and acknowledged Worker-held generation;
+        // C2 exact attachment/version; C3 its claim is a live renewal of the
+        // Session root lease; C4 credential holder is Worker. Effects: E1 one
+        // exact owner and generation; E2 every missing/mismatched/stale cause
+        // yields no routable target. The old RunDispatch claim is not a second
+        // source of Session-realization authority.
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // | R1 | yes | yes | yes | yes | E1 |
+        // | R2 | no | any | any | any | E2 |
+        // | R3 | yes | no | any | any | E2 |
+        // | R4 | yes | yes | no | any | E2 |
+        // | R5 | yes | yes | yes | no | E2 |
+        let mut root = session("relay-route", crate::SessionRevision(1));
+        let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "worker.example");
+        let credential = CredentialAccess::new(
+            CredentialRef {
+                id: "credential-1".into(),
+                revision: 1,
+            },
+            CredentialMaterialSource::ControlPlaneReference,
+            CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("Bearer".into()),
+            },
+            CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::VirtualOnly),
+        );
+        root.mcp = SessionMcpAttachmentSet::from_initial(
+            vec![McpAttachmentDraft {
+                name: "calc".into(),
+                target: awaken_session_mcp_contract::McpTarget::parse_http(
+                    "https://mcp.example.test/",
+                )
+                .unwrap(),
+                prompts_as_skills: false,
+                credential: Some(credential),
+                origin: McpAttachmentOrigin::Agent,
+            }],
+            Some(holder),
+        )
+        .unwrap();
+        let attachment = &mut root.mcp.attachments[0];
+        attachment.state = McpAttachmentState::Active;
+        attachment.publication_acknowledged = true;
+        attachment.realization = Some(McpRealizationClaim {
+            realization_id: "realization-1".into(),
+            runtime_incarnation: "runtime-1".into(),
+            lease_epoch: 3,
+            lease_expires_at_unix_ms: 100,
+            stage_idempotency_key: "stage-1".into(),
+        });
+        root.realization = Some(SessionRealizationLease {
+            owner: "k8s:ns:worker:pod-uid".into(),
+            runtime_incarnation: "runtime-1".into(),
+            epoch: 3,
+            expires_at_unix_ms: 110,
+        });
+        let id = root.mcp.attachments[0].attachment_id.clone();
+        let (owner, generation) = root
+            .current_worker_relay_generation(&id, 1, 99)
+            .expect("R1 exact active route");
+        assert_eq!(owner, "k8s:ns:worker:pod-uid", "R1/E1");
+        assert_eq!(generation.generation().version(), 1, "R1/E1");
+
+        assert!(
+            root.current_worker_relay_generation(&McpAttachmentId("other".into()), 1, 99)
+                .is_none(),
+            "R3/E2 foreign attachment"
+        );
+        assert!(
+            root.current_worker_relay_generation(&id, 2, 99).is_none(),
+            "R3/E2 foreign version"
+        );
+        assert!(
+            root.current_worker_relay_generation(&id, 1, 110).is_none(),
+            "R4/E2 exact expiry"
+        );
+        let mut changed = root.clone();
+        changed.mcp.attachments[0].publication_acknowledged = false;
+        assert!(
+            changed
+                .current_worker_relay_generation(&id, 1, 99)
+                .is_none(),
+            "R2/E2"
+        );
+        changed = root.clone();
+        changed.mcp.attachments[0]
+            .realization
+            .as_mut()
+            .unwrap()
+            .lease_epoch = 4;
+        assert!(
+            changed
+                .current_worker_relay_generation(&id, 1, 99)
+                .is_none(),
+            "R4/E2"
+        );
+        changed = root.clone();
+        changed.mcp.attachments[0]
+            .selected_plaintext_holder
+            .as_mut()
+            .unwrap()
+            .boundary = PlaintextBoundary::Platform;
+        assert!(
+            changed
+                .current_worker_relay_generation(&id, 1, 99)
+                .is_none(),
+            "R5/E2"
+        );
     }
 }

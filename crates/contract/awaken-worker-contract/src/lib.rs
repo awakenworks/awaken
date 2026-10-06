@@ -20,6 +20,7 @@ mod manifest;
 mod observation;
 mod placement;
 mod registry;
+mod relay_route;
 mod requirements;
 
 pub use awaken_credential_contract::{
@@ -55,6 +56,7 @@ pub use registry::{
     worker_observation_sequence_after_heartbeat, worker_process_exit_admission,
     worker_registration_history_admission, worker_slot_is_replaceable,
 };
+pub use relay_route::{WORKER_RELAY_DESTINATION_PATH, WorkerRelayDestination};
 #[cfg(any(test, kani))]
 pub(crate) use requirements::required_capability_is_admitted;
 pub use requirements::{

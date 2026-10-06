@@ -601,17 +601,17 @@ public-key registry, a ciphertext store, or a KMS unwrap contract. A deployment
 that cannot install the canonical materializer in the Gateway therefore still
 fails closed; envelope metadata alone does not establish network delivery.
 
-### Amendment: deployment-owned Cloud Native profile (2026-08-14)
+### Amendment: deployment-owned Cloud Native profile (2026-08-14; refined 2026-10-06)
 
-The canonical Environment execution application accepts one optional,
-deployment-owned `CredentialRealizationProfile` for Cloud Native Sessions and
-freezes it into the existing `EnvironmentSnapshot`. The hosted composition must
-derive that profile from the same installed adapter capability projection used
-by its Workers. Self-hosted Native and all ACP Sessions retain their canonical
-local profiles. This seam does not enumerate allowed holders, select from model
-policy, or retry with a different boundary; absence preserves the open
-self-hosted default, while an installed profile selects exactly one holder per
-purpose before Session persistence and dispatch.
+The Environment application freezes one optional deployment-owned
+`CredentialRealizationProfile` into its snapshot. An installed Cloud profile
+selects the holder for Native and ACP; otherwise standalone ACP keeps Workload
+and Native keeps Worker. Derived from installed Worker adapter evidence, this
+holder is pinned at Session creation; recovery and transport cannot change it.
+
+The frozen holder controls network projection: `allow_mcp_servers` adds upstream
+MCP hosts only for Workload custody. Worker/Platform custody excludes them;
+Worker relay staging requires the Gateway host in the frozen allowlist.
 
 An unsupported matrix cell fails admission with a stable error. It never falls
 through to another row.

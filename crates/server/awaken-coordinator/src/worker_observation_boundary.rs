@@ -19,13 +19,14 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::SharedHost;
 
 pub const WORKER_OBSERVATIONS_PATH: &str = "/internal/v1/workers/observations";
 pub const WORKER_OBSERVE_PERMISSION: &str = "worker:observe";
 pub(crate) const WORKER_DOMAIN_PATH: &str = "/internal/v1/workers/domain";
+pub use awaken_worker_contract::WORKER_RELAY_DESTINATION_PATH;
 /// Total per-attempt deadline for one private control-plane call.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const ATTEMPTS: usize = 3;
@@ -38,12 +39,17 @@ struct BoundaryState {
 }
 
 #[derive(Clone)]
-struct DomainState {
-    directory: Arc<dyn WorkerDirectory>,
-    host: Arc<SharedHost>,
-    environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
-    sessions: Arc<awaken_session_application::SessionApplication>,
-    authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
+pub(crate) struct DomainState {
+    pub(crate) directory: Arc<dyn WorkerDirectory>,
+    pub(crate) host: Arc<SharedHost>,
+    pub(crate) environments:
+        Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+    pub(crate) sessions: Arc<awaken_session_application::SessionApplication>,
+    pub(crate) relay_targets: Option<Arc<dyn crate::WorkerRelayTargetObserver>>,
+    pub(crate) clock: Arc<dyn awaken_time::WallClock>,
+    pub(crate) authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
+    pub(crate) relay_authenticator:
+        Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
 }
 
 /// A read-only composition of the original Registry, Dispatch, and WorkQueue
@@ -56,22 +62,97 @@ struct WorkerDomainObservation {
     session_realizations_active: bool,
 }
 
-pub(crate) fn domain_router_with_authenticator(
-    directory: Arc<dyn WorkerDirectory>,
-    host: Arc<SharedHost>,
-    environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
-    sessions: Arc<awaken_session_application::SessionApplication>,
-    authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
-) -> Router {
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkerRelayQuery {
+    session_id: String,
+    attachment_id: String,
+    version: u64,
+}
+
+pub(crate) fn domain_router_with_authenticator(state: DomainState) -> Router {
     Router::new()
         .route(WORKER_DOMAIN_PATH, get(handle_domain))
-        .with_state(DomainState {
-            directory,
-            host,
-            environments,
-            sessions,
-            authenticator,
-        })
+        .route(WORKER_RELAY_DESTINATION_PATH, get(handle_relay_destination))
+        .with_state(state)
+}
+
+async fn handle_relay_destination(
+    State(state): State<DomainState>,
+    headers: HeaderMap,
+    query: Result<Query<WorkerRelayQuery>, axum::extract::rejection::QueryRejection>,
+) -> axum::response::Response {
+    let Some(authenticator) = state.relay_authenticator.as_ref() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    if let Err(status) = authenticate_observer(authenticator.as_ref(), &headers) {
+        return status.into_response();
+    }
+    let query = match query {
+        Ok(Query(query))
+            if !query.session_id.is_empty()
+                && query.session_id.len() <= 512
+                && query.session_id.trim() == query.session_id
+                && !query.attachment_id.is_empty()
+                && query.attachment_id.len() <= 512
+                && query.attachment_id.trim() == query.attachment_id
+                && query.version > 0 =>
+        {
+            query
+        }
+        _ => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let Some(targets) = &state.relay_targets else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let now = awaken_time::WallClockExt::now_ms(state.clock.as_ref());
+    let session_id = awaken_session_types::SessionId::from(query.session_id);
+    let session = match state.sessions.session(&session_id).await {
+        Ok(session) => session,
+        Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
+    let Some((worker_id, generation)) = session.current_worker_relay_generation(
+        &awaken_session_mcp_contract::McpAttachmentId(query.attachment_id),
+        query.version,
+        now,
+    ) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let registered = match state.directory.current(&worker_id).await {
+        Ok(Some(registered))
+            if registered.snapshot.identity.worker_id == worker_id
+                && registered.snapshot.state.accepts_work()
+                && registered.snapshot.expires_at_ms > now
+                && registered.process_exit.is_none() =>
+        {
+            registered
+        }
+        Ok(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
+    let ip = match targets.ip_for(&registered.snapshot.identity).await {
+        Ok(ip) => ip,
+        Err(crate::WorkerRelayTargetError::InvalidIdentity) => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        Err(crate::WorkerRelayTargetError::Unavailable) => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+    };
+    let expiry = generation
+        .lease_expires_at_unix_ms()
+        .min(registered.snapshot.expires_at_ms);
+    match awaken_worker_contract::WorkerRelayDestination::new(
+        registered.snapshot.identity,
+        ip,
+        expiry,
+    ) {
+        Ok(destination) => (StatusCode::OK, Json(destination)).into_response(),
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
 }
 
 fn authenticate_observer(

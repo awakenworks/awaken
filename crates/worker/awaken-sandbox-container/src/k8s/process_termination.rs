@@ -166,11 +166,42 @@ impl PodProcessObserver {
         name: &str,
         expected_uid: &str,
     ) -> Result<PodProcessBinding, RuntimeError> {
+        self.observed_pod_binding(name, expected_uid)
+            .await
+            .map(|(_, binding)| binding)
+    }
+
+    async fn observed_pod_binding(
+        &self,
+        name: &str,
+        expected_uid: &str,
+    ) -> Result<(Pod, PodProcessBinding), RuntimeError> {
         if expected_uid.is_empty() {
             return Err(backend("Pod process binding requires an authenticated UID"));
         }
         let pod = self.pods.get(name).await.map_err(backend)?;
-        bind(&self.namespace, name, expected_uid, &pod)
+        let binding = bind(&self.namespace, name, expected_uid, &pod)?;
+        Ok((pod, binding))
+    }
+
+    /// Observe a relay destination from the same Pod and exact running-process
+    /// proof as ordinary Worker binding. No second Pod lookup may pair a UID
+    /// from one observation with an address from another.
+    pub async fn relay_ip_for(
+        &self,
+        name: &str,
+        expected_uid: &str,
+    ) -> Result<std::net::IpAddr, RuntimeError> {
+        let (pod, binding) = self.observed_pod_binding(name, expected_uid).await?;
+        if !binding.worker_evidence_was_retained() {
+            return Err(backend("Worker relay Pod evidence is not retained"));
+        }
+        pod.status
+            .as_ref()
+            .and_then(|status| status.pod_ip.as_deref())
+            .ok_or_else(|| backend("Worker relay Pod address is missing"))?
+            .parse()
+            .map_err(|_| backend("Worker relay Pod address is invalid"))
     }
 
     /// Can be called by a different live owner after the original process died.
