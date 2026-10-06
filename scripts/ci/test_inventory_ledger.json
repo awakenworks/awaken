@@ -1,4 +1,6 @@
 {
-  "renamed": {},
-  "removed": {}
+  "removed": {},
+  "renamed": {
+    "terminal_cleanup_capacity_counts_distinct_owners_from_one_root_scan": "session_worker_demand_counts_live_affinity_and_terminal_cleanup"
+  }
 }
