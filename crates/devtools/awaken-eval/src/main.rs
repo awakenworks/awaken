@@ -25,7 +25,7 @@ async fn main() -> ExitCode {
         return import_claude(&args[1..]);
     }
     if args.first().map(String::as_str) == Some("outcome-import-codex") {
-        return import_codex(&args[1..]);
+        return import_codex(&args[1..]).await;
     }
     if args.first().map(String::as_str) == Some("outcome-run-acp") {
         return run_outcome_acp(&args[1..]).await;
@@ -105,7 +105,7 @@ async fn main() -> ExitCode {
     }
 }
 
-fn import_codex(args: &[String]) -> ExitCode {
+async fn import_codex(args: &[String]) -> ExitCode {
     let [sessions_root, goals_db, output_path, rest @ ..] = args else {
         eprintln!(
             "usage: awaken-eval outcome-import-codex <sessions-root> <goals.sqlite> <dataset.json> [limit]"
@@ -133,7 +133,9 @@ fn import_codex(args: &[String]) -> ExitCode {
         &PathBuf::from(goals_db),
         "codex-goal-complete-private-v1",
         limit,
-    ) {
+    )
+    .await
+    {
         Ok(result) => result,
         Err(error) => {
             eprintln!("failed to import Codex transcripts: {error}");
