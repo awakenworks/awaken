@@ -134,6 +134,7 @@ mod tests {
     struct RecordingBroker {
         requests: Mutex<Vec<(String, String)>>,
         join: RequestJoin,
+        seal_calls: Arc<AtomicUsize>,
     }
 
     #[tokio::test]
@@ -169,6 +170,7 @@ mod tests {
             Arc::new(RecordingBroker {
                 requests: Mutex::new(Vec::new()),
                 join: RequestJoin::Unknown,
+                seal_calls: Arc::new(AtomicUsize::new(0)),
             })
         };
         assert!(direct.with_create_transport(broker()).is_err(), "A1");
@@ -234,8 +236,71 @@ mod tests {
             _scope: &str,
             _predecessor: &ContainerEffectFence,
         ) -> Result<RequestJoin, RuntimeError> {
+            self.seal_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.join.clone())
         }
+    }
+
+    #[tokio::test]
+    async fn rich_brokered_terminal_seals_requests_without_granting_absence() {
+        // Causes: C1 a plan has a projected participant and uses the broker;
+        // C2 the old effect fence is exact/missing; C3 the broker joins all
+        // requests or reports Unknown; C4 direct mode has no durable broker.
+        // Effects: E1 C1+C2(exact) calls the one provider seal even when C3
+        // is Complete, but never grants a cleanup receipt; E2 missing C2 or
+        // C4 cannot borrow broker closure. Rules R1=C1+exact+Complete->E1,
+        // R2=C1+exact+Unknown->E1, R3=missing|direct->E2.
+        let mut plan = super::super::ephemeral_plan();
+        plan.binds.push(crate::BindPlan {
+            source_ref: "content".into(),
+            mount_path: "/mnt/content".into(),
+            read_only: true,
+            content: Some("body".into()),
+            content_bytes: None,
+            secret_content: None,
+            secret_writeback: false,
+            credential_file_path: None,
+        });
+        let fence =
+            ContainerEffectFence::new("old-effect", "worker", "worker-boot", 1, u64::MAX).unwrap();
+        for joined in [RequestJoin::Complete(Vec::new()), RequestJoin::Unknown] {
+            let seals = Arc::new(AtomicUsize::new(0));
+            let broker = Arc::new(RecordingBroker {
+                requests: Mutex::new(Vec::new()),
+                join: joined,
+                seal_calls: seals.clone(),
+            });
+            let runtime = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap())
+                .with_create_transport(broker)
+                .unwrap();
+            assert_eq!(
+                runtime
+                    .missing_handle_terminal_evidence("scope", &plan, Some(&fence))
+                    .await
+                    .unwrap(),
+                crate::MissingHandleTerminalEvidence::Unknown,
+                "R1/R2 rich participant cannot receive absence"
+            );
+            assert_eq!(seals.load(Ordering::SeqCst), 1, "R1/R2 one provider seal");
+            assert_eq!(
+                runtime
+                    .missing_handle_terminal_evidence("scope", &plan, None)
+                    .await
+                    .unwrap(),
+                crate::MissingHandleTerminalEvidence::Unknown,
+                "R3 no old fence"
+            );
+            assert_eq!(seals.load(Ordering::SeqCst), 1, "R3 no extra seal");
+        }
+        let direct = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
+        assert_eq!(
+            direct
+                .missing_handle_terminal_evidence("scope", &plan, Some(&fence))
+                .await
+                .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unknown,
+            "R3 direct rich attempt remains unproven"
+        );
     }
 
     #[tokio::test]
@@ -272,6 +337,7 @@ mod tests {
         let broker = Arc::new(RecordingBroker {
             requests: Mutex::new(Vec::new()),
             join: RequestJoin::Unknown,
+            seal_calls: Arc::new(AtomicUsize::new(0)),
         });
         let runtime = runtime.with_create_transport(broker.clone()).unwrap();
         let brokered_configuration = runtime.realization_configuration().unwrap();
@@ -404,6 +470,7 @@ mod tests {
                 .with_create_transport(Arc::new(RecordingBroker {
                     requests: Mutex::new(Vec::new()),
                     join: joined,
+                    seal_calls: Arc::new(AtomicUsize::new(0)),
                 }))
                 .unwrap()
         };
@@ -501,7 +568,7 @@ mod tests {
         // C3 current Pod has the same UID, frozen effect, and no PVC; C4 the
         // current Pod is foreign/terminating, an orphan claim exists, its
         // image/security spec differs despite copied annotations, or another
-        // kind was Created.
+        // kind was Created/Isolated without a participant-close proof.
         // Effects: E1 C1+C2+C3 yields one typed incarnation for the existing
         // handle-bound cleanup; E2 any C4 or absent C1/C2 stays Unknown and
         // cannot turn a Pod GET into a cleanup receipt. Rules J1=C1+C2+C3->E1,
@@ -606,6 +673,7 @@ mod tests {
                 .with_create_transport(Arc::new(RecordingBroker {
                     requests: Mutex::new(Vec::new()),
                     join: RequestJoin::Complete(tickets),
+                    seal_calls: Arc::new(AtomicUsize::new(0)),
                 }))
                 .unwrap()
         };
@@ -658,12 +726,24 @@ mod tests {
         let mut other = created;
         other.request.resource = "configmaps".into();
         assert_eq!(
-            runtime(vec![other])
+            runtime(vec![other.clone()])
                 .missing_handle_terminal_evidence("scope", &plan, Some(&fence))
                 .await
                 .unwrap(),
             crate::MissingHandleTerminalEvidence::Unknown,
             "J2 another created participant"
+        );
+        other.status = super::super::TicketStatus::Finished(super::super::TicketResult::Isolated {
+            uid: "reserved-uid".into(),
+        });
+        other.isolation_id = "0123456789abcdef0123456789abcdef".into();
+        assert_eq!(
+            runtime(vec![other])
+                .missing_handle_terminal_evidence("scope", &plan, Some(&fence))
+                .await
+                .unwrap(),
+            crate::MissingHandleTerminalEvidence::Unknown,
+            "J2 an isolated other Kind is request closure, not participant closure"
         );
         assert_eq!(
             calls.load(Ordering::SeqCst),

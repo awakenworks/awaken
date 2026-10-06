@@ -122,7 +122,7 @@ rules:
     verbs: ["create", "get"]
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "delete", "deletecollection"]
+    verbs: ["get", "list", "delete"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "delete"]

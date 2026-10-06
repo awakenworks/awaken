@@ -12,70 +12,17 @@ const PROTECTED_OTHER_KINDS: [&str; 5] = [
     "daemonsets",
 ];
 
-fn protected_other_kind(
-    resource: &str,
-    namespace: &str,
-) -> (kube::core::ApiResource, kube::core::DynamicObject) {
+fn protected_other_kind_resource(resource: &str) -> kube::core::ApiResource {
     use kube::core::{ApiResource, GroupVersionKind};
-    use serde_json::json;
-
-    let (group, kind, body) = match resource {
-        "persistentvolumeclaims" => (
-            "",
-            "PersistentVolumeClaim",
-            json!({"spec":{
-                "accessModes":["ReadWriteOnce"], "storageClassName":"",
-                "selector":{"matchLabels":{"awaken.dev/no-matching-pv":namespace}},
-                "resources":{"requests":{"storage":"1Mi"}}
-            }}),
-        ),
-        "configmaps" => ("", "ConfigMap", json!({"data":{"role":"reservation"}})),
-        "secrets" => ("", "Secret", json!({"type":"Opaque"})),
-        "jobs" => (
-            "batch",
-            "Job",
-            json!({"spec":{
-                "suspend":true,
-                "template":{"spec":{
-                    "restartPolicy":"Never",
-                    "containers":[{"name":"inert","image":"invalid.invalid/awaken-create-isolation:never",
-                        "imagePullPolicy":"Never","command":["/bin/false"]}]
-                }}
-            }}),
-        ),
-        "daemonsets" => (
-            "apps",
-            "DaemonSet",
-            json!({"spec":{
-                "selector":{"matchLabels":{"awaken.dev/reservation-instance":namespace}},
-                "template":{
-                    "metadata":{"labels":{"awaken.dev/reservation-instance":namespace}},
-                    "spec":{
-                        "nodeSelector":{"awaken.dev/create-isolation-node":namespace},
-                        "containers":[{"name":"inert","image":"invalid.invalid/awaken-create-isolation:never",
-                            "imagePullPolicy":"Never","command":["/bin/false"]}]
-                    }
-                }
-            }}),
-        ),
+    let (group, kind) = match resource {
+        "persistentvolumeclaims" => ("", "PersistentVolumeClaim"),
+        "configmaps" => ("", "ConfigMap"),
+        "secrets" => ("", "Secret"),
+        "jobs" => ("batch", "Job"),
+        "daemonsets" => ("apps", "DaemonSet"),
         _ => panic!("unsupported protected reservation Kind"),
     };
-    let gvk = GroupVersionKind::gvk(group, "v1", kind);
-    let api_resource = ApiResource::from_gvk_with_plural(&gvk, resource);
-    let mut object = json!({
-        "apiVersion":api_resource.api_version.clone(),
-        "kind":kind,
-        "metadata":{
-            "namespace":namespace,
-            "name":format!("reserved-{resource}"),
-            "labels":{(ISOLATION_LABEL):"true"}
-        }
-    });
-    object
-        .as_object_mut()
-        .unwrap()
-        .extend(body.as_object().unwrap().clone());
-    (api_resource, serde_json::from_value(object).unwrap())
+    ApiResource::from_gvk_with_plural(&GroupVersionKind::gvk(group, "v1", kind), resource)
 }
 
 fn generated_namespace(prefix: &str) -> k8s_openapi::api::core::v1::Namespace {
@@ -368,22 +315,19 @@ async fn worker_create_ledger_joins_api_requests_and_rejects_recreated_uid() {
 }
 
 #[tokio::test]
-async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
-    // Causes: C1 a task-owned, isolated k3d cluster has the exact VAP and
-    // binding; C2 the original Pod ticket wins CAS but its Create is never
-    // sent (the crash-before-send fault cut); C3 the Worker/group are sealed;
-    // C4 the first reservation response or Coordinator process may be lost.
-    // C5 each other brokered Kind has one task-owned, non-executing protected
-    // reservation; C6 a Job/DaemonSet controller can advance resourceVersion
-    // after Create. Effects: E1 C1+C2+C3 yields one real unscheduled Pod UID
-    // and one Isolated ticket; E2 C4 replay retains that UID; E3 the active
-    // policy rejects exact dry-run deletion and label-removing UPDATE on every
-    // C5 Kind using a dry-run merge PATCH that cannot fail on C6's stale
-    // resourceVersion; E4 test-owned policy and objects are removed only after this
-    // no-original-request fixture is complete. Rules L1=C1+C2+C3->E1+E3,
-    // L2=L1+C4->E2, L3=C1+C5->E3, L4=teardown->E4. The
-    // same-name delayed-original race and policy-denial mutant are covered by
-    // the separate fault cut and unit decision table.
+async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
+    // Causes: C1 a task-owned k3d cluster has the exact VAP and binding;
+    // C2 each of the six original Kind tickets wins CAS but its Create is
+    // never sent (crash-before-send); C3 Worker/group seal; C4 replay after
+    // lost reservation response or Coordinator restart; C5 a controller
+    // advances Job/DaemonSet resourceVersion. Effects: E1 C1+C2+C3 creates
+    // six inert, exact-UID reservations with zero controller child Pods and
+    // joins six Isolated tickets;
+    // E2 C4 retains all UIDs; E3 the policy rejects exact dry-run DELETE and
+    // label-removing UPDATE on every Kind without a stale-version false fail;
+    // E4 after proof, task-owned finalizers, resources and policy are removed.
+    // Rules L1=C1+C2+C3->E1+E3, L2=L1+C4->E2, L3=C5+dry-run patch->E3,
+    // L4=teardown->E4. Delayed-original races use the separate API test.
     if std::env::var("AWAKEN_K8S_ISOLATION_E2E").as_deref() != Ok("1") {
         return;
     }
@@ -392,7 +336,7 @@ async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
         ValidatingAdmissionPolicy, ValidatingAdmissionPolicyBinding,
     };
     use k8s_openapi::api::core::v1::{Namespace, Pod};
-    use kube::api::{DeleteParams, Patch, PatchParams, PostParams, Preconditions};
+    use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams, Preconditions};
     use kube::{Api, ResourceExt};
     use serde::Deserialize as _;
     use std::io;
@@ -482,53 +426,108 @@ async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
         let request = CreateTicketRequest::new(
             "old-effect", "pods", &sandbox_name, "sandbox-pod", "a".repeat(64),
         )?;
-        if ledger.admit_request(anchor, &request).await? != TicketAdmission::Forward {
-            return Err(io::Error::other("first Pod ticket did not win CAS").into());
+        let mut requests = vec![request.clone()];
+        for resource in PROTECTED_OTHER_KINDS {
+            requests.push(CreateTicketRequest::new(
+                "old-effect", resource, &sandbox_name,
+                format!("reserved-{resource}"), "a".repeat(64),
+            )?);
+        }
+        for ticket in &requests {
+            if ledger.admit_request(anchor, ticket).await? != TicketAdmission::Forward {
+                return Err(io::Error::other(format!("first {resource} ticket did not win CAS", resource = ticket.resource)).into());
+            }
         }
         ledger.seal_worker(anchor).await?;
         let _ = ledger.seal_group_and_join(anchor, "old-effect").await?;
-        let mut isolated_uid = None;
+        let mut isolated = None;
         // awaken-wait: Kubernetes policy activation is an external physical fact; each retry reads the same durable ticket join.
         for _ in 0..60 {
             let joined = ledger.isolate_sealed_group_and_join(anchor, "old-effect").await?;
-            if let RequestJoin::Complete(tickets) = joined
-                && let Some(ticket) = tickets.into_iter().find(|ticket| ticket.request == request)
-                && let awaken_sandbox_container::k8s::TicketStatus::Finished(
-                    TicketResult::Isolated { uid },
-                ) = ticket.status
-                && !ticket.isolation_pending
-            {
-                isolated_uid = Some(uid);
-                break;
+            if let RequestJoin::Complete(tickets) = joined {
+                let observed = tickets.iter().filter_map(|ticket| {
+                    if ticket.isolation_pending { return None; }
+                    match &ticket.status {
+                        awaken_sandbox_container::k8s::TicketStatus::Finished(TicketResult::Isolated { uid }) =>
+                            Some((ticket.request.resource.clone(), uid.clone())),
+                        _ => None,
+                    }
+                }).collect::<std::collections::BTreeMap<_, _>>();
+                if observed.len() == requests.len() {
+                    isolated = Some(observed);
+                    break;
+                }
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        let uid = isolated_uid.ok_or_else(|| io::Error::other("real Pod isolation did not join"))?;
+        let isolated = match isolated {
+            Some(isolated) => isolated,
+            None => {
+                let mut details = Vec::new();
+                for request in &requests {
+                    let observation = if request.resource == "pods" {
+                        let api: Api<Pod> = Api::namespaced(client.clone(), &sandbox_name);
+                        api.get_opt(&request.name).await?
+                            .map(|pod| serde_json::json!({
+                                "uid":pod.metadata.uid,"phase":pod.status.and_then(|status| status.phase),
+                                "finalizers":pod.metadata.finalizers
+                            }))
+                    } else {
+                        use kube::core::DynamicObject;
+                        let resource = protected_other_kind_resource(&request.resource);
+                        let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), &sandbox_name, &resource);
+                        api.get_opt(&request.name).await?.map(|object| {
+                            let value = serde_json::to_value(object).expect("Kubernetes object is serializable");
+                            serde_json::json!({
+                                "uid":value["metadata"]["uid"],"finalizers":value["metadata"]["finalizers"],
+                                "spec":value["spec"],"status":value["status"],
+                                "immutable":value["immutable"],"type":value["type"]
+                            })
+                        })
+                    };
+                    details.push((request.resource.clone(), ledger.ticket_for(anchor, request).await?, observation));
+                }
+                return Err(io::Error::other(format!("six real Kind isolations did not join: {details:?}")).into());
+            }
+        };
+        let uid = isolated.get("pods").ok_or_else(|| io::Error::other("Pod UID missing"))?;
         let pods: Api<Pod> = Api::namespaced(client.clone(), &sandbox_name);
         let observed = pods.get("sandbox-pod").await?;
-        if observed.metadata.uid.as_deref() != Some(&uid)
+        if observed.metadata.uid.as_deref() != Some(uid.as_str())
             || observed.spec.as_ref().and_then(|spec| spec.node_name.as_ref()).is_some()
             || observed.metadata.deletion_timestamp.is_some()
         {
             return Err(io::Error::other("isolated Pod changed its exact unbound UID").into());
         }
+        let child_uids = ["jobs", "daemonsets"]
+            .into_iter()
+            .filter_map(|resource| isolated.get(resource))
+            .collect::<Vec<_>>();
+        if pods.list(&ListParams::default()).await?.items.iter().any(|pod| {
+            pod.metadata.owner_references.as_ref().is_some_and(|owners| {
+                owners.iter().any(|owner| child_uids.iter().any(|uid| owner.uid.as_str() == uid.as_str()))
+            })
+        }) {
+            return Err(io::Error::other("inert controller reservation created a child Pod").into());
+        }
         for resource in PROTECTED_OTHER_KINDS {
             use kube::core::DynamicObject;
-            let (api_resource, desired) = protected_other_kind(resource, &sandbox_name);
+            let api_resource = protected_other_kind_resource(resource);
             let api: Api<DynamicObject> =
                 Api::namespaced_with(client.clone(), &sandbox_name, &api_resource);
-            let name = desired.name_any();
-            let created = api.create(&PostParams::default(), &desired).await?;
-            let Some(uid) = created.metadata.uid.clone() else {
-                return Err(io::Error::other("protected reservation has no API UID").into());
-            };
+            let name = format!("reserved-{resource}");
+            let created = api.get(&name).await?;
+            let uid = isolated.get(resource).ok_or_else(|| io::Error::other("Kind UID missing"))?;
+            if created.metadata.uid.as_deref() != Some(uid.as_str()) {
+                return Err(io::Error::other(format!("{resource} isolation changed UID")).into());
+            }
             let denied = api
                 .delete(
                     &name,
                     &DeleteParams {
                         dry_run: true,
                         preconditions: Some(Preconditions {
-                            uid: Some(uid),
+                            uid: Some(uid.clone()),
                             resource_version: None,
                         }),
                         ..DeleteParams::default()
@@ -563,10 +562,16 @@ async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
                 .into());
             }
         }
-        let replay = ledger.isolate_sealed_group_and_join(anchor, "old-effect").await?;
+        let replacement = K8sWorkerCreateLedger::new(
+            client.clone(), &control_name, &sandbox_name, "provider-isolation",
+        )?;
+        let replay = replacement.isolate_sealed_group_and_join(anchor, "old-effect").await?;
         if !matches!(replay, RequestJoin::Complete(tickets)
-            if tickets.len() == 1
-                && tickets[0].status == awaken_sandbox_container::k8s::TicketStatus::Finished(TicketResult::Isolated { uid }))
+            if tickets.len() == requests.len()
+                && tickets.iter().all(|ticket|
+                    !ticket.isolation_pending &&
+                    matches!(&ticket.status, awaken_sandbox_container::k8s::TicketStatus::Finished(TicketResult::Isolated { uid })
+                        if isolated.get(&ticket.request.resource) == Some(uid))))
         {
             return Err(io::Error::other("isolation replay changed the joined UID").into());
         }
@@ -618,10 +623,10 @@ async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
         let name = sandbox.name_any();
         for resource in PROTECTED_OTHER_KINDS {
             use kube::core::DynamicObject;
-            let (api_resource, desired) = protected_other_kind(resource, &name);
+            let api_resource = protected_other_kind_resource(resource);
             let api: Api<DynamicObject> =
                 Api::namespaced_with(client.clone(), &name, &api_resource);
-            let object_name = desired.name_any();
+            let object_name = format!("reserved-{resource}");
             // awaken-wait: a selected admission policy can outlive its binding
             // deletion briefly; only an exact UID-fenced DELETE and absence
             // close each task-owned reservation.
@@ -649,6 +654,30 @@ async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
                     cleanup_errors.push(format!("{resource} reservation has no exact UID"));
                     break;
                 };
+                let release = api
+                    .patch(
+                        &object_name,
+                        &PatchParams::default(),
+                        &Patch::Merge(serde_json::json!({
+                            "metadata":{"finalizers":[]}
+                        })),
+                    )
+                    .await;
+                match release {
+                    Ok(updated) if updated.metadata.uid.as_deref() == Some(uid.as_str()) => {}
+                    Err(kube::Error::Api(error))
+                        if matches!(error.code, 403 | 422)
+                            && error.message.contains("awaken-create-isolation") =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        continue;
+                    }
+                    other => {
+                        cleanup_errors
+                            .push(format!("{resource} exact finalizer release: {other:?}"));
+                        break;
+                    }
+                }
                 let result = api
                     .delete(
                         &object_name,

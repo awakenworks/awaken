@@ -190,9 +190,12 @@ fn validate_create(
             })
         || metadata.get("finalizers").is_some_and(|finalizers| {
             finalizers.as_array().is_none_or(|values| {
-                values
-                    .iter()
-                    .any(|value| value.as_str() == Some(ORIGINAL_GUARD_FINALIZER))
+                values.iter().any(|value| {
+                    matches!(
+                        value.as_str(),
+                        Some(ORIGINAL_GUARD_FINALIZER | ISOLATION_LABEL)
+                    )
+                })
             })
         })
     {
@@ -215,36 +218,42 @@ fn validate_create(
     })
 }
 
-fn stamp_admitted_pod(
+fn stamp_admitted_create(
     body: Vec<u8>,
+    resource: &str,
     isolation_id: &str,
     request_digest: &str,
 ) -> Result<Vec<u8>, ApplicationError> {
     if isolation_id.is_empty() {
         return Err(ApplicationError::unavailable(
-            "historical Pod Create has no provider-owned isolation identity",
+            "historical Create has no provider-owned isolation identity",
         ));
     }
     let mut object: Value = serde_json::from_slice(&body)
-        .map_err(|_| ApplicationError::internal("admitted Pod Create bytes are invalid"))?;
+        .map_err(|_| ApplicationError::internal("admitted Create bytes are invalid"))?;
     let metadata = object
         .get_mut("metadata")
         .and_then(Value::as_object_mut)
-        .ok_or_else(|| ApplicationError::internal("admitted Pod Create metadata is missing"))?;
+        .ok_or_else(|| ApplicationError::internal("admitted Create metadata is missing"))?;
     let annotations = metadata.entry("annotations").or_insert_with(|| json!({}));
     let annotations = annotations
         .as_object_mut()
-        .ok_or_else(|| ApplicationError::internal("admitted Pod annotations are invalid"))?;
+        .ok_or_else(|| ApplicationError::internal("admitted Create annotations are invalid"))?;
     annotations.insert(ISOLATION_ID_ANNOTATION.into(), isolation_id.into());
     annotations.insert(REQUEST_DIGEST_ANNOTATION.into(), request_digest.into());
-    let finalizers = metadata
-        .entry("finalizers")
-        .or_insert_with(|| json!([]))
-        .as_array_mut()
-        .ok_or_else(|| ApplicationError::internal("admitted Pod finalizers are invalid"))?;
-    finalizers.push(ORIGINAL_GUARD_FINALIZER.into());
+    // Only the Pod disposal owner currently releases the original-result
+    // guard. Other Kinds retain exact identity annotations but cannot gain a
+    // finalizer that their ordinary lifecycle has no authority to remove.
+    if resource == "pods" {
+        let finalizers = metadata
+            .entry("finalizers")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .ok_or_else(|| ApplicationError::internal("admitted Create finalizers are invalid"))?;
+        finalizers.push(ORIGINAL_GUARD_FINALIZER.into());
+    }
     serde_json::to_vec(&object)
-        .map_err(|_| ApplicationError::internal("admitted Pod Create cannot be encoded"))
+        .map_err(|_| ApplicationError::internal("admitted Create cannot be encoded"))
 }
 
 fn binding<'a>(
@@ -547,24 +556,21 @@ impl K8sCreateBroker {
                 })?;
             return Ok(status_response(403, "Forbidden"));
         }
-        let body = if create.ticket.resource == "pods" {
-            let admitted = self
-                .ledger
-                .ticket_for(
-                    binding(&self.ledger, &anchor, &pod, &self.provider_id)?,
-                    &create.ticket,
-                )
-                .await
-                .map_err(|_| {
-                    ApplicationError::unavailable("admitted Pod Create ticket is unavailable")
-                })?
-                .ok_or_else(|| {
-                    ApplicationError::unavailable("admitted Pod Create ticket is missing")
-                })?;
-            stamp_admitted_pod(create.body, &admitted.isolation_id, &create.ticket.digest)?
-        } else {
-            create.body
-        };
+        let admitted = self
+            .ledger
+            .ticket_for(
+                binding(&self.ledger, &anchor, &pod, &self.provider_id)?,
+                &create.ticket,
+            )
+            .await
+            .map_err(|_| ApplicationError::unavailable("admitted Create ticket is unavailable"))?
+            .ok_or_else(|| ApplicationError::unavailable("admitted Create ticket is missing"))?;
+        let body = stamp_admitted_create(
+            create.body,
+            &create.ticket.resource,
+            &admitted.isolation_id,
+            &create.ticket.digest,
+        )?;
         let request = Request::builder()
             .method(Method::POST)
             .uri(create.path.as_str())
@@ -719,7 +725,7 @@ mod tests {
     fn provider_isolation_metadata_is_reserved_on_every_brokered_kind() {
         // Causes: C1 each of the six admitted Kubernetes collections; C2
         // provider-owned evidence is absent, or the Worker supplies the
-        // reservation label, isolation annotation, or original guard
+        // reservation label, isolation annotation, or either provider
         // finalizer. Constraint: exact namespace/name and realization digest
         // are otherwise valid. Effects: E1 absent C2 admits one ticket; E2
         // every forged C2 is refused before ledger CAS or API I/O.
@@ -751,16 +757,77 @@ mod tests {
             annotation["metadata"]["annotations"][ISOLATION_ID_ANNOTATION] = "forged".into();
             let mut finalizer = base;
             finalizer["metadata"]["finalizers"] = json!([ORIGINAL_GUARD_FINALIZER]);
+            let mut reservation_finalizer = finalizer.clone();
+            reservation_finalizer["metadata"]["finalizers"] = json!([ISOLATION_LABEL]);
             for (axis, object) in [
                 ("label", label),
                 ("annotation", annotation),
                 ("finalizer", finalizer),
+                ("reservation finalizer", reservation_finalizer),
             ] {
                 assert!(
                     validate_create(&identity, "ns", request(object)).is_err(),
                     "M2-M4 {path} {axis}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn broker_stamps_identity_on_every_kind_and_guards_only_pod() {
+        // Causes: C1 one of six brokered Kind paths has won the durable CAS;
+        // C2 its ticket has a provider nonce or a historical missing nonce;
+        // C3 the Worker supplies ordinary metadata and no protected markers.
+        // Effects: E1 C1+C2(valid)+C3 adds the exact nonce/digest without
+        // changing the Worker projection; E2 only Pod gains the guard its
+        // existing disposal owner can release; E3 C2(missing) refuses
+        // forwarding before an API call. Decision rules B1=valid+C3->E1,
+        // B2=B1+Pod->E2, B3=missing->E3.
+        let body = serde_json::to_vec(&json!({
+            "metadata":{"name":"target","annotations":{"awaken.dev/realization-digest":"a".repeat(64)}},
+            "spec":{"keep":"worker"}
+        }))
+        .unwrap();
+        for resource in [
+            "pods",
+            "persistentvolumeclaims",
+            "configmaps",
+            "secrets",
+            "jobs",
+            "daemonsets",
+        ] {
+            let stamped = stamp_admitted_create(
+                body.clone(),
+                resource,
+                "0123456789abcdef0123456789abcdef",
+                &"b".repeat(64),
+            )
+            .unwrap();
+            let value: Value = serde_json::from_slice(&stamped).unwrap();
+            assert_eq!(value["spec"]["keep"], "worker", "B1 {resource}");
+            assert_eq!(
+                value["metadata"]["annotations"][ISOLATION_ID_ANNOTATION],
+                "0123456789abcdef0123456789abcdef",
+                "B1 {resource}"
+            );
+            assert_eq!(
+                value["metadata"]["annotations"][REQUEST_DIGEST_ANNOTATION],
+                "b".repeat(64),
+                "B1 {resource}"
+            );
+            assert_eq!(
+                value["metadata"]["finalizers"],
+                if resource == "pods" {
+                    json!([ORIGINAL_GUARD_FINALIZER])
+                } else {
+                    Value::Null
+                },
+                "B2 {resource}"
+            );
+            assert!(
+                stamp_admitted_create(body.clone(), resource, "", &"b".repeat(64)).is_err(),
+                "B3 {resource}"
+            );
         }
     }
 

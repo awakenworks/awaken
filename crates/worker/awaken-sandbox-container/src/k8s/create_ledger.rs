@@ -381,11 +381,7 @@ impl K8sWorkerCreateLedger {
         // One candidate per caller, reused across resourceVersion CAS retries.
         // A losing caller reads the winner's retained identity and cannot
         // replace it with its own nonce.
-        let isolation_id = if request.resource == "pods" {
-            uuid::Uuid::new_v4().simple().to_string()
-        } else {
-            String::new()
-        };
+        let isolation_id = uuid::Uuid::new_v4().simple().to_string();
         self.mutate(binding, |state| {
             let admission = state.admit(request, &isolation_id)?;
             let changed = admission == TicketAdmission::Forward;
@@ -431,9 +427,9 @@ impl K8sWorkerCreateLedger {
     }
 
     /// The existing sealed ledger is the only request authority. Once the
-    /// original Worker process has a Registry exit receipt, race an inert Pod
-    /// against each unresolved original Pod POST and retain its observed UID
-    /// in that same ticket. Other resource kinds remain Unknown.
+    /// original Worker process has a Registry exit receipt, race an inert
+    /// same-Kind object against each unresolved original POST and retain its
+    /// observed UID in that same ticket. Participant disposal remains separate.
     pub async fn isolate_sealed_group_and_join(
         &self,
         binding: K8sLedgerBinding<'_>,
@@ -444,10 +440,13 @@ impl K8sWorkerCreateLedger {
             return Ok(RequestJoin::Unknown);
         };
         for ticket in tickets {
-            if ticket.request.resource != "pods"
-                || (!matches!(ticket.status, TicketStatus::InFlight) && !ticket.isolation_pending)
-            {
+            if !matches!(ticket.status, TicketStatus::InFlight) && !ticket.isolation_pending {
                 continue;
+            }
+            // A historical ticket admitted before provider nonces existed
+            // cannot borrow a newly minted reservation after process loss.
+            if ticket.isolation_id.is_empty() {
+                return Ok(RequestJoin::Unknown);
             }
             let should_isolate = self
                 .mutate(binding, |state| state.start_isolation(&ticket.request))
@@ -455,7 +454,7 @@ impl K8sWorkerCreateLedger {
             if !should_isolate {
                 continue;
             }
-            let Some(result) = isolation::isolate_pod(&self.client, &ticket).await? else {
+            let Some(result) = isolation::isolate(&self.client, &ticket).await? else {
                 return Ok(RequestJoin::Unknown);
             };
             self.mutate(binding, |state| {

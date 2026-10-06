@@ -1,8 +1,8 @@
 // @formal surface obligation=sandbox.admission_never_weakens_isolation
-// @formal reason: A sealed provider ticket reserves the exact Pod name before
+// @formal reason: A sealed provider ticket reserves the exact Kind/name before
 // @formal reason: it can be called joined. The API denial and live-name tests
 // @formal reason: qualify selected transitions, not universal K8s refinement.
-//! Physical Pod-name reservation for a Create whose response was lost.
+//! Physical same-Kind name reservation for a Create whose response was lost.
 //!
 //! This is part of the existing provider ledger, not a second retry queue.
 //! The reservation is deliberately retained: releasing its name before the
@@ -13,6 +13,7 @@ use k8s_openapi::api::admissionregistration::v1::{
     ValidatingAdmissionPolicyBindingSpec, ValidatingAdmissionPolicySpec,
 };
 use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{DeleteParams, PostParams, Preconditions};
 use kube::{Api, Client};
 use serde_json::json;
@@ -29,7 +30,8 @@ pub const ISOLATION_LABEL: &str = "awaken.dev/create-isolation";
 /// Retains an original Pod until its exact Create result and terminal disposal
 /// have been joined. The existing Pod-finalizer CAS helper owns release.
 pub const ORIGINAL_GUARD_FINALIZER: &str = "awaken.dev/create-result-guard";
-const FINALIZER: &str = "awaken.dev/create-isolation";
+const FINALIZER: &str = ISOLATION_LABEL;
+const PVC_PROTECTION_FINALIZER: &str = "kubernetes.io/pvc-protection";
 const GATE: &str = "awaken.dev/create-isolation";
 const POLICY: &str = "awaken-create-isolation";
 
@@ -136,6 +138,74 @@ fn reservation(ticket: &CreateTicket) -> Result<Pod, RuntimeError> {
     .map_err(backend)
 }
 
+fn exact_reservation_metadata(
+    ticket: &CreateTicket,
+    metadata: &ObjectMeta,
+    uid: Option<&str>,
+) -> bool {
+    let exact_finalizers = match metadata.finalizers.as_deref() {
+        Some([provider]) if provider == FINALIZER => true,
+        Some([first, second]) if ticket.request.resource == "persistentvolumeclaims" => {
+            (first == FINALIZER && second == PVC_PROTECTION_FINALIZER)
+                || (first == PVC_PROTECTION_FINALIZER && second == FINALIZER)
+        }
+        _ => false,
+    };
+    metadata.name.as_deref() == Some(ticket.request.name.as_str())
+        && metadata.namespace.as_deref() == Some(ticket.request.namespace.as_str())
+        && metadata.uid.as_deref().is_some_and(|actual| {
+            !actual.trim().is_empty() && uid.is_none_or(|expected| actual == expected)
+        })
+        && metadata.deletion_timestamp.is_none()
+        && metadata.owner_references.is_none()
+        && exact_finalizers
+        && metadata
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.get(ISOLATION_LABEL))
+            .map(String::as_str)
+            == Some("true")
+        && metadata
+            .annotations
+            .as_ref()
+            .and_then(|values| values.get(ISOLATION_ID_ANNOTATION))
+            .map(String::as_str)
+            == Some(ticket.isolation_id.as_str())
+        && metadata
+            .annotations
+            .as_ref()
+            .and_then(|values| values.get(REQUEST_DIGEST_ANNOTATION))
+            .map(String::as_str)
+            == Some(ticket.request.digest.as_str())
+}
+
+fn exact_original_metadata(ticket: &CreateTicket, metadata: &ObjectMeta) -> bool {
+    metadata.name.as_deref() == Some(ticket.request.name.as_str())
+        && metadata.namespace.as_deref() == Some(ticket.request.namespace.as_str())
+        && metadata
+            .uid
+            .as_deref()
+            .is_some_and(|uid| !uid.trim().is_empty())
+        && metadata.deletion_timestamp.is_none()
+        && metadata
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.get(ISOLATION_LABEL))
+            .is_none()
+        && metadata
+            .annotations
+            .as_ref()
+            .and_then(|values| values.get(ISOLATION_ID_ANNOTATION))
+            .map(String::as_str)
+            == Some(ticket.isolation_id.as_str())
+        && metadata
+            .annotations
+            .as_ref()
+            .and_then(|values| values.get(REQUEST_DIGEST_ANNOTATION))
+            .map(String::as_str)
+            == Some(ticket.request.digest.as_str())
+}
+
 fn exact_reservation(ticket: &CreateTicket, observed: &Pod, uid: Option<&str>) -> bool {
     let Ok(expected) = reservation(ticket) else {
         return false;
@@ -164,48 +234,11 @@ fn exact_reservation(ticket: &CreateTicket, observed: &Pod, uid: Option<&str>) -
         });
     api_defaults::normalize_pod_spec(&mut desired, false);
     api_defaults::normalize_pod_spec(&mut actual, true);
-    observed.metadata.name == Some(ticket.request.name.clone())
-        && observed.metadata.namespace == Some(ticket.request.namespace.clone())
-        && observed.metadata.uid.as_deref().is_some_and(|actual| {
-            !actual.trim().is_empty() && uid.is_none_or(|expected| actual == expected)
-        })
-        && observed.metadata.deletion_timestamp.is_none()
-        && unbound
-        && observed.metadata.owner_references.is_none()
-        && observed.metadata.finalizers.as_deref() == Some(&[FINALIZER.to_owned()][..])
-        && observed
-            .metadata
-            .labels
-            .as_ref()
-            .and_then(|labels| labels.get(ISOLATION_LABEL))
-            .map(String::as_str)
-            == Some("true")
-        && observed
-            .metadata
-            .annotations
-            .as_ref()
-            .and_then(|annotations| annotations.get(ISOLATION_ID_ANNOTATION))
-            .map(String::as_str)
-            == Some(ticket.isolation_id.as_str())
-        && observed
-            .metadata
-            .annotations
-            .as_ref()
-            .and_then(|annotations| annotations.get(REQUEST_DIGEST_ANNOTATION))
-            .map(String::as_str)
-            == Some(ticket.request.digest.as_str())
-        && desired == actual
+    exact_reservation_metadata(ticket, &observed.metadata, uid) && unbound && desired == actual
 }
 
 fn exact_original(ticket: &CreateTicket, observed: &Pod) -> bool {
-    observed.metadata.name == Some(ticket.request.name.clone())
-        && observed.metadata.namespace == Some(ticket.request.namespace.clone())
-        && observed
-            .metadata
-            .uid
-            .as_deref()
-            .is_some_and(|uid| !uid.trim().is_empty())
-        && observed.metadata.deletion_timestamp.is_none()
+    exact_original_metadata(ticket, &observed.metadata)
         && observed
             .metadata
             .finalizers
@@ -215,38 +248,21 @@ fn exact_original(ticket: &CreateTicket, observed: &Pod) -> bool {
                     .iter()
                     .any(|value| value == ORIGINAL_GUARD_FINALIZER)
             })
-        && observed
-            .metadata
-            .labels
-            .as_ref()
-            .and_then(|labels| labels.get(ISOLATION_LABEL))
-            .is_none()
-        && observed
-            .metadata
-            .annotations
-            .as_ref()
-            .and_then(|annotations| annotations.get(ISOLATION_ID_ANNOTATION))
-            .map(String::as_str)
-            == Some(ticket.isolation_id.as_str())
-        && observed
-            .metadata
-            .annotations
-            .as_ref()
-            .and_then(|annotations| annotations.get(REQUEST_DIGEST_ANNOTATION))
-            .map(String::as_str)
-            == Some(ticket.request.digest.as_str())
 }
 
-async fn deletion_is_denied(api: &Api<Pod>, name: &str, uid: &str) -> Result<bool, RuntimeError> {
-    let params = DeleteParams {
+fn delete_probe_params(uid: &str) -> DeleteParams {
+    DeleteParams {
         dry_run: true,
         preconditions: Some(Preconditions {
             uid: Some(uid.into()),
             resource_version: None,
         }),
         ..Default::default()
-    };
-    match api.delete(name, &params).await {
+    }
+}
+
+fn deletion_denial<T>(result: Result<T, kube::Error>) -> Result<bool, RuntimeError> {
+    match result {
         Err(kube::Error::Api(error))
             if matches!(error.code, 403 | 422) && error.message.contains(POLICY) =>
         {
@@ -256,6 +272,10 @@ async fn deletion_is_denied(api: &Api<Pod>, name: &str, uid: &str) -> Result<boo
         Err(kube::Error::Api(error)) if matches!(error.code, 404 | 409) => Ok(false),
         Err(error) => Err(backend(error)),
     }
+}
+
+async fn deletion_is_denied(api: &Api<Pod>, name: &str, uid: &str) -> Result<bool, RuntimeError> {
+    deletion_denial(api.delete(name, &delete_probe_params(uid)).await)
 }
 
 pub(crate) async fn verify_reservation(
@@ -310,6 +330,19 @@ pub(super) async fn isolate_pod(
         Ok(Some(TicketResult::Created { uid }))
     } else {
         Ok(None)
+    }
+}
+
+mod non_pod;
+
+pub(super) async fn isolate(
+    client: &Client,
+    ticket: &CreateTicket,
+) -> Result<Option<TicketResult>, RuntimeError> {
+    if ticket.request.resource == "pods" {
+        isolate_pod(client, ticket).await
+    } else {
+        non_pod::isolate_other(client, ticket).await
     }
 }
 
@@ -403,7 +436,7 @@ mod tests {
     fn deployment_policy_matches_the_runtime_attestation_contract() {
         // Causes: C1 the six-kind VAP/binding selector, operation or
         // enforcement drifts; C2 Product/Worker lose read-only policy access
-        // or regain Pod deletecollection. Effects: E1 C1 fails before rollout and live
+        // or regain any protected Kind's deletecollection. Effects: E1 C1 fails before rollout and live
         // attestation returns Unknown; E2 C2 fails the deployment contract.
         // Rules D1=!C1+!C2->pass, D2=C1|C2->fail. The policy and RBAC remain
         // deployment-owned rather than a second runtime configuration.
@@ -479,26 +512,31 @@ mod tests {
                 doc["kind"] == "Role" && doc["metadata"]["name"] == "awaken-runtime-read-dispose"
             })
             .unwrap();
-        let pods_rule = runtime_role["rules"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|rule| {
-                rule["resources"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|value| value == "pods")
-            })
-            .unwrap();
-        assert!(
-            !pods_rule["verbs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|verb| verb == "deletecollection"),
-            "D1 no Pod collection delete bypass"
-        );
+        for rule in runtime_role["rules"].as_array().unwrap() {
+            let protected = rule["resources"].as_array().unwrap().iter().any(|value| {
+                matches!(
+                    value.as_str(),
+                    Some(
+                        "pods"
+                            | "persistentvolumeclaims"
+                            | "configmaps"
+                            | "secrets"
+                            | "jobs"
+                            | "daemonsets"
+                    )
+                )
+            });
+            if protected {
+                assert!(
+                    !rule["verbs"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|verb| verb == "deletecollection"),
+                    "D1 no protected Kind collection delete bypass: {rule}"
+                );
+            }
+        }
     }
 
     fn client(state: Arc<Mutex<Fixture>>) -> Client {

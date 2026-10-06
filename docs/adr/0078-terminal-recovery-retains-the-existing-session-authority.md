@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-09-07
 - Amends: [ADR-0075](0075-unified-managed-session-worker-execution.md)
-- Implementation: Resource projection and terminal-only release implemented; bounded direct-process and brokered cross-process Kubernetes Pod handle-free convergence implemented; richer participant closure remains pending
+- Implementation: Resource projection and terminal-only release implemented; bounded direct-process and brokered cross-process Kubernetes Pod handle-free convergence implemented; six-Kind Create name isolation implemented; richer participant closure remains pending
 
 ## Context
 
@@ -592,17 +592,19 @@ while old requests may exist.
 This slice extends only the K8s Sandbox physical adapter and its deployment
 policy. Flow WorkUnit, Dispatch attempt, Worker Registry, Session cleanup owner,
 and the direct-mode process-local gate remain their existing authorities.
-Historical tickets without an isolation ID, non-Pod InFlight tickets, rich
-participant plans, remote/opaque effects, and a missing or unready admission
-policy remain Unknown. The retained inert Pod consumes one Pod name and quota
-entry for each unresolved original request; that availability cost is explicit
+At this Pod-only checkpoint, historical tickets without an isolation ID,
+non-Pod InFlight tickets, rich participant plans, remote/opaque effects, and a
+missing or unready admission policy remained Unknown. The retained inert Pod
+consumes one Pod name and quota entry for each unresolved original request; that
+availability cost is explicit
 and must be included in capacity planning. The IC-11 fault matrix needs both
 race orders, response loss, process restart, policy drift, same-name/foreign
 UID and cleanup-receipt loss before general automatic recovery is claimed.
 
-The opt-in k3d provider test `pod_create_isolation_joins_one_real_api_uid_after_reservation`
-exercises the crash-before-send row against real ConfigMap CAS, Pod defaulting,
-admission policy activation, dry-run DELETE denial and exact resource cleanup.
+The opt-in k3d provider test `brokered_create_isolation_joins_six_real_api_uids_after_reservation`
+now exercises the crash-before-send row for all six Kinds against real
+ConfigMap CAS, API defaulting, admission policy activation, dry-run DELETE
+denial and exact resource cleanup.
 The opt-in `original_create_guard_keeps_a_deleted_pod_visible_until_exact_release`
 test observes that a UID-fenced DELETE leaves the guarded Pod visible and a
 same-name Create returns 409; exact guard removal then allows Pod and Namespace
@@ -629,16 +631,45 @@ durable ticket CAS, protected immutable reservation, exact UID and projection
 read-back, and the resource's own side-effect/participant-stop proof. In
 particular, a sampled absence of Job/DaemonSet children does not stop their
 controllers, and a pending PVC observation does not prove the old claim could
-never allocate storage. The existing Pod-only ledger remains the authority;
-non-Pod InFlight tickets and rich plans continue to return Unknown until those
-additional facts are implemented and verified in that same provider path.
+never allocate storage. At this primitive-only checkpoint, the Pod-only ledger
+remained the authority; non-Pod InFlight tickets and rich plans remained
+Unknown until those additional facts could be implemented in that same path.
 
-The first production preparation extends that existing admission policy to all
-six brokered collections and reserves its isolation label, annotations and
-guard finalizer at the common broker boundary for every Kind. The policy
-attestation still requires exact deployed spec and an actual selected-resource
-DELETE denial; a generation observation alone is insufficient. No non-Pod
-ticket gains an `Isolated` result or Session receipt from this preparation.
+The provider ledger now mints one immutable nonce for each of the six brokered
+Kind tickets and races the same-Kind inert reservation after the exact old
+Worker stop. The common broker stamps the original request's nonce and digest;
+only Pod originals gain the original-result finalizer because its existing
+disposal owner can release that guard. For non-Pod reservations, the provider
+checks the exact UID and metadata, policy-selected dry-run DELETE denial,
+Kind-specific inert shape, and absence of Job/DaemonSet-owned Pods. Pending
+PVCs may carry Kubernetes's `pvc-protection` finalizer in addition to the
+provider guard; any other extra finalizer fails the exact check. The non-Pod
+projection rejects extra PVC sources, ConfigMap/Secret data, executable Pod
+template fields and unknown controller spec defaults. A real DaemonSet read
+reported the first `deprecated.daemonset.template.generation=1` annotation;
+only that exact Kubernetes-added value is admitted, while a later generation
+or any other extra annotation stays Unknown. Other unrecognized observations stay
+Unknown rather than borrowing an inert reservation proof. The real k3d
+test joins six independently admitted crash-before-send tickets, replays all
+six UIDs, and removes the task-owned objects and admission policy. Its earlier
+PVC failure reproduced the built-in finalizer before this exact allowance was
+added. The product runtime Role no longer grants Secret `deletecollection`,
+which would bypass the retained object's exact-UID deletion path. A broad
+admission generation observation or a sampled 404 remains insufficient. A
+dedicated k3d RBAC readback of that exact Role returned `no` for collection
+deletion on all six protected Kinds while retaining `yes` for Secret `get` and
+single-object `delete`.
+
+This closes the six admitted Create request lifetimes only in the demonstrated
+reservation case. A non-Pod `Isolated` ticket remains `Unknown` to handle-free
+terminal preparation because the provider has not yet proved complete
+participant disposal. Rich plans now seal and join the same brokered request
+ledger after exact Worker exit but still return `Unknown`; direct rich attempts
+keep their existing fail-closed path. Normal non-Pod originals do not receive
+an unowned finalizer. Created PVC/ConfigMap/Secret, partial projection, Job or
+DaemonSet children, remote/opaque execution, and missing historical nonces
+still cannot produce a Session cleanup receipt or Flow successor. The separate
+late-original race test proves same-name exclusion, not a whole product retry.
 
 The signed Worker-side Create client is assembled by the existing
 `awaken-worker` process composition root, which already owns both its

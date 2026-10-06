@@ -193,13 +193,14 @@ Create request's lifetime is unknown and consume Pod quota; keep the policy
 and its reservations when operating this deployment.
 
 On a dedicated k3d cluster with no existing `awaken-create-isolation` policy,
-the opt-in provider test creates and removes its own policy, namespaces and
-reservation:
+set `KUBECONFIG` to that cluster's kubeconfig rather than relying on the global
+current context. The opt-in provider test creates and removes its own policy,
+namespaces and six Kind reservations:
 
 ```bash
 AWAKEN_K8S_E2E=1 AWAKEN_K8S_ISOLATION_E2E=1 \
   cargo test -p awaken-sandbox-container --features k8s --test k8s_e2e \
-  pod_create_isolation_joins_one_real_api_uid_after_reservation
+  brokered_create_isolation_joins_six_real_api_uids_after_reservation
 AWAKEN_K8S_E2E=1 AWAKEN_K8S_ISOLATION_E2E=1 \
   cargo test -p awaken-sandbox-container --features k8s --test k8s_e2e \
   original_create_guard_keeps_a_deleted_pod_visible_until_exact_release

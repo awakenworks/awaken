@@ -296,18 +296,16 @@ impl ContainerRuntime for K8sRuntime {
         expected_effect_fence: Option<&ContainerEffectFence>,
     ) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
         // Kubernetes creates the Pod before ConfigMaps, Secrets, Memory
-        // projection, or control sidecars. For this deliberately narrow shape,
-        // therefore, absence of the canonical Pod and PVC proves that no
-        // independently governed participant was ever published. Richer plans
-        // retain the fail-closed handle requirement.
-        if !unmaterialized_absence_shape_is_closed(
+        // projection, or control sidecars. Only the narrow shape can receive
+        // an absence witness. A brokered rich attempt still seals its one
+        // provider request ledger before returning Unknown, so the original
+        // Worker cannot keep admitting physical Creates after terminal stop.
+        let absence_shape_closed = unmaterialized_absence_shape_is_closed(
             !plan.packages.is_empty(),
             !plan.binds.is_empty(),
             !plan.memory_mounts.is_empty(),
             continuation::claim_required(plan, self.continuation_volume.is_some()),
-        ) {
-            return Ok(MissingHandleTerminalEvidence::Unknown);
-        }
+        );
         let Some(expected_effect_fence) = expected_effect_fence else {
             return Ok(MissingHandleTerminalEvidence::Unknown);
         };
@@ -365,6 +363,9 @@ impl ContainerRuntime for K8sRuntime {
                 }
             }
         } else {
+            if !absence_shape_closed {
+                return Ok(MissingHandleTerminalEvidence::Unknown);
+            }
             let Some(_closed_attempt) = self
                 .close_observed_creation_attempt(scope, expected_effect_fence)
                 .await
@@ -373,6 +374,9 @@ impl ContainerRuntime for K8sRuntime {
                 // it never joined. It never borrows the brokered proof path.
                 return Ok(MissingHandleTerminalEvidence::Unknown);
             };
+        }
+        if !absence_shape_closed {
+            return Ok(MissingHandleTerminalEvidence::Unknown);
         }
         self.admit_plan(plan).await?;
         if let Some((ticket, uid)) = isolated_pod {
