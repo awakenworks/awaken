@@ -369,7 +369,7 @@ dependencies = [
 [[package]]
 name = "awaken-api-contract"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation.git?rev=0eb1c56967f8d74c566d3a8c0dc4035b81736f80#0eb1c56967f8d74c566d3a8c0dc4035b81736f80"
+source = "git+https://github.com/awakenworks/awaken-foundation.git?rev=88b296cba1514ae32be53285e97f0aea4ebb3822#88b296cba1514ae32be53285e97f0aea4ebb3822"
 dependencies = [
  "serde",
  "serde_json",
@@ -1655,7 +1655,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-client"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=5c50fc881df0b7c923a7a146392cb2319b996d70#5c50fc881df0b7c923a7a146392cb2319b996d70"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=b20e06b677d681b2c68d45a1d5b498089554c123#b20e06b677d681b2c68d45a1d5b498089554c123"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -1672,7 +1672,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-contract"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=5c50fc881df0b7c923a7a146392cb2319b996d70#5c50fc881df0b7c923a7a146392cb2319b996d70"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=b20e06b677d681b2c68d45a1d5b498089554c123#b20e06b677d681b2c68d45a1d5b498089554c123"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -1684,7 +1684,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-core"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=5c50fc881df0b7c923a7a146392cb2319b996d70#5c50fc881df0b7c923a7a146392cb2319b996d70"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=b20e06b677d681b2c68d45a1d5b498089554c123#b20e06b677d681b2c68d45a1d5b498089554c123"
 dependencies = [
  "argon2",
  "awaken-iam-contract",
@@ -1700,7 +1700,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-host"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=5c50fc881df0b7c923a7a146392cb2319b996d70#5c50fc881df0b7c923a7a146392cb2319b996d70"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=b20e06b677d681b2c68d45a1d5b498089554c123#b20e06b677d681b2c68d45a1d5b498089554c123"
 dependencies = [
  "awaken-iam-client",
  "awaken-iam-contract",
@@ -1719,7 +1719,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-preset"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=5c50fc881df0b7c923a7a146392cb2319b996d70#5c50fc881df0b7c923a7a146392cb2319b996d70"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=b20e06b677d681b2c68d45a1d5b498089554c123#b20e06b677d681b2c68d45a1d5b498089554c123"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -1728,7 +1728,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-server"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=5c50fc881df0b7c923a7a146392cb2319b996d70#5c50fc881df0b7c923a7a146392cb2319b996d70"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=b20e06b677d681b2c68d45a1d5b498089554c123#b20e06b677d681b2c68d45a1d5b498089554c123"
 dependencies = [
  "async-trait",
  "awaken-iam-client",
@@ -2764,7 +2764,7 @@ dependencies = [
 [[package]]
 name = "awaken-scoped-migration"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation.git?rev=0eb1c56967f8d74c566d3a8c0dc4035b81736f80#0eb1c56967f8d74c566d3a8c0dc4035b81736f80"
+source = "git+https://github.com/awakenworks/awaken-foundation.git?rev=88b296cba1514ae32be53285e97f0aea4ebb3822#88b296cba1514ae32be53285e97f0aea4ebb3822"
 dependencies = [
  "sha2 0.10.9",
  "sqlx",
@@ -2774,7 +2774,7 @@ dependencies = [
 [[package]]
 name = "awaken-scoped-migration-sqlite"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation.git?rev=0eb1c56967f8d74c566d3a8c0dc4035b81736f80#0eb1c56967f8d74c566d3a8c0dc4035b81736f80"
+source = "git+https://github.com/awakenworks/awaken-foundation.git?rev=88b296cba1514ae32be53285e97f0aea4ebb3822#88b296cba1514ae32be53285e97f0aea4ebb3822"
 dependencies = [
  "awaken-scoped-migration",
  "rusqlite",
@@ -3298,6 +3298,7 @@ name = "awaken-sqlite-pool"
 version = "1.0.0"
 dependencies = [
  "rusqlite",
+ "sqlx",
  "tempfile",
  "thiserror",
  "tokio",
