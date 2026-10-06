@@ -32,7 +32,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use awaken_api_contract::CursorPage;
 use awaken_session_application_contract::{
     CursorParams, EventForwardingSink, OwnerScopedRunApplication, Pending, RunApplication,
-    RunApplicationError, RunResume, StepOutcome, paginate_history,
+    RunApplicationError, RunMode, RunResume, StepOutcome, paginate_history,
 };
 use awaken_session_error_contract::RunErrorKind;
 use awaken_tenancy::{PresentedThreadId, ResolvedAgentId, ResolvedResourceId, WorkspaceScope};
@@ -44,12 +44,6 @@ use crate::types::{AgUiEvent, RunAgentInput};
 type Runtime = Arc<dyn RunApplication>;
 type ScopedRuntime = Arc<dyn OwnerScopedRunApplication>;
 type RuntimeState = (Runtime, RunMode);
-
-#[derive(Clone)]
-enum RunMode {
-    Local,
-    OwnerScoped(ScopedRuntime),
-}
 
 struct ThreadIds {
     runtime: String,
@@ -99,6 +93,10 @@ fn router_with_ports(runtime: Runtime, mode: RunMode) -> Router {
     Router::new()
         .route("/v1/ag-ui", post(run_agent))
         .route("/v1/ag-ui/agents/{agent_id}", post(run_agent_scoped))
+        .route(
+            "/v1/ag-ui/threads/{thread_id}/runs",
+            axum::routing::delete(interrupt_threaded),
+        )
         .route(
             "/v1/ag-ui/threads/{thread_id}/messages",
             get(thread_messages),
@@ -174,6 +172,26 @@ async fn run_agent_scoped(
         presented_thread.map(|Extension(thread)| thread.0),
     )
     .await
+}
+
+/// A deliberate client Stop uses the existing neutral interrupt command. The
+/// application guard resolves an external Thread only for this exact token.
+async fn interrupt_threaded(
+    State((rt, _)): State<RuntimeState>,
+    Path(thread_id): Path<String>,
+    resolved: Option<Extension<ResolvedResourceId>>,
+    _owner: Extension<WorkspaceScope>,
+) -> Response {
+    let thread = resolved
+        .map(|Extension(thread)| thread.0)
+        .unwrap_or(thread_id);
+    if thread.trim().is_empty() {
+        return query_error(RunApplicationError::bad_request("thread id is required"));
+    }
+    match rt.interrupt(&thread).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => query_error(error),
+    }
 }
 
 async fn run(
@@ -297,8 +315,10 @@ fn stream_turn(
         // the end comes from the committed tail, not the live channel (G10/G13).
         let mut transcoder = AgUiEncoder::new(wire_thread, run_id.clone());
         let close_thread = thread.clone();
-        // A handle kept out of the turn task so a client disconnect can cancel it.
-        let rt_cancel = rt.clone();
+        // Keep the selected Run port out of the turn task so disconnects use
+        // the same local/owner-scoped policy as AI SDK.
+        let rt_for_disconnect = rt.clone();
+        let disconnect_mode = mode.clone();
         let operation_id = run_id.clone();
         let turn = tokio::spawn(async move {
             match mode {
@@ -327,9 +347,9 @@ fn stream_turn(
             };
             for wire in wires {
                 if out_tx.send(sse_line(&wire)).is_err() {
-                    // Client hung up: cancel the in-flight turn so it ends promptly
-                    // instead of running to completion detached (a token leak).
-                    let _ = rt_cancel.interrupt(&close_thread).await;
+                    let _ = disconnect_mode
+                        .on_stream_disconnect(rt_for_disconnect.as_ref(), &close_thread)
+                        .await;
                     return;
                 }
             }

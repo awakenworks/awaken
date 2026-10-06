@@ -39,6 +39,15 @@ recovery evidence.
 | A2A | remote Agent Card, message/task, status, and artifact compatibility | remote attempt over ordinary `Run`/`Thread` truth | A2A task snapshots and JSON-RPC errors |
 | Internal/native HTTP | server-owned runtime API | neutral submit/control/query ports | product-specific public status names |
 
+For owner-scoped AI SDK and AG-UI Sessions, a closed SSE response detaches only
+the live observer. Clients that intend to stop the durable Run must explicitly
+`DELETE /v1/ai-sdk/threads/{thread}/runs` or
+`DELETE /v1/ag-ui/threads/{thread}/runs` before aborting their stream. The
+existing ApplicationAccess `thread.run` grant binds either command to the
+exact managed Session; an HTTP abort alone is not a cancellation receipt.
+Local, connection-bound adapters still interrupt on hang-up. A2A Task
+publication and `tasks/cancel` retain their separate Task lifecycle contract.
+
 Adapters may share mapping helpers only below the public DTO layer. Public event
 names, request schemas, error schemas, headers, replay ids, and conformance
 fixtures remain one adapter at a time.

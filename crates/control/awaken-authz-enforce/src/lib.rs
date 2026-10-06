@@ -292,6 +292,9 @@ fn classify_application_route<'a>(method: &Method, path: &'a str) -> Option<Appl
         (&Method::POST, ["v1", "ai-sdk", "threads", thread, "runs"]) => {
             ApplicationRoute::run("ai-sdk", Some(thread), None)
         }
+        (&Method::DELETE, ["v1", "ai-sdk", "threads", thread, "runs"]) => {
+            ApplicationRoute::run("ai-sdk", Some(thread), None)
+        }
         (&Method::POST, ["v1", "ai-sdk", "agents", agent, "runs"]) => {
             ApplicationRoute::run("ai-sdk", None, Some(agent))
         }
@@ -299,6 +302,9 @@ fn classify_application_route<'a>(method: &Method, path: &'a str) -> Option<Appl
             ApplicationRoute::messages("ai-sdk", thread)
         }
         (&Method::POST, ["v1", "ag-ui"]) => ApplicationRoute::run("ag-ui", None, None),
+        (&Method::DELETE, ["v1", "ag-ui", "threads", thread, "runs"]) => {
+            ApplicationRoute::run("ag-ui", Some(thread), None)
+        }
         (&Method::POST, ["v1", "ag-ui", "agents", agent]) => {
             ApplicationRoute::run("ag-ui", None, Some(agent))
         }
