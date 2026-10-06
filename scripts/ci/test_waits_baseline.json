@@ -7,7 +7,6 @@
       "crates/runtime/awaken-ext-mcp/src/plugin.rs": 1,
       "crates/runtime/awaken-ext-memory/src/localfs.rs": 1,
       "crates/server/awaken-coordinator/src/runtime_authority.rs": 2,
-      "crates/server/awaken-environment-image-build/src/sqlite.rs": 2,
       "crates/server/awaken-dispatch-http/tests/active_active_postgres.rs": 1,
       "crates/server/awaken-dispatch/tests/crash_before_settle.rs": 1,
       "crates/server/awaken-dispatch/tests/nats.rs": 1,
@@ -41,8 +40,8 @@
       "e2e/secret_nonleak_e2e.mjs": 1
     },
     "generic-settle": {
-      "crates/server/awaken-protocol-managed/tests/adapter.rs": 1,
       "crates/control/awaken-control/tests/webhook_plane.rs": 1,
+      "crates/server/awaken-protocol-managed/tests/adapter.rs": 1,
       "e2e/acp_control_lifecycle_e2e.ts": 1,
       "e2e/conformance/ark_managed_agents_compat_e2e.ts": 1,
       "e2e/coordinator_authority_parity_e2e.ts": 1,

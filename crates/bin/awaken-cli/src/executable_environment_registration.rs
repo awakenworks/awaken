@@ -191,6 +191,7 @@ async fn open_image_builds(
             awaken_environment_image_build::open_sqlite_environment_image_build_store(
                 deployment.data_dir.join("environment_images.db"),
             )
+            .await
             .map_err(|error| error.to_string())?
         }
         awaken_control::StoreBackend::Postgres(database_url) => match schema {
