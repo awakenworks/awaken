@@ -35,7 +35,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 thiserror.workspace = true
-rusqlite.workspace = true
+awaken-sqlite-pool.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 awaken-outbound-http = { workspace = true }
 
 [dev-dependencies]

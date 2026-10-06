@@ -11,7 +11,6 @@ use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 
 use awaken_ext_goal::outcome::GradeDecision;
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::outcome_judge::{JudgeCase, JudgeDataset, SCHEMA_VERSION, SourceKind};
@@ -42,28 +41,26 @@ pub struct CodexImportStats {
 /// Import Codex goals that the agent explicitly concluded with
 /// `update_goal({status:"complete"})`. These are positive-only, self-judged weak
 /// labels; they measure cross-Judge agreement, not objective accuracy.
-pub fn import_codex_goals(
+pub async fn import_codex_goals(
     sessions_root: &Path,
     goals_db: &Path,
     dataset_name: impl Into<String>,
     limit: usize,
 ) -> io::Result<(JudgeDataset, CodexImportStats)> {
-    let connection =
-        Connection::open_with_flags(goals_db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(sqlite_error)?;
-    let mut statement = connection
-        .prepare(
-            "SELECT thread_id, objective FROM thread_goals \
-             WHERE status = 'complete' ORDER BY thread_id",
-        )
+    // The goals database belongs to Codex: open it read-only so importing can
+    // never write to it.
+    let pool = awaken_sqlite_pool::EmbeddedSqlite::read_only(goals_db)
+        .open()
+        .await
         .map_err(sqlite_error)?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(sqlite_error)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(sqlite_error)?;
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT thread_id, objective FROM thread_goals \
+         WHERE status = 'complete' ORDER BY thread_id",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(sqlite_error)?;
+    pool.close().await;
     let mut stats = CodexImportStats {
         completed_goals: rows.len(),
         matched_transcripts: 0,
@@ -212,7 +209,7 @@ fn find_uuid_suffix(name: &str) -> Option<String> {
     (stem.len() >= 36).then(|| stem[stem.len() - 36..].to_string())
 }
 
-fn sqlite_error(error: rusqlite::Error) -> io::Error {
+fn sqlite_error(error: impl std::error::Error + Send + Sync + 'static) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
 }
 
@@ -581,8 +578,8 @@ mod tests {
         fs::remove_dir_all(dir).ok();
     }
 
-    #[test]
-    fn codex_import_prefers_the_summary_after_complete_tool_call() {
+    #[tokio::test]
+    async fn codex_import_prefers_the_summary_after_complete_tool_call() {
         let dir =
             std::env::temp_dir().join(format!("awaken-codex-goal-import-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -617,25 +614,36 @@ mod tests {
         }
         drop(file);
         let db = dir.join("goals.sqlite");
-        let connection = Connection::open(&db).unwrap();
-        connection
-            .execute_batch(
-                "CREATE TABLE thread_goals (
-                    thread_id TEXT PRIMARY KEY, goal_id TEXT, objective TEXT,
-                    status TEXT, token_budget INTEGER, tokens_used INTEGER,
-                    time_used_seconds INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER
-                );",
+        // A plain rollback-journal database, as an external tool would leave it.
+        let owner = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&db)
+                    .create_if_missing(true),
             )
+            .await
             .unwrap();
-        connection
-            .execute(
-                "INSERT INTO thread_goals VALUES (?1, 'g', 'ship', 'complete', NULL, 0, 0, 0, 0)",
-                [thread_id],
-            )
-            .unwrap();
-        drop(connection);
+        sqlx::raw_sql(
+            "CREATE TABLE thread_goals (
+                thread_id TEXT PRIMARY KEY, goal_id TEXT, objective TEXT,
+                status TEXT, token_budget INTEGER, tokens_used INTEGER,
+                time_used_seconds INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER
+            );",
+        )
+        .execute(&owner)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO thread_goals VALUES (?1, 'g', 'ship', 'complete', NULL, 0, 0, 0, 0)",
+        )
+        .bind(&thread_id)
+        .execute(&owner)
+        .await
+        .unwrap();
+        owner.close().await;
 
-        let (dataset, stats) = import_codex_goals(&dir, &db, "codex", 0).unwrap();
+        let (dataset, stats) = import_codex_goals(&dir, &db, "codex", 0).await.unwrap();
         assert_eq!(stats.selected, 1);
         assert_eq!(dataset.cases[0].deliverable, "FINAL: tests pass");
         fs::remove_dir_all(dir).ok();

@@ -1360,11 +1360,12 @@ dependencies = [
  "awaken-run-executor-acp",
  "awaken-runtime",
  "awaken-runtime-contract",
+ "awaken-sqlite-pool",
  "awaken-store-inmem",
  "awaken-time",
- "rusqlite",
  "serde",
  "serde_json",
+ "sqlx",
  "thiserror",
  "tokio",
 ]
