@@ -46,7 +46,7 @@ futures = { version = "0.3", optional = true }
 test-support = []
 # Postgres bytea backend (idempotent INSERT ... ON CONFLICT). Compile-verified;
 # running needs a database.
-postgres = ["dep:awaken-sql-storage", "dep:sqlx", "dep:awaken-scoped-migration"]
+postgres = ["dep:awaken-sql-storage", "dep:sqlx", "dep:awaken-scoped-migration", "awaken-sql-storage/postgres"]
 # SQLite BLOB backend (`sqlite::SqliteFileStore`) over the same `file_store` scope.
 sqlite = ["dep:awaken-sql-storage", "dep:sqlx", "dep:awaken-scoped-migration", "dep:awaken-sqlite-pool"]
 # Object-store backend (S3-compatible/GCS via `object_store`; key = content id).

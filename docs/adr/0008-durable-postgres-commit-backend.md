@@ -140,6 +140,53 @@ an unrelated Thread in those runs took 4–5 ms. These are single samples, not
 latency targets or production capacity evidence; a long-Thread acceptance SLO
 and an incremental recovery design remain separate work.
 
+## PostgreSQL checkout and cancellation (2026-10-07)
+
+Runtime PostgreSQL connection lifecycle has one owner:
+`awaken-sql-storage::postgres_pool_options`. Composition roots still choose
+connection capacity and clone the same pool into repositories. Standalone
+commit, dispatch, checkpoint and Worker-directory constructors use that same
+policy. A composition that injects a `PgPool` must construct it with this policy;
+domain repositories retain ownership of their SQL, transactions and facts.
+
+SQLx 0.8.6 can cancel `BEGIN` after sending it but before recording transaction
+depth. Its drop guard then queues no rollback, and its protocol ping accepts the
+server's open transaction. A later recovery read can inherit its snapshot and
+fail when setting isolation, while other borrowers can execute in the wrong
+transaction. Increasing replicas or retrying the projection does not repair that
+connection. SQLx's upstream [PostgreSQL cancellation fix](https://github.com/transact-rs/sqlx/pull/4394)
+also reports this defect in 0.9.0; upgrading to that release alone is insufficient.
+
+The existing bounded checkout health check now proves clean server state as well
+as transport liveness. It executes one simple-protocol, no-data anonymous block,
+`DO $awaken_pool$ BEGIN ROLLBACK; END $awaken_pool$`. PostgreSQL permits its
+transaction control only outside an explicit transaction block. A healthy
+automatic transaction succeeds; an open or aborted transaction rejects the
+check, and SQLx discards the connection before the next borrower can use it.
+The block writes no domain data and creates no persistent function or schema
+object. Fresh connections run the same check so unsupported database
+permissions fail at construction rather than causing silent connection churn.
+
+The database must have its standard `plpgsql` language and grant the connection
+role `USAGE` on it. This does not require schema `CREATE` permission. Each check
+retains the existing 500 ms deadline; total acquisition and connection capacity
+remain composition policy. The check adds SQL execution cost and an automatic
+transaction rollback to PostgreSQL statistics, so application commit throughput
+and failed business transactions must not be inferred from total database
+transaction counts. Scoped local throughput observations must quantify its cost.
+
+Cancellation while opening a transaction now leads to connection retirement,
+then a fresh canonical recovery transaction. Domain transaction rollback,
+receipt replay, dense global order, claim fencing and the Managed committed-prefix
+validation remain unchanged. An ambiguous commit still requires querying its
+existing receipt; a clean connection does not prove that an external effect ran
+exactly once. The cause/effect rules in `awaken-sql-storage`'s live PostgreSQL
+tests own the cancellation, reuse, permission and durability coverage; the
+production-role k3d scenario owns failure and completed-turn acceptance.
+
+PostgreSQL documents the [anonymous block's transaction-control restriction](https://www.postgresql.org/docs/16/sql-do.html)
+and [top-level transaction management](https://www.postgresql.org/docs/16/plpgsql-transactions.html).
+
 ## References
 
 - [INVARIANTS.md](../INVARIANTS.md) — G1, G13, G31, G32 (the commit contract).

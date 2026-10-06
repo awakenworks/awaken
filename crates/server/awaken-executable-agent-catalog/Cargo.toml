@@ -12,6 +12,7 @@ layer = "infrastructure"
 authority = "executable-agent-catalog"
 
 [dependencies]
+awaken-sql-storage = { workspace = true, features = ["postgres"] }
 awaken-executable-agent-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-durable-projection.workspace = true

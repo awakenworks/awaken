@@ -53,7 +53,8 @@ pub struct PostgresConfigStore {
 impl PostgresConfigStore {
     /// Connect and apply the config migrations.
     pub async fn connect(url: &str) -> Result<Self, StoreError> {
-        let pool = PgPool::connect(url)
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
             .await
             .map_err(|err| StoreError::Connect(err.to_string()))?;
         Self::with_pool(pool).await
@@ -66,7 +67,8 @@ impl PostgresConfigStore {
     /// is pending or drifted, so an application process never becomes a second
     /// migration runner.
     pub async fn connect_existing(url: &str) -> Result<Self, StoreError> {
-        let pool = PgPool::connect(url)
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
             .await
             .map_err(|err| StoreError::Connect(err.to_string()))?;
         Self::with_existing_pool(pool).await

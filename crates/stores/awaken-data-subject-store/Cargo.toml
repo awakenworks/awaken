@@ -15,6 +15,7 @@ authority = "data-subject-store"
 # storage is compiled only for tests or the explicit `test-support` feature.
 
 [dependencies]
+awaken-sql-storage = { workspace = true, optional = true }
 awaken-data-subject-application.workspace = true
 async-trait.workspace = true
 serde_json = { workspace = true }
@@ -37,7 +38,7 @@ default = []
 # Volatile consent/erasure authority used only by tests and scenario fixtures.
 test-support = []
 # Postgres-backed Control DataSubjectRepo (ADR-0050 D7, Org-partitioned).
-postgres = ["sqlx/postgres", "sqlx/json"]
+postgres = ["sqlx/postgres", "sqlx/json", "dep:awaken-sql-storage", "awaken-sql-storage/postgres"]
 
 [[test]]
 name = "repo_conformance"

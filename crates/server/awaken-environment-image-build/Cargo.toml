@@ -12,6 +12,7 @@ layer = "infrastructure"
 authority = "environment-image"
 
 [dependencies]
+awaken-sql-storage = { workspace = true, features = ["postgres"] }
 awaken-time.workspace = true
 async-trait.workspace = true
 awaken-environment-contract.workspace = true

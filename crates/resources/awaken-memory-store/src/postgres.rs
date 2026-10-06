@@ -132,7 +132,8 @@ pub struct PostgresMemoryRepository {
 impl PostgresMemoryRepository {
     /// Connect and apply the memory-store migrations (one-step convenience).
     pub async fn connect(url: &str, clock: Arc<dyn WallClock>) -> Result<Self, PgStoreError> {
-        let pool = PgPool::connect(url)
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
             .await
             .map_err(|e| PgStoreError::Connect(e.to_string()))?;
         let store = Self::with_pool(pool, clock);
@@ -145,7 +146,8 @@ impl PostgresMemoryRepository {
         url: &str,
         clock: Arc<dyn WallClock>,
     ) -> Result<Self, PgStoreError> {
-        let pool = PgPool::connect(url)
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
             .await
             .map_err(|error| PgStoreError::Connect(error.to_string()))?;
         Self::with_existing_pool(pool, clock).await

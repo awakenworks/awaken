@@ -20,7 +20,10 @@ pub struct PostgresEnvRegistry {
 
 impl PostgresEnvRegistry {
     pub async fn connect(url: &str, clock: Arc<dyn WallClock>) -> Result<Self, String> {
-        let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
+            .await
+            .map_err(|e| e.to_string())?;
         Self::with_pool(pool, clock).await
     }
 
@@ -35,7 +38,10 @@ impl PostgresEnvRegistry {
     }
 
     pub async fn connect_existing(url: &str, clock: Arc<dyn WallClock>) -> Result<Self, String> {
-        let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .connect(url)
+            .await
+            .map_err(|e| e.to_string())?;
         Self::with_existing_pool(pool, clock).await
     }
 

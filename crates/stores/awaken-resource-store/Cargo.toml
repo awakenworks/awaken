@@ -12,6 +12,7 @@ layer = "infrastructure"
 authority = "resource"
 
 [dependencies]
+awaken-sql-storage = { workspace = true, optional = true }
 awaken-resource-contract.workspace = true
 awaken-sqlite-pool = { workspace = true, optional = true }
 async-trait.workspace = true
@@ -34,7 +35,7 @@ default = ["sqlite"]
 # Private in-memory SQLite authority used only by tests and scenario fixtures.
 test-support = []
 sqlite = ["dep:sqlx", "dep:awaken-sqlite-pool", "dep:awaken-scoped-migration"]
-postgres = ["dep:sqlx", "dep:tokio", "dep:awaken-scoped-migration"]
+postgres = ["dep:sqlx", "dep:tokio", "dep:awaken-scoped-migration", "dep:awaken-sql-storage", "awaken-sql-storage/postgres"]
 
 [lints]
 workspace = true

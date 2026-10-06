@@ -198,7 +198,7 @@ pub struct PostgresCommitCoordinator {
 
 impl PostgresCommitCoordinator {
     async fn pool(url: &str, max_connections: u32) -> Result<PgPool, StoreError> {
-        sqlx::postgres::PgPoolOptions::new()
+        awaken_sql_storage::postgres_pool_options()
             .max_connections(max_connections)
             .connect(url)
             .await

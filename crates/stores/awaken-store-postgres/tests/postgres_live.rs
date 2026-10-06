@@ -38,7 +38,7 @@ use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind, RunLifecy
 use awaken_store_postgres::PostgresCommitCoordinator;
 use sqlx::Executor;
 use sqlx::Row;
-use sqlx::postgres::{PgPool, PgPoolOptions};
+use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
 fn database_url() -> String {
@@ -63,6 +63,13 @@ async fn schema_pool(schema: &'static str) -> Option<PgPool> {
     let admin = match PgPool::connect(&database_url()).await {
         Ok(pool) => pool,
         Err(err) => {
+            // Fixture decision rule: an explicit acceptance URL failing to
+            // connect rejects the run; only an absent URL plus an unavailable
+            // optional development database permits the historical local skip.
+            assert!(
+                std::env::var_os("AWAKEN_TEST_DATABASE_URL").is_none(),
+                "configured PostgreSQL fixture must be reachable: {err}"
+            );
             println!("[skip] no Postgres reachable: {err}");
             return None;
         }
@@ -75,17 +82,15 @@ async fn schema_pool(schema: &'static str) -> Option<PgPool> {
         .await
         .expect("create schema");
     admin.close().await;
-    PgPoolOptions::new()
-        .after_connect(move |conn, _meta| {
-            Box::pin(async move {
-                conn.execute(format!("SET search_path = {schema}").as_str())
-                    .await?;
-                Ok(())
-            })
-        })
-        .connect(&database_url())
-        .await
-        .ok()
+    // Fixture ownership: preserve the production checkout policy, including
+    // its fresh-connection validation; schema isolation belongs to the existing
+    // URL projection rather than an after_connect replacement that erases it.
+    Some(
+        awaken_sql_storage::postgres_pool_options()
+            .connect(&database_url_in_schema(schema))
+            .await
+            .expect("reachable fixture must construct its canonical schema pool"),
+    )
 }
 
 fn message(id: &str, text: &str) -> Message {

@@ -1,7 +1,7 @@
 {
   "baseline": {
     "scanners_without_input_globs": 17,
-    "scope_lists": 32
+    "scope_lists": 31
   },
   "comment": [
     "Every hand-written scope inside scripts/ci, with the reason it is not derived.",
@@ -125,9 +125,6 @@
     },
     "_session_state_ownership_fitness.py:SESSION_MUTATION_ROOTS": {
       "reason": "the three crate roots allowed to mutate session state; which trees may is an ownership decision no file in them declares about itself"
-    },
-    "_sqlite_scheduler_fitness.py:ASYNC_SQLITE_ADAPTERS": {
-      "reason": "the two adapters that drive sqlite from async code and therefore need the scheduler rule; a third is the defect the rule is written to catch"
     },
     "check_authority_arithmetic.py:RULES": {
       "reason": "each entry pairs an authority file with the arithmetic it must not re-derive, so the list carries the rule and not merely the scope"

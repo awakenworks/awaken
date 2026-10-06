@@ -34,6 +34,7 @@ tokio-util.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite", "json"], optional = true }
 awaken-scoped-migration.workspace = true
 awaken-sqlite-pool = { workspace = true, optional = true }
+awaken-sql-storage = { workspace = true, optional = true, features = ["postgres"] }
 async-nats = { version = "0.50", optional = true }
 awaken-time.workspace = true
 futures-lite = { version = "2", optional = true }
@@ -48,6 +49,7 @@ durable = [
     "awaken-scoped-migration/postgres",
     "awaken-scoped-migration/sqlite",
     "dep:awaken-sqlite-pool",
+    "dep:awaken-sql-storage",
 ]
 # Private SQLite dispatch authority for unit/integration/scenario fixtures.
 test-support = ["durable", "awaken-dispatch-execution/test-support"]
