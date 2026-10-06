@@ -28,12 +28,13 @@ enum Outcome {
     Block,
 }
 
-fn in_memory_application(executor: Arc<dyn DreamExecutor>) -> DreamApplication {
+async fn in_memory_application(executor: Arc<dyn DreamExecutor>) -> DreamApplication {
     DreamApplication::with_store(
         executor,
         Arc::new(InMemoryDreamProcessStore::default()),
         awaken_time::system_clock(),
     )
+    .await
     .expect("empty test Dream store")
 }
 
@@ -119,7 +120,7 @@ async fn automatic_policy_is_opt_in_thresholded_and_reuses_the_dream_job_path() 
     // P2 enabled but fewer than min -> advance schedule, no job;
     // P3 enabled + threshold -> exactly one ordinary DreamProcess using max bound;
     // P4 successful job advances cutoff -> unchanged Sessions are not reprocessed.
-    let (state, _, _) = state(Outcome::Complete);
+    let (state, _, _) = state(Outcome::Complete).await;
     let sparse = Arc::new(std::sync::atomic::AtomicBool::new(true));
     state.bind_session_source(Arc::new(Sessions(sparse.clone())));
     state
@@ -138,6 +139,7 @@ async fn automatic_policy_is_opt_in_thresholded_and_reuses_the_dream_job_path() 
                 instructions: Some("Keep durable facts.".into()),
             },
         )
+        .await
         .unwrap();
     assert!(
         state.tick_policies(u64::MAX).await.unwrap().is_empty(),
@@ -159,6 +161,7 @@ async fn automatic_policy_is_opt_in_thresholded_and_reuses_the_dream_job_path() 
                 instructions: Some("Keep durable facts.".into()),
             },
         )
+        .await
         .unwrap();
     assert!(
         state.tick_policies(u64::MAX).await.unwrap().is_empty(),
@@ -198,17 +201,22 @@ async fn dream_policy_application_projects_defaults_validates_and_survives_resta
         "awaken-dream-policy-{}-{unique}.db",
         std::process::id()
     ));
-    let repository =
-        Arc::new(SqliteManagedSessionRepository::open(path.to_str().unwrap()).unwrap());
+    let repository = Arc::new(
+        SqliteManagedSessionRepository::open(path.to_str().unwrap())
+            .await
+            .unwrap(),
+    );
     let worker = Arc::new(Worker {
         outcome: Outcome::Complete,
         started: Arc::new(Notify::new()),
         release: Arc::new(Notify::new()),
     });
     let state = Arc::new(
-        DreamApplication::with_store(worker, repository, awaken_time::system_clock()).unwrap(),
+        DreamApplication::with_store(worker, repository, awaken_time::system_clock())
+            .await
+            .unwrap(),
     );
-    let default = state.policy("default", "mem_policy").unwrap();
+    let default = state.policy("default", "mem_policy").await.unwrap();
     assert!(!default.config.enabled, "A1");
     assert!(default.next_due_at.is_none(), "A1");
     assert!(
@@ -228,6 +236,7 @@ async fn dream_policy_application_projects_defaults_validates_and_survives_resta
                     instructions: None,
                 }
             )
+            .await
             .is_err(),
         "A2"
     );
@@ -247,8 +256,9 @@ async fn dream_policy_application_projects_defaults_validates_and_survives_resta
                 instructions: Some("Keep durable decisions.".into()),
             },
         )
+        .await
         .unwrap();
-    let configured = state.policy("default", "mem_policy").unwrap();
+    let configured = state.policy("default", "mem_policy").await.unwrap();
     assert!(configured.config.enabled, "A3");
     assert!(configured.next_due_at.is_some(), "A3");
     drop(state);
@@ -260,12 +270,17 @@ async fn dream_policy_application_projects_defaults_validates_and_survives_resta
                 started: Arc::new(Notify::new()),
                 release: Arc::new(Notify::new()),
             }),
-            Arc::new(SqliteManagedSessionRepository::open(path.to_str().unwrap()).unwrap()),
+            Arc::new(
+                SqliteManagedSessionRepository::open(path.to_str().unwrap())
+                    .await
+                    .unwrap(),
+            ),
             awaken_time::system_clock(),
         )
+        .await
         .unwrap(),
     );
-    let restored = reopened.policy("default", "mem_policy").unwrap();
+    let restored = reopened.policy("default", "mem_policy").await.unwrap();
     assert!(restored.config.enabled, "A4");
     assert_eq!(restored.config.interval_seconds, 3600, "A4");
     let _ = std::fs::remove_file(path);
@@ -285,8 +300,12 @@ async fn concurrent_policy_ticks_claim_one_dream_across_replicas() {
             Ok(vec!["s1".into()])
         }
     }
-    let repository = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
-    let make_state = || {
+    let repository = Arc::new(
+        SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let make_state = || async {
         Arc::new(
             DreamApplication::with_store(
                 Arc::new(Worker {
@@ -297,11 +316,12 @@ async fn concurrent_policy_ticks_claim_one_dream_across_replicas() {
                 repository.clone(),
                 awaken_time::system_clock(),
             )
+            .await
             .unwrap(),
         )
     };
-    let first = make_state();
-    let second = make_state();
+    let first = make_state().await;
+    let second = make_state().await;
     first
         .set_policy(
             "default",
@@ -318,6 +338,7 @@ async fn concurrent_policy_ticks_claim_one_dream_across_replicas() {
                 instructions: None,
             },
         )
+        .await
         .unwrap();
     first.bind_session_source(Arc::new(Sessions));
     second.bind_session_source(Arc::new(Sessions));
@@ -332,7 +353,7 @@ async fn concurrent_policy_ticks_claim_one_dream_across_replicas() {
         second.tick_policies(u64::MAX)
     );
     assert_eq!(left.unwrap().len() + right.unwrap().len(), 1);
-    assert_eq!(repository.dream_processes().unwrap().len(), 1);
+    assert_eq!(repository.dream_processes().await.unwrap().len(), 1);
 }
 
 struct Worker {
@@ -387,7 +408,7 @@ impl DreamExecutor for Worker {
     }
 }
 
-fn state(outcome: Outcome) -> (Arc<DreamApplication>, Arc<Notify>, Arc<Notify>) {
+async fn state(outcome: Outcome) -> (Arc<DreamApplication>, Arc<Notify>, Arc<Notify>) {
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let worker = Arc::new(Worker {
@@ -395,7 +416,7 @@ fn state(outcome: Outcome) -> (Arc<DreamApplication>, Arc<Notify>, Arc<Notify>) 
         started: started.clone(),
         release: release.clone(),
     });
-    let state = Arc::new(in_memory_application(worker));
+    let state = Arc::new(in_memory_application(worker).await);
     state.bind_session_source(Arc::new(FixedSessionFacts));
     (state, started, release)
 }
@@ -436,7 +457,7 @@ async fn create_rejects_a_supported_but_not_executable_workspace_model() {
     // persistence. Constraint K1 the readiness seam remains the sole model
     // consumer; it owns no executable cache. Decision table: D1 C1=>E1;
     // D2 C2=>E2.
-    let (application, _, _) = state(Outcome::Complete);
+    let (application, _, _) = state(Outcome::Complete).await;
     application.bind_model_readiness(Arc::new(NoReadyDreamModels));
     let app = support::edge_stamped(dreams_router(application));
     let body = request(
@@ -454,7 +475,7 @@ async fn create_rejects_a_supported_but_not_executable_workspace_model() {
             .contains("not connected or executable")
     );
 
-    let (unavailable, _, _) = state(Outcome::Complete);
+    let (unavailable, _, _) = state(Outcome::Complete).await;
     unavailable.bind_model_readiness(Arc::new(UnavailableDreamModels));
     let app = support::edge_stamped(dreams_router(unavailable));
     let status = request(
@@ -537,7 +558,7 @@ async fn wait_for_status(app: &axum::Router, id: &str, expected: &str) -> Value 
 // Decision table: D1=C1; D2=C1+C2; D3=C2+C3; D4=C1+C4.
 #[tokio::test]
 async fn official_create_retrieve_list_archive_and_failure_shapes() {
-    let (complete, _, _) = state(Outcome::Complete);
+    let (complete, _, _) = state(Outcome::Complete).await;
     let app = support::edge_stamped(dreams_router(complete));
     let created = request(
         &app,
@@ -570,7 +591,7 @@ async fn official_create_retrieve_list_archive_and_failure_shapes() {
         .expect(StatusCode::OK);
     assert_eq!(archived_list["data"].as_array().unwrap().len(), 1);
 
-    let (failed_state, _, _) = state(Outcome::Fail);
+    let (failed_state, _, _) = state(Outcome::Fail).await;
     let failed_app = support::edge_stamped(dreams_router(failed_state));
     let created = request(
         &failed_app,
@@ -587,7 +608,7 @@ async fn official_create_retrieve_list_archive_and_failure_shapes() {
 
 #[tokio::test]
 async fn update_existing_output_behavior_round_trips_and_reuses_the_source_store() {
-    let (state, _, _) = state(Outcome::Complete);
+    let (state, _, _) = state(Outcome::Complete).await;
     let app = support::edge_stamped(dreams_router(state));
     let mut body = create_body("mem_1", &["sesn_1"]);
     body["output_behavior"] = json!({
@@ -624,7 +645,7 @@ async fn validation_and_terminal_mutation_decision_table() {
     // bounds, input availability, and lifecycle state. Effects/decision rules:
     // D1 each invalid create cause -> 400 and no job; D2 missing input -> 400;
     // D3 archive(nonterminal) -> 400; D4 cancel(completed|failed) -> 400.
-    let (state, _, _) = state(Outcome::Complete);
+    let (state, _, _) = state(Outcome::Complete).await;
     let app = support::edge_stamped(dreams_router(state));
     let invalid = [
         json!({"inputs":[], "model":"m"}),
@@ -667,7 +688,7 @@ async fn validation_and_terminal_mutation_decision_table() {
 // Decision table: D1=C1; D2=C1+C2; D3=C1+C3; D4=C1+C4.
 #[tokio::test]
 async fn cancellation_is_immediate_idempotent_and_retains_prepared_output() {
-    let (state, started, release) = state(Outcome::Block);
+    let (state, started, release) = state(Outcome::Block).await;
     let app = support::edge_stamped(dreams_router(state));
     let created = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"])))
         .await
@@ -812,6 +833,7 @@ async fn late_worker_completion_cannot_repeat_or_overwrite_cancellation_cleanup(
                 store.clone(),
                 awaken_time::system_clock(),
             )
+            .await
             .unwrap(),
         );
         let app = support::edge_stamped(dreams_router(state));
@@ -836,6 +858,7 @@ async fn late_worker_completion_cannot_repeat_or_overwrite_cancellation_cleanup(
         assert_eq!(cleanups.load(Ordering::SeqCst), 1, "C3/E1");
         let process = store
             .dream_processes()
+            .await
             .unwrap()
             .into_iter()
             .find(|process| process.process_id == id)
@@ -927,6 +950,7 @@ async fn canceled_cleanup_retry_cannot_return_success_before_its_receipt() {
             store.clone(),
             awaken_time::system_clock(),
         )
+        .await
         .unwrap(),
     );
     let app = support::edge_stamped(dreams_router(state));
@@ -942,6 +966,7 @@ async fn canceled_cleanup_retry_cannot_return_success_before_its_receipt() {
     assert_eq!(first_status, StatusCode::SERVICE_UNAVAILABLE, "R1/E1");
     let pending = store
         .dream_processes()
+        .await
         .unwrap()
         .into_iter()
         .find(|process| process.process_id == id)
@@ -965,6 +990,7 @@ async fn canceled_cleanup_retry_cannot_return_success_before_its_receipt() {
     }
     let settled = store
         .dream_processes()
+        .await
         .unwrap()
         .into_iter()
         .find(|process| process.process_id == id)
@@ -1023,12 +1049,15 @@ async fn running_output_projection_transitions_from_empty_to_prepared() {
     let release_prepare = Arc::new(Notify::new());
     let execute_started = Arc::new(Notify::new());
     let release_execute = Arc::new(Notify::new());
-    let application = Arc::new(in_memory_application(Arc::new(PhasedWorker {
-        prepare_started: prepare_started.clone(),
-        release_prepare: release_prepare.clone(),
-        execute_started: execute_started.clone(),
-        release_execute: release_execute.clone(),
-    })));
+    let application = Arc::new(
+        in_memory_application(Arc::new(PhasedWorker {
+            prepare_started: prepare_started.clone(),
+            release_prepare: release_prepare.clone(),
+            execute_started: execute_started.clone(),
+            release_execute: release_execute.clone(),
+        }))
+        .await,
+    );
     let app = support::edge_stamped(dreams_router(application));
     let created = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"])))
         .await
@@ -1087,7 +1116,7 @@ async fn documented_pipeline_failures_round_trip_through_http() {
         ("F2", "timeout"),
         ("F3", "input_memory_store_too_large"),
     ] {
-        let application = Arc::new(in_memory_application(Arc::new(PreparationFailure(kind))));
+        let application = Arc::new(in_memory_application(Arc::new(PreparationFailure(kind))).await);
         let app = support::edge_stamped(dreams_router(application));
         let created = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"])))
             .await
@@ -1138,7 +1167,7 @@ async fn canceled_dream_keeps_projecting_trailing_session_usage() {
         started: started.clone(),
         release: release.clone(),
     });
-    let application = Arc::new(in_memory_application(worker));
+    let application = Arc::new(in_memory_application(worker).await);
     let usage = Arc::new(std::sync::atomic::AtomicU64::new(10));
     application.bind_session_source(Arc::new(MutableUsage(usage.clone())));
     let app = support::edge_stamped(dreams_router(application));
@@ -1166,7 +1195,7 @@ async fn dream_routes_accept_the_sdk_default_dreaming_beta() {
     // Header causes/effects: absent or Managed-only -> 400; the Dream beta alone
     // (the generated SDK default) or combined with Managed -> route. Query
     // `beta=true` never substitutes for headers.
-    let (state, _, _) = state(Outcome::Complete);
+    let (state, _, _) = state(Outcome::Complete).await;
     let app = support::edge_stamped(
         dreams_router(state).layer(axum::middleware::from_fn(enforce_managed_beta)),
     );
@@ -1241,7 +1270,7 @@ async fn compatible_dream_router_has_no_awaken_only_configuration_routes() {
     // compatible router; R2 former Dream policy API and R3 former dedicated
     // Dream-Agent API -> 404. Auxiliary Agent authoring uses ordinary Agent
     // configuration, so neither removed path may regain an owner.
-    let (state, _, _) = state(Outcome::Complete);
+    let (state, _, _) = state(Outcome::Complete).await;
     let app = support::edge_stamped(dreams_router(state));
     assert_ne!(
         request(&app, "GET", "/v1/dreams", None).await.status(),
@@ -1262,7 +1291,7 @@ async fn list_supports_official_repeated_status_filters_and_cursor_pages() {
     // List causes/effects: newest-first inventory + limit -> E1 page cursor;
     // repeated statuses -> E2 OR filter; invalid bound/limit -> E3 400. Rules
     // L1-L3 cover the SDK PageCursor and DreamListParams contract.
-    let (state, _, _) = state(Outcome::Complete);
+    let (state, _, _) = state(Outcome::Complete).await;
     let app = support::edge_stamped(dreams_router(state));
     let mut ids = Vec::new();
     for session in ["s1", "s2"] {
@@ -1335,10 +1364,14 @@ async fn sqlite_repository_restores_terminal_dreams_after_restart() {
         started: Arc::new(Notify::new()),
         release: Arc::new(Notify::new()),
     });
-    let repository =
-        Arc::new(SqliteManagedSessionRepository::open(path.to_str().unwrap()).unwrap());
+    let repository = Arc::new(
+        SqliteManagedSessionRepository::open(path.to_str().unwrap())
+            .await
+            .unwrap(),
+    );
     let state = Arc::new(
         DreamApplication::with_store(worker, repository.clone(), awaken_time::system_clock())
+            .await
             .unwrap(),
     );
     state.bind_session_source(Arc::new(FixedSessionFacts));
@@ -1348,7 +1381,7 @@ async fn sqlite_repository_restores_terminal_dreams_after_restart() {
         .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap().to_string();
     let completed = wait_for_status(&app, &id, "completed").await;
-    let durable = serde_json::to_value(&repository.dream_processes().unwrap()[0])
+    let durable = serde_json::to_value(&repository.dream_processes().await.unwrap()[0])
         .expect("R3 typed durable process projection");
     assert!(durable.get("usage").is_none(), "R3");
     drop(app);
@@ -1360,9 +1393,14 @@ async fn sqlite_repository_restores_terminal_dreams_after_restart() {
             started: Arc::new(Notify::new()),
             release: Arc::new(Notify::new()),
         }),
-        Arc::new(SqliteManagedSessionRepository::open(path.to_str().unwrap()).unwrap()),
+        Arc::new(
+            SqliteManagedSessionRepository::open(path.to_str().unwrap())
+                .await
+                .unwrap(),
+        ),
         awaken_time::system_clock(),
     )
+    .await
     .unwrap();
     reopened.bind_session_source(Arc::new(AlternateSessionFacts));
     let restored = reopened.retrieve("default", &id).await.unwrap();
@@ -1403,7 +1441,11 @@ async fn resume_incomplete_cas_resets_and_executes_a_durable_running_job() {
     // Recovery decision rule: C1 durable status is Running when a process dies
     // before preparation -> E1 a new state CAS-resets it to Pending, E2 exactly
     // the canonical worker path resumes it, E3 terminal output/usage persist.
-    let repository = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repository = Arc::new(
+        SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let entered = Arc::new(Notify::new());
     let first = Arc::new(
         DreamApplication::with_store(
@@ -1414,6 +1456,7 @@ async fn resume_incomplete_cas_resets_and_executes_a_durable_running_job() {
             repository.clone(),
             awaken_time::system_clock(),
         )
+        .await
         .unwrap(),
     );
     let first_app = support::edge_stamped(dreams_router(first));
@@ -1437,10 +1480,11 @@ async fn resume_incomplete_cas_resets_and_executes_a_durable_running_job() {
             repository,
             awaken_time::system_clock(),
         )
+        .await
         .unwrap(),
     );
     recovered.bind_session_source(Arc::new(FixedSessionFacts));
-    recovered.resume_incomplete();
+    recovered.resume_incomplete().await;
     let recovered_app = support::edge_stamped(dreams_router(recovered));
     let terminal =
         wait_for_status(&recovered_app, created["id"].as_str().unwrap(), "completed").await;
@@ -1483,13 +1527,18 @@ async fn restart_retries_terminal_cleanup_before_publishing_completion() {
     // cleanup fails -> E1 public projection stays Running and cleanup_pending is
     // durable; C2 restart with healthy cleanup -> E2 cleanup-only resume clears
     // artifacts and only then publishes Completed (the Agent is not re-executed).
-    let repository = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repository = Arc::new(
+        SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let first = Arc::new(
         DreamApplication::with_store(
             Arc::new(CleanupFails),
             repository.clone(),
             awaken_time::system_clock(),
         )
+        .await
         .unwrap(),
     );
     let first_app = support::edge_stamped(dreams_router(first));
@@ -1504,6 +1553,7 @@ async fn restart_retries_terminal_cleanup_before_publishing_completion() {
     for _ in 0..100 {
         if repository
             .dream_processes()
+            .await
             .unwrap()
             .iter()
             .any(|job| job.cleanup_pending)
@@ -1532,9 +1582,10 @@ async fn restart_retries_terminal_cleanup_before_publishing_completion() {
             repository,
             awaken_time::system_clock(),
         )
+        .await
         .unwrap(),
     );
-    recovered.resume_incomplete();
+    recovered.resume_incomplete().await;
     let terminal = wait_for_status(
         &support::edge_stamped(dreams_router(recovered)),
         created["id"].as_str().unwrap(),
@@ -1601,10 +1652,13 @@ async fn transient_terminal_cleanup_retries_without_reexecuting_the_dream() {
     // second Dream/Session state machine participates.
     let executions = Arc::new(AtomicUsize::new(0));
     let cleanups = Arc::new(AtomicUsize::new(0));
-    let state = Arc::new(in_memory_application(Arc::new(CleanupFailsOnce {
-        executions: executions.clone(),
-        cleanups: cleanups.clone(),
-    })));
+    let state = Arc::new(
+        in_memory_application(Arc::new(CleanupFailsOnce {
+            executions: executions.clone(),
+            cleanups: cleanups.clone(),
+        }))
+        .await,
+    );
     let app = support::edge_stamped(dreams_router(state));
     let created = request(
         &app,
@@ -1662,9 +1716,7 @@ async fn dream_uses_one_stable_ordinary_agent_id_without_selection_state() {
     // changes its executable snapshot without creating Dream-specific selection
     // state or a second API.
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let state = Arc::new(in_memory_application(Arc::new(RecordingWorker(
-        seen.clone(),
-    ))));
+    let state = Arc::new(in_memory_application(Arc::new(RecordingWorker(seen.clone()))).await);
     let app = support::edge_stamped(dreams_router(state));
     let _ = request(
         &app,
@@ -1724,9 +1776,12 @@ async fn input_deleted_after_create_fails_before_terminal_publication() {
     // Input lifecycle decision rule: C1 inputs exist at create but a selected
     // Session becomes unavailable before completion -> E1 typed failed Dream,
     // E2 no completed state is ever published, E3 prepared output remains listed.
-    let state = Arc::new(in_memory_application(Arc::new(LifecycleWorker(
-        std::sync::atomic::AtomicUsize::new(0),
-    ))));
+    let state = Arc::new(
+        in_memory_application(Arc::new(LifecycleWorker(
+            std::sync::atomic::AtomicUsize::new(0),
+        )))
+        .await,
+    );
     let app = support::edge_stamped(dreams_router(state));
     let created = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"])))
         .await

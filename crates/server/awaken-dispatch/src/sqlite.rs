@@ -8,8 +8,8 @@
 //! takes the database write lock, so claims serialize and a run is owned by one
 //! worker at a time. The claim policy — recover an expired lease, then wake a
 //! awaiting run with pending input, then a fresh run — matches
-//! the test-support `MemoryDispatchStore` reference backend exactly. The synchronous
-//! `rusqlite` driver runs each operation on a blocking thread.
+//! the test-support `MemoryDispatchStore` reference backend exactly. Each
+//! operation holds the store's one sqlx connection (ADR-0087) for its whole span.
 
 use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
@@ -19,7 +19,11 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
+use futures_util::TryStreamExt;
+use sqlx::sqlite::{Sqlite, SqliteConnection};
 
 use crate::dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CasOutcome,
@@ -77,29 +81,28 @@ pub enum StoreError {
 /// Built in, not configured — one runtime is one component.
 const NS: &str = "runtime";
 
-fn published_checksum(
-    conn: &Connection,
+async fn published_checksum(
+    pool: &EmbeddedPool,
     bundle: &str,
     version: i64,
 ) -> Result<Option<String>, StoreError> {
-    let ledger_exists = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-            params![format!("{NS}_schema_migrations")],
-            |row| row.get::<_, bool>(0),
-        )
-        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    let ledger_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+    )
+    .bind(format!("{NS}_schema_migrations"))
+    .fetch_one(pool)
+    .await
+    .map_err(|error| StoreError::Migrate(error.to_string()))?;
     if !ledger_exists {
         return Ok(None);
     }
-    conn.query_row(
-        &format!(
-            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = ?2"
-        ),
-        params![bundle, version],
-        |row| row.get(0),
-    )
-    .optional()
+    sqlx::query_scalar(&format!(
+        "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = ?2"
+    ))
+    .bind(bundle)
+    .bind(version)
+    .fetch_optional(pool)
+    .await
     .map_err(|error| StoreError::Migrate(error.to_string()))
 }
 
@@ -126,31 +129,28 @@ fn no_running_peer(prefix: &str) -> String {
     )
 }
 
-fn exact_run_replay(
-    tx: &Transaction<'_>,
+async fn exact_run_replay(
+    tx: &mut SqliteConnection,
     prefix: &str,
     request: &RunDispatch,
 ) -> Result<bool, DispatchError> {
     let run_id = &request.run_id().0;
-    let live = tx
-        .query_row(
-            &format!("SELECT request FROM {prefix}_dispatch WHERE run_id = ?1"),
-            params![run_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(store_error)?
-        .map(|stored| serde_json::from_str::<RunDispatch>(&stored).map_err(json_err))
-        .transpose()?;
+    let live = sqlx::query_scalar::<_, String>(&format!(
+        "SELECT request FROM {prefix}_dispatch WHERE run_id = ?1"
+    ))
+    .bind(run_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(store_error)?
+    .map(|stored| serde_json::from_str::<RunDispatch>(&stored).map_err(json_err))
+    .transpose()?;
     let completed = if live.is_none() {
-        tx.query_row(
-            &format!(
-                "SELECT request_fingerprint FROM {prefix}_dispatch_completion WHERE run_id = ?1"
-            ),
-            params![run_id],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()
+        sqlx::query_scalar::<_, Option<String>>(&format!(
+            "SELECT request_fingerprint FROM {prefix}_dispatch_completion WHERE run_id = ?1"
+        ))
+        .bind(run_id)
+        .fetch_optional(&mut *tx)
+        .await
         .map_err(store_error)?
     } else {
         None
@@ -165,20 +165,20 @@ fn exact_run_replay(
 
 /// The one SQLite insertion kernel after Run identity and any command-specific
 /// admission have been decided in the caller's transaction.
-fn insert_new_dispatch(
-    tx: &Transaction<'_>,
+async fn insert_new_dispatch(
+    tx: &mut SqliteConnection,
     prefix: &str,
     request: &RunDispatch,
     options: &SubmitOptions,
 ) -> Result<(), DispatchError> {
-    insert_dispatch_with_state(tx, prefix, request, options, "pending", None)
+    insert_dispatch_with_state(tx, prefix, request, options, "pending", None).await
 }
 
 /// The single SQLite row insertion owner. Session Run reservation changes only
 /// the initial phase/deadline; canonical identity, dedupe, and supersession stay
 /// shared with ordinary enqueue.
-fn insert_dispatch_with_state(
-    tx: &Transaction<'_>,
+async fn insert_dispatch_with_state(
+    tx: &mut SqliteConnection,
     prefix: &str,
     request: &RunDispatch,
     options: &SubmitOptions,
@@ -188,34 +188,22 @@ fn insert_dispatch_with_state(
     let mut epoch = 0i64;
     if options.supersede {
         epoch = crate::next_supersession_epoch(
-            tx.query_row(
-                &format!(
-                    "SELECT COALESCE(MAX(epoch), 0) FROM {prefix}_dispatch WHERE thread_id = ?1"
-                ),
-                params![request.thread_id().0],
-                |row| row.get::<_, i64>(0),
-            )
+            sqlx::query_scalar::<_, i64>(&format!(
+                "SELECT COALESCE(MAX(epoch), 0) FROM {prefix}_dispatch WHERE thread_id = ?1"
+            ))
+            .bind(&request.thread_id().0)
+            .fetch_one(&mut *tx)
+            .await
             .map_err(store_error)?,
         )?;
-        let candidates = {
-            let mut statement = tx
-                .prepare(&format!(
-                    "SELECT run_id, status, lease_epoch, cancel_requested \
-                     FROM {prefix}_dispatch WHERE thread_id = ?1"
-                ))
-                .map_err(store_error)?;
-            let rows = statement
-                .query_map(params![request.thread_id().0], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                })
-                .map_err(store_error)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(store_error)?
-        };
+        let candidates = sqlx::query_as::<_, (String, String, i64, i64)>(&format!(
+            "SELECT run_id, status, lease_epoch, cancel_requested \
+             FROM {prefix}_dispatch WHERE thread_id = ?1"
+        ))
+        .bind(&request.thread_id().0)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
         validate_session_run_replacement_candidates(
             request,
             candidates
@@ -238,57 +226,52 @@ fn insert_dispatch_with_state(
             .supersede() else {
                 continue;
             };
-            tx.execute(
-                &format!(
-                    "UPDATE {prefix}_dispatch SET status = ?2, lease_owner = NULL, \
-                     lease_until = NULL WHERE run_id = ?1"
-                ),
-                params![run_id, crate::dispatch_state_db(next.state)],
-            )
+            sqlx::query(&format!(
+                "UPDATE {prefix}_dispatch SET status = ?2, lease_owner = NULL, \
+                 lease_until = NULL WHERE run_id = ?1"
+            ))
+            .bind(run_id)
+            .bind(crate::dispatch_state_db(next.state))
+            .execute(&mut *tx)
+            .await
             .map_err(store_error)?;
         }
     }
 
-    tx.execute(
-        &format!(
-            "INSERT INTO {prefix}_dispatch \
-             (run_id, thread_id, request, status, priority, epoch, dedupe_key, lease_until) \
-             SELECT ?1,?2,?3,?7,?4,?5,?6,?8 \
-             WHERE NOT EXISTS ( \
-                 SELECT 1 FROM {prefix}_dispatch \
-                 WHERE dedupe_key = ?6 AND status <> 'dead_letter') \
-             AND NOT EXISTS (SELECT 1 FROM {prefix}_dispatch_completion WHERE run_id = ?1) \
-             ON CONFLICT(run_id) DO NOTHING"
-        ),
-        params![
-            request.run_id().0,
-            request.thread_id().0,
-            json(request)?,
-            options.priority,
-            epoch,
-            options.dedupe_key,
-            initial_status,
-            lease_until,
-        ],
-    )
+    sqlx::query(&format!(
+        "INSERT INTO {prefix}_dispatch \
+         (run_id, thread_id, request, status, priority, epoch, dedupe_key, lease_until) \
+         SELECT ?1,?2,?3,?7,?4,?5,?6,?8 \
+         WHERE NOT EXISTS ( \
+             SELECT 1 FROM {prefix}_dispatch \
+             WHERE dedupe_key = ?6 AND status <> 'dead_letter') \
+         AND NOT EXISTS (SELECT 1 FROM {prefix}_dispatch_completion WHERE run_id = ?1) \
+         ON CONFLICT(run_id) DO NOTHING"
+    ))
+    .bind(&request.run_id().0)
+    .bind(&request.thread_id().0)
+    .bind(json(request)?)
+    .bind(options.priority)
+    .bind(epoch)
+    .bind(options.dedupe_key.as_deref())
+    .bind(initial_status)
+    .bind(lease_until)
+    .execute(&mut *tx)
+    .await
     .map_err(store_error)?;
     Ok(())
 }
 
-fn known_session_child_threads(
-    tx: &Transaction<'_>,
+async fn known_session_child_threads(
+    tx: &mut SqliteConnection,
     prefix: &str,
     parent: &ThreadId,
 ) -> Result<Vec<ThreadId>, DispatchError> {
-    let live_requests = {
-        let mut statement = tx
-            .prepare(&format!("SELECT request FROM {prefix}_dispatch"))
+    let live_requests =
+        sqlx::query_scalar::<_, String>(&format!("SELECT request FROM {prefix}_dispatch"))
+            .fetch_all(&mut *tx)
+            .await
             .map_err(store_error)?;
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(store_error)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(store_error)?
-    };
     let mut known = Vec::new();
     for stored in live_requests {
         let stored = serde_json::from_str::<RunDispatch>(&stored).map_err(json_err)?;
@@ -296,30 +279,36 @@ fn known_session_child_threads(
             known.push(thread.clone());
         }
     }
-    let mut statement = tx
-        .prepare(&format!(
-            "SELECT thread_id FROM {prefix}_dispatch_completion \
-             WHERE session_thread_id = ?1 AND thread_id IS NOT NULL \
-             AND thread_id <> session_thread_id"
-        ))
-        .map_err(store_error)?;
-    let rows = statement
-        .query_map(params![parent.0], |row| row.get::<_, String>(0))
-        .map_err(store_error)?;
+    let rows = sqlx::query_scalar::<_, String>(&format!(
+        "SELECT thread_id FROM {prefix}_dispatch_completion \
+         WHERE session_thread_id = ?1 AND thread_id IS NOT NULL \
+         AND thread_id <> session_thread_id"
+    ))
+    .bind(&parent.0)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(store_error)?;
     for row in rows {
-        known.push(ThreadId(row.map_err(store_error)?));
+        known.push(ThreadId(row));
     }
     Ok(known)
 }
 
 pub struct SqliteDispatchStore {
-    conn: awaken_sqlite_pool::SharedSqliteConnection,
+    pool: EmbeddedPool,
     /// Serializes every dispatch operation with a fenced commit. SQLite is a
     /// single-process backend; an owned guard can therefore span the separate
-    /// commit database write without exposing a non-Send rusqlite transaction.
+    /// commit database write without holding a database transaction open.
     authority: Arc<tokio::sync::Mutex<()>>,
     clock: Arc<dyn awaken_time::WallClock>,
 }
+
+/// The authority guard and the store's one connection, held together for one
+/// dispatch operation. The connection is released before the guard.
+type HeldConnection<'a> = (
+    tokio::sync::MutexGuard<'a, ()>,
+    awaken_sqlite_pool::EmbeddedConnection,
+);
 
 impl SqliteDispatchStore {
     /// Open (or create) a database file and apply the dispatch migrations.
@@ -328,87 +317,88 @@ impl SqliteDispatchStore {
     /// [`MemoryDispatchStore::new`](crate::MemoryDispatchStore::new): this store
     /// judges its own rows, so a default would let a caller believe it had
     /// supplied one when it had not.
-    pub fn open(path: &str, clock: Arc<dyn awaken_time::WallClock>) -> Result<Self, StoreError> {
-        let conn = awaken_sqlite_pool::SqliteConnectionFactory::file(path)
+    pub async fn open(
+        path: &str,
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) -> Result<Self, StoreError> {
+        let pool = EmbeddedSqlite::file(path)
             .open()
+            .await
             .map_err(|err| StoreError::Open(err.to_string()))?;
-        Self::from_connection(conn, clock)
+        Self::from_pool(pool, clock).await
     }
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory(clock: Arc<dyn awaken_time::WallClock>) -> Result<Self, StoreError> {
-        let conn = awaken_sqlite_pool::SqliteConnectionFactory::memory()
+    pub async fn open_in_memory(
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) -> Result<Self, StoreError> {
+        let pool = EmbeddedSqlite::memory()
             .open()
+            .await
             .map_err(|err| StoreError::Open(err.to_string()))?;
-        Self::from_connection(conn, clock)
+        Self::from_pool(pool, clock).await
     }
 
-    fn from_connection(
-        conn: Connection,
+    async fn from_pool(
+        pool: EmbeddedPool,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Self, StoreError> {
         let published =
-            selected_dispatch_bundle(published_checksum(&conn, BUNDLE_ID, 15)?.as_deref())
+            selected_dispatch_bundle(published_checksum(&pool, BUNDLE_ID, 15).await?.as_deref())
                 .map_err(|err| StoreError::Migrate(err.to_string()))?;
         let converged = selected_converged_dispatch_bundle(
-            published_checksum(&conn, CONVERGED_BUNDLE_ID, 7)?.as_deref(),
+            published_checksum(&pool, CONVERGED_BUNDLE_ID, 7)
+                .await?
+                .as_deref(),
         )
         .map_err(|err| StoreError::Migrate(err.to_string()))?;
-        let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+        let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
-        runner
-            .run_bundle(&conn, &published)
-            .and_then(|_| runner.run_bundle(&conn, &converged))
+        awaken_sqlite_pool::held(runner.run_bundle(&published))
+            .await
+            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        awaken_sqlite_pool::held(runner.run_bundle(&converged))
+            .await
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
         Ok(Self {
-            conn: awaken_sqlite_pool::SharedSqliteConnection::new(conn),
+            pool,
             authority: Arc::new(tokio::sync::Mutex::new(())),
             clock,
         })
     }
 
-    /// Run a closure with the locked connection on a blocking thread. The closure
-    /// receives the runtime table namespace.
-    async fn with_conn<T, F>(&self, f: F) -> Result<T, DispatchError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut Connection, &str) -> Result<T, DispatchError> + Send + 'static,
-    {
-        let _authority = self.authority.lock().await;
-        self.with_conn_unlocked(f).await
+    /// Take the dispatch authority, then the store's one connection, for a whole
+    /// operation. The runtime table namespace is [`NS`].
+    async fn with_conn(&self) -> Result<HeldConnection<'_>, DispatchError> {
+        let authority = self.authority.lock().await;
+        let conn = self.with_conn_unlocked().await?;
+        Ok((authority, conn))
     }
 
-    /// Execute while the caller already owns `authority`.
-    async fn with_conn_unlocked<T, F>(&self, f: F) -> Result<T, DispatchError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut Connection, &str) -> Result<T, DispatchError> + Send + 'static,
-    {
-        awaken_sqlite_pool::with_connection(self.conn.clone(), move |conn| f(conn, NS))
+    /// Acquire the connection while the caller already owns `authority`.
+    async fn with_conn_unlocked(
+        &self,
+    ) -> Result<awaken_sqlite_pool::EmbeddedConnection, DispatchError> {
+        self.pool
+            .acquire()
             .await
-            .map_err(|err| DispatchError::Rejected(err.to_string()))?
+            .map_err(|err| DispatchError::Rejected(err.to_string()))
     }
 
     /// Run ids in a terminal-ish dispatch status (dead_letter, superseded), in
     /// enqueue order — backs the operational `dead_letters`/`superseded` queries.
     async fn run_ids_by_status(&self, status: &'static str) -> Result<Vec<RunId>, DispatchError> {
-        self.with_conn(move |conn, p| {
-            let mut stmt = conn
-                .prepare(&format!(
-                    "SELECT run_id FROM {p}_dispatch WHERE status = ?1 ORDER BY created_at"
-                ))
-                .map_err(store_error)?;
-            let rows = stmt
-                .query_map(params![status], |r| r.get::<_, String>(0))
-                .map_err(store_error)?;
-            let mut ids = Vec::new();
-            for row in rows {
-                ids.push(RunId(row.map_err(store_error)?));
-            }
-            Ok(ids)
-        })
+        let (_authority, mut conn) = self.with_conn().await?;
+        let p = NS;
+        let ids = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT run_id FROM {p}_dispatch WHERE status = ?1 ORDER BY created_at"
+        ))
+        .bind(status)
+        .fetch_all(&mut *conn)
         .await
+        .map_err(store_error)?;
+        Ok(ids.into_iter().map(RunId).collect())
     }
 
     async fn lock_claim_epoch_in_status(
@@ -418,30 +408,19 @@ impl SqliteDispatchStore {
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
         let guard = self.authority.clone().lock_owned().await;
         let run = claim.run_id.0.clone();
-        let current: Option<ClaimEpochStorageRow<String>> = self
-            .with_conn_unlocked(move |conn, p| {
-                conn.query_row(
-                    &format!(
-                        "SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested, active_attempt_owner, active_attempt_epoch \
-                         FROM {p}_dispatch WHERE run_id = ?1 AND status = ?2"
-                    ),
-                    params![run, required_status],
-                    |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                            row.get(5)?,
-                            row.get(6)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(store_error)
-            })
-            .await?;
+        let current: Option<ClaimEpochStorageRow<String>> = {
+            let mut conn = self.with_conn_unlocked().await?;
+            let p = NS;
+            sqlx::query_as(&format!(
+                "SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested, active_attempt_owner, active_attempt_epoch \
+                 FROM {p}_dispatch WHERE run_id = ?1 AND status = ?2"
+            ))
+            .bind(run)
+            .bind(required_status)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(store_error)?
+        };
         let request = match current {
             None => None,
             Some((
@@ -508,21 +487,36 @@ include!("sqlite/summaries.rs");
 include!("sqlite/message_ports.rs");
 include!("sqlite/pending_rows.rs");
 
-fn store_error(err: rusqlite::Error) -> DispatchError {
+fn store_error(err: sqlx::Error) -> DispatchError {
     DispatchError::unavailable(err)
+}
+
+/// Open the `BEGIN IMMEDIATE` transaction every SQLite dispatch mutation runs
+/// in: it takes the database write lock before the first read.
+async fn immediate(
+    conn: &mut SqliteConnection,
+) -> Result<sqlx::Transaction<'_, Sqlite>, DispatchError> {
+    sqlx::Connection::begin_with(conn, "BEGIN IMMEDIATE")
+        .await
+        .map_err(store_error)
+}
+
+/// A statement's affected-row count in the `usize` the dispatch ports report.
+fn affected(done: sqlx::sqlite::SqliteQueryResult) -> usize {
+    usize::try_from(done.rows_affected()).unwrap_or(usize::MAX)
 }
 
 #[cfg(test)]
 mod migration_history_tests {
     use awaken_scoped_migration::MigrationBundle;
-    use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
-    use rusqlite::Connection;
+    use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+    use awaken_sqlite_pool::EmbeddedSqlite;
 
     use super::{NS, SqliteDispatchStore};
     use crate::dispatch_schema::{BUNDLE_ID, CONVERGED_BUNDLE_ID, expanded_dispatch_bundle};
 
-    #[test]
-    fn published_v7_lineages_preserve_receipts_and_converge_once() {
+    #[tokio::test]
+    async fn published_v7_lineages_preserve_receipts_and_converge_once() {
         use crate::dispatch_schema::{
             converged_dispatch_bundle, dispatch_bundle, selected_converged_dispatch_bundle,
         };
@@ -533,10 +527,11 @@ mod migration_history_tests {
         // R1=C1 closure -> append index@8; R2=C1 index -> append closure@8;
         // R3=R1/R2+C2 -> same 8 receipts. Unknown V7 is tested separately.
         for index_first in [false, true] {
-            let conn = Connection::open_in_memory().unwrap();
-            let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
+            let pool = EmbeddedSqlite::memory().open().await.unwrap();
+            let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS).unwrap();
             runner
-                .run_bundle(&conn, &dispatch_bundle().unwrap())
+                .run_bundle(&dispatch_bundle().unwrap())
+                .await
                 .unwrap();
             let canonical = converged_dispatch_bundle().unwrap();
             let index = Migration::new(
@@ -554,75 +549,86 @@ mod migration_history_tests {
             let mut prefix = canonical.migrations()[..6].to_vec();
             prefix.push(original);
             runner
-                .run_bundle(
-                    &conn,
-                    &MigrationBundle::new(CONVERGED_BUNDLE_ID, prefix).unwrap(),
-                )
+                .run_bundle(&MigrationBundle::new(CONVERGED_BUNDLE_ID, prefix).unwrap())
+                .await
                 .unwrap();
-            let store =
-                SqliteDispatchStore::from_connection(conn, awaken_time::system_clock()).unwrap();
-            let conn = store.conn.lock().unwrap();
+            let store = SqliteDispatchStore::from_pool(pool, awaken_time::system_clock())
+                .await
+                .unwrap();
+            let pool = store.pool.clone();
+            let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS).unwrap();
             let selected = selected_converged_dispatch_bundle(Some(&checksum)).unwrap();
-            runner.run_bundle(&conn, &selected).unwrap();
-            let retained: String = conn.query_row(
+            runner.run_bundle(&selected).await.unwrap();
+            let retained: String = sqlx::query_scalar(
                 "SELECT checksum FROM runtime_schema_migrations WHERE bundle_id=?1 AND version=7",
-                [CONVERGED_BUNDLE_ID], |row| row.get(0),
-            ).unwrap();
+            )
+            .bind(CONVERGED_BUNDLE_ID)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
             assert_eq!(retained, checksum, "E1 immutable V7 receipt");
-            let receipts: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM runtime_schema_migrations WHERE bundle_id=?1",
-                    [CONVERGED_BUNDLE_ID],
-                    |row| row.get(0),
-                )
-                .unwrap();
+            let receipts: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM runtime_schema_migrations WHERE bundle_id=?1",
+            )
+            .bind(CONVERGED_BUNDLE_ID)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
             assert_eq!(receipts, 8, "E3 exact replay");
-            let closed_columns: i64 = conn.query_row(
+            let closed_columns: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM pragma_table_info('runtime_dispatch') WHERE name='active_attempt_closing'",
-                [], |row| row.get(0),
-            ).unwrap();
-            let indexes: i64 = conn.query_row(
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let indexes: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='runtime_dispatch_operation_run_sequence'",
-                [], |row| row.get(0),
-            ).unwrap();
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
             assert_eq!((closed_columns, indexes), (1, 1), "E2 both effects once");
         }
     }
 
-    #[test]
-    fn unknown_v7_receipt_cannot_select_a_compatibility_stream() {
+    #[tokio::test]
+    async fn unknown_v7_receipt_cannot_select_a_compatibility_stream() {
         use crate::dispatch_schema::{converged_dispatch_bundle, dispatch_bundle};
         // R4 unknown V7 checksum -> ordinary migration mismatch, no repair or
         // receipt overwrite. A lookalike schema never authorizes migration.
-        let conn = Connection::open_in_memory().unwrap();
-        let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
+        let pool = EmbeddedSqlite::memory().open().await.unwrap();
+        let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS).unwrap();
         runner
-            .run_bundle(&conn, &dispatch_bundle().unwrap())
+            .run_bundle(&dispatch_bundle().unwrap())
+            .await
             .unwrap();
         let canonical = converged_dispatch_bundle().unwrap();
         runner
             .run_bundle(
-                &conn,
                 &MigrationBundle::new(CONVERGED_BUNDLE_ID, canonical.migrations()[..7].to_vec())
                     .unwrap(),
             )
+            .await
             .unwrap();
-        conn.execute(
+        sqlx::query(
             "UPDATE runtime_schema_migrations SET checksum=?1 WHERE bundle_id=?2 AND version=7",
-            rusqlite::params!["unknown", CONVERGED_BUNDLE_ID],
         )
+        .bind("unknown")
+        .bind(CONVERGED_BUNDLE_ID)
+        .execute(&pool)
+        .await
         .unwrap();
         assert!(
             matches!(
-                SqliteDispatchStore::from_connection(conn, awaken_time::system_clock()),
+                SqliteDispatchStore::from_pool(pool, awaken_time::system_clock()).await,
                 Err(super::StoreError::Migrate(_))
             ),
             "R4 reject"
         );
     }
 
-    #[test]
-    fn store_open_selects_and_converges_the_durable_expanded_history() {
+    #[tokio::test]
+    async fn store_open_selects_and_converges_the_durable_expanded_history() {
         /* Adapter-selection cause/effect table:
          * Q1 no ledger -> fresh compact history; Q2 exact expanded V15 receipt
          * with V1..V24 -> finish expanded V25..V29 then apply converged V1..V7;
@@ -631,38 +637,42 @@ mod migration_history_tests {
          */
         let directory = tempfile::tempdir().expect("migration database directory");
         let path = directory.path().join("dispatch.db");
-        let connection = Connection::open(&path).expect("seed database");
+        let seed = EmbeddedSqlite::file(&path)
+            .open()
+            .await
+            .expect("seed database");
         let expanded = expanded_dispatch_bundle().expect("expanded history");
         let published = MigrationBundle::new(BUNDLE_ID, expanded.migrations()[..24].to_vec())
             .expect("expanded prefix");
-        SqliteMigrationRunner::with_prefix(NS)
+        SqliteMigrationRunner::with_prefix(seed.sqlx().clone(), NS)
             .expect("runner")
-            .run_bundle(&connection, &published)
+            .run_bundle(&published)
+            .await
             .expect("seed expanded history");
-        let migrated =
-            SqliteDispatchStore::from_connection(connection, awaken_time::system_clock())
-                .expect("Q2 selected migration");
+        let migrated = SqliteDispatchStore::from_pool(seed, awaken_time::system_clock())
+            .await
+            .expect("Q2 selected migration");
         drop(migrated);
         let reopened = SqliteDispatchStore::open(
             path.to_str().expect("UTF-8 migration path"),
             awaken_time::system_clock(),
         )
+        .await
         .expect("Q3 idempotent reopen");
-        let connection = reopened.conn.lock().expect("Q3 inspect connection");
-        let published_max: i64 = connection
-            .query_row(
-                "SELECT MAX(version) FROM runtime_schema_migrations WHERE bundle_id = ?1",
-                [BUNDLE_ID],
-                |row| row.get(0),
-            )
-            .expect("Q2 published terminal");
-        let converged_count: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM runtime_schema_migrations WHERE bundle_id = ?1",
-                [CONVERGED_BUNDLE_ID],
-                |row| row.get(0),
-            )
-            .expect("Q2 convergence receipt");
+        let published_max: i64 = sqlx::query_scalar(
+            "SELECT MAX(version) FROM runtime_schema_migrations WHERE bundle_id = ?1",
+        )
+        .bind(BUNDLE_ID)
+        .fetch_one(&reopened.pool)
+        .await
+        .expect("Q2 published terminal");
+        let converged_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM runtime_schema_migrations WHERE bundle_id = ?1",
+        )
+        .bind(CONVERGED_BUNDLE_ID)
+        .fetch_one(&reopened.pool)
+        .await
+        .expect("Q2 convergence receipt");
         assert_eq!(published_max, 29, "Q2 expanded terminal");
         assert_eq!(
             converged_count, 8,

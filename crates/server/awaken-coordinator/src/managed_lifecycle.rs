@@ -187,7 +187,7 @@ mod tests {
         // cannot replace committed replay truth.
         // Decision rule: evaluate every labeled cause partition in this test; each matching rule
         // selects only its stated effect and preserves the authority constraint.
-        let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+        let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()).await);
         let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
         let webhook = Arc::new(RecordingWebhook::default());
         let delivery = install_managed_lifecycle_delivery(

@@ -477,6 +477,7 @@ mod tests {
         // repository only preserves that already-decided aggregate state.
         let repository = Arc::new(
             awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
                 .expect("open test Registry repository"),
         );
         let registry = RegistryApplication::new(
@@ -532,6 +533,7 @@ mod tests {
         // Execution safety is proved separately by resolve_for_execution.
         let repository = Arc::new(
             awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
                 .expect("open test Registry repository"),
         );
         let registry = RegistryApplication::new(repository, awaken_time::system_clock());

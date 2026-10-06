@@ -7,9 +7,13 @@
 // @formal entrypoint memory.stale_conditional_delete_never_removes_live_head
 //! SQLite [`MemoryRepository`] over the crate's `memory_store` migration scope.
 
+use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use awaken_sql_storage::StoredU64;
 use awaken_time::WallClock;
-use rusqlite::{Connection, OptionalExtension, params};
+use sqlx::SqliteConnection;
+use std::future::Future;
 use std::sync::Arc;
 
 use crate::schema::{BUNDLE_ID, converged_memory_store_bundle, selected_memory_store_bundle};
@@ -25,25 +29,23 @@ pub enum StoreError {
     Migrate(String),
 }
 
-/// Apply the `memory_store` scoped migration bundle to `conn` (idempotent).
+/// Apply the `memory_store` scoped migration bundle to `pool` (idempotent).
 /// Shared by both SQLite stores, since they live under one scope.
-fn migrate_conn(conn: &Connection) -> Result<(), StoreError> {
-    let ledger_exists = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-            [format!("{NS}_schema_migrations")],
-            |row| row.get::<_, bool>(0),
-        )
-        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+async fn migrate_pool(pool: &EmbeddedPool) -> Result<(), StoreError> {
+    let ledger_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+    )
+    .bind(format!("{NS}_schema_migrations"))
+    .fetch_one(pool)
+    .await
+    .map_err(|error| StoreError::Migrate(error.to_string()))?;
     let v1_checksum = if ledger_exists {
-        conn.query_row(
-            &format!(
-                "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
-            ),
-            [BUNDLE_ID],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
+        sqlx::query_scalar::<_, String>(&format!(
+            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
+        ))
+        .bind(BUNDLE_ID)
+        .fetch_optional(pool)
+        .await
         .map_err(|error| StoreError::Migrate(error.to_string()))?
     } else {
         None
@@ -52,20 +54,15 @@ fn migrate_conn(conn: &Connection) -> Result<(), StoreError> {
         .map_err(|error| StoreError::Migrate(error.to_string()))?;
     let converged =
         converged_memory_store_bundle().map_err(|error| StoreError::Migrate(error.to_string()))?;
-    let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+    let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
         .map_err(|error| StoreError::Migrate(error.to_string()))?;
-    runner
-        .run_bundle(conn, &published)
-        .and_then(|_| runner.run_bundle(conn, &converged))
+    awaken_sqlite_pool::held(runner.run_bundle(&published))
+        .await
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    awaken_sqlite_pool::held(runner.run_bundle(&converged))
+        .await
         .map_err(|error| StoreError::Migrate(error.to_string()))?;
     Ok(())
-}
-
-fn migrate_guarded(conn: &awaken_sqlite_pool::SharedSqliteConnection) -> Result<(), StoreError> {
-    let guard = conn
-        .lock()
-        .map_err(|_| StoreError::Migrate("memory_store connection poisoned".into()))?;
-    migrate_conn(&guard)
 }
 
 use crate::repository::{
@@ -94,64 +91,64 @@ fn next_domain_version(value: i64) -> Result<u64, MemErr> {
         .map_err(mem_err)
 }
 
-/// Like [`with_conn`] but the closure carries [`MemErr`] (so it can raise
-/// `PathConflict`/`Conflict`/`NotFound`, not only storage faults).
-async fn with_conn_mem<T, F>(
-    conn: &awaken_sqlite_pool::SharedSqliteConnection,
-    f: F,
-) -> Result<T, MemErr>
+/// Run one mutation on the store's connection to completion.
+///
+/// The connection is admitted in the caller (first come, first served), then
+/// the transaction runs on its own task: a caller that stops waiting after
+/// admission does not roll back a write already in flight, exactly as the
+/// former blocking-thread bridge kept running its admitted operation.
+async fn with_conn_mem<T, F, Fut>(pool: &EmbeddedPool, operation: F) -> Result<T, MemErr>
 where
     T: Send + 'static,
-    F: FnOnce(&Connection) -> Result<T, MemErr> + Send + 'static,
+    F: FnOnce(awaken_sqlite_pool::EmbeddedConnection) -> Fut,
+    Fut: Future<Output = Result<T, MemErr>> + Send + 'static,
 {
-    awaken_sqlite_pool::with_connection(conn.clone(), move |connection| f(connection))
-        .await
-        .map_err(mem_err)?
+    let connection = pool.acquire().await.map_err(mem_err)?;
+    tokio::spawn(operation(connection)).await.map_err(mem_err)?
 }
 
 /// A SQLite-backed [`MemoryRepository`] (path-addressed, CAS). Each mutation holds the
-/// connection mutex, so a read-modify-write (compare-and-swap, rename-replace) is
+/// store's one connection, so a read-modify-write (compare-and-swap, rename-replace) is
 /// atomic within the process; a cross-node CAS is the postgres backend's job.
 pub struct SqliteMemoryRepository {
-    conn: awaken_sqlite_pool::SharedSqliteConnection,
+    pool: EmbeddedPool,
     clock: Arc<dyn WallClock>,
 }
 
 impl SqliteMemoryRepository {
     /// Open (or create) a database file and apply the memory-store migrations
     /// (one-step convenience for a store-owned database).
-    pub fn open(path: &str, clock: Arc<dyn WallClock>) -> Result<Self, StoreError> {
-        let conn = awaken_sqlite_pool::SqliteConnectionFactory::file(path)
+    pub async fn open(path: &str, clock: Arc<dyn WallClock>) -> Result<Self, StoreError> {
+        let pool = EmbeddedSqlite::file(path)
             .open()
+            .await
             .map_err(|e| StoreError::Open(e.to_string()))?;
-        let store = Self::over(conn, clock);
-        store.ensure_schema()?;
+        let store = Self::over(pool, clock);
+        store.ensure_schema().await?;
         Ok(store)
     }
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory(clock: Arc<dyn WallClock>) -> Result<Self, StoreError> {
-        let conn = awaken_sqlite_pool::SqliteConnectionFactory::memory()
+    pub async fn open_in_memory(clock: Arc<dyn WallClock>) -> Result<Self, StoreError> {
+        let pool = EmbeddedSqlite::memory()
             .open()
+            .await
             .map_err(|e| StoreError::Open(e.to_string()))?;
-        let store = Self::over(conn, clock);
-        store.ensure_schema()?;
+        let store = Self::over(pool, clock);
+        store.ensure_schema().await?;
         Ok(store)
     }
 
-    /// Wrap an existing connection **without migrating**, allowing a unified
+    /// Wrap an existing pool **without migrating**, allowing a unified
     /// migration pipeline to own the shared database.
-    pub fn over(conn: Connection, clock: Arc<dyn WallClock>) -> Self {
-        Self {
-            conn: awaken_sqlite_pool::SharedSqliteConnection::new(conn),
-            clock,
-        }
+    pub fn over(pool: EmbeddedPool, clock: Arc<dyn WallClock>) -> Self {
+        Self { pool, clock }
     }
 
     /// Apply the `memory_store` scoped migration bundle (idempotent). Optional.
-    pub fn ensure_schema(&self) -> Result<(), StoreError> {
-        migrate_guarded(&self.conn)
+    pub async fn ensure_schema(&self) -> Result<(), StoreError> {
+        migrate_pool(&self.pool).await
     }
 }
 
@@ -197,82 +194,96 @@ fn parse_operation(value: &str) -> Result<MemoryVersionOperation, MemErr> {
     }
 }
 
-fn row_version(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryVersion> {
-    let operation: String = row.get(2)?;
-    let content: Option<Vec<u8>> = row.get(4)?;
+/// One `{NS}_versions` row: id, memory_id, operation, path, content, created,
+/// redacted, created_by_json, redacted_by_json.
+type VersionRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<Vec<u8>>,
+    i64,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+);
+
+fn row_version(row: VersionRow) -> Result<MemoryVersion, MemErr> {
+    let (
+        id,
+        memory_id,
+        operation,
+        path,
+        content,
+        created,
+        redacted,
+        created_by_json,
+        redacted_by_json,
+    ) = row;
     let content = content
         .map(String::from_utf8)
         .transpose()
-        .map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                4,
-                rusqlite::types::Type::Blob,
-                Box::new(error),
-            )
-        })?;
-    let actor = |index| -> rusqlite::Result<Option<MemoryActor>> {
-        row.get::<_, Option<String>>(index)?
-            .map(|json| {
-                serde_json::from_str(&json).map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        index,
-                        rusqlite::types::Type::Text,
-                        Box::new(error),
-                    )
-                })
-            })
+        .map_err(mem_err)?;
+    let actor = |json: Option<String>| -> Result<Option<MemoryActor>, MemErr> {
+        json.map(|json| serde_json::from_str(&json).map_err(mem_err))
             .transpose()
     };
     Ok(MemoryVersion {
-        id: row.get(0)?,
-        memory_id: row.get(1)?,
-        operation: parse_operation(&operation).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                2,
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })?,
-        path: row.get(3)?,
+        id,
+        memory_id,
+        operation: parse_operation(&operation)?,
+        path,
         content,
-        created_unix_nanos: row.get::<_, i64>(5)? as u128,
-        created_by: actor(7)?,
-        redacted_unix_nanos: row.get::<_, Option<i64>>(6)?.map(|value| value as u128),
-        redacted_by: actor(8)?,
+        created_unix_nanos: created as u128,
+        created_by: actor(created_by_json)?,
+        redacted_unix_nanos: redacted.map(|value| value as u128),
+        redacted_by: actor(redacted_by_json)?,
     })
 }
 
-fn next_counter(tx: &rusqlite::Transaction<'_>, name: &str, seed_sql: &str) -> Result<i64, MemErr> {
-    let seed: i64 = tx
-        .query_row(seed_sql, [], |row| row.get(0))
+async fn next_counter(
+    tx: &mut SqliteConnection,
+    name: &str,
+    seed_sql: &str,
+) -> Result<i64, MemErr> {
+    let seed: i64 = sqlx::query_scalar(seed_sql)
+        .fetch_one(&mut *tx)
+        .await
         .map_err(mem_err)?;
-    tx.execute(
-        &format!("INSERT OR IGNORE INTO {NS}_counters(name, next_value) VALUES (?1, ?2)"),
-        params![name, seed],
-    )
+    sqlx::query(&format!(
+        "INSERT OR IGNORE INTO {NS}_counters(name, next_value) VALUES (?1, ?2)"
+    ))
+    .bind(name)
+    .bind(seed)
+    .execute(&mut *tx)
+    .await
     .map_err(mem_err)?;
-    tx.execute(
-        &format!("UPDATE {NS}_counters SET next_value = next_value + 1 WHERE name = ?1"),
-        params![name],
-    )
+    sqlx::query(&format!(
+        "UPDATE {NS}_counters SET next_value = next_value + 1 WHERE name = ?1"
+    ))
+    .bind(name)
+    .execute(&mut *tx)
+    .await
     .map_err(mem_err)?;
-    tx.query_row(
-        &format!("SELECT next_value FROM {NS}_counters WHERE name = ?1"),
-        params![name],
-        |row| row.get(0),
-    )
+    sqlx::query_scalar(&format!(
+        "SELECT next_value FROM {NS}_counters WHERE name = ?1"
+    ))
+    .bind(name)
+    .fetch_one(&mut *tx)
+    .await
     .map_err(mem_err)
 }
 
-fn append_version(
-    tx: &rusqlite::Transaction<'_>,
+async fn append_version(
+    tx: &mut SqliteConnection,
     append: VersionAppend<'_>,
 ) -> Result<MemoryVersion, MemErr> {
     let ordinal = next_counter(
         tx,
         "memory_version",
         &format!("SELECT COALESCE(MAX(ordinal), 0) FROM {NS}_versions"),
-    )?;
+    )
+    .await?;
     let version = MemoryVersion {
         id: format!("memver_{ordinal:016}"),
         memory_id: append.memory_id.to_string(),
@@ -284,28 +295,27 @@ fn append_version(
         redacted_unix_nanos: None,
         redacted_by: None,
     };
-    tx.execute(
-        &format!(
-            "INSERT INTO {NS}_versions \
-             (store_id, ordinal, id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, NULL)"
-        ),
-        params![
-            append.store,
-            ordinal,
-            version.id,
-            append.memory_id,
-            operation_name(append.operation),
-            append.path,
-            append.content.map(str::as_bytes),
-            append.created,
-            append
-                .actor
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(mem_err)?,
-        ],
-    )
+    let created_by = append
+        .actor
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(mem_err)?;
+    sqlx::query(&format!(
+        "INSERT INTO {NS}_versions \
+         (store_id, ordinal, id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, NULL)"
+    ))
+    .bind(append.store)
+    .bind(ordinal)
+    .bind(&version.id)
+    .bind(append.memory_id)
+    .bind(operation_name(append.operation))
+    .bind(append.path)
+    .bind(append.content.map(str::as_bytes))
+    .bind(append.created)
+    .bind(created_by)
+    .execute(&mut *tx)
+    .await
     .map_err(mem_err)?;
     Ok(version)
 }
@@ -321,156 +331,124 @@ impl MemoryRepository for SqliteMemoryRepository {
         let store = store.to_owned();
         let id = candidate.id();
         let encoded = serde_json::to_string(candidate).map_err(mem_err)?;
-        with_conn_mem(&self.conn, move |conn| {
+        with_conn_mem(&self.pool, move |mut conn| async move {
             // Reserve the SQLite write transaction BEFORE observing absence or
             // capacity, including independent connections after Worker restart.
-            let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate).map_err(mem_err)?;
-            let existing: Option<String> = tx.query_row(
-                &format!("SELECT candidate_json FROM {NS}_copy_conflicts WHERE store_id = ?1 AND id = ?2"),
-                params![store, id], |row| row.get(0),
-            ).optional().map_err(mem_err)?;
+            let mut tx = sqlx::Connection::begin_with(&mut *conn, "BEGIN IMMEDIATE")
+                .await
+                .map_err(mem_err)?;
+            let existing: Option<String> = sqlx::query_scalar(&format!(
+                "SELECT candidate_json FROM {NS}_copy_conflicts WHERE store_id = ?1 AND id = ?2"
+            ))
+            .bind(&store)
+            .bind(&id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(mem_err)?;
             if let Some(existing) = existing {
-                return if existing == encoded { Ok(()) } else {
+                return if existing == encoded {
+                    Ok(())
+                } else {
                     Err(mem_err("Memory copy proposal identity mismatch"))
                 };
             }
-            let count: i64 = tx.query_row(
-                &format!("SELECT COUNT(*) FROM {NS}_copy_conflicts WHERE store_id = ?1"),
-                [&store], |row| row.get(0),
-            ).map_err(mem_err)?;
-            if count >= crate::MAX_MEMORIES_PER_STORE as i64 { return Err(MemErr::AtCapacity); }
-            tx.execute(
-                &format!("INSERT INTO {NS}_copy_conflicts (store_id, id, candidate_json) VALUES (?1, ?2, ?3)"),
-                params![store, id, encoded],
-            ).map_err(mem_err)?;
-            tx.commit().map_err(mem_err)
-        }).await
+            let count: i64 = sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM {NS}_copy_conflicts WHERE store_id = ?1"
+            ))
+            .bind(&store)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(mem_err)?;
+            if count >= crate::MAX_MEMORIES_PER_STORE as i64 {
+                return Err(MemErr::AtCapacity);
+            }
+            sqlx::query(&format!(
+                "INSERT INTO {NS}_copy_conflicts (store_id, id, candidate_json) VALUES (?1, ?2, ?3)"
+            ))
+            .bind(&store)
+            .bind(&id)
+            .bind(&encoded)
+            .execute(&mut *tx)
+            .await
+            .map_err(mem_err)?;
+            tx.commit().await.map_err(mem_err)
+        })
+        .await
     }
 
     async fn list_copy_conflicts(
         &self,
         store: &str,
     ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
-        let store = store.to_owned();
-        with_conn_mem(&self.conn, move |conn| {
-            let mut query = conn
-                .prepare(&format!(
-                    "SELECT id, candidate_json FROM {NS}_copy_conflicts WHERE store_id = ?1 ORDER BY id"
-                ))
-                .map_err(mem_err)?;
-            query
-                .query_map([store], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
-                .map_err(mem_err)?
-                .map(|row| {
-                    let (id, encoded) = row.map_err(mem_err)?;
-                    crate::repository::decode_copy_conflict(&id, &encoded)
-                })
-                .collect()
-        })
+        let rows: Vec<(String, String)> = sqlx::query_as(&format!(
+            "SELECT id, candidate_json FROM {NS}_copy_conflicts WHERE store_id = ?1 ORDER BY id"
+        ))
+        .bind(store)
+        .fetch_all(&self.pool)
         .await
+        .map_err(mem_err)?;
+        rows.into_iter()
+            .map(|(id, encoded)| crate::repository::decode_copy_conflict(&id, &encoded))
+            .collect()
     }
+
     async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
-        let store = store.to_string();
-        with_conn_mem(&self.conn, move |conn| {
-            let mut stmt = conn
-                .prepare(&format!(
-                    "SELECT id, path, content, sha, version, created, updated \
-                     FROM {NS}_memories WHERE store_id = ?1 ORDER BY path"
-                ))
-                .map_err(mem_err)?;
-            stmt.query_map(params![store], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, i64>(6)?,
-                ))
-            })
-            .map_err(mem_err)?
-            .map(|row| {
-                let (id, path, content, sha, version, created, updated) = row.map_err(mem_err)?;
+        let rows: Vec<(String, String, Vec<u8>, String, i64, i64, i64)> = sqlx::query_as(&format!(
+            "SELECT id, path, content, sha, version, created, updated \
+                 FROM {NS}_memories WHERE store_id = ?1 ORDER BY path"
+        ))
+        .bind(store)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(mem_err)?;
+        rows.into_iter()
+            .map(|(id, path, content, sha, version, created, updated)| {
                 row_memory(id, path, content, sha, version, created, updated)
             })
             .collect()
-        })
-        .await
     }
 
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
-        let (store, prefix) = (store.to_string(), prefix.to_string());
-        with_conn_mem(&self.conn, move |conn| {
-            let mut stmt = conn
-                .prepare(&format!(
-                    "SELECT id, path, sha, length(content), version, updated \
-                     FROM {NS}_memories WHERE store_id = ?1"
-                ))
-                .map_err(mem_err)?;
-            let rows = stmt
-                .query_map(params![store], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, i64>(3)?,
-                        r.get::<_, i64>(4)?,
-                        r.get::<_, i64>(5)?,
-                    ))
-                })
-                .map_err(mem_err)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(mem_err)?;
-            rows.into_iter()
-                .filter(|(_, path, ..)| under_prefix(path, &prefix))
-                .map(|(id, path, sha, size, version, updated)| {
-                    Ok(MemoryEntry {
-                        id,
-                        path,
-                        content_sha256: sha,
-                        content_size: u64::try_from(size).map_err(mem_err)?,
-                        version: domain_version(version)?,
-                        updated_unix_nanos: updated as u128,
-                    })
-                })
-                .collect::<Result<Vec<_>, MemErr>>()
-        })
+        let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(&format!(
+            "SELECT id, path, sha, length(content), version, updated \
+             FROM {NS}_memories WHERE store_id = ?1"
+        ))
+        .bind(store)
+        .fetch_all(&self.pool)
         .await
+        .map_err(mem_err)?;
+        rows.into_iter()
+            .filter(|(_, path, ..)| under_prefix(path, prefix))
+            .map(|(id, path, sha, size, version, updated)| {
+                Ok(MemoryEntry {
+                    id,
+                    path,
+                    content_sha256: sha,
+                    content_size: u64::try_from(size).map_err(mem_err)?,
+                    version: domain_version(version)?,
+                    updated_unix_nanos: updated as u128,
+                })
+            })
+            .collect::<Result<Vec<_>, MemErr>>()
     }
 
     async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
-        let (store, path) = (store.to_string(), path.to_string());
-        with_conn_mem(&self.conn, move |conn| {
-            let row = conn
-                .query_row(
-                    &format!(
-                        "SELECT id, path, content, sha, version, created, updated \
-                         FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"
-                    ),
-                    params![store, path],
-                    |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, Vec<u8>>(2)?,
-                            r.get::<_, String>(3)?,
-                            r.get::<_, i64>(4)?,
-                            r.get::<_, i64>(5)?,
-                            r.get::<_, i64>(6)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(mem_err)?;
-            match row {
-                Some((id, path, content, sha, version, created, updated)) => Ok(Some(row_memory(
-                    id, path, content, sha, version, created, updated,
-                )?)),
-                None => Ok(None),
-            }
-        })
-        .await
+        let row: Option<(String, String, Vec<u8>, String, i64, i64, i64)> =
+            sqlx::query_as(&format!(
+                "SELECT id, path, content, sha, version, created, updated \
+                 FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"
+            ))
+            .bind(store)
+            .bind(path)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(mem_err)?;
+        match row {
+            Some((id, path, content, sha, version, created, updated)) => Ok(Some(row_memory(
+                id, path, content, sha, version, created, updated,
+            )?)),
+            None => Ok(None),
+        }
     }
 
     async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
@@ -489,49 +467,56 @@ impl MemoryRepository for SqliteMemoryRepository {
         let (store, path, content) = (store.to_string(), path.to_string(), content.to_string());
         let actor = actor.cloned();
         let clock = self.clock.clone();
-        with_conn_mem(&self.conn, move |conn| {
-            let tx = conn.unchecked_transaction().map_err(mem_err)?;
-            let exists = tx
-                .query_row(
-                    &format!("SELECT 1 FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
-                    params![store, path],
-                    |_| Ok(()),
-                )
-                .optional()
-                .map_err(mem_err)?
-                .is_some();
+        with_conn_mem(&self.pool, move |mut conn| async move {
+            let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(mem_err)?;
+            let exists = sqlx::query_scalar::<_, i64>(&format!(
+                "SELECT 1 FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"
+            ))
+            .bind(&store)
+            .bind(&path)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(mem_err)?
+            .is_some();
             if exists {
                 return Err(MemErr::PathConflict(path));
             }
-            let live_count: i64 = tx
-                .query_row(
-                    &format!("SELECT COUNT(*) FROM {NS}_memories WHERE store_id = ?1"),
-                    params![store],
-                    |row| row.get(0),
-                )
-                .map_err(mem_err)?;
+            let live_count: i64 = sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM {NS}_memories WHERE store_id = ?1"
+            ))
+            .bind(&store)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(mem_err)?;
             if live_count >= crate::MAX_MEMORIES_PER_STORE as i64 {
                 return Err(MemErr::AtCapacity);
             }
             let ordinal = next_counter(
-                &tx,
+                &mut tx,
                 "memory_id",
                 &format!("SELECT COALESCE(MAX(ordinal), 0) FROM {NS}_memories"),
-            )?;
+            )
+            .await?;
             let id = format!("mem_{ordinal}");
             let sha = sha256_hex(&content);
             let now = stored_now_nanos(clock.as_ref())?;
-            tx.execute(
-                &format!(
-                    "INSERT INTO {NS}_memories \
-                     (store_id, path, id, ordinal, content, sha, version, created, updated) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)"
-                ),
-                params![store, path, id, ordinal, content.as_bytes(), sha, now],
-            )
+            sqlx::query(&format!(
+                "INSERT INTO {NS}_memories \
+                 (store_id, path, id, ordinal, content, sha, version, created, updated) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)"
+            ))
+            .bind(&store)
+            .bind(&path)
+            .bind(&id)
+            .bind(ordinal)
+            .bind(content.as_bytes())
+            .bind(&sha)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
             .map_err(mem_err)?;
             append_version(
-                &tx,
+                &mut tx,
                 VersionAppend {
                     store: &store,
                     memory_id: &id,
@@ -541,8 +526,9 @@ impl MemoryRepository for SqliteMemoryRepository {
                     created: now,
                     actor: actor.as_ref(),
                 },
-            )?;
-            tx.commit().map_err(mem_err)?;
+            )
+            .await?;
+            tx.commit().await.map_err(mem_err)?;
             Ok(Memory {
                 content_size: content.len() as u64,
                 content: Some(content),
@@ -595,64 +581,60 @@ impl MemoryRepository for SqliteMemoryRepository {
         validate_path(to)?;
         let (store, from, to) = (store.to_string(), from.to_string(), to.to_string());
         let clock = self.clock.clone();
-        with_conn_mem(&self.conn, move |conn| {
+        with_conn_mem(&self.pool, move |mut conn| async move {
             // Atomic POSIX replace: drop the destination and move the source in ONE
             // transaction, so a crash between the two writes can never leave the
             // destination deleted without the move completing (an uncommitted
-            // transaction is rolled back on recovery). `unchecked_transaction` gives a
-            // transaction from a shared `&Connection`; it rolls back if dropped before
-            // `commit` (any early return here — e.g. a mid-op fault — undoes the DELETE).
-            let tx = conn.unchecked_transaction().map_err(mem_err)?;
-            let row = tx
-                .query_row(
-                    &format!(
-                        "SELECT id, content, sha, version, created FROM {NS}_memories \
-                         WHERE store_id = ?1 AND path = ?2"
-                    ),
-                    params![store, from],
-                    |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, Vec<u8>>(1)?,
-                            r.get::<_, String>(2)?,
-                            r.get::<_, i64>(3)?,
-                            r.get::<_, i64>(4)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(mem_err)?;
+            // transaction is rolled back on recovery). The transaction rolls back
+            // if dropped before `commit` (any early return here — e.g. a mid-op
+            // fault — undoes the DELETE).
+            let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(mem_err)?;
+            let row: Option<(String, Vec<u8>, String, i64, i64)> = sqlx::query_as(&format!(
+                "SELECT id, content, sha, version, created FROM {NS}_memories \
+                 WHERE store_id = ?1 AND path = ?2"
+            ))
+            .bind(&store)
+            .bind(&from)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(mem_err)?;
             let (id, content, sha, version, created) =
                 row.ok_or_else(|| MemErr::NotFound(from.clone()))?;
             if from == to {
                 return row_memory(id, from, content, sha, version, created, created);
             }
             let now = stored_now_nanos(clock.as_ref())?;
-            let displaced_id = tx
-                .query_row(
-                    &format!("SELECT id FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
-                    params![store, to],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(mem_err)?;
-            let id = rename_replace_identity(id, displaced_id.as_ref());
-            tx.execute(
-                &format!("DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
-                params![store, to],
-            )
+            let displaced_id: Option<String> = sqlx::query_scalar(&format!(
+                "SELECT id FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"
+            ))
+            .bind(&store)
+            .bind(&to)
+            .fetch_optional(&mut *tx)
+            .await
             .map_err(mem_err)?;
-            tx.execute(
-                &format!(
-                    "UPDATE {NS}_memories SET path = ?1, version = version + 1, updated = ?2 \
-                     WHERE store_id = ?3 AND id = ?4"
-                ),
-                params![to, now, store, id],
-            )
+            let id = rename_replace_identity(id, displaced_id.as_ref());
+            sqlx::query(&format!(
+                "DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"
+            ))
+            .bind(&store)
+            .bind(&to)
+            .execute(&mut *tx)
+            .await
+            .map_err(mem_err)?;
+            sqlx::query(&format!(
+                "UPDATE {NS}_memories SET path = ?1, version = version + 1, updated = ?2 \
+                 WHERE store_id = ?3 AND id = ?4"
+            ))
+            .bind(&to)
+            .bind(now)
+            .bind(&store)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
             .map_err(mem_err)?;
             if let Some(displaced_id) = displaced_id {
                 append_version(
-                    &tx,
+                    &mut tx,
                     VersionAppend {
                         store: &store,
                         memory_id: &displaced_id,
@@ -662,11 +644,12 @@ impl MemoryRepository for SqliteMemoryRepository {
                         created: now,
                         actor: None,
                     },
-                )?;
+                )
+                .await?;
             }
             let content = String::from_utf8(content).map_err(mem_err)?;
             append_version(
-                &tx,
+                &mut tx,
                 VersionAppend {
                     store: &store,
                     memory_id: &id,
@@ -676,8 +659,9 @@ impl MemoryRepository for SqliteMemoryRepository {
                     created: now,
                     actor: None,
                 },
-            )?;
-            tx.commit().map_err(mem_err)?;
+            )
+            .await?;
+            tx.commit().await.map_err(mem_err)?;
             Ok(Memory {
                 content_size: content.len() as u64,
                 content: Some(content),
@@ -705,26 +689,29 @@ impl MemoryRepository for SqliteMemoryRepository {
         let (store, path) = (store.to_string(), path.to_string());
         let actor = actor.cloned();
         let clock = self.clock.clone();
-        with_conn_mem(&self.conn, move |conn| {
-            let tx = conn.unchecked_transaction().map_err(mem_err)?;
-            let memory_id = tx
-                .query_row(
-                    &format!("SELECT id FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
-                    params![store, path],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(mem_err)?;
+        with_conn_mem(&self.pool, move |mut conn| async move {
+            let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(mem_err)?;
+            let memory_id: Option<String> = sqlx::query_scalar(&format!(
+                "SELECT id FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"
+            ))
+            .bind(&store)
+            .bind(&path)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(mem_err)?;
             let Some(memory_id) = memory_id else {
                 return Ok(());
             };
-            tx.execute(
-                &format!("DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
-                params![store, path],
-            )
+            sqlx::query(&format!(
+                "DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"
+            ))
+            .bind(&store)
+            .bind(&path)
+            .execute(&mut *tx)
+            .await
             .map_err(mem_err)?;
             append_version(
-                &tx,
+                &mut tx,
                 VersionAppend {
                     store: &store,
                     memory_id: &memory_id,
@@ -734,8 +721,9 @@ impl MemoryRepository for SqliteMemoryRepository {
                     created: stored_now_nanos(clock.as_ref())?,
                     actor: actor.as_ref(),
                 },
-            )?;
-            tx.commit().map_err(mem_err)?;
+            )
+            .await?;
+            tx.commit().await.map_err(mem_err)?;
             Ok(())
         })
         .await
@@ -764,28 +752,17 @@ impl MemoryRepository for SqliteMemoryRepository {
             actor.cloned(),
         );
         let clock = self.clock.clone();
-        with_conn_mem(&self.conn, move |conn| {
-            let tx = conn.unchecked_transaction().map_err(mem_err)?;
-            let row = tx
-                .query_row(
-                    &format!(
-                        "SELECT id, content, sha, version, created, updated FROM {NS}_memories \
-                         WHERE store_id = ?1 AND path = ?2"
-                    ),
-                    params![store, path],
-                    |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, Vec<u8>>(1)?,
-                            r.get::<_, String>(2)?,
-                            r.get::<_, i64>(3)?,
-                            r.get::<_, i64>(4)?,
-                            r.get::<_, i64>(5)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(mem_err)?;
+        with_conn_mem(&self.pool, move |mut conn| async move {
+            let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(mem_err)?;
+            let row: Option<(String, Vec<u8>, String, i64, i64, i64)> = sqlx::query_as(&format!(
+                "SELECT id, content, sha, version, created, updated FROM {NS}_memories \
+                 WHERE store_id = ?1 AND path = ?2"
+            ))
+            .bind(&store)
+            .bind(&path)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(mem_err)?;
             let admission =
                 ConditionalDeleteAdmission::new(row.as_ref().map(|(id, _, sha, version, _, _)| {
                     (
@@ -807,13 +784,16 @@ impl MemoryRepository for SqliteMemoryRepository {
                 }
                 ConditionalDeleteAdmission::Delete => {}
             }
-            tx.execute(
-                &format!("DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
-                params![store, path],
-            )
+            sqlx::query(&format!(
+                "DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"
+            ))
+            .bind(&store)
+            .bind(&path)
+            .execute(&mut *tx)
+            .await
             .map_err(mem_err)?;
             append_version(
-                &tx,
+                &mut tx,
                 VersionAppend {
                     store: &store,
                     memory_id: base.memory_id(),
@@ -823,28 +803,24 @@ impl MemoryRepository for SqliteMemoryRepository {
                     created: stored_now_nanos(clock.as_ref())?,
                     actor: actor.as_ref(),
                 },
-            )?;
-            tx.commit().map_err(mem_err)?;
+            )
+            .await?;
+            tx.commit().await.map_err(mem_err)?;
             Ok(true)
         })
         .await
     }
 
     async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
-        let store = store.to_string();
-        with_conn_mem(&self.conn, move |conn| {
-            let mut stmt = conn
-                .prepare(&format!(
-                    "SELECT id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json \
-                     FROM {NS}_versions WHERE store_id = ?1 ORDER BY ordinal"
-                ))
-                .map_err(mem_err)?;
-            stmt.query_map(params![store], row_version)
-                .map_err(mem_err)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(mem_err)
-        })
+        let rows: Vec<VersionRow> = sqlx::query_as(&format!(
+            "SELECT id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json \
+             FROM {NS}_versions WHERE store_id = ?1 ORDER BY ordinal"
+        ))
+        .bind(store)
+        .fetch_all(&self.pool)
         .await
+        .map_err(mem_err)?;
+        rows.into_iter().map(row_version).collect()
     }
 
     async fn redact_version(
@@ -864,42 +840,44 @@ impl MemoryRepository for SqliteMemoryRepository {
         let (store, version_id) = (store.to_string(), version_id.to_string());
         let actor = actor.cloned();
         let clock = self.clock.clone();
-        with_conn_mem(&self.conn, move |conn| {
-            let tx = conn.unchecked_transaction().map_err(mem_err)?;
-            let existing = tx
-                .query_row(
-                    &format!(
-                        "SELECT id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json \
-                         FROM {NS}_versions WHERE store_id = ?1 AND id = ?2"
-                    ),
-                    params![store, version_id],
-                    row_version,
-                )
-                .optional()
-                .map_err(mem_err)?;
-            let Some(mut version) = existing else {
+        with_conn_mem(&self.pool, move |mut conn| async move {
+            let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(mem_err)?;
+            let existing: Option<VersionRow> = sqlx::query_as(&format!(
+                "SELECT id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json \
+                 FROM {NS}_versions WHERE store_id = ?1 AND id = ?2"
+            ))
+            .bind(&store)
+            .bind(&version_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(mem_err)?;
+            let Some(mut version) = existing.map(row_version).transpose()? else {
                 return Ok(None);
             };
             if version.redacted_unix_nanos.is_none() {
                 let redacted = stored_now_nanos(clock.as_ref())?;
-                tx.execute(
-                    &format!(
-                        "UPDATE {NS}_versions SET content = NULL, redacted = ?1, redacted_by_json = ?2 \
-                         WHERE store_id = ?3 AND id = ?4"
-                    ),
-                    params![
-                        redacted,
-                        actor.as_ref().map(serde_json::to_string).transpose().map_err(mem_err)?,
-                        store,
-                        version_id
-                    ],
+                sqlx::query(&format!(
+                    "UPDATE {NS}_versions SET content = NULL, redacted = ?1, redacted_by_json = ?2 \
+                     WHERE store_id = ?3 AND id = ?4"
+                ))
+                .bind(redacted)
+                .bind(
+                    actor
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()
+                        .map_err(mem_err)?,
                 )
+                .bind(&store)
+                .bind(&version_id)
+                .execute(&mut *tx)
+                .await
                 .map_err(mem_err)?;
                 version.content = None;
                 version.redacted_unix_nanos = Some(redacted as u128);
                 version.redacted_by = actor.clone();
             }
-            tx.commit().map_err(mem_err)?;
+            tx.commit().await.map_err(mem_err)?;
             Ok(Some(version))
         })
         .await
@@ -907,27 +885,31 @@ impl MemoryRepository for SqliteMemoryRepository {
 
     async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
         let store = store.to_string();
-        with_conn_mem(&self.conn, move |conn| {
-            let tx = conn.unchecked_transaction().map_err(mem_err)?;
-            let copy_conflicts_deleted = tx
-                .execute(
-                    &format!("DELETE FROM {NS}_copy_conflicts WHERE store_id = ?1"),
-                    params![store],
-                )
-                .map_err(mem_err)? as u64;
-            let versions_deleted = tx
-                .execute(
-                    &format!("DELETE FROM {NS}_versions WHERE store_id = ?1"),
-                    params![store],
-                )
-                .map_err(mem_err)? as u64;
-            let heads_deleted = tx
-                .execute(
-                    &format!("DELETE FROM {NS}_memories WHERE store_id = ?1"),
-                    params![store],
-                )
-                .map_err(mem_err)? as u64;
-            tx.commit().map_err(mem_err)?;
+        with_conn_mem(&self.pool, move |mut conn| async move {
+            let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(mem_err)?;
+            let copy_conflicts_deleted = sqlx::query(&format!(
+                "DELETE FROM {NS}_copy_conflicts WHERE store_id = ?1"
+            ))
+            .bind(&store)
+            .execute(&mut *tx)
+            .await
+            .map_err(mem_err)?
+            .rows_affected();
+            let versions_deleted =
+                sqlx::query(&format!("DELETE FROM {NS}_versions WHERE store_id = ?1"))
+                    .bind(&store)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(mem_err)?
+                    .rows_affected();
+            let heads_deleted =
+                sqlx::query(&format!("DELETE FROM {NS}_memories WHERE store_id = ?1"))
+                    .bind(&store)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(mem_err)?
+                    .rows_affected();
+            tx.commit().await.map_err(mem_err)?;
             Ok(MemoryPurgeSummary {
                 heads_deleted,
                 versions_deleted,
@@ -966,28 +948,17 @@ impl SqliteMemoryRepository {
         let actor = actor.cloned();
         let expected_path = expected_path.map(str::to_owned);
         let clock = self.clock.clone();
-        with_conn_mem(&self.conn, move |conn| {
-            let tx = conn.unchecked_transaction().map_err(mem_err)?;
-            let row = tx
-                .query_row(
-                    &format!(
-                        "SELECT path, sha, content, version, created, updated FROM {NS}_memories \
-                         WHERE store_id = ?1 AND id = ?2"
-                    ),
-                    params![store, base.memory_id()],
-                    |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, Vec<u8>>(2)?,
-                            r.get::<_, i64>(3)?,
-                            r.get::<_, i64>(4)?,
-                            r.get::<_, i64>(5)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(mem_err)?;
+        with_conn_mem(&self.pool, move |mut conn| async move {
+            let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(mem_err)?;
+            let row: Option<(String, String, Vec<u8>, i64, i64, i64)> = sqlx::query_as(&format!(
+                "SELECT path, sha, content, version, created, updated FROM {NS}_memories \
+                 WHERE store_id = ?1 AND id = ?2"
+            ))
+            .bind(&store)
+            .bind(base.memory_id())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(mem_err)?;
             let (path, cur_sha, cur_content, version, created, updated) =
                 row.ok_or_else(|| MemErr::NotFound(base.memory_id().to_owned()))?;
             let requested_path = target_path.unwrap_or_else(|| path.clone());
@@ -1030,42 +1001,44 @@ impl SqliteMemoryRepository {
                 HeadUpdateAdmission::Apply => {}
             }
             let now = stored_now_nanos(clock.as_ref())?;
-            let displaced_id = if requested_path == path {
+            let displaced_id: Option<String> = if requested_path == path {
                 None
             } else {
-                tx.query_row(
-                    &format!("SELECT id FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
-                    params![store, requested_path],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
+                sqlx::query_scalar(&format!(
+                    "SELECT id FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"
+                ))
+                .bind(&store)
+                .bind(&requested_path)
+                .fetch_optional(&mut *tx)
+                .await
                 .map_err(mem_err)?
             };
             if displaced_id.is_some() {
-                tx.execute(
-                    &format!("DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
-                    params![store, requested_path],
-                )
+                sqlx::query(&format!(
+                    "DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"
+                ))
+                .bind(&store)
+                .bind(&requested_path)
+                .execute(&mut *tx)
+                .await
                 .map_err(mem_err)?;
             }
-            tx.execute(
-                &format!(
-                    "UPDATE {NS}_memories SET path = ?1, content = ?2, sha = ?3, \
-                     version = version + 1, updated = ?4 WHERE store_id = ?5 AND id = ?6"
-                ),
-                params![
-                    requested_path,
-                    content.as_bytes(),
-                    new_sha,
-                    now,
-                    store,
-                    base.memory_id()
-                ],
-            )
+            sqlx::query(&format!(
+                "UPDATE {NS}_memories SET path = ?1, content = ?2, sha = ?3, \
+                 version = version + 1, updated = ?4 WHERE store_id = ?5 AND id = ?6"
+            ))
+            .bind(&requested_path)
+            .bind(content.as_bytes())
+            .bind(&new_sha)
+            .bind(now)
+            .bind(&store)
+            .bind(base.memory_id())
+            .execute(&mut *tx)
+            .await
             .map_err(mem_err)?;
             if let Some(displaced_id) = displaced_id {
                 append_version(
-                    &tx,
+                    &mut tx,
                     VersionAppend {
                         store: &store,
                         memory_id: &displaced_id,
@@ -1075,10 +1048,11 @@ impl SqliteMemoryRepository {
                         created: now,
                         actor: actor.as_ref(),
                     },
-                )?;
+                )
+                .await?;
             }
             append_version(
-                &tx,
+                &mut tx,
                 VersionAppend {
                     store: &store,
                     memory_id: base.memory_id(),
@@ -1088,8 +1062,9 @@ impl SqliteMemoryRepository {
                     created: now,
                     actor: actor.as_ref(),
                 },
-            )?;
-            tx.commit().map_err(mem_err)?;
+            )
+            .await?;
+            tx.commit().await.map_err(mem_err)?;
             Ok(Memory {
                 content_size: content.len() as u64,
                 content: Some(content),
@@ -1110,33 +1085,29 @@ mod migration_seam_tests {
     use super::*;
     use crate::schema::memory_store_bundle;
 
-    #[test]
-    fn current_baseline_exposes_only_the_memory_aggregate() {
+    #[tokio::test]
+    async fn current_baseline_exposes_only_the_memory_aggregate() {
         // Causes: C1 empty ledger; C2 current V1/V2/V3 stream; C3 exact replay.
         // Effects: E1 create heads, versions, and counters only; E2 apply both
         // versions once; E3 apply nothing. Decision rules M1=C1+C2=>E1+E2;
         // M2=C3=>E3. Drift rejection is owned by the common runner tests.
-        let conn = Connection::open_in_memory().expect("open sqlite");
+        let conn = EmbeddedSqlite::memory().open().await.expect("open sqlite");
         let full = memory_store_bundle().expect("bundle builds");
-        let runner =
-            awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS).expect("runner");
+        let runner = SqliteMigrationRunner::with_prefix(conn.sqlx().clone(), NS).expect("runner");
 
-        let first = runner.run_bundle(&conn, &full).expect("M1 apply V1/V2/V3");
+        let first = runner.run_bundle(&full).await.expect("M1 apply V1/V2/V3");
         assert_eq!(
             first.iter().map(|m| m.version).collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
-        let tables = conn
-            .prepare(
-                "SELECT name FROM sqlite_master WHERE type='table' \
-                 AND name LIKE 'memory_store_%' \
-                 AND name NOT LIKE 'memory_store_schema_migrations%' ORDER BY name",
-            )
-            .unwrap()
-            .query_map([], |row| row.get::<_, String>(0))
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
+        let tables: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type='table' \
+             AND name LIKE 'memory_store_%' \
+             AND name NOT LIKE 'memory_store_schema_migrations%' ORDER BY name",
+        )
+        .fetch_all(&conn)
+        .await
+        .unwrap();
         assert_eq!(
             tables,
             [
@@ -1146,27 +1117,26 @@ mod migration_seam_tests {
             ],
             "M1/E1"
         );
-        let retired: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_store_blob'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let retired: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_store_blob'",
+        )
+        .fetch_one(&conn)
+        .await
+        .unwrap();
         assert_eq!(retired, 0, "M1/E1");
-        assert!(runner.run_bundle(&conn, &full).expect("M2").is_empty());
+        assert!(runner.run_bundle(&full).await.expect("M2").is_empty());
     }
 
-    /// `over` wraps a connection without migrating; the store only works once the
+    /// `over` wraps a pool without migrating; the store only works once the
     /// caller opts into the `memory_store` scope via `ensure_schema`.
     #[tokio::test]
     async fn over_does_not_migrate_but_ensure_schema_does() {
         let fs = SqliteMemoryRepository::over(
-            Connection::open_in_memory().unwrap(),
+            EmbeddedSqlite::memory().open().await.unwrap(),
             awaken_time::system_clock(),
         );
         assert!(fs.create("s", "/a.md", "alpha").await.is_err());
-        fs.ensure_schema().unwrap();
+        fs.ensure_schema().await.unwrap();
         assert_eq!(
             fs.create("s", "/a.md", "alpha")
                 .await
@@ -1185,7 +1155,9 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn sqlite_memory_repository_conforms() {
         crate::conformance::conformance(
-            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock())
+                .await
+                .unwrap(),
         )
         .await;
     }
@@ -1196,7 +1168,9 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn sqlite_memory_repository_extended_conformance() {
         crate::conformance::extended_conformance(
-            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock())
+                .await
+                .unwrap(),
         )
         .await;
     }
@@ -1204,7 +1178,9 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn sqlite_head_update_is_one_atomic_transaction() {
         crate::conformance::atomic_head_update_conformance(
-            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock())
+                .await
+                .unwrap(),
         )
         .await;
     }
@@ -1215,7 +1191,9 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn sqlite_rename_replace_orphans_destination_id() {
         crate::conformance::rename_replace_orphans_the_destination_id(
-            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock())
+                .await
+                .unwrap(),
         )
         .await;
     }
@@ -1225,7 +1203,9 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn durable_ids_remain_monotonic_after_delete() {
         crate::conformance::ids_stay_monotonic_across_delete(
-            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock())
+                .await
+                .unwrap(),
         )
         .await;
     }
@@ -1242,7 +1222,9 @@ mod memory_repository_tests {
         let path_str = path.to_str().unwrap();
         let version_id;
         {
-            let fs = SqliteMemoryRepository::open(path_str, awaken_time::system_clock()).unwrap();
+            let fs = SqliteMemoryRepository::open(path_str, awaken_time::system_clock())
+                .await
+                .unwrap();
             let api_actor = MemoryActor::ApiActor {
                 api_key_id: "api_durable".into(),
             };
@@ -1268,7 +1250,9 @@ mod memory_repository_tests {
                 .unwrap()
                 .unwrap();
         }
-        let fs = SqliteMemoryRepository::open(path_str, awaken_time::system_clock()).unwrap();
+        let fs = SqliteMemoryRepository::open(path_str, awaken_time::system_clock())
+            .await
+            .unwrap();
         assert_eq!(
             fs.get_by_path("s", "/keep.md")
                 .await
@@ -1309,19 +1293,23 @@ mod memory_repository_tests {
     /// then assert both memories are intact.
     #[tokio::test]
     async fn rename_replace_is_crash_atomic() {
-        let fs = SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap();
+        let fs = SqliteMemoryRepository::open_in_memory(awaken_time::system_clock())
+            .await
+            .unwrap();
         fs.create("s", "/from.md", "src").await.unwrap();
         fs.create("s", "/to.md", "dst").await.unwrap();
 
         // Simulate a crash: delete the destination inside a transaction, then abandon
         // it (drop without commit) — exactly the interrupted-rename window.
         {
-            let guard = fs.conn.lock().unwrap();
-            let tx = guard.unchecked_transaction().unwrap();
-            tx.execute(
-                &format!("DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
-                params!["s", "/to.md"],
-            )
+            let mut tx = fs.pool.begin().await.unwrap();
+            sqlx::query(&format!(
+                "DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"
+            ))
+            .bind("s")
+            .bind("/to.md")
+            .execute(&mut *tx)
+            .await
             .unwrap();
             // tx dropped here without commit == process died mid-rename.
         }
@@ -1352,7 +1340,9 @@ mod memory_repository_tests {
     #[tokio::test]
     async fn sqlite_store_enforces_the_shared_capacity_contract() {
         crate::repository::tests::capacity_conformance(
-            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap(),
+            &SqliteMemoryRepository::open_in_memory(awaken_time::system_clock())
+                .await
+                .unwrap(),
         )
         .await;
     }

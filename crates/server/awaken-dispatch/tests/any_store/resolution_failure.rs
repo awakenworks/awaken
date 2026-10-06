@@ -21,7 +21,7 @@ async fn terminal_resolution_storage_faults_and_takeover_preserve_queue_progress
         for fault in ["reject", "lost-reply", "takeover"] {
             let clock = Arc::new(ManualClock::new(100));
             let store = Arc::new(if sqlite {
-                any_in_memory_with_clock_handle(clock.clone())
+                any_in_memory_with_clock_handle(clock.clone()).await
             } else {
                 AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(clock.clone())))
             });
@@ -41,11 +41,12 @@ async fn terminal_resolution_storage_faults_and_takeover_preserve_queue_progress
             let database = root.path().join("commit.db");
             let committed = Arc::new(
                 awaken_store_sqlite::SqliteCommitCoordinator::open(database.to_str().unwrap())
+                    .await
                     .unwrap(),
             );
             let clock = Arc::new(ManualClock::new(100));
             let store = Arc::new(if sqlite {
-                any_in_memory_with_clock_handle(clock.clone())
+                any_in_memory_with_clock_handle(clock.clone()).await
             } else {
                 AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(clock.clone())))
             });
@@ -60,6 +61,7 @@ async fn terminal_resolution_storage_faults_and_takeover_preserve_queue_progress
             drop(committed);
             let reopened =
                 awaken_store_sqlite::SqliteCommitCoordinator::open(database.to_str().unwrap())
+                    .await
                     .unwrap();
             assert_eq!(reopened.commit_count(), 1, "R19 durable terminal count");
             assert!(matches!(

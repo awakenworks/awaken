@@ -1027,6 +1027,7 @@ mod tests {
         let storage = tempfile::tempdir().unwrap();
         let dispatch = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+                .await
                 .expect("artifact test dispatch"),
         );
         dispatch
@@ -1041,8 +1042,9 @@ mod tests {
             .expect("claim artifact attempt")
             .expect("artifact attempt available");
         let expected_claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
-        let mut raw_host =
-            SharedHost::new(Arc::new(NoLlm), "test").with_dispatch_store(dispatch.clone());
+        let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test")
+            .await
+            .with_dispatch_store(dispatch.clone());
         let claims = Arc::new(std::sync::Mutex::new(Vec::new()));
         raw_host.resources.artifact_publisher = Arc::new(RecordingArtifactPublisher {
             inner: raw_host.resources.artifact_publisher.clone(),
@@ -1324,7 +1326,7 @@ mod tests {
         );
 
         let failed_storage = tempfile::tempdir().unwrap();
-        let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test");
+        let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test").await;
         raw_host.resources.file_application = None;
         raw_host.resources.artifact_publisher =
             Arc::new(awaken_resource_contract::UnavailableArtifactPublisher);

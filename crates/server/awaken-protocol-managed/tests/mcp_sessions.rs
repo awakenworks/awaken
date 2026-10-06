@@ -57,12 +57,12 @@ impl CountingLifecycleNotifier {
     }
 }
 
-fn lifecycle_test_state() -> (
+async fn lifecycle_test_state() -> (
     ManagedState,
     Arc<SqliteManagedSessionRepository>,
     Arc<CountingLifecycleNotifier>,
 ) {
-    let repository = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repository = support::session_repository("open Session repository").await;
     let notifier = Arc::new(CountingLifecycleNotifier::default());
     let state = support::state_with_mcp(PreparingFake {
         captured: Arc::new(Mutex::new(Vec::new())),
@@ -71,6 +71,7 @@ fn lifecycle_test_state() -> (
         repo: None,
         fail_with: None,
     })
+    .await
     .with_session_repo(repository.clone())
     .with_lifecycle_notifier(notifier.clone());
     (state, repository, notifier)
@@ -1227,14 +1228,13 @@ struct HotHarness {
     repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
 }
 
-fn hot_harness() -> HotHarness {
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-        SqliteManagedSessionRepository::open_in_memory().expect("open hot Session repository"),
-    );
-    hot_harness_with_repo(repo)
+async fn hot_harness() -> HotHarness {
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        support::session_repository("open hot Session repository").await;
+    hot_harness_with_repo(repo).await
 }
 
-fn hot_harness_with_repo(
+async fn hot_harness_with_repo(
     repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
 ) -> HotHarness {
     let runtime_state = Arc::new(Mutex::new(HotRuntimeState::default()));
@@ -1243,6 +1243,7 @@ fn hot_harness_with_repo(
             state: runtime_state.clone(),
             repo: repo.clone(),
         })
+        .await
         .with_session_repo(repo.clone()),
     );
     HotHarness {
@@ -1255,16 +1256,15 @@ fn hot_harness_with_repo(
 
 /// Sessions + vaults over ONE shared `VaultState`, the way the server mounts
 /// them, so a credential entered through the vault routes is bindable at create.
-fn harness(fail_with: Option<RunErrorKind>) -> Harness {
+async fn harness(fail_with: Option<RunErrorKind>) -> Harness {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
     let vaults = Arc::new(support::vault(secrets, credentials));
     let captured = Arc::new(Mutex::new(Vec::new()));
     let staged = Arc::new(Mutex::new(Vec::new()));
     let observed_durable = Arc::new(Mutex::new(Vec::new()));
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-        SqliteManagedSessionRepository::open_in_memory().expect("open Session repository"),
-    );
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        support::session_repository("open Session repository").await;
     let state = support::state_with_mcp(PreparingFake {
         captured: captured.clone(),
         staged: staged.clone(),
@@ -1272,6 +1272,7 @@ fn harness(fail_with: Option<RunErrorKind>) -> Harness {
         repo: Some(repo.clone()),
         fail_with,
     })
+    .await
     .with_vaults(vaults.clone())
     .with_session_repo(repo.clone());
     let app = router(Arc::new(state)).merge(vault_router(vaults.clone()));
@@ -1302,6 +1303,7 @@ async fn check_bind_is_fail_closed_on_unknown_vault() {
         repo: None,
         fail_with: None,
     })
+    .await
     .with_vaults(vaults);
 
     let bad: awaken_protocol_managed::types::SessionCreateParams = serde_json::from_value(json!({
@@ -1364,7 +1366,7 @@ async fn session_mcp_overrides_validate_the_effective_pair_not_field_presence() 
     // overriding either half alone, using different names, or duplicating a
     // ToolSet must fail before Session persistence or MCP staging. Only the
     // exact server/ToolSet pair is accepted.
-    let h = harness(None);
+    let h = harness(None).await;
     let server = json!({ "name": "docs", "type": "url", "url": MCP_URL });
     let toolset = json!({ "type": "mcp_toolset", "mcp_server_name": "docs" });
     for agent in [
@@ -1514,7 +1516,7 @@ async fn create_mcp_credential(
 
 #[tokio::test]
 async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape() {
-    let h = harness(None);
+    let h = harness(None).await;
     let (vault_id, cred_id) = vault_with_mcp_oauth(&h).await;
 
     let session = call(
@@ -1630,7 +1632,7 @@ async fn session_binding_supports_static_bearer_and_normalized_mcp_urls() {
     // to the same target -> E1 stage carries that credential's exact source and
     // revision. Constraint: URL normalization selects identity only; plaintext
     // remains under Vault custody and never enters the Session aggregate.
-    let h = harness(None);
+    let h = harness(None).await;
     let vault = call(
         &h.app,
         "POST",
@@ -1682,7 +1684,7 @@ async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() 
     // Vault wins; C2 no credential matches the normalized target -> E2 optional
     // MCP auth remains absent. Decision V1=C1=>E1, V2=C2=>E2. Constraint: order
     // is explicit request policy and a miss never fabricates credential access.
-    let h = harness(None);
+    let h = harness(None).await;
     let mut vaults = Vec::new();
     let mut sources = Vec::new();
     for name in ["first-created", "second-created"] {
@@ -1755,7 +1757,7 @@ async fn an_archived_vault_cannot_be_attached_to_a_new_session() {
     // Decision A1: C1 the only referenced Vault is archived -> E1 create returns
     // 404 and E2 no Runtime preparation occurs. Constraint: lifecycle denial is
     // checked before credential selection or any Session/Runtime side effect.
-    let h = harness(None);
+    let h = harness(None).await;
     let (vault_id, _) = vault_with_mcp_oauth(&h).await;
     let _ = call(
         &h.app,
@@ -1787,7 +1789,7 @@ async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
     // E1 stage receives exact endpoint/client/scope plus an opaque sealed-token
     // reference. Constraint: neither access nor refresh plaintext crosses the
     // Vault boundary; the reference remains bound to source revision one.
-    let h = harness(None);
+    let h = harness(None).await;
     let vault = call(
         &h.app,
         "POST",
@@ -1866,7 +1868,7 @@ async fn session_without_mcp_servers_echoes_empty_and_prepares_an_empty_init() {
     // durable attachment aggregate are empty, E2 baseline preparation runs once,
     // and E3 no MCP stage effect occurs. Constraint: absence is represented by
     // empty canonical state, not a second optional attachment authority.
-    let h = harness(None);
+    let h = harness(None).await;
     let session = call(
         &h.app,
         "POST",
@@ -1899,7 +1901,7 @@ async fn unknown_vault_id_fails_the_create_with_404_and_provisions_nothing() {
     // Decision U1: C1 the sole referenced Vault is unknown -> E1 standard 404
     // naming that id, E2 no Session row, and E3 no preparation. Constraint: the
     // complete Vault set is admitted before identity minting or Runtime I/O.
-    let h = harness(None);
+    let h = harness(None).await;
     let body = call(
         &h.app,
         "POST",
@@ -1936,7 +1938,7 @@ async fn known_plus_unknown_vault_id_still_fails_the_create() {
     // request -> E1 reject the entire create and E2 perform no preparation.
     // Constraint: Vault admission is all-or-nothing; a valid member cannot mask
     // an invalid member or authorize a partial MCP binding.
-    let h = harness(None);
+    let h = harness(None).await;
     let (vault_id, _) = vault_with_mcp_oauth(&h).await;
     let body = call(
         &h.app,
@@ -1995,7 +1997,7 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
             "api_error",
         ),
     ] {
-        let h = harness(Some(kind));
+        let h = harness(Some(kind)).await;
         let body = call(
             &h.app,
             "POST",
@@ -2100,7 +2102,7 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
 /// Thread recovery read is `None`; no rule may assemble a prefix from split reads.
 #[tokio::test]
 async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
-    let h = hot_harness();
+    let h = hot_harness().await;
     let created = call(
         &h.app,
         "POST",
@@ -2222,7 +2224,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         "H4"
     );
 
-    let failed = hot_harness();
+    let failed = hot_harness().await;
     let created = call(
         &failed.app,
         "POST",
@@ -2291,7 +2293,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         "H6"
     );
 
-    let mismatch = hot_harness();
+    let mismatch = hot_harness().await;
     let created = call(
         &mismatch.app,
         "POST",
@@ -2390,7 +2392,7 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
 }
 
 async fn mcp_recovery_lifecycle_decision_table_case() {
-    let h = hot_harness();
+    let h = hot_harness().await;
     let created = call(
         &h.app,
         "POST",
@@ -2500,7 +2502,7 @@ async fn mcp_recovery_lifecycle_decision_table_case() {
 }
 
 async fn mcp_recovery_retry_decision_table_case() {
-    let h = hot_harness();
+    let h = hot_harness().await;
 
     let created = call(
         &h.app,
@@ -2581,7 +2583,7 @@ async fn mcp_recovery_retry_decision_table_case() {
 /// no atomic Thread snapshot and never consults split transcript/ticket reads.
 #[tokio::test]
 async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
-    let h = hot_harness();
+    let h = hot_harness().await;
     let created = call(
         &h.app,
         "POST",
@@ -2695,7 +2697,7 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
 /// no-Run fixture returns `None` from the sole atomic recovery boundary.
 #[tokio::test]
 async fn update_precondition_and_idempotency_tests_are_generated_from_decision_table() {
-    let h = hot_harness();
+    let h = hot_harness().await;
     let (create_headers, created) = call_with_headers(
         &h.app,
         "POST",
@@ -2963,12 +2965,9 @@ async fn create_conflict_after_root_commit_returns_one_recoverable_session() {
     // | P2 | stable | exact public | conflict | same | E1+E2+E3 |
     // | P3 | stable | exact public | conflict | changed | E4 |
     for (rule, key) in [("P1", None), ("P2", Some("create-conflict"))] {
-        let inner = Arc::new(
-            SqliteManagedSessionRepository::open_in_memory()
-                .expect("open create-conflict repository"),
-        );
+        let inner = support::session_repository("open create-conflict repository").await;
         let conflicts = Arc::new(ScheduledConflictRepository::new(inner));
-        let h = hot_harness_with_repo(conflicts.clone());
+        let h = hot_harness_with_repo(conflicts.clone()).await;
         conflicts.conflicts_on_next(&[1, 2, 3]);
         let headers = key.map_or_else(Vec::new, |key| vec![("idempotency-key", key)]);
         let (response_headers, created) = call_with_headers(
@@ -3045,7 +3044,7 @@ async fn create_conflict_after_root_commit_returns_one_recoverable_session() {
 /// projection creates a Run; the atomic Thread snapshot remains absent.
 #[tokio::test]
 async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
-    let h = hot_harness();
+    let h = hot_harness().await;
     let (_, created) = call_with_headers(
         &h.app,
         "POST",
@@ -3146,11 +3145,9 @@ async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
 /// Thread recovery query returns `None` without a split fallback.
 #[tokio::test]
 async fn update_cas_retry_tests_are_generated_from_decision_table() {
-    let inner = Arc::new(
-        SqliteManagedSessionRepository::open_in_memory().expect("open conflict repository"),
-    );
+    let inner = support::session_repository("open conflict repository").await;
     let conflicts = Arc::new(ScheduledConflictRepository::new(inner));
-    let h = hot_harness_with_repo(conflicts.clone());
+    let h = hot_harness_with_repo(conflicts.clone()).await;
     let (_, created) = call_with_headers(
         &h.app,
         "POST",
@@ -3787,7 +3784,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         }
     }
 
-    let state = support::state(HauntedRuntime);
+    let state = support::state(HauntedRuntime).await;
     let session = state
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
@@ -3816,7 +3813,7 @@ async fn create_session_commits_the_owned_fact_then_notifies_once() {
     // Decision rule L1: C1 creation reaches idle and C2 repository commit
     // succeeds -> E1 one stable owned fact exists and E2 one payload-free wake
     // occurs. The repository, never the notifier, owns fact content.
-    let (state, repository, notifier) = lifecycle_test_state();
+    let (state, repository, notifier) = lifecycle_test_state().await;
 
     let session = state
         .create_session(
@@ -3858,7 +3855,7 @@ async fn archive_session_commits_the_terminated_fact_once() {
     // fact and no second wake. Create's idled fact remains independently stable.
     // Constraint K0: this lifecycle/outbox fixture has no Run, so archive sees
     // no atomic Thread recovery snapshot and cannot invent split recovery truth.
-    let (state, repository, notifier) = lifecycle_test_state();
+    let (state, repository, notifier) = lifecycle_test_state().await;
 
     let session = state
         .create_session(
@@ -3915,7 +3912,7 @@ async fn delete_session_commits_the_deleted_fact_with_the_owner() {
     // becomes unavailable and E2 one post-commit wake is added to create's wake.
     // Constraint: repository transaction owns the fact and deletion; notifier
     // remains a payload-free post-commit hint and cannot recreate the aggregate.
-    let (state, repository, notifier) = lifecycle_test_state();
+    let (state, repository, notifier) = lifecycle_test_state().await;
 
     let session = state
         .create_session(

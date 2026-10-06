@@ -74,7 +74,7 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
     if let Ok(phase) = std::env::var(CHILD_MODE) {
         let db = std::env::var(DB_PATH).unwrap();
         let marker = std::env::var(MARKER_PATH).unwrap();
-        let (repo, secrets) = crash_secrets::stores(&db, &KEY);
+        let (repo, secrets) = crash_secrets::stores(&db, &KEY).await;
         repo.insert_vault(
             "ws",
             ManagedVault {
@@ -143,7 +143,7 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
         .expect("child reaches the material-write boundary and is killed");
         assert!(!status.success());
 
-        let (repo, secrets) = crash_secrets::stores(db.to_str().unwrap(), &KEY);
+        let (repo, secrets) = crash_secrets::stores(db.to_str().unwrap(), &KEY).await;
         assert!(
             matches!(
                 repo.get(&source().id).await,
@@ -238,7 +238,9 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
 async fn sqlite_writing_lease_fences_live_and_stale_owners() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("lease-fence.db");
-    let repo = SqliteCredentialRepo::open(db.to_str().unwrap()).unwrap();
+    let repo = SqliteCredentialRepo::open(db.to_str().unwrap())
+        .await
+        .unwrap();
     repo.insert_vault(
         "ws",
         ManagedVault {

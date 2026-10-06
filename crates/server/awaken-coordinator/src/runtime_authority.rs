@@ -329,7 +329,8 @@ async fn open_dispatch(
             let store = awaken_dispatch::open_sqlite_dispatch_store(
                 &root.join("dispatch.db").to_string_lossy(),
                 clock,
-            )?;
+            )
+            .await?;
             Ok((Arc::new(store), None))
         }
         DispatchBackend::Postgres => {
@@ -453,6 +454,7 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
                                 }),
                             StoreKind::Sqlite => {
                                 SqliteCommitCoordinator::open(&path.to_string_lossy())
+                                    .await
                                     .map(|commit| {
                                         Arc::new(LocalCommitAdapter::projected(commit))
                                             as Arc<dyn LocalCommit>

@@ -100,7 +100,7 @@ impl WebhookMutationIntent {
     }
 }
 
-/// Infrastructure failure from a synchronous authored-config repository.
+/// Infrastructure failure from an authored-config repository.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigRepositoryError {
     #[error("config repository storage failure: {0}")]
@@ -111,11 +111,13 @@ pub enum ConfigRepositoryError {
     InvalidMutation(String),
 }
 
-/// A store for authored [`InferenceProfile`]s (an admin-plane aggregate). Sync +
-/// in-memory by default; a durable backend can implement the same port.
+/// A store for authored [`InferenceProfile`]s (an admin-plane aggregate). An
+/// in-memory reference store and durable backends implement the same port.
+#[async_trait::async_trait]
 pub trait InferenceProfileStore: Send + Sync {
-    fn put(&self, id: String, profile: InferenceProfile) -> Result<(), ConfigRepositoryError>;
-    fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError>;
+    async fn put(&self, id: String, profile: InferenceProfile)
+    -> Result<(), ConfigRepositoryError>;
+    async fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError>;
 }
 
 /// Opaque durable key for a profile id inside one trusted Workspace. Length
@@ -129,28 +131,34 @@ pub fn workspace_profile_key(workspace_id: &str, profile_id: &str) -> String {
 /// a shared profile id to collide across tenants. A matching unscoped row
 /// remains readable for in-place upgrades; a row owned by another Workspace is
 /// treated as absent.
-pub fn get_workspace_profile(
+pub async fn get_workspace_profile(
     store: &dyn InferenceProfileStore,
     workspace_id: &str,
     profile_id: &str,
 ) -> Result<Option<InferenceProfile>, ConfigRepositoryError> {
-    if let Some(profile) = store.get(&workspace_profile_key(workspace_id, profile_id))? {
+    if let Some(profile) = store
+        .get(&workspace_profile_key(workspace_id, profile_id))
+        .await?
+    {
         return Ok((profile.workspace_id == workspace_id).then_some(profile));
     }
     Ok(store
-        .get(profile_id)?
+        .get(profile_id)
+        .await?
         .filter(|profile| profile.workspace_id == workspace_id))
 }
 
 /// Persist under the Workspace-qualified key. Callers must stamp and validate the
 /// trusted owner before invoking this helper.
-pub fn put_workspace_profile(
+pub async fn put_workspace_profile(
     store: &dyn InferenceProfileStore,
     workspace_id: &str,
     profile_id: &str,
     profile: InferenceProfile,
 ) -> Result<(), ConfigRepositoryError> {
-    store.put(workspace_profile_key(workspace_id, profile_id), profile)
+    store
+        .put(workspace_profile_key(workspace_id, profile_id), profile)
+        .await
 }
 
 /// A store for authored [`WebhookEndpointDef`]s (an admin-plane aggregate,
@@ -158,38 +166,48 @@ pub fn put_workspace_profile(
 /// reference implementation is available only under `test-support`. Unlike
 /// [`InferenceProfileStore`] it enumerates by
 /// workspace (dispatch fan-out) and supports delete (unsubscribe).
+#[async_trait::async_trait]
 pub trait WebhookStore: Send + Sync {
-    fn get(&self, id: &str) -> Result<Option<WebhookEndpointDef>, ConfigRepositoryError>;
+    async fn get(&self, id: &str) -> Result<Option<WebhookEndpointDef>, ConfigRepositoryError>;
     /// Every endpoint owned by `workspace_id` (including disabled), for CRUD list
     /// and dispatch matching.
-    fn list(&self, workspace_id: &str) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError>;
+    async fn list(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError>;
     /// Atomically update only operator-authored fields on an existing row. The
     /// owner, secret reference, and concurrent delivery state remain authoritative.
-    fn update_authored(
+    async fn update_authored(
         &self,
         patch: WebhookAuthoringPatch,
     ) -> Result<WebhookAuthoringState, ConfigRepositoryError>;
     /// Durably journal a create/delete before any SecretStore side effect. The
     /// current aggregate must exactly equal `before`, and only one intent per id
     /// may exist.
-    fn begin_mutation(&self, intent: WebhookMutationIntent) -> Result<(), ConfigRepositoryError>;
+    async fn begin_mutation(
+        &self,
+        intent: WebhookMutationIntent,
+    ) -> Result<(), ConfigRepositoryError>;
     /// Atomically publish the journaled `after` state (or remove the row for a
     /// delete). Both the pending intent and current `before` must still match.
-    fn apply_mutation(&self, intent: &WebhookMutationIntent) -> Result<(), ConfigRepositoryError>;
-    fn pending_mutations(&self) -> Result<Vec<WebhookMutationIntent>, ConfigRepositoryError>;
+    async fn apply_mutation(
+        &self,
+        intent: &WebhookMutationIntent,
+    ) -> Result<(), ConfigRepositoryError>;
+    async fn pending_mutations(&self) -> Result<Vec<WebhookMutationIntent>, ConfigRepositoryError>;
     /// Idempotently retire this exact converged intent. A different newer intent
     /// at the same id is a conflict rather than an ABA deletion.
-    fn complete_mutation(
+    async fn complete_mutation(
         &self,
         intent: &WebhookMutationIntent,
     ) -> Result<(), ConfigRepositoryError>;
     /// All committed signing-material references, for protected inventory
     /// reconciliation across the shared SecretStore.
-    fn material_refs(&self) -> Result<Vec<SecretRef>, ConfigRepositoryError>;
+    async fn material_refs(&self) -> Result<Vec<SecretRef>, ConfigRepositoryError>;
     /// Atomically apply one delivery result to the existing row. A success resets
     /// the consecutive-failure count; a failure increments it and disables the row
     /// at `failure_threshold`. Missing rows are a terminal no-op.
-    fn record_delivery(
+    async fn record_delivery(
         &self,
         id: &str,
         outcome: WebhookDeliveryOutcome,
@@ -389,21 +407,22 @@ fn agent_input_revision_decision_is_exact_non_wrapping_and_replay_first() {
     }
 }
 
+#[async_trait::async_trait]
 pub trait AgentInputBindingRepository: Send + Sync {
     /// Apply revision 1 to a new aggregate or exactly current+1 to an existing
     /// aggregate. Replaying byte-equivalent state at the current revision is
     /// idempotent; stale/skipped revisions fail closed.
-    fn put_agent_inputs(
+    async fn put_agent_inputs(
         &self,
         workspace_id: &str,
         config: AgentInputConfig,
     ) -> Result<(), AgentInputRepositoryError>;
-    fn get_agent_inputs(
+    async fn get_agent_inputs(
         &self,
         workspace_id: &str,
         agent_id: &str,
     ) -> Result<Option<AgentInputConfig>, AgentInputRepositoryError>;
-    fn list_agent_inputs(
+    async fn list_agent_inputs(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<AgentInputConfig>, AgentInputRepositoryError>;
@@ -415,8 +434,8 @@ mod tests {
     use crate::{BindingId, FileId, InputBinding, InputResourceId, ResourceAccess};
     use crate::{InMemoryAgentInputBindingRepository, InMemoryWebhookStore};
 
-    #[test]
-    fn agent_inputs_are_isolated_by_workspace_even_for_the_same_agent_id() {
+    #[tokio::test]
+    async fn agent_inputs_are_isolated_by_workspace_even_for_the_same_agent_id() {
         let store = InMemoryAgentInputBindingRepository::new();
         let config = |resource_id: &str| AgentInputConfig {
             agent_id: "shared-agent".into(),
@@ -433,14 +452,17 @@ mod tests {
 
         store
             .put_agent_inputs("workspace-a", config("file-a"))
+            .await
             .unwrap();
         store
             .put_agent_inputs("workspace-b", config("file-b"))
+            .await
             .unwrap();
 
         assert_eq!(
             store
                 .get_agent_inputs("workspace-a", "shared-agent")
+                .await
                 .unwrap()
                 .unwrap()
                 .inputs[0]
@@ -451,6 +473,7 @@ mod tests {
         assert_eq!(
             store
                 .get_agent_inputs("workspace-b", "shared-agent")
+                .await
                 .unwrap()
                 .unwrap()
                 .inputs[0]
@@ -461,17 +484,27 @@ mod tests {
         assert!(
             store
                 .get_agent_inputs("workspace-c", "shared-agent")
+                .await
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(store.list_agent_inputs("workspace-a").unwrap().len(), 1);
         assert_eq!(
-            store.list_agent_inputs("workspace-a").unwrap()[0].inputs[0]
+            store.list_agent_inputs("workspace-a").await.unwrap().len(),
+            1
+        );
+        assert_eq!(
+            store.list_agent_inputs("workspace-a").await.unwrap()[0].inputs[0]
                 .target
                 .id(),
             "file-a"
         );
-        assert!(store.list_agent_inputs("workspace-c").unwrap().is_empty());
+        assert!(
+            store
+                .list_agent_inputs("workspace-c")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -597,8 +630,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn agent_input_revisions_are_sequential_and_replays_are_idempotent() {
+    #[tokio::test]
+    async fn agent_input_revisions_are_sequential_and_replays_are_idempotent() {
         let store = InMemoryAgentInputBindingRepository::new();
         let config = |revision| AgentInputConfig {
             agent_id: "agent".into(),
@@ -607,10 +640,16 @@ mod tests {
             revision,
         };
 
-        store.put_agent_inputs("workspace", config(1)).unwrap();
-        store.put_agent_inputs("workspace", config(1)).unwrap();
+        store
+            .put_agent_inputs("workspace", config(1))
+            .await
+            .unwrap();
+        store
+            .put_agent_inputs("workspace", config(1))
+            .await
+            .unwrap();
         assert_eq!(
-            store.put_agent_inputs("workspace", config(3)),
+            store.put_agent_inputs("workspace", config(3)).await,
             Err(AgentInputRepositoryError::RevisionConflict {
                 current: 1,
                 attempted: 3,
@@ -619,15 +658,19 @@ mod tests {
         assert_eq!(
             store
                 .get_agent_inputs("workspace", "agent")
+                .await
                 .unwrap()
                 .unwrap()
                 .revision,
             1,
             "a skipped revision must not mutate the accepted aggregate"
         );
-        store.put_agent_inputs("workspace", config(2)).unwrap();
+        store
+            .put_agent_inputs("workspace", config(2))
+            .await
+            .unwrap();
         assert_eq!(
-            store.put_agent_inputs("workspace", config(1)),
+            store.put_agent_inputs("workspace", config(1)).await,
             Err(AgentInputRepositoryError::RevisionConflict {
                 current: 2,
                 attempted: 1,
@@ -636,6 +679,7 @@ mod tests {
         assert_eq!(
             store
                 .get_agent_inputs("workspace", "agent")
+                .await
                 .unwrap()
                 .unwrap()
                 .revision,
@@ -643,7 +687,7 @@ mod tests {
             "a stale revision must not roll back the accepted aggregate"
         );
         assert_eq!(
-            store.put_agent_inputs("new-workspace", config(0)),
+            store.put_agent_inputs("new-workspace", config(0)).await,
             Err(AgentInputRepositoryError::InvalidRevision(0))
         );
     }
@@ -662,24 +706,25 @@ mod tests {
         }
     }
 
-    fn commit_webhook(store: &dyn WebhookStore, definition: WebhookEndpointDef) {
+    async fn commit_webhook(store: &dyn WebhookStore, definition: WebhookEndpointDef) {
         let intent = WebhookMutationIntent::create(definition);
-        store.begin_mutation(intent.clone()).unwrap();
-        store.apply_mutation(&intent).unwrap();
-        store.complete_mutation(&intent).unwrap();
+        store.begin_mutation(intent.clone()).await.unwrap();
+        store.apply_mutation(&intent).await.unwrap();
+        store.complete_mutation(&intent).await.unwrap();
     }
 
-    #[test]
-    fn webhook_store_lists_by_workspace_and_journals_delete() {
+    #[tokio::test]
+    async fn webhook_store_lists_by_workspace_and_journals_delete() {
         let store = InMemoryWebhookStore::new();
-        commit_webhook(&store, webhook("wh-a1", "wrkspc_a", false));
-        commit_webhook(&store, webhook("wh-a2", "wrkspc_a", true)); // disabled, still enumerated
-        commit_webhook(&store, webhook("wh-b1", "wrkspc_b", false));
+        commit_webhook(&store, webhook("wh-a1", "wrkspc_a", false)).await;
+        commit_webhook(&store, webhook("wh-a2", "wrkspc_a", true)).await; // disabled, still enumerated
+        commit_webhook(&store, webhook("wh-b1", "wrkspc_b", false)).await;
 
         // `list` is workspace-filtered (dispatch fan-out is per workspace), sorted
         // by id, and INCLUDES disabled rows (CRUD list surfaces suspended ones).
         let ids_a: Vec<String> = store
             .list("wrkspc_a")
+            .await
             .unwrap()
             .into_iter()
             .map(|d| d.id)
@@ -694,6 +739,7 @@ mod tests {
         assert!(
             store
                 .list("wrkspc_a")
+                .await
                 .unwrap()
                 .iter()
                 .find(|d| d.id == "wh-a2")
@@ -703,16 +749,17 @@ mod tests {
 
         // Delete is a journaled aggregate transition; replay observes the missing
         // row instead of inventing a second direct-delete path.
-        let before = store.get("wh-a1").unwrap().unwrap();
+        let before = store.get("wh-a1").await.unwrap().unwrap();
         let intent = WebhookMutationIntent::delete(before);
-        store.begin_mutation(intent.clone()).unwrap();
-        store.apply_mutation(&intent).unwrap();
-        store.complete_mutation(&intent).unwrap();
-        assert!(store.get("wh-a1").unwrap().is_none());
+        store.begin_mutation(intent.clone()).await.unwrap();
+        store.apply_mutation(&intent).await.unwrap();
+        store.complete_mutation(&intent).await.unwrap();
+        assert!(store.get("wh-a1").await.unwrap().is_none());
 
         // The surviving (disabled) row is still listed and reachable.
         let remaining: Vec<String> = store
             .list("wrkspc_a")
+            .await
             .unwrap()
             .into_iter()
             .map(|d| d.id)
@@ -721,24 +768,26 @@ mod tests {
         assert!(
             store
                 .list("wrkspc_b")
+                .await
                 .unwrap()
                 .iter()
                 .any(|d| d.id == "wh-b1")
         );
     }
 
-    #[test]
-    fn webhook_delivery_state_machine_is_durable_in_the_store_contract() {
+    #[tokio::test]
+    async fn webhook_delivery_state_machine_is_durable_in_the_store_contract() {
         // Cause/effect graph: C1 success; C2 failure below threshold; C3 failure at
         // threshold; C4 missing row. Effects: E1 reset counter; E2 increment while
         // active; E3 atomically disable; E4 terminal no-op. Constraint C1 xor C2.
         // Decision table: R1=C1 after C2 -> E1; R2=C2,count=0,threshold=2 -> E2;
         // R3=C2,count=1,threshold=2 -> E3; R4=C4 -> E4.
         let store = InMemoryWebhookStore::new();
-        commit_webhook(&store, webhook("wh", "wrkspc", false));
+        commit_webhook(&store, webhook("wh", "wrkspc", false)).await;
         assert_eq!(
             store
                 .record_delivery("wh", WebhookDeliveryOutcome::Failed, 2)
+                .await
                 .unwrap(),
             WebhookDeliveryState::Active {
                 consecutive_failures: 1
@@ -748,6 +797,7 @@ mod tests {
         assert_eq!(
             store
                 .record_delivery("wh", WebhookDeliveryOutcome::Succeeded, 2)
+                .await
                 .unwrap(),
             WebhookDeliveryState::Active {
                 consecutive_failures: 0
@@ -756,10 +806,12 @@ mod tests {
         );
         store
             .record_delivery("wh", WebhookDeliveryOutcome::Failed, 2)
+            .await
             .unwrap();
         assert_eq!(
             store
                 .record_delivery("wh", WebhookDeliveryOutcome::Failed, 2)
+                .await
                 .unwrap(),
             WebhookDeliveryState::Disabled {
                 consecutive_failures: 2
@@ -769,14 +821,15 @@ mod tests {
         assert_eq!(
             store
                 .record_delivery("missing", WebhookDeliveryOutcome::Failed, 2)
+                .await
                 .unwrap(),
             WebhookDeliveryState::Missing,
             "R4"
         );
     }
 
-    #[test]
-    fn webhook_authoring_and_material_intents_follow_the_decision_table() {
+    #[tokio::test]
+    async fn webhook_authoring_and_material_intents_follow_the_decision_table() {
         // Cause graph: C1 existing row with delivery count; C2 authored patch;
         // C3 pending delete intent; C4 delivery/update during intent; C5 apply and
         // complete. Effects E1 authored fields change but operational/ref fields
@@ -787,9 +840,10 @@ mod tests {
         let store = InMemoryWebhookStore::new();
         let original = webhook("wh", "wrkspc", false);
         let secret_ref = original.secret_ref.clone();
-        commit_webhook(&store, original);
+        commit_webhook(&store, original).await;
         store
             .record_delivery("wh", WebhookDeliveryOutcome::Failed, 20)
+            .await
             .unwrap();
         let updated = store
             .update_authored(WebhookAuthoringPatch {
@@ -799,6 +853,7 @@ mod tests {
                 event_types: vec!["run.completed".into()],
                 disabled: None,
             })
+            .await
             .unwrap();
         let WebhookAuthoringState::Updated(updated) = updated else {
             panic!("R1 must update")
@@ -807,49 +862,57 @@ mod tests {
         assert_eq!(updated.secret_ref, secret_ref, "R1/E1");
 
         let intent = WebhookMutationIntent::delete(updated);
-        store.begin_mutation(intent.clone()).unwrap();
+        store.begin_mutation(intent.clone()).await.unwrap();
         assert!(
             matches!(
-                store.record_delivery("wh", WebhookDeliveryOutcome::Failed, 20),
+                store
+                    .record_delivery("wh", WebhookDeliveryOutcome::Failed, 20)
+                    .await,
                 Err(ConfigRepositoryError::MutationConflict(_))
             ),
             "R2/E2"
         );
         assert!(
             matches!(
-                store.update_authored(WebhookAuthoringPatch {
-                    id: "wh".into(),
-                    workspace_id: "wrkspc".into(),
-                    url: "https://racing.example/hook".into(),
-                    event_types: vec![],
-                    disabled: None,
-                }),
+                store
+                    .update_authored(WebhookAuthoringPatch {
+                        id: "wh".into(),
+                        workspace_id: "wrkspc".into(),
+                        url: "https://racing.example/hook".into(),
+                        event_types: vec![],
+                        disabled: None,
+                    })
+                    .await,
                 Err(ConfigRepositoryError::MutationConflict(_))
             ),
             "R2/E2"
         );
-        store.apply_mutation(&intent).unwrap();
-        assert!(store.get("wh").unwrap().is_none(), "R3/E3");
+        store.apply_mutation(&intent).await.unwrap();
+        assert!(store.get("wh").await.unwrap().is_none(), "R3/E3");
         assert_eq!(
-            store.pending_mutations().unwrap(),
+            store.pending_mutations().await.unwrap(),
             vec![intent.clone()],
             "R3/E3"
         );
-        store.complete_mutation(&intent).unwrap();
-        assert!(store.pending_mutations().unwrap().is_empty(), "R4/E4");
+        store.complete_mutation(&intent).await.unwrap();
+        assert!(store.pending_mutations().await.unwrap().is_empty(), "R4/E4");
 
         // R5 a stale completion races a newer same-id intent -> conflict and the
         // newer journal remains (ABA protection).
         let replacement = WebhookMutationIntent::create(webhook("wh", "wrkspc", false));
-        store.begin_mutation(replacement.clone()).unwrap();
+        store.begin_mutation(replacement.clone()).await.unwrap();
         assert!(
             matches!(
-                store.complete_mutation(&intent),
+                store.complete_mutation(&intent).await,
                 Err(ConfigRepositoryError::MutationConflict(_))
             ),
             "R5"
         );
-        assert_eq!(store.pending_mutations().unwrap(), vec![replacement], "R5");
+        assert_eq!(
+            store.pending_mutations().await.unwrap(),
+            vec![replacement],
+            "R5"
+        );
 
         // R6 an attempted direct before→after row replacement is not a material
         // lifecycle command and cannot reopen the removed generic put path.

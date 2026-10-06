@@ -25,7 +25,6 @@ awaken-provisioning-contract.workspace = true
 awaken-agent-config.workspace = true
 # Failure disposition (Disposition) for the credential-cooldown ops route.
 awaken-runtime-contract.workspace = true
-awaken-sql-storage.workspace = true
 awaken-tenancy.workspace = true
 # The one wall-clock port: availability, manual attribute and discovery stamps.
 awaken-time.workspace = true
@@ -36,17 +35,13 @@ thiserror.workspace = true
 axum.workspace = true
 async-trait.workspace = true
 schemars = { version = "1", optional = true }
-# Feature `sqlite`: embedded durable admin aggregate backend
-# over the crate's own `admin` migration scope (ADR-0043 sqlite-repos).
-rusqlite = { workspace = true, optional = true }
+# Feature `sqlite`: embedded durable admin aggregate backend over sqlx
+# (ADR-0087) and the crate's own `admin` migration scope (ADR-0043 sqlite-repos).
 awaken-sqlite-pool = { workspace = true, optional = true }
-# Feature `postgres`: network-DB admin store over the same `admin` migration
-# scope (ADR-0043). The sync store ports are bridged onto a dedicated runtime the
-# store owns, so `tokio` (multi-thread) is a hard dep of this feature.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
-tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread"] }
-awaken-scoped-migration = { workspace = true, features = ["postgres"] }
-awaken-scoped-migration-sqlite.workspace = true
+# Features `sqlite` and `postgres`: the async admin stores over the same `admin`
+# migration scope (ADR-0043).
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite", "json"], optional = true }
+awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
@@ -54,8 +49,9 @@ tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tempfile = "3"
 # The live Postgres store test (feature `postgres`) isolates itself in its own
-# schema via `SET search_path`.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+# schema via `SET search_path`; the SQLite admission test drives a second control
+# pool on the same database file.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }
 
 [features]
 default = []
@@ -65,9 +61,9 @@ test-support = [
     "awaken-model-catalog/test-support",
 ]
 # SQLite-backed admin stores (`sqlite::SqliteAdminStore`), ADR-0043 sqlite-repos.
-sqlite = ["dep:rusqlite", "dep:awaken-sqlite-pool"]
+sqlite = ["dep:awaken-sqlite-pool", "dep:sqlx"]
 # Postgres-backed admin store (`postgres::PostgresAdminStore`), ADR-0043.
-postgres = ["dep:sqlx", "dep:tokio"]
+postgres = ["dep:sqlx"]
 # Emit JSON Schema for the admin config DTOs (drives TS-contract generation,
 # ADR-0043). Enables the domains' own `schema` features.
 schema = [

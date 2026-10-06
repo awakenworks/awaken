@@ -195,8 +195,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn coordinator_catalog_policy_never_installs_an_acp_executor() {
+    #[tokio::test]
+    async fn coordinator_catalog_policy_never_installs_an_acp_executor() {
         // Causes: C1 no ACP installation, a projection-only catalog, or an
         // executor factory; C2 canonical, alias, or unknown CLI id. Effects:
         // E1 absent installation refuses policy; E2 projection-only and
@@ -204,7 +204,7 @@ mod tests {
         // role can launch; E4 only canonical ids pass. Decision rules:
         // P1=absent=>E1; P2=projection-only=>E2+!E3+E4;
         // P3=executor=>E2+E3+E4; P4=alias|unknown=>!E4 for P2/P3.
-        let host = SharedHost::new(Arc::new(NoLlm), "test");
+        let host = SharedHost::new(Arc::new(NoLlm), "test").await;
         assert!(
             host.acp_adapter_policy()
                 .err()
@@ -237,8 +237,8 @@ mod tests {
         assert!(!policy.contains("unknown-cli"), "P4 unknown");
     }
 
-    #[test]
-    fn with_acp_factory_wires_only_frozen_acp_thread_projections() {
+    #[tokio::test]
+    async fn with_acp_factory_wires_only_frozen_acp_thread_projections() {
         // Cause graph: wiring an ACP executor provides execution capability only;
         // a frozen Session projection supplies the backend fact. Neither creates a
         // deployment-wide default.
@@ -246,7 +246,7 @@ mod tests {
         // | Rule | Executor wired | Session projection | ACP selected |
         // | A1 | yes | acp:claude | yes |
         // | A2 | yes | absent | no |
-        let host = with_fixture_acp(SharedHost::new(Arc::new(NoLlm), "test"));
+        let host = with_fixture_acp(SharedHost::new(Arc::new(NoLlm), "test").await);
         host.register_thread_backend_projection("t", "acp:claude");
         assert!(host.exec.acp.is_some(), "A1 executor");
         assert_eq!(
@@ -266,8 +266,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn provisioning_selects_one_session_environment_policy() {
+    #[tokio::test]
+    async fn provisioning_selects_one_session_environment_policy() {
         // Causes: immutable provisioning is BackendOwned, Provider, or
         // HostExecutor. Effects: BackendOwned receives the trusted Workdir
         // provider; all managed/in-process variants retain the configured tier.
@@ -276,7 +276,7 @@ mod tests {
         // | E1 | BackendOwned | host identity |
         // | E2 | Provider | configured Namespace |
         // | E3 | HostExecutor | configured Namespace |
-        let mut host = with_fixture_acp(SharedHost::new(Arc::new(NoLlm), "test"));
+        let mut host = with_fixture_acp(SharedHost::new(Arc::new(NoLlm), "test").await);
         let backend_owned = crate::session_environment::SandboxEnvironmentProvider::
             trusted_host_workdir_with_agent_stderr(
                 session_sandbox_base(host.deployment_config()).join("backend-owned"),
@@ -352,7 +352,7 @@ mod tests {
     async fn hub_launch_observer_republishes_lifecycle_to_the_thread_hub() {
         use awaken_run_executor_acp::{AcpLaunchEvent, AcpLaunchStage};
 
-        let host = SharedHost::new(Arc::new(NoLlm), "test");
+        let host = SharedHost::new(Arc::new(NoLlm), "test").await;
         // A UI-facing observer subscribes to the thread before the agent starts.
         let mut sub = host.hub().subscribe("thread-42");
         let observer = host.acp_launch_observer();

@@ -14,9 +14,11 @@ use awaken_resource_contract::{
     ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
 #[cfg(feature = "sqlite")]
-use awaken_sqlite_pool::SharedSqliteConnection;
+use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 #[cfg(feature = "sqlite")]
-use rusqlite::Connection;
+use awaken_sqlite_pool::EmbeddedPool;
+#[cfg(feature = "sqlite")]
+use awaken_sqlite_pool::EmbeddedSqlite;
 
 #[cfg(feature = "postgres")]
 mod postgres;
@@ -35,7 +37,7 @@ pub use postgres::PostgresResourceStore;
 /// SQLite adapter used by the durable single-machine composition.
 #[cfg(feature = "sqlite")]
 pub struct SqliteResourceStore {
-    connection: SharedSqliteConnection,
+    pool: EmbeddedPool,
 }
 
 #[cfg(feature = "sqlite")]
@@ -45,55 +47,47 @@ impl SqliteResourceStore {
     /// Ephemeral mode intentionally reuses the durable adapter so lifecycle,
     /// reference and fencing semantics have one implementation on a node.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn in_memory() -> Result<Self, ResourcePurgeError> {
-        Self::open(":memory:")
+    pub async fn in_memory() -> Result<Self, ResourcePurgeError> {
+        Self::open_location(EmbeddedSqlite::memory()).await
     }
 
-    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, ResourcePurgeError> {
-        let connection = awaken_sqlite_pool::SqliteConnectionFactory::file(path)
+    pub async fn open(path: impl AsRef<std::path::Path>) -> Result<Self, ResourcePurgeError> {
+        Self::open_location(EmbeddedSqlite::file(path)).await
+    }
+
+    async fn open_location(location: EmbeddedSqlite) -> Result<Self, ResourcePurgeError> {
+        let pool = location
             .open()
+            .await
             .map_err(|error| storage(error.to_string()))?;
-        let store = Self {
-            connection: SharedSqliteConnection::new(connection),
-        };
-        store.ensure_schema()?;
+        let store = Self { pool };
+        store.ensure_schema().await?;
         Ok(store)
     }
 
     /// Apply every Resources-owned migration scope. Registry and lifecycle keep
     /// independent ledgers because neither aggregate depends on the other's
     /// tables.
-    pub fn ensure_schema(&self) -> Result<(), ResourcePurgeError> {
-        let connection = self
-            .connection()
-            .map_err(|_| storage("resource SQLite connection was poisoned"))?;
+    pub async fn ensure_schema(&self) -> Result<(), ResourcePurgeError> {
         let lifecycle =
             schema::resource_reclamation_bundle().map_err(|error| storage(error.to_string()))?;
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(schema::NS)
-            .map_err(|error| storage(error.to_string()))?
-            .run_bundle(&connection, &lifecycle)
-            .map_err(|error| storage(error.to_string()))?;
+        awaken_sqlite_pool::held(
+            SqliteMigrationRunner::with_prefix(self.pool.sqlx().clone(), schema::NS)
+                .map_err(|error| storage(error.to_string()))?
+                .run_bundle(&lifecycle),
+        )
+        .await
+        .map_err(|error| storage(error.to_string()))?;
         let registry =
             schema::resource_registry_bundle().map_err(|error| storage(error.to_string()))?;
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(schema::REGISTRY_NS)
-            .map_err(|error| storage(error.to_string()))?
-            .run_bundle(&connection, &registry)
-            .map(|_| ())
-            .map_err(|error| storage(error.to_string()))
-    }
-
-    fn connection(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Connection>> {
-        self.connection.lock()
-    }
-
-    async fn with_connection<T, F>(&self, operation: F) -> Result<T, ResourcePurgeError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut Connection) -> Result<T, ResourcePurgeError> + Send + 'static,
-    {
-        awaken_sqlite_pool::with_connection(self.connection.clone(), operation)
-            .await
-            .map_err(storage)?
+        awaken_sqlite_pool::held(
+            SqliteMigrationRunner::with_prefix(self.pool.sqlx().clone(), schema::REGISTRY_NS)
+                .map_err(|error| storage(error.to_string()))?
+                .run_bundle(&registry),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| storage(error.to_string()))
     }
 }
 
@@ -345,6 +339,14 @@ mod tests {
 
     use awaken_store_conformance::resource_lifecycle::{intent, reference};
 
+    /// Row changes made by the store's one connection since it opened.
+    async fn total_changes(store: &SqliteResourceStore) -> i64 {
+        sqlx::query_scalar("SELECT total_changes()")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+    }
+
     #[test]
     fn malformed_persisted_purge_frames_are_corruption_not_bad_commands() {
         // D1 malformed JSON; D2 valid JSON with invalid immutable coordinates;
@@ -430,7 +432,7 @@ mod tests {
     #[tokio::test]
     async fn sqlite_in_memory_conforms() {
         awaken_store_conformance::resource_lifecycle::run_suite(
-            &SqliteResourceStore::in_memory().unwrap(),
+            &SqliteResourceStore::in_memory().await.unwrap(),
         )
         .await;
     }
@@ -439,32 +441,24 @@ mod tests {
     /// C2 two lifecycle calls queue on a two-worker runtime; C3 an authority
     /// timer becomes ready before the connection is released. Effects: E1 the
     /// timer fires within its deadline; E2 both queued operations finish after
-    /// release; E3 no async method waits on a raw connection mutex.
+    /// release; E3 waiting for the connection occupies no Tokio worker.
     /// Decision rule Q1=C1+C2+C3=>E1+E2+E3.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sqlite_lifecycle_contention_does_not_starve_authority_timers() {
-        let store = std::sync::Arc::new(SqliteResourceStore::in_memory().unwrap());
-        let held = store.connection.clone();
-        let (held_tx, held_rx) = std::sync::mpsc::sync_channel(1);
-        let holder = std::thread::spawn(move || {
-            let _guard = held.lock().expect("Q1 connection lock");
-            held_tx.send(()).expect("Q1 announce connection owner");
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        });
-        held_rx.recv().expect("Q1 connection held");
+        let store = std::sync::Arc::new(SqliteResourceStore::in_memory().await.unwrap());
+        let held = store.pool.acquire().await.expect("Q1 connection held");
 
         let left_store = std::sync::Arc::clone(&store);
         let left = tokio::spawn(async move { left_store.get("missing-left").await });
         let right_store = std::sync::Arc::clone(&store);
         let right = tokio::spawn(async move { right_store.get("missing-right").await });
-        tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            tokio::time::sleep(std::time::Duration::from_millis(10)),
-        )
-        .await
-        .expect("Q1/E1 authority timer remains schedulable");
+        // awaken-wait: Q1 measures the timer itself; its prompt firing proves runtime workers are not blocked.
+        let authority_timer = tokio::time::sleep(std::time::Duration::from_millis(10));
+        tokio::time::timeout(std::time::Duration::from_millis(100), authority_timer)
+            .await
+            .expect("Q1/E1 authority timer remains schedulable");
 
-        holder.join().expect("Q1 release connection");
+        drop(held);
         assert_eq!(left.await.expect("Q1 left task").expect("Q1/E2"), None);
         assert_eq!(right.await.expect("Q1 right task").expect("Q1/E2"), None);
     }
@@ -484,7 +478,7 @@ mod tests {
     /// | N3 | A | B | E3 |
     #[tokio::test]
     async fn sqlite_identical_reference_replacement_is_a_storage_noop() {
-        let store = SqliteResourceStore::in_memory().unwrap();
+        let store = SqliteResourceStore::in_memory().await.unwrap();
         let holder = "stable-session";
         let first = ResourceReferenceRecord {
             target: ResourceTarget::new("workspace-a", ResourceKind::File, "blob-a"),
@@ -505,7 +499,7 @@ mod tests {
             )
             .await
             .expect("N1 initial set");
-        let before = store.connection().unwrap().total_changes();
+        let before = total_changes(&store).await;
         store
             .replace_references(
                 ResourceReferenceKind::SessionBinding,
@@ -514,11 +508,7 @@ mod tests {
             )
             .await
             .expect("N1-N2 repeated set");
-        assert_eq!(
-            store.connection().unwrap().total_changes(),
-            before,
-            "N1-N2/E1-E2"
-        );
+        assert_eq!(total_changes(&store).await, before, "N1-N2/E1-E2");
 
         store
             .replace_references(
@@ -528,10 +518,7 @@ mod tests {
             )
             .await
             .expect("N3 changed set");
-        assert!(
-            store.connection().unwrap().total_changes() > before,
-            "N3/E3"
-        );
+        assert!(total_changes(&store).await > before, "N3/E3");
         assert!(
             store.references(&first.target).await.unwrap().is_empty(),
             "N3/E3"
@@ -554,24 +541,23 @@ mod tests {
     /// | S2 | empty | corrupt | E2 error, no fence committed |
     #[tokio::test]
     async fn sqlite_acquire_rechecks_references_added_by_the_fence_transaction() {
-        let store = SqliteResourceStore::in_memory().unwrap();
+        let store = SqliteResourceStore::in_memory().await.unwrap();
         let target = ResourceTarget::new("workspace-a", ResourceKind::File, "late-hash");
-        store
-            .connection()
-            .unwrap()
-            .execute_batch(
-                "CREATE TRIGGER inject_late_reference
-                 AFTER INSERT ON resource_lifecycle_reclamation_fences
-                 WHEN NEW.resource_id = 'late-hash'
-                 BEGIN
-                   INSERT INTO resource_lifecycle_references(
-                     workspace_id, resource_kind, resource_id, reference_kind, reference_id
-                   ) VALUES (
-                     'workspace-a', 'file', 'late-hash', 'session_binding', 'session-late'
-                   );
-                 END;",
-            )
-            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TRIGGER inject_late_reference
+             AFTER INSERT ON resource_lifecycle_reclamation_fences
+             WHEN NEW.resource_id = 'late-hash'
+             BEGIN
+               INSERT INTO resource_lifecycle_references(
+                 workspace_id, resource_kind, resource_id, reference_kind, reference_id
+               ) VALUES (
+                 'workspace-a', 'file', 'late-hash', 'session_binding', 'session-late'
+               );
+             END;",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
 
         let outcome = store
             .acquire_reclamation("intent-late", &target)
@@ -586,35 +572,31 @@ mod tests {
             ),
             "S1/E1: {outcome:?}"
         );
-        let fence_count: i64 = store
-            .connection()
-            .unwrap()
-            .query_row(
-                "SELECT count(*) FROM resource_lifecycle_reclamation_fences
+        let fence_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM resource_lifecycle_reclamation_fences
                  WHERE resource_kind = 'file' AND resource_id = 'late-hash'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
         assert_eq!(fence_count, 0, "S1/E1");
 
         let corrupt_target = ResourceTarget::new("workspace-a", ResourceKind::File, "corrupt-hash");
-        store
-            .connection()
-            .unwrap()
-            .execute_batch(
-                "CREATE TRIGGER inject_corrupt_late_reference
-                 AFTER INSERT ON resource_lifecycle_reclamation_fences
-                 WHEN NEW.resource_id = 'corrupt-hash'
-                 BEGIN
-                   INSERT INTO resource_lifecycle_references(
-                     workspace_id, resource_kind, resource_id, reference_kind, reference_id
-                   ) VALUES (
-                     'workspace-a', 'file', 'corrupt-hash', 'unknown_kind', 'session-corrupt'
-                   );
-                 END;",
-            )
-            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TRIGGER inject_corrupt_late_reference
+             AFTER INSERT ON resource_lifecycle_reclamation_fences
+             WHEN NEW.resource_id = 'corrupt-hash'
+             BEGIN
+               INSERT INTO resource_lifecycle_references(
+                 workspace_id, resource_kind, resource_id, reference_kind, reference_id
+               ) VALUES (
+                 'workspace-a', 'file', 'corrupt-hash', 'unknown_kind', 'session-corrupt'
+               );
+             END;",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
         let error = store
             .acquire_reclamation("intent-corrupt", &corrupt_target)
             .await
@@ -623,19 +605,16 @@ mod tests {
             matches!(error, ResourcePurgeError::CorruptData { .. }),
             "S2/E2: {error:?}"
         );
-        let (fence_count, reference_count): (i64, i64) = store
-            .connection()
-            .unwrap()
-            .query_row(
-                "SELECT
+        let (fence_count, reference_count): (i64, i64) = sqlx::query_as(
+            "SELECT
                    (SELECT count(*) FROM resource_lifecycle_reclamation_fences
                     WHERE resource_kind = 'file' AND resource_id = 'corrupt-hash'),
                    (SELECT count(*) FROM resource_lifecycle_references
                     WHERE resource_kind = 'file' AND resource_id = 'corrupt-hash')",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
         assert_eq!((fence_count, reference_count), (0, 0), "S2/E2");
     }
 
@@ -652,8 +631,8 @@ mod tests {
     async fn sqlite_concurrent_duplicate_put_is_idempotent() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("resources.db");
-        let first = std::sync::Arc::new(SqliteResourceStore::open(&path).unwrap());
-        let second = std::sync::Arc::new(SqliteResourceStore::open(&path).unwrap());
+        let first = std::sync::Arc::new(SqliteResourceStore::open(&path).await.unwrap());
+        let second = std::sync::Arc::new(SqliteResourceStore::open(&path).await.unwrap());
         let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
 
         let submit = |store: std::sync::Arc<SqliteResourceStore>,
@@ -687,19 +666,16 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn sqlite_records_the_scoped_resource_reclamation_migration() {
-        let store = SqliteResourceStore::in_memory().unwrap();
-        let applied = store
-            .connection()
-            .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM resource_lifecycle_schema_migrations
+    #[tokio::test]
+    async fn sqlite_records_the_scoped_resource_reclamation_migration() {
+        let store = SqliteResourceStore::in_memory().await.unwrap();
+        let applied = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM resource_lifecycle_schema_migrations
                  WHERE bundle_id = 'awaken.resource_lifecycle' AND version = 1",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap();
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
         assert_eq!(applied, 1);
     }
 
@@ -713,7 +689,7 @@ mod tests {
                 .build()
                 .unwrap();
             runtime.block_on(async move {
-                let store = SqliteResourceStore::in_memory().unwrap();
+                let store = SqliteResourceStore::in_memory().await.unwrap();
                 let row = reference("workspace-a", "ownership-a");
                 let mut referenced = false;
                 let mut fence: Option<&str> = None;
@@ -800,7 +776,7 @@ mod tests {
         // close/reopen without kind aliasing or loss.
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("resources.db");
-        let store = SqliteResourceStore::open(&path).unwrap();
+        let store = SqliteResourceStore::open(&path).await.unwrap();
         awaken_store_conformance::resource_lifecycle::run_suite(&store).await;
         let kinds = [
             ResourceKind::File,
@@ -825,7 +801,7 @@ mod tests {
                 .unwrap();
         }
         drop(store);
-        let reopened = SqliteResourceStore::open(path).unwrap();
+        let reopened = SqliteResourceStore::open(path).await.unwrap();
         assert!(reopened.get("purge-1").await.unwrap().is_some());
         assert_eq!(
             reopened

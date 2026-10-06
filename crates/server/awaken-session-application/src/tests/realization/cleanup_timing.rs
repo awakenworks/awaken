@@ -15,8 +15,11 @@ async fn live_session_usage_projects_the_same_clock_that_opened_its_root_interva
     // exact root active seconds 0/7/8/0, never ambient wall time or an underflow;
     // all reads leave the durable root unchanged. This qualifies accounting
     // over a declared typed residency fixture, not actual provider residency.
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let clock = Arc::new(ManualClock::new(1_000_000));
     let id = SessionId::from("clock-usage");
     let mut session = persisted(id.as_str(), false, "idle");
@@ -80,7 +83,7 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
         let workers_path = directory.path().join("workers.sqlite");
         let sessions_path = directory.path().join("sessions.sqlite");
         let sessions_path = sessions_path.to_str().unwrap();
-        let workers = SqliteWorkerDirectory::open(&workers_path).unwrap();
+        let workers = SqliteWorkerDirectory::open(&workers_path).await.unwrap();
         let clock = Arc::new(ManualClock::new(1_000_000));
         let now = clock.now_ms();
         let heartbeat_at = now - age;
@@ -120,9 +123,11 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
             RegistryMutation::Applied
         );
         drop(workers);
-        let workers = Arc::new(SqliteWorkerDirectory::open(&workers_path).unwrap());
+        let workers = Arc::new(SqliteWorkerDirectory::open(&workers_path).await.unwrap());
         let repo = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open(sessions_path).unwrap(),
+            awaken_session_store::SqliteManagedSessionRepository::open(sessions_path)
+                .await
+                .unwrap(),
         );
         let id = SessionId::from("clock-cleanup");
         let mut requested = persisted(id.as_str(), true, "terminated");
@@ -275,14 +280,15 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
         drop(app);
         drop(repo);
         drop(workers);
-        let reopened =
-            awaken_session_store::SqliteManagedSessionRepository::open(sessions_path).unwrap();
+        let reopened = awaken_session_store::SqliteManagedSessionRepository::open(sessions_path)
+            .await
+            .unwrap();
         assert_eq!(
             reopened.get(&id).await.unwrap(),
             after,
             "R6/{rule} root survives reopen"
         );
-        let reopened_workers = SqliteWorkerDirectory::open(&workers_path).unwrap();
+        let reopened_workers = SqliteWorkerDirectory::open(&workers_path).await.unwrap();
         let current = reopened_workers
             .current(&target.owner)
             .await

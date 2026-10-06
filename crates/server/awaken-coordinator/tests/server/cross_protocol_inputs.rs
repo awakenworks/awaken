@@ -16,7 +16,7 @@ async fn ai_sdk_input_and_client_answer_remain_one_managed_history_each() {
     // Constraints: this is deterministic protocol/commit coverage, not real
     // model quality. The existing server helpers and custom-tool fixture own
     // setup. No parallel input ledger or application-specific event API.
-    let app = build_custom_router();
+    let app = build_custom_router().await;
     let session = create_session(&app).await;
     let customer = "服务费金额本次没提供，收款时间还没定。";
     let mut payloads = vec![serde_json::json!({

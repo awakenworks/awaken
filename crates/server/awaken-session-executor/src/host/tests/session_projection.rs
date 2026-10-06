@@ -16,7 +16,7 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
     // | H2 | default | acp:claude | reject mismatch |
     // | H3 | default | absent | accept publication |
     // | H4 | absent | acp:claude | reject missing authority |
-    let published_host = || {
+    let published_host = || async {
         let snapshot = crate::config::server_config(
             "assistant",
             "stub",
@@ -33,11 +33,12 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
                 .expect("valid publication");
         dispatch_test_host(
             SharedHost::new(Arc::new(OkModel), "stub")
+                .await
                 .with_agent_publications(Arc::new(publications)),
         )
     };
 
-    let (matching, _matching_managed) = published_host();
+    let (matching, _matching_managed) = published_host().await;
     matching.register_thread_backend_projection("backend-h1", "default");
     assert!(
         matching
@@ -51,7 +52,7 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
         .await
         .expect("H1 matching projection");
 
-    let (mismatch, _mismatch_managed) = published_host();
+    let (mismatch, _mismatch_managed) = published_host().await;
     mismatch.register_thread_backend_projection("backend-h2", "acp:claude");
     let error = match mismatch.ctx_for("backend-h2", Some("assistant")).await {
         Ok(_) => panic!("H2 accepted a mismatched backend projection"),
@@ -62,13 +63,14 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
         "H2"
     );
 
-    let (publication_only, _publication_only_managed) = published_host();
+    let (publication_only, _publication_only_managed) = published_host().await;
     publication_only
         .ctx_for("backend-h3", Some("assistant"))
         .await
         .expect("H3 publication without redundant projection");
 
-    let (orphan, _orphan_managed) = dispatch_test_host(SharedHost::new(Arc::new(OkModel), "stub"));
+    let (orphan, _orphan_managed) =
+        dispatch_test_host(SharedHost::new(Arc::new(OkModel), "stub").await);
     orphan.register_thread_backend_projection("backend-h4", "acp:claude");
     let error = match orphan.ctx_for("backend-h4", Some("assistant")).await {
         Ok(_) => panic!("H4 accepted a backend projection without a publication"),
@@ -216,7 +218,9 @@ async fn session_tool_policy_preserves_the_published_snapshot_identity() {
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([publication.clone()])
             .expect("valid publication");
     let (host, _managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications)),
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_agent_publications(Arc::new(publications)),
     );
     host.session_slots.update("policy-session", |slot| {
         slot.tools = Some(
@@ -320,6 +324,7 @@ async fn session_web_policy_overlay_reaches_the_configured_plugin_before_inferen
     let inferences = Arc::new(AtomicUsize::new(0));
     let (host, _managed) = dispatch_test_host(
         SharedHost::new(Arc::new(SessionInferenceProbe(inferences.clone())), "stub")
+            .await
             .with_agent_publications(Arc::new(publications)),
     );
     host.session_slots.update("provider-server-policy", |slot| {
@@ -362,8 +367,8 @@ async fn session_web_policy_overlay_reaches_the_configured_plugin_before_inferen
     assert_eq!(inferences.load(Ordering::SeqCst), 0, "S1/E2");
 }
 
-#[test]
-fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool() {
+#[tokio::test]
+async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool() {
     // Managed repository Skill cause/effect rules R2/R3. C1 a Managed Agent
     // toolset defaults disabled; C2 `bash` is explicitly enabled; C3 exact
     // `read` is disabled or enabled; C4 workspace-qualified and legacy-relative
@@ -386,7 +391,7 @@ fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool() {
         ToolsetSource,
     };
 
-    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    let host = SharedHost::new(Arc::new(OkModel), "stub").await;
     let enabled = ToolExecutionPolicy {
         enabled: true,
         permission: ToolPermissionRequirement::AlwaysAllow,
@@ -498,8 +503,8 @@ fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool() {
     );
 }
 
-#[test]
-fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
+#[tokio::test]
+async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     // Cause/effect graph: C1 profile is Managed; C2 an exact frozen Skill is
     // selected; C3 at least one filesystem tool is enabled; C4 the frozen
     // projection is present. Effects: E1 ManagedFilesystem is selected; E2 the
@@ -540,9 +545,14 @@ fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         "Think carefully.",
         &[],
     )];
-    let host = SharedHost::new(Arc::new(OkModel), "stub").with_skills(vec![
-        awaken_ext_skills::SkillSpec::new("think", "Think", "reason", "Think carefully."),
-    ]);
+    let host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
+        .with_skills(vec![awaken_ext_skills::SkillSpec::new(
+            "think",
+            "Think",
+            "reason",
+            "Think carefully.",
+        )]);
 
     host.session_slots.update("direct-semantic", |slot| {
         slot.tools = Some(deny_filesystem());
@@ -590,7 +600,7 @@ fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         "M3/E3: {denied}"
     );
 
-    let empty_host = SharedHost::new(Arc::new(OkModel), "stub");
+    let empty_host = SharedHost::new(Arc::new(OkModel), "stub").await;
     empty_host.session_slots.update("managed-no-skill", |slot| {
         slot.session_dispatch = true;
         slot.tools = Some(deny_filesystem());
@@ -758,8 +768,8 @@ fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     );
 }
 
-#[test]
-fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
+#[tokio::test]
+async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
     // Content-delivery cause/effect graph: C1 the physical Session has no prior
     // choice; C2 it already chose filesystem and a deny-all Outcome grader is
     // projected; C3 it already chose semantic tools and a later Agent snapshot
@@ -774,7 +784,7 @@ fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
         ToolsetSource,
     };
 
-    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    let host = SharedHost::new(Arc::new(OkModel), "stub").await;
     let restricted = awaken_runtime_contract::ExecutableAgentSnapshot::builder("grader")
         .model(test_model_binding())
         .build();
@@ -1150,6 +1160,7 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
             .expect("valid publication");
     let (host, _managed) = dispatch_test_host(
         SharedHost::new(Arc::new(ClientLookupModel), "stub")
+            .await
             .with_agent_publications(Arc::new(publications)),
     );
 
@@ -1270,7 +1281,9 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("valid publication");
     let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications)),
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .await
+            .with_agent_publications(Arc::new(publications)),
     );
     install_test_session_application(&host);
     install_test_dispatch_runtime(&host)
@@ -1309,7 +1322,7 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
     };
     assert!(error.to_string().contains("projection"), "R3");
 
-    let fallback_host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let fallback_host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     install_test_session_application(&fallback_host);
     install_test_dispatch_runtime(&fallback_host)
         .install_test_session_init(
@@ -1389,8 +1402,9 @@ async fn frozen_session_resolves_its_exact_agent_revision_instead_of_current() {
         current.clone(),
     ])
     .expect("valid revisioned publications");
-    let host =
-        SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications));
+    let host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
+        .with_agent_publications(Arc::new(publications));
     let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
         awaken_session_configuration_contract::SessionBaselineInputs {
             environment: on_tool_use_environment(),
@@ -1488,8 +1502,9 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
     .expect("literal model reference");
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("valid publication");
-    let mut host =
-        SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications));
+    let mut host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
+        .with_agent_publications(Arc::new(publications));
     host.deployment.disable_local_pool = true;
     let host = Arc::new(host);
     install_test_session_application(&host);
@@ -1615,7 +1630,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
     // | L6 | durable local Worker | current | E1 exact inbox |
     // | L7 | Coordinator-only | absent | E3 inactive |
     // Decision rule: execute L1-L7; only a current registry entry may produce E1.
-    let direct = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let direct = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let _direct_managed = install_test_dispatch_runtime(&direct);
     let direct_ctx = direct
         .ctx_for("direct-live", None)
@@ -1666,11 +1681,9 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
 
     let mut local_deployment = crate::DeploymentConfig::ephemeral();
     local_deployment.durable = true;
-    let local = Arc::new(SharedHost::new_with_deployment(
-        Arc::new(OkModel),
-        "stub",
-        local_deployment,
-    ));
+    let local = Arc::new(
+        SharedHost::new_with_deployment(Arc::new(OkModel), "stub", local_deployment).await,
+    );
     let _local_managed = install_test_dispatch_runtime(&local);
     let local_ctx = local.ctx_for("local-live", None).await.expect("L6 context");
     *local_ctx.active_run.lock().expect("active run mutex") = Some(RunId("run-local".into()));
@@ -1690,11 +1703,9 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
     let mut remote_deployment = crate::DeploymentConfig::ephemeral();
     remote_deployment.durable = true;
     remote_deployment.disable_local_pool = true;
-    let remote = Arc::new(SharedHost::new_with_deployment(
-        Arc::new(OkModel),
-        "stub",
-        remote_deployment,
-    ));
+    let remote = Arc::new(
+        SharedHost::new_with_deployment(Arc::new(OkModel), "stub", remote_deployment).await,
+    );
     let remote_ctx = remote
         .ctx_for("remote-live", None)
         .await
@@ -1726,6 +1737,7 @@ async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path()
 
     let initializer = Arc::new(RecordingInitializer(AtomicUsize::new(0)));
     let host = SharedHost::new(Arc::new(OkModel), "stub")
+        .await
         .with_cache_volume_initializer(initializer.clone());
     let mut spec = crate::provisioning::agent_run_sandbox_spec("cache-wiring");
     spec.mounts
@@ -1786,6 +1798,7 @@ async fn repository_layout_conflict_fails_before_cache_prewarm() {
     let initializer = Arc::new(CountingInitializer(AtomicUsize::new(0)));
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub")
+            .await
             .with_cache_volume_initializer(initializer.clone()),
     );
     let managed = managed_with_resource_source(host.clone());
@@ -1877,7 +1890,7 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
         }
     }
 
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     // The real mediator injects credential material upstream. To this process a
@@ -1976,8 +1989,8 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
 // every role, so a Coordinator composed over `ManagedHost` never meets a
 // `None` rung; the ladder exists for narrower runtimes and fakes, and this law
 // is what lets protocol adapters select roles without a fallback path.
-#[test]
-fn managed_host_owns_every_session_runtime_role() {
+#[tokio::test]
+async fn managed_host_owns_every_session_runtime_role() {
     fn assert_all(host: &dyn awaken_session_execution_contract::SessionRuntime) {
         assert!(host.realization().is_some(), "R1 realization");
         assert!(host.coordination().is_some(), "R1 coordination");
@@ -1990,7 +2003,7 @@ fn managed_host_owns_every_session_runtime_role() {
         assert!(host.live_inbox().is_some(), "R1 live inbox");
         assert!(host.capability().is_some(), "R1 capability");
     }
-    let shared = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let shared = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let host = crate::ManagedHost::new(shared);
     assert_all(&host);
 }

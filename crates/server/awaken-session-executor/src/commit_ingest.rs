@@ -263,11 +263,8 @@ mod tests {
         }
     }
 
-    fn cold_claimed_memory_host() -> (Arc<SharedHost>, crate::ManagedHost) {
-        let host = Arc::new(SharedHost::new(
-            Arc::new(crate::host::MemoryHostModel),
-            "stub",
-        ));
+    async fn cold_claimed_memory_host() -> (Arc<SharedHost>, crate::ManagedHost) {
+        let host = Arc::new(SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub").await);
         let managed = crate::ManagedHost::new(host.clone())
             .with_resource_validator(crate::host::test_resource_validator())
             .install_dispatch_session_runtime();
@@ -381,6 +378,7 @@ mod tests {
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([extractor.clone()])
                 .expect("one exact Memory extractor publication");
         let admission = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
+            .await
             .with_agent_publications(Arc::new(publications));
         admission.register_thread_resource_manifest(thread, manifest);
         let dispatch = admission
@@ -391,7 +389,7 @@ mod tests {
             OVERRIDE_MODEL_REF,
             "R1-R3/C5"
         );
-        let (host, _managed) = cold_claimed_memory_host();
+        let (host, _managed) = cold_claimed_memory_host().await;
         assert!(
             host.session_slots.read(thread, |_| ()).is_none(),
             "R1-R3/C3 target starts cold"
@@ -530,6 +528,7 @@ mod tests {
             .expect("exact root and Memory extractor publications"),
         );
         let admission = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
+            .await
             .with_agent_publications(publications.clone());
         admission.register_thread_resource_manifest(thread, manifest.clone());
         let dispatch = admission
@@ -538,10 +537,12 @@ mod tests {
 
         let queue = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+                .await
                 .expect("durable dispatch store"),
         );
         let host = Arc::new(
             SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
+                .await
                 .with_dispatch_store(queue.clone())
                 .with_agent_publications(publications),
         );
@@ -700,7 +701,7 @@ mod tests {
             OVERRIDE_MODEL_REF,
             "R1-R5/C7"
         );
-        let (host, _managed) = cold_claimed_memory_host();
+        let (host, _managed) = cold_claimed_memory_host().await;
         assert!(
             host.session_slots.read(parent_thread, |_| ()).is_none()
                 && host.session_slots.read(child_thread, |_| ()).is_none(),
@@ -898,8 +899,8 @@ mod tests {
         assert_eq!(stale.kind, ApplicationErrorKind::InvalidRequest, "R7/E1");
     }
 
-    #[test]
-    fn worker_claimed_commit_is_the_injected_port_only_for_a_worker() {
+    #[tokio::test]
+    async fn worker_claimed_commit_is_the_injected_port_only_for_a_worker() {
         // Decision table: C1 the Host role is database-less Worker (selected
         // by its product constructor, varied by the test-only role seam here);
         // C2 startup injected a claimed-commit transport.
@@ -922,9 +923,13 @@ mod tests {
         }
         let injected: Arc<dyn ClaimedRunCommit> = Arc::new(SelectedOnly);
         let host = || SharedHost::new(Arc::new(crate::NoModelConfiguredExecutor), "stub");
-        assert!(host().worker_claimed_commit().unwrap().is_none(), "W1");
+        assert!(
+            host().await.worker_claimed_commit().unwrap().is_none(),
+            "W1"
+        );
         assert!(
             host()
+                .await
                 .with_worker_claimed_commit(injected.clone())
                 .worker_claimed_commit()
                 .unwrap()
@@ -932,6 +937,7 @@ mod tests {
             "W1 injected"
         );
         let selected = host()
+            .await
             .with_database_less_worker_role_for_test()
             .with_worker_claimed_commit(injected.clone())
             .worker_claimed_commit()
@@ -939,6 +945,7 @@ mod tests {
             .expect("W2");
         assert!(Arc::ptr_eq(&selected, &injected), "W2 exact port");
         let error = match host()
+            .await
             .with_database_less_worker_role_for_test()
             .worker_claimed_commit()
         {

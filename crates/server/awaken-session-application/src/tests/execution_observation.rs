@@ -127,8 +127,11 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
     use awaken_dispatch_contract::{
         DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOutcome, RunClaim,
     };
-    let repository =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repository = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let session = profiled_observed_session("native-observed");
     assert!(
         session.event_batches.is_empty(),
@@ -306,8 +309,11 @@ async fn native_run_observation_refuses_foreign_scope_missing_source_and_invalid
     // R6 unknown Run => NotFound, never reuse the latest Run. These cover scope,
     // mode, dependency, input and membership causes; all leave root unchanged.
     use awaken_dispatch_contract::DispatchCursor;
-    let repository =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repository = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(
         repository.as_ref(),
         profiled_observed_session("native-refusals"),
@@ -400,8 +406,11 @@ async fn native_run_reply_rejects_foreign_owner_mode_and_nonprimary_or_unfenced_
     use awaken_session_execution_contract::{
         SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand,
     };
-    let repository =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repository = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(
         repository.as_ref(),
         profiled_observed_session("native-reply-owner"),
@@ -527,8 +536,11 @@ async fn native_run_claim_is_visible_before_the_first_commit_only_with_exact_adm
     use awaken_dispatch_contract::{
         DispatchCursor, DispatchOperation, DispatchOperationalEvent, RunClaim,
     };
-    let repository =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repository = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     create(
         repository.as_ref(),
         profiled_observed_session("native-precommit"),
@@ -729,6 +741,7 @@ async fn execution_observation_joins_only_same_snapshot_run_and_model_facts() {
     // performs no write or recovery.
     let repository = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("session repository"),
     );
     let mut session = observed_session("session-observed");
@@ -882,6 +895,7 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
     // Neither corrupt source can become fabricated successful evidence.
     let repository = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("session repository"),
     );
     create(repository.as_ref(), observed_session("session-empty")).await;

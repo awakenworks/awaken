@@ -29,6 +29,7 @@ awaken-session-store = { workspace = true, features = ["test-support"] }
 [dev-dependencies]
 awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true

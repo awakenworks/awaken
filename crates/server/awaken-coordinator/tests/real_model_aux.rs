@@ -26,7 +26,7 @@ use awaken_resource_contract::{
 };
 use awaken_session_executor::HostOutcomeDrive;
 
-fn live_host() -> Option<(SharedHost, String)> {
+async fn live_host() -> Option<(SharedHost, String)> {
     let key = std::env::var("KIMI_API_KEY").ok()?;
     let base = std::env::var("KIMI_BASE_URL")
         .unwrap_or_else(|_| "https://api.kimi.com/coding/v1/".to_string());
@@ -38,10 +38,9 @@ fn live_host() -> Option<(SharedHost, String)> {
     )
     .expect("explicit client construction");
     Some((
-        Arc::into_inner(awaken_scenario_host::build_unmounted_host(
-            Arc::new(executor),
-            model.clone(),
-        ))
+        Arc::into_inner(
+            awaken_scenario_host::build_unmounted_host(Arc::new(executor), model.clone()).await,
+        )
         .expect("unmounted scenario host has one owner"),
         model,
     ))
@@ -98,7 +97,9 @@ async fn live_memory_extraction_writes_a_memory_file() {
     // Coverage rationale: `live memory extraction` is one independent branch selecting `writes a
     // memory file`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
-    let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
+    let (host, _model) = live_host()
+        .await
+        .expect("set KIMI_API_KEY to run this test");
     let store = "live-memory-extraction";
     bind_memory(&host, "mem-e2e", store);
 
@@ -159,7 +160,9 @@ async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation()
     // Coverage rationale: `live memory` is one independent branch selecting `is generated then
     // recalled and used in a new conversation`; a multi-row decision table is not applicable, and
     // sibling tests own alternate causes.
-    let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
+    let (host, _model) = live_host()
+        .await
+        .expect("set KIMI_API_KEY to run this test");
     let store = "live-memory-loop";
     bind_memory(&host, "conv-1", store);
     bind_memory(&host, "conv-2", store);
@@ -213,7 +216,9 @@ async fn live_relevance_selection_picks_the_right_memory_via_the_selector_agent(
     // is one independent branch selecting `all output, state, side-effect, error, and terminal
     // assertions below hold together`; a multi-row decision table is not applicable, and sibling
     // tests own alternate causes.
-    let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
+    let (host, _model) = live_host()
+        .await
+        .expect("set KIMI_API_KEY to run this test");
     let store = "live-memory-selection";
 
     // Pre-populate MORE than the recall `select_over` threshold (12) so the recall
@@ -270,7 +275,9 @@ async fn live_relevance_selection_picks_the_right_memory_via_the_selector_agent(
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
-    let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
+    let (host, _model) = live_host()
+        .await
+        .expect("set KIMI_API_KEY to run this test");
     // The judge is now an ordinary agent resolved by id; grade with a real one.
     let host = host
         .with_judge("judge")
@@ -318,7 +325,9 @@ async fn live_compaction_summarizes_and_the_conversation_continues() {
     // independent branch selecting `all output, state, side-effect, error, and terminal assertions
     // below hold together`; a multi-row decision table is not applicable, and sibling tests own
     // alternate causes.
-    let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
+    let (host, _model) = live_host()
+        .await
+        .expect("set KIMI_API_KEY to run this test");
     // Compact once history passes 4 messages, keeping the last 2 verbatim.
     let host = host.with_compaction_tokens(4, 2);
 

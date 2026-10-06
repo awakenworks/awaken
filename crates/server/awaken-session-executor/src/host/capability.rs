@@ -23,6 +23,8 @@ pub(crate) use environment::EnvironmentProviders;
 pub(crate) use execution::AttemptBackends;
 pub(crate) use mcp::McpRelayCapability;
 pub(crate) use resources::ResourcePorts;
+#[cfg(test)]
+pub(super) use resources::local_memory_extraction_repository;
 #[cfg(any(test, feature = "test-support"))]
 pub use resources::{LocalResourcePorts, LocalSkillPorts};
 pub(super) use resources::{ResourceInputs, WorkerContentAdapters};

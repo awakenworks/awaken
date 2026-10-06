@@ -315,7 +315,11 @@ async fn physical_ack_waits_for_all_participants_sqlite() {
     for dropped in [false, true] {
         let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
         assert_parent_return_waits_for_all_participants(
-            Arc::new(SqliteDispatchStore::open_in_memory(clock.clock()).unwrap()),
+            Arc::new(
+                SqliteDispatchStore::open_in_memory(clock.clock())
+                    .await
+                    .unwrap(),
+            ),
             dropped,
         )
         .await;
@@ -705,7 +709,11 @@ async fn native_cancel_evidence_precedes_physical_ack_sqlite() {
     for unknown in [false, true] {
         let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
         assert_native_cancel_observes_history_before_physical_ack(
-            Arc::new(SqliteDispatchStore::open_in_memory(clock.clock()).unwrap()),
+            Arc::new(
+                SqliteDispatchStore::open_in_memory(clock.clock())
+                    .await
+                    .unwrap(),
+            ),
             unknown,
             &clock,
         )
@@ -856,7 +864,9 @@ async fn live_lease_fences_a_claim_sqlite() {
     // in-memory reference does.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     assert_live_lease_fences_a_claim(
-        &SqliteDispatchStore::open_in_memory(clock.clock()).expect("open"),
+        &SqliteDispatchStore::open_in_memory(clock.clock())
+            .await
+            .expect("open"),
         &clock,
     )
     .await;
@@ -1177,7 +1187,11 @@ async fn occupied_attempt_recovery_sqlite() {
         for coordinated in [false, true] {
             let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
             assert_occupied_attempt_terminal_recovery(
-                Arc::new(SqliteDispatchStore::open_in_memory(clock.clock()).unwrap()),
+                Arc::new(
+                    SqliteDispatchStore::open_in_memory(clock.clock())
+                        .await
+                        .unwrap(),
+                ),
                 acp,
                 cancel,
                 coordinated,
@@ -1624,12 +1638,14 @@ async fn killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen(
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let dispatch = Arc::new(
             SqliteDispatchStore::open(root.join("dispatch.db").to_str().unwrap(), clock.clone())
+                .await
                 .unwrap(),
         );
         let commit = Arc::new(
             awaken_store_sqlite::SqliteCommitCoordinator::open(
                 root.join("commit.db").to_str().unwrap(),
             )
+            .await
             .unwrap(),
         );
         let (runtime, calls) = blocking_tool_runtime(Arc::new(tokio::sync::Semaphore::new(0)));
@@ -1667,12 +1683,14 @@ async fn killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen(
             root.path().join("dispatch.db").to_str().unwrap(),
             clock.clone(),
         )
+        .await
         .unwrap(),
     );
     let commit = Arc::new(
         awaken_store_sqlite::SqliteCommitCoordinator::open(
             root.path().join("commit.db").to_str().unwrap(),
         )
+        .await
         .unwrap(),
     );
     assert!(

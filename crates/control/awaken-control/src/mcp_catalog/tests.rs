@@ -39,12 +39,13 @@ struct Harness {
     _temp: tempfile::TempDir,
 }
 impl Harness {
-    fn new() -> Self {
+    async fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(
             awaken_admin_config_api::SqliteAdminStore::open(
                 temp.path().join("admin.sqlite").to_str().unwrap(),
             )
+            .await
             .unwrap(),
         );
         let probe = Arc::new(Probe::default());
@@ -117,7 +118,7 @@ async fn credential_target_scope_lifecycle_and_precedence_decision_table() {
     // C1 two accounts same endpoint => retain both; C2 wrong URL/Workspace =>
     // absent/reject; C3 stale revision => 409; C4 revoked => reject/no probe;
     // C5 valid selected account => one live probe, no secret in response.
-    let h = Harness::new();
+    let h = Harness::new().await;
     let url = "https://mcp.notion.com/mcp";
     let (va, a) = h.credential("w", "Product Notion", url).await;
     let (_vb, b) = h
@@ -229,7 +230,7 @@ async fn local_config_stdio_defaults_and_conflicts_are_atomic() {
     // 409 without overwriting; L3 stdio + HTTP credential -> reject; L4 changed
     // URL invalidates default applicability; L5 remove definition clears only
     // its default; L6 another Workspace never reads/writes these rows.
-    let h = Harness::new();
+    let h = Harness::new().await;
     let url = "https://mcp.example.test/mcp";
     let (_, credential) = h.credential("w", "Account", url).await;
     let (status, _) = h
@@ -301,7 +302,7 @@ async fn local_config_stdio_defaults_and_conflicts_are_atomic() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    let stored = h.store.get_mcp_configuration("w").unwrap().unwrap();
+    let stored = h.store.get_mcp_configuration("w").await.unwrap().unwrap();
     assert!(!stored.defaults.contains_key("local:custom"));
     assert!(stored.server("local:stdio").is_some());
 }
@@ -310,7 +311,7 @@ async fn local_config_stdio_defaults_and_conflicts_are_atomic() {
 async fn current_revision_noop_does_not_create_a_configuration_revision() {
     // N1 identical local definition + current CAS -> no revision; N2 stale CAS
     // even with identical content -> conflict; N3 clear absent default -> no-op.
-    let h = Harness::new();
+    let h = Harness::new().await;
     let body = server("same", "https://mcp.example.test/mcp");
     let (status, first) = h
         .call(
@@ -358,7 +359,7 @@ async fn documented_mcp_operations_are_mounted_on_the_real_router() {
     // O1 documented method/path -> routed owner, including validation failures;
     // O2 missing method/route -> framework 404/405 and test failure. Schema and
     // TS generation share this registry, not a separate frontend endpoint list.
-    let h = Harness::new();
+    let h = Harness::new().await;
     for (path, operations) in contract_paths() {
         for method in operations.as_object().unwrap().keys() {
             let path = path.replace("{key}", "catalog:notion");
@@ -431,7 +432,7 @@ async fn supervised_catalog_refresh_uses_one_sync_path_and_stops_with_lifecycle(
         }
     });
 
-    let harness = Harness::new();
+    let harness = Harness::new().await;
     let mut configuration = McpConfiguration::new(
         "background".into(),
         McpCatalogSnapshot {
@@ -445,6 +446,7 @@ async fn supervised_catalog_refresh_uses_one_sync_path_and_stops_with_lifecycle(
     harness
         .store
         .put_mcp_configuration(0, &configuration)
+        .await
         .unwrap();
     let mut unconfigured = McpConfiguration::new(
         "unconfigured".into(),
@@ -458,6 +460,7 @@ async fn supervised_catalog_refresh_uses_one_sync_path_and_stops_with_lifecycle(
     harness
         .store
         .put_mcp_configuration(0, &unconfigured)
+        .await
         .unwrap();
     let service = McpCatalogService::new(
         harness.store.clone(),
@@ -475,6 +478,7 @@ async fn supervised_catalog_refresh_uses_one_sync_path_and_stops_with_lifecycle(
             if harness
                 .store
                 .get_mcp_configuration("background")
+                .await
                 .unwrap()
                 .is_some_and(|value| value.catalog.revision == 2)
             {
@@ -491,6 +495,7 @@ async fn supervised_catalog_refresh_uses_one_sync_path_and_stops_with_lifecycle(
             if harness
                 .store
                 .get_mcp_configuration("background")
+                .await
                 .unwrap()
                 .is_some_and(|value| value.catalog.revision == 3)
             {
@@ -515,6 +520,7 @@ async fn supervised_catalog_refresh_uses_one_sync_path_and_stops_with_lifecycle(
         harness
             .store
             .get_mcp_configuration("background")
+            .await
             .unwrap()
             .unwrap()
             .catalog
@@ -530,6 +536,7 @@ async fn supervised_catalog_refresh_uses_one_sync_path_and_stops_with_lifecycle(
             if harness
                 .store
                 .get_mcp_configuration("background")
+                .await
                 .unwrap()
                 .is_some_and(|value| value.catalog.revision == 4)
             {
@@ -544,6 +551,7 @@ async fn supervised_catalog_refresh_uses_one_sync_path_and_stops_with_lifecycle(
         harness
             .store
             .get_mcp_configuration("unconfigured")
+            .await
             .unwrap()
             .unwrap(),
         unconfigured,

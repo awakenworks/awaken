@@ -45,7 +45,9 @@ fn ck(thread: &str, run: &str, text: &str, state: RunState) -> ThreadCommit {
 // thread, so this is a real backend capability the shared suite does not cover.)
 #[tokio::test]
 async fn two_threads_in_one_store_do_not_leak_transcripts() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     let ta = ThreadId("t-a".to_string());
     let tb = ThreadId("t-b".to_string());
 
@@ -90,7 +92,9 @@ async fn two_threads_in_one_store_do_not_leak_transcripts() {
 // second thread's events are excluded. (Conformance only covers EventScope::Run.)
 #[tokio::test]
 async fn event_scope_thread_isolates_across_threads() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
 
     store
         .commit(ck("t-a", "r-a", "a1", RunState::Running))
@@ -147,7 +151,7 @@ async fn reopening_reruns_migrations_idempotently() {
     let _ = std::fs::remove_file(&path);
 
     {
-        let store = SqliteCommitCoordinator::open(&path).expect("open 1");
+        let store = SqliteCommitCoordinator::open(&path).await.expect("open 1");
         store
             .commit(ck("t1", "r1", "hi", RunState::Ended(EndCause::NaturalEnd)))
             .await
@@ -156,8 +160,9 @@ async fn reopening_reruns_migrations_idempotently() {
     // Re-open twice more: each open re-applies the bundle against an already
     // migrated schema. It must succeed and preserve the committed fence.
     for attempt in 2..=3 {
-        let store =
-            SqliteCommitCoordinator::open(&path).unwrap_or_else(|e| panic!("open {attempt}: {e}"));
+        let store = SqliteCommitCoordinator::open(&path)
+            .await
+            .unwrap_or_else(|e| panic!("open {attempt}: {e}"));
         assert_eq!(
             store.commit_count(),
             1,
@@ -175,7 +180,9 @@ async fn reopening_reruns_migrations_idempotently() {
 // which pins run reads and the fence but not list_events).
 #[tokio::test]
 async fn empty_store_event_reads_are_absent() {
-    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory()
+        .await
+        .expect("open");
     assert!(
         store
             .list_events(&EventScope::Run(RunId("r1".to_string())), None, 10)

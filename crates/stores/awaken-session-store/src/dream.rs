@@ -3,10 +3,10 @@
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Durable Dream job and automatic-policy adapters.
 
+use async_trait::async_trait;
 use awaken_session_dream_contract::{
     DreamPolicyRecord, DreamProcessRecord, DreamProcessStore, DreamProcessStoreError,
 };
-use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::Row;
 
@@ -44,139 +44,146 @@ fn decode_policy(
     Ok(record)
 }
 
+#[async_trait]
 impl DreamProcessStore for SqliteManagedSessionRepository {
-    fn dream_processes(&self) -> Result<Vec<DreamProcessRecord>, DreamProcessStoreError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        let mut statement = conn
-            .prepare("SELECT job_id, data FROM managed_dream ORDER BY job_id")
-            .map_err(storage)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(storage)?;
-        rows.map(|row| {
-            let (key, data) = row.map_err(storage)?;
-            decode_process(key, data)
-        })
+    async fn dream_processes(&self) -> Result<Vec<DreamProcessRecord>, DreamProcessStoreError> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT job_id, data FROM managed_dream ORDER BY job_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?
+        .into_iter()
+        .map(|(key, data)| decode_process(key, data))
         .collect()
     }
 
-    fn compare_and_swap_dream_process(
+    async fn compare_and_swap_dream_process(
         &self,
         expected: Option<&DreamProcessRecord>,
         record: DreamProcessRecord,
     ) -> Result<bool, DreamProcessStoreError> {
         let data = encode(&record)?;
-        let mut conn = self.conn.lock().map_err(storage)?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
             .map_err(storage)?;
-        let current = tx
-            .query_row(
-                "SELECT data FROM managed_dream WHERE job_id=?1",
-                params![record.process_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(storage)?
-            .map(|data| decode_process(record.process_id.clone(), data))
-            .transpose()?;
+        let current =
+            sqlx::query_scalar::<_, String>("SELECT data FROM managed_dream WHERE job_id=?1")
+                .bind(&record.process_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?
+                .map(|data| decode_process(record.process_id.clone(), data))
+                .transpose()?;
         if current.as_ref() != expected {
             return Ok(false);
         }
         let changed = match current {
-            None => tx.execute(
-                "INSERT OR IGNORE INTO managed_dream (job_id, data) VALUES (?1, ?2)",
-                params![record.process_id, data],
-            ),
-            Some(_) => tx.execute(
-                "UPDATE managed_dream SET data=?2 WHERE job_id=?1",
-                params![record.process_id, data],
-            ),
+            None => {
+                sqlx::query("INSERT OR IGNORE INTO managed_dream (job_id, data) VALUES (?1, ?2)")
+                    .bind(&record.process_id)
+                    .bind(data)
+                    .execute(&mut *tx)
+                    .await
+            }
+            Some(_) => {
+                sqlx::query("UPDATE managed_dream SET data=?2 WHERE job_id=?1")
+                    .bind(&record.process_id)
+                    .bind(data)
+                    .execute(&mut *tx)
+                    .await
+            }
         }
-        .map_err(storage)?;
+        .map_err(storage)?
+        .rows_affected();
         if changed != 1 {
             return Ok(false);
         }
-        tx.commit().map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
         Ok(true)
     }
 
-    fn dream_policies(&self) -> Result<Vec<DreamPolicyRecord>, DreamProcessStoreError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        let mut statement = conn
-            .prepare(
-                "SELECT workspace_id, memory_store_id, data FROM managed_dream_policy \
-                 ORDER BY workspace_id, memory_store_id",
-            )
-            .map_err(storage)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(storage)?;
-        rows.map(|row| {
-            let (workspace_id, memory_store_id, data) = row.map_err(storage)?;
+    async fn dream_policies(&self) -> Result<Vec<DreamPolicyRecord>, DreamProcessStoreError> {
+        sqlx::query_as::<_, (String, String, String)>(
+            "SELECT workspace_id, memory_store_id, data FROM managed_dream_policy \
+             ORDER BY workspace_id, memory_store_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?
+        .into_iter()
+        .map(|(workspace_id, memory_store_id, data)| {
             decode_policy(workspace_id, memory_store_id, data)
         })
         .collect()
     }
 
-    fn compare_and_swap_dream_policy(
+    async fn compare_and_swap_dream_policy(
         &self,
         expected: Option<&DreamPolicyRecord>,
         record: DreamPolicyRecord,
     ) -> Result<bool, DreamProcessStoreError> {
         let data = encode(&record)?;
-        let mut conn = self.conn.lock().map_err(storage)?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
             .map_err(storage)?;
-        let current = tx
-            .query_row(
-                "SELECT data FROM managed_dream_policy WHERE workspace_id=?1 AND memory_store_id=?2",
-                params![record.workspace_id, record.memory_store_id],
-                |row| row.get::<_, String>(0),
+        let current = sqlx::query_scalar::<_, String>(
+            "SELECT data FROM managed_dream_policy WHERE workspace_id=?1 AND memory_store_id=?2",
+        )
+        .bind(&record.workspace_id)
+        .bind(&record.memory_store_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        .map(|data| {
+            decode_policy(
+                record.workspace_id.clone(),
+                record.memory_store_id.clone(),
+                data,
             )
-            .optional()
-            .map_err(storage)?
-            .map(|data| {
-                decode_policy(
-                    record.workspace_id.clone(),
-                    record.memory_store_id.clone(),
-                    data,
-                )
-            })
-            .transpose()?;
+        })
+        .transpose()?;
         if current.as_ref() != expected {
             return Ok(false);
         }
         let changed = match current {
-            None => tx.execute(
-                "INSERT OR IGNORE INTO managed_dream_policy \
-                 (workspace_id, memory_store_id, data) VALUES (?1, ?2, ?3)",
-                params![record.workspace_id, record.memory_store_id, data],
-            ),
-            Some(_) => tx.execute(
-                "UPDATE managed_dream_policy SET data=?3 \
-                 WHERE workspace_id=?1 AND memory_store_id=?2",
-                params![record.workspace_id, record.memory_store_id, data],
-            ),
+            None => {
+                sqlx::query(
+                    "INSERT OR IGNORE INTO managed_dream_policy \
+                     (workspace_id, memory_store_id, data) VALUES (?1, ?2, ?3)",
+                )
+                .bind(&record.workspace_id)
+                .bind(&record.memory_store_id)
+                .bind(data)
+                .execute(&mut *tx)
+                .await
+            }
+            Some(_) => {
+                sqlx::query(
+                    "UPDATE managed_dream_policy SET data=?3 \
+                     WHERE workspace_id=?1 AND memory_store_id=?2",
+                )
+                .bind(&record.workspace_id)
+                .bind(&record.memory_store_id)
+                .bind(data)
+                .execute(&mut *tx)
+                .await
+            }
         }
-        .map_err(storage)?;
+        .map_err(storage)?
+        .rows_affected();
         if changed != 1 {
             return Ok(false);
         }
-        tx.commit().map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
         Ok(true)
     }
 
-    fn claim_dream_policy(
+    async fn claim_dream_policy(
         &self,
         expected_policy: &DreamPolicyRecord,
         policy: DreamPolicyRecord,
@@ -184,18 +191,19 @@ impl DreamProcessStore for SqliteManagedSessionRepository {
     ) -> Result<bool, DreamProcessStoreError> {
         let policy_data = encode(&policy)?;
         let process_data = encode(&process)?;
-        let mut conn = self.conn.lock().map_err(storage)?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
             .map_err(storage)?;
-        let current = tx
-            .query_row(
-                "SELECT data FROM managed_dream_policy WHERE workspace_id=?1 AND memory_store_id=?2",
-                params![policy.workspace_id, policy.memory_store_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(storage)?;
+        let current = sqlx::query_scalar::<_, String>(
+            "SELECT data FROM managed_dream_policy WHERE workspace_id=?1 AND memory_store_id=?2",
+        )
+        .bind(&policy.workspace_id)
+        .bind(&policy.memory_store_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?;
         let current = current
             .map(|data| {
                 decode_policy(
@@ -208,186 +216,165 @@ impl DreamProcessStore for SqliteManagedSessionRepository {
         if current.as_ref() != Some(expected_policy) {
             return Ok(false);
         }
-        tx.execute(
+        sqlx::query(
             "UPDATE managed_dream_policy SET data=?3 \
              WHERE workspace_id=?1 AND memory_store_id=?2",
-            params![policy.workspace_id, policy.memory_store_id, policy_data],
         )
+        .bind(&policy.workspace_id)
+        .bind(&policy.memory_store_id)
+        .bind(policy_data)
+        .execute(&mut *tx)
+        .await
         .map_err(storage)?;
-        let inserted = tx
-            .execute(
-                "INSERT OR IGNORE INTO managed_dream (job_id, data) VALUES (?1, ?2)",
-                params![process.process_id, process_data],
-            )
-            .map_err(storage)?;
+        let inserted =
+            sqlx::query("INSERT OR IGNORE INTO managed_dream (job_id, data) VALUES (?1, ?2)")
+                .bind(&process.process_id)
+                .bind(process_data)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage)?
+                .rows_affected();
         if inserted != 1 {
             return Ok(false);
         }
-        tx.commit().map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
         Ok(true)
     }
 }
 
+#[async_trait]
 impl DreamProcessStore for PostgresManagedSessionRepository {
-    fn dream_processes(&self) -> Result<Vec<DreamProcessRecord>, DreamProcessStoreError> {
-        let pool = self.pool.clone();
-        awaken_sql_storage::block_on_ambient_runtime(&self.handle, move || {
-            Box::pin(async move {
-                sqlx::query("SELECT job_id, data FROM managed_dream ORDER BY job_id")
-                    .fetch_all(&pool)
-                    .await
-                    .map_err(storage)?
-                    .into_iter()
-                    .map(|row| {
-                        decode_process(
-                            row.try_get(0).map_err(storage)?,
-                            row.try_get(1).map_err(storage)?,
-                        )
-                    })
-                    .collect()
+    async fn dream_processes(&self) -> Result<Vec<DreamProcessRecord>, DreamProcessStoreError> {
+        sqlx::query("SELECT job_id, data FROM managed_dream ORDER BY job_id")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(storage)?
+            .into_iter()
+            .map(|row| {
+                decode_process(
+                    row.try_get(0).map_err(storage)?,
+                    row.try_get(1).map_err(storage)?,
+                )
             })
-        })
+            .collect()
     }
 
-    fn compare_and_swap_dream_process(
+    async fn compare_and_swap_dream_process(
         &self,
         expected: Option<&DreamProcessRecord>,
         record: DreamProcessRecord,
     ) -> Result<bool, DreamProcessStoreError> {
-        let pool = self.pool.clone();
-        let expected = expected.cloned();
         let data = encode(&record)?;
-        awaken_sql_storage::block_on_ambient_runtime(&self.handle, move || {
-            Box::pin(async move {
-                let mut tx = pool.begin().await.map_err(storage)?;
-                let current =
-                    sqlx::query("SELECT data FROM managed_dream WHERE job_id=$1 FOR UPDATE")
-                        .bind(&record.process_id)
-                        .fetch_optional(&mut *tx)
-                        .await
-                        .map_err(storage)?
-                        .map(|row| {
-                            decode_process(
-                                record.process_id.clone(),
-                                row.try_get(0).map_err(storage)?,
-                            )
-                        })
-                        .transpose()?;
-                if current.as_ref() != expected.as_ref() {
-                    tx.rollback().await.map_err(storage)?;
-                    return Ok(false);
-                }
-                let result = match current {
-                    None => sqlx::query("INSERT INTO managed_dream (job_id, data) VALUES ($1, $2) ON CONFLICT(job_id) DO NOTHING")
-                        .bind(record.process_id).bind(data).execute(&mut *tx).await,
-                    Some(_) => sqlx::query("UPDATE managed_dream SET data=$2 WHERE job_id=$1")
-                        .bind(record.process_id).bind(data).execute(&mut *tx).await,
-                }.map_err(storage)?;
-                if result.rows_affected() != 1 {
-                    tx.rollback().await.map_err(storage)?;
-                    return Ok(false);
-                }
-                tx.commit().await.map_err(storage)?;
-                Ok(true)
-            })
-        })
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let current = sqlx::query("SELECT data FROM managed_dream WHERE job_id=$1 FOR UPDATE")
+            .bind(&record.process_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(storage)?
+            .map(|row| decode_process(record.process_id.clone(), row.try_get(0).map_err(storage)?))
+            .transpose()?;
+        if current.as_ref() != expected {
+            tx.rollback().await.map_err(storage)?;
+            return Ok(false);
+        }
+        let result = match current {
+            None => sqlx::query("INSERT INTO managed_dream (job_id, data) VALUES ($1, $2) ON CONFLICT(job_id) DO NOTHING")
+                .bind(record.process_id).bind(data).execute(&mut *tx).await,
+            Some(_) => sqlx::query("UPDATE managed_dream SET data=$2 WHERE job_id=$1")
+                .bind(record.process_id).bind(data).execute(&mut *tx).await,
+        }.map_err(storage)?;
+        if result.rows_affected() != 1 {
+            tx.rollback().await.map_err(storage)?;
+            return Ok(false);
+        }
+        tx.commit().await.map_err(storage)?;
+        Ok(true)
     }
 
-    fn dream_policies(&self) -> Result<Vec<DreamPolicyRecord>, DreamProcessStoreError> {
-        let pool = self.pool.clone();
-        awaken_sql_storage::block_on_ambient_runtime(&self.handle, move || {
-            Box::pin(async move {
-                sqlx::query("SELECT workspace_id, memory_store_id, data FROM managed_dream_policy ORDER BY workspace_id, memory_store_id")
-                .fetch_all(&pool).await.map_err(storage)?.into_iter()
-                .map(|row| decode_policy(
-                    row.try_get(0).map_err(storage)?,
-                    row.try_get(1).map_err(storage)?,
-                    row.try_get(2).map_err(storage)?,
-                ))
-                .collect()
-            })
-        })
+    async fn dream_policies(&self) -> Result<Vec<DreamPolicyRecord>, DreamProcessStoreError> {
+        sqlx::query("SELECT workspace_id, memory_store_id, data FROM managed_dream_policy ORDER BY workspace_id, memory_store_id")
+            .fetch_all(&self.pool).await.map_err(storage)?.into_iter()
+            .map(|row| decode_policy(
+                row.try_get(0).map_err(storage)?,
+                row.try_get(1).map_err(storage)?,
+                row.try_get(2).map_err(storage)?,
+            ))
+            .collect()
     }
 
-    fn compare_and_swap_dream_policy(
+    async fn compare_and_swap_dream_policy(
         &self,
         expected: Option<&DreamPolicyRecord>,
         record: DreamPolicyRecord,
     ) -> Result<bool, DreamProcessStoreError> {
-        let pool = self.pool.clone();
-        let expected = expected.cloned();
         let data = encode(&record)?;
-        awaken_sql_storage::block_on_ambient_runtime(&self.handle, move || {
-            Box::pin(async move {
-                let mut tx = pool.begin().await.map_err(storage)?;
-                let current = sqlx::query("SELECT data FROM managed_dream_policy WHERE workspace_id=$1 AND memory_store_id=$2 FOR UPDATE")
-                    .bind(&record.workspace_id).bind(&record.memory_store_id)
-                    .fetch_optional(&mut *tx).await.map_err(storage)?
-                    .map(|row| decode_policy(
-                        record.workspace_id.clone(),
-                        record.memory_store_id.clone(),
-                        row.try_get(0).map_err(storage)?,
-                    ))
-                    .transpose()?;
-                if current.as_ref() != expected.as_ref() {
-                    tx.rollback().await.map_err(storage)?;
-                    return Ok(false);
-                }
-                let result = match current {
-                    None => sqlx::query("INSERT INTO managed_dream_policy (workspace_id, memory_store_id, data) VALUES ($1, $2, $3) ON CONFLICT(workspace_id, memory_store_id) DO NOTHING")
-                        .bind(record.workspace_id).bind(record.memory_store_id).bind(data).execute(&mut *tx).await,
-                    Some(_) => sqlx::query("UPDATE managed_dream_policy SET data=$3 WHERE workspace_id=$1 AND memory_store_id=$2")
-                        .bind(record.workspace_id).bind(record.memory_store_id).bind(data).execute(&mut *tx).await,
-                }.map_err(storage)?;
-                if result.rows_affected() != 1 {
-                    tx.rollback().await.map_err(storage)?;
-                    return Ok(false);
-                }
-                tx.commit().await.map_err(storage)?;
-                Ok(true)
-            })
-        })
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let current = sqlx::query("SELECT data FROM managed_dream_policy WHERE workspace_id=$1 AND memory_store_id=$2 FOR UPDATE")
+            .bind(&record.workspace_id).bind(&record.memory_store_id)
+            .fetch_optional(&mut *tx).await.map_err(storage)?
+            .map(|row| decode_policy(
+                record.workspace_id.clone(),
+                record.memory_store_id.clone(),
+                row.try_get(0).map_err(storage)?,
+            ))
+            .transpose()?;
+        if current.as_ref() != expected {
+            tx.rollback().await.map_err(storage)?;
+            return Ok(false);
+        }
+        let result = match current {
+            None => sqlx::query("INSERT INTO managed_dream_policy (workspace_id, memory_store_id, data) VALUES ($1, $2, $3) ON CONFLICT(workspace_id, memory_store_id) DO NOTHING")
+                .bind(record.workspace_id).bind(record.memory_store_id).bind(data).execute(&mut *tx).await,
+            Some(_) => sqlx::query("UPDATE managed_dream_policy SET data=$3 WHERE workspace_id=$1 AND memory_store_id=$2")
+                .bind(record.workspace_id).bind(record.memory_store_id).bind(data).execute(&mut *tx).await,
+        }.map_err(storage)?;
+        if result.rows_affected() != 1 {
+            tx.rollback().await.map_err(storage)?;
+            return Ok(false);
+        }
+        tx.commit().await.map_err(storage)?;
+        Ok(true)
     }
 
-    fn claim_dream_policy(
+    async fn claim_dream_policy(
         &self,
         expected_policy: &DreamPolicyRecord,
         policy: DreamPolicyRecord,
         process: DreamProcessRecord,
     ) -> Result<bool, DreamProcessStoreError> {
-        let pool = self.pool.clone();
-        let expected_policy = expected_policy.clone();
         let policy_data = encode(&policy)?;
         let process_data = encode(&process)?;
-        awaken_sql_storage::block_on_ambient_runtime(&self.handle, move || {
-            Box::pin(async move {
-                let mut tx = pool.begin().await.map_err(storage)?;
-                let current = sqlx::query("SELECT data FROM managed_dream_policy WHERE workspace_id=$1 AND memory_store_id=$2 FOR UPDATE")
-                    .bind(&policy.workspace_id).bind(&policy.memory_store_id)
-                    .fetch_optional(&mut *tx).await.map_err(storage)?
-                    .map(|row| decode_policy(
-                        policy.workspace_id.clone(),
-                        policy.memory_store_id.clone(),
-                        row.try_get(0).map_err(storage)?,
-                    ))
-                    .transpose()?;
-                if current.as_ref() != Some(&expected_policy) {
-                    tx.rollback().await.map_err(storage)?;
-                    return Ok(false);
-                }
-                sqlx::query("UPDATE managed_dream_policy SET data=$3 WHERE workspace_id=$1 AND memory_store_id=$2")
-                    .bind(&policy.workspace_id).bind(&policy.memory_store_id).bind(policy_data)
-                    .execute(&mut *tx).await.map_err(storage)?;
-                let inserted = sqlx::query("INSERT INTO managed_dream (job_id, data) VALUES ($1, $2) ON CONFLICT(job_id) DO NOTHING")
-                .bind(process.process_id).bind(process_data).execute(&mut *tx).await.map_err(storage)?.rows_affected();
-                if inserted != 1 {
-                    tx.rollback().await.map_err(storage)?;
-                    return Ok(false);
-                }
-                tx.commit().await.map_err(storage)?;
-                Ok(true)
-            })
-        })
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let current = sqlx::query("SELECT data FROM managed_dream_policy WHERE workspace_id=$1 AND memory_store_id=$2 FOR UPDATE")
+            .bind(&policy.workspace_id).bind(&policy.memory_store_id)
+            .fetch_optional(&mut *tx).await.map_err(storage)?
+            .map(|row| decode_policy(
+                policy.workspace_id.clone(),
+                policy.memory_store_id.clone(),
+                row.try_get(0).map_err(storage)?,
+            ))
+            .transpose()?;
+        if current.as_ref() != Some(expected_policy) {
+            tx.rollback().await.map_err(storage)?;
+            return Ok(false);
+        }
+        sqlx::query(
+            "UPDATE managed_dream_policy SET data=$3 WHERE workspace_id=$1 AND memory_store_id=$2",
+        )
+        .bind(&policy.workspace_id)
+        .bind(&policy.memory_store_id)
+        .bind(policy_data)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        let inserted = sqlx::query("INSERT INTO managed_dream (job_id, data) VALUES ($1, $2) ON CONFLICT(job_id) DO NOTHING")
+        .bind(process.process_id).bind(process_data).execute(&mut *tx).await.map_err(storage)?.rows_affected();
+        if inserted != 1 {
+            tx.rollback().await.map_err(storage)?;
+            return Ok(false);
+        }
+        tx.commit().await.map_err(storage)?;
+        Ok(true)
     }
 }
 
@@ -396,16 +383,21 @@ mod tests {
     use super::*;
     use awaken_store_conformance::dream_store::{dream_store_conformance, process};
 
-    #[test]
-    fn sqlite_compare_and_swap_and_policy_claim_are_atomic() {
-        dream_store_conformance(&SqliteManagedSessionRepository::open_in_memory().unwrap());
+    #[tokio::test]
+    async fn sqlite_compare_and_swap_and_policy_claim_are_atomic() {
+        dream_store_conformance(
+            &SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
+        )
+        .await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn postgres_dream_store_conforms_and_reopens() {
         // R1-R6 execute the same suite against real PostgreSQL. R7 reopen
-        // preserves the complete process/policy frames. The synchronous port
-        // uses the documented multi-thread runtime bridge used by production.
+        // preserves the complete process/policy frames. The port is async, so
+        // the PostgreSQL adapter calls sqlx directly without a runtime bridge.
         let Some((url, admin)) = crate::tests::postgres_test_admin().await else {
             return;
         };
@@ -418,15 +410,15 @@ mod tests {
         let repository = PostgresManagedSessionRepository::connect(&scoped)
             .await
             .unwrap();
-        dream_store_conformance(&repository);
-        let jobs = repository.dream_processes().unwrap();
-        let policies = repository.dream_policies().unwrap();
+        dream_store_conformance(&repository).await;
+        let jobs = repository.dream_processes().await.unwrap();
+        let policies = repository.dream_policies().await.unwrap();
         drop(repository);
         let reopened = PostgresManagedSessionRepository::connect(&scoped)
             .await
             .unwrap();
-        assert_eq!(reopened.dream_processes().unwrap(), jobs);
-        assert_eq!(reopened.dream_policies().unwrap(), policies);
+        assert_eq!(reopened.dream_processes().await.unwrap(), jobs);
+        assert_eq!(reopened.dream_policies().await.unwrap(), policies);
         drop(reopened);
         sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
             .execute(&admin)
@@ -435,15 +427,17 @@ mod tests {
         admin.close().await;
     }
 
-    #[test]
-    fn sqlite_cas_normalizes_a_legacy_dream_record_through_the_typed_path() {
+    #[tokio::test]
+    async fn sqlite_cas_normalizes_a_legacy_dream_record_through_the_typed_path() {
         // Compatibility cause/effect rules: C1 a retained row uses legacy `id`
         // and duplicated `usage` fields -> E1 it decodes to the canonical typed
         // process; C2 that exact typed value is the CAS expectation -> E2 the
         // transition commits and rewrites one canonical payload without `usage`.
         // R1=C1, R2=C1+C2 prove compatibility is an adapter concern, not a
         // parallel application persistence path.
-        let repository = SqliteManagedSessionRepository::open_in_memory().unwrap();
+        let repository = SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap();
         let original = process("dream-legacy");
         let mut legacy = serde_json::to_value(&original).unwrap();
         let fields = legacy.as_object_mut().unwrap();
@@ -453,17 +447,14 @@ mod tests {
             "usage".into(),
             serde_json::json!({"input_tokens": 42, "output_tokens": 7}),
         );
-        repository
-            .conn
-            .lock()
-            .unwrap()
-            .execute(
-                "INSERT INTO managed_dream (job_id, data) VALUES (?1, ?2)",
-                params!["dream-legacy", legacy.to_string()],
-            )
+        sqlx::query("INSERT INTO managed_dream (job_id, data) VALUES (?1, ?2)")
+            .bind("dream-legacy")
+            .bind(legacy.to_string())
+            .execute(&repository.pool)
+            .await
             .unwrap();
 
-        let loaded = repository.dream_processes().unwrap().remove(0);
+        let loaded = repository.dream_processes().await.unwrap().remove(0);
         assert_eq!(loaded, original, "R1");
         let candidate = DreamProcessRecord {
             status: awaken_session_dream_contract::DreamStatus::Running,
@@ -472,19 +463,15 @@ mod tests {
         assert!(
             repository
                 .compare_and_swap_dream_process(Some(&loaded), candidate.clone())
+                .await
                 .unwrap(),
             "R2"
         );
-        assert_eq!(repository.dream_processes().unwrap(), vec![candidate]);
-        let raw: String = repository
-            .conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT data FROM managed_dream WHERE job_id=?1",
-                params!["dream-legacy"],
-                |row| row.get(0),
-            )
+        assert_eq!(repository.dream_processes().await.unwrap(), vec![candidate]);
+        let raw: String = sqlx::query_scalar("SELECT data FROM managed_dream WHERE job_id=?1")
+            .bind("dream-legacy")
+            .fetch_one(&repository.pool)
+            .await
             .unwrap();
         let normalized: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert!(normalized.get("process_id").is_some(), "R2");

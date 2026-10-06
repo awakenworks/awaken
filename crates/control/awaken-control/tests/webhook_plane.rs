@@ -92,74 +92,75 @@ impl LifecycleOutbox for SessionOutbox {
 }
 
 impl MemStore {
-    fn put(&self, def: WebhookEndpointDef) {
+    async fn put(&self, def: WebhookEndpointDef) {
         let intent = WebhookMutationIntent::create(def);
-        self.0.begin_mutation(intent.clone()).unwrap();
-        self.0.apply_mutation(&intent).unwrap();
-        self.0.complete_mutation(&intent).unwrap();
+        self.0.begin_mutation(intent.clone()).await.unwrap();
+        self.0.apply_mutation(&intent).await.unwrap();
+        self.0.complete_mutation(&intent).await.unwrap();
     }
-    fn get(&self, id: &str) -> Option<WebhookEndpointDef> {
-        self.0.get(id).unwrap()
+    async fn get(&self, id: &str) -> Option<WebhookEndpointDef> {
+        self.0.get(id).await.unwrap()
     }
-    fn list(&self, workspace_id: &str) -> Vec<WebhookEndpointDef> {
-        self.0.list(workspace_id).unwrap()
+    async fn list(&self, workspace_id: &str) -> Vec<WebhookEndpointDef> {
+        self.0.list(workspace_id).await.unwrap()
     }
 }
 
+#[async_trait]
 impl WebhookStore for MemStore {
-    fn get(
+    async fn get(
         &self,
         id: &str,
     ) -> Result<Option<WebhookEndpointDef>, awaken_config_resolver::ConfigRepositoryError> {
-        Ok(MemStore::get(self, id))
+        Ok(MemStore::get(self, id).await)
     }
-    fn list(
+    async fn list(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<WebhookEndpointDef>, awaken_config_resolver::ConfigRepositoryError> {
-        Ok(MemStore::list(self, workspace_id))
+        Ok(MemStore::list(self, workspace_id).await)
     }
-    fn update_authored(
+    async fn update_authored(
         &self,
         patch: WebhookAuthoringPatch,
     ) -> Result<WebhookAuthoringState, awaken_config_resolver::ConfigRepositoryError> {
-        self.0.update_authored(patch)
+        self.0.update_authored(patch).await
     }
-    fn begin_mutation(
+    async fn begin_mutation(
         &self,
         intent: WebhookMutationIntent,
     ) -> Result<(), awaken_config_resolver::ConfigRepositoryError> {
-        self.0.begin_mutation(intent)
+        self.0.begin_mutation(intent).await
     }
-    fn apply_mutation(
+    async fn apply_mutation(
         &self,
         intent: &WebhookMutationIntent,
     ) -> Result<(), awaken_config_resolver::ConfigRepositoryError> {
-        self.0.apply_mutation(intent)
+        self.0.apply_mutation(intent).await
     }
-    fn pending_mutations(
+    async fn pending_mutations(
         &self,
     ) -> Result<Vec<WebhookMutationIntent>, awaken_config_resolver::ConfigRepositoryError> {
-        self.0.pending_mutations()
+        self.0.pending_mutations().await
     }
-    fn complete_mutation(
+    async fn complete_mutation(
         &self,
         intent: &WebhookMutationIntent,
     ) -> Result<(), awaken_config_resolver::ConfigRepositoryError> {
-        self.0.complete_mutation(intent)
+        self.0.complete_mutation(intent).await
     }
-    fn material_refs(
+    async fn material_refs(
         &self,
     ) -> Result<Vec<SecretRef>, awaken_config_resolver::ConfigRepositoryError> {
-        self.0.material_refs()
+        self.0.material_refs().await
     }
-    fn record_delivery(
+    async fn record_delivery(
         &self,
         id: &str,
         outcome: WebhookDeliveryOutcome,
         failure_threshold: u32,
     ) -> Result<WebhookDeliveryState, awaken_config_resolver::ConfigRepositoryError> {
-        self.0.record_delivery(id, outcome, failure_threshold)
+        self.0.record_delivery(id, outcome, failure_threshold).await
     }
 }
 
@@ -240,16 +241,18 @@ impl SecretStore for MemSecrets {
     }
 }
 
-fn seed(store: &MemStore, id: &str, ws: &str) {
-    store.put(WebhookEndpointDef {
-        id: id.into(),
-        workspace_id: ws.into(),
-        url: "https://old.example/hook".into(),
-        event_types: vec!["run.completed".into()],
-        disabled: false,
-        consecutive_failures: 0,
-        secret_ref: SecretRef(format!("whsec:{id}")),
-    });
+async fn seed(store: &MemStore, id: &str, ws: &str) {
+    store
+        .put(WebhookEndpointDef {
+            id: id.into(),
+            workspace_id: ws.into(),
+            url: "https://old.example/hook".into(),
+            event_types: vec!["run.completed".into()],
+            disabled: false,
+            consecutive_failures: 0,
+            secret_ref: SecretRef(format!("whsec:{id}")),
+        })
+        .await;
 }
 
 /// Drive one request through the real router, stamping the tenant scope as the
@@ -308,7 +311,7 @@ async fn create_mints_a_secret_seals_it_and_stores_the_row() {
         .expect("plaintext secret returned once");
     assert!(!secret.is_empty());
     // The secret-free row is stored, sealed under its own ref.
-    let row = store.get("wh1").expect("row stored");
+    let row = store.get("wh1").await.expect("row stored");
     assert_eq!(row.workspace_id, "ws_a");
     assert!(
         row.secret_ref.0.starts_with("sec:webhook:whref_"),
@@ -336,7 +339,7 @@ async fn create_without_url_is_400() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(store.get("wh1").is_none(), "no row on a bad request");
+    assert!(store.get("wh1").await.is_none(), "no row on a bad request");
 }
 
 #[tokio::test]
@@ -361,9 +364,9 @@ async fn malformed_authoring_fields_are_rejected_without_side_effects() {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "R1/R2");
-        assert!(store.get("wh_invalid").is_none(), "E2");
+        assert!(store.get("wh_invalid").await.is_none(), "E2");
         assert!(secrets.map.lock().unwrap().is_empty(), "E3");
-        assert!(store.pending_mutations().unwrap().is_empty(), "E4");
+        assert!(store.pending_mutations().await.unwrap().is_empty(), "E4");
     }
 }
 
@@ -403,7 +406,7 @@ async fn an_authored_disabled_flag_is_honoured_when_the_subscription_is_created(
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "created");
-        let row = store.get("wh_created").expect("stored row");
+        let row = store.get("wh_created").await.expect("stored row");
         assert_eq!(
             row.disabled, expected_disabled,
             "stored row honours authoring"
@@ -448,7 +451,10 @@ async fn an_ssrf_shaped_url_is_rejected_and_seals_no_secret() {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{bad} must be rejected");
-        assert!(store.get("wh_ssrf").is_none(), "no row stored for {bad}");
+        assert!(
+            store.get("wh_ssrf").await.is_none(),
+            "no row stored for {bad}"
+        );
         assert!(
             secrets.map.lock().unwrap().is_empty(),
             "no secret sealed for a rejected url {bad}"
@@ -471,11 +477,11 @@ async fn seal_failure_is_500_and_stores_no_row() {
     .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(
-        store.get("wh1").is_none(),
+        store.get("wh1").await.is_none(),
         "a failed seal leaves no dangling row"
     );
     assert!(
-        store.pending_mutations().unwrap().is_empty(),
+        store.pending_mutations().await.unwrap().is_empty(),
         "successful compensation retires the create intent"
     );
 }
@@ -499,8 +505,8 @@ async fn failed_seal_and_failed_compensation_remain_recoverable() {
     )
     .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "R1/E1");
-    assert!(store.get("wh1").is_none(), "R1/E1");
-    assert_eq!(store.pending_mutations().unwrap().len(), 1, "R1/E2");
+    assert!(store.get("wh1").await.is_none(), "R1/E1");
+    assert_eq!(store.pending_mutations().await.unwrap().len(), 1, "R1/E2");
 
     secrets.fail_delete.store(false, Ordering::SeqCst);
     assert_eq!(
@@ -510,7 +516,7 @@ async fn failed_seal_and_failed_compensation_remain_recoverable() {
         1,
         "R2/E3"
     );
-    assert!(store.pending_mutations().unwrap().is_empty(), "R2/E3");
+    assert!(store.pending_mutations().await.unwrap().is_empty(), "R2/E3");
 }
 
 #[tokio::test]
@@ -518,7 +524,7 @@ async fn cross_tenant_put_is_404_and_does_not_hijack_the_row() {
     // Causes: an existing row belongs to ws_b while edge scope is ws_a.
     // Rule A2: mismatched scope -> 404, unchanged row and no material rotation.
     let store = Arc::new(MemStore::default());
-    seed(&store, "wh1", "ws_b");
+    seed(&store, "wh1", "ws_b").await;
     let secrets = Arc::new(MemSecrets::ok());
     let (status, _) = call(
         store.clone(),
@@ -530,9 +536,9 @@ async fn cross_tenant_put_is_404_and_does_not_hijack_the_row() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(store.get("wh1").unwrap().workspace_id, "ws_b", "A2");
+    assert_eq!(store.get("wh1").await.unwrap().workspace_id, "ws_b", "A2");
     assert!(secrets.inventory().await.unwrap().is_empty(), "A2");
-    let row = store.get("wh1").unwrap();
+    let row = store.get("wh1").await.unwrap();
     assert_eq!(row.workspace_id, "ws_b", "owner unchanged");
     assert_eq!(row.url, "https://old.example/hook", "url unchanged");
 }
@@ -540,7 +546,7 @@ async fn cross_tenant_put_is_404_and_does_not_hijack_the_row() {
 #[tokio::test]
 async fn cross_tenant_get_is_404() {
     let store = Arc::new(MemStore::default());
-    seed(&store, "wh1", "ws_b");
+    seed(&store, "wh1", "ws_b").await;
     let (status, _) = call(
         store,
         Arc::new(MemSecrets::ok()),
@@ -556,7 +562,7 @@ async fn cross_tenant_get_is_404() {
 #[tokio::test]
 async fn cross_tenant_delete_is_a_noop() {
     let store = Arc::new(MemStore::default());
-    seed(&store, "wh1", "ws_b");
+    seed(&store, "wh1", "ws_b").await;
     let (status, _) = call(
         store.clone(),
         Arc::new(MemSecrets::ok()),
@@ -568,7 +574,7 @@ async fn cross_tenant_delete_is_a_noop() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert!(
-        store.get("wh1").is_some(),
+        store.get("wh1").await.is_some(),
         "another tenant's row is not deleted"
     );
 }
@@ -581,7 +587,7 @@ async fn owned_delete_removes_row_and_signing_material() {
     let store = Arc::new(MemStore::default());
     let secrets = Arc::new(MemSecrets::ok());
     seed_resolvable(&store, &secrets, "wh1", "ws_a", &[]).await;
-    let reference = store.get("wh1").unwrap().secret_ref;
+    let reference = store.get("wh1").await.unwrap().secret_ref;
     let (status, _) = call(
         store.clone(),
         secrets.clone(),
@@ -592,9 +598,9 @@ async fn owned_delete_removes_row_and_signing_material() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "R1");
-    assert!(store.get("wh1").is_none(), "R1/E2");
+    assert!(store.get("wh1").await.is_none(), "R1/E2");
     assert!(secrets.get(&reference).await.is_err(), "R1/E3");
-    assert!(store.pending_mutations().unwrap().is_empty(), "R1/E4");
+    assert!(store.pending_mutations().await.unwrap().is_empty(), "R1/E4");
 }
 
 #[tokio::test]
@@ -605,7 +611,7 @@ async fn failed_delete_cleanup_keeps_a_recoverable_intent() {
     let store = Arc::new(MemStore::default());
     let secrets = Arc::new(MemSecrets::ok());
     seed_resolvable(&store, &secrets, "wh1", "ws_a", &[]).await;
-    let reference = store.get("wh1").unwrap().secret_ref;
+    let reference = store.get("wh1").await.unwrap().secret_ref;
     secrets.fail_delete.store(true, Ordering::SeqCst);
     let (status, _) = call(
         store.clone(),
@@ -617,9 +623,9 @@ async fn failed_delete_cleanup_keeps_a_recoverable_intent() {
     )
     .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "R1");
-    assert!(store.get("wh1").is_none(), "R1");
+    assert!(store.get("wh1").await.is_none(), "R1");
     assert!(secrets.get(&reference).await.is_ok(), "R1");
-    assert_eq!(store.pending_mutations().unwrap().len(), 1, "R1");
+    assert_eq!(store.pending_mutations().await.unwrap().len(), 1, "R1");
 
     secrets.fail_delete.store(false, Ordering::SeqCst);
     assert_eq!(
@@ -630,21 +636,23 @@ async fn failed_delete_cleanup_keeps_a_recoverable_intent() {
         "R2"
     );
     assert!(secrets.get(&reference).await.is_err(), "R2");
-    assert!(store.pending_mutations().unwrap().is_empty(), "R2");
+    assert!(store.pending_mutations().await.unwrap().is_empty(), "R2");
 }
 
 #[tokio::test]
 async fn update_in_place_preserves_the_sealed_secret() {
     let store = Arc::new(MemStore::default());
-    store.put(WebhookEndpointDef {
-        id: "wh1".into(),
-        workspace_id: "ws_a".into(),
-        url: "https://old.example/hook".into(),
-        event_types: vec![],
-        disabled: true,
-        consecutive_failures: 7,
-        secret_ref: SecretRef("whsec:original".into()),
-    });
+    store
+        .put(WebhookEndpointDef {
+            id: "wh1".into(),
+            workspace_id: "ws_a".into(),
+            url: "https://old.example/hook".into(),
+            event_types: vec![],
+            disabled: true,
+            consecutive_failures: 7,
+            secret_ref: SecretRef("whsec:original".into()),
+        })
+        .await;
     let (status, body) = call(
         store.clone(),
         Arc::new(MemSecrets::ok()),
@@ -658,7 +666,7 @@ async fn update_in_place_preserves_the_sealed_secret() {
     assert_eq!(body["url"], "https://new.example/hook");
     // No new secret minted on update, and none echoed.
     assert!(body.get("secret").is_none(), "update never echoes a secret");
-    let row = store.get("wh1").unwrap();
+    let row = store.get("wh1").await.unwrap();
     assert_eq!(
         row.secret_ref.0, "whsec:original",
         "sealed secret preserved"
@@ -674,15 +682,17 @@ async fn an_operator_can_reenable_an_auto_disabled_subscription() {
     // `update_in_place...`); E2 re-enable and reset count while preserving secret.
     // Decision rule R2=C1∧C3 -> E2 closes the auto-disable recovery loop.
     let store = Arc::new(MemStore::default());
-    store.put(WebhookEndpointDef {
-        id: "wh1".into(),
-        workspace_id: "ws_a".into(),
-        url: "https://old.example/hook".into(),
-        event_types: vec![],
-        disabled: true,
-        consecutive_failures: 20,
-        secret_ref: SecretRef("whsec:original".into()),
-    });
+    store
+        .put(WebhookEndpointDef {
+            id: "wh1".into(),
+            workspace_id: "ws_a".into(),
+            url: "https://old.example/hook".into(),
+            event_types: vec![],
+            disabled: true,
+            consecutive_failures: 20,
+            secret_ref: SecretRef("whsec:original".into()),
+        })
+        .await;
     let (status, body) = call(
         store.clone(),
         Arc::new(MemSecrets::ok()),
@@ -694,7 +704,7 @@ async fn an_operator_can_reenable_an_auto_disabled_subscription() {
     .await;
     assert_eq!(status, StatusCode::OK, "R2");
     assert_eq!(body["disabled"], false, "R2");
-    let row = store.get("wh1").unwrap();
+    let row = store.get("wh1").await.unwrap();
     assert!(!row.disabled, "R2");
     assert_eq!(row.consecutive_failures, 0, "R2");
     assert_eq!(row.secret_ref.0, "whsec:original", "R2");
@@ -703,7 +713,7 @@ async fn an_operator_can_reenable_an_auto_disabled_subscription() {
 #[tokio::test]
 async fn get_projects_the_row_without_the_secret() {
     let store = Arc::new(MemStore::default());
-    seed(&store, "wh1", "ws_a");
+    seed(&store, "wh1", "ws_a").await;
     let (status, body) = call(
         store,
         Arc::new(MemSecrets::ok()),
@@ -726,8 +736,8 @@ async fn get_projects_the_row_without_the_secret() {
 #[tokio::test]
 async fn list_is_scoped_to_the_tenant() {
     let store = Arc::new(MemStore::default());
-    seed(&store, "wh_a", "ws_a");
-    seed(&store, "wh_b", "ws_b");
+    seed(&store, "wh_a", "ws_a").await;
+    seed(&store, "wh_b", "ws_b").await;
     let (status, body) = call(
         store,
         Arc::new(MemSecrets::ok()),
@@ -761,15 +771,17 @@ async fn seed_resolvable(
         )
         .await
         .unwrap();
-    store.put(WebhookEndpointDef {
-        id: id.into(),
-        workspace_id: ws.into(),
-        url: "https://x.example/hook".into(),
-        event_types: types.iter().map(|s| s.to_string()).collect(),
-        disabled: false,
-        consecutive_failures: 0,
-        secret_ref,
-    });
+    store
+        .put(WebhookEndpointDef {
+            id: id.into(),
+            workspace_id: ws.into(),
+            url: "https://x.example/hook".into(),
+            event_types: types.iter().map(|s| s.to_string()).collect(),
+            disabled: false,
+            consecutive_failures: 0,
+            secret_ref,
+        })
+        .await;
 }
 
 fn source(store: Arc<MemStore>, secrets: Arc<MemSecrets>) -> ConfigPlaneSubscriptionSource {
@@ -804,7 +816,7 @@ async fn matching_fails_closed_when_a_subscription_secret_is_unresolvable() {
     let store = Arc::new(MemStore::default());
     let secrets = Arc::new(MemSecrets::ok());
     // Row present, but its secret was never sealed.
-    seed(&store, "wh1", "ws_a");
+    seed(&store, "wh1", "ws_a").await;
     let error = source(store, secrets)
         .matching("ws_a", "run.completed")
         .await
@@ -815,7 +827,7 @@ async fn matching_fails_closed_when_a_subscription_secret_is_unresolvable() {
     );
 
     let store = Arc::new(MemStore::default());
-    seed(&store, "wh1", "ws_a");
+    seed(&store, "wh1", "ws_a").await;
     let delivery = config_plane_lifecycle_delivery(
         Arc::new(ConfigPlaneSubscriptionSource::new(
             store as Arc<dyn WebhookStore>,
@@ -852,6 +864,7 @@ async fn matching_skips_disabled_and_type_mismatched_subscriptions() {
             event_types: vec!["run.completed".into()],
             disabled: Some(true),
         })
+        .await
         .unwrap();
 
     let out = source(store, secrets)
@@ -881,21 +894,29 @@ async fn delivery_results_persist_failure_disable_and_success_reset() {
         SubscriptionFailureState::Active,
         "R1"
     );
-    assert_eq!(store.get("wh1").unwrap().consecutive_failures, 1, "R1");
+    assert_eq!(
+        store.get("wh1").await.unwrap().consecutive_failures,
+        1,
+        "R1"
+    );
     assert_eq!(
         source.record_failure("wh1", 2).await.unwrap(),
         SubscriptionFailureState::Disabled,
         "R2"
     );
     assert!(
-        store.get("wh1").unwrap().disabled,
+        store.get("wh1").await.unwrap().disabled,
         "R2: auto-disable is a config-plane write"
     );
 
     seed_resolvable(&store, &MemSecrets::ok(), "wh2", "ws_a", &[]).await;
     source.record_failure("wh2", 2).await.unwrap();
     source.record_success("wh2").await.unwrap();
-    assert_eq!(store.get("wh2").unwrap().consecutive_failures, 0, "R3");
+    assert_eq!(
+        store.get("wh2").await.unwrap().consecutive_failures,
+        0,
+        "R3"
+    );
 }
 
 #[tokio::test]
@@ -919,7 +940,7 @@ async fn interrupted_material_mutations_recover_from_the_durable_row() {
     };
 
     let unpublished = WebhookMutationIntent::create(create_def("unpublished"));
-    store.begin_mutation(unpublished.clone()).unwrap();
+    store.begin_mutation(unpublished.clone()).await.unwrap();
     secrets
         .put(
             &unpublished.after.as_ref().unwrap().secret_ref,
@@ -944,12 +965,12 @@ async fn interrupted_material_mutations_recover_from_the_durable_row() {
 
     let published = WebhookMutationIntent::create(create_def("published"));
     let published_ref = published.after.as_ref().unwrap().secret_ref.clone();
-    store.begin_mutation(published.clone()).unwrap();
+    store.begin_mutation(published.clone()).await.unwrap();
     secrets
         .put(&published_ref, RedactedString::new("keep"))
         .await
         .unwrap();
-    store.apply_mutation(&published).unwrap();
+    store.apply_mutation(&published).await.unwrap();
     assert_eq!(
         recover_webhook_mutations(store.as_ref(), secrets.as_ref())
             .await
@@ -963,10 +984,10 @@ async fn interrupted_material_mutations_recover_from_the_durable_row() {
         "R2"
     );
 
-    let before = store.get("published").unwrap();
+    let before = store.get("published").await.unwrap();
     let deleted = WebhookMutationIntent::delete(before);
-    store.begin_mutation(deleted.clone()).unwrap();
-    store.apply_mutation(&deleted).unwrap();
+    store.begin_mutation(deleted.clone()).await.unwrap();
+    store.apply_mutation(&deleted).await.unwrap();
     assert_eq!(
         recover_webhook_mutations(store.as_ref(), secrets.as_ref())
             .await
@@ -975,7 +996,7 @@ async fn interrupted_material_mutations_recover_from_the_durable_row() {
         "R3"
     );
     assert!(secrets.get(&published_ref).await.is_err(), "R3");
-    assert!(store.pending_mutations().unwrap().is_empty());
+    assert!(store.pending_mutations().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -1008,26 +1029,30 @@ async fn inventory_reconciliation_protects_intents_and_reports_missing_material(
         consecutive_failures: 0,
         secret_ref: protected.clone(),
     });
-    store.begin_mutation(pending).unwrap();
+    store.begin_mutation(pending).await.unwrap();
     let missing = SecretRef("sec:webhook:missing".into());
-    store.put(WebhookEndpointDef {
-        id: "missing".into(),
-        workspace_id: "ws_a".into(),
-        url: "https://hooks.example/missing".into(),
-        event_types: vec![],
-        disabled: false,
-        consecutive_failures: 0,
-        secret_ref: missing.clone(),
-    });
-    store.put(WebhookEndpointDef {
-        id: "concurrent".into(),
-        workspace_id: "ws_a".into(),
-        url: "https://hooks.example/concurrent".into(),
-        event_types: vec![],
-        disabled: false,
-        consecutive_failures: 0,
-        secret_ref: concurrent.clone(),
-    });
+    store
+        .put(WebhookEndpointDef {
+            id: "missing".into(),
+            workspace_id: "ws_a".into(),
+            url: "https://hooks.example/missing".into(),
+            event_types: vec![],
+            disabled: false,
+            consecutive_failures: 0,
+            secret_ref: missing.clone(),
+        })
+        .await;
+    store
+        .put(WebhookEndpointDef {
+            id: "concurrent".into(),
+            workspace_id: "ws_a".into(),
+            url: "https://hooks.example/concurrent".into(),
+            event_types: vec![],
+            disabled: false,
+            consecutive_failures: 0,
+            secret_ref: concurrent.clone(),
+        })
+        .await;
 
     let report = reconcile_webhook_inventory(store.as_ref(), secrets.as_ref())
         .await
@@ -1760,7 +1785,7 @@ async fn an_unscoped_request_is_refused_before_any_row_is_written() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "unscoped create is refused");
     assert!(
-        store.get("wh1").is_none(),
+        store.get("wh1").await.is_none(),
         "a refused create writes no subscription"
     );
 
@@ -1790,7 +1815,7 @@ async fn an_ssrf_shaped_url_is_rejected_on_the_update_path_too() {
         "http://hooks.example.com/x",                // non-https
     ] {
         let store = Arc::new(MemStore::default());
-        seed(&store, "wh1", "ws_a"); // an existing, owned row at a safe url
+        seed(&store, "wh1", "ws_a").await; // an existing, owned row at a safe url
         let (status, _) = call(
             store.clone(),
             Arc::new(MemSecrets::ok()),
@@ -1805,7 +1830,7 @@ async fn an_ssrf_shaped_url_is_rejected_on_the_update_path_too() {
             StatusCode::BAD_REQUEST,
             "{bad} must be rejected on update"
         );
-        let row = store.get("wh1").expect("the row still exists");
+        let row = store.get("wh1").await.expect("the row still exists");
         assert_eq!(
             row.url, "https://old.example/hook",
             "a rejected update must not repoint the endpoint at {bad}"
@@ -1875,7 +1900,7 @@ async fn loopback_router_seam_changes_only_endpoint_admission() {
         StatusCode::BAD_REQUEST,
         "P1/E1 strict production admission rejects loopback"
     );
-    assert!(strict_store.get("wh_policy").is_none(), "P1/E1");
+    assert!(strict_store.get("wh_policy").await.is_none(), "P1/E1");
 
     assert_eq!(
         drive(
@@ -1892,6 +1917,7 @@ async fn loopback_router_seam_changes_only_endpoint_admission() {
     assert_eq!(
         loopback_store
             .get("wh_policy")
+            .await
             .expect("P2/E2 row is stored")
             .workspace_id,
         "ws_a"
@@ -1903,7 +1929,7 @@ async fn delete_of_an_owned_row_removes_it() {
     // The happy-path unsubscribe: a tenant deleting its own subscription tears the
     // row out (the counterpart to the cross-tenant no-op).
     let store = Arc::new(MemStore::default());
-    seed(&store, "wh1", "ws_a");
+    seed(&store, "wh1", "ws_a").await;
     let (status, _) = call(
         store.clone(),
         Arc::new(MemSecrets::ok()),
@@ -1915,7 +1941,7 @@ async fn delete_of_an_owned_row_removes_it() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert!(
-        store.get("wh1").is_none(),
+        store.get("wh1").await.is_none(),
         "the tenant's own row is actually removed"
     );
 }

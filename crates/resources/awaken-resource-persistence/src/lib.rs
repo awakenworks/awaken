@@ -43,7 +43,7 @@ pub enum ResourcePersistenceError {
 ///
 /// `clock` is the Resources context's one clock: the registry and every
 /// Resources command stamp time with it (see [`ResourceAuthorities::clock`]).
-pub fn open_embedded(
+pub async fn open_embedded(
     root: &Path,
     clock: Arc<dyn WallClock>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
@@ -53,6 +53,7 @@ pub fn open_embedded(
     })?;
     let resources = Arc::new(
         awaken_resource_store::SqliteResourceStore::open(root.join("resources.db"))
+            .await
             .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?,
     );
     let registry = Arc::new(RegistryApplication::new(resources.clone(), clock.clone()));
@@ -61,6 +62,7 @@ pub fn open_embedded(
         .to_str()
         .ok_or_else(|| ResourcePersistenceError::NonUtf8Path(memory_path.clone()))?;
     let memory = awaken_memory_store::SqliteMemoryRepository::open(memory_path, clock.clone())
+        .await
         .map_err(|error| ResourcePersistenceError::Memory(error.to_string()))?;
     let file_path = root.join("files.db");
     let file_path = file_path
@@ -68,6 +70,7 @@ pub fn open_embedded(
         .ok_or_else(|| ResourcePersistenceError::NonUtf8Path(file_path.clone()))?;
     let files = Arc::new(
         awaken_file_store::sqlite::SqliteFileStore::open(file_path)
+            .await
             .map_err(|error| ResourcePersistenceError::File(error.to_string()))?,
     );
     let skills = awaken_skill_store::FsSkillStore::open(root.join("skills"))
@@ -218,12 +221,13 @@ pub async fn open_postgres_with_pool_and_object_store(
 
 /// Hermetic Resources application for tests and scenario processes.
 #[cfg(feature = "test-support")]
-pub fn ephemeral(
+pub async fn ephemeral(
     clock: Arc<dyn WallClock>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
     let resources = Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()
+            .await
             .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?,
     );
     let registry = Arc::new(RegistryApplication::new(resources.clone(), clock.clone()));
@@ -389,8 +393,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn embedded_selection_returns_one_complete_application() {
+    #[tokio::test]
+    async fn embedded_selection_returns_one_complete_application() {
         // Cause/effect decision table:
         // R1 writable root -> one application exposing all six authorities and
         // stable MemoryStore/purge service identities; R2 root is a file -> typed
@@ -399,6 +403,7 @@ mod tests {
         // embedded selection and the no-parallel-application invariant.
         let root = tempfile::tempdir().expect("R1 root");
         let app = open_embedded(root.path(), awaken_time::system_clock())
+            .await
             .expect("R1 complete Resources application");
         let authorities = app.authorities();
         let _ = authorities.resource_registry();
@@ -412,7 +417,7 @@ mod tests {
 
         let invalid = tempfile::NamedTempFile::new().expect("R2 file");
         assert!(matches!(
-            open_embedded(invalid.path(), awaken_time::system_clock()),
+            open_embedded(invalid.path(), awaken_time::system_clock()).await,
             Err(ResourcePersistenceError::CreateDirectory { .. })
         ));
     }
@@ -428,7 +433,7 @@ mod tests {
             awaken_time::UtcTime::from_unix_nanos(NANOS),
         ));
         let root = tempfile::tempdir().unwrap();
-        let app = open_embedded(root.path(), clock.clone()).unwrap();
+        let app = open_embedded(root.path(), clock.clone()).await.unwrap();
         let authorities = app.authorities();
         assert!(Arc::ptr_eq(&authorities.clock(), &clock), "RC handle");
         let memory = authorities.memory_repository();
@@ -456,10 +461,10 @@ mod tests {
         // from making only part of the Resources aggregate appear recovered.
         let directory = tempfile::tempdir()?;
         let fixture = {
-            let application = open_embedded(directory.path(), awaken_time::system_clock())?;
+            let application = open_embedded(directory.path(), awaken_time::system_clock()).await?;
             seed_all_resource_authorities(&application, "embedded-restart").await?
         };
-        let reopened = open_embedded(directory.path(), awaken_time::system_clock())?;
+        let reopened = open_embedded(directory.path(), awaken_time::system_clock()).await?;
         assert_all_resource_authorities(&reopened, &fixture).await
     }
 

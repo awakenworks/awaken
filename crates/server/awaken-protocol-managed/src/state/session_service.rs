@@ -28,14 +28,14 @@ impl ManagedState {
     /// Session repository and the canonical Environment execution projection via
     /// [`ManagedState::from_application`].
     #[cfg(test)]
-    pub fn new(
+    pub async fn new(
         runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
     ) -> Self {
         let clock = awaken_time::system_clock();
         Self::from_fixture_parts(
             Arc::new(runtime),
             None,
-            awaken_protocol_managed_testkit::ephemeral_session_repository(),
+            awaken_protocol_managed_testkit::ephemeral_session_repository().await,
             awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
             clock,
         )
@@ -45,7 +45,7 @@ impl ManagedState {
     /// The shared `Arc` preserves one instance without merging the
     /// Session Run lifecycle with MCP attachment realization.
     #[cfg(test)]
-    pub fn new_with_mcp<R>(runtime: R) -> Self
+    pub async fn new_with_mcp<R>(runtime: R) -> Self
     where
         R: awaken_session_execution_contract::CompleteSessionRuntime
             + awaken_session_execution_contract::McpAttachmentRealizer
@@ -56,7 +56,7 @@ impl ManagedState {
         Self::from_fixture_parts(
             runtime.clone(),
             Some(runtime),
-            awaken_protocol_managed_testkit::ephemeral_session_repository(),
+            awaken_protocol_managed_testkit::ephemeral_session_repository().await,
             awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
             clock,
         )

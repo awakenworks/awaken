@@ -707,6 +707,7 @@ async fn cold_replica_recovers_projection_before_reusing_exact_activity_receipt(
     // | R3   | present        | existing    | warm             | idempotent E1-E3 |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("session repository"),
     );
     let mut session = persisted("cold-replica-activity", false, "idle");
@@ -797,6 +798,7 @@ async fn authenticated_protocol_scope_survives_a_cold_replica_and_replays_one_ac
     // | R5   | workspace     | wrong          | foreign       | resume    | E3     |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("session repository"),
     );
     create(
@@ -931,6 +933,7 @@ async fn background_attention_uses_canonical_session_admission_without_observing
     // enqueue nor a second background lifecycle is available to this port.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("session repository"),
     );
     create(
@@ -1019,6 +1022,7 @@ async fn public_run_reserves_then_restores_and_projects_before_activation() {
     // | H3 | terminal/invalid | none | none | reject through existing gates |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("session repository"),
     );
     create(
@@ -1661,6 +1665,7 @@ async fn background_activation_uses_the_session_runtime_without_a_second_queue_p
     // R3=C1.completed=>E2.Completed.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("session repository"),
     );
     let runtime = Arc::new(ActivationOnlySessionRunRuntime::default());
@@ -1726,6 +1731,7 @@ async fn admission_surfaces_dispatch_failure_and_preserves_retryable_intent() {
     // | D2   | T  | T  | T  | T  | E3     |
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("session repository"),
     );
     let environments = Arc::new(RecordingEnvironmentSource::default());
@@ -1832,6 +1838,7 @@ async fn worker_placed_cloud_session_admits_the_event_that_triggers_realization(
     // Local Preparing is independently rejected by activity rule A8.
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("session repository"),
     );
     let environments = Arc::new(RecordingEnvironmentSource::default());
@@ -1875,6 +1882,7 @@ async fn recovered_running_activity_admits_a_fenced_successor() {
     // realization convergence.
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("session repository"),
     );
     let mut running = persisted("crash-orphaned-activity", false, "running");
@@ -1912,6 +1920,7 @@ async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
     // adjacent decorator test covers admission and Runtime failures.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("session repository"),
     );
     create(

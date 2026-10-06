@@ -427,22 +427,31 @@ async fn reject_corrupt(catalog: &dyn FileCatalog, session: &str) {
 async fn sqlite_corrupt_capture_is_neither_read_nor_replaced() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("corrupt.db");
-    let store = awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap()).unwrap();
-    let connection = awaken_sqlite_pool::SqliteConnectionFactory::file(path)
+    let store = awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap())
+        .await
+        .unwrap();
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(path)
         .open()
+        .await
         .unwrap();
     for (index, &(revision, ids)) in CORRUPT_CAPTURES.iter().enumerate() {
         let session = format!("corrupt-{index}");
-        connection
-            .execute(
-                "INSERT INTO file_store_artifact_capture VALUES (?1,?2,?3,?4)",
-                rusqlite::params!["capture-workspace", session, revision, ids],
-            )
+        sqlx::query("INSERT INTO file_store_artifact_capture VALUES (?1,?2,?3,?4)")
+            .bind("capture-workspace")
+            .bind(&session)
+            .bind(revision)
+            .bind(ids)
+            .execute(&connection)
+            .await
             .unwrap();
         reject_corrupt(&store, &session).await;
-        let unchanged: (i64, String) = connection.query_row(
+        let unchanged: (i64, String) = sqlx::query_as(
             "SELECT revision,file_ids_json FROM file_store_artifact_capture WHERE session_id=?1",
-            [&session], |row| Ok((row.get(0)?,row.get(1)?))).unwrap();
+        )
+        .bind(&session)
+        .fetch_one(&connection)
+        .await
+        .unwrap();
         assert_eq!(unchanged, (revision, ids.into()), "D1 no rewrite");
     }
 }
@@ -459,11 +468,14 @@ async fn sqlite_capture_contract_and_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("files.db");
     contract(Arc::new(
-        awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap()).unwrap(),
+        awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap())
+            .await
+            .unwrap(),
     ))
     .await;
-    let reopened =
-        awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap()).unwrap();
+    let reopened = awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap())
+        .await
+        .unwrap();
     assert_eq!(
         current(&reopened).await.unwrap().revision,
         6,
@@ -480,8 +492,12 @@ async fn sqlite_independent_connections_serialize_capture_creation() {
     // same durable revision. SQL transaction locking must own serialization.
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("concurrent.db");
-    let left = awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap()).unwrap();
-    let right = awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap()).unwrap();
+    let left = awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap())
+        .await
+        .unwrap();
+    let right = awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap())
+        .await
+        .unwrap();
     left.create_file(file("capture-a", "report.txt"))
         .await
         .unwrap();
@@ -522,13 +538,18 @@ async fn sqlite_v5_upgrade_preserves_files_without_guessing_a_capture() {
     let legacy =
         awaken_scoped_migration::MigrationBundle::new(BUNDLE_ID, full.migrations()[..5].to_vec())
             .unwrap();
-    let connection = awaken_sqlite_pool::SqliteConnectionFactory::memory()
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::memory()
         .open()
+        .await
         .unwrap();
-    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-        .unwrap()
-        .run_bundle(&connection, &legacy)
-        .unwrap();
+    awaken_scoped_migration::sqlite::SqliteMigrationRunner::with_prefix(
+        connection.sqlx().clone(),
+        NS,
+    )
+    .unwrap()
+    .run_bundle(&legacy)
+    .await
+    .unwrap();
     let store = awaken_file_store::sqlite::SqliteFileStore::over(connection);
     for record in [
         file("capture-a", "report.txt"),
@@ -540,7 +561,7 @@ async fn sqlite_v5_upgrade_preserves_files_without_guessing_a_capture() {
         .list_files("capture-workspace", Some("capture-session"))
         .await
         .unwrap();
-    store.ensure_schema().unwrap();
+    store.ensure_schema().await.unwrap();
     assert_eq!(current(&store).await, None, "M1");
     assert_eq!(
         store
@@ -554,7 +575,7 @@ async fn sqlite_v5_upgrade_preserves_files_without_guessing_a_capture() {
         .replace_artifact_capture(request(0, &["capture-a"]))
         .await
         .unwrap();
-    store.ensure_schema().unwrap();
+    store.ensure_schema().await.unwrap();
     assert_eq!(
         current(&store).await.unwrap().file_ids,
         ["capture-a"],

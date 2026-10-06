@@ -29,25 +29,28 @@ use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_dispatch_testkit::ConformanceClock as _;
 use harness::{TICKET, activation, activation_on, tool_runtime};
 
-fn any_in_memory() -> AnyDispatchStore {
+async fn any_in_memory() -> AnyDispatchStore {
     awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
+        .await
         .expect("open in-memory sqlite backend")
 }
 
 /// The same runtime-selected backend over a raw injected clock handle.
-fn any_in_memory_with_clock_handle(
+async fn any_in_memory_with_clock_handle(
     clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> AnyDispatchStore {
     awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock)
+        .await
         .expect("open in-memory sqlite backend")
 }
 
 /// The same runtime-selected backend over a clock the test drives, because the
 /// dispatch port now reads "now" from the store it was built with.
-fn any_in_memory_with_clock(
+async fn any_in_memory_with_clock(
     clock: &awaken_dispatch_testkit::ManualStoreClock,
 ) -> AnyDispatchStore {
     awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clock())
+        .await
         .expect("open in-memory sqlite backend")
 }
 
@@ -57,7 +60,7 @@ async fn execution_binding_is_frozen_with_the_physical_slot() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     for store in [
         AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(clock.clock()))),
-        any_in_memory_with_clock(&clock),
+        any_in_memory_with_clock(&clock).await,
     ] {
         harness::attempt_binding::assert_binding_lifecycle(&store, &clock).await;
         harness::attempt_binding::assert_closing_lifecycle(&store, &clock).await;
@@ -74,20 +77,23 @@ async fn returned_attempt_cannot_restart_under_the_same_claim() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     for store in [
         AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(clock.clock()))),
-        any_in_memory_with_clock(&clock),
+        any_in_memory_with_clock(&clock).await,
     ] {
         harness::attempt_retirement::assert_retirement(&store, 0, &clock).await;
     }
 }
 
-#[test]
-fn non_postgres_wrapper_does_not_fabricate_a_checkpoint_authority() {
+#[tokio::test]
+async fn non_postgres_wrapper_does_not_fabricate_a_checkpoint_authority() {
     // Cause/effect decision table: R1 Postgres -> paired durable checkpoint (covered
     // by `any_postgres_connect_and_claim`); R2 SQLite -> None so the host must bind
     // its durable FS checkpoint; R3 remote dispatch -> None so the claim-bound HTTP
     // path remains authoritative. This test owns R2/R3 and prevents an implicit
     // process-local checkpoint from returning inside the runtime-selected wrapper.
-    assert!(any_in_memory().stream_checkpoint_store().is_none(), "R2");
+    assert!(
+        any_in_memory().await.stream_checkpoint_store().is_none(),
+        "R2"
+    );
     let remote =
         AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(system_clock())));
     assert!(remote.stream_checkpoint_store().is_none(), "R3");
@@ -96,7 +102,7 @@ fn non_postgres_wrapper_does_not_fabricate_a_checkpoint_authority() {
 #[tokio::test]
 async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = any_in_memory_with_clock(&clock);
+    let store = any_in_memory_with_clock(&clock).await;
     let mut gpu = PlacementRequirements::remote_required();
     gpu.required_capabilities.insert("gpu".to_string());
     let mut cpu = PlacementRequirements::remote_required();
@@ -223,7 +229,8 @@ async fn exact_backend_capability_routes_a_mixed_queue_on_every_local_store() {
     exact_backend_capability_claim_conformance(&MemoryDispatchStore::new(clock.clock()), &clock)
         .await;
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    exact_backend_capability_claim_conformance(&any_in_memory_with_clock(&clock), &clock).await;
+    exact_backend_capability_claim_conformance(&any_in_memory_with_clock(&clock).await, &clock)
+        .await;
 }
 
 fn worker_snapshot(id: &str, boot: &str, generation: u64) -> WorkerSnapshot {
@@ -321,7 +328,7 @@ async fn policy_claim_is_wired_through_memory_and_runtime_selected_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     policy_claim_conformance(&MemoryDispatchStore::new(clock.clock()), &clock).await;
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    policy_claim_conformance(&any_in_memory_with_clock(&clock), &clock).await;
+    policy_claim_conformance(&any_in_memory_with_clock(&clock).await, &clock).await;
 }
 
 #[tokio::test]
@@ -382,7 +389,7 @@ async fn replacement_policy_cannot_override_never_replace() {
 #[tokio::test]
 async fn recovery_mode_is_enforced_from_the_durable_previous_assignment() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = any_in_memory_with_clock(&clock);
+    let store = any_in_memory_with_clock(&clock).await;
     let mut never = PlacementRequirements::remote_required();
     never.required_capabilities.insert("cpu".to_string());
     never.recovery = WorkerRecoveryMode::NeverReplace;
@@ -468,7 +475,7 @@ async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
     // => E2; F3 C1+C2(after)+C3(foreign) => E3. The moved erasure delegates
     // to the same SQL row and does not install another clock or lease owner.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = any_in_memory_with_clock(&clock);
+    let store = any_in_memory_with_clock(&clock).await;
     store
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
@@ -519,7 +526,7 @@ async fn any_lets_two_owners_claim_distinct_runs() {
     // (ADR-0022) "distinct runs" means distinct THREADS — two runs of one thread
     // cannot both be in flight (see `any_serializes_one_thread_across_workers`).
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = any_in_memory_with_clock(&clock);
+    let store = any_in_memory_with_clock(&clock).await;
     store
         .enqueue(RunDispatch::new(activation_on("run-1", "thread-1")))
         .await
@@ -566,7 +573,7 @@ async fn any_serializes_one_thread_across_workers() {
     // pending run, not a supersession of run-1) — a second worker still cannot claim
     // it, and it becomes claimable only after run-1 settles.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = any_in_memory_with_clock(&clock);
+    let store = any_in_memory_with_clock(&clock).await;
     store
         .enqueue(RunDispatch::new(activation_on("run-1", "thread-x")))
         .await
@@ -615,7 +622,7 @@ async fn any_serializes_one_thread_across_workers() {
 
 #[tokio::test]
 async fn any_delegates_inbox_append_idempotency() {
-    let store = any_in_memory();
+    let store = any_in_memory().await;
     let input = harness::pending("msg-1", "run-1", TICKET, ResumeResult::allow());
     assert!(store.append(input.clone()).await.unwrap(), "first append");
     assert!(
@@ -630,7 +637,7 @@ async fn any_exposes_the_builtin_backends_operational_feed() {
     // identity; A3 unknown Run returns empty with unchanged cursor. Dropping
     // the selector fails A3. The adjacent erased-adapter case owns A4.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = any_in_memory_with_clock(&clock);
+    let store = any_in_memory_with_clock(&clock).await;
     store
         .enqueue(RunDispatch::new(activation("operations-run")))
         .await
@@ -707,8 +714,12 @@ async fn with_owner_drives_a_durable_run_over_any_sqlite() {
     // Decision rule R1=C1+C2+C3+C4 -> E1+E2+E3. A sentinel claim timestamp would
     // instead make the live verifier reject its own lease before the first Step.
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(any_in_memory());
-    let commit = Arc::new(SqliteCommitCoordinator::open_in_memory().expect("commit"));
+    let store = Arc::new(any_in_memory().await);
+    let commit = Arc::new(
+        SqliteCommitCoordinator::open_in_memory()
+            .await
+            .expect("commit"),
+    );
     let ingress = DispatchTestHarness::with_owner(
         runtime,
         store.clone(),

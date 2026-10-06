@@ -84,23 +84,20 @@ pub(super) async fn open_admin_store_views(
     match backend {
         awaken_control::StoreBackend::Sqlite(path) => {
             let store = awaken_admin_config_api::SqliteAdminStore::open(&path.to_string_lossy())
+                .await
                 .map_err(|error| format!("open admin SQLite {}: {error}", path.display()))?;
             Ok(AdminStoreViews::from_store(store))
         }
         awaken_control::StoreBackend::Postgres(url) => {
-            // This store owns a blocking client/runtime; never nest it on the
-            // async startup worker. Schema mode remains deployment authority.
-            let url = url.clone();
-            let store = tokio::task::spawn_blocking(move || match mode {
+            // Schema mode remains deployment authority.
+            let store = match mode {
                 PostgresSchemaMode::Migrate => {
-                    awaken_admin_config_api::PostgresAdminStore::connect(&url)
+                    awaken_admin_config_api::PostgresAdminStore::connect(url).await
                 }
                 PostgresSchemaMode::Verify => {
-                    awaken_admin_config_api::PostgresAdminStore::connect_existing(&url)
+                    awaken_admin_config_api::PostgresAdminStore::connect_existing(url).await
                 }
-            })
-            .await
-            .map_err(|error| format!("join admin Postgres connection: {error}"))?
+            }
             .map_err(|error| format!("connect admin Postgres: {error}"))?;
             Ok(AdminStoreViews::from_store(store))
         }
@@ -172,6 +169,7 @@ pub(super) async fn open_session_store_views(
         StoreBackend::Sqlite(path) => {
             let repository = Arc::new(
                 awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
+                    .await
                     .map_err(|error| format!("open sessions SQLite {}: {error}", path.display()))?,
             );
             Ok(SessionStoreViews {
@@ -221,6 +219,7 @@ pub(super) async fn open_environment_work(
     match backend {
         StoreBackend::Sqlite(path) => Ok(Arc::new(
             awaken_work_store::SqliteWorkQueue::open(&path.to_string_lossy(), clock)
+                .await
                 .map_err(|error| format!("open work queue SQLite: {error}"))?,
         )),
         StoreBackend::Postgres(url) => Ok(Arc::new(
@@ -332,6 +331,7 @@ pub(super) async fn open_process_stores(
         Some(match &cfg.catalog {
             StoreBackend::Sqlite(p) => Arc::new(
                 awaken_model_catalog_store::SqliteCatalogRepo::open(&path(p))
+                    .await
                     .map_err(|error| format!("open catalog SQLite {}: {error}", p.display()))?,
             ),
             StoreBackend::Postgres(url) => Arc::new(
@@ -367,6 +367,7 @@ pub(super) async fn open_process_stores(
             StoreBackend::Sqlite(p) => {
                 let file = path(p);
                 let (creds, blobs) = awaken_credential_store::sqlite::open_migrated_pair(&file)
+                    .await
                     .map_err(|error| format!("open credential SQLite {}: {error}", p.display()))?;
                 (
                     Arc::new(creds),
@@ -472,6 +473,7 @@ pub(super) async fn open_process_stores(
                         &path(p),
                         clock.clone(),
                     )
+                    .await
                     .map_err(|error| {
                         format!("open captured-content SQLite {}: {error}", p.display())
                     })?,
@@ -513,6 +515,7 @@ pub(super) async fn open_process_stores(
         Some(match &cfg.config {
             StoreBackend::Sqlite(p) => Arc::new(
                 awaken_config_store::SqliteConfigStore::open(&path(p))
+                    .await
                     .map_err(|error| format!("open config SQLite {}: {error}", p.display()))?,
             ),
             StoreBackend::Postgres(url) => Arc::new(
@@ -544,9 +547,11 @@ pub(super) async fn open_process_stores(
         match &cfg.data_subject {
             StoreBackend::Sqlite(p) => {
                 let store = Arc::new(
-                    awaken_data_subject_store::SqliteDataSubjectRepo::open(&path(p)).map_err(
-                        |error| format!("open data-subject SQLite {}: {error}", p.display()),
-                    )?,
+                    awaken_data_subject_store::SqliteDataSubjectRepo::open(&path(p))
+                        .await
+                        .map_err(|error| {
+                            format!("open data-subject SQLite {}: {error}", p.display())
+                        })?,
                 );
                 repo = store.clone();
                 jobs = store;
@@ -587,12 +592,14 @@ pub(super) async fn open_process_stores(
                         &path(environment_path),
                         clock.clone(),
                     )
+                    .await
                     .map_err(|error| format!("open environments SQLite: {error}"))?,
                 ) as Arc<dyn awaken_environment_contract::EnvRegistry>,
                 Arc::new(
                     awaken_sandbox_policy_store::SqliteSandboxExecutionPolicyStore::open(&path(
                         environment_path,
                     ))
+                    .await
                     .map_err(|error| format!("open sandbox policies SQLite: {error}"))?,
                 )
                     as Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>,

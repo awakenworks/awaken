@@ -235,7 +235,7 @@ fn extractor(
     extractor
 }
 
-fn bound_test_memory(
+async fn bound_test_memory(
     llm: Arc<dyn LlmExecutor>,
     session_id: &str,
     sandbox_base: &std::path::Path,
@@ -248,6 +248,7 @@ fn bound_test_memory(
 ) {
     let extractions = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("open ephemeral Memory extraction repository"),
     );
     let runtime = Arc::new(MemoryRuntime::new(
@@ -476,7 +477,8 @@ async fn extraction_writes_a_memory_then_recall_reads_it_back() {
         "thread-1",
         &sandbox_base,
         &mem_root,
-    );
+    )
+    .await;
 
     assert!(
         !extraction.reconcile().await.unwrap(),
@@ -735,7 +737,7 @@ async fn extraction_seed_excludes_recalled_memory_messages() {
     let sandbox_base = std::env::temp_dir().join(format!("awaken-mem2-sbx-{stamp}"));
     let mem_root = std::env::temp_dir().join(format!("awaken-mem2-root-{stamp}"));
     let (runtime, extraction, repository, _extractions) =
-        bound_test_memory(Arc::new(SeedEchoModel), "t", &sandbox_base, &mem_root);
+        bound_test_memory(Arc::new(SeedEchoModel), "t", &sandbox_base, &mem_root).await;
 
     // A committed history with a recalled-memory system message + a real Run.
     let recall = Message::text(
@@ -780,7 +782,8 @@ async fn extraction_uses_the_per_agent_memory_prompts() {
         "t-custom",
         &sandbox_base,
         &mem_root,
-    );
+    )
+    .await;
 
     extraction
         .trigger(
@@ -827,7 +830,8 @@ async fn terminal_redelivery_creates_one_logical_extraction_and_one_memory_versi
         "thread-redelivery",
         &sandbox_base,
         &mem_root,
-    );
+    )
+    .await;
 
     for _ in 0..2 {
         extraction
@@ -867,7 +871,8 @@ async fn recovery_after_store_before_receipt_does_not_duplicate_a_memory_version
         "thread-crash",
         &sandbox_base,
         &mem_root,
-    );
+    )
+    .await;
     let content = "customer maintenance is Sunday";
     let target = awaken_memory_store::sha256_hex(content);
     let mut intent = MemoryExtractionIntent::new_range(
@@ -972,6 +977,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
 
     let first_repository = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open(&extraction_db)
+            .await
             .expect("R1 open extraction repository"),
     );
     let first_runtime = Arc::new(MemoryRuntime::new(
@@ -1012,9 +1018,10 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
 
     let recovered_repository = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open(&extraction_db)
+            .await
             .expect("R2 reopen extraction repository"),
     );
-    let recovered_host = Arc::new(SharedHost::new(Arc::new(ExtractorModel), "stub"));
+    let recovered_host = Arc::new(SharedHost::new(Arc::new(ExtractorModel), "stub").await);
     recovered_host.install_memory_extraction_repository(Arc::new(FailFirstRecoverableRead::new(
         recovered_repository.clone(),
     )));

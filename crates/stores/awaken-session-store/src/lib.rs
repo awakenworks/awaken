@@ -42,7 +42,6 @@ mod extraction;
 mod row_codec;
 mod schema;
 use row_codec::{EncodedSessionRow, decode, encode, normalize_published_row};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use schema::{BUNDLE_ID, CONVERGED_BUNDLE_ID, converged_session_bundle, selected_session_schema};
 #[cfg(test)]
 use schema::{

@@ -27,11 +27,9 @@ tokio = { workspace = true, features = ["rt", "fs"] }
 # a durable JSON record per memory.
 serde_json = { workspace = true }
 # Feature `sqlite`: embedded durable MemoryRepository over the crate's migration scope.
-rusqlite = { workspace = true, optional = true }
 # Feature `postgres`: network-DB MemoryRepository over the same scope (multi-node).
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
-awaken-scoped-migration = { workspace = true, features = ["postgres"], optional = true }
-awaken-scoped-migration-sqlite = { workspace = true, optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"], optional = true }
+awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"], optional = true }
 awaken-sqlite-pool = { workspace = true, optional = true }
 awaken-sql-storage.workspace = true
 
@@ -39,13 +37,13 @@ awaken-sql-storage.workspace = true
 awaken-lease-testkit.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 tempfile = "3"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }
 
 [features]
 default = []
 # Process-local Memory authority and private SQLite databases for tests/scenarios.
 test-support = []
-sqlite = ["dep:rusqlite", "dep:awaken-scoped-migration", "dep:awaken-scoped-migration-sqlite", "dep:awaken-sqlite-pool"]
+sqlite = ["dep:sqlx", "dep:awaken-scoped-migration", "dep:awaken-sqlite-pool"]
 postgres = ["dep:sqlx", "dep:awaken-scoped-migration"]
 
 [lints]

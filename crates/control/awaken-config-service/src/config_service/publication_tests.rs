@@ -25,7 +25,7 @@ async fn publish_resolves_scope_access_once_into_the_persisted_snapshot() {
         }
     }
 
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let resolver = Arc::new(CountingProviderResolver {
         calls: std::sync::atomic::AtomicUsize::new(0),
     });
@@ -145,7 +145,7 @@ async fn preview_registers_inline_inputs_without_authoring_persistence() {
 
 #[tokio::test]
 async fn local_publication_pins_host_access_instead_of_deferring_to_runtime() {
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let plane = ConfigPlane::new(
         Arc::new(test_service()),
         store,
@@ -353,7 +353,7 @@ async fn config_plane_preserves_publish_intent_during_source_race() {
         (None, Some(0)),
         (Some(1), Some(0)),
     ] {
-        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
         let scope = ScopeId::from("publication-source");
         let catalog = Arc::new(ExecutableAgentCatalog::new());
         let service = ConfigService::new(
@@ -559,6 +559,7 @@ async fn publish_does_not_bake_session_resource_prompts_into_agent_instructions(
                 revision: 1,
             },
         )
+        .await
         .unwrap();
 
     let scope = ScopeId::from(DEFAULT_SCOPE);
@@ -566,7 +567,8 @@ async fn publish_does_not_bake_session_resource_prompts_into_agent_instructions(
         Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
         None,
         Some(resources),
-    );
+    )
+    .await;
     plane.put(&scope, &agent_config("agent-1")).await.unwrap();
     let publication = plane.publish(&scope, "agent-1").await.unwrap();
 
@@ -594,6 +596,7 @@ async fn publish_pins_agent_model_catalog_and_session_defaults_revision() {
                 revision: 1,
             },
         )
+        .await
         .unwrap();
     let tool = ToolDescriptor::pinned(
         "builtin",
@@ -601,7 +604,7 @@ async fn publish_pins_agent_model_catalog_and_session_defaults_revision() {
         "search",
         serde_json::json!({"type": "object"}),
     );
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let catalog = Arc::new(ExecutableAgentCatalog::new());
     let service = ConfigService::new(
         Arc::new(FakeResolver),
@@ -667,6 +670,7 @@ async fn publish_pins_agent_model_catalog_and_session_defaults_revision() {
                 revision: 2,
             },
         )
+        .await
         .unwrap();
     assert!(
         catalog
@@ -697,12 +701,14 @@ async fn reviewed_publish_fences_config_and_resource_revisions() {
                 revision: 1,
             },
         )
+        .await
         .unwrap();
     let plane = plane_with(
         Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
         None,
         Some(resources),
-    );
+    )
+    .await;
     let scope = ScopeId::from(DEFAULT_SCOPE);
     plane.put(&scope, &agent_config("reviewed")).await.unwrap();
 
@@ -724,7 +730,7 @@ async fn reviewed_publish_fences_config_and_resource_revisions() {
 
 #[tokio::test]
 async fn publish_resolves_auto_to_the_first_offering_and_keeps_the_source_auto() {
-    let plane = static_plane(Some(Arc::new(FakeResolver)));
+    let plane = static_plane(Some(Arc::new(FakeResolver))).await;
     let scope = ScopeId::from(DEFAULT_SCOPE);
     plane.put(&scope, &auto_config("mgmt")).await.unwrap();
     let publication = plane.publish(&scope, "mgmt").await.unwrap();
@@ -748,7 +754,7 @@ async fn managed_projection_preserves_the_published_authoring_model_id() {
     // Auto/Profile has no public authored id. Effects: E1 Target projection
     // round-trips the authored id exactly; E2 policy selection falls back to
     // the immutable resolved binding. This case exercises decision rule C1.
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let catalog = Arc::new(ExecutableAgentCatalog::new());
     let plane = ConfigPlane::new(
         Arc::new(ConfigService::new(
@@ -787,7 +793,7 @@ async fn managed_projection_preserves_the_published_authoring_model_id() {
 
 #[tokio::test]
 async fn reconcile_re_publishes_auto_but_skips_pinned() {
-    let plane = static_plane(Some(Arc::new(FakeResolver)));
+    let plane = static_plane(Some(Arc::new(FakeResolver))).await;
     let scope = ScopeId::from(DEFAULT_SCOPE);
 
     // A pinned agent: reconcile is a no-op (operator pin is authoritative).
@@ -828,7 +834,7 @@ async fn reconciliation_skips_terminal_agents_and_exact_port_rejects_them() {
         ("disabled-auto", Some("disabled"), None, "L2/L4"),
         ("archived-auto", None, Some("archived"), "L3/L4"),
     ] {
-        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
         let plane = ConfigPlane::new(
             Arc::new(test_service()),
             store.clone(),
@@ -899,7 +905,7 @@ async fn reconcile_advances_source_revision_before_changed_policy_fingerprint() 
     // revision-2 publication/register succeeds.
     // R2(exact replay) -> no bump (covered above). R3(CAS conflict) -> stale
     // error and no registration.
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let catalog = Arc::new(ExecutableAgentCatalog::new());
     let registrar = Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone()));
     let tools = Arc::new(crate::tool_catalog::StaticToolCatalog(vec![]));
@@ -980,7 +986,7 @@ async fn reconcile_advances_source_revision_before_changed_policy_fingerprint() 
 async fn reconciler_adapter_republishes_the_named_auto_agents() {
     use crate::binding_resolver::{ConfigServiceReconciler, PublicationBindingReconciler};
 
-    let plane = static_plane(Some(Arc::new(FakeResolver)));
+    let plane = static_plane(Some(Arc::new(FakeResolver))).await;
     let scope = ScopeId::from(DEFAULT_SCOPE);
     plane.put(&scope, &auto_config("assistant")).await.unwrap();
     plane.publish(&scope, "assistant").await.unwrap();
@@ -1011,7 +1017,7 @@ async fn observation_reconcile_republishes_policy_agents_in_every_owned_scope() 
     // Decision rule O1: C1+C2+C3+C4 => three E1 publications + E2 + E3.
     // Store-failure propagation is covered by FailingScopedRegistry; single-id
     // policy/pinned/missing rules are covered by the test above.
-    let plane = static_plane(Some(Arc::new(FakeResolver)));
+    let plane = static_plane(Some(Arc::new(FakeResolver))).await;
     for (scope, id) in [("workspace-a", "auto-a"), ("workspace-b", "auto-b")] {
         let scope = ScopeId::from(scope);
         plane.put(&scope, &auto_config(id)).await.unwrap();
@@ -1044,7 +1050,7 @@ async fn observation_reconcile_republishes_policy_agents_in_every_owned_scope() 
 
 #[tokio::test]
 async fn pinned_publication_uses_the_explicit_host_resolver() {
-    let plane = static_plane(None);
+    let plane = static_plane(None).await;
     let scope = ScopeId::from(DEFAULT_SCOPE);
     plane.put(&scope, &agent_config("pinned")).await.unwrap();
     let publication = plane.publish(&scope, "pinned").await.unwrap();
@@ -1072,7 +1078,7 @@ async fn admin_tools_compile_only_in_the_reserved_scope() {
         serde_json::json!({"type": "object"}),
     );
     let catalog = ScopedToolCatalog::new(Vec::new(), RESERVED_ADMIN_SCOPE, vec![admin]);
-    let plane = plane_with(Arc::new(catalog), None, None);
+    let plane = plane_with(Arc::new(catalog), None, None).await;
 
     // A config that names the admin tool.
     let mut cfg = agent_config("mgmt");
@@ -1105,7 +1111,7 @@ async fn admin_tools_compile_only_in_the_reserved_scope() {
 async fn no_resource_store_compiles_byte_identically() {
     // Without a wired resource store, instructions are the base verbatim.
     let scope = ScopeId::from(DEFAULT_SCOPE);
-    let plane = static_plane(None);
+    let plane = static_plane(None).await;
     plane.put(&scope, &agent_config("agent-2")).await.unwrap();
     let publication = plane.publish(&scope, "agent-2").await.unwrap();
     assert_eq!(
@@ -1121,7 +1127,7 @@ async fn no_resource_store_compiles_byte_identically() {
 #[tokio::test]
 async fn publish_missing_config_is_not_stored() {
     // P2: no config stored for the id → NotStored (before any resolve/compile).
-    let plane = static_plane(None);
+    let plane = static_plane(None).await;
     let scope = ScopeId::from(DEFAULT_SCOPE);
     let err = plane.publish(&scope, "ghost").await.unwrap_err();
     assert!(matches!(err, PublishError::NotStored(_)), "{err:?}");
@@ -1130,7 +1136,7 @@ async fn publish_missing_config_is_not_stored() {
 #[tokio::test]
 async fn publish_is_unresolvable_when_the_catalog_has_no_model() {
     // P4: Auto + a resolver, but the resolver reports no provider-backed model.
-    let plane = static_plane(Some(Arc::new(ErrResolver)));
+    let plane = static_plane(Some(Arc::new(ErrResolver))).await;
     let scope = ScopeId::from(DEFAULT_SCOPE);
     plane.put(&scope, &auto_config("mgmt")).await.unwrap();
     let err = plane.publish(&scope, "mgmt").await.unwrap_err();
@@ -1141,7 +1147,7 @@ async fn publish_is_unresolvable_when_the_catalog_has_no_model() {
 async fn publish_compile_failure_when_config_names_an_unknown_tool() {
     // P5: resolve succeeds, compile fails because a named tool is not in the
     // (empty) catalog → Compile (not Unresolvable).
-    let plane = static_plane(Some(Arc::new(FakeResolver)));
+    let plane = static_plane(Some(Arc::new(FakeResolver))).await;
     let scope = ScopeId::from(DEFAULT_SCOPE);
     let mut cfg = agent_config("mgmt");
     cfg.tool_ids = vec!["ghost_tool".to_string()];
@@ -1156,7 +1162,7 @@ async fn publish_compile_failure_when_config_names_an_unknown_tool() {
 #[tokio::test]
 async fn validate_reports_a_resolver_failure_as_a_model_issue() {
     // F12a: an Auto binding that cannot resolve is a `model`-field issue.
-    let plane = static_plane(Some(Arc::new(ErrResolver)));
+    let plane = static_plane(Some(Arc::new(ErrResolver))).await;
     let issue = plane
         .validate(&ScopeId::from(DEFAULT_SCOPE), &auto_config("mgmt"))
         .await
@@ -1179,7 +1185,7 @@ async fn durable_publication_survives_unavailable_registration_and_retry() {
     // | Rule | C1 | Registrar | Effect |
     // | R1 | T | unavailable | durable row + 503 |
     // | R2 | existing | healthy | same row + current registration |
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let scope = ScopeId::from("wrkspc_registration_retry");
     let unavailable = ConfigPlane::new(
         Arc::new(ConfigService::new(

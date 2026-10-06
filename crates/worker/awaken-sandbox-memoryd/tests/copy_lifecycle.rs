@@ -40,6 +40,7 @@ async fn live_and_recovered_copy_do_not_follow_a_renamed_head() {
                     root.path().join("memory.sqlite").to_str().unwrap(),
                     awaken_time::system_clock(),
                 )
+                .await
                 .unwrap(),
             );
             let base = repository.create("s", "/note.md", "base").await.unwrap();
@@ -111,6 +112,7 @@ async fn ingress_and_recovery_reject_a_tree_that_cannot_be_harvested() {
             root.path().join("memory.sqlite").to_str().unwrap(),
             awaken_time::system_clock(),
         )
+        .await
         .unwrap(),
     );
     repository.create("s", "/a.md", "valid").await.unwrap();
@@ -180,6 +182,7 @@ async fn materialization_rejects_nonportable_store_paths_before_any_file_write()
                 root.join("memory.sqlite").to_str().unwrap(),
                 awaken_time::system_clock(),
             )
+            .await
             .unwrap(),
         );
         repository.create("s", "/a.md", "valid").await.unwrap();
@@ -246,6 +249,7 @@ async fn materialization_never_silently_overwrites_filesystem_aliases() {
             root.join("memory.sqlite").to_str().unwrap(),
             awaken_time::system_clock(),
         )
+        .await
         .unwrap(),
     );
     repository.create("s", "/A.md", "upper").await.unwrap();
@@ -313,6 +317,7 @@ async fn parent_alias_admission_preserves_exact_no_edit_heads_and_history() {
                     root.path().join("memory.sqlite").to_str().unwrap(),
                     awaken_time::system_clock(),
                 )
+                .await
                 .unwrap(),
             );
             let prefix = if nested { "/outer" } else { "" };
@@ -355,6 +360,7 @@ async fn recovery_preserves_logical_names_without_host_rematerialization() {
             root.path().join("memory.sqlite").to_str().unwrap(),
             awaken_time::system_clock(),
         )
+        .await
         .unwrap(),
     );
     let mut files = vec![];
@@ -416,6 +422,7 @@ async fn unrepresentable_copy_blocks_writeback_until_source_is_repaired() {
                             database.to_str().unwrap(),
                             awaken_time::system_clock(),
                         )
+                        .await
                         .unwrap(),
                     );
                     for path in ["/a.md", "/gone.md"] {
@@ -519,6 +526,7 @@ async fn unrepresentable_copy_blocks_writeback_until_source_is_repaired() {
                         database.to_str().unwrap(),
                         awaken_time::system_clock(),
                     )
+                    .await
                     .unwrap();
                     assert_eq!(reopened.snapshot_heads("s").await.unwrap(), durable_heads);
                     assert_eq!(
@@ -543,6 +551,7 @@ async fn ambiguous_projection_shapes_reject_before_any_write_in_both_orders() {
                 root.path().join("memory.sqlite").to_str().unwrap(),
                 awaken_time::system_clock(),
             )
+            .await
             .unwrap(),
         );
         repository.create("s", "/a", "base").await.unwrap();
@@ -594,6 +603,7 @@ async fn unreadable_projection_never_authorizes_partial_writeback() {
                 root.join("memory.sqlite").to_str().unwrap(),
                 awaken_time::system_clock(),
             )
+            .await
             .unwrap(),
         );
         let original = repository.create("s", "/a.md", "base").await.unwrap();
@@ -653,6 +663,7 @@ async fn empty_entry_and_depth_overflows_fail_before_any_repository_write() {
                 root.join("memory.sqlite").to_str().unwrap(),
                 awaken_time::system_clock(),
             )
+            .await
             .unwrap(),
         );
         let original = repository.create("s", "/a.md", "base").await.unwrap();
@@ -702,6 +713,7 @@ async fn unavailable_copy_root_is_not_evidence_of_memory_deletion() {
         let database = root.join("memory.sqlite");
         let repository = Arc::new(
             SqliteMemoryRepository::open(database.to_str().unwrap(), awaken_time::system_clock())
+                .await
                 .unwrap(),
         );
         let original = repository
@@ -792,6 +804,7 @@ async fn concurrent_copy_harvest_preserves_one_winner_and_retry_evidence() {
                     database.to_str().unwrap(),
                     awaken_time::system_clock(),
                 )
+                .await
                 .unwrap(),
             );
             repository.create("s", "/note.md", "base").await.unwrap();
@@ -898,6 +911,7 @@ async fn concurrent_copy_harvest_preserves_one_winner_and_retry_evidence() {
                 database.to_str().unwrap(),
                 awaken_time::system_clock(),
             )
+            .await
             .unwrap();
             assert_eq!(reopened.list_copy_conflicts("s").await.unwrap(), retained);
             assert_eq!(
@@ -928,6 +942,7 @@ async fn unsafe_copy_entries_fail_before_any_durable_mutation() {
                 root.join("memory.sqlite").to_str().unwrap(),
                 awaken_time::system_clock(),
             )
+            .await
             .unwrap(),
         );
         let original = repository.create("s", "/a.md", "base").await.unwrap();
@@ -998,6 +1013,7 @@ async fn an_existing_empty_copy_is_an_intentional_delete_not_a_missing_tree() {
             root.join("memory.sqlite").to_str().unwrap(),
             awaken_time::system_clock(),
         )
+        .await
         .unwrap(),
     );
     repository.create("s", "/note.md", "base").await.unwrap();
@@ -1040,6 +1056,7 @@ async fn windows_junction_is_not_a_readable_memory_projection() {
                 root.join("memory.sqlite").to_str().unwrap(),
                 awaken_time::system_clock(),
             )
+            .await
             .unwrap(),
         );
         let original = repository.create("s", "/a.md", "base").await.unwrap();
@@ -1119,6 +1136,7 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
         let database = root.join("memory.sqlite");
         let repository = Arc::new(
             SqliteMemoryRepository::open(database.to_str().unwrap(), awaken_time::system_clock())
+                .await
                 .unwrap(),
         );
         repository.create("s", "/a.md", "a-base").await.unwrap();
@@ -1172,6 +1190,7 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
         drop(repository);
         let repository = Arc::new(
             SqliteMemoryRepository::open(database.to_str().unwrap(), awaken_time::system_clock())
+                .await
                 .unwrap(),
         );
         let mounter = MemoryStoreMounter::copy_only(repository.clone());
@@ -1226,6 +1245,7 @@ async fn recovered_copy_retries_committed_write_without_a_second_version() {
     let database = root.join("memory.sqlite");
     let repository = Arc::new(
         SqliteMemoryRepository::open(database.to_str().unwrap(), awaken_time::system_clock())
+            .await
             .unwrap(),
     );
     let base = repository.create("s", "/note.md", "base").await.unwrap();
@@ -1249,6 +1269,7 @@ async fn recovered_copy_retries_committed_write_without_a_second_version() {
     drop(repository);
     let repository = Arc::new(
         SqliteMemoryRepository::open(database.to_str().unwrap(), awaken_time::system_clock())
+            .await
             .unwrap(),
     );
     let replacement = MemoryStoreMounter::copy_only(repository.clone());
@@ -1305,6 +1326,7 @@ async fn concurrent_identical_edits_converge_but_different_creates_conflict() {
                 root.join("memory.sqlite").to_str().unwrap(),
                 awaken_time::system_clock(),
             )
+            .await
             .unwrap(),
         );
         let seeded = matches!(rule, "same-update" | "same-delete");
@@ -1414,6 +1436,7 @@ async fn copy_mount_reconciles_once_and_survives_mounter_replacement() {
             database.to_str().expect("UTF-8 database path"),
             awaken_time::system_clock(),
         )
+        .await
         .expect("open durable repository"),
     );
     repository
@@ -1448,6 +1471,7 @@ async fn copy_mount_reconciles_once_and_survives_mounter_replacement() {
             database.to_str().expect("UTF-8 database path"),
             awaken_time::system_clock(),
         )
+        .await
         .expect("reopen durable repository"),
     );
     let replacement = MemoryStoreMounter::copy_only(replacement_repository.clone());

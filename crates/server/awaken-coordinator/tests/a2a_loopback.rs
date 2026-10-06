@@ -231,7 +231,7 @@ impl LlmExecutor for NativeDelegatingModel {
     }
 }
 
-fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
+async fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
     let parent = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", "parent", "default"))
         .tools(awaken_session_executor::authorable_tools())
@@ -258,11 +258,14 @@ fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("parent and delegated remote publications are valid");
     let host = Arc::new(
-        Arc::into_inner(build_unmounted_host_with_agent_publications(
-            Arc::new(NativeDelegatingModel),
-            "parent",
-            Arc::new(publications),
-        ))
+        Arc::into_inner(
+            build_unmounted_host_with_agent_publications(
+                Arc::new(NativeDelegatingModel),
+                "parent",
+                Arc::new(publications),
+            )
+            .await,
+        )
         .expect("unmounted scenario host has one owner")
         .with_remote_attempt_executor(awaken_session_executor::RemoteAttemptInstallation {
             executor: Arc::new(A2aRunExecutor::new(Arc::new(FixedTransportResolver(
@@ -275,7 +278,7 @@ fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
     host
 }
 
-fn published_delegating_host(
+async fn published_delegating_host(
     endpoint: &str,
     credential: CredentialAccess,
     security_fingerprint: String,
@@ -307,11 +310,14 @@ fn published_delegating_host(
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("authenticated parent and child publications are valid");
     let host = Arc::new(
-        Arc::into_inner(build_unmounted_host_with_agent_publications(
-            Arc::new(NativeDelegatingModel),
-            "parent",
-            Arc::new(publications),
-        ))
+        Arc::into_inner(
+            build_unmounted_host_with_agent_publications(
+                Arc::new(NativeDelegatingModel),
+                "parent",
+                Arc::new(publications),
+            )
+            .await,
+        )
         .expect("unmounted scenario host has one owner")
         .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(materializer))),
     );
@@ -319,8 +325,8 @@ fn published_delegating_host(
     host
 }
 
-#[test]
-fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
+#[tokio::test]
+async fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
     // Causes:
     // C1 parent publication permits researcher and freezes AgentDelegation; C2
     // researcher publication pins a2a:*; C3 one remote attempt executor is
@@ -344,9 +350,9 @@ fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
     // resolver tests in awaken-session-executor.
     run_composed_async_test(|| async {
         let transport = Arc::new(RouterTransport {
-            app: build_router(Arc::new(EchoModel), "remote"),
+            app: build_router(Arc::new(EchoModel), "remote").await,
         });
-        let host = delegating_host(transport);
+        let host = delegating_host(transport).await;
 
         host.run(None, "thread", vec![user("research the answer")])
             .await
@@ -356,8 +362,8 @@ fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
     });
 }
 
-#[test]
-fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
+#[tokio::test]
+async fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
     // Causes:
     // C1 the published remote child pins a card fingerprint, verified origin
     // target, and one exact origin-tagged credential revision; C2 the card requires Bearer auth; C3
@@ -375,15 +381,17 @@ fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
     // fingerprint drift are the fail-closed rules in `a2a_remote` and
     // `PinnedA2aTransportResolver`; anonymous U1/U2 are covered above.
     run_composed_async_test(|| async {
-        let peer =
-            authenticated::AuthenticatedPeer::start(build_router(Arc::new(EchoModel), "remote"))
-                .await;
+        let peer = authenticated::AuthenticatedPeer::start(
+            build_router(Arc::new(EchoModel), "remote").await,
+        )
+        .await;
         let host = published_delegating_host(
             &peer.endpoint,
             peer.access.clone(),
             peer.security_fingerprint.clone(),
             peer.materializer(),
-        );
+        )
+        .await;
 
         host.run(
             None,

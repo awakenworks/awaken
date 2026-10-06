@@ -2055,24 +2055,24 @@ async fn managed_material_mutation_begin_and_phases_conform(
 }
 
 /// Run every suite, each on a fresh repo from `make`.
-async fn run_all(make: impl Fn() -> Box<dyn CredentialRepo>) {
-    sources_round_trip_and_scope_by_workspace(&*make()).await;
-    replacement_lineage_round_trips(&*make()).await;
-    pools_round_trip_and_scope_by_workspace(&*make()).await;
-    missing_rows_are_not_found(&*make()).await;
-    put_is_upsert(&*make()).await;
-    worker_local_registration_is_atomic_idempotent_and_secret_free(&*make()).await;
-    mutation_wal_publish_and_completion_are_idempotent(&*make()).await;
-    completing_unpublished_mutation_is_idempotent(&*make()).await;
-    rotation_publication_is_revision_cas_and_idempotent(&*make()).await;
-    distinct_replacement_is_old_row_cas_and_idempotent(&*make()).await;
-    distinct_replacement_recovery_is_directional(&*make()).await;
-    get_is_an_unscoped_by_id_primitive(&*make()).await;
+async fn run_all<F: std::future::Future<Output = Box<dyn CredentialRepo>>>(make: impl Fn() -> F) {
+    sources_round_trip_and_scope_by_workspace(&*make().await).await;
+    replacement_lineage_round_trips(&*make().await).await;
+    pools_round_trip_and_scope_by_workspace(&*make().await).await;
+    missing_rows_are_not_found(&*make().await).await;
+    put_is_upsert(&*make().await).await;
+    worker_local_registration_is_atomic_idempotent_and_secret_free(&*make().await).await;
+    mutation_wal_publish_and_completion_are_idempotent(&*make().await).await;
+    completing_unpublished_mutation_is_idempotent(&*make().await).await;
+    rotation_publication_is_revision_cas_and_idempotent(&*make().await).await;
+    distinct_replacement_is_old_row_cas_and_idempotent(&*make().await).await;
+    distinct_replacement_recovery_is_directional(&*make().await).await;
+    get_is_an_unscoped_by_id_primitive(&*make().await).await;
 }
 
 #[tokio::test]
 async fn in_memory_repo_conforms() {
-    run_all(|| Box::new(InMemoryCredentialRepo::new())).await;
+    run_all(|| async { Box::new(InMemoryCredentialRepo::new()) as Box<dyn CredentialRepo> }).await;
     managed_material_mutation_begin_and_phases_conform(&InMemoryCredentialRepo::new()).await;
 }
 
@@ -2080,9 +2080,12 @@ async fn in_memory_repo_conforms() {
 #[tokio::test]
 async fn sqlite_repo_conforms() {
     use awaken_credential_store::sqlite::SqliteCredentialRepo;
-    run_all(|| Box::new(SqliteCredentialRepo::open_in_memory().unwrap())).await;
+    run_all(|| async {
+        Box::new(SqliteCredentialRepo::open_in_memory().await.unwrap()) as Box<dyn CredentialRepo>
+    })
+    .await;
     managed_material_mutation_begin_and_phases_conform(
-        &SqliteCredentialRepo::open_in_memory().unwrap(),
+        &SqliteCredentialRepo::open_in_memory().await.unwrap(),
     )
     .await;
 }
@@ -2095,12 +2098,11 @@ async fn sqlite_repo_conforms() {
 #[tokio::test]
 async fn sqlite_recovery_scans_reject_mismatched_durable_keys_before_secret_io() {
     use awaken_credential_store::sqlite::SqliteCredentialRepo;
-    use rusqlite::{Connection, params};
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("credential-key-fence.db");
     let path = path.to_str().unwrap();
-    let repo = SqliteCredentialRepo::open(path).unwrap();
+    let repo = SqliteCredentialRepo::open(path).await.unwrap();
 
     let mut source_after = source("cred:sqlite:key-envelope", "ws");
     source_after.env_key = None;
@@ -2134,25 +2136,24 @@ async fn sqlite_recovery_scans_reject_mismatched_durable_keys_before_secret_io()
             .with_material_ready()
             .unwrap();
 
-    let connection = Connection::open(path).unwrap();
-    connection
-        .execute(
-            "INSERT INTO credential_creation_intent (source_id, data) VALUES (?1, ?2)",
-            params![
-                "wrong-source-row-key",
-                serde_json::to_string(&source_ready).unwrap()
-            ],
-        )
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(path)
+        .open()
+        .await
         .unwrap();
-    connection
-        .execute(
-            "INSERT INTO credential_managed_credential_mutation (source_id, data) VALUES (?1, ?2)",
-            params![
-                "wrong-managed-row-key",
-                serde_json::to_string(&managed_ready).unwrap()
-            ],
-        )
+    sqlx::query("INSERT INTO credential_creation_intent (source_id, data) VALUES (?1, ?2)")
+        .bind("wrong-source-row-key")
+        .bind(serde_json::to_string(&source_ready).unwrap())
+        .execute(&connection)
+        .await
         .unwrap();
+    sqlx::query(
+        "INSERT INTO credential_managed_credential_mutation (source_id, data) VALUES (?1, ?2)",
+    )
+    .bind("wrong-managed-row-key")
+    .bind(serde_json::to_string(&managed_ready).unwrap())
+    .execute(&connection)
+    .await
+    .unwrap();
 
     let store = DeleteCountingStore::default();
     assert!(
@@ -2167,14 +2168,13 @@ async fn sqlite_recovery_scans_reject_mismatched_durable_keys_before_secret_io()
     );
     assert_eq!(store.reads.load(Ordering::SeqCst), 0);
     assert_eq!(store.deletes.load(Ordering::SeqCst), 0);
-    let retained: i64 = connection
-        .query_row(
-            "SELECT (SELECT COUNT(*) FROM credential_creation_intent) + \
-             (SELECT COUNT(*) FROM credential_managed_credential_mutation)",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let retained: i64 = sqlx::query_scalar(
+        "SELECT (SELECT COUNT(*) FROM credential_creation_intent) + \
+         (SELECT COUNT(*) FROM credential_managed_credential_mutation)",
+    )
+    .fetch_one(&connection)
+    .await
+    .unwrap();
     assert_eq!(retained, 2);
 }
 
@@ -2186,8 +2186,13 @@ async fn sqlite_legacy_mutation_recovery_conforms() {
     use awaken_credential_store::sqlite::SqliteCredentialRepo;
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("legacy-writer.db");
-    let repo = SqliteCredentialRepo::open(path.to_str().unwrap()).unwrap();
-    let connection = rusqlite::Connection::open(path).unwrap();
+    let repo = SqliteCredentialRepo::open(path.to_str().unwrap())
+        .await
+        .unwrap();
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(&path)
+        .open()
+        .await
+        .unwrap();
     for retain_attempt in [false, true] {
         for phase in [
             CredentialMaterialMutationPhase::Writing,
@@ -2195,15 +2200,14 @@ async fn sqlite_legacy_mutation_recovery_conforms() {
             CredentialMaterialMutationPhase::ReclaimingAbort,
         ] {
             for (table, wire, source_field) in legacy_mutation_wires(retain_attempt, phase) {
-                connection
-                    .execute(
-                        &format!("INSERT INTO {table} (source_id, data) VALUES (?1, ?2)"),
-                        rusqlite::params![
-                            wire[source_field]["id"].as_str().unwrap(),
-                            serde_json::to_string(&wire).unwrap()
-                        ],
-                    )
-                    .unwrap();
+                sqlx::query(&format!(
+                    "INSERT INTO {table} (source_id, data) VALUES (?1, ?2)"
+                ))
+                .bind(wire[source_field]["id"].as_str().unwrap())
+                .bind(serde_json::to_string(&wire).unwrap())
+                .execute(&connection)
+                .await
+                .unwrap();
             }
             legacy_mutation_recovery_conforms(&repo, retain_attempt).await;
         }
@@ -2211,15 +2215,13 @@ async fn sqlite_legacy_mutation_recovery_conforms() {
     let (plain, managed) = prepare_root_encoding_updates(&repo).await;
     for (table, wire) in root_encoding_wires(&plain, &managed) {
         assert_eq!(
-            connection
-                .execute(
-                    &format!("UPDATE {table} SET data = ?1 WHERE id = ?2"),
-                    rusqlite::params![
-                        serde_json::to_string_pretty(&wire).unwrap(),
-                        wire["id"].as_str().unwrap()
-                    ],
-                )
-                .unwrap(),
+            sqlx::query(&format!("UPDATE {table} SET data = ?1 WHERE id = ?2"))
+                .bind(serde_json::to_string_pretty(&wire).unwrap())
+                .bind(wire["id"].as_str().unwrap())
+                .execute(&connection)
+                .await
+                .unwrap()
+                .rows_affected(),
             1
         );
     }

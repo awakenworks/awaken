@@ -16,8 +16,8 @@ use awaken_dream_application::{
 };
 
 /// Build the one Dream scenario router used by process-level SDK E2E.
-pub fn build_dream_router() -> Router {
-    build_dream_router_and_host().0
+pub async fn build_dream_router() -> Router {
+    build_dream_router_and_host().await.0
 }
 
 /// Process-level Dream route. Unlike the pure in-process fixture above, this
@@ -46,7 +46,8 @@ pub async fn build_dream_runtime_router() -> Router {
     });
     let router = crate::scenario_platform::mount_parts_with_model_publication_resolver(
         host, resources, resolver, barrier,
-    );
+    )
+    .await;
     router.merge(dream_auxiliary_routes())
 }
 
@@ -143,7 +144,7 @@ impl DreamExecutor for PreparedDreamBarrier {
 }
 
 /// Return the same router plus its Host for focused cross-module assertions.
-pub fn build_dream_router_and_host() -> (Router, Arc<SharedHost>) {
+pub async fn build_dream_router_and_host() -> (Router, Arc<SharedHost>) {
     // Keep the Dream lifecycle fixture deterministic by default, but route an
     // explicitly requested HTTP model through the same production provider
     // adapter as every other scenario. Dream used to bypass `scenario_model`,
@@ -153,7 +154,7 @@ pub fn build_dream_router_and_host() -> (Router, Arc<SharedHost>) {
         model_ref: model_ref.clone(),
     });
     let (router, host) =
-        build_router_and_host_with_model_publication_resolver(model, model_ref, resolver);
+        build_router_and_host_with_model_publication_resolver(model, model_ref, resolver).await;
     (router.merge(dream_auxiliary_routes()), host)
 }
 

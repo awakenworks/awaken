@@ -240,8 +240,9 @@ mod tests {
         // timestamp. The retained root deliberately stays before physical
         // cleanup: this proves logical deletion, never remote quiescence.
         let state = ManagedState::new(crate::state::test_support::RehydrateFake::default())
+            .await
             .with_session_repo(Arc::new(
-                crate::state::test_support::ephemeral_session_repo(),
+                crate::state::test_support::ephemeral_session_repo().await,
             ));
         let owner = awaken_tenancy::DEFAULT_WORKSPACE_ID;
         assert!(

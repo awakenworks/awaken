@@ -20,17 +20,24 @@ fn invalid_pending(error: ManagedCredentialMutationError) -> CredentialError {
     }
 }
 
-async fn with_conn_managed_mutation<T, F>(
-    conn: &awaken_sqlite_pool::SharedSqliteConnection,
-    f: F,
-) -> Result<T, ManagedCredentialMutationError>
-where
-    T: Send + 'static,
-    F: FnOnce(&mut Connection, &str) -> Result<T, ManagedCredentialMutationError> + Send + 'static,
-{
-    awaken_sqlite_pool::with_connection(conn.clone(), move |connection| f(connection, NS))
+/// The one `data` column selected by a single text key, if the row exists.
+async fn data_at(
+    conn: &mut SqliteConnection,
+    sql: &str,
+    key: &str,
+) -> Result<Option<String>, CredentialError> {
+    sqlx::query_scalar(sql)
+        .bind(key)
+        .fetch_optional(&mut *conn)
         .await
-        .map_err(|error| ManagedCredentialMutationError::Store(storage(error)))?
+        .map_err(storage)
+}
+
+fn decode<T: serde::de::DeserializeOwned>(
+    data: Option<String>,
+) -> Result<Option<T>, CredentialError> {
+    data.map(|data| serde_json::from_str(&data).map_err(storage))
+        .transpose()
 }
 
 #[async_trait::async_trait]
@@ -43,83 +50,79 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         pending
             .validate_for_begin(now_unix_ms)
             .map_err(invalid_pending)?;
-        with_conn(&self.conn, move |conn, p| {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(storage)?;
-            let durable: Option<PendingManagedCredentialMutation> = tx
-                .query_row(
-                    &format!(
-                        "SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"
-                    ),
-                    params![pending.after_source.id.0],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-                .map(|data| serde_json::from_str(&data).map_err(storage))
-                .transpose()?;
-            if let Some(durable) = durable {
-                if !durable.matches_logical_command(&pending) {
-                    return Err(CredentialError::MutationConflict(
-                        "another Managed credential mutation is pending".into(),
-                    ));
-                }
-                tx.commit().map_err(storage)?;
-                return Ok(false);
-            }
-            let current_source = tx
-                .query_row(
-                    &format!("SELECT data FROM {p}_source WHERE id = ?1"),
-                    params![pending.after_source.id.0],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-                .map(|data| serde_json::from_str(&data).map_err(storage))
-                .transpose()?;
-            let current_child = tx
-                .query_row(
-                    &format!("SELECT data FROM {p}_managed_vault_credential WHERE id = ?1"),
-                    params![pending.after_credential.id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-                .map(|data| serde_json::from_str(&data).map_err(storage))
-                .transpose()?;
-            if !pending.is_unpublished_at(current_source.as_ref(), current_child.as_ref()) {
-                return Err(CredentialError::MutationConflict(
-                    "Managed credential changed before its mutation was prepared".into(),
-                ));
-            }
-            let inserted = tx.execute(
-                &format!("INSERT OR IGNORE INTO {p}_managed_credential_mutation (source_id, data) VALUES (?1, ?2)"),
-                params![pending.after_source.id.0, serde_json::to_string(&pending).map_err(storage)?],
-            )
+        let p = NS;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
             .map_err(storage)?;
-            let durable = tx
-                .query_row(
-                    &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
-                    params![pending.after_source.id.0],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-                .ok_or_else(|| CredentialError::MutationConflict(
-                    "Managed credential mutation lost its pending fact".into()
-                ))?;
-            let durable: PendingManagedCredentialMutation =
-                serde_json::from_str(&durable).map_err(storage)?;
+        let durable: Option<PendingManagedCredentialMutation> = decode(
+            data_at(
+                &mut tx,
+                &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
+                &pending.after_source.id.0,
+            )
+            .await?,
+        )?;
+        if let Some(durable) = durable {
             if !durable.matches_logical_command(&pending) {
                 return Err(CredentialError::MutationConflict(
                     "another Managed credential mutation is pending".into(),
                 ));
             }
-            tx.commit().map_err(storage)?;
-            Ok(inserted == 1)
-        })
+            tx.commit().await.map_err(storage)?;
+            return Ok(false);
+        }
+        let current_source = decode(
+            data_at(
+                &mut tx,
+                &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                &pending.after_source.id.0,
+            )
+            .await?,
+        )?;
+        let current_child = decode(
+            data_at(
+                &mut tx,
+                &format!("SELECT data FROM {p}_managed_vault_credential WHERE id = ?1"),
+                &pending.after_credential.id,
+            )
+            .await?,
+        )?;
+        if !pending.is_unpublished_at(current_source.as_ref(), current_child.as_ref()) {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential changed before its mutation was prepared".into(),
+            ));
+        }
+        let inserted = sqlx::query(&format!(
+            "INSERT OR IGNORE INTO {p}_managed_credential_mutation (source_id, data) VALUES (?1, ?2)"
+        ))
+        .bind(&pending.after_source.id.0)
+        .bind(serde_json::to_string(&pending).map_err(storage)?)
+        .execute(&mut *tx)
         .await
+        .map_err(storage)?
+        .rows_affected();
+        let durable = data_at(
+            &mut tx,
+            &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
+            &pending.after_source.id.0,
+        )
+        .await?
+        .ok_or_else(|| {
+            CredentialError::MutationConflict(
+                "Managed credential mutation lost its pending fact".into(),
+            )
+        })?;
+        let durable: PendingManagedCredentialMutation =
+            serde_json::from_str(&durable).map_err(storage)?;
+        if !durable.matches_logical_command(&pending) {
+            return Err(CredentialError::MutationConflict(
+                "another Managed credential mutation is pending".into(),
+            ));
+        }
+        tx.commit().await.map_err(storage)?;
+        Ok(inserted == 1)
     }
 
     async fn commit_managed_mutation(
@@ -128,251 +131,244 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
     ) -> Result<PendingManagedCredentialMutation, ManagedCredentialMutationError> {
         pending.validate()?;
         let plan = managed_credential_commit_plan(pending)?;
-        let pending = pending.clone();
-        with_conn_managed_mutation(&self.conn, move |conn, p| {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(storage)?;
-            let durable: PendingManagedCredentialMutation = tx
-                .query_row(
-                    &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
-                    params![pending.after_source.id.0],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-                .map(|data| serde_json::from_str(&data).map_err(storage))
-                .transpose()?
-                .ok_or_else(|| CredentialError::MutationConflict(
-                    "Managed credential mutation has no durable pending fact".into()
-                ))?;
-            durable.validate()?;
-            if durable.material_fence.phase != CredentialMaterialMutationPhase::Reclaiming
-                && (durable != pending
-                    || pending.material_fence.phase != CredentialMaterialMutationPhase::Ready)
+        let p = NS;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage)?;
+        let durable: PendingManagedCredentialMutation = decode(
+            data_at(
+                &mut tx,
+                &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
+                &pending.after_source.id.0,
+            )
+            .await?,
+        )?
+        .ok_or_else(|| {
+            CredentialError::MutationConflict(
+                "Managed credential mutation has no durable pending fact".into(),
+            )
+        })?;
+        durable.validate()?;
+        if durable.material_fence.phase != CredentialMaterialMutationPhase::Reclaiming
+            && (&durable != pending
+                || pending.material_fence.phase != CredentialMaterialMutationPhase::Ready)
+        {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential mutation is not ready or does not match its durable fact"
+                    .into(),
+            )
+            .into());
+        }
+        let vault: Option<ManagedVault> = decode(
+            data_at(
+                &mut tx,
+                &format!("SELECT data FROM {p}_managed_vault WHERE id = ?1"),
+                &pending.after_credential.vault_id,
+            )
+            .await?,
+        )?;
+        let current_source: Option<CredentialSource> = decode(
+            data_at(
+                &mut tx,
+                &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                &pending.after_source.id.0,
+            )
+            .await?,
+        )?;
+        let current_child: Option<ManagedVaultCredential> = decode(
+            data_at(
+                &mut tx,
+                &format!("SELECT data FROM {p}_managed_vault_credential WHERE id = ?1"),
+                &pending.after_credential.id,
+            )
+            .await?,
+        )?;
+        if durable.material_fence.phase == CredentialMaterialMutationPhase::Reclaiming {
+            if durable != plan.reclaiming_mutation
+                || current_source.as_ref() != Some(&plan.source)
+                || current_child.as_ref() != Some(&plan.credential)
             {
-                return Err(CredentialError::MutationConflict(
-                    "Managed credential mutation is not ready or does not match its durable fact".into(),
-                ).into());
-            }
-            let vault = tx
-                .query_row(
-                    &format!("SELECT data FROM {p}_managed_vault WHERE id = ?1"),
-                    params![pending.after_credential.vault_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-                .map(|data| serde_json::from_str(&data).map_err(storage))
-                .transpose()?;
-            let current_source = tx
-                .query_row(
-                    &format!("SELECT data FROM {p}_source WHERE id = ?1"),
-                    params![pending.after_source.id.0],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-                .map(|data| serde_json::from_str(&data).map_err(storage))
-                .transpose()?;
-            let current_child = tx
-                .query_row(
-                    &format!("SELECT data FROM {p}_managed_vault_credential WHERE id = ?1"),
-                    params![pending.after_credential.id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-                .map(|data| serde_json::from_str(&data).map_err(storage))
-                .transpose()?;
-            if durable.material_fence.phase == CredentialMaterialMutationPhase::Reclaiming {
-                if durable != plan.reclaiming_mutation
-                    || current_source.as_ref() != Some(&plan.source)
-                    || current_child.as_ref() != Some(&plan.credential)
-                {
-                    return Err(ManagedCredentialMutationError::RevisionConflict);
-                }
-                tx.commit().map_err(storage)?;
-                return Ok(durable);
-            }
-            if !pending.is_unpublished_at(current_source.as_ref(), current_child.as_ref()) {
                 return Err(ManagedCredentialMutationError::RevisionConflict);
             }
-            let mut statement = tx
-                .prepare(&format!(
-                    "SELECT data FROM {p}_managed_vault_credential \
-                     WHERE workspace_id = ?1 AND vault_id = ?2 AND id <> ?3 ORDER BY id"
-                ))
-                .map_err(storage)?;
-            let existing = statement
-                .query_map(
-                    params![
-                        pending.after_credential.workspace_id,
-                        pending.after_credential.vault_id,
-                        pending.after_credential.id
-                    ],
-                    |row| row.get::<_, String>(0),
-                )
-                .map_err(storage)?
-                .map(|row| {
-                    row.map_err(storage)
-                        .and_then(|data| serde_json::from_str(&data).map_err(storage))
-                })
-                .collect::<Result<Vec<ManagedVaultCredential>, _>>()?;
-            drop(statement);
-            match pending.operation {
-                ManagedCredentialOperation::Create => admit_managed_credential_insert(
-                    &pending.after_credential.workspace_id,
-                    vault.as_ref(),
-                    &existing,
-                    &pending.after_credential,
-                )?,
-                ManagedCredentialOperation::Update => {
-                    let before = pending
-                        .before_credential
-                        .as_ref()
-                        .ok_or(ManagedCredentialMutationError::NotFound)?;
-                    admit_managed_credential_replacement(
-                        &pending.after_credential.workspace_id,
-                        Some(before),
-                        before.revision,
-                        &pending.after_credential,
-                    )?;
-                    let mut admission = pending.after_credential.clone();
-                    admission.revision = 1;
-                    admission.lifecycle = ManagedCredentialLifecycle::Active;
-                    admit_managed_credential_insert(
-                        &pending.after_credential.workspace_id,
-                        vault.as_ref(),
-                        &existing,
-                        &admission,
-                    )?;
-                }
-                ManagedCredentialOperation::Archive | ManagedCredentialOperation::Delete => {
-                    let before = pending
-                        .before_credential
-                        .as_ref()
-                        .ok_or(ManagedCredentialMutationError::NotFound)?;
-                    admit_managed_credential_replacement(
-                        &pending.after_credential.workspace_id,
-                        Some(before),
-                        before.revision,
-                        &pending.after_credential,
-                    )?;
-                    if !managed_retirement_parent_admitted(
-                        pending.operation,
-                        vault.as_ref(),
-                        &pending.after_credential,
-                    ) {
-                        return Err(if vault.is_some() {
-                            ManagedCredentialMutationError::InvalidLifecycle
-                        } else {
-                            ManagedCredentialMutationError::NotFound
-                        });
-                    }
-                }
-            }
-            let source_changed = if pending.operation == ManagedCredentialOperation::Create {
-                tx.execute(
-                    &format!("INSERT OR IGNORE INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3)"),
-                    params![
-                        pending.after_source.id.0,
-                        pending.after_source.workspace_id,
-                        serde_json::to_string(&plan.source).map_err(storage)?
-                    ],
-                )
-                .map_err(storage)?
-            } else {
-                let before = pending
-                    .before_source
-                    .as_ref()
-                    .ok_or(ManagedCredentialMutationError::NotFound)?;
-                tx.execute(
-                    &format!("UPDATE {p}_source SET workspace_id = ?1, data = ?2 \
-                             WHERE id = ?3 AND workspace_id = ?4"),
-                    params![
-                        pending.after_source.workspace_id,
-                        serde_json::to_string(&plan.source).map_err(storage)?,
-                        pending.after_source.id.0,
-                        before.workspace_id,
-                    ],
-                )
-                .map_err(storage)?
-            };
-            if source_changed != 1 {
-                return Err(ManagedCredentialMutationError::RevisionConflict);
-            }
-            let child_changed = if pending.operation == ManagedCredentialOperation::Create {
-                tx.execute(
-                    &format!("INSERT OR IGNORE INTO {p}_managed_vault_credential \
-                             (id, vault_id, workspace_id, source_id, data) VALUES (?1, ?2, ?3, ?4, ?5)"),
-                    params![
-                        pending.after_credential.id,
-                        pending.after_credential.vault_id,
-                        pending.after_credential.workspace_id,
-                        pending.after_credential.source_id.0,
-                        serde_json::to_string(&plan.credential).map_err(storage)?
-                    ],
-                )
-                .map_err(storage)?
-            } else {
+            tx.commit().await.map_err(storage)?;
+            return Ok(durable);
+        }
+        if !pending.is_unpublished_at(current_source.as_ref(), current_child.as_ref()) {
+            return Err(ManagedCredentialMutationError::RevisionConflict);
+        }
+        let existing = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT data FROM {p}_managed_vault_credential \
+             WHERE workspace_id = ?1 AND vault_id = ?2 AND id <> ?3 ORDER BY id"
+        ))
+        .bind(&pending.after_credential.workspace_id)
+        .bind(&pending.after_credential.vault_id)
+        .bind(&pending.after_credential.id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?
+        .into_iter()
+        .map(|data| serde_json::from_str(&data).map_err(storage))
+        .collect::<Result<Vec<ManagedVaultCredential>, _>>()?;
+        match pending.operation {
+            ManagedCredentialOperation::Create => admit_managed_credential_insert(
+                &pending.after_credential.workspace_id,
+                vault.as_ref(),
+                &existing,
+                &pending.after_credential,
+            )?,
+            ManagedCredentialOperation::Update => {
                 let before = pending
                     .before_credential
                     .as_ref()
                     .ok_or(ManagedCredentialMutationError::NotFound)?;
-                tx.execute(
-                    &format!("UPDATE {p}_managed_vault_credential SET vault_id = ?1, \
-                             workspace_id = ?2, source_id = ?3, data = ?4 WHERE id = ?5 \
-                             AND vault_id = ?6 AND workspace_id = ?7 AND source_id = ?8"),
-                    params![
-                        pending.after_credential.vault_id,
-                        pending.after_credential.workspace_id,
-                        pending.after_credential.source_id.0,
-                        serde_json::to_string(&plan.credential).map_err(storage)?,
-                        pending.after_credential.id,
-                        before.vault_id,
-                        before.workspace_id,
-                        before.source_id.0,
-                    ],
-                )
-                .map_err(storage)?
-            };
-            if child_changed != 1 {
-                return Err(ManagedCredentialMutationError::RevisionConflict);
+                admit_managed_credential_replacement(
+                    &pending.after_credential.workspace_id,
+                    Some(before),
+                    before.revision,
+                    &pending.after_credential,
+                )?;
+                let mut admission = pending.after_credential.clone();
+                admission.revision = 1;
+                admission.lifecycle = ManagedCredentialLifecycle::Active;
+                admit_managed_credential_insert(
+                    &pending.after_credential.workspace_id,
+                    vault.as_ref(),
+                    &existing,
+                    &admission,
+                )?;
             }
-            tx.execute(
-                &format!("UPDATE {p}_managed_credential_mutation SET data = ?1 WHERE source_id = ?2"),
-                params![
-                    serde_json::to_string(&plan.reclaiming_mutation).map_err(storage)?,
-                    pending.after_source.id.0
-                ],
-            )
-            .map_err(storage)?;
-            if let Some(rollout) = plan.rollout {
-                tx.execute(
-                    &format!("INSERT OR IGNORE INTO {p}_managed_credential_rollout (event_id, data) VALUES (?1, ?2)"),
-                    params![rollout.id, serde_json::to_string(&rollout).map_err(storage)?],
-                )
-                .map_err(storage)?;
-                let durable = tx
-                    .query_row(
-                        &format!("SELECT data FROM {p}_managed_credential_rollout WHERE event_id = ?1"),
-                        params![rollout.id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .map_err(storage)?;
-                let durable: ManagedCredentialRollout =
-                    serde_json::from_str(&durable).map_err(storage)?;
-                if managed_credential_rollout_identity_decision(Some(&durable), &rollout)
-                    == ManagedCredentialRolloutIdentityDecision::Collision
-                {
-                    return Err(ManagedCredentialMutationError::RevisionConflict);
+            ManagedCredentialOperation::Archive | ManagedCredentialOperation::Delete => {
+                let before = pending
+                    .before_credential
+                    .as_ref()
+                    .ok_or(ManagedCredentialMutationError::NotFound)?;
+                admit_managed_credential_replacement(
+                    &pending.after_credential.workspace_id,
+                    Some(before),
+                    before.revision,
+                    &pending.after_credential,
+                )?;
+                if !managed_retirement_parent_admitted(
+                    pending.operation,
+                    vault.as_ref(),
+                    &pending.after_credential,
+                ) {
+                    return Err(if vault.is_some() {
+                        ManagedCredentialMutationError::InvalidLifecycle
+                    } else {
+                        ManagedCredentialMutationError::NotFound
+                    });
                 }
             }
-            tx.commit().map_err(storage)?;
-            Ok(plan.reclaiming_mutation)
-        })
+        }
+        let source_changed = if pending.operation == ManagedCredentialOperation::Create {
+            sqlx::query(&format!(
+                "INSERT OR IGNORE INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3)"
+            ))
+            .bind(&pending.after_source.id.0)
+            .bind(&pending.after_source.workspace_id)
+            .bind(serde_json::to_string(&plan.source).map_err(storage)?)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?
+            .rows_affected()
+        } else {
+            let before = pending
+                .before_source
+                .as_ref()
+                .ok_or(ManagedCredentialMutationError::NotFound)?;
+            sqlx::query(&format!(
+                "UPDATE {p}_source SET workspace_id = ?1, data = ?2 \
+                 WHERE id = ?3 AND workspace_id = ?4"
+            ))
+            .bind(&pending.after_source.workspace_id)
+            .bind(serde_json::to_string(&plan.source).map_err(storage)?)
+            .bind(&pending.after_source.id.0)
+            .bind(&before.workspace_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?
+            .rows_affected()
+        };
+        if source_changed != 1 {
+            return Err(ManagedCredentialMutationError::RevisionConflict);
+        }
+        let child_changed = if pending.operation == ManagedCredentialOperation::Create {
+            sqlx::query(&format!(
+                "INSERT OR IGNORE INTO {p}_managed_vault_credential \
+                 (id, vault_id, workspace_id, source_id, data) VALUES (?1, ?2, ?3, ?4, ?5)"
+            ))
+            .bind(&pending.after_credential.id)
+            .bind(&pending.after_credential.vault_id)
+            .bind(&pending.after_credential.workspace_id)
+            .bind(&pending.after_credential.source_id.0)
+            .bind(serde_json::to_string(&plan.credential).map_err(storage)?)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?
+            .rows_affected()
+        } else {
+            let before = pending
+                .before_credential
+                .as_ref()
+                .ok_or(ManagedCredentialMutationError::NotFound)?;
+            sqlx::query(&format!(
+                "UPDATE {p}_managed_vault_credential SET vault_id = ?1, \
+                 workspace_id = ?2, source_id = ?3, data = ?4 WHERE id = ?5 \
+                 AND vault_id = ?6 AND workspace_id = ?7 AND source_id = ?8"
+            ))
+            .bind(&pending.after_credential.vault_id)
+            .bind(&pending.after_credential.workspace_id)
+            .bind(&pending.after_credential.source_id.0)
+            .bind(serde_json::to_string(&plan.credential).map_err(storage)?)
+            .bind(&pending.after_credential.id)
+            .bind(&before.vault_id)
+            .bind(&before.workspace_id)
+            .bind(&before.source_id.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?
+            .rows_affected()
+        };
+        if child_changed != 1 {
+            return Err(ManagedCredentialMutationError::RevisionConflict);
+        }
+        sqlx::query(&format!(
+            "UPDATE {p}_managed_credential_mutation SET data = ?1 WHERE source_id = ?2"
+        ))
+        .bind(serde_json::to_string(&plan.reclaiming_mutation).map_err(storage)?)
+        .bind(&pending.after_source.id.0)
+        .execute(&mut *tx)
         .await
+        .map_err(storage)?;
+        if let Some(rollout) = plan.rollout {
+            sqlx::query(&format!(
+                "INSERT OR IGNORE INTO {p}_managed_credential_rollout (event_id, data) VALUES (?1, ?2)"
+            ))
+            .bind(&rollout.id)
+            .bind(serde_json::to_string(&rollout).map_err(storage)?)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+            let durable: String = sqlx::query_scalar(&format!(
+                "SELECT data FROM {p}_managed_credential_rollout WHERE event_id = ?1"
+            ))
+            .bind(&rollout.id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(storage)?;
+            let durable: ManagedCredentialRollout =
+                serde_json::from_str(&durable).map_err(storage)?;
+            if managed_credential_rollout_identity_decision(Some(&durable), &rollout)
+                == ManagedCredentialRolloutIdentityDecision::Collision
+            {
+                return Err(ManagedCredentialMutationError::RevisionConflict);
+            }
+        }
+        tx.commit().await.map_err(storage)?;
+        Ok(plan.reclaiming_mutation)
     }
 
     async fn mark_managed_mutation_ready(
@@ -380,77 +376,64 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         pending: &PendingManagedCredentialMutation,
     ) -> Result<PendingManagedCredentialMutation, CredentialError> {
         pending.validate().map_err(invalid_pending)?;
-        let pending = pending.clone();
-        with_conn(&self.conn, move |conn, p| {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(storage)?;
-            let data = tx
-                .query_row(
-                    &format!(
-                        "SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"
-                    ),
-                    params![pending.after_source.id.0],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-                .ok_or_else(|| {
-                    CredentialError::MutationConflict(
-                        "Managed credential mutation has no durable pending fact".into(),
-                    )
-                })?;
-            let durable: PendingManagedCredentialMutation =
-                serde_json::from_str(&data).map_err(storage)?;
-            if durable != pending
-                || pending.material_fence.phase != CredentialMaterialMutationPhase::Writing
-            {
-                return Err(CredentialError::MutationConflict(
-                    "Managed credential ready transition does not match Writing".into(),
-                ));
-            }
-            let ready = durable.with_material_ready()?;
-            tx.execute(
-                &format!(
-                    "UPDATE {p}_managed_credential_mutation SET data = ?1 WHERE source_id = ?2"
-                ),
-                params![
-                    serde_json::to_string(&ready).map_err(storage)?,
-                    pending.after_source.id.0
-                ],
-            )
+        let p = NS;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
             .map_err(storage)?;
-            tx.commit().map_err(storage)?;
-            Ok(ready)
-        })
+        let data = data_at(
+            &mut tx,
+            &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
+            &pending.after_source.id.0,
+        )
+        .await?
+        .ok_or_else(|| {
+            CredentialError::MutationConflict(
+                "Managed credential mutation has no durable pending fact".into(),
+            )
+        })?;
+        let durable: PendingManagedCredentialMutation =
+            serde_json::from_str(&data).map_err(storage)?;
+        if &durable != pending
+            || pending.material_fence.phase != CredentialMaterialMutationPhase::Writing
+        {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential ready transition does not match Writing".into(),
+            ));
+        }
+        let ready = durable.with_material_ready()?;
+        sqlx::query(&format!(
+            "UPDATE {p}_managed_credential_mutation SET data = ?1 WHERE source_id = ?2"
+        ))
+        .bind(serde_json::to_string(&ready).map_err(storage)?)
+        .bind(&pending.after_source.id.0)
+        .execute(&mut *tx)
         .await
+        .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(ready)
     }
 
     async fn pending_managed_mutations(
         &self,
     ) -> Result<Vec<PendingManagedCredentialMutation>, CredentialError> {
-        with_conn(&self.conn, move |conn, p| {
-            let mut statement = conn
-                .prepare(&format!(
-                    "SELECT source_id, data FROM {p}_managed_credential_mutation \
-                     ORDER BY created_at, source_id"
-                ))
-                .map_err(storage)?;
-            let rows = statement
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(storage)?;
-            rows.map(|row| {
-                let (source_id, data) = row.map_err(storage)?;
+        let p = NS;
+        let rows = sqlx::query_as::<_, (String, String)>(&format!(
+            "SELECT source_id, data FROM {p}_managed_credential_mutation \
+             ORDER BY created_at, source_id"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        rows.into_iter()
+            .map(|(source_id, data)| {
                 let pending = serde_json::from_str::<PendingManagedCredentialMutation>(&data)
                     .map_err(storage)?;
                 pending.validate_durable_key(&source_id)?;
                 Ok(pending)
             })
             .collect()
-        })
-        .await
     }
 
     async fn claim_expired_managed_mutation(
@@ -464,52 +447,45 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             return Ok(None);
         };
         claimed.validate().map_err(invalid_pending)?;
-        let pending = pending.clone();
-        with_conn(&self.conn, move |conn, p| {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(storage)?;
-            let current = tx
-                .query_row(
-                    &format!(
-                        "SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"
-                    ),
-                    params![pending.after_source.id.0],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?;
-            let Some(current) = current else {
-                tx.commit().map_err(storage)?;
-                return Ok(None);
-            };
-            let durable: PendingManagedCredentialMutation =
-                serde_json::from_str(&current).map_err(storage)?;
-            // Successful claim already requires Writing; full snapshot equality
-            // also fences phase changes before this locked write.
-            if durable != pending {
-                tx.commit().map_err(storage)?;
-                return Ok(None);
-            }
-            let changed = tx
-                .execute(
-                    &format!(
-                        "UPDATE {p}_managed_credential_mutation SET data = ?1 \
-                             WHERE source_id = ?2"
-                    ),
-                    params![
-                        serde_json::to_string(&claimed).map_err(storage)?,
-                        pending.after_source.id.0,
-                    ],
-                )
-                .map_err(storage)?;
-            if changed != 1 {
-                return Ok(None);
-            }
-            tx.commit().map_err(storage)?;
-            Ok(Some(claimed))
-        })
+        let p = NS;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage)?;
+        let current = data_at(
+            &mut tx,
+            &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
+            &pending.after_source.id.0,
+        )
+        .await?;
+        let Some(current) = current else {
+            tx.commit().await.map_err(storage)?;
+            return Ok(None);
+        };
+        let durable: PendingManagedCredentialMutation =
+            serde_json::from_str(&current).map_err(storage)?;
+        // Successful claim already requires Writing; full snapshot equality
+        // also fences phase changes before this locked write.
+        if &durable != pending {
+            tx.commit().await.map_err(storage)?;
+            return Ok(None);
+        }
+        let changed = sqlx::query(&format!(
+            "UPDATE {p}_managed_credential_mutation SET data = ?1 \
+                 WHERE source_id = ?2"
+        ))
+        .bind(serde_json::to_string(&claimed).map_err(storage)?)
+        .bind(&pending.after_source.id.0)
+        .execute(&mut *tx)
         .await
+        .map_err(storage)?
+        .rows_affected();
+        if changed != 1 {
+            return Ok(None);
+        }
+        tx.commit().await.map_err(storage)?;
+        Ok(Some(claimed))
     }
 
     async fn abort_managed_mutation(
@@ -517,71 +493,60 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         pending: &PendingManagedCredentialMutation,
     ) -> Result<PendingManagedCredentialMutation, CredentialError> {
         pending.validate().map_err(invalid_pending)?;
-        let pending = pending.clone();
-        with_conn(&self.conn, move |conn, p| {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(storage)?;
-            let current_source = tx
-                .query_row(
-                    &format!("SELECT data FROM {p}_source WHERE id = ?1"),
-                    params![pending.after_source.id.0],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-                .map(|data| serde_json::from_str(&data).map_err(storage))
-                .transpose()?;
-            let current_child = tx
-                .query_row(
-                    &format!("SELECT data FROM {p}_managed_vault_credential WHERE id = ?1"),
-                    params![pending.after_credential.id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-                .map(|data| serde_json::from_str(&data).map_err(storage))
-                .transpose()?;
-            let current = tx
-                .query_row(
-                    &format!(
-                        "SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"
-                    ),
-                    params![pending.after_source.id.0],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-                .ok_or_else(|| {
-                    CredentialError::MutationConflict(
-                        "Managed credential abort has no durable pending fact".into(),
-                    )
-                })?;
-            let durable: PendingManagedCredentialMutation =
-                serde_json::from_str(&current).map_err(storage)?;
-            let reclaiming =
-                pending.admit_abort(&durable, current_source.as_ref(), current_child.as_ref())?;
-            let changed = tx
-                .execute(
-                    &format!(
-                        "UPDATE {p}_managed_credential_mutation SET data = ?1 \
-                             WHERE source_id = ?2"
-                    ),
-                    params![
-                        serde_json::to_string(&reclaiming).map_err(storage)?,
-                        pending.after_source.id.0,
-                    ],
-                )
-                .map_err(storage)?;
-            if changed != 1 {
-                return Err(CredentialError::MutationConflict(
-                    "Managed credential abort lost its exact durable fact".into(),
-                ));
-            }
-            tx.commit().map_err(storage)?;
-            Ok(reclaiming)
-        })
+        let p = NS;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage)?;
+        let current_source: Option<CredentialSource> = decode(
+            data_at(
+                &mut tx,
+                &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                &pending.after_source.id.0,
+            )
+            .await?,
+        )?;
+        let current_child: Option<ManagedVaultCredential> = decode(
+            data_at(
+                &mut tx,
+                &format!("SELECT data FROM {p}_managed_vault_credential WHERE id = ?1"),
+                &pending.after_credential.id,
+            )
+            .await?,
+        )?;
+        let current = data_at(
+            &mut tx,
+            &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
+            &pending.after_source.id.0,
+        )
+        .await?
+        .ok_or_else(|| {
+            CredentialError::MutationConflict(
+                "Managed credential abort has no durable pending fact".into(),
+            )
+        })?;
+        let durable: PendingManagedCredentialMutation =
+            serde_json::from_str(&current).map_err(storage)?;
+        let reclaiming =
+            pending.admit_abort(&durable, current_source.as_ref(), current_child.as_ref())?;
+        let changed = sqlx::query(&format!(
+            "UPDATE {p}_managed_credential_mutation SET data = ?1 \
+                 WHERE source_id = ?2"
+        ))
+        .bind(serde_json::to_string(&reclaiming).map_err(storage)?)
+        .bind(&pending.after_source.id.0)
+        .execute(&mut *tx)
         .await
+        .map_err(storage)?
+        .rows_affected();
+        if changed != 1 {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential abort lost its exact durable fact".into(),
+            ));
+        }
+        tx.commit().await.map_err(storage)?;
+        Ok(reclaiming)
     }
 
     async fn complete_managed_mutation(
@@ -589,188 +554,160 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         pending: &PendingManagedCredentialMutation,
     ) -> Result<(), CredentialError> {
         pending.validate().map_err(invalid_pending)?;
-        let pending = pending.clone();
-        with_conn(&self.conn, move |conn, p| {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(storage)?;
-            let current = tx
-                .query_row(
-                    &format!(
-                        "SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"
-                    ),
-                    params![pending.after_source.id.0],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?;
-            let Some(current) = current else {
-                tx.commit().map_err(storage)?;
-                return Ok(());
-            };
-            let durable: PendingManagedCredentialMutation =
-                serde_json::from_str(&current).map_err(storage)?;
-            let current_source = tx
-                .query_row(
-                    &format!("SELECT data FROM {p}_source WHERE id = ?1"),
-                    params![pending.after_source.id.0],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-                .map(|data| serde_json::from_str(&data).map_err(storage))
-                .transpose()?;
-            let current_child = tx
-                .query_row(
-                    &format!("SELECT data FROM {p}_managed_vault_credential WHERE id = ?1"),
-                    params![pending.after_credential.id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?
-                .map(|data| serde_json::from_str(&data).map_err(storage))
-                .transpose()?;
-            pending.admit_completion(&durable, current_source.as_ref(), current_child.as_ref())?;
-            let changed = tx
-                .execute(
-                    &format!(
-                        "DELETE FROM {p}_managed_credential_mutation \
-                             WHERE source_id = ?1"
-                    ),
-                    params![pending.after_source.id.0],
-                )
-                .map_err(storage)?;
-            if changed != 1 {
-                return Err(CredentialError::MutationConflict(
-                    "Managed credential completion lost its exact durable fact".into(),
-                ));
-            }
-            tx.commit().map_err(storage)
-        })
+        let p = NS;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage)?;
+        let current = data_at(
+            &mut tx,
+            &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
+            &pending.after_source.id.0,
+        )
+        .await?;
+        let Some(current) = current else {
+            tx.commit().await.map_err(storage)?;
+            return Ok(());
+        };
+        let durable: PendingManagedCredentialMutation =
+            serde_json::from_str(&current).map_err(storage)?;
+        let current_source: Option<CredentialSource> = decode(
+            data_at(
+                &mut tx,
+                &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                &pending.after_source.id.0,
+            )
+            .await?,
+        )?;
+        let current_child: Option<ManagedVaultCredential> = decode(
+            data_at(
+                &mut tx,
+                &format!("SELECT data FROM {p}_managed_vault_credential WHERE id = ?1"),
+                &pending.after_credential.id,
+            )
+            .await?,
+        )?;
+        pending.admit_completion(&durable, current_source.as_ref(), current_child.as_ref())?;
+        let changed = sqlx::query(&format!(
+            "DELETE FROM {p}_managed_credential_mutation \
+                 WHERE source_id = ?1"
+        ))
+        .bind(&pending.after_source.id.0)
+        .execute(&mut *tx)
         .await
+        .map_err(storage)?
+        .rows_affected();
+        if changed != 1 {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential completion lost its exact durable fact".into(),
+            ));
+        }
+        tx.commit().await.map_err(storage)
     }
 
     async fn managed_rollout(
         &self,
         event_id: &str,
     ) -> Result<Option<ManagedCredentialRollout>, CredentialError> {
-        let event_id = event_id.to_owned();
-        with_conn(&self.conn, move |conn, p| {
-            conn.query_row(
+        let p = NS;
+        let mut conn = self.pool.acquire().await.map_err(storage)?;
+        decode(
+            data_at(
+                &mut conn,
                 &format!("SELECT data FROM {p}_managed_credential_rollout WHERE event_id = ?1"),
-                params![event_id],
-                |row| row.get::<_, String>(0),
+                event_id,
             )
-            .optional()
-            .map_err(storage)?
-            .map(|data| serde_json::from_str(&data).map_err(storage))
-            .transpose()
-        })
-        .await
+            .await?,
+        )
     }
 
     async fn pending_managed_rollouts(
         &self,
     ) -> Result<Vec<ManagedCredentialRollout>, CredentialError> {
-        with_conn(&self.conn, |conn, p| {
-            let mut statement = conn
-                .prepare(&format!(
-                    "SELECT event_id, data FROM {p}_managed_credential_rollout \
-                     ORDER BY created_at, event_id"
-                ))
-                .map_err(storage)?;
-            let rows = statement
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(storage)?;
-            let mut rollouts = Vec::new();
-            for row in rows {
-                let (event_id, data) = row.map_err(storage)?;
-                match serde_json::from_str(&data) {
-                    Ok(value) => rollouts.push(value),
-                    Err(error) => tracing::error!(
-                        recovery_record = "managed_credential_rollout",
-                        record_id = %event_id,
-                        error = %error,
-                        "retaining and isolating an undecodable durable recovery record"
-                    ),
-                }
-            }
-            Ok(rollouts)
-        })
+        let p = NS;
+        let rows = sqlx::query_as::<_, (String, String)>(&format!(
+            "SELECT event_id, data FROM {p}_managed_credential_rollout \
+             ORDER BY created_at, event_id"
+        ))
+        .fetch_all(&self.pool)
         .await
+        .map_err(storage)?;
+        let mut rollouts = Vec::new();
+        for (event_id, data) in rows {
+            match serde_json::from_str(&data) {
+                Ok(value) => rollouts.push(value),
+                Err(error) => tracing::error!(
+                    recovery_record = "managed_credential_rollout",
+                    record_id = %event_id,
+                    error = %error,
+                    "retaining and isolating an undecodable durable recovery record"
+                ),
+            }
+        }
+        Ok(rollouts)
     }
 
     async fn complete_managed_rollout(
         &self,
         rollout: &ManagedCredentialRollout,
     ) -> Result<(), CredentialError> {
-        let rollout = rollout.clone();
-        with_conn(&self.conn, move |conn, p| {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(storage)?;
-            let current = tx
-                .query_row(
-                    &format!("SELECT data FROM {p}_managed_credential_rollout WHERE event_id = ?1"),
-                    params![rollout.id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(storage)?;
-            let Some(current) = current else {
-                tx.commit().map_err(storage)?;
-                return Ok(());
-            };
-            let durable: ManagedCredentialRollout =
-                serde_json::from_str(&current).map_err(storage)?;
-            if managed_credential_rollout_identity_decision(Some(&durable), &rollout)
-                == ManagedCredentialRolloutIdentityDecision::Collision
-            {
-                return Err(CredentialError::MutationConflict(
-                    "Managed credential rollout acknowledgement is stale".into(),
-                ));
-            }
-            let changed = tx
-                .execute(
-                    &format!(
-                        "DELETE FROM {p}_managed_credential_rollout \
-                             WHERE event_id = ?1"
-                    ),
-                    params![rollout.id],
-                )
-                .map_err(storage)?;
-            if changed != 1 {
-                return Err(CredentialError::MutationConflict(
-                    "Managed credential rollout acknowledgement lost its exact event".into(),
-                ));
-            }
-            tx.commit().map_err(storage)
-        })
+        let p = NS;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage)?;
+        let current = data_at(
+            &mut tx,
+            &format!("SELECT data FROM {p}_managed_credential_rollout WHERE event_id = ?1"),
+            &rollout.id,
+        )
+        .await?;
+        let Some(current) = current else {
+            tx.commit().await.map_err(storage)?;
+            return Ok(());
+        };
+        let durable: ManagedCredentialRollout = serde_json::from_str(&current).map_err(storage)?;
+        if managed_credential_rollout_identity_decision(Some(&durable), rollout)
+            == ManagedCredentialRolloutIdentityDecision::Collision
+        {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential rollout acknowledgement is stale".into(),
+            ));
+        }
+        let changed = sqlx::query(&format!(
+            "DELETE FROM {p}_managed_credential_rollout \
+                 WHERE event_id = ?1"
+        ))
+        .bind(&rollout.id)
+        .execute(&mut *tx)
         .await
+        .map_err(storage)?
+        .rows_affected();
+        if changed != 1 {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential rollout acknowledgement lost its exact event".into(),
+            ));
+        }
+        tx.commit().await.map_err(storage)
     }
 
     async fn pending_managed_vault_deletions(&self) -> Result<Vec<ManagedVault>, CredentialError> {
-        with_conn(&self.conn, move |conn, p| {
-            let mut statement = conn
-                .prepare(&format!(
-                    "SELECT data FROM {p}_managed_vault ORDER BY workspace_id, id"
-                ))
-                .map_err(storage)?;
-            let rows = statement
-                .query_map([], |row| row.get::<_, String>(0))
-                .map_err(storage)?;
-            let mut pending = Vec::new();
-            for row in rows {
-                let vault: ManagedVault =
-                    serde_json::from_str(&row.map_err(storage)?).map_err(storage)?;
-                if vault.deletion_requested() {
-                    pending.push(vault);
-                }
-            }
-            Ok(pending)
-        })
+        let p = NS;
+        let rows: Vec<String> = sqlx::query_scalar(&format!(
+            "SELECT data FROM {p}_managed_vault ORDER BY workspace_id, id"
+        ))
+        .fetch_all(&self.pool)
         .await
+        .map_err(storage)?;
+        let mut pending = Vec::new();
+        for row in rows {
+            let vault: ManagedVault = serde_json::from_str(&row).map_err(storage)?;
+            if vault.deletion_requested() {
+                pending.push(vault);
+            }
+        }
+        Ok(pending)
     }
 }

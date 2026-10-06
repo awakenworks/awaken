@@ -15,9 +15,10 @@ use awaken_provisioning_contract::{
     SandboxExecutionPolicy, SandboxExecutionPolicyError, SandboxExecutionPolicyRef,
     SandboxExecutionPolicyStore, SandboxExecutionPolicyVersion,
 };
+use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
-use awaken_sqlite_pool::{SharedSqliteConnection, SqliteConnectionFactory};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use sqlx::{PgPool, Row};
 
 const NS: &str = "sandbox_execution_policy";
@@ -144,7 +145,7 @@ impl SandboxExecutionPolicyStore for InMemorySandboxExecutionPolicyStore {
 }
 
 pub struct SqliteSandboxExecutionPolicyStore {
-    conn: SharedSqliteConnection,
+    pool: EmbeddedPool,
 }
 
 pub struct PostgresSandboxExecutionPolicyStore {
@@ -317,26 +318,25 @@ fn as_i64(value: u64) -> Result<i64, SandboxExecutionPolicyError> {
 }
 
 impl SqliteSandboxExecutionPolicyStore {
-    pub fn open(path: &str) -> Result<Self, String> {
-        let conn = SqliteConnectionFactory::file(path)
+    pub async fn open(path: &str) -> Result<Self, String> {
+        let pool = EmbeddedSqlite::file(path)
             .open()
+            .await
             .map_err(|error| error.to_string())?;
-        let ledger_exists = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-                [format!("{NS}_schema_migrations")],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(|error| error.to_string())?;
-        let v1_checksum = if ledger_exists {
-            conn.query_row(
-                &format!(
-                    "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
-                ),
-                [BUNDLE_ID],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
+        let ledger_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        )
+        .bind(format!("{NS}_schema_migrations"))
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
+        let v1_checksum: Option<String> = if ledger_exists {
+            sqlx::query_scalar(&format!(
+                "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
+            ))
+            .bind(BUNDLE_ID)
+            .fetch_optional(&pool)
+            .await
             .map_err(|error| error.to_string())?
         } else {
             None
@@ -344,41 +344,15 @@ impl SqliteSandboxExecutionPolicyStore {
         let published = selected_sandbox_policy_bundle(v1_checksum.as_deref())
             .map_err(|error| error.to_string())?;
         let converged = converged_sandbox_policy_bundle().map_err(|error| error.to_string())?;
-        let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+        let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
             .map_err(|error| error.to_string())?;
-        runner
-            .run_bundle(&conn, &published)
-            .and_then(|_| runner.run_bundle(&conn, &converged))
-            .map_err(|error| error.to_string())?;
-        Ok(Self {
-            conn: SharedSqliteConnection::new(conn),
-        })
-    }
-
-    async fn with_connection<T, F>(&self, operation: F) -> Result<T, SandboxExecutionPolicyError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut Connection) -> Result<T, SandboxExecutionPolicyError> + Send + 'static,
-    {
-        awaken_sqlite_pool::with_connection(self.conn.clone(), operation)
+        awaken_sqlite_pool::held(runner.run_bundle(&published))
             .await
-            .map_err(store_failed)?
-    }
-
-    fn exact(
-        conn: &Connection,
-        reference: &SandboxExecutionPolicyRef,
-    ) -> Result<SandboxExecutionPolicy, SandboxExecutionPolicyError> {
-        let json: Option<String> = conn
-            .query_row(
-                "SELECT policy_json FROM sandbox_execution_policy_version WHERE policy_id=?1 AND version=?2",
-                params![reference.id.0, reference.version.0],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))?;
-        serde_json::from_str(&json.ok_or(SandboxExecutionPolicyError::NotFound)?)
-            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))
+            .map_err(|error| error.to_string())?;
+        awaken_sqlite_pool::held(runner.run_bundle(&converged))
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(Self { pool })
     }
 }
 
@@ -392,20 +366,31 @@ impl SandboxExecutionPolicyStore for SqliteSandboxExecutionPolicyStore {
         if policy.version != SandboxExecutionPolicyVersion::INITIAL {
             return Err(SandboxExecutionPolicyError::VersionConflict);
         }
-        self.with_connection(move |conn| {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(store_failed)?;
-            let json = serde_json::to_string(&policy).map_err(store_failed)?;
-            tx.execute(
-                "INSERT INTO sandbox_execution_policy_version(policy_id,version,policy_json) VALUES(?1,?2,?3)",
-                params![policy.id.0, policy.version.0, json],
-            )
-            .and_then(|_| tx.execute("INSERT INTO sandbox_execution_policy_current(policy_id,version) VALUES(?1,?2)", params![policy.id.0, policy.version.0]))
-            .map_err(|_| SandboxExecutionPolicyError::VersionConflict)?;
-            tx.commit().map_err(store_failed)
-        })
+        let version = as_i64(policy.version.0)?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(store_failed)?;
+        let json = serde_json::to_string(&policy).map_err(store_failed)?;
+        sqlx::query(
+            "INSERT INTO sandbox_execution_policy_version(policy_id,version,policy_json) VALUES(?1,?2,?3)",
+        )
+        .bind(&policy.id.0)
+        .bind(version)
+        .bind(json)
+        .execute(&mut *tx)
         .await
+        .map_err(|_| SandboxExecutionPolicyError::VersionConflict)?;
+        sqlx::query(
+            "INSERT INTO sandbox_execution_policy_current(policy_id,version) VALUES(?1,?2)",
+        )
+        .bind(&policy.id.0)
+        .bind(version)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| SandboxExecutionPolicyError::VersionConflict)?;
+        tx.commit().await.map_err(store_failed)
     }
 
     async fn publish(
@@ -417,37 +402,53 @@ impl SandboxExecutionPolicyStore for SqliteSandboxExecutionPolicyStore {
         if policy.version != expected_current.checked_next()? {
             return Err(SandboxExecutionPolicyError::VersionConflict);
         }
-        self.with_connection(move |conn| {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(store_failed)?;
-            let changed = tx
-                .execute(
-                    "UPDATE sandbox_execution_policy_current SET version=?1 WHERE policy_id=?2 AND version=?3",
-                    params![policy.version.0, policy.id.0, expected_current.0],
-                )
-                .map_err(store_failed)?;
-            if changed != 1 {
-                return Err(SandboxExecutionPolicyError::VersionConflict);
-            }
-            let json = serde_json::to_string(&policy).map_err(store_failed)?;
-            tx.execute(
-                "INSERT INTO sandbox_execution_policy_version(policy_id,version,policy_json) VALUES(?1,?2,?3)",
-                params![policy.id.0, policy.version.0, json],
-            )
-            .map_err(|_| SandboxExecutionPolicyError::VersionConflict)?;
-            tx.commit().map_err(store_failed)
-        })
+        let version = as_i64(policy.version.0)?;
+        let expected = as_i64(expected_current.0)?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(store_failed)?;
+        let changed = sqlx::query(
+            "UPDATE sandbox_execution_policy_current SET version=?1 WHERE policy_id=?2 AND version=?3",
+        )
+        .bind(version)
+        .bind(&policy.id.0)
+        .bind(expected)
+        .execute(&mut *tx)
         .await
+        .map_err(store_failed)?
+        .rows_affected();
+        if changed != 1 {
+            return Err(SandboxExecutionPolicyError::VersionConflict);
+        }
+        let json = serde_json::to_string(&policy).map_err(store_failed)?;
+        sqlx::query(
+            "INSERT INTO sandbox_execution_policy_version(policy_id,version,policy_json) VALUES(?1,?2,?3)",
+        )
+        .bind(&policy.id.0)
+        .bind(version)
+        .bind(json)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| SandboxExecutionPolicyError::VersionConflict)?;
+        tx.commit().await.map_err(store_failed)
     }
 
     async fn get_exact(
         &self,
         reference: &SandboxExecutionPolicyRef,
     ) -> Result<SandboxExecutionPolicy, SandboxExecutionPolicyError> {
-        let reference = reference.clone();
-        self.with_connection(move |conn| Self::exact(conn, &reference))
-            .await
+        let json: Option<String> = sqlx::query_scalar(
+            "SELECT policy_json FROM sandbox_execution_policy_version WHERE policy_id=?1 AND version=?2",
+        )
+        .bind(&reference.id.0)
+        .bind(as_i64(reference.version.0)?)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_failed)?;
+        serde_json::from_str(&json.ok_or(SandboxExecutionPolicyError::NotFound)?)
+            .map_err(store_failed)
     }
 }
 
@@ -525,10 +526,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("policy.db");
         let path = path.to_str().unwrap();
-        let first = SqliteSandboxExecutionPolicyStore::open(path).unwrap();
+        let first = SqliteSandboxExecutionPolicyStore::open(path).await.unwrap();
         exact_version_decision_table(&first).await;
         drop(first);
-        let restarted = SqliteSandboxExecutionPolicyStore::open(path).unwrap();
+        let restarted = SqliteSandboxExecutionPolicyStore::open(path).await.unwrap();
         let v1 = SandboxExecutionPolicyRef {
             id: SandboxExecutionPolicyId("strict".into()),
             version: SandboxExecutionPolicyVersion(1),
@@ -539,8 +540,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sqlite_schema_has_one_scoped_migration_authority() {
+    #[tokio::test]
+    async fn sqlite_schema_has_one_scoped_migration_authority() {
         // Causal graph:
         // open -> run selected published bundle -> common convergence -> serve
         // reopen -> ledger verifies checksums -> no duplicate schema path
@@ -554,75 +555,55 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("policy-schema.db");
         let path = path.to_str().unwrap();
-        let first = SqliteSandboxExecutionPolicyStore::open(path).unwrap();
-        let applied: i64 = first
-            .conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM sandbox_execution_policy_schema_migrations WHERE bundle_id = 'awaken.sandbox_execution_policy'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let first = SqliteSandboxExecutionPolicyStore::open(path).await.unwrap();
+        let applied: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sandbox_execution_policy_schema_migrations WHERE bundle_id = 'awaken.sandbox_execution_policy'",
+        )
+        .fetch_one(&first.pool)
+        .await
+        .unwrap();
         assert_eq!(applied, 1);
-        let converged: i64 = first
-            .conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM sandbox_execution_policy_schema_migrations WHERE bundle_id = 'awaken.sandbox_execution_policy.converged'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let converged: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sandbox_execution_policy_schema_migrations WHERE bundle_id = 'awaken.sandbox_execution_policy.converged'",
+        )
+        .fetch_one(&first.pool)
+        .await
+        .unwrap();
         assert_eq!(converged, 1);
-        let foreign_binding_table: Option<String> = first
-            .conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sandbox_execution_policy_environment'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .unwrap();
+        let foreign_binding_table: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sandbox_execution_policy_environment'",
+        )
+        .fetch_optional(&first.pool)
+        .await
+        .unwrap();
         assert_eq!(
             foreign_binding_table, None,
             "Environment-to-policy binding has one owner in EnvRegistry"
         );
         drop(first);
-        let reopened = SqliteSandboxExecutionPolicyStore::open(path).unwrap();
-        let applied_after_reopen: i64 = reopened
-            .conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM sandbox_execution_policy_schema_migrations WHERE bundle_id = 'awaken.sandbox_execution_policy'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let reopened = SqliteSandboxExecutionPolicyStore::open(path).await.unwrap();
+        let applied_after_reopen: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sandbox_execution_policy_schema_migrations WHERE bundle_id = 'awaken.sandbox_execution_policy'",
+        )
+        .fetch_one(&reopened.pool)
+        .await
+        .unwrap();
         assert_eq!(applied_after_reopen, 1);
-        reopened
-            .conn
-            .lock()
-            .unwrap()
-            .execute(
-                "UPDATE sandbox_execution_policy_schema_migrations SET checksum = 'drifted' WHERE bundle_id = 'awaken.sandbox_execution_policy' AND version = 1",
-                [],
-            )
-            .unwrap();
+        sqlx::query(
+            "UPDATE sandbox_execution_policy_schema_migrations SET checksum = 'drifted' WHERE bundle_id = 'awaken.sandbox_execution_policy' AND version = 1",
+        )
+        .execute(&reopened.pool)
+        .await
+        .unwrap();
         drop(reopened);
         assert!(
-            SqliteSandboxExecutionPolicyStore::open(path).is_err(),
+            SqliteSandboxExecutionPolicyStore::open(path).await.is_err(),
             "checksum drift fails closed instead of being rewritten"
         );
     }
 
-    #[test]
-    fn published_schema_histories_select_exact_v1_and_converge() {
+    #[tokio::test]
+    async fn published_schema_histories_select_exact_v1_and_converge() {
         // Causes: H1 no/current receipt, H2 exact expanded V1 receipt, H3
         // unknown V1 receipt, H4 an expanded V3 environment table. Effects:
         // E1 compact selection, E2 exact V1..V3 selection, E3 checksum failure,
@@ -649,42 +630,37 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("expanded-policy.db");
-        let conn = Connection::open(&path).unwrap();
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+        let seed = EmbeddedSqlite::file(&path).open().await.unwrap();
+        SqliteMigrationRunner::with_prefix(seed.sqlx().clone(), NS)
             .unwrap()
-            .run_bundle(&conn, &expanded)
+            .run_bundle(&expanded)
+            .await
             .unwrap();
-        conn.execute(
+        sqlx::query(
             "INSERT INTO sandbox_execution_policy_environment(environment_id, policy_id, version) VALUES('legacy-env', 'legacy-policy', 1)",
-            [],
         )
+        .execute(&seed)
+        .await
         .unwrap();
-        drop(conn);
-        let migrated = SqliteSandboxExecutionPolicyStore::open(path.to_str().unwrap()).unwrap();
-        let ledgers: (i64, i64) = migrated
-            .conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT \
-                   SUM(CASE WHEN bundle_id = 'awaken.sandbox_execution_policy' THEN 1 ELSE 0 END), \
-                   SUM(CASE WHEN bundle_id = 'awaken.sandbox_execution_policy.converged' THEN 1 ELSE 0 END) \
-                 FROM sandbox_execution_policy_schema_migrations",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+        seed.close().await;
+        let migrated = SqliteSandboxExecutionPolicyStore::open(path.to_str().unwrap())
+            .await
             .unwrap();
+        let ledgers: (i64, i64) = sqlx::query_as(
+            "SELECT \
+               SUM(CASE WHEN bundle_id = 'awaken.sandbox_execution_policy' THEN 1 ELSE 0 END), \
+               SUM(CASE WHEN bundle_id = 'awaken.sandbox_execution_policy.converged' THEN 1 ELSE 0 END) \
+             FROM sandbox_execution_policy_schema_migrations",
+        )
+        .fetch_one(&migrated.pool)
+        .await
+        .unwrap();
         assert_eq!(ledgers, (3, 1), "H2+H4 -> E2+E4");
-        let historical_rows: i64 = migrated
-            .conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM sandbox_execution_policy_environment",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let historical_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sandbox_execution_policy_environment")
+                .fetch_one(&migrated.pool)
+                .await
+                .unwrap();
         assert_eq!(historical_rows, 1, "H4 remains inert and is not rewritten");
 
         let unknown = std::collections::BTreeMap::from([(1, "f".repeat(64))]);

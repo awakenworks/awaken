@@ -53,6 +53,7 @@ impl SubscriptionSource for ConfigPlaneSubscriptionSource {
         for def in self
             .store
             .list(workspace_id)
+            .await
             .map_err(|error| error.to_string())?
         {
             if def.disabled || !def.wants(event_type) {
@@ -78,6 +79,7 @@ impl SubscriptionSource for ConfigPlaneSubscriptionSource {
     async fn record_success(&self, id: &str) -> Result<(), String> {
         self.store
             .record_delivery(id, WebhookDeliveryOutcome::Succeeded, 1)
+            .await
             .map(|_| ())
             .map_err(|error| error.to_string())
     }
@@ -89,6 +91,7 @@ impl SubscriptionSource for ConfigPlaneSubscriptionSource {
     ) -> Result<SubscriptionFailureState, String> {
         self.store
             .record_delivery(id, WebhookDeliveryOutcome::Failed, failure_threshold)
+            .await
             .map(|state| match state {
                 WebhookDeliveryState::Active { .. } => SubscriptionFailureState::Active,
                 WebhookDeliveryState::Disabled { .. } => SubscriptionFailureState::Disabled,
@@ -136,11 +139,12 @@ pub async fn recover_webhook_mutations(
 ) -> Result<usize, String> {
     let intents = store
         .pending_mutations()
+        .await
         .map_err(|error| error.to_string())?;
     let mut recovered = 0;
     for intent in intents {
         let id = intent.id().map_err(|error| error.to_string())?;
-        let current = store.get(id).map_err(|error| error.to_string())?;
+        let current = store.get(id).await.map_err(|error| error.to_string())?;
         if current == intent.after {
             cleanup_material_difference(intent.before.as_ref(), intent.after.as_ref(), secrets)
                 .await?;
@@ -154,6 +158,7 @@ pub async fn recover_webhook_mutations(
         }
         store
             .complete_mutation(&intent)
+            .await
             .map_err(|error| error.to_string())?;
         recovered += 1;
     }
@@ -174,8 +179,12 @@ pub async fn reconcile_webhook_inventory(
         .map_err(|error| error.to_string())?;
     let pending = store
         .pending_mutations()
+        .await
         .map_err(|error| error.to_string())?;
-    let committed = store.material_refs().map_err(|error| error.to_string())?;
+    let committed = store
+        .material_refs()
+        .await
+        .map_err(|error| error.to_string())?;
     let committed_keys: HashSet<String> = committed.iter().map(|item| item.0.clone()).collect();
     let protected: HashSet<String> = committed_keys
         .iter()
@@ -429,7 +438,7 @@ async fn put_subscription(
         event_types: event_types.clone(),
         disabled: authored_disabled,
     };
-    match state.store.update_authored(patch.clone()) {
+    match state.store.update_authored(patch.clone()).await {
         Ok(WebhookAuthoringState::Updated(updated)) => {
             return (StatusCode::OK, Json(view(&updated)));
         }
@@ -455,11 +464,11 @@ async fn put_subscription(
         secret_ref: secret_ref.clone(),
     };
     let intent = WebhookMutationIntent::create(def.clone());
-    if let Err(error) = state.store.begin_mutation(intent.clone()) {
+    if let Err(error) = state.store.begin_mutation(intent.clone()).await {
         // A concurrent create may have committed between update_authored(Missing)
         // and begin_mutation. Re-apply the patch once through the same atomic path.
         if matches!(error, ConfigRepositoryError::MutationConflict(_)) {
-            match state.store.update_authored(patch) {
+            match state.store.update_authored(patch).await {
                 Ok(WebhookAuthoringState::Updated(updated)) => {
                     return (StatusCode::OK, Json(view(&updated)));
                 }
@@ -479,7 +488,7 @@ async fn put_subscription(
         // A failed put may have written before losing its response. Retire the
         // intent only after idempotent cleanup succeeds; otherwise recovery owns it.
         if state.secrets.delete(&secret_ref).await.is_ok() {
-            let _ = state.store.complete_mutation(&intent);
+            let _ = state.store.complete_mutation(&intent).await;
         }
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -488,12 +497,12 @@ async fn put_subscription(
             })),
         );
     }
-    if let Err(error) = state.store.apply_mutation(&intent) {
+    if let Err(error) = state.store.apply_mutation(&intent).await {
         // Never compensate an ambiguous row commit inline: the durable intent lets
         // recovery decide whether the row or the candidate material won.
         return repository_problem(error);
     }
-    if let Err(error) = state.store.complete_mutation(&intent) {
+    if let Err(error) = state.store.complete_mutation(&intent).await {
         // Both externally visible projections committed. Preserve the successful
         // create response; recovery idempotently retires the stale journal entry.
         eprintln!("webhook mutation completion remains pending for {id}: {error}");
@@ -517,7 +526,7 @@ async fn get_subscription(
     Path(id): Path<String>,
     RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
 ) -> Result<Json<Value>, StatusCode> {
-    match state.store.get(&id) {
+    match state.store.get(&id).await {
         // Self-fence: another tenant's id is a 404, not a disclosure.
         Ok(Some(def)) if def.workspace_id == workspace_id => Ok(Json(view(&def))),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
@@ -532,6 +541,7 @@ async fn list_subscriptions(
     let rows = state
         .store
         .list(&workspace_id)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let data: Vec<Value> = rows.iter().map(view).collect();
     Ok(Json(json!({ "data": data, "has_more": false })))
@@ -545,21 +555,21 @@ async fn delete_subscription(
     // Only unsubscribe an endpoint this tenant owns; a cross-tenant or absent id is a
     // silent no-op (idempotent, and no ownership disclosure).
     for _ in 0..3 {
-        let definition = match state.store.get(&id) {
+        let definition = match state.store.get(&id).await {
             Ok(Some(definition)) if definition.workspace_id == workspace_id => definition,
             Ok(_) => return StatusCode::NO_CONTENT,
             Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
         };
         let intent = WebhookMutationIntent::delete(definition.clone());
-        match state.store.begin_mutation(intent.clone()) {
+        match state.store.begin_mutation(intent.clone()).await {
             Ok(()) => {
-                if state.store.apply_mutation(&intent).is_err() {
+                if state.store.apply_mutation(&intent).await.is_err() {
                     return StatusCode::INTERNAL_SERVER_ERROR;
                 }
                 if state.secrets.delete(&definition.secret_ref).await.is_err() {
                     return StatusCode::INTERNAL_SERVER_ERROR;
                 }
-                if let Err(error) = state.store.complete_mutation(&intent) {
+                if let Err(error) = state.store.complete_mutation(&intent).await {
                     eprintln!("webhook delete completion remains pending for {id}: {error}");
                 }
                 return StatusCode::NO_CONTENT;

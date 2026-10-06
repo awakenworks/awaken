@@ -935,7 +935,7 @@ async fn provider_owner_participant() {
     let base = Path::new(&base);
     let memory = std::env::var("SCOPED_PROVIDER_MEMORY").as_deref() == Ok("1");
     let (provider, specification) = if memory {
-        (memory::provider(base), memory::specification())
+        (memory::provider(base).await, memory::specification())
     } else {
         (LocalProvider::trusted_host(base), spec())
     };

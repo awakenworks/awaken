@@ -24,9 +24,10 @@ use awaken_session_work_contract::WorkQueue;
 
 /// A fresh in-memory durable Session repository.
 #[must_use]
-pub fn ephemeral_session_repository() -> Arc<dyn SessionStore> {
+pub async fn ephemeral_session_repository() -> Arc<dyn SessionStore> {
     Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
             .expect("open ephemeral managed Session repository"),
     )
 }
@@ -95,33 +96,36 @@ pub fn environment_components(
 }
 
 /// Volatile `ManagedState` constructors for tests outside the adapter crate.
-/// Bring it into scope (`use ... as _`) and `ManagedState::new(runtime)` reads
+/// Bring it into scope (`use ... as _`) and `ManagedState::new(runtime).await` reads
 /// as it did when the adapter built its own stores.
+// Test fixtures await these directly in their own test body; no caller needs
+// a `Send` bound on the returned future.
+#[allow(async_fn_in_trait)]
 pub trait ManagedStateFixture: Sized {
     /// A Managed state over `runtime` with no MCP realization.
-    fn new(runtime: impl CompleteSessionRuntime + 'static) -> Self;
+    async fn new(runtime: impl CompleteSessionRuntime + 'static) -> Self;
 
     /// A Managed state whose one fixture object is both the Runtime and the
     /// MCP attachment realizer.
-    fn new_with_mcp<R>(runtime: R) -> Self
+    async fn new_with_mcp<R>(runtime: R) -> Self
     where
         R: CompleteSessionRuntime + McpAttachmentRealizer + 'static;
 }
 
 impl ManagedStateFixture for ManagedState {
-    fn new(runtime: impl CompleteSessionRuntime + 'static) -> Self {
+    async fn new(runtime: impl CompleteSessionRuntime + 'static) -> Self {
         // A test's fixture graph: it runs on the host clock throughout.
         let clock = awaken_time::system_clock();
         ManagedState::from_fixture_parts(
             Arc::new(runtime),
             None,
-            ephemeral_session_repository(),
+            ephemeral_session_repository().await,
             environment_fixture(clock.clone()).execution,
             clock,
         )
     }
 
-    fn new_with_mcp<R>(runtime: R) -> Self
+    async fn new_with_mcp<R>(runtime: R) -> Self
     where
         R: CompleteSessionRuntime + McpAttachmentRealizer + 'static,
     {
@@ -130,7 +134,7 @@ impl ManagedStateFixture for ManagedState {
         ManagedState::from_fixture_parts(
             runtime.clone(),
             Some(runtime),
-            ephemeral_session_repository(),
+            ephemeral_session_repository().await,
             environment_fixture(clock.clone()).execution,
             clock,
         )

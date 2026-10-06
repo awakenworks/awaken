@@ -222,11 +222,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sqlite_migrates_legacy_worker_json_atomically() {
+    #[tokio::test]
+    async fn sqlite_migrates_legacy_worker_json_atomically() {
         use awaken_scoped_migration::MigrationBundle;
-        use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
-        use rusqlite::Connection;
+        use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+        use awaken_sqlite_pool::EmbeddedSqlite;
 
         /* JSON cutover decision table:
          * J1 valid legacy snapshot -> one relational row with every authority
@@ -237,11 +237,9 @@ mod tests {
         let full = registry_bundle().expect("registry");
         let legacy_v2 =
             MigrationBundle::new(BUNDLE_ID, full.migrations()[..2].to_vec()).expect("legacy V2");
-        let runner = SqliteMigrationRunner::with_prefix(NS).expect("runner");
-        let valid = Connection::open_in_memory().expect("valid sqlite");
-        runner
-            .run_bundle(&valid, &legacy_v2)
-            .expect("J1 seed schema");
+        let valid = EmbeddedSqlite::memory().open().await.expect("valid sqlite");
+        let runner = SqliteMigrationRunner::with_prefix(valid.sqlx().clone(), NS).expect("runner");
+        runner.run_bundle(&legacy_v2).await.expect("J1 seed schema");
         let record = serde_json::json!({
             "snapshot": {
                 "state": "dead",
@@ -259,17 +257,19 @@ mod tests {
             "heartbeat_at_ms": 10,
             "drain_deadline_ms": null
         });
-        valid
-            .execute(
-                "INSERT INTO worker_registry_worker
-                 (worker_id, incarnation_id, generation, state, expires_at_ms, record_json)
-                 VALUES ('worker-a', 'incarnation-a', 3, 'dead', 20, ?1)",
-                [record.to_string()],
-            )
-            .expect("J1 legacy row");
+        sqlx::query(
+            "INSERT INTO worker_registry_worker
+             (worker_id, incarnation_id, generation, state, expires_at_ms, record_json)
+             VALUES ('worker-a', 'incarnation-a', 3, 'dead', 20, ?1)",
+        )
+        .bind(record.to_string())
+        .execute(&valid)
+        .await
+        .expect("J1 legacy row");
         assert_eq!(
             runner
-                .run_bundle(&valid, &full)
+                .run_bundle(&full)
+                .await
                 .expect("J1 migrate")
                 .iter()
                 .map(|migration| migration.version)
@@ -277,28 +277,15 @@ mod tests {
             [3],
             "J1"
         );
-        let migrated = valid
-            .query_row(
+        let migrated =
+            sqlx::query_as::<_, (String, String, i64, String, String, i64, i64, i64, i64, i64)>(
                 "SELECT worker_id, incarnation_id, generation, state,
-                        capability_fingerprint, in_flight, heartbeat_sequence,
-                        observation_sequence, registered_at_ms, heartbeat_at_ms
-                 FROM worker_registry_worker",
-                [],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, i64>(5)?,
-                        row.get::<_, i64>(6)?,
-                        row.get::<_, i64>(7)?,
-                        row.get::<_, i64>(8)?,
-                        row.get::<_, i64>(9)?,
-                    ))
-                },
+                    capability_fingerprint, in_flight, heartbeat_sequence,
+                    observation_sequence, registered_at_ms, heartbeat_at_ms
+             FROM worker_registry_worker",
             )
+            .fetch_one(&valid)
+            .await
             .expect("J1 relational row");
         assert_eq!(
             migrated,
@@ -318,57 +305,61 @@ mod tests {
         );
         assert!(
             runner
-                .run_bundle(&valid, &full)
+                .run_bundle(&full)
+                .await
                 .expect("J3 reopen")
                 .is_empty()
         );
 
-        let corrupt = Connection::open_in_memory().expect("corrupt sqlite");
-        runner
-            .run_bundle(&corrupt, &legacy_v2)
-            .expect("J2 seed schema");
-        corrupt
-            .execute(
-                "INSERT INTO worker_registry_worker
-                 (worker_id, incarnation_id, generation, state, expires_at_ms, record_json)
-                 VALUES ('worker-b', 'incarnation-b', 1, 'dead', 2, '{\"snapshot\":{\"state\":\"dead\"}}')",
-                [],
-            )
-            .expect("J2 corrupt legacy row");
-        assert!(runner.run_bundle(&corrupt, &full).is_err(), "J2 reject");
+        let corrupt = EmbeddedSqlite::memory()
+            .open()
+            .await
+            .expect("corrupt sqlite");
+        let runner =
+            SqliteMigrationRunner::with_prefix(corrupt.sqlx().clone(), NS).expect("runner");
+        runner.run_bundle(&legacy_v2).await.expect("J2 seed schema");
+        sqlx::query(
+            "INSERT INTO worker_registry_worker
+             (worker_id, incarnation_id, generation, state, expires_at_ms, record_json)
+             VALUES ('worker-b', 'incarnation-b', 1, 'dead', 2, '{\"snapshot\":{\"state\":\"dead\"}}')",
+        )
+        .execute(&corrupt)
+        .await
+        .expect("J2 corrupt legacy row");
+        assert!(runner.run_bundle(&full).await.is_err(), "J2 reject");
         assert_eq!(
-            corrupt
-                .query_row("SELECT COUNT(*) FROM worker_registry_worker", [], |row| row
-                    .get::<_, i64>(0))
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM worker_registry_worker")
+                .fetch_one(&corrupt)
+                .await
                 .expect("J2 legacy row retained"),
             1,
             "J2 rollback"
         );
         assert_eq!(
-            corrupt
-                .query_row(
-                    "SELECT MAX(version) FROM worker_registry_schema_migrations WHERE bundle_id = ?1",
-                    [BUNDLE_ID],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("J2 ledger retained"),
+            sqlx::query_scalar::<_, i64>(
+                "SELECT MAX(version) FROM worker_registry_schema_migrations WHERE bundle_id = ?1",
+            )
+            .bind(BUNDLE_ID)
+            .fetch_one(&corrupt)
+            .await
+            .expect("J2 ledger retained"),
             2,
             "J2 no V3 receipt"
         );
     }
 
-    #[test]
-    fn sqlite_rejects_invalid_worker_authority() {
-        use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
-        use rusqlite::Connection;
+    #[tokio::test]
+    async fn sqlite_rejects_invalid_worker_authority() {
+        use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+        use awaken_sqlite_pool::EmbeddedSqlite;
 
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = EmbeddedSqlite::memory().open().await.unwrap();
         let bundle = registry_bundle().unwrap();
-        let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
-        runner.run_bundle(&conn, &bundle).unwrap();
+        let runner = SqliteMigrationRunner::with_prefix(conn.sqlx().clone(), NS).unwrap();
+        runner.run_bundle(&bundle).await.unwrap();
 
         assert!(
-            conn.execute(
+            sqlx::query(
                 "INSERT INTO worker_registry_worker
                      (worker_id, incarnation_id, generation, state, manifest_json,
                       capability_fingerprint, in_flight, warm_environment_shapes_json,
@@ -377,11 +368,12 @@ mod tests {
                       registered_at_ms, heartbeat_at_ms)
                  VALUES ('negative', 'incarnation', -1, 'ready', '{}', 'fingerprint', 0,
                          '[]', '[]', '[]', 1, 0, 0, 0, 0)",
-                [],
             )
+            .execute(&conn)
+            .await
             .is_err()
         );
-        conn.execute(
+        sqlx::query(
             "INSERT INTO worker_registry_worker
                  (worker_id, incarnation_id, generation, state, manifest_json,
                   capability_fingerprint, in_flight, warm_environment_shapes_json,
@@ -390,14 +382,16 @@ mod tests {
                   registered_at_ms, heartbeat_at_ms)
              VALUES ('valid', 'incarnation', 1, 'ready', '{}', 'fingerprint', 0,
                      '[]', '[]', '[]', 1, 0, 0, 0, 0)",
-            [],
         )
+        .execute(&conn)
+        .await
         .unwrap();
         assert!(
-            conn.execute(
+            sqlx::query(
                 "UPDATE worker_registry_worker SET expires_at_ms = -1 WHERE worker_id = 'valid'",
-                [],
             )
+            .execute(&conn)
+            .await
             .is_err()
         );
     }

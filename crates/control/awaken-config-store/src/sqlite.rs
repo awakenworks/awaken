@@ -14,7 +14,10 @@
 //! SQLite config-store adapter under the built-in `config` namespace.
 
 use async_trait::async_trait;
-use rusqlite::{Connection, OptionalExtension, params};
+use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
+use sqlx::sqlite::SqliteConnection;
 
 use awaken_tenancy::ScopeId;
 
@@ -42,44 +45,44 @@ pub enum StoreError {
 
 /// A SQLite-backed [`ConfigRegistry`].
 pub struct SqliteConfigStore {
-    conn: awaken_sqlite_pool::SharedSqliteConnection,
+    pool: EmbeddedPool,
 }
 
 impl SqliteConfigStore {
     /// Open (or create) a database file and apply the config migrations.
-    pub fn open(path: &str) -> Result<Self, StoreError> {
-        let conn = awaken_sqlite_pool::SqliteConnectionFactory::file(path)
+    pub async fn open(path: &str) -> Result<Self, StoreError> {
+        let pool = EmbeddedSqlite::file(path)
             .open()
+            .await
             .map_err(|err| StoreError::Open(err.to_string()))?;
-        Self::from_connection(conn)
+        Self::from_pool(pool).await
     }
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = awaken_sqlite_pool::SqliteConnectionFactory::memory()
+    pub async fn open_in_memory() -> Result<Self, StoreError> {
+        let pool = EmbeddedSqlite::memory()
             .open()
+            .await
             .map_err(|err| StoreError::Open(err.to_string()))?;
-        Self::from_connection(conn)
+        Self::from_pool(pool).await
     }
 
-    fn from_connection(conn: Connection) -> Result<Self, StoreError> {
-        let ledger_exists = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-                [format!("{NS}_schema_migrations")],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(|error| StoreError::Migrate(error.to_string()))?;
-        let v1_checksum = if ledger_exists {
-            conn.query_row(
-                &format!(
-                    "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
-                ),
-                [BUNDLE_ID],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
+    async fn from_pool(pool: EmbeddedPool) -> Result<Self, StoreError> {
+        let ledger_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        )
+        .bind(format!("{NS}_schema_migrations"))
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        let v1_checksum: Option<String> = if ledger_exists {
+            sqlx::query_scalar(&format!(
+                "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
+            ))
+            .bind(BUNDLE_ID)
+            .fetch_optional(&pool)
+            .await
             .map_err(|error| StoreError::Migrate(error.to_string()))?
         } else {
             None
@@ -88,25 +91,15 @@ impl SqliteConfigStore {
             .map_err(|error| StoreError::Migrate(error.to_string()))?;
         let converged =
             converged_config_bundle().map_err(|error| StoreError::Migrate(error.to_string()))?;
-        let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+        let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
             .map_err(|error| StoreError::Migrate(error.to_string()))?;
-        runner
-            .run_bundle(&conn, &published)
-            .and_then(|_| runner.run_bundle(&conn, &converged))
-            .map_err(|error| StoreError::Migrate(error.to_string()))?;
-        Ok(Self {
-            conn: awaken_sqlite_pool::SharedSqliteConnection::new(conn),
-        })
-    }
-
-    async fn with_conn<T, F>(&self, f: F) -> Result<T, ConfigStoreError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut Connection, &str) -> Result<T, ConfigStoreError> + Send + 'static,
-    {
-        awaken_sqlite_pool::with_connection(self.conn.clone(), move |conn| f(conn, NS))
+        awaken_sqlite_pool::held(runner.run_bundle(&published))
             .await
-            .map_err(|err| ConfigStoreError(err.to_string()))?
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        awaken_sqlite_pool::held(runner.run_bundle(&converged))
+            .await
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        Ok(Self { pool })
     }
 
     /// Inject immutable history for codec, recovery, and quarantine tests.
@@ -117,14 +110,18 @@ impl SqliteConfigStore {
         scope: &ScopeId,
         publication: &StoredPublication,
     ) -> Result<(), ConfigStoreError> {
-        let fingerprint = publication.fingerprint.clone();
-        let agent_id = publication.agent_id.clone();
-        let state = publication.state.as_str().to_string();
+        let state = publication.state.as_str();
         let record = serde_json::to_string(publication).map_err(reject)?;
-        let scope = scope.0.clone();
-        self.with_conn(move |conn, p| {
-            insert_publication(conn, p, &fingerprint, &agent_id, &state, &record, &scope)
-        })
+        let mut conn = self.pool.acquire().await.map_err(reject)?;
+        insert_publication(
+            &mut conn,
+            NS,
+            &publication.fingerprint,
+            &publication.agent_id,
+            state,
+            &record,
+            &scope.0,
+        )
         .await
     }
 }
@@ -133,8 +130,14 @@ fn reject(err: impl std::fmt::Display) -> ConfigStoreError {
     ConfigStoreError(err.to_string())
 }
 
-fn insert_publication(
-    conn: &Connection,
+/// SQLite has no unsigned 64-bit column: a stored generation or instant is an
+/// `INTEGER` that must be non-negative to be a domain value.
+fn unsigned(value: i64) -> Result<u64, ConfigStoreError> {
+    u64::try_from(value).map_err(reject)
+}
+
+async fn insert_publication(
+    conn: &mut SqliteConnection,
     p: &str,
     fingerprint: &str,
     agent_id: &str,
@@ -142,23 +145,46 @@ fn insert_publication(
     record: &str,
     scope: &str,
 ) -> Result<(), ConfigStoreError> {
-    conn.execute(
-        &format!(
-            "INSERT INTO {p}_publication (fingerprint, agent_id, state, record, scope_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5) \
-             ON CONFLICT(scope_id, fingerprint) DO NOTHING"
-        ),
-        params![fingerprint, agent_id, state, record, scope],
-    )
+    sqlx::query(&format!(
+        "INSERT INTO {p}_publication (fingerprint, agent_id, state, record, scope_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5) \
+         ON CONFLICT(scope_id, fingerprint) DO NOTHING"
+    ))
+    .bind(fingerprint)
+    .bind(agent_id)
+    .bind(state)
+    .bind(record)
+    .bind(scope)
+    .execute(&mut *conn)
+    .await
     .map_err(reject)?;
     Ok(())
+}
+
+/// The current generation of one Agent row, if it exists.
+async fn current_generation(
+    conn: &mut SqliteConnection,
+    p: &str,
+    scope: &str,
+    id: &str,
+) -> Result<Option<u64>, ConfigStoreError> {
+    sqlx::query_scalar::<_, i64>(&format!(
+        "SELECT generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"
+    ))
+    .bind(id)
+    .bind(scope)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(reject)?
+    .map(unsigned)
+    .transpose()
 }
 
 /// The single CAS write seam for plain and audited writes. The caller owns
 /// any wider audit/effect transaction; this statement owns the atomic revision
 /// predicate, including the absent-row case (zero means create, never update).
-fn write_config_revision(
-    conn: &Connection,
+async fn write_config_revision(
+    conn: &mut SqliteConnection,
     p: &str,
     scope: &str,
     id: &str,
@@ -177,40 +203,30 @@ fn write_config_revision(
                  WHERE id = ?1 AND scope_id = ?3 AND generation = ?5 RETURNING generation"
         )
     };
-    conn.query_row(
-        &statement,
-        params![
-            id,
-            data,
-            scope,
-            plan.next.database_value(),
-            plan.expected.database_value()
-        ],
-        |row| row.get(0),
-    )
-    .optional()
-    .map_err(reject)
+    sqlx::query_scalar::<_, i64>(&statement)
+        .bind(id)
+        .bind(data)
+        .bind(scope)
+        .bind(plan.next.database_value())
+        .bind(plan.expected.database_value())
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(reject)?
+        .map(unsigned)
+        .transpose()
 }
 
 #[async_trait]
 impl ScopedConfigRegistry for SqliteConfigStore {
     async fn list_config_scopes(&self) -> Result<Vec<ScopeId>, ConfigStoreError> {
-        self.with_conn(move |conn, p| {
-            let mut statement = conn
-                .prepare(&format!(
-                    "SELECT DISTINCT scope_id FROM {p}_agent ORDER BY scope_id ASC"
-                ))
-                .map_err(reject)?;
-            let rows = statement
-                .query_map([], |row| row.get::<_, String>(0))
-                .map_err(reject)?;
-            let mut scopes = Vec::new();
-            for row in rows {
-                scopes.push(ScopeId::from(row.map_err(reject)?));
-            }
-            Ok(scopes)
-        })
+        let p = NS;
+        let scopes = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT DISTINCT scope_id FROM {p}_agent ORDER BY scope_id ASC"
+        ))
+        .fetch_all(&self.pool)
         .await
+        .map_err(reject)?;
+        Ok(scopes.into_iter().map(ScopeId::from).collect())
     }
 
     async fn put_config_scoped(
@@ -218,42 +234,38 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         scope: &ScopeId,
         config: &AgentConfig,
     ) -> Result<(), ConfigStoreError> {
-        let id = config.id.clone();
+        let p = NS;
+        let id = config.id.as_str();
         let data = serde_json::to_string(config).map_err(reject)?;
-        let scope = scope.0.clone();
-        self.with_conn(move |conn, p| {
-            // Agent identity is `(scope_id, id)`: another scope may reuse the
-            // same portable Agent id without reading or clobbering this row.
-            let tx = conn
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .map_err(reject)?;
-            let current_revision = tx
-                .query_row(
-                    &format!("SELECT generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"),
-                    params![id, scope],
-                    |row| row.get::<_, u64>(0),
-                )
-                .optional()
-                .map_err(reject)?;
-            let plan = match crate::ConfigRevisionWritePlan::advance_current(current_revision)
-                .map_err(reject)?
-            {
-                crate::ConfigRevisionAdmission::Apply(plan) => plan,
-                crate::ConfigRevisionAdmission::Conflict { .. } => {
-                    return Err(ConfigStoreError(
-                        "config generation is present at invalid zero".into(),
-                    ));
-                }
-            };
-            if write_config_revision(&tx, p, &scope, &id, &data, plan)?.is_none() {
+        let scope = scope.0.as_str();
+        // Agent identity is `(scope_id, id)`: another scope may reuse the
+        // same portable Agent id without reading or clobbering this row.
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(reject)?;
+        let current_revision = current_generation(&mut tx, p, scope, id).await?;
+        let plan = match crate::ConfigRevisionWritePlan::advance_current(current_revision)
+            .map_err(reject)?
+        {
+            crate::ConfigRevisionAdmission::Apply(plan) => plan,
+            crate::ConfigRevisionAdmission::Conflict { .. } => {
                 return Err(ConfigStoreError(
-                    "config generation transition lost its exclusive writer".into(),
+                    "config generation is present at invalid zero".into(),
                 ));
             }
-            tx.commit().map_err(reject)?;
-            Ok(())
-        })
-        .await
+        };
+        if write_config_revision(&mut tx, p, scope, id, &data, plan)
+            .await?
+            .is_none()
+        {
+            return Err(ConfigStoreError(
+                "config generation transition lost its exclusive writer".into(),
+            ));
+        }
+        tx.commit().await.map_err(reject)?;
+        Ok(())
     }
 
     async fn put_config_with_audit_scoped(
@@ -275,199 +287,186 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         audit: &ManagementAuditRecord,
         effect: Option<&ManagementEffect>,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
-        let config = config.clone();
-        let id = config.id.clone();
-        let scope = scope.0.clone();
+        let p = NS;
+        let id = config.id.as_str();
+        let scope = scope.0.as_str();
         let (tool, call_id) = audit.identity();
-        let call_id = call_id.to_owned();
-        let tool = tool.to_owned();
-        let audit = audit.clone();
-        let effect = effect.cloned();
-        self.with_conn(move |conn, p| {
-            let tx = conn
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .map_err(reject)?;
-            let existing: Option<(String, i64)> = tx
-                .query_row(
-                    &format!(
-                        "SELECT record, business_committed FROM {p}_management_audit \
-                         WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
-                    ),
-                    params![scope, call_id, tool],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(reject)?;
-            let existing = existing
-                .map(|(record, state)| {
-                    serde_json::from_str::<ManagementAuditRecord>(&record)
-                        .map(|record| (record, state))
-                        .map_err(reject)
-                })
-                .transpose()?;
-            if audit.admit_write(existing.as_ref().map(|(record, state)| (record, *state)))?
-                == ManagementAuditAdmission::Replay
-            {
-                tx.commit().map_err(reject)?;
-                return Ok(AuditedConfigWrite::Replayed);
-            }
-            let current: Option<(String, u64)> = tx
-                .query_row(
-                    &format!(
-                        "SELECT data, generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"
-                    ),
-                    params![id, scope],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(reject)?;
-            let current_revision = current.as_ref().map(|(_, revision)| *revision);
-            let plan = match crate::ConfigRevisionWritePlan::admit(
-                current_revision,
-                expected_generation,
-            )
-            .map_err(reject)?
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(reject)?;
+        let existing: Option<(String, i64)> = sqlx::query_as(&format!(
+            "SELECT record, business_committed FROM {p}_management_audit \
+             WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
+        ))
+        .bind(scope)
+        .bind(call_id)
+        .bind(tool)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?;
+        let existing = existing
+            .map(|(record, state)| {
+                serde_json::from_str::<ManagementAuditRecord>(&record)
+                    .map(|record| (record, state))
+                    .map_err(reject)
+            })
+            .transpose()?;
+        if audit.admit_write(existing.as_ref().map(|(record, state)| (record, *state)))?
+            == ManagementAuditAdmission::Replay
+        {
+            tx.commit().await.map_err(reject)?;
+            return Ok(AuditedConfigWrite::Replayed);
+        }
+        let current: Option<(String, i64)> = sqlx::query_as(&format!(
+            "SELECT data, generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"
+        ))
+        .bind(id)
+        .bind(scope)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?;
+        let current = current
+            .map(|(data, revision)| Ok::<_, ConfigStoreError>((data, unsigned(revision)?)))
+            .transpose()?;
+        let current_revision = current.as_ref().map(|(_, revision)| *revision);
+        let plan =
+            match crate::ConfigRevisionWritePlan::admit(current_revision, expected_generation)
+                .map_err(reject)?
             {
                 crate::ConfigRevisionAdmission::Apply(plan) => plan,
                 crate::ConfigRevisionAdmission::Conflict { current_revision } => {
                     return Ok(AuditedConfigWrite::Conflict { current_revision });
                 }
             };
-            let current_config = current
-                .as_ref()
-                .map(|(data, _)| serde_json::from_str::<AgentConfig>(data).map_err(reject))
-                .transpose()?;
-            let config = config
-                .canonicalize_mutable_authoring_against(current_config.as_ref())
-                .map_err(reject)?;
-            let data = serde_json::to_string(&config).map_err(reject)?;
-            if let Some(effect) = effect {
-                let effect_payload = serde_json::to_string(&effect).map_err(reject)?;
-                let existing_payload: Option<String> = tx
-                    .query_row(
-                        &format!(
-                            "SELECT payload FROM {p}_management_effect \
-                             WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3"
-                        ),
-                        params![scope, effect.kind(), effect.key()],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(reject)?;
-                let pending = existing_payload.as_deref().map(serde_json::from_str::<ManagementEffect>).transpose().map_err(reject)?;
-                if effect.requires_enqueue(pending.as_ref())? {
-                    tx.execute(
-                        &format!("INSERT INTO {p}_management_effect (scope_id, kind, effect_key, payload) VALUES (?1, ?2, ?3, ?4)"),
-                        params![scope, effect.kind(), effect.key(), effect_payload],
-                    ).map_err(reject)?;
-                }
-            }
-            if write_config_revision(&tx, p, &scope, &id, &data, plan)?.is_none() {
-                let current_revision = tx
-                    .query_row(
-                        &format!(
-                            "SELECT generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"
-                        ),
-                        params![id, scope],
-                        |row| row.get::<_, u64>(0),
-                    )
-                    .optional()
-                    .map_err(reject)?;
-                return Ok(AuditedConfigWrite::Conflict { current_revision });
-            }
-            tx.execute(
-                &format!(
-                    "UPDATE {p}_management_audit SET business_committed = 1 \
-                     WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
-                ),
-                params![scope, call_id, tool],
-            )
+        let current_config = current
+            .as_ref()
+            .map(|(data, _)| serde_json::from_str::<AgentConfig>(data).map_err(reject))
+            .transpose()?;
+        let config = config
+            .clone()
+            .canonicalize_mutable_authoring_against(current_config.as_ref())
             .map_err(reject)?;
-            tx.commit().map_err(reject)?;
-            Ok(AuditedConfigWrite::Applied)
-        })
+        let data = serde_json::to_string(&config).map_err(reject)?;
+        if let Some(effect) = effect {
+            let effect_payload = serde_json::to_string(effect).map_err(reject)?;
+            let existing_payload: Option<String> = sqlx::query_scalar(&format!(
+                "SELECT payload FROM {p}_management_effect \
+                 WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3"
+            ))
+            .bind(scope)
+            .bind(effect.kind())
+            .bind(effect.key())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(reject)?;
+            let pending = existing_payload
+                .as_deref()
+                .map(serde_json::from_str::<ManagementEffect>)
+                .transpose()
+                .map_err(reject)?;
+            if effect.requires_enqueue(pending.as_ref())? {
+                sqlx::query(&format!(
+                    "INSERT INTO {p}_management_effect (scope_id, kind, effect_key, payload) VALUES (?1, ?2, ?3, ?4)"
+                ))
+                .bind(scope)
+                .bind(effect.kind())
+                .bind(effect.key())
+                .bind(effect_payload)
+                .execute(&mut *tx)
+                .await
+                .map_err(reject)?;
+            }
+        }
+        if write_config_revision(&mut tx, p, scope, id, &data, plan)
+            .await?
+            .is_none()
+        {
+            let current_revision = current_generation(&mut tx, p, scope, id).await?;
+            return Ok(AuditedConfigWrite::Conflict { current_revision });
+        }
+        sqlx::query(&format!(
+            "UPDATE {p}_management_audit SET business_committed = 1 \
+             WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
+        ))
+        .bind(scope)
+        .bind(call_id)
+        .bind(tool)
+        .execute(&mut *tx)
         .await
+        .map_err(reject)?;
+        tx.commit().await.map_err(reject)?;
+        Ok(AuditedConfigWrite::Applied)
     }
 
     async fn pending_management_effects_scoped(
         &self,
         scope: &ScopeId,
     ) -> Result<Vec<ManagementEffect>, ConfigStoreError> {
-        let scope = scope.0.clone();
-        self.with_conn(move |conn, p| {
-            let mut statement = conn
-                .prepare(&format!(
-                    "SELECT kind, effect_key, payload FROM {p}_management_effect \
-                     WHERE scope_id = ?1 ORDER BY created_at, kind, effect_key"
-                ))
-                .map_err(reject)?;
-            let rows = statement
-                .query_map(params![scope], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                })
-                .map_err(reject)?;
-            rows.map(|row| {
-                let (kind, key, payload) = row.map_err(reject)?;
+        let p = NS;
+        let rows: Vec<(String, String, String)> = sqlx::query_as(&format!(
+            "SELECT kind, effect_key, payload FROM {p}_management_effect \
+             WHERE scope_id = ?1 ORDER BY created_at, kind, effect_key"
+        ))
+        .bind(&scope.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(reject)?;
+        rows.into_iter()
+            .map(|(kind, key, payload)| {
                 let effect: ManagementEffect = serde_json::from_str(&payload).map_err(reject)?;
                 effect.validate_index(&kind, &key)?;
                 Ok(effect)
             })
             .collect()
-        })
-        .await
     }
 
     async fn complete_management_effect_scoped(
         &self,
         receipt: &ManagementEffectReceipt,
     ) -> Result<bool, ConfigStoreError> {
-        let receipt = receipt.clone();
-        self.with_conn(move |conn, p| {
-            let tx = conn.transaction().map_err(reject)?;
-            let effect = receipt.effect();
-            let scope = &receipt.scope().0;
-            let payload: Option<String> = tx
-                .query_row(
-                    &format!(
-                        "SELECT payload FROM {p}_management_effect \
-                          WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3"
-                    ),
-                    params![scope, effect.kind(), effect.key()],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(reject)?;
-            let pending = payload
-                .as_deref()
-                .map(serde_json::from_str::<ManagementEffect>)
-                .transpose()
-                .map_err(reject)?;
-            if let Some(pending) = &pending {
-                pending.validate_index(effect.kind(), effect.key())?;
-            }
-            if !management_effect_retirement_is_admitted(&receipt, pending.as_ref()) {
-                return Ok(false);
-            }
-            // The same transaction protects the exact observation through DELETE.
-            // A concurrent SQLite writer makes this upgrade fail, never delete a
-            // newer payload using an earlier unfenced observation.
-            let removed = tx
-                .execute(
-                    &format!(
-                        "DELETE FROM {p}_management_effect \
-                          WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3"
-                    ),
-                    params![scope, effect.kind(), effect.key()],
-                )
-                .map_err(reject)?;
-            tx.commit().map_err(reject)?;
-            Ok(removed == 1)
-        })
+        let p = NS;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let effect = receipt.effect();
+        let scope = &receipt.scope().0;
+        let payload: Option<String> = sqlx::query_scalar(&format!(
+            "SELECT payload FROM {p}_management_effect \
+              WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3"
+        ))
+        .bind(scope)
+        .bind(effect.kind())
+        .bind(effect.key())
+        .fetch_optional(&mut *tx)
         .await
+        .map_err(reject)?;
+        let pending = payload
+            .as_deref()
+            .map(serde_json::from_str::<ManagementEffect>)
+            .transpose()
+            .map_err(reject)?;
+        if let Some(pending) = &pending {
+            pending.validate_index(effect.kind(), effect.key())?;
+        }
+        if !management_effect_retirement_is_admitted(receipt, pending.as_ref()) {
+            return Ok(false);
+        }
+        // The same transaction protects the exact observation through DELETE.
+        // A concurrent SQLite writer makes this upgrade fail, never delete a
+        // newer payload using an earlier unfenced observation.
+        let removed = sqlx::query(&format!(
+            "DELETE FROM {p}_management_effect \
+              WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3"
+        ))
+        .bind(scope)
+        .bind(effect.kind())
+        .bind(effect.key())
+        .execute(&mut *tx)
+        .await
+        .map_err(reject)?
+        .rows_affected();
+        tx.commit().await.map_err(reject)?;
+        Ok(removed == 1)
     }
 
     async fn record_management_audit_scoped(
@@ -475,41 +474,41 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         scope: &ScopeId,
         audit: &ManagementAuditRecord,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
-        let scope = scope.0.clone();
-        let audit = audit.clone();
-        let data = serde_json::to_string(&audit).map_err(reject)?;
-        self.with_conn(move |conn, p| {
-            let (tool, call_id) = audit.identity();
-            // The unique tuple arbitrates across connections, not a process-local
-            // read-before-insert race. Exact retry compares domain data, not JSON text.
-            let inserted = conn
-                .execute(
-                    &format!(
-                        "INSERT INTO {p}_management_audit (scope_id, tool, call_id, record) \
-                     VALUES (?1, ?2, ?3, ?4) \
-                     ON CONFLICT (scope_id, tool, call_id) DO NOTHING"
-                    ),
-                    params![scope, tool, call_id, data],
-                )
-                .map_err(reject)?;
-            if inserted == 1 {
-                return Ok(AuditedConfigWrite::Applied);
-            }
-            let existing: String = conn
-                .query_row(
-                    &format!(
-                        "SELECT record FROM {p}_management_audit \
-                     WHERE scope_id = ?1 AND tool = ?2 AND call_id = ?3"
-                    ),
-                    params![scope, tool, call_id],
-                    |row| row.get(0),
-                )
-                .map_err(reject)?;
-            let existing = serde_json::from_str(&existing).map_err(reject)?;
-            audit.admit_write(Some((&existing, 0)))?;
-            Ok(AuditedConfigWrite::Replayed)
-        })
+        let p = NS;
+        let scope = scope.0.as_str();
+        let data = serde_json::to_string(audit).map_err(reject)?;
+        let (tool, call_id) = audit.identity();
+        // The unique tuple arbitrates across connections, not a process-local
+        // read-before-insert race. Exact retry compares domain data, not JSON text.
+        let inserted = sqlx::query(&format!(
+            "INSERT INTO {p}_management_audit (scope_id, tool, call_id, record) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT (scope_id, tool, call_id) DO NOTHING"
+        ))
+        .bind(scope)
+        .bind(tool)
+        .bind(call_id)
+        .bind(data)
+        .execute(&self.pool)
         .await
+        .map_err(reject)?
+        .rows_affected();
+        if inserted == 1 {
+            return Ok(AuditedConfigWrite::Applied);
+        }
+        let existing: String = sqlx::query_scalar(&format!(
+            "SELECT record FROM {p}_management_audit \
+             WHERE scope_id = ?1 AND tool = ?2 AND call_id = ?3"
+        ))
+        .bind(scope)
+        .bind(tool)
+        .bind(call_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(reject)?;
+        let existing = serde_json::from_str(&existing).map_err(reject)?;
+        audit.admit_write(Some((&existing, 0)))?;
+        Ok(AuditedConfigWrite::Replayed)
     }
 
     async fn get_management_audit_scoped(
@@ -518,30 +517,24 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         tool: &str,
         call_id: &str,
     ) -> Result<Option<ManagementAuditEntry>, ConfigStoreError> {
-        let scope = scope.0.clone();
-        let audit_key = call_id.to_owned();
-        let tool = tool.to_owned();
-        self.with_conn(move |conn, p| {
-            let row: Option<(String, i64)> = conn
-                .query_row(
-                    &format!(
-                        "SELECT record, business_committed FROM {p}_management_audit \
-                         WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
-                    ),
-                    params![scope, audit_key, tool],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(reject)?;
-            row.map(|(record, business_committed)| {
-                ManagementAuditEntry::from_stored(
-                    serde_json::from_str(&record).map_err(reject)?,
-                    business_committed,
-                )
-            })
-            .transpose()
-        })
+        let p = NS;
+        let row: Option<(String, i64)> = sqlx::query_as(&format!(
+            "SELECT record, business_committed FROM {p}_management_audit \
+             WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
+        ))
+        .bind(&scope.0)
+        .bind(call_id)
+        .bind(tool)
+        .fetch_optional(&self.pool)
         .await
+        .map_err(reject)?;
+        row.map(|(record, business_committed)| {
+            ManagementAuditEntry::from_stored(
+                serde_json::from_str(&record).map_err(reject)?,
+                business_committed,
+            )
+        })
+        .transpose()
     }
 
     async fn mark_management_audit_committed_scoped(
@@ -550,27 +543,24 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         tool: &str,
         call_id: &str,
     ) -> Result<(), ConfigStoreError> {
-        let scope = scope.0.clone();
-        let audit_key = call_id.to_owned();
-        let tool = tool.to_owned();
-        self.with_conn(move |conn, p| {
-            let changed = conn
-                .execute(
-                    &format!(
-                        "UPDATE {p}_management_audit SET business_committed = 1 \
-                         WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
-                    ),
-                    params![scope, audit_key, tool],
-                )
-                .map_err(reject)?;
-            if changed != 1 {
-                return Err(ConfigStoreError(
-                    "management audit completion target was not found".into(),
-                ));
-            }
-            Ok(())
-        })
+        let p = NS;
+        let changed = sqlx::query(&format!(
+            "UPDATE {p}_management_audit SET business_committed = 1 \
+             WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
+        ))
+        .bind(&scope.0)
+        .bind(call_id)
+        .bind(tool)
+        .execute(&self.pool)
         .await
+        .map_err(reject)?
+        .rows_affected();
+        if changed != 1 {
+            return Err(ConfigStoreError(
+                "management audit completion target was not found".into(),
+            ));
+        }
+        Ok(())
     }
 
     async fn put_config_if_revision_scoped(
@@ -579,45 +569,31 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         config: &AgentConfig,
         expected_generation: u64,
     ) -> Result<ConfigWrite, ConfigStoreError> {
-        let id = config.id.clone();
+        let p = NS;
+        let id = config.id.as_str();
         let data = serde_json::to_string(config).map_err(reject)?;
-        let scope = scope.0.clone();
-        self.with_conn(move |conn, p| {
-            let tx = conn
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .map_err(reject)?;
-            let current_revision = tx
-                .query_row(
-                    &format!("SELECT generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"),
-                    params![id, scope],
-                    |row| row.get::<_, u64>(0),
-                )
-                .optional()
-                .map_err(reject)?;
-            let plan =
-                match crate::ConfigRevisionWritePlan::admit(current_revision, expected_generation)
-                    .map_err(reject)?
-                {
-                    crate::ConfigRevisionAdmission::Apply(plan) => plan,
-                    crate::ConfigRevisionAdmission::Conflict { current_revision } => {
-                        return Ok(ConfigWrite::Conflict { current_revision });
-                    }
-                };
-            if let Some(revision) = write_config_revision(&tx, p, &scope, &id, &data, plan)? {
-                tx.commit().map_err(reject)?;
-                return Ok(ConfigWrite::Applied { revision });
-            }
-            let current_revision = tx
-                .query_row(
-                    &format!("SELECT generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"),
-                    params![id, scope],
-                    |row| row.get::<_, u64>(0),
-                )
-                .optional()
-                .map_err(reject)?;
-            Ok(ConfigWrite::Conflict { current_revision })
-        })
-        .await
+        let scope = scope.0.as_str();
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(reject)?;
+        let current_revision = current_generation(&mut tx, p, scope, id).await?;
+        let plan =
+            match crate::ConfigRevisionWritePlan::admit(current_revision, expected_generation)
+                .map_err(reject)?
+            {
+                crate::ConfigRevisionAdmission::Apply(plan) => plan,
+                crate::ConfigRevisionAdmission::Conflict { current_revision } => {
+                    return Ok(ConfigWrite::Conflict { current_revision });
+                }
+            };
+        if let Some(revision) = write_config_revision(&mut tx, p, scope, id, &data, plan).await? {
+            tx.commit().await.map_err(reject)?;
+            return Ok(ConfigWrite::Applied { revision });
+        }
+        let current_revision = current_generation(&mut tx, p, scope, id).await?;
+        Ok(ConfigWrite::Conflict { current_revision })
     }
 
     async fn get_config_scoped(
@@ -625,21 +601,17 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         scope: &ScopeId,
         id: &str,
     ) -> Result<Option<AgentConfig>, ConfigStoreError> {
-        let id = id.to_string();
-        let scope = scope.0.clone();
-        self.with_conn(move |conn, p| {
-            let data: Option<String> = conn
-                .query_row(
-                    &format!("SELECT data FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"),
-                    params![id, scope],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(reject)?;
-            data.map(|s| serde_json::from_str(&s).map_err(reject))
-                .transpose()
-        })
+        let p = NS;
+        let data: Option<String> = sqlx::query_scalar(&format!(
+            "SELECT data FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"
+        ))
+        .bind(id)
+        .bind(&scope.0)
+        .fetch_optional(&self.pool)
         .await
+        .map_err(reject)?;
+        data.map(|s| serde_json::from_str(&s).map_err(reject))
+            .transpose()
     }
 
     async fn get_config_revision_scoped(
@@ -647,38 +619,32 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         scope: &ScopeId,
         id: &str,
     ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
-        let id = id.to_string();
-        let scope = scope.0.clone();
-        self.with_conn(move |conn, p| {
-            let row: Option<(String, u64, u64, u64)> = conn
-                .query_row(
-                    &format!(
-                        "SELECT a.data, a.generation, \
-                         CAST(strftime('%s', first.created_at) AS INTEGER) * 1000, \
-                         CAST(strftime('%s', current.created_at) AS INTEGER) * 1000 \
-                         FROM {p}_agent a \
-                         JOIN {p}_agent_revision first ON first.scope_id = a.scope_id \
-                           AND first.id = a.id AND first.generation = 1 \
-                         JOIN {p}_agent_revision current ON current.scope_id = a.scope_id \
-                           AND current.id = a.id AND current.generation = a.generation \
-                         WHERE a.id = ?1 AND a.scope_id = ?2"
-                    ),
-                    params![id, scope],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-                )
-                .optional()
-                .map_err(reject)?;
-            row.map(|(data, revision, created_at_unix_ms, updated_at_unix_ms)| {
-                Ok(AgentConfigRevision {
-                    config: serde_json::from_str(&data).map_err(reject)?,
-                    revision,
-                    created_at_unix_ms: Some(created_at_unix_ms),
-                    updated_at_unix_ms: Some(updated_at_unix_ms),
-                })
-            })
-            .transpose()
-        })
+        let p = NS;
+        let row: Option<(String, i64, i64, i64)> = sqlx::query_as(&format!(
+            "SELECT a.data, a.generation, \
+             CAST(strftime('%s', first.created_at) AS INTEGER) * 1000, \
+             CAST(strftime('%s', current.created_at) AS INTEGER) * 1000 \
+             FROM {p}_agent a \
+             JOIN {p}_agent_revision first ON first.scope_id = a.scope_id \
+               AND first.id = a.id AND first.generation = 1 \
+             JOIN {p}_agent_revision current ON current.scope_id = a.scope_id \
+               AND current.id = a.id AND current.generation = a.generation \
+             WHERE a.id = ?1 AND a.scope_id = ?2"
+        ))
+        .bind(id)
+        .bind(&scope.0)
+        .fetch_optional(&self.pool)
         .await
+        .map_err(reject)?;
+        row.map(|(data, revision, created_at_unix_ms, updated_at_unix_ms)| {
+            Ok(AgentConfigRevision {
+                config: serde_json::from_str(&data).map_err(reject)?,
+                revision: unsigned(revision)?,
+                created_at_unix_ms: Some(unsigned(created_at_unix_ms)?),
+                updated_at_unix_ms: Some(unsigned(updated_at_unix_ms)?),
+            })
+        })
+        .transpose()
     }
 
     async fn list_config_revisions_scoped(
@@ -686,68 +652,48 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         scope: &ScopeId,
         id: &str,
     ) -> Result<Vec<AgentConfigRevision>, ConfigStoreError> {
-        let id = id.to_string();
-        let scope = scope.0.clone();
-        self.with_conn(move |conn, p| {
-            let mut statement = conn
-                .prepare(&format!(
-                    "SELECT data, generation, \
-                     CAST(strftime('%s', (SELECT MIN(first.created_at) \
-                       FROM {p}_agent_revision first WHERE first.scope_id = ?1 AND first.id = ?2)) \
-                       AS INTEGER) * 1000, \
-                     CAST(strftime('%s', created_at) AS INTEGER) * 1000 \
-                     FROM {p}_agent_revision \
-                     WHERE scope_id = ?1 AND id = ?2 ORDER BY generation ASC"
-                ))
-                .map_err(reject)?;
-            let rows = statement
-                .query_map(params![scope, id], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, u64>(1)?,
-                        row.get::<_, u64>(2)?,
-                        row.get::<_, u64>(3)?,
-                    ))
-                })
-                .map_err(reject)?;
-            let mut revisions = Vec::new();
-            for row in rows {
-                let (data, revision, created_at_unix_ms, updated_at_unix_ms) =
-                    row.map_err(reject)?;
-                revisions.push(AgentConfigRevision {
-                    config: serde_json::from_str(&data).map_err(reject)?,
-                    revision,
-                    created_at_unix_ms: Some(created_at_unix_ms),
-                    updated_at_unix_ms: Some(updated_at_unix_ms),
-                });
-            }
-            Ok(revisions)
-        })
+        let p = NS;
+        let rows: Vec<(String, i64, i64, i64)> = sqlx::query_as(&format!(
+            "SELECT data, generation, \
+             CAST(strftime('%s', (SELECT MIN(first.created_at) \
+               FROM {p}_agent_revision first WHERE first.scope_id = ?1 AND first.id = ?2)) \
+               AS INTEGER) * 1000, \
+             CAST(strftime('%s', created_at) AS INTEGER) * 1000 \
+             FROM {p}_agent_revision \
+             WHERE scope_id = ?1 AND id = ?2 ORDER BY generation ASC"
+        ))
+        .bind(&scope.0)
+        .bind(id)
+        .fetch_all(&self.pool)
         .await
+        .map_err(reject)?;
+        rows.into_iter()
+            .map(|(data, revision, created_at_unix_ms, updated_at_unix_ms)| {
+                Ok(AgentConfigRevision {
+                    config: serde_json::from_str(&data).map_err(reject)?,
+                    revision: unsigned(revision)?,
+                    created_at_unix_ms: Some(unsigned(created_at_unix_ms)?),
+                    updated_at_unix_ms: Some(unsigned(updated_at_unix_ms)?),
+                })
+            })
+            .collect()
     }
 
     async fn list_configs_scoped(
         &self,
         scope: &ScopeId,
     ) -> Result<Vec<AgentConfig>, ConfigStoreError> {
-        let scope = scope.0.clone();
-        self.with_conn(move |conn, p| {
-            let mut stmt = conn
-                .prepare(&format!(
-                    "SELECT data FROM {p}_agent WHERE scope_id = ?1 ORDER BY id ASC"
-                ))
-                .map_err(reject)?;
-            let rows = stmt
-                .query_map(params![scope], |r| r.get::<_, String>(0))
-                .map_err(reject)?;
-            let mut configs = Vec::new();
-            for row in rows {
-                let data = row.map_err(reject)?;
-                configs.push(serde_json::from_str(&data).map_err(reject)?);
-            }
-            Ok(configs)
-        })
+        let p = NS;
+        let rows: Vec<String> = sqlx::query_scalar(&format!(
+            "SELECT data FROM {p}_agent WHERE scope_id = ?1 ORDER BY id ASC"
+        ))
+        .bind(&scope.0)
+        .fetch_all(&self.pool)
         .await
+        .map_err(reject)?;
+        rows.iter()
+            .map(|data| serde_json::from_str(data).map_err(reject))
+            .collect()
     }
 
     async fn put_publication_if_source_current_scoped(
@@ -755,67 +701,51 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         scope: &ScopeId,
         publication: &StoredPublication,
     ) -> Result<PublicationWrite, ConfigStoreError> {
-        let fingerprint = publication.fingerprint.clone();
-        let agent_id = publication.agent_id.clone();
-        let state = publication.state.as_str().to_string();
+        let p = NS;
+        let fingerprint = publication.fingerprint.as_str();
+        let agent_id = publication.agent_id.as_str();
+        let state = publication.state.as_str();
         let record = serde_json::to_string(publication).map_err(reject)?;
         let source_revision = publication.source_revision;
-        let execution_workspace = publication.execution_workspace.clone();
-        let scope = scope.0.clone();
-        self.with_conn(move |conn, p| {
-            let tx = conn.transaction().map_err(reject)?;
-            let current_revision = tx
-                .query_row(
-                    &format!("SELECT generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"),
-                    params![agent_id, scope],
-                    |row| row.get::<_, u64>(0),
-                )
-                .optional()
-                .map_err(reject)?;
-            if let crate::PublicationSourceAdmission::Conflict { current_revision } =
-                crate::PublicationSourceAdmission::new(current_revision, source_revision)
-            {
-                return Ok(PublicationWrite::Conflict { current_revision });
-            }
-            let existing = {
-                let mut statement = tx
-                    .prepare(&format!(
-                        "SELECT record FROM {p}_publication \
-                         WHERE scope_id = ?1 AND agent_id = ?2"
-                    ))
-                    .map_err(reject)?;
-                let rows = statement
-                    .query_map(params![scope, agent_id], |row| row.get::<_, String>(0))
-                    .map_err(reject)?;
-                let mut existing = Vec::new();
-                for row in rows {
-                    existing.push(
-                        decode_publication(&row.map_err(reject)?, &ScopeId::from(scope.as_str()))
-                            .map_err(reject)?,
-                    );
-                }
-                existing
-            };
-            let decision = publication_revision_decision(
-                execution_workspace.as_str(),
-                source_revision,
-                fingerprint.as_str(),
-                existing.iter().map(|existing| {
-                    (
-                        existing.execution_workspace.as_str(),
-                        existing.source_revision,
-                        existing.fingerprint.as_str(),
-                    )
-                }),
-            );
-            if decision == PublicationRevisionDecision::Conflict {
-                return Ok(PublicationWrite::Conflict { current_revision });
-            }
-            insert_publication(&tx, p, &fingerprint, &agent_id, &state, &record, &scope)?;
-            tx.commit().map_err(reject)?;
-            Ok(PublicationWrite::Committed { source_revision })
-        })
+        let execution_workspace = &publication.execution_workspace;
+        let scope = scope.0.as_str();
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let current_revision = current_generation(&mut tx, p, scope, agent_id).await?;
+        if let crate::PublicationSourceAdmission::Conflict { current_revision } =
+            crate::PublicationSourceAdmission::new(current_revision, source_revision)
+        {
+            return Ok(PublicationWrite::Conflict { current_revision });
+        }
+        let existing = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT record FROM {p}_publication \
+             WHERE scope_id = ?1 AND agent_id = ?2"
+        ))
+        .bind(scope)
+        .bind(agent_id)
+        .fetch_all(&mut *tx)
         .await
+        .map_err(reject)?
+        .iter()
+        .map(|record| decode_publication(record, &ScopeId::from(scope)).map_err(reject))
+        .collect::<Result<Vec<_>, _>>()?;
+        let decision = publication_revision_decision(
+            execution_workspace.as_str(),
+            source_revision,
+            fingerprint,
+            existing.iter().map(|existing| {
+                (
+                    existing.execution_workspace.as_str(),
+                    existing.source_revision,
+                    existing.fingerprint.as_str(),
+                )
+            }),
+        );
+        if decision == PublicationRevisionDecision::Conflict {
+            return Ok(PublicationWrite::Conflict { current_revision });
+        }
+        insert_publication(&mut tx, p, fingerprint, agent_id, state, &record, scope).await?;
+        tx.commit().await.map_err(reject)?;
+        Ok(PublicationWrite::Committed { source_revision })
     }
 
     async fn get_publication_scoped(
@@ -823,67 +753,43 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         scope: &ScopeId,
         fingerprint: &str,
     ) -> Result<Option<StoredPublication>, ConfigStoreError> {
-        let fingerprint = fingerprint.to_string();
-        let scope = scope.0.clone();
-        self.with_conn(move |conn, p| {
-            let row: Option<(String, i64, i64)> = conn
-                .query_row(
-                    &format!(
-                        "SELECT record, rowid, CAST(strftime('%s', created_at) AS INTEGER) * 1000 \
-                         FROM {p}_publication WHERE fingerprint = ?1 AND scope_id = ?2"
-                    ),
-                    params![fingerprint, scope],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .optional()
-                .map_err(reject)?;
-            row.map(|(record, sequence, published_at)| {
-                let publication =
-                    decode_publication(&record, &ScopeId::from(scope.as_str())).map_err(reject)?;
-                attach_publication_row(publication, sequence, published_at, true)
-            })
-            .transpose()
-        })
+        let p = NS;
+        let row: Option<(String, i64, i64)> = sqlx::query_as(&format!(
+            "SELECT record, rowid, CAST(strftime('%s', created_at) AS INTEGER) * 1000 \
+             FROM {p}_publication WHERE fingerprint = ?1 AND scope_id = ?2"
+        ))
+        .bind(fingerprint)
+        .bind(&scope.0)
+        .fetch_optional(&self.pool)
         .await
+        .map_err(reject)?;
+        row.map(|(record, sequence, published_at)| {
+            let publication = decode_publication(&record, scope).map_err(reject)?;
+            attach_publication_row(publication, sequence, published_at, true)
+        })
+        .transpose()
     }
 
     async fn list_published_scoped(
         &self,
         scope: &ScopeId,
     ) -> Result<Vec<StoredPublication>, ConfigStoreError> {
-        let scope = scope.0.clone();
-        self.with_conn(move |conn, p| {
-            let mut stmt = conn
-                .prepare(&format!(
-                    "SELECT record, rowid, CAST(strftime('%s', created_at) AS INTEGER) * 1000 \
-                     FROM {p}_publication \
-                     WHERE scope_id = ?1 AND state = 'published' ORDER BY rowid ASC"
-                ))
-                .map_err(reject)?;
-            let rows = stmt
-                .query_map(params![scope], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, i64>(2)?,
-                    ))
-                })
-                .map_err(reject)?;
-            let mut out = Vec::new();
-            for row in rows {
-                let (record, sequence, published_at) = row.map_err(reject)?;
-                let publication =
-                    decode_publication(&record, &ScopeId::from(scope.as_str())).map_err(reject)?;
-                out.push(attach_publication_row(
-                    publication,
-                    sequence,
-                    published_at,
-                    true,
-                )?);
-            }
-            Ok(out)
-        })
+        let p = NS;
+        let rows: Vec<(String, i64, i64)> = sqlx::query_as(&format!(
+            "SELECT record, rowid, CAST(strftime('%s', created_at) AS INTEGER) * 1000 \
+             FROM {p}_publication \
+             WHERE scope_id = ?1 AND state = 'published' ORDER BY rowid ASC"
+        ))
+        .bind(&scope.0)
+        .fetch_all(&self.pool)
         .await
+        .map_err(reject)?;
+        rows.into_iter()
+            .map(|(record, sequence, published_at)| {
+                let publication = decode_publication(&record, scope).map_err(reject)?;
+                attach_publication_row(publication, sequence, published_at, true)
+            })
+            .collect()
     }
 }
 
@@ -973,7 +879,7 @@ mod scope_tests {
 
     #[tokio::test]
     async fn durable_audit_intent_and_config_commit_are_atomic_and_replay_safe() {
-        let store = SqliteConfigStore::open_in_memory().unwrap();
+        let store = SqliteConfigStore::open_in_memory().await.unwrap();
         let scope = ScopeId::from("ws_a");
         let audit = ManagementAuditRecord {
             tool: "admin_draft_agent".into(),
@@ -1034,7 +940,7 @@ mod scope_tests {
 
     #[tokio::test]
     async fn audited_same_agent_id_is_committed_independently_in_each_scope() {
-        let store = SqliteConfigStore::open_in_memory().unwrap();
+        let store = SqliteConfigStore::open_in_memory().await.unwrap();
         let owner = ScopeId::from("ws_owner");
         let attacker = ScopeId::from("ws_attacker");
         store
@@ -1082,7 +988,7 @@ mod scope_tests {
 
     #[tokio::test]
     async fn a_scope_reads_back_its_own_agent() {
-        let store = SqliteConfigStore::open_in_memory().expect("open");
+        let store = SqliteConfigStore::open_in_memory().await.expect("open");
         let a = ScopeId::from("ws_a");
         store.put_config_scoped(&a, &agent("x")).await.expect("put");
         assert_eq!(
@@ -1097,7 +1003,7 @@ mod scope_tests {
 
     #[tokio::test]
     async fn another_scope_cannot_read_the_agent() {
-        let store = SqliteConfigStore::open_in_memory().expect("open");
+        let store = SqliteConfigStore::open_in_memory().await.expect("open");
         store
             .put_config_scoped(&ScopeId::from("ws_a"), &agent("x"))
             .await
@@ -1114,7 +1020,7 @@ mod scope_tests {
 
     #[tokio::test]
     async fn the_same_agent_id_is_stored_independently_in_each_scope() {
-        let store = SqliteConfigStore::open_in_memory().expect("open");
+        let store = SqliteConfigStore::open_in_memory().await.expect("open");
         let a = ScopeId::from("ws_a");
         let b = ScopeId::from("ws_b");
         store
@@ -1146,7 +1052,7 @@ mod scope_tests {
 
     #[tokio::test]
     async fn the_scope_free_port_uses_the_default_scope() {
-        let store = SqliteConfigStore::open_in_memory().expect("open");
+        let store = SqliteConfigStore::open_in_memory().await.expect("open");
         // A scope-free write lands under DEFAULT_SCOPE and is readable scope-free…
         store.put_config(&agent("d")).await.expect("put");
         assert!(store.get_config("d").await.expect("get").is_some());

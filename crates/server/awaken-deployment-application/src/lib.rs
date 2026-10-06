@@ -1458,6 +1458,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("deployment-{unique}.db"));
         let repository = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
+                .await
                 .unwrap(),
         );
         let first =
@@ -1632,10 +1633,12 @@ mod tests {
         ));
         let left_repository = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
+                .await
                 .unwrap(),
         );
         let right_repository = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
+                .await
                 .unwrap(),
         );
         let mut left = DeploymentApplication::from_repository(
@@ -1682,6 +1685,7 @@ mod tests {
         drop(right_repository);
         let restored_repository = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
+                .await
                 .unwrap(),
         );
         let restored = DeploymentApplication::from_repository(

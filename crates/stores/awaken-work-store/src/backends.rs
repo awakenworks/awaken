@@ -13,6 +13,7 @@
 use super::*;
 use awaken_time::WallClockExt;
 use sqlx::postgres::PgRow;
+use sqlx::sqlite::{Sqlite, SqliteConnection};
 
 /// Decode the selected PostgreSQL Work row through the same item constructor
 /// used by the durable backend's other reads.
@@ -38,13 +39,8 @@ pub(super) fn pg_row_to_item(row: &PgRow) -> Result<WorkItem, WorkQueueError> {
 impl SqliteWorkQueue {
     /// A private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory(clock: Arc<dyn WallClock>) -> Result<Self, String> {
-        Self::from_connection(
-            awaken_sqlite_pool::SqliteConnectionFactory::memory()
-                .open()
-                .map_err(|error| error.to_string())?,
-            clock,
-        )
+    pub async fn open_in_memory(clock: Arc<dyn WallClock>) -> Result<Self, String> {
+        Self::from_location(awaken_sqlite_pool::EmbeddedSqlite::memory(), clock).await
     }
 
     /// Open (or create) the work-queue database at `path` and apply migrations.
@@ -52,124 +48,132 @@ impl SqliteWorkQueue {
     /// The wall clock is a constructor argument, not something the queue reaches
     /// for: every `*_at` this backend writes is a reading of exactly this clock,
     /// so a test can name the instant a record must carry.
-    pub fn open(path: &str, clock: Arc<dyn WallClock>) -> Result<Self, String> {
-        Self::from_connection(
-            awaken_sqlite_pool::SqliteConnectionFactory::file(path)
-                .open()
-                .map_err(|error| error.to_string())?,
-            clock,
-        )
+    pub async fn open(path: &str, clock: Arc<dyn WallClock>) -> Result<Self, String> {
+        Self::from_location(awaken_sqlite_pool::EmbeddedSqlite::file(path), clock).await
     }
 
-    pub(super) fn from_connection(
-        conn: Connection,
+    async fn from_location(
+        location: awaken_sqlite_pool::EmbeddedSqlite,
         clock: Arc<dyn WallClock>,
     ) -> Result<Self, String> {
-        apply_sqlite_migrations(&conn)?;
+        let pool = location.open().await.map_err(|error| error.to_string())?;
+        apply_sqlite_migrations(&pool).await?;
         Ok(Self {
-            conn: SharedSqliteConnection::new(conn),
+            pool,
             book: LeaseBook::default(),
             clock,
         })
     }
 
-    pub(super) async fn with_connection<T, F>(&self, operation: F) -> Result<T, WorkQueueError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut Connection) -> Result<T, WorkQueueError> + Send + 'static,
-    {
-        awaken_sqlite_pool::with_connection(self.conn.clone(), operation)
-            .await
-            .map_err(storage)?
+    /// The store's one connection, held for a whole queue operation exactly as
+    /// the former shared-connection scheduler held it.
+    pub(super) async fn connection(
+        &self,
+    ) -> Result<awaken_sqlite_pool::EmbeddedConnection, WorkQueueError> {
+        self.pool.acquire().await.map_err(storage)
     }
 
     /// Reclaim `env_id`'s `active` rows whose durable lease has lapsed.
-    pub(super) fn reclaim_lapsed(
-        tx: &Transaction<'_>,
+    pub(super) async fn reclaim_lapsed(
+        tx: &mut SqliteConnection,
         env_id: &str,
         now_ms: u64,
     ) -> Result<(), WorkQueueError> {
         let cleared = reclaimed_lease_authority();
-        tx.execute(
+        sqlx::query(
             "UPDATE work_queue_item \
              SET state = 'queued', lease_owner = ?1, lease_expires_ms = ?2, \
                  lease_refreshed_ms = ?3, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
              WHERE environment_id = ?4 AND state = 'active' \
                AND (lease_expires_ms IS NULL OR lease_expires_ms <= ?5)",
-            params![
-                cleared.owner,
-                cleared.expires_at,
-                cleared.refreshed_at,
-                env_id,
-                db_millis(now_ms)
-            ],
         )
+        .bind(cleared.owner)
+        .bind(cleared.expires_at)
+        .bind(cleared.refreshed_at)
+        .bind(env_id)
+        .bind(db_millis(now_ms))
+        .execute(&mut *tx)
+        .await
         .map_err(storage)?;
         Ok(())
     }
 
     /// Insert a queued row and return its work id. A Session uses its id as
     /// `data_id`; a healthcheck references its own generated work id.
-    pub(super) fn insert(
-        conn: &mut Connection,
+    pub(super) async fn insert(
+        conn: &mut SqliteConnection,
         environment_id: &str,
         data_type: &str,
         session_id: Option<&str>,
         created_at: String,
     ) -> Result<String, WorkQueueError> {
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
+        let mut tx = immediate(conn).await?;
         if let Some(session_id) = session_id
-            && let Some(existing) = tx
-                .query_row(
-                    "SELECT work_id FROM work_queue_item \
-                     WHERE environment_id = ?1 AND data_type = 'session' AND data_id = ?2 \
-                     ORDER BY seq ASC LIMIT 1",
-                    params![environment_id, session_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(storage)?
+            && let Some(existing) = sqlx::query_scalar::<_, String>(
+                "SELECT work_id FROM work_queue_item \
+                 WHERE environment_id = ?1 AND data_type = 'session' AND data_id = ?2 \
+                 ORDER BY seq ASC LIMIT 1",
+            )
+            .bind(environment_id)
+            .bind(session_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(storage)?
         {
-            tx.commit().map_err(storage)?;
+            tx.commit().await.map_err(storage)?;
             return Ok(existing);
         }
-        let next: i64 = tx
-            .query_row(
-                "SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(storage)?;
+        let next: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(storage)?;
         let work_id = format!("work_{next:016}");
         let data_id = session_id.unwrap_or(&work_id);
-        tx.execute(
+        sqlx::query(
             "INSERT INTO work_queue_item \
                 (work_id, seq, environment_id, data_type, data_id, metadata_json, state, created_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, '{}', 'queued', ?6)",
-            params![work_id, next, environment_id, data_type, data_id, created_at],
         )
+        .bind(&work_id)
+        .bind(next)
+        .bind(environment_id)
+        .bind(data_type)
+        .bind(data_id)
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await
         .map_err(storage)?;
-        tx.commit().map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
         Ok(work_id)
     }
 
-    pub(super) fn owned(
-        tx: &Transaction<'_>,
+    pub(super) async fn owned(
+        tx: &mut SqliteConnection,
         env_id: &str,
         wid: &str,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        tx.query_row(
-            &format!(
-                "SELECT {COLS} FROM work_queue_item WHERE work_id = ?1 AND environment_id = ?2"
-            ),
-            params![wid, env_id],
-            row_to_item,
-        )
-        .optional()
-        .map_err(storage)
+        sqlx::query(&format!(
+            "SELECT {COLS} FROM work_queue_item WHERE work_id = ?1 AND environment_id = ?2"
+        ))
+        .bind(wid)
+        .bind(env_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        .map(|row| row_to_item(&row).map_err(storage))
+        .transpose()
     }
+}
+
+/// Open the write transaction every SQLite queue mutation runs in: SQLite's
+/// `BEGIN IMMEDIATE` takes the database write lock before the first read.
+pub(super) async fn immediate(
+    conn: &mut SqliteConnection,
+) -> Result<sqlx::Transaction<'_, Sqlite>, WorkQueueError> {
+    sqlx::Connection::begin_with(conn, "BEGIN IMMEDIATE")
+        .await
+        .map_err(storage)
 }
 
 impl PostgresWorkQueue {

@@ -153,10 +153,13 @@ mod tests {
             .build();
         let store = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+                .await
                 .expect("dispatch store"),
         );
         let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_dispatch_store(store.clone()),
         );
         let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         install_complete_projection_for_snapshot(

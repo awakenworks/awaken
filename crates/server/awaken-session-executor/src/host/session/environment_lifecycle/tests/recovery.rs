@@ -21,8 +21,12 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     // same-id recreation. Rules RR1=C1+C2=>E1, RR2=C1+C2+C3=>E2+E3.
     let thread = "cached-resume-revocation";
     let root = tempfile::tempdir().unwrap();
-    let host =
-        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(root.path()));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_store_dir(root.path())
+            .await,
+    );
     let managed = managed_test_host(host.clone());
     let snapshot = test_activation(thread, "cached-resume-publication").snapshot;
     install_complete_projection_for_snapshot(
@@ -116,7 +120,10 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
     let ready_thread = "ordinary-ready-recovery";
     let ready_storage = tempfile::tempdir().unwrap();
     let ready_host = Arc::new(
-        SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(ready_storage.path()),
+        SharedHost::new(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_store_dir(ready_storage.path())
+            .await,
     );
     let _ready_managed =
         crate::ManagedHost::new(ready_host.clone()).install_dispatch_session_runtime();
@@ -186,7 +193,10 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
     let missing_thread = "terminated-recovery-missing-provider";
     let missing_storage = tempfile::tempdir().unwrap();
     let missing_host = Arc::new(
-        SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(missing_storage.path()),
+        SharedHost::new(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_store_dir(missing_storage.path())
+            .await,
     );
     let _missing_managed =
         crate::ManagedHost::new(missing_host.clone()).install_dispatch_session_runtime();
@@ -247,7 +257,7 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let source_generation = generation(thread).id().to_owned();
-    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
     host.session_slots.update(thread, |slot| {
         slot.environment_owner = resident(thread, environment.clone());
     });
@@ -363,7 +373,8 @@ async fn closed_recovery_cannot_override_protected_retirements() {
         };
         let environment = environment(&provider, thread).await;
         let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
-        let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+        let host =
+            SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
         host.session_slots.update(thread, |slot| {
             slot.environment_owner = resident(thread, environment.clone());
         });
@@ -495,7 +506,7 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
         .into_session_provider();
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
-    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
     host.session_slots.update(thread, |slot| {
         // Test fixture write remains inside the sole lifecycle-owner module.
         slot.environment_owner = resident(thread, environment.clone());
@@ -568,8 +579,8 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
     assert!(Arc::ptr_eq(&retained.environment, &environment), "R20/E2");
 }
 
-#[test]
-fn legacy_suspending_projection_keeps_exact_binding_provenance_without_fabrication() {
+#[tokio::test]
+async fn legacy_suspending_projection_keeps_exact_binding_provenance_without_fabrication() {
     // Cause/effect rule: C1 an upgrade reads a legacy Suspending row whose
     // source effect was not serialized; C2 its generation and binding remain
     // exact. Effect E1 project one `LegacyDirect` pending owner containing the
@@ -587,7 +598,7 @@ fn legacy_suspending_projection_keeps_exact_binding_provenance_without_fabricati
         None,
         None,
     );
-    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
     host.install_session_environment_owner_projection(
         thread,
         "workspace",

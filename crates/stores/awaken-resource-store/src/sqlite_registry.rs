@@ -8,7 +8,6 @@ use awaken_resource_contract::{
     AggregateRevision, InsertOutcome, MemoryStoreAggregate, RegistryRepositoryError,
     ReplaceOutcome, RepositoryAggregate, ResourceRegistryRepository, Stored,
 };
-use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::SqliteResourceStore;
@@ -27,40 +26,32 @@ fn corrupt(error: impl ToString) -> RegistryRepositoryError {
     RegistryRepositoryError::CorruptData(error.to_string())
 }
 
-impl SqliteResourceStore {
-    /// Run one Registry statement on the shared connection's blocking lane, the
-    /// same scheduler every other SQLite Resource port uses.
-    async fn registry_task<T, F>(&self, operation: F) -> Result<T, RegistryRepositoryError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut Connection) -> Result<T, RegistryRepositoryError> + Send + 'static,
-    {
-        awaken_sqlite_pool::with_connection(self.connection.clone(), operation)
-            .await
-            .map_err(indeterminate)?
-    }
+/// Any SQLite constraint failure (the primary result code of every extended
+/// `SQLITE_CONSTRAINT_*` code), which an insert of an existing key raises.
+fn is_constraint_violation(error: &sqlx::Error) -> bool {
+    const SQLITE_CONSTRAINT: i32 = 19;
+    error
+        .as_database_error()
+        .and_then(|error| error.code())
+        .and_then(|code| code.parse::<i32>().ok())
+        .is_some_and(|code| code & 0xff == SQLITE_CONSTRAINT)
+}
 
+impl SqliteResourceStore {
     async fn registry_record<T: DeserializeOwned + Send + 'static>(
         &self,
         kind: &'static str,
         id: &str,
     ) -> Result<Option<Stored<T>>, RegistryRepositoryError> {
-        let id = id.to_owned();
-        let row: Option<(i64, String)> = self
-            .registry_task(move |connection| {
-                connection
-                    .query_row(
-                        &format!(
-                            "SELECT revision, data FROM {REGISTRY_NS}_entry \
-                             WHERE kind = ?1 AND id = ?2"
-                        ),
-                        params![kind, id],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()
-                    .map_err(indeterminate)
-            })
-            .await?;
+        let row: Option<(i64, String)> = sqlx::query_as(&format!(
+            "SELECT revision, data FROM {REGISTRY_NS}_entry \
+             WHERE kind = ?1 AND id = ?2"
+        ))
+        .bind(kind)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(indeterminate)?;
         row.map(|(revision, data)| {
             let revision = u64::try_from(revision)
                 .map_err(corrupt)
@@ -81,26 +72,20 @@ impl SqliteResourceStore {
         aggregate: &T,
     ) -> Result<InsertOutcome, RegistryRepositoryError> {
         let data = serde_json::to_string(aggregate).map_err(corrupt)?;
-        let id = id.to_owned();
-        self.registry_task(move |connection| {
-            match connection.execute(
-                &format!(
-                    "INSERT INTO {REGISTRY_NS}_entry (kind, id, revision, data) \
-                     VALUES (?1, ?2, 1, ?3)"
-                ),
-                params![kind, id, data],
-            ) {
-                Ok(_) => Ok(InsertOutcome::Inserted),
-                Err(error)
-                    if error.sqlite_error_code()
-                        == Some(rusqlite::ErrorCode::ConstraintViolation) =>
-                {
-                    Ok(InsertOutcome::AlreadyRegistered)
-                }
-                Err(error) => Err(indeterminate(error)),
-            }
-        })
+        match sqlx::query(&format!(
+            "INSERT INTO {REGISTRY_NS}_entry (kind, id, revision, data) \
+             VALUES (?1, ?2, 1, ?3)"
+        ))
+        .bind(kind)
+        .bind(id)
+        .bind(data)
+        .execute(&self.pool)
         .await
+        {
+            Ok(_) => Ok(InsertOutcome::Inserted),
+            Err(error) if is_constraint_violation(&error) => Ok(InsertOutcome::AlreadyRegistered),
+            Err(error) => Err(indeterminate(error)),
+        }
     }
 
     async fn replace_registry_record<T: Serialize>(
@@ -116,26 +101,19 @@ impl SqliteResourceStore {
             ))
         })?;
         let data = serde_json::to_string(aggregate).map_err(corrupt)?;
-        let id = id.to_owned();
-        let changed = self
-            .registry_task(move |connection| {
-                connection
-                    .execute(
-                        &format!(
-                            "UPDATE {REGISTRY_NS}_entry SET revision = ?4, data = ?5 \
-                             WHERE kind = ?1 AND id = ?2 AND revision = ?3"
-                        ),
-                        params![
-                            kind,
-                            id,
-                            expected_revision.get() as i64,
-                            next.get() as i64,
-                            data
-                        ],
-                    )
-                    .map_err(indeterminate)
-            })
-            .await?;
+        let changed = sqlx::query(&format!(
+            "UPDATE {REGISTRY_NS}_entry SET revision = ?4, data = ?5 \
+             WHERE kind = ?1 AND id = ?2 AND revision = ?3"
+        ))
+        .bind(kind)
+        .bind(id)
+        .bind(expected_revision.get() as i64)
+        .bind(next.get() as i64)
+        .bind(data)
+        .execute(&self.pool)
+        .await
+        .map_err(indeterminate)?
+        .rows_affected();
         Ok(if changed == 1 {
             ReplaceOutcome::Replaced { revision: next }
         } else {
@@ -148,27 +126,14 @@ impl SqliteResourceStore {
         kind: &'static str,
         validate: impl Fn(&T, &str) -> Result<(), RegistryRepositoryError>,
     ) -> Result<Vec<Stored<T>>, RegistryRepositoryError> {
-        let rows = self
-            .registry_task(move |connection| {
-                let mut statement = connection
-                    .prepare(&format!(
-                        "SELECT id, revision, data FROM {REGISTRY_NS}_entry \
-                         WHERE kind = ?1 ORDER BY id"
-                    ))
-                    .map_err(indeterminate)?;
-                statement
-                    .query_map(params![kind], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, i64>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    })
-                    .map_err(indeterminate)?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(indeterminate)
-            })
-            .await?;
+        let rows: Vec<(String, i64, String)> = sqlx::query_as(&format!(
+            "SELECT id, revision, data FROM {REGISTRY_NS}_entry \
+             WHERE kind = ?1 ORDER BY id"
+        ))
+        .bind(kind)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(indeterminate)?;
         rows.into_iter()
             .map(|(id, revision, data)| {
                 let revision = u64::try_from(revision)
@@ -352,7 +317,10 @@ mod tests {
         // and this test would fail at R2 or R3.
         let directory = tempfile::tempdir().expect("Registry directory");
         let path = directory.path().join("resources.db");
-        let connection = rusqlite::Connection::open(&path).expect("open V1 database");
+        let connection = awaken_sqlite_pool::EmbeddedSqlite::file(&path)
+            .open()
+            .await
+            .expect("open V1 database");
         let v1 = awaken_scoped_migration::MigrationBundle::new(
             crate::schema::REGISTRY_BUNDLE_ID,
             vec![
@@ -365,26 +333,28 @@ mod tests {
             ],
         )
         .expect("valid published Registry bundle");
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(
+        awaken_scoped_migration::sqlite::SqliteMigrationRunner::with_prefix(
+            connection.sqlx().clone(),
             crate::schema::REGISTRY_NS,
         )
         .expect("valid published prefix")
-        .run_bundle(&connection, &v1)
+        .run_bundle(&v1)
+        .await
         .expect("apply published V1");
         let aggregate = memory();
-        connection
-            .execute(
-                "INSERT INTO resource_catalog_entry (kind, id, data) VALUES (?1, ?2, ?3)",
-                params![
-                    MEMORY,
-                    aggregate.definition().id.as_str(),
-                    serde_json::to_string(&aggregate).expect("serialize V1 aggregate")
-                ],
-            )
+        sqlx::query("INSERT INTO resource_catalog_entry (kind, id, data) VALUES (?1, ?2, ?3)")
+            .bind(MEMORY)
+            .bind(aggregate.definition().id.as_str())
+            .bind(serde_json::to_string(&aggregate).expect("serialize V1 aggregate"))
+            .execute(&connection)
+            .await
             .expect("seed V1 row");
+        connection.close().await;
         drop(connection);
 
-        let upgraded = SqliteResourceStore::open(&path).expect("apply Registry V2");
+        let upgraded = SqliteResourceStore::open(&path)
+            .await
+            .expect("apply Registry V2");
         let stored = upgraded
             .load_memory_store("memory-cas")
             .await
@@ -392,16 +362,13 @@ mod tests {
             .expect("V1 row survives in-place upgrade");
         assert_eq!(stored.revision, AggregateRevision::INITIAL);
         assert_eq!(stored.aggregate, aggregate);
-        let applied = upgraded
-            .connection()
-            .expect("resource SQLite connection")
-            .query_row(
-                "SELECT COUNT(*) FROM resource_catalog_schema_migrations \
-                 WHERE bundle_id = 'awaken.resource_catalog' AND version = 2",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .expect("read Registry migration ledger");
+        let applied = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM resource_catalog_schema_migrations \
+             WHERE bundle_id = 'awaken.resource_catalog' AND version = 2",
+        )
+        .fetch_one(&upgraded.pool)
+        .await
+        .expect("read Registry migration ledger");
         assert_eq!(applied, 1);
     }
 
@@ -410,21 +377,20 @@ mod tests {
         // Corruption partition: valid aggregate JSON stored under a different
         // physical id must be rejected by both point lookup and inventory. The
         // domain validates aggregate invariants; the adapter owns row identity.
-        let store = SqliteResourceStore::in_memory().expect("open Registry");
+        let store = SqliteResourceStore::in_memory()
+            .await
+            .expect("open Registry");
         let aggregate = memory();
-        store
-            .connection()
-            .expect("resource SQLite connection")
-            .execute(
-                "INSERT INTO resource_catalog_entry (kind, id, revision, data) \
-                 VALUES (?1, ?2, 1, ?3)",
-                params![
-                    MEMORY,
-                    "aliased-row",
-                    serde_json::to_string(&aggregate).expect("serialize aggregate")
-                ],
-            )
-            .expect("seed mismatched row");
+        sqlx::query(
+            "INSERT INTO resource_catalog_entry (kind, id, revision, data) \
+             VALUES (?1, ?2, 1, ?3)",
+        )
+        .bind(MEMORY)
+        .bind("aliased-row")
+        .bind(serde_json::to_string(&aggregate).expect("serialize aggregate"))
+        .execute(&store.pool)
+        .await
+        .expect("seed mismatched row");
         assert!(matches!(
             store.load_memory_store("aliased-row").await,
             Err(RegistryRepositoryError::CorruptData(_))
@@ -442,7 +408,9 @@ mod tests {
         // and reopen exposes one complete aggregate rather than a torn merge.
         let directory = tempfile::tempdir().expect("Registry directory");
         let path = directory.path().join("resources.db");
-        let seed = SqliteResourceStore::open(&path).expect("open Registry seed");
+        let seed = SqliteResourceStore::open(&path)
+            .await
+            .expect("open Registry seed");
         assert_eq!(
             seed.insert_memory_store(&memory())
                 .await
@@ -451,8 +419,12 @@ mod tests {
         );
         drop(seed);
 
-        let left = SqliteResourceStore::open(&path).expect("open left writer");
-        let right = SqliteResourceStore::open(&path).expect("open right writer");
+        let left = SqliteResourceStore::open(&path)
+            .await
+            .expect("open left writer");
+        let right = SqliteResourceStore::open(&path)
+            .await
+            .expect("open right writer");
         let mut left_state = left
             .load_memory_store("memory-cas")
             .await
@@ -504,7 +476,9 @@ mod tests {
                 .count(),
             1
         );
-        let reopened = SqliteResourceStore::open(path).expect("reopen Registry");
+        let reopened = SqliteResourceStore::open(path)
+            .await
+            .expect("reopen Registry");
         let durable = reopened
             .load_memory_store("memory-cas")
             .await

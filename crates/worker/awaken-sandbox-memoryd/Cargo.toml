@@ -38,7 +38,10 @@ libc = { version = "0.2", optional = true }
 [dev-dependencies]
 awaken-lease-testkit.workspace = true
 tempfile = "3"
-rusqlite = { workspace = true, features = ["functions"] }
+# The write-back fault test pauses the repository's own SQLite connection
+# inside a write (a row-change hook on the pool's one connection).
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+awaken-sqlite-pool.workspace = true
 awaken-memory-store = { workspace = true, features = ["sqlite", "test-support"] }
 # Kernel-VFS integration tests issue a syscall std does not expose (`truncate` by
 # path → setattr without an fd); nix is a safe wrapper (no `unsafe` in tests).

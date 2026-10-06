@@ -94,6 +94,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 });
                 let mut raw =
                     SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
+                        .await
                         .with_environment_checkpoint_store(store.clone());
                 if registered {
                     raw.execution_authority = Some(worker.clone());
@@ -256,6 +257,7 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
         let mut host =
             SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
+                .await
                 .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
                     events: events.clone(),
                     expected_id: "exact-checkpoint".into(),
@@ -337,8 +339,8 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
     }
 }
 
-#[test]
-fn suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_slots() {
+#[tokio::test]
+async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_slots() {
     use crate::session_slot::SessionRealizationAuthority as Authority;
     use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
     use awaken_session_resource_contract::SessionRealizationLease;
@@ -374,7 +376,8 @@ fn suspension_and_terminal_admission_use_live_observation_and_never_reopen_close
         ("S14", "uninstalled", "same", false, false),
         ("S15", "absent", "same", false, false),
     ] {
-        let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+        let host =
+            SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
         let root = match state {
             "absent" | "uninstalled" => Authority::Uninstalled,
             "closed-empty" => Authority::Closed(None),

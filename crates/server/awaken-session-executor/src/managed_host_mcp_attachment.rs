@@ -769,7 +769,7 @@ mod tests {
         // realization, Staging projection, or process spawn. Constraint: an
         // anonymous target needs no credential materialization. Decision row:
         // S0 C1+C2 -> E1+E2, before any Session Environment effect.
-        let host = Arc::new(crate::SharedHost::new(Arc::new(NoLlm), "test"));
+        let host = Arc::new(crate::SharedHost::new(Arc::new(NoLlm), "test").await);
         let generation =
             crate::test_mcp::mcp_fence("mcp-no-reaper", "stdio", 1, "runtime-1", 1, u64::MAX);
         let request = awaken_session_mcp_contract::StageMcpAttachment {

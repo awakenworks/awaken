@@ -19,6 +19,9 @@ use std::time::Duration;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 
 use crate::WRITE_WAIT;
+use crate::clock_hold::ClockHold;
+use crate::embedded_pool::EmbeddedPool;
+use crate::settle::{COLLATION, ConnectedFile, LiveFile, file_key, settled};
 
 /// Admission waits like the former semaphore did: a caller queues until the one
 /// connection is free. The bound only keeps a wedged connection from hanging a
@@ -75,8 +78,27 @@ impl EmbeddedSqlite {
         }
     }
 
+    fn file_path(&self) -> Option<&Path> {
+        match &self.location {
+            Location::File(path) | Location::ReadOnlyFile(path) => Some(path),
+            Location::Memory => None,
+        }
+    }
+
+    /// Wait until every pool this process dropped on the file has finished
+    /// closing. sqlx closes a dropped pool's connection later, on its own thread,
+    /// and closing the last connection checkpoints the WAL into the main file, so
+    /// a caller that inspects the files after dropping a store waits here to see
+    /// them at rest, as it did when dropping a synchronous connection closed it.
+    /// Pools still in use do not delay it.
+    pub async fn settled(&self) {
+        if let Some(path) = self.file_path() {
+            settled(path).await;
+        }
+    }
+
     /// Open the store's one-connection pool under the embedded policy.
-    pub async fn open(&self) -> Result<SqlitePool, SqlitePoolError> {
+    pub async fn open(&self) -> Result<EmbeddedPool, SqlitePoolError> {
         let options = match &self.location {
             Location::File(path) => SqliteConnectOptions::new()
                 .filename(path)
@@ -88,6 +110,18 @@ impl EmbeddedSqlite {
         }
         .busy_timeout(WRITE_WAIT)
         .foreign_keys(true);
+        let file = self.file_path().map(file_key);
+        let options = match &file {
+            Some(file) => {
+                let connected = ConnectedFile::new(file.clone());
+                options.collation(COLLATION, move |left: &str, right: &str| {
+                    let _connected = &connected;
+                    left.cmp(right)
+                })
+            }
+            None => options,
+        };
+        let _opening = ClockHold::take();
         // `min_connections(1)` with no idle or lifetime limit keeps the single
         // connection open, so an in-memory database is never dropped and
         // recreated empty behind the store's back.
@@ -104,7 +138,7 @@ impl EmbeddedSqlite {
         if matches!(self.location, Location::File(_)) {
             ensure_wal(&pool).await?;
         }
-        Ok(pool)
+        Ok(EmbeddedPool::new(pool, file.map(LiveFile::new)))
     }
 }
 
@@ -128,16 +162,18 @@ async fn ensure_wal(pool: &SqlitePool) -> Result<(), SqlitePoolError> {
 
 #[cfg(test)]
 mod tests {
+    use futures_util::FutureExt as _;
+
     use super::*;
 
-    async fn pragma_text(pool: &SqlitePool, pragma: &str) -> String {
+    async fn pragma_text(pool: &EmbeddedPool, pragma: &str) -> String {
         sqlx::query_scalar::<_, String>(&format!("PRAGMA {pragma}"))
             .fetch_one(pool)
             .await
             .unwrap()
     }
 
-    async fn pragma_int(pool: &SqlitePool, pragma: &str) -> i64 {
+    async fn pragma_int(pool: &EmbeddedPool, pragma: &str) -> i64 {
         sqlx::query_scalar::<_, i64>(&format!("PRAGMA {pragma}"))
             .fetch_one(pool)
             .await
@@ -249,6 +285,103 @@ mod tests {
         assert!(!missing.exists(), "R3");
     }
 
+    /// Paused-clock decision table (a current-thread runtime with paused time):
+    ///
+    /// | Rule | SQLite work | Pending timer | Effect |
+    /// |---|---|---|---|
+    /// | C1 | opening the pool | the 24 h admission bound | open succeeds |
+    /// | C2 | one statement | a 1 s timer | the statement finishes first |
+    /// | C3 | back-to-back callers on the one connection | admission bounds | every caller is admitted |
+    #[tokio::test(start_paused = true)]
+    async fn sqlite_work_holds_a_paused_clock_still() {
+        let pool = EmbeddedSqlite::memory().open().await.expect("C1");
+        sqlx::query("CREATE TABLE fact (value INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let started = tokio::time::Instant::now();
+        let timer = tokio::spawn(tokio::time::sleep(Duration::from_secs(1)));
+        for value in 0..50 {
+            sqlx::query("INSERT INTO fact (value) VALUES (?1)")
+                .bind(value)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        assert_eq!(started.elapsed(), Duration::ZERO, "C2");
+        assert!(!timer.is_finished(), "C2");
+
+        let callers = (0..20)
+            .map(|value| {
+                let pool = pool.clone();
+                tokio::spawn(async move {
+                    sqlx::query("INSERT INTO fact (value) VALUES (?1)")
+                        .bind(value)
+                        .execute(&pool)
+                        .await
+                })
+            })
+            .collect::<Vec<_>>();
+        for caller in callers {
+            caller.await.unwrap().expect("C3");
+        }
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM fact")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 70, "C3");
+        timer.await.unwrap();
+    }
+
+    /// Settle decision table:
+    ///
+    /// | Rule | Pools on the file | Effect of `settled` |
+    /// |---|---|---|
+    /// | L1 | one in use | resolves at once |
+    /// | L2 | one in use, one dropped | resolves once the dropped one has closed; the other still works |
+    /// | L3 | all dropped | resolves once closed; the last close checkpointed and removed the WAL |
+    /// | L4 | memory, or an open that failed | resolves at once |
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settled_waits_only_for_dropped_pools_to_finish_closing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settled.db");
+        let store = EmbeddedSqlite::file(&path);
+        let first = store.open().await.unwrap();
+        sqlx::query("CREATE TABLE fact (value INTEGER)")
+            .execute(&first)
+            .await
+            .unwrap();
+        assert!(store.settled().now_or_never().is_some(), "L1");
+
+        let second = EmbeddedSqlite::file(directory.path().join(".").join("settled.db"))
+            .open()
+            .await
+            .unwrap();
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(10), store.settled())
+            .await
+            .expect("L2 the dropped pool closes");
+        sqlx::query("INSERT INTO fact (value) VALUES (1)")
+            .execute(&second)
+            .await
+            .expect("L2");
+
+        drop(second);
+        tokio::time::timeout(Duration::from_secs(10), store.settled())
+            .await
+            .expect("L3 the dropped pools close");
+        assert!(!directory.path().join("settled.db-wal").exists(), "L3");
+
+        assert!(
+            EmbeddedSqlite::memory().settled().now_or_never().is_some(),
+            "L4"
+        );
+        let missing = EmbeddedSqlite::read_only(directory.path().join("missing.db"));
+        assert!(missing.open().await.is_err(), "L4");
+        assert!(missing.settled().now_or_never().is_some(), "L4");
+    }
+
     #[tokio::test]
     async fn an_in_memory_database_persists_across_operations() {
         // The pool keeps its single connection, so data written by one operation
@@ -280,7 +413,7 @@ mod tests {
 
     type Order = Arc<Mutex<Vec<&'static str>>>;
 
-    async fn memory_pool() -> SqlitePool {
+    async fn memory_pool() -> EmbeddedPool {
         let pool = EmbeddedSqlite::memory().open().await.unwrap();
         sqlx::query("CREATE TABLE evidence (id INTEGER)")
             .execute(&pool)
@@ -293,7 +426,7 @@ mod tests {
     /// polling its admission once in place before spawning it (a spawned task
     /// might otherwise register after the next caller).
     async fn enqueue(
-        pool: &SqlitePool,
+        pool: &EmbeddedPool,
         order: &Order,
         name: &'static str,
     ) -> tokio::task::JoinHandle<()> {
@@ -315,7 +448,7 @@ mod tests {
 
     /// Hold the one connection until the returned sender fires.
     async fn owner(
-        pool: &SqlitePool,
+        pool: &EmbeddedPool,
         order: &Order,
         name: &'static str,
     ) -> (

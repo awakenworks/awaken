@@ -162,7 +162,9 @@ async fn sqlite_bounded_dispatch_queries_conform() {
     // projection decoder; the budget applies before payload deserialization.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     assert_bounded_query_conformance(
-        &SqliteDispatchStore::open_in_memory(clock.clock()).unwrap(),
+        &SqliteDispatchStore::open_in_memory(clock.clock())
+            .await
+            .unwrap(),
         &clock,
     )
     .await;
@@ -226,20 +228,22 @@ async fn sqlite_corrupt_summary_does_not_poison_identity_pages() {
     // Q7 uses a real persisted payload corruption, not a mock query result.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("queries.sqlite");
-    let store =
-        SqliteDispatchStore::open(path.to_str().unwrap(), awaken_time::system_clock()).unwrap();
+    let store = SqliteDispatchStore::open(path.to_str().unwrap(), awaken_time::system_clock())
+        .await
+        .unwrap();
     for run in ["bad", "healthy"] {
         store
             .enqueue(RunDispatch::new(harness::activation(run)))
             .await
             .unwrap();
     }
-    let connection = rusqlite::Connection::open(path).unwrap();
-    connection
-        .execute(
-            "UPDATE runtime_dispatch SET request = '{}' WHERE run_id = 'bad'",
-            [],
-        )
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(path)
+        .open()
+        .await
+        .unwrap();
+    sqlx::query("UPDATE runtime_dispatch SET request = '{}' WHERE run_id = 'bad'")
+        .execute(&connection)
+        .await
         .unwrap();
     assert_bad_row_isolation(&store).await;
 }

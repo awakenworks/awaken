@@ -11,16 +11,23 @@ const STORE: &str = "owner-crash-memory";
 const BEFORE: &str = "committed before owner SIGKILL — 无换行";
 const AFTER: &str = "committed by the recovered execution — 无换行";
 
-fn repository(base: &Path, clock: Arc<dyn awaken_time::WallClock>) -> Arc<SqliteMemoryRepository> {
-    Arc::new(SqliteMemoryRepository::open(base.join("memory.db").to_str().unwrap(), clock).unwrap())
+async fn repository(
+    base: &Path,
+    clock: Arc<dyn awaken_time::WallClock>,
+) -> Arc<SqliteMemoryRepository> {
+    Arc::new(
+        SqliteMemoryRepository::open(base.join("memory.db").to_str().unwrap(), clock)
+            .await
+            .unwrap(),
+    )
 }
 
-pub(super) fn provider(base: &Path) -> LocalProvider {
+pub(super) async fn provider(base: &Path) -> LocalProvider {
     // One provider process reading stamps both the repository and the FUSE
     // mounter; the durable-head assertions below reopen SQLite independently.
     let clock = awaken_time::system_clock();
     LocalProvider::trusted_host(base).with_memory_mounter(Arc::new(MemoryStoreMounter::new(
-        repository(base, clock.clone()),
+        repository(base, clock.clone()).await,
         clock,
     )))
 }
@@ -101,6 +108,7 @@ fn kernel_mount(path: &Path) -> Option<String> {
 async fn durable_head(base: &Path) -> awaken_memory_store::Memory {
     // Independent reopened SQLite connection, not the FUSE content cache.
     repository(base, awaken_time::system_clock())
+        .await
         .get_by_path(STORE, "/note.md")
         .await
         .unwrap()
@@ -136,6 +144,7 @@ async fn provider_owner_crash_reacquires_fuse_before_new_scoped_execution() {
     // distributed Worker/Control restart, vendor login or partial-I/O durability.
     let base = tempfile::tempdir().unwrap();
     repository(base.path(), awaken_time::system_clock())
+        .await
         .create(STORE, "/note.md", "seed")
         .await
         .unwrap();
@@ -155,7 +164,7 @@ async fn provider_owner_crash_reacquires_fuse_before_new_scoped_execution() {
     let mut old_file = std::fs::File::open(mount_path.join("note.md")).unwrap();
     let before = durable_head(base.path()).await;
     assert_eq!(before.content.as_deref(), Some(BEFORE));
-    let provider = provider(base.path());
+    let provider = provider(base.path()).await;
     let specification = specification();
     let authority = pc::test_support::EffectAuthority::new(&fence("adopt"));
     assert!(

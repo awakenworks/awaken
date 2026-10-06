@@ -134,7 +134,7 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
         .unwrap()
         .push(serde_json::json!("/workspace/confirmed-2.json"));
     let binding = serde_json::to_string(&successor).unwrap();
-    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
     host.session_slots.update(thread, |slot| {
         slot.environment_owner = SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
             cause: SessionEnvironmentRetirementCause::RealizationRevocation,
@@ -608,7 +608,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
     let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
     host.install_test_resident_session_environment(thread, environment.clone());
     let generation = generation(thread);
     let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
@@ -676,7 +676,7 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
     let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
     host.install_test_resident_session_environment(thread, environment.clone());
 
     assert!(
@@ -865,8 +865,12 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     };
 
     let root = tempfile::tempdir().unwrap();
-    let host =
-        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(root.path()));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_store_dir(root.path())
+            .await,
+    );
     // Fixture constraint: the complete projection uses the production Managed
     // runtime only to select the same frozen provider. This test then calls the
     // typed lifecycle owner directly; claimed end-to-end ordering remains in the

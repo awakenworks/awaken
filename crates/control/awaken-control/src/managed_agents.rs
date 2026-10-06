@@ -732,7 +732,7 @@ mod tests {
         // | rule | request | resolver | Managed result | ConfigPlane write |
         // | F1   | valid   | rejects  | Invalid        | none              |
         let temp = tempfile::tempdir().unwrap();
-        let plane = rejecting_plane(temp.path().join("config.sqlite").to_str().unwrap());
+        let plane = rejecting_plane(temp.path().join("config.sqlite").to_str().unwrap()).await;
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane.clone(),
             "workspace-a",
@@ -851,7 +851,7 @@ mod tests {
         // catalog's semantic delegation owner may survive.
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("managed-opaque.sqlite");
-        let (plane, executable) = plane_with_delegation_and_catalog(path.to_str().unwrap());
+        let (plane, executable) = plane_with_delegation_and_catalog(path.to_str().unwrap()).await;
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane.clone(),
             "workspace-a",
@@ -991,7 +991,7 @@ mod tests {
         // | L3   | Archived  | archive | stale current      | yes            | withdraw repaired, no new revision |
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
-        let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
+        let (plane, catalog) = plane_with_catalog(path.to_str().unwrap()).await;
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane.clone(),
             "workspace-a",
@@ -1080,7 +1080,7 @@ mod tests {
         let path = temp.path().join("config.sqlite");
         let id = {
             let repository = ConfigPlaneManagedAgentRepository::new(
-                plane(path.to_str().unwrap()),
+                plane(path.to_str().unwrap()).await,
                 "workspace-a",
                 awaken_time::system_clock(),
             );
@@ -1096,7 +1096,7 @@ mod tests {
         };
 
         let repository = ConfigPlaneManagedAgentRepository::new(
-            plane(path.to_str().unwrap()),
+            plane(path.to_str().unwrap()).await,
             "workspace-a",
             awaken_time::system_clock(),
         );
@@ -1132,7 +1132,7 @@ mod tests {
         // version, and restart through one selection rule.
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
-        let (plane, _catalog) = plane_with_catalog(path.to_str().unwrap());
+        let (plane, _catalog) = plane_with_catalog(path.to_str().unwrap()).await;
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane.clone(),
             "workspace-a",
@@ -1233,7 +1233,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
         let id = {
-            let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
+            let (plane, catalog) = plane_with_catalog(path.to_str().unwrap()).await;
             let repository = ConfigPlaneManagedAgentRepository::new(
                 plane.clone(),
                 "workspace-a",
@@ -1263,7 +1263,7 @@ mod tests {
             created.id
         };
 
-        let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
+        let (plane, catalog) = plane_with_catalog(path.to_str().unwrap()).await;
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane.clone(),
             "workspace-a",
@@ -1311,7 +1311,7 @@ mod tests {
         // table cannot pass by refusing everything.
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
-        let plane = plane_with_delegation(path.to_str().unwrap());
+        let plane = plane_with_delegation(path.to_str().unwrap()).await;
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane,
             "workspace-a",
@@ -1432,7 +1432,7 @@ mod tests {
         // frozen geography and mismatch admission has no Agent write side effect.
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
-        let plane = plane_with_delegation(path.to_str().unwrap());
+        let plane = plane_with_delegation(path.to_str().unwrap()).await;
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane,
             "workspace-a",
@@ -1607,7 +1607,7 @@ mod tests {
         // surface uses one projection, and restart cannot introduce cached truth.
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
-        let plane = plane_with_delegation(path.to_str().unwrap());
+        let plane = plane_with_delegation(path.to_str().unwrap()).await;
         let repository = ConfigPlaneManagedAgentRepository::new(
             plane.clone(),
             "workspace-a",
@@ -1720,7 +1720,7 @@ mod tests {
         drop(repository);
         drop(plane);
         let cold = ConfigPlaneManagedAgentRepository::new(
-            plane_with_delegation(path.to_str().unwrap()),
+            plane_with_delegation(path.to_str().unwrap()).await,
             "workspace-a",
             awaken_time::system_clock(),
         );
@@ -1777,7 +1777,7 @@ mod tests {
         // | U2   | acp:<cli>        | yes        | control-plane ACP intent preserved |
         let native_temp = tempfile::tempdir().unwrap();
         let native_repository = ConfigPlaneManagedAgentRepository::new(
-            plane(native_temp.path().join("config.sqlite").to_str().unwrap()),
+            plane(native_temp.path().join("config.sqlite").to_str().unwrap()).await,
             "workspace-a",
             awaken_time::system_clock(),
         );
@@ -1887,7 +1887,7 @@ mod tests {
         // | P3 | request-scoped | B | project reserved Assistant |
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
-        let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
+        let (plane, catalog) = plane_with_catalog(path.to_str().unwrap()).await;
         let mut config = awaken_admin_assistant::admin_assistant_config();
         config.model_binding =
             ModelSelection::pinned("provider", "model-a", "backend").expect("literal coordinates");

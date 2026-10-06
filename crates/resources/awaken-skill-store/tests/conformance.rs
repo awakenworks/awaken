@@ -293,7 +293,9 @@ async fn filesystem_corruption_retains_the_original_frame() {
 async fn sqlite_corruption_retains_the_original_frame() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("corrupt.sqlite");
-    let store = awaken_skill_store::SqliteSkillStore::open(path.to_str().unwrap()).unwrap();
+    let store = awaken_skill_store::SqliteSkillStore::open(path.to_str().unwrap())
+        .await
+        .unwrap();
     store
         .create(
             definition("fault-workspace", "fault-skill"),
@@ -301,23 +303,25 @@ async fn sqlite_corruption_retains_the_original_frame() {
         )
         .await
         .unwrap();
-    let connection = awaken_sqlite_pool::SqliteConnectionFactory::file(path)
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(path)
         .open()
+        .await
         .unwrap();
-    connection
-        .execute(
-            "UPDATE skill_store_aggregate SET data='{}' WHERE workspace_id=?1 AND id=?2",
-            ["fault-workspace", "fault-skill"],
-        )
+    sqlx::query("UPDATE skill_store_aggregate SET data='{}' WHERE workspace_id=?1 AND id=?2")
+        .bind("fault-workspace")
+        .bind("fault-skill")
+        .execute(&connection)
+        .await
         .unwrap();
     corrupt_frame_is_not_absent_or_overwritten(&store).await;
-    let stored: String = connection
-        .query_row(
-            "SELECT data FROM skill_store_aggregate WHERE workspace_id=?1 AND id=?2",
-            ["fault-workspace", "fault-skill"],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let stored: String = sqlx::query_scalar(
+        "SELECT data FROM skill_store_aggregate WHERE workspace_id=?1 AND id=?2",
+    )
+    .bind("fault-workspace")
+    .bind("fault-skill")
+    .fetch_one(&connection)
+    .await
+    .unwrap();
     assert_eq!(stored, "{}", "D2 original bytes");
 }
 
@@ -499,7 +503,12 @@ async fn filesystem_processes_do_not_lose_a_concurrent_version() {
 #[cfg(all(feature = "sqlite", feature = "test-support"))]
 #[tokio::test]
 async fn sqlite_conforms() {
-    aggregate_lifecycle(&awaken_skill_store::SqliteSkillStore::open_in_memory().unwrap()).await;
+    aggregate_lifecycle(
+        &awaken_skill_store::SqliteSkillStore::open_in_memory()
+            .await
+            .unwrap(),
+    )
+    .await;
 }
 
 #[cfg(all(feature = "sqlite", feature = "test-support"))]
@@ -513,7 +522,9 @@ async fn sqlite_retired_pin_survives_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("skills.sqlite");
     let path = path.to_str().unwrap();
-    let store = awaken_skill_store::SqliteSkillStore::open(path).unwrap();
+    let store = awaken_skill_store::SqliteSkillStore::open(path)
+        .await
+        .unwrap();
     store
         .create(
             definition("persist", "retired"),
@@ -529,7 +540,9 @@ async fn sqlite_retired_pin_survives_reopen() {
     assert!(store.delete_version("persist", "retired", 2).await.unwrap());
     drop(store);
 
-    let reopened = awaken_skill_store::SqliteSkillStore::open(path).unwrap();
+    let reopened = awaken_skill_store::SqliteSkillStore::open(path)
+        .await
+        .unwrap();
     assert_eq!(
         reopened.list_versions("persist", "retired").await.unwrap(),
         vec![version("retired", 1, b"v1")],

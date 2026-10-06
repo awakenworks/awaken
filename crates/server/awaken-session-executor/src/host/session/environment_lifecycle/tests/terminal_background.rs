@@ -20,7 +20,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     let physical_id = environment.lifecycle().handle().sandbox_id;
     let durable_generation = generation(thread);
     assert_ne!(physical_id, durable_generation.id(), "C2");
-    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
     host.session_slots.update(thread, |slot| {
         slot.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
             identity: BoundSessionEnvironmentIdentity::Durable {
@@ -114,7 +114,9 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         let root = tempfile::tempdir().unwrap();
         let host = Arc::new(
             SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
+                .await
                 .with_store_dir(root.path())
+                .await
                 .with_skill_store(root.path().join("skill-store")),
         );
         let activation = test_activation(thread, &format!("terminal-background-{thread}"));
@@ -479,7 +481,9 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     let thread = "terminal-unmaterialized-replay";
     let root = tempfile::tempdir().unwrap();
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
-        .with_store_dir(root.path());
+        .await
+        .with_store_dir(root.path())
+        .await;
     let activation = test_activation(thread, "terminal-unmaterialized");
     let projection = empty_frozen_projection_for_snapshot(
         "workspace",
@@ -733,7 +737,7 @@ async fn cold_checkpoint_disposal_cannot_seed_an_owner_without_preparation() {
     // Cold adoption belongs exclusively to the preceding source Preparation
     // phase and is covered end-to-end by the canonical Host continuation tests.
     let thread = "cold-checkpoint-source";
-    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
     let generation = generation(thread);
     let binding = serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
         "non-resumable",

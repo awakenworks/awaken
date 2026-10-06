@@ -205,14 +205,14 @@ pub(crate) fn installation_workspace(deployment: &awaken_session_executor::Deplo
     }
 }
 
-pub(crate) fn resource_host(
+pub(crate) async fn resource_host(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
 ) -> ScenarioPlatform {
-    resource_host_with_deployment(llm, model_ref, scenario_deployment())
+    resource_host_with_deployment(llm, model_ref, scenario_deployment()).await
 }
 
-pub(crate) fn resource_host_with_deployment(
+pub(crate) async fn resource_host_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     deployment: awaken_session_executor::DeploymentConfig,
@@ -223,12 +223,13 @@ pub(crate) fn resource_host_with_deployment(
         deployment,
         SCENARIO_RUNTIME_AUTHORITY.get(),
     )
+    .await
 }
 
 /// One assembly path for the binary's installed authority and direct test
 /// factories. Passing the selected port makes both branches testable without
 /// mutating the process-wide OnceLock in parallel unit tests.
-fn resource_host_with_selected_runtime(
+async fn resource_host_with_selected_runtime(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     deployment: awaken_session_executor::DeploymentConfig,
@@ -238,8 +239,10 @@ fn resource_host_with_selected_runtime(
     let clock = awaken_time::system_clock();
     let resources = match deployment.storage_dir.clone() {
         Some(storage_dir) => awaken_resource_persistence::open_embedded(&storage_dir, clock)
+            .await
             .expect("open embedded scenario Resources application"),
         None => awaken_resource_persistence::ephemeral(clock)
+            .await
             .expect("open ephemeral scenario Resources application"),
     };
     // Resource durability and runtime policy are orthogonal. Even an ephemeral
@@ -248,7 +251,8 @@ fn resource_host_with_selected_runtime(
     // explicit Local sandbox tier with the fail-closed Namespace default.
     let extraction_repository = awaken_runtime_host_testkit::memory_extraction_repository(
         deployment.storage_dir.as_deref(),
-    );
+    )
+    .await;
     // A durable scenario root always carries its installation marker, even when
     // an explicit scenario Workspace overrides the coordinate below.
     let installation_workspace = installation_workspace(&deployment);
@@ -312,6 +316,7 @@ pub(crate) async fn runtime_resource_host_with_deployment(
     deployment: awaken_session_executor::DeploymentConfig,
 ) -> ScenarioPlatform {
     resource_host_with_deployment(llm, model_ref, deployment)
+        .await
         .map_host_async(|host| async move {
             awaken_execution_composition::with_session_environment_from_deployment(
                 host,
@@ -358,6 +363,7 @@ mod tests {
             deployment,
             Some(&selected),
         )
+        .await
         .into_parts();
         assert!(
             Arc::ptr_eq(&host.dispatch_store().unwrap(), &exact_dispatch),
@@ -432,8 +438,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn scenario_resource_authority_fmeca_decision_table() {
+    #[tokio::test]
+    async fn scenario_resource_authority_fmeca_decision_table() {
         // FMECA failure modes: FM1 the router reopens a Resource Registry, FM2
         // Host and HTTP use different Memory repositories, FM3 Skill ingestion
         // and Runtime read different roots, FM4 File commands use different
@@ -457,7 +463,8 @@ mod tests {
             Arc::new(crate::EchoModel),
             "resource-authority-test",
             deployment,
-        );
+        )
+        .await;
         let (host, resources) = platform.into_parts();
         let authorities = resources.authorities();
 
@@ -477,11 +484,11 @@ mod tests {
         assert!(!storage.path().join("skills_catalog").exists(), "R1/E3");
     }
 
-    #[test]
+    #[tokio::test]
     #[should_panic(
         expected = "durable or distributed Scenario Runtime requires an installed Coordinator authority"
     )]
-    fn durable_scenario_without_installed_authority_fails_closed() {
+    async fn durable_scenario_without_installed_authority_fails_closed() {
         // Causes: C1 no globally installed Runtime authority; C2 typed
         // Deployment requests durable Run delivery. Effect E1 reject before a
         // volatile Memory queue can be mistaken for persistent execution.
@@ -496,7 +503,8 @@ mod tests {
             Arc::new(crate::EchoModel),
             "no-silent-volatile-fallback",
             deployment,
-        );
+        )
+        .await;
     }
 
     #[test]

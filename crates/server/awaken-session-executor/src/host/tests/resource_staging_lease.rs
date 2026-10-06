@@ -11,7 +11,7 @@ use super::*;
 async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
     for lifecycle in [false, true] {
         for leased in [false, true] {
-            let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+            let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
             let lease = awaken_session_resource_contract::SessionRealizationLease {
                 owner: "worker".into(),
                 runtime_incarnation: "worker/1".into(),
@@ -92,7 +92,7 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
 // pending owner and a fresh selection finishes it. Empty retry is a no-op.
 #[tokio::test]
 async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup() {
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let mut cancellations = Vec::new();
     for session in ["held", "free"] {
         host.session_slots.update(session, |slot| {
@@ -173,7 +173,7 @@ async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
     use crate::session_slot::{
         BoundSessionEnvironmentIdentity, SessionEnvironmentOwner, SessionEnvironmentPreparation,
     };
-    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    let host = SharedHost::new(Arc::new(OkModel), "stub").await;
     for id in ["left", "right"] {
         host.session_slots.update(id, |_| ());
     }
@@ -247,6 +247,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 *control.renewal_gate.lock().unwrap() = Some(gate.clone());
                 let host = Arc::new(
                     SharedHost::new(Arc::new(OkModel), "stub")
+                        .await
                         .with_session_recovery_control(control.clone()),
                 );
                 let now = crate::terminal_repository_publication::runtime_unix_now_ms();
@@ -473,7 +474,7 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
     // substitutes for reaching it. The real monotonic sleep only ages proof,
     // never manufactures a different durable lease or resets the request start.
     for resources in [false, true] {
-        let f = StagingFixture::new();
+        let f = StagingFixture::new().await;
         let mut projection = f.projection.clone();
         if !resources {
             projection.resource_revision = 0;
@@ -537,16 +538,17 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
 }
 
 impl StagingFixture {
-    fn new() -> Self {
-        Self::with_authority(None)
+    async fn new() -> Self {
+        Self::with_authority(None).await
     }
 
-    fn with_authority(
+    async fn with_authority(
         authority: Option<Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>>,
     ) -> Self {
         let source = Arc::new(GatedFileSource::default());
         let control = Arc::new(RemoteTerminalCleanupControl::default());
         let mut host = SharedHost::new(Arc::new(OkModel), "stub")
+            .await
             .with_file_content_source(source.clone())
             .with_session_recovery_control(control.clone());
         if let Some(authority) = authority {
@@ -649,7 +651,7 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
     // closed predecessor never reopens; E3 old revocation cannot cancel new I/O.
     // The existing ordinary-replay and forced-close tests own their negative
     // cases; this crosses the previously omitted retirement/continuation edge.
-    let mut f = StagingFixture::new();
+    let mut f = StagingFixture::new().await;
     let old = f.lease.clone();
     f.host
         .install_session_realization_lease(SESSION, old.clone())
@@ -723,7 +725,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
     // no Control call and no mutation. No HTTP client is installed on Host:
     // the borrowed application Control must reach the one existing scheduler.
     // Resource/phase projections are unchanged: this port owns lease-only work.
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let now = crate::terminal_repository_publication::runtime_unix_now_ms();
     let mut initial = Vec::new();
@@ -796,7 +798,7 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
     // no renewal; D3 expired/due + no Control -> explicit error, retain the
     // exact root for cleanup. Physical refresh is independently exercised by
     // the real scoped-candidate test below, including a Closed/empty cohort.
-    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    let host = SharedHost::new(Arc::new(OkModel), "stub").await;
     let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
     assert_eq!(
         host.renew_due_session_realizations(timing).await.unwrap(),
@@ -870,6 +872,7 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
         .await
         .expect("install scoped execution");
     let host = SharedHost::new_with_deployment(Arc::new(OkModel), "stub", deployment)
+        .await
         .with_backend_owned_environment_provider(trusted.into_session_provider())
         .with_execution_authority(gate.clone());
     let lease = awaken_session_resource_contract::SessionRealizationLease {
@@ -989,7 +992,7 @@ async fn worker_root_denies_fresh_and_replaced_projection_before_resource_io() {
     for existing in [false, true] {
         for resource in [false, true] {
             let gate = Arc::new(WorkerProofGate(std::sync::Mutex::new(true)));
-            let mut f = StagingFixture::with_authority(Some(gate.clone()));
+            let mut f = StagingFixture::with_authority(Some(gate.clone())).await;
             if existing {
                 f.host
                     .install_session_realization_lease(SESSION, f.lease.clone())
@@ -1036,7 +1039,7 @@ async fn worker_root_close_during_preparation_prevents_completion_and_reentry() 
     // Root closes -> cohort closes/cancels -> File finishes late. Effects: no
     // executable projection, no lease reentry; cleanup remains separately owned.
     let gate = Arc::new(WorkerProofGate(std::sync::Mutex::new(true)));
-    let f = StagingFixture::with_authority(Some(gate.clone()));
+    let f = StagingFixture::with_authority(Some(gate.clone())).await;
     let task = f.start().await;
     *gate.0.lock().unwrap() = false;
     let revocation = f.host.begin_session_realization_revocation();
@@ -1064,7 +1067,7 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
     // scheduler rejects and revokes only this projection. No global close here,
     // so this test detects a scheduler that consults ONLY the Session lease.
     let gate = Arc::new(WorkerProofGate(std::sync::Mutex::new(true)));
-    let f = StagingFixture::with_authority(Some(gate.clone()));
+    let f = StagingFixture::with_authority(Some(gate.clone())).await;
     f.host
         .install_session_realization_lease(SESSION, f.lease.clone())
         .unwrap();
@@ -1114,7 +1117,7 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
 // complete installer and scheduler, not a manually preinstalled lease fixture.
 #[tokio::test]
 async fn cold_resource_staging_is_renewable_before_projection_publication() {
-    let f = StagingFixture::new();
+    let f = StagingFixture::new().await;
     let task = f.start().await;
     f.assert_unpublished();
     let renewed = f
@@ -1154,7 +1157,7 @@ async fn cold_resource_staging_is_renewable_before_projection_publication() {
 #[tokio::test]
 async fn failed_or_cancelled_resource_preparation_drops_only_its_unpublished_lease() {
     for cancel in [false, true] {
-        let f = StagingFixture::new();
+        let f = StagingFixture::new().await;
         let task = f.start().await;
         if cancel {
             task.abort();
@@ -1189,7 +1192,7 @@ async fn failed_or_cancelled_resource_preparation_drops_only_its_unpublished_lea
 #[tokio::test]
 async fn renewal_rejection_cancels_resource_io_before_waiting_for_realization_lock() {
     for resident_lease in [false, true] {
-        let f = StagingFixture::new();
+        let f = StagingFixture::new().await;
         if resident_lease {
             f.host
                 .install_session_realization_lease(SESSION, f.lease.clone())
@@ -1221,7 +1224,7 @@ async fn renewal_rejection_cancels_resource_io_before_waiting_for_realization_lo
 // through the SAME scheduler; success then preserves its extended expiry.
 #[tokio::test]
 async fn temporary_renewal_failure_does_not_abort_live_resource_preparation() {
-    let f = StagingFixture::new();
+    let f = StagingFixture::new().await;
     let task = f.start().await;
     *f.control.renewal_failure.lock().unwrap() = Some(
         awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
@@ -1253,7 +1256,7 @@ async fn temporary_renewal_failure_does_not_abort_live_resource_preparation() {
 // is wall time, so Tokio's paused clock alone would not model expiry correctly.
 #[tokio::test]
 async fn resource_preparation_expires_even_without_another_renewal_sweep() {
-    let mut f = StagingFixture::new();
+    let mut f = StagingFixture::new().await;
     f.lease.expires_at_unix_ms = f.now + 150;
     let mut task = f.start().await;
     let result = tokio::time::timeout(std::time::Duration::from_secs(2), &mut task).await;
@@ -1277,7 +1280,7 @@ async fn resource_preparation_expires_even_without_another_renewal_sweep() {
 #[tokio::test]
 async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
     for mutation in ["replace", "invalidate", "remove"] {
-        let f = StagingFixture::new();
+        let f = StagingFixture::new().await;
         let mut task = f.start().await;
         let mut successor = f.lease.clone();
         successor.epoch += 1;
@@ -1331,7 +1334,7 @@ async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
 // and installation of a shorter snapshot (renewal response races preparation).
 #[tokio::test]
 async fn preflight_failure_has_no_lease_and_failed_replay_preserves_existing_renewal() {
-    let mut f = StagingFixture::new();
+    let mut f = StagingFixture::new().await;
     f.projection.baseline.fingerprint.0.clear();
     assert!(
         f.host
@@ -1346,7 +1349,7 @@ async fn preflight_failure_has_no_lease_and_failed_replay_preserves_existing_ren
             .is_err()
     );
     assert!(f.host.session_slots.realization_leases().is_empty());
-    let f = StagingFixture::new();
+    let f = StagingFixture::new().await;
     let mut renewed = f.lease.clone();
     renewed.expires_at_unix_ms += 30_000;
     f.host
@@ -1372,7 +1375,7 @@ async fn preflight_failure_has_no_lease_and_failed_replay_preserves_existing_ren
 // case adds actual cold I/O rather than duplicating those synthetic lease tests.
 #[tokio::test]
 async fn many_cold_resource_reads_share_the_existing_renewal_scheduler() {
-    let f = StagingFixture::new();
+    let f = StagingFixture::new().await;
     let mut tasks = Vec::new();
     for index in 0..16 {
         let session = format!("cold-{index}");
@@ -1410,7 +1413,7 @@ async fn many_cold_resource_reads_share_the_existing_renewal_scheduler() {
 // one rejected renewal. A cold read must not pin worker shutdown indefinitely.
 #[tokio::test]
 async fn worker_revocation_cancels_blocked_resource_preparation() {
-    let f = StagingFixture::new();
+    let f = StagingFixture::new().await;
     let task = f.start().await;
     let revoked = tokio::time::timeout(
         std::time::Duration::from_secs(1),
@@ -1434,7 +1437,7 @@ async fn worker_revocation_cancels_blocked_resource_preparation() {
 // not a frozen timeout copied from the original Control response.
 #[tokio::test]
 async fn renewed_preparation_survives_its_original_deadline() {
-    let mut f = StagingFixture::new();
+    let mut f = StagingFixture::new().await;
     f.lease.expires_at_unix_ms = f.now + 400;
     f.control
         .renewals
@@ -1466,7 +1469,7 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
     // Deliver the original successful response last, then release File bytes.
     // The canonical slot must neither regress nor publish the obsolete input.
     for takeover in [false, true] {
-        let f = StagingFixture::new();
+        let f = StagingFixture::new().await;
         let preparation = f.start().await;
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
         *f.control.renewal_response_gate.lock().unwrap() = Some(gate.clone());
@@ -1549,7 +1552,7 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
     // that session expires and cancels its blocked read without a late publish.
     // Existing scheduler tests own capacity/order; this adds repeated complete
     // staging lifetimes and subsequent overload to that same scheduler.
-    let mut f = StagingFixture::new();
+    let mut f = StagingFixture::new().await;
     let ttl = 600;
     f.lease.expires_at_unix_ms = f.now + ttl;
     let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(ttl);

@@ -46,8 +46,11 @@ async fn application_creation_time_survives_process_crash_boundaries() {
     const DB: &str = "AWAKEN_TIME_CRASH_DB";
     const MARKER: &str = "AWAKEN_TIME_CRASH_MARKER";
     if let Ok(mode) = std::env::var(MODE) {
-        let repo =
-            Arc::new(SqliteManagedSessionRepository::open(&std::env::var(DB).unwrap()).unwrap());
+        let repo = Arc::new(
+            SqliteManagedSessionRepository::open(&std::env::var(DB).unwrap())
+                .await
+                .unwrap(),
+        );
         let faulting = Arc::new(FaultingSessionRepository::new(repo));
         *faulting.create_crash_boundary.lock().unwrap() =
             Some((mode == "after", std::env::var(MARKER).unwrap().into()));
@@ -66,7 +69,11 @@ async fn application_creation_time_survives_process_crash_boundaries() {
             "tests::creation::time_assurance::application_creation_time_survives_process_crash_boundaries", &marker)
             .env(MODE, mode).env(DB, &db).env(MARKER, &marker).run().unwrap();
         assert!(!status.success());
-        let repo = Arc::new(SqliteManagedSessionRepository::open(db.to_str().unwrap()).unwrap());
+        let repo = Arc::new(
+            SqliteManagedSessionRepository::open(db.to_str().unwrap())
+                .await
+                .unwrap(),
+        );
         if mode == "before" {
             assert!(
                 matches!(
@@ -122,7 +129,9 @@ async fn mutation_time_receipts_reject_conflicts_and_recover_lost_ack() {
     // T7 commit then lost acknowledgement => retry observes original time.
     // All assertions compare complete roots, so time-only or partial writes fail.
     mutation_time_receipt_table(Arc::new(
-        SqliteManagedSessionRepository::open_in_memory().unwrap(),
+        SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
     ))
     .await;
 }
@@ -214,7 +223,11 @@ async fn concurrent_root_cas_time_belongs_only_to_the_winner() {
     // T10 two writers prepared from one revision, distinct clocks and payloads.
     // Barrier releases both after preparation; exactly one CAS may persist.
     // The losing time/payload never contaminates the winner, including replay.
-    let repo = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let initial = timed_application(repo.clone(), 100)
         .create_session(command())
         .await
@@ -254,7 +267,11 @@ async fn first_archive_time_is_durable_and_legacy_archive_stays_unknown() {
     // unknown after file-SQLite readback. No read or retry supplies a new time.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("archive-time.sqlite");
-    let repo = Arc::new(SqliteManagedSessionRepository::open(path.to_str().unwrap()).unwrap());
+    let repo = Arc::new(
+        SqliteManagedSessionRepository::open(path.to_str().unwrap())
+            .await
+            .unwrap(),
+    );
     let id = "archive-time-new";
     create(repo.as_ref(), persisted(id, false, "idle")).await;
     let fact = awaken_session_state_contract::ManagedLifecycleFact {
@@ -281,7 +298,11 @@ async fn first_archive_time_is_durable_and_legacy_archive_stays_unknown() {
     };
     create(repo.as_ref(), old).await;
     drop(repo);
-    let cold_repo = Arc::new(SqliteManagedSessionRepository::open(path.to_str().unwrap()).unwrap());
+    let cold_repo = Arc::new(
+        SqliteManagedSessionRepository::open(path.to_str().unwrap())
+            .await
+            .unwrap(),
+    );
     let cold = cold_repo.get(&SessionId::from(id)).await.unwrap();
     assert_eq!(cold.archived_at_unix_ms(), Some(100), "A1 cold");
     timed_application(cold_repo.clone(), 900)
@@ -328,7 +349,11 @@ async fn concurrent_archives_keep_only_the_winning_clock_sample() {
     // same command receipt after the winner archived.
     // Effects: exactly one transition commits; the durable typed time and v1
     // display belong to that winner, never the later replaying observation.
-    let repo = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(
+        SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
     let id = "archive-time-race";
     create(repo.as_ref(), persisted(id, false, "idle")).await;
     let fact = awaken_session_state_contract::ManagedLifecycleFact {

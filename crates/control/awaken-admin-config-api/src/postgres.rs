@@ -1,24 +1,16 @@
 // @formal entrypoint agent_inputs.rejected_revision_does_not_mutate
 //! Postgres adapter (feature `postgres`, ADR-0043) for the admin-plane
 //! aggregates, over the crate's own `admin` migration scope ([`admin_bundle`]):
-//! one [`PostgresAdminStore`] serves the same three sync store ports the sqlite
-//! backend does from a single connection pool.
+//! one [`PostgresAdminStore`] serves the same store ports the sqlite backend
+//! does from a single connection pool.
 //!
-//! The repository ports are synchronous but fallible: SQL and JSON failures
-//! cross the repository boundary as `ConfigRepositoryError`. `sqlx` is async-only,
-//! so this backend
-//! owns a dedicated single-worker Tokio runtime and drives each short query to
-//! completion on it via [`block`], which runs the future on a fresh OS thread so
-//! it is safe to call from *inside* the server's request-handler runtime (a
-//! nested `block_on` would panic otherwise). Each bridged future owns its inputs
-//! (the pool is an `Arc`, cloned in; params are owned), so there are no
-//! cross-thread borrow puzzles. Admin writes are low-frequency authoring
-//! operations, so the per-call thread hop is negligible.
+//! The repository ports are asynchronous and fallible: SQL and JSON failures
+//! cross the repository boundary as `ConfigRepositoryError`, and every port
+//! awaits its queries on the caller's runtime.
 
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
-use tokio::runtime::{Builder, Handle, Runtime};
 
 use awaken_config_resolver::{
     AgentInputAdmission, AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError,
@@ -27,7 +19,6 @@ use awaken_config_resolver::{
     WebhookMutationIntent, WebhookStore, agent_input_storage_key, agent_input_workspace_prefix,
     plan_agent_input_write, validate_stored_agent_inputs,
 };
-use awaken_sql_storage::block_on_owned_runtime as block;
 
 use crate::schema::{BUNDLE_ID, converged_admin_bundle, selected_admin_bundle};
 
@@ -39,8 +30,6 @@ pub(crate) const NS: &str = "admin";
 /// Errors from connecting or migrating the store.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    #[error("runtime: {0}")]
-    Runtime(String),
     #[error("connect: {0}")]
     Connect(String),
     #[error("migrate: {0}")]
@@ -50,139 +39,96 @@ pub enum StoreError {
 }
 
 /// A Postgres-backed store for the admin-plane aggregates, implementing all four
-/// sync store ports. Wrap in `Arc` and clone into each `AdminState` slot so the
+/// store ports. Wrap in `Arc` and clone into each `AdminState` slot so the
 /// ports share one pool.
 pub struct PostgresAdminStore {
     pub(crate) pool: PgPool,
-    pub(crate) handle: Handle,
-    /// The store owns its runtime; `Option` so [`Drop`] can shut it down in the
-    /// background (dropping a runtime from within another runtime would panic).
-    rt: Option<Runtime>,
 }
 
 impl PostgresAdminStore {
-    /// Connect and apply the admin migrations under the `admin` namespace. Sync so
-    /// it composes with the sync ports; the pool lives on this store's own runtime.
-    pub fn connect(url: &str) -> Result<Self, StoreError> {
-        Self::connect_with_mode(url, true)
+    /// Connect and apply the admin migrations under the `admin` namespace.
+    pub async fn connect(url: &str) -> Result<Self, StoreError> {
+        Self::connect_with_mode(url, true).await
     }
 
     /// Connect to an already-migrated admin schema without executing DDL.
-    pub fn connect_existing(url: &str) -> Result<Self, StoreError> {
-        Self::connect_with_mode(url, false)
+    pub async fn connect_existing(url: &str) -> Result<Self, StoreError> {
+        Self::connect_with_mode(url, false).await
     }
 
-    fn connect_with_mode(url: &str, migrate_schema: bool) -> Result<Self, StoreError> {
-        let rt = Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .map_err(|err| StoreError::Runtime(err.to_string()))?;
-        let handle = rt.handle().clone();
-        let url = url.to_string();
-        let pool = block(&handle, move || async move {
-            let pool = PgPool::connect(&url)
-                .await
-                .map_err(|err| StoreError::Connect(err.to_string()))?;
-            if migrate_schema {
-                migrate(&pool).await?;
-            } else {
-                verify(&pool).await?;
-            }
-            Ok::<_, StoreError>(pool)
-        })?;
-        Ok(Self {
-            pool,
-            handle,
-            rt: Some(rt),
-        })
+    async fn connect_with_mode(url: &str, migrate_schema: bool) -> Result<Self, StoreError> {
+        let pool = PgPool::connect(url)
+            .await
+            .map_err(|err| StoreError::Connect(err.to_string()))?;
+        if migrate_schema {
+            migrate(&pool).await?;
+        } else {
+            verify(&pool).await?;
+        }
+        Ok(Self { pool })
     }
 
-    fn put_json<T: serde::Serialize>(
+    async fn put_json<T: serde::Serialize>(
         &self,
         table: &str,
         key_col: &str,
         key: &str,
         value: &T,
     ) -> Result<(), ConfigRepositoryError> {
-        let sql = format!(
-            "INSERT INTO {NS}_{table} ({key_col}, data) VALUES ($1, $2) \
-             ON CONFLICT ({key_col}) DO UPDATE SET data = excluded.data"
-        );
-        let pool = self.pool.clone();
-        let key = key.to_string();
         let data = serde_json::to_value(value)
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-        block(&self.handle, move || async move {
-            sqlx::query(&sql)
-                .bind(key)
-                .bind(Json(data))
-                .execute(&pool)
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            Ok(())
-        })
-    }
-
-    fn get_json<T: serde::de::DeserializeOwned + Send + 'static>(
-        &self,
-        table: &str,
-        key_col: &str,
-        key: &str,
-    ) -> Result<Option<T>, ConfigRepositoryError> {
-        let sql = format!("SELECT data FROM {NS}_{table} WHERE {key_col} = $1");
-        let pool = self.pool.clone();
-        let key = key.to_string();
-        block(&self.handle, move || async move {
-            let row = sqlx::query(&sql)
-                .bind(key)
-                .fetch_optional(&pool)
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            row.map(|row| {
-                row.try_get::<Json<T>, _>("data")
-                    .map(|Json(value)| value)
-                    .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
-            })
-            .transpose()
-        })
-    }
-
-    /// All JSON rows of `table` ordered by `key_col` (the in-memory/sqlite stores'
-    /// sorted-list contract).
-    fn list_json<T: serde::de::DeserializeOwned + Send + 'static>(
-        &self,
-        table: &str,
-        key_col: &str,
-    ) -> Result<Vec<T>, ConfigRepositoryError> {
-        let sql = format!("SELECT data FROM {NS}_{table} ORDER BY {key_col}");
-        let pool = self.pool.clone();
-        block(&self.handle, move || async move {
-            let rows = sqlx::query(&sql)
-                .fetch_all(&pool)
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            rows.into_iter()
-                .map(|row| {
-                    row.try_get::<Json<T>, _>("data")
-                        .map(|Json(value)| value)
-                        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
-                })
-                .collect()
-        })
+        sqlx::query(&format!(
+            "INSERT INTO {NS}_{table} ({key_col}, data) VALUES ($1, $2) \
+             ON CONFLICT ({key_col}) DO UPDATE SET data = excluded.data"
+        ))
+        .bind(key)
+        .bind(Json(data))
+        .execute(&self.pool)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        Ok(())
     }
 }
 
-impl Drop for PostgresAdminStore {
-    fn drop(&mut self) {
-        // A Tokio runtime must not be dropped from within another runtime (it would
-        // panic on the blocking shutdown). `shutdown_background` hands the teardown
-        // off so dropping the store from an async context (e.g. server shutdown) is
-        // safe.
-        if let Some(rt) = self.rt.take() {
-            rt.shutdown_background();
-        }
-    }
+/// One JSON row of `table` by primary key, deserialized; `None` when absent.
+async fn fetch_json<T: serde::de::DeserializeOwned>(
+    pool: &PgPool,
+    table: &str,
+    key_col: &str,
+    key: &str,
+) -> Result<Option<T>, ConfigRepositoryError> {
+    let row = sqlx::query(&format!(
+        "SELECT data FROM {NS}_{table} WHERE {key_col} = $1"
+    ))
+    .bind(key)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+    row.map(|row| {
+        row.try_get::<Json<T>, _>("data")
+            .map(|Json(value)| value)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
+    })
+    .transpose()
+}
+
+/// All JSON rows of `table` ordered by `key_col`.
+async fn fetch_all_json<T: serde::de::DeserializeOwned>(
+    pool: &PgPool,
+    table: &str,
+    key_col: &str,
+) -> Result<Vec<T>, ConfigRepositoryError> {
+    let rows = sqlx::query(&format!("SELECT data FROM {NS}_{table} ORDER BY {key_col}"))
+        .fetch_all(pool)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+    rows.into_iter()
+        .map(|row| {
+            row.try_get::<Json<T>, _>("data")
+                .map(|Json(value)| value)
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
+        })
+        .collect()
 }
 
 /// Apply the `admin` migration bundle to `pool` (idempotent; the runner records
@@ -266,446 +212,451 @@ async fn lock_aggregate_id(
     Ok(())
 }
 
+#[async_trait::async_trait]
 impl AgentInputBindingRepository for PostgresAdminStore {
-    fn put_agent_inputs(
+    async fn put_agent_inputs(
         &self,
         workspace_id: &str,
         config: AgentInputConfig,
     ) -> Result<(), AgentInputRepositoryError> {
         let key = agent_input_storage_key(workspace_id, &config.agent_id)?;
         let workspace_id = workspace_id.to_owned();
-        let pool = self.pool.clone();
-        block(&self.handle, move || async move {
-            let mut tx = pool
-                .begin()
-                .await
-                .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
-            lock_aggregate_id(&mut tx, &format!("{NS}_agent_resource:{key}"))
-                .await
-                .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
-            let row = sqlx::query(&format!(
-                "SELECT data FROM {NS}_agent_resource WHERE agent_id = $1 FOR UPDATE"
-            ))
-            .bind(&key)
-            .fetch_optional(&mut *tx)
+        let pool = &self.pool;
+        let mut tx = pool
+            .begin()
             .await
             .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
-            let current = row
-                .map(|row| {
-                    let Json(value): Json<AgentInputConfig> = row
-                        .try_get("data")
-                        .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
-                    Ok::<_, AgentInputRepositoryError>(value)
-                })
-                .transpose()?;
-            let AgentInputAdmission::Write(plan) =
-                plan_agent_input_write(&workspace_id, current.as_ref(), &config)?
-            else {
-                return Ok(());
-            };
-            let data = serde_json::to_value(plan.config())
-                .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
-            let statement = match plan.expected_revision() {
-                None => format!(
-                    "INSERT INTO {NS}_agent_resource (agent_id, data) \
-                                SELECT $1, $2 WHERE $3::bigint IS NULL ON CONFLICT(agent_id) DO NOTHING"
-                ),
-                Some(_) => format!(
-                    "UPDATE {NS}_agent_resource SET data = $2 \
-                                   WHERE agent_id = $1 AND (data->>'revision')::bigint = $3"
-                ),
-            };
-            let changed = sqlx::query(&statement)
-                .bind(plan.storage_key())
-                .bind(Json(data))
-                .bind(plan.expected_revision())
-                .execute(&mut *tx)
-                .await
-                .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
-            if changed.rows_affected() != 1 {
-                return Err(AgentInputRepositoryError::Storage(
-                    "Agent input plan lost its commit predicate".into(),
-                ));
-            }
-            tx.commit()
-                .await
-                .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))
-        })
+        lock_aggregate_id(&mut tx, &format!("{NS}_agent_resource:{key}"))
+            .await
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+        let row = sqlx::query(&format!(
+            "SELECT data FROM {NS}_agent_resource WHERE agent_id = $1 FOR UPDATE"
+        ))
+        .bind(&key)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+        let current = row
+            .map(|row| {
+                let Json(value): Json<AgentInputConfig> = row
+                    .try_get("data")
+                    .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+                Ok::<_, AgentInputRepositoryError>(value)
+            })
+            .transpose()?;
+        let AgentInputAdmission::Write(plan) =
+            plan_agent_input_write(&workspace_id, current.as_ref(), &config)?
+        else {
+            return Ok(());
+        };
+        let data = serde_json::to_value(plan.config())
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+        let statement = match plan.expected_revision() {
+            None => format!(
+                "INSERT INTO {NS}_agent_resource (agent_id, data) \
+                            SELECT $1, $2 WHERE $3::bigint IS NULL ON CONFLICT(agent_id) DO NOTHING"
+            ),
+            Some(_) => format!(
+                "UPDATE {NS}_agent_resource SET data = $2 \
+                               WHERE agent_id = $1 AND (data->>'revision')::bigint = $3"
+            ),
+        };
+        let changed = sqlx::query(&statement)
+            .bind(plan.storage_key())
+            .bind(Json(data))
+            .bind(plan.expected_revision())
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+        if changed.rows_affected() != 1 {
+            return Err(AgentInputRepositoryError::Storage(
+                "Agent input plan lost its commit predicate".into(),
+            ));
+        }
+        tx.commit()
+            .await
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))
     }
-    fn get_agent_inputs(
+    async fn get_agent_inputs(
         &self,
         workspace_id: &str,
         agent_id: &str,
     ) -> Result<Option<AgentInputConfig>, AgentInputRepositoryError> {
         let key = agent_input_storage_key(workspace_id, agent_id)?;
-        self.get_json("agent_resource", "agent_id", &key)
+        fetch_json(&self.pool, "agent_resource", "agent_id", &key)
+            .await
             .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?
             .map(|config| validate_stored_agent_inputs(workspace_id, &key, config))
             .transpose()
     }
-    fn list_agent_inputs(
+    async fn list_agent_inputs(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<AgentInputConfig>, AgentInputRepositoryError> {
         let prefix = agent_input_workspace_prefix(workspace_id)?;
         let workspace_id = workspace_id.to_owned();
-        let pool = self.pool.clone();
-        block(&self.handle, move || async move {
-            let rows = sqlx::query(&format!(
-                "SELECT agent_id, data FROM {NS}_agent_resource ORDER BY agent_id COLLATE \"C\""
-            ))
-            .fetch_all(&pool)
-            .await
-            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
-            rows.into_iter()
-                .map(|row| {
-                    let key = row
-                        .try_get::<String, _>("agent_id")
-                        .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
-                    Ok((key, row))
-                })
-                .filter(|row: &Result<_, AgentInputRepositoryError>| {
-                    row.as_ref()
-                        .map_or(true, |(key, _)| key.starts_with(&prefix))
-                })
-                .map(|row| {
-                    let (key, row) = row?;
-                    let Json(config): Json<AgentInputConfig> = row
-                        .try_get("data")
-                        .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
-                    validate_stored_agent_inputs(&workspace_id, &key, config)
-                })
-                .collect()
-        })
+        let pool = &self.pool;
+        let rows = sqlx::query(&format!(
+            "SELECT agent_id, data FROM {NS}_agent_resource ORDER BY agent_id COLLATE \"C\""
+        ))
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+        rows.into_iter()
+            .map(|row| {
+                let key = row
+                    .try_get::<String, _>("agent_id")
+                    .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+                Ok((key, row))
+            })
+            .filter(|row: &Result<_, AgentInputRepositoryError>| {
+                row.as_ref()
+                    .map_or(true, |(key, _)| key.starts_with(&prefix))
+            })
+            .map(|row| {
+                let (key, row) = row?;
+                let Json(config): Json<AgentInputConfig> = row
+                    .try_get("data")
+                    .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+                validate_stored_agent_inputs(&workspace_id, &key, config)
+            })
+            .collect()
     }
 }
 
+#[async_trait::async_trait]
 impl WebhookStore for PostgresAdminStore {
-    fn get(&self, id: &str) -> Result<Option<WebhookEndpointDef>, ConfigRepositoryError> {
-        self.get_json("webhook", "id", id)
+    async fn get(&self, id: &str) -> Result<Option<WebhookEndpointDef>, ConfigRepositoryError> {
+        fetch_json(&self.pool, "webhook", "id", id).await
     }
-    fn list(&self, workspace_id: &str) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError> {
-        // Reuse the sorted list bridge, then fence by owner in Rust (webhook rows are
+    async fn list(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError> {
+        // Reuse the sorted list query, then fence by owner in Rust (webhook rows are
         // low-cardinality; workspace lives inside the JSON, not a column).
-        Ok(self
-            .list_json::<WebhookEndpointDef>("webhook", "id")?
-            .into_iter()
-            .filter(|d| d.workspace_id == workspace_id)
-            .collect())
+        Ok(
+            fetch_all_json::<WebhookEndpointDef>(&self.pool, "webhook", "id")
+                .await?
+                .into_iter()
+                .filter(|d| d.workspace_id == workspace_id)
+                .collect(),
+        )
     }
-    fn update_authored(
+    async fn update_authored(
         &self,
         patch: WebhookAuthoringPatch,
     ) -> Result<WebhookAuthoringState, ConfigRepositoryError> {
-        let pool = self.pool.clone();
-        block(&self.handle, move || async move {
-            let mut tx = pool
-                .begin()
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            lock_aggregate_id(&mut tx, &patch.id).await?;
-            let pending = sqlx::query(&format!(
-                "SELECT 1 FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
-            ))
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        lock_aggregate_id(&mut tx, &patch.id).await?;
+        let pending = sqlx::query(&format!(
+            "SELECT 1 FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
+        ))
+        .bind(&patch.id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        if pending.is_some() {
+            return Err(ConfigRepositoryError::MutationConflict(format!(
+                "webhook {} has a pending material mutation",
+                patch.id
+            )));
+        }
+        let row = sqlx::query(&format!(
+            "SELECT data FROM {NS}_webhook WHERE id = $1 FOR UPDATE"
+        ))
+        .bind(&patch.id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let Some(row) = row else {
+            return Ok(WebhookAuthoringState::Missing);
+        };
+        let Json(mut definition): Json<WebhookEndpointDef> = row
+            .try_get("data")
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        if definition.workspace_id != patch.workspace_id {
+            return Ok(WebhookAuthoringState::OwnerMismatch);
+        }
+        definition.url = patch.url;
+        definition.event_types = patch.event_types;
+        if let Some(disabled) = patch.disabled {
+            definition.disabled = disabled;
+            if !disabled {
+                definition.consecutive_failures = 0;
+            }
+        }
+        let data = serde_json::to_value(&definition)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        sqlx::query(&format!("UPDATE {NS}_webhook SET data = $2 WHERE id = $1"))
             .bind(&patch.id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            if pending.is_some() {
-                return Err(ConfigRepositoryError::MutationConflict(format!(
-                    "webhook {} has a pending material mutation",
-                    patch.id
-                )));
-            }
-            let row = sqlx::query(&format!(
-                "SELECT data FROM {NS}_webhook WHERE id = $1 FOR UPDATE"
-            ))
-            .bind(&patch.id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            let Some(row) = row else {
-                return Ok(WebhookAuthoringState::Missing);
-            };
-            let Json(mut definition): Json<WebhookEndpointDef> = row
-                .try_get("data")
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            if definition.workspace_id != patch.workspace_id {
-                return Ok(WebhookAuthoringState::OwnerMismatch);
-            }
-            definition.url = patch.url;
-            definition.event_types = patch.event_types;
-            if let Some(disabled) = patch.disabled {
-                definition.disabled = disabled;
-                if !disabled {
-                    definition.consecutive_failures = 0;
-                }
-            }
-            let data = serde_json::to_value(&definition)
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            sqlx::query(&format!("UPDATE {NS}_webhook SET data = $2 WHERE id = $1"))
-                .bind(&patch.id)
-                .bind(Json(data))
-                .execute(&mut *tx)
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            tx.commit()
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            Ok(WebhookAuthoringState::Updated(definition))
-        })
-    }
-
-    fn begin_mutation(&self, intent: WebhookMutationIntent) -> Result<(), ConfigRepositoryError> {
-        let id = intent.id()?.to_string();
-        let data = serde_json::to_value(&intent)
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-        let pool = self.pool.clone();
-        block(&self.handle, move || async move {
-            let mut tx = pool
-                .begin()
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            lock_aggregate_id(&mut tx, &id).await?;
-            let pending = sqlx::query(&format!(
-                "SELECT data FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
-            ))
-            .bind(&id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            if let Some(row) = pending {
-                let Json(pending): Json<WebhookMutationIntent> = row
-                    .try_get("data")
-                    .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-                return if pending == intent {
-                    Ok(())
-                } else {
-                    Err(ConfigRepositoryError::MutationConflict(format!(
-                        "webhook {id} already has a pending mutation"
-                    )))
-                };
-            }
-            let row = sqlx::query(&format!(
-                "SELECT data FROM {NS}_webhook WHERE id = $1 FOR UPDATE"
-            ))
-            .bind(&id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            let current = row
-                .map(|row| {
-                    row.try_get::<Json<WebhookEndpointDef>, _>("data")
-                        .map(|Json(value)| value)
-                        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
-                })
-                .transpose()?;
-            if current != intent.before {
-                return Err(ConfigRepositoryError::MutationConflict(format!(
-                    "webhook {id} changed before mutation admission"
-                )));
-            }
-            sqlx::query(&format!(
-                "INSERT INTO {NS}_webhook_mutation(id,data) VALUES ($1,$2)"
-            ))
-            .bind(&id)
             .bind(Json(data))
             .execute(&mut *tx)
             .await
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            tx.commit()
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
-        })
+        tx.commit()
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        Ok(WebhookAuthoringState::Updated(definition))
     }
 
-    fn apply_mutation(&self, intent: &WebhookMutationIntent) -> Result<(), ConfigRepositoryError> {
+    async fn begin_mutation(
+        &self,
+        intent: WebhookMutationIntent,
+    ) -> Result<(), ConfigRepositoryError> {
         let id = intent.id()?.to_string();
-        let intent = intent.clone();
-        let pool = self.pool.clone();
-        block(&self.handle, move || async move {
-            let mut tx = pool
-                .begin()
-                .await
+        let data = serde_json::to_value(&intent)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        lock_aggregate_id(&mut tx, &id).await?;
+        let pending = sqlx::query(&format!(
+            "SELECT data FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
+        ))
+        .bind(&id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        if let Some(row) = pending {
+            let Json(pending): Json<WebhookMutationIntent> = row
+                .try_get("data")
                 .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            lock_aggregate_id(&mut tx, &id).await?;
-            let pending = sqlx::query(&format!(
-                "SELECT data FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
-            ))
-            .bind(&id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
-            .map(|row| {
-                row.try_get::<Json<WebhookMutationIntent>, _>("data")
-                    .map(|Json(value)| value)
-                    .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
-            })
-            .transpose()?;
-            let current = sqlx::query(&format!(
-                "SELECT data FROM {NS}_webhook WHERE id = $1 FOR UPDATE"
-            ))
-            .bind(&id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
+            return if pending == intent {
+                Ok(())
+            } else {
+                Err(ConfigRepositoryError::MutationConflict(format!(
+                    "webhook {id} already has a pending mutation"
+                )))
+            };
+        }
+        let row = sqlx::query(&format!(
+            "SELECT data FROM {NS}_webhook WHERE id = $1 FOR UPDATE"
+        ))
+        .bind(&id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let current = row
             .map(|row| {
                 row.try_get::<Json<WebhookEndpointDef>, _>("data")
                     .map(|Json(value)| value)
                     .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
             })
             .transpose()?;
-            if pending.as_ref() != Some(&intent) || current != intent.before {
-                return Err(ConfigRepositoryError::MutationConflict(format!(
-                    "webhook {id} no longer matches its pending mutation"
-                )));
-            }
-            match &intent.after {
-                Some(after) => {
-                    let data = serde_json::to_value(after)
-                        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-                    sqlx::query(&format!("INSERT INTO {NS}_webhook(id,data) VALUES ($1,$2)"))
-                        .bind(&id)
-                        .bind(Json(data))
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-                }
-                None => {
-                    sqlx::query(&format!("DELETE FROM {NS}_webhook WHERE id = $1"))
-                        .bind(&id)
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-                }
-            }
-            tx.commit()
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
-        })
+        if current != intent.before {
+            return Err(ConfigRepositoryError::MutationConflict(format!(
+                "webhook {id} changed before mutation admission"
+            )));
+        }
+        sqlx::query(&format!(
+            "INSERT INTO {NS}_webhook_mutation(id,data) VALUES ($1,$2)"
+        ))
+        .bind(&id)
+        .bind(Json(data))
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
     }
 
-    fn pending_mutations(&self) -> Result<Vec<WebhookMutationIntent>, ConfigRepositoryError> {
-        self.list_json("webhook_mutation", "id")
-    }
-
-    fn complete_mutation(
+    async fn apply_mutation(
         &self,
         intent: &WebhookMutationIntent,
     ) -> Result<(), ConfigRepositoryError> {
-        let pool = self.pool.clone();
-        let id = intent.id()?.to_string();
-        let intent = intent.clone();
-        block(&self.handle, move || async move {
-            let mut tx = pool
-                .begin()
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            lock_aggregate_id(&mut tx, &id).await?;
-            let pending = sqlx::query(&format!(
-                "SELECT data FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
-            ))
-            .bind(&id)
-            .fetch_optional(&mut *tx)
+        let id = intent.id()?;
+        let mut tx = self
+            .pool
+            .begin()
             .await
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
-            .map(|row| {
-                row.try_get::<Json<WebhookMutationIntent>, _>("data")
-                    .map(|Json(value)| value)
-                    .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
-            })
-            .transpose()?;
-            match pending {
-                None => return Ok(()),
-                Some(pending) if pending == intent => {}
-                Some(_) => {
-                    return Err(ConfigRepositoryError::MutationConflict(format!(
-                        "webhook {id} has a different pending mutation"
-                    )));
-                }
-            }
-            sqlx::query(&format!("DELETE FROM {NS}_webhook_mutation WHERE id = $1"))
-                .bind(&id)
-                .execute(&mut *tx)
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            tx.commit()
-                .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        lock_aggregate_id(&mut tx, id).await?;
+        let pending = sqlx::query(&format!(
+            "SELECT data FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
+        ))
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
+        .map(|row| {
+            row.try_get::<Json<WebhookMutationIntent>, _>("data")
+                .map(|Json(value)| value)
                 .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
         })
+        .transpose()?;
+        let current = sqlx::query(&format!(
+            "SELECT data FROM {NS}_webhook WHERE id = $1 FOR UPDATE"
+        ))
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
+        .map(|row| {
+            row.try_get::<Json<WebhookEndpointDef>, _>("data")
+                .map(|Json(value)| value)
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
+        })
+        .transpose()?;
+        if pending.as_ref() != Some(intent) || current != intent.before {
+            return Err(ConfigRepositoryError::MutationConflict(format!(
+                "webhook {id} no longer matches its pending mutation"
+            )));
+        }
+        match &intent.after {
+            Some(after) => {
+                let data = serde_json::to_value(after)
+                    .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+                sqlx::query(&format!("INSERT INTO {NS}_webhook(id,data) VALUES ($1,$2)"))
+                    .bind(id)
+                    .bind(Json(data))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            }
+            None => {
+                sqlx::query(&format!("DELETE FROM {NS}_webhook WHERE id = $1"))
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            }
+        }
+        tx.commit()
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
     }
 
-    fn material_refs(
+    async fn pending_mutations(&self) -> Result<Vec<WebhookMutationIntent>, ConfigRepositoryError> {
+        fetch_all_json(&self.pool, "webhook_mutation", "id").await
+    }
+
+    async fn complete_mutation(
+        &self,
+        intent: &WebhookMutationIntent,
+    ) -> Result<(), ConfigRepositoryError> {
+        let id = intent.id()?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        lock_aggregate_id(&mut tx, id).await?;
+        let pending = sqlx::query(&format!(
+            "SELECT data FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
+        ))
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
+        .map(|row| {
+            row.try_get::<Json<WebhookMutationIntent>, _>("data")
+                .map(|Json(value)| value)
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
+        })
+        .transpose()?;
+        match pending {
+            None => return Ok(()),
+            Some(pending) if &pending == intent => {}
+            Some(_) => {
+                return Err(ConfigRepositoryError::MutationConflict(format!(
+                    "webhook {id} has a different pending mutation"
+                )));
+            }
+        }
+        sqlx::query(&format!("DELETE FROM {NS}_webhook_mutation WHERE id = $1"))
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
+    }
+
+    async fn material_refs(
         &self,
     ) -> Result<Vec<awaken_credential_vault::SecretRef>, ConfigRepositoryError> {
-        Ok(self
-            .list_json::<WebhookEndpointDef>("webhook", "id")?
-            .into_iter()
-            .map(|definition| definition.secret_ref)
-            .collect())
+        Ok(
+            fetch_all_json::<WebhookEndpointDef>(&self.pool, "webhook", "id")
+                .await?
+                .into_iter()
+                .map(|definition| definition.secret_ref)
+                .collect(),
+        )
     }
 
-    fn record_delivery(
+    async fn record_delivery(
         &self,
         id: &str,
         outcome: WebhookDeliveryOutcome,
         failure_threshold: u32,
     ) -> Result<WebhookDeliveryState, ConfigRepositoryError> {
-        let pool = self.pool.clone();
-        let id = id.to_string();
-        block(&self.handle, move || async move {
-            let mut tx = pool
-                .begin()
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            lock_aggregate_id(&mut tx, &id).await?;
-            let pending = sqlx::query(&format!(
-                "SELECT 1 FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
-            ))
-            .bind(&id)
-            .fetch_optional(&mut *tx)
+        let mut tx = self
+            .pool
+            .begin()
             .await
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            if pending.is_some() {
-                return Err(ConfigRepositoryError::MutationConflict(format!(
-                    "webhook {id} has a pending material mutation"
-                )));
-            }
-            let row = sqlx::query(&format!(
-                "SELECT data FROM {NS}_webhook WHERE id = $1 FOR UPDATE"
-            ))
-            .bind(&id)
-            .fetch_optional(&mut *tx)
+        lock_aggregate_id(&mut tx, id).await?;
+        let pending = sqlx::query(&format!(
+            "SELECT 1 FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
+        ))
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        if pending.is_some() {
+            return Err(ConfigRepositoryError::MutationConflict(format!(
+                "webhook {id} has a pending material mutation"
+            )));
+        }
+        let row = sqlx::query(&format!(
+            "SELECT data FROM {NS}_webhook WHERE id = $1 FOR UPDATE"
+        ))
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let Some(row) = row else {
+            return Ok(WebhookDeliveryState::Missing);
+        };
+        let Json(mut definition): Json<WebhookEndpointDef> = row
+            .try_get("data")
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let state = definition.record_delivery(outcome, failure_threshold);
+        let data = serde_json::to_value(&definition)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        sqlx::query(&format!("UPDATE {NS}_webhook SET data = $2 WHERE id = $1"))
+            .bind(id)
+            .bind(Json(data))
+            .execute(&mut *tx)
             .await
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            let Some(row) = row else {
-                return Ok(WebhookDeliveryState::Missing);
-            };
-            let Json(mut definition): Json<WebhookEndpointDef> = row
-                .try_get("data")
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            let state = definition.record_delivery(outcome, failure_threshold);
-            let data = serde_json::to_value(&definition)
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            sqlx::query(&format!("UPDATE {NS}_webhook SET data = $2 WHERE id = $1"))
-                .bind(id)
-                .bind(Json(data))
-                .execute(&mut *tx)
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            tx.commit()
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            Ok(state)
-        })
+        tx.commit()
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        Ok(state)
     }
 }
 
+#[async_trait::async_trait]
 impl InferenceProfileStore for PostgresAdminStore {
-    fn put(&self, id: String, profile: InferenceProfile) -> Result<(), ConfigRepositoryError> {
+    async fn put(
+        &self,
+        id: String,
+        profile: InferenceProfile,
+    ) -> Result<(), ConfigRepositoryError> {
         self.put_json("inference_profile", "id", &id, &profile)
+            .await
     }
-    fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError> {
-        self.get_json("inference_profile", "id", id)
+    async fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError> {
+        fetch_json(&self.pool, "inference_profile", "id", id).await
     }
 }

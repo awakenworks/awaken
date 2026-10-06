@@ -185,90 +185,95 @@ mod backfill {
 }
 
 #[cfg(feature = "sqlite")]
-#[test]
-fn sqlite_backfills_legacy_managed_timestamps_from_insert_time() {
-    use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
+#[tokio::test]
+async fn sqlite_backfills_legacy_managed_timestamps_from_insert_time() {
+    use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
     use backfill::*;
 
-    let connection = rusqlite::Connection::open_in_memory().unwrap();
-    let runner = SqliteMigrationRunner::with_prefix("credential").unwrap();
+    let pool = awaken_sqlite_pool::EmbeddedSqlite::memory()
+        .open()
+        .await
+        .unwrap();
+    let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), "credential").unwrap();
     runner
-        .run_bundle(
-            &connection,
-            &credential_bundle_through(SPECS.len()).unwrap(),
-        )
+        .run_bundle(&credential_bundle_through(SPECS.len()).unwrap())
+        .await
         .unwrap();
     let sqlite_time = |instant: &str| instant.replace('T', " ").replace('Z', "");
     for (id, data) in vault_rows() {
-        connection
-            .execute(
-                "INSERT INTO credential_managed_vault (id, workspace_id, data, created_at) \
-                 VALUES (?1, 'ws', ?2, ?3)",
-                rusqlite::params![id, data.to_string(), sqlite_time(VAULT_INSERTED)],
-            )
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO credential_managed_vault (id, workspace_id, data, created_at) \
+             VALUES (?1, 'ws', ?2, ?3)",
+        )
+        .bind(id)
+        .bind(data.to_string())
+        .bind(sqlite_time(VAULT_INSERTED))
+        .execute(&pool)
+        .await
+        .unwrap();
     }
     for (id, data) in credential_rows() {
-        connection
-            .execute(
-                "INSERT INTO credential_managed_vault_credential \
-                 (id, vault_id, workspace_id, source_id, data, created_at) \
-                 VALUES (?1, 'legacy-vault', 'ws', ?2, ?3, ?4)",
-                rusqlite::params![
-                    id,
-                    data["source_id"].as_str().unwrap(),
-                    data.to_string(),
-                    sqlite_time(CHILD_INSERTED)
-                ],
-            )
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO credential_managed_vault_credential \
+             (id, vault_id, workspace_id, source_id, data, created_at) \
+             VALUES (?1, 'legacy-vault', 'ws', ?2, ?3, ?4)",
+        )
+        .bind(id)
+        .bind(data["source_id"].as_str().unwrap().to_owned())
+        .bind(data.to_string())
+        .bind(sqlite_time(CHILD_INSERTED))
+        .execute(&pool)
+        .await
+        .unwrap();
     }
     for (source_id, data) in mutation_rows() {
-        connection
-            .execute(
-                "INSERT INTO credential_managed_credential_mutation (source_id, data, created_at) \
-                 VALUES (?1, ?2, ?3)",
-                rusqlite::params![source_id, data.to_string(), sqlite_time(PENDING_INSERTED)],
-            )
-            .unwrap();
-    }
-    let modern_before = connection
-        .query_row(
-            "SELECT data FROM credential_managed_vault WHERE id = 'modern-vault'",
-            [],
-            |row| row.get::<_, String>(0),
+        sqlx::query(
+            "INSERT INTO credential_managed_credential_mutation (source_id, data, created_at) \
+             VALUES (?1, ?2, ?3)",
         )
+        .bind(source_id)
+        .bind(data.to_string())
+        .bind(sqlite_time(PENDING_INSERTED))
+        .execute(&pool)
+        .await
         .unwrap();
+    }
+    let modern_data = || {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>(
+                "SELECT data FROM credential_managed_vault WHERE id = 'modern-vault'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let modern_before = modern_data().await;
 
     runner
-        .run_bundle(&connection, &credential_bundle().unwrap())
+        .run_bundle(&credential_bundle().unwrap())
+        .await
         .unwrap();
 
-    let rows = |sql: &str| -> Vec<(String, serde_json::Value)> {
-        let mut statement = connection.prepare(sql).unwrap();
-        statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .unwrap()
-            .map(|row| {
-                let (id, data) = row.unwrap();
-                (id, serde_json::from_str(&data).unwrap())
-            })
-            .collect()
+    let rows = |sql: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (String, String)>(sql)
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|(id, data)| (id, serde_json::from_str(&data).unwrap()))
+                .collect::<Vec<(String, serde_json::Value)>>()
+        }
     };
     assert_backfilled(
-        &rows("SELECT id, data FROM credential_managed_vault"),
-        &rows("SELECT id, data FROM credential_managed_vault_credential"),
-        &rows("SELECT source_id, data FROM credential_managed_credential_mutation"),
+        &rows("SELECT id, data FROM credential_managed_vault").await,
+        &rows("SELECT id, data FROM credential_managed_vault_credential").await,
+        &rows("SELECT source_id, data FROM credential_managed_credential_mutation").await,
     );
-    let modern_after = connection
-        .query_row(
-            "SELECT data FROM credential_managed_vault WHERE id = 'modern-vault'",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .unwrap();
+    let modern_after = modern_data().await;
     assert_eq!(modern_before, modern_after, "E2 modern row untouched");
 }
 

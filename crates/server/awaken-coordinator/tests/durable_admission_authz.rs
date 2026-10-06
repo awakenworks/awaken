@@ -72,7 +72,7 @@ async fn app() -> Router {
                 .expect("install the single Scenario Runtime authority");
         })
         .await;
-    build_router_with_deployment(Arc::new(EchoModel), "echo", deployment)
+    build_router_with_deployment(Arc::new(EchoModel), "echo", deployment).await
 }
 
 /// Send a request with an explicit raw body + optional Authorization header and

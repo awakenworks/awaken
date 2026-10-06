@@ -11,7 +11,6 @@ use awaken_ext_memory::{
     MemoryExtractionError, MemoryExtractionIntent, MemoryExtractionRepository,
     MemoryExtractionStatus, PutMemoryExtractionOutcome,
 };
-use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use sqlx::Row;
 
 use crate::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
@@ -60,6 +59,20 @@ fn validate_next_revision(
     Ok(())
 }
 
+fn sqlite_storage(error: impl std::fmt::Display) -> MemoryExtractionError {
+    MemoryExtractionError::Storage(error.to_string())
+}
+
+/// SQLite INTEGER is signed 64-bit; a larger domain value is refused before it
+/// reaches storage instead of wrapping.
+fn sqlite_integer(value: u64) -> Result<i64, MemoryExtractionError> {
+    i64::try_from(value).map_err(sqlite_storage)
+}
+
+fn sqlite_optional_integer(value: Option<u64>) -> Result<Option<i64>, MemoryExtractionError> {
+    value.map(sqlite_integer).transpose()
+}
+
 #[async_trait]
 impl MemoryExtractionRepository for SqliteManagedSessionRepository {
     async fn put_extraction_if_absent(
@@ -67,97 +80,79 @@ impl MemoryExtractionRepository for SqliteManagedSessionRepository {
         intent: MemoryExtractionIntent,
     ) -> Result<PutMemoryExtractionOutcome, MemoryExtractionError> {
         let data = encode(&intent)?;
-        awaken_sqlite_pool::with_connection(self.conn.clone(), move |conn| {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
-            let existing = tx
-                .query_row(
-                    "SELECT data FROM managed_memory_extraction
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(sqlite_storage)?;
+        let existing: Option<String> = sqlx::query_scalar(
+            "SELECT data FROM managed_memory_extraction
                  WHERE idempotency_key = ?1 OR intent_id = ?2
                  ORDER BY CASE WHEN idempotency_key = ?1 THEN 0 ELSE 1 END
                  LIMIT 1",
-                    params![intent.idempotency_key, intent.intent_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
-            if let Some(existing) = existing {
-                let existing = decode(&existing)?;
-                tx.commit()
-                    .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
-                return if existing.same_request(&intent) {
-                    Ok(PutMemoryExtractionOutcome::Existing)
-                } else {
-                    Err(MemoryExtractionError::IdempotencyConflict(
-                        intent.idempotency_key,
-                    ))
-                };
-            }
-            tx.execute(
-                "INSERT INTO managed_memory_extraction
+        )
+        .bind(&intent.idempotency_key)
+        .bind(&intent.intent_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(sqlite_storage)?;
+        if let Some(existing) = existing {
+            let existing = decode(&existing)?;
+            tx.commit().await.map_err(sqlite_storage)?;
+            return if existing.same_request(&intent) {
+                Ok(PutMemoryExtractionOutcome::Existing)
+            } else {
+                Err(MemoryExtractionError::IdempotencyConflict(
+                    intent.idempotency_key,
+                ))
+            };
+        }
+        sqlx::query(
+            "INSERT INTO managed_memory_extraction
                 (intent_id, idempotency_key, status, revision, lease_expires_at_unix_ms, data)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    intent.intent_id,
-                    intent.idempotency_key,
-                    intent.status.storage_name(),
-                    intent.revision,
-                    intent.lease_expires_at_unix_ms,
-                    data,
-                ],
-            )
-            .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
-            tx.commit()
-                .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
-            Ok(PutMemoryExtractionOutcome::Inserted)
-        })
+        )
+        .bind(&intent.intent_id)
+        .bind(&intent.idempotency_key)
+        .bind(intent.status.storage_name())
+        .bind(sqlite_integer(intent.revision)?)
+        .bind(sqlite_optional_integer(intent.lease_expires_at_unix_ms)?)
+        .bind(data)
+        .execute(&mut *tx)
         .await
-        .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?
+        .map_err(sqlite_storage)?;
+        tx.commit().await.map_err(sqlite_storage)?;
+        Ok(PutMemoryExtractionOutcome::Inserted)
     }
 
     async fn get_extraction(
         &self,
         intent_id: &str,
     ) -> Result<Option<MemoryExtractionIntent>, MemoryExtractionError> {
-        let intent_id = intent_id.to_string();
-        awaken_sqlite_pool::with_connection(self.conn.clone(), move |conn| {
-            conn.query_row(
-                "SELECT data FROM managed_memory_extraction WHERE intent_id = ?1",
-                params![intent_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?
-            .map(|data| decode(&data))
-            .transpose()
-        })
+        sqlx::query_scalar::<_, String>(
+            "SELECT data FROM managed_memory_extraction WHERE intent_id = ?1",
+        )
+        .bind(intent_id)
+        .fetch_optional(&self.pool)
         .await
-        .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?
+        .map_err(sqlite_storage)?
+        .map(|data| decode(&data))
+        .transpose()
     }
 
     async fn extraction_cursor(&self, thread_id: &str) -> Result<usize, MemoryExtractionError> {
-        let thread_id = thread_id.to_string();
-        awaken_sqlite_pool::with_connection(self.conn.clone(), move |conn| {
-            let mut statement = conn
-                .prepare("SELECT data FROM managed_memory_extraction")
-                .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
-            let rows = statement
-                .query_map([], |row| row.get::<_, String>(0))
-                .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
-            let mut cursor = 0;
-            for row in rows {
-                let data =
-                    row.map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
-                let intent = decode(&data)?;
-                if intent.logical_thread_id() == thread_id {
-                    cursor = cursor.max(intent.transcript_cursor());
-                }
+        let rows = sqlx::query_scalar::<_, String>("SELECT data FROM managed_memory_extraction")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(sqlite_storage)?;
+        let mut cursor = 0;
+        for data in rows {
+            let intent = decode(&data)?;
+            if intent.logical_thread_id() == thread_id {
+                cursor = cursor.max(intent.transcript_cursor());
             }
-            Ok(cursor)
-        })
-        .await
-        .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?
+        }
+        Ok(cursor)
     }
 
     async fn recoverable_extractions(
@@ -166,34 +161,22 @@ impl MemoryExtractionRepository for SqliteManagedSessionRepository {
     ) -> Result<Vec<MemoryExtractionIntent>, MemoryExtractionError> {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let recoverable = MemoryExtractionStatus::recoverable_storage_names();
-        awaken_sqlite_pool::with_connection(self.conn.clone(), move |conn| {
-            let mut statement = conn
-                .prepare(
-                    "SELECT data FROM managed_memory_extraction
+        sqlx::query_scalar::<_, String>(
+            "SELECT data FROM managed_memory_extraction
                  WHERE status IN (?1, ?2, ?3, ?4)
                  ORDER BY created_at, intent_id LIMIT ?5",
-                )
-                .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
-            statement
-                .query_map(
-                    params![
-                        recoverable[0],
-                        recoverable[1],
-                        recoverable[2],
-                        recoverable[3],
-                        limit
-                    ],
-                    |row| row.get::<_, String>(0),
-                )
-                .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?
-                .map(|row| {
-                    row.map_err(|error| MemoryExtractionError::Storage(error.to_string()))
-                        .and_then(|data| decode(&data))
-                })
-                .collect()
-        })
+        )
+        .bind(recoverable[0])
+        .bind(recoverable[1])
+        .bind(recoverable[2])
+        .bind(recoverable[3])
+        .bind(limit)
+        .fetch_all(&self.pool)
         .await
-        .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?
+        .map_err(sqlite_storage)?
+        .iter()
+        .map(|data| decode(data))
+        .collect()
     }
 
     async fn compare_and_swap_extraction(
@@ -203,31 +186,27 @@ impl MemoryExtractionRepository for SqliteManagedSessionRepository {
     ) -> Result<(), MemoryExtractionError> {
         validate_next_revision(expected_revision, &intent)?;
         let data = encode(&intent)?;
-        awaken_sqlite_pool::with_connection(self.conn.clone(), move |conn| {
-            let changed = conn
-                .execute(
-                    "UPDATE managed_memory_extraction
+        let changed = sqlx::query(
+            "UPDATE managed_memory_extraction
                  SET status = ?3, revision = ?4, lease_expires_at_unix_ms = ?5, data = ?6
                  WHERE intent_id = ?1 AND idempotency_key = ?2 AND revision = ?7",
-                    params![
-                        intent.intent_id,
-                        intent.idempotency_key,
-                        intent.status.storage_name(),
-                        intent.revision,
-                        intent.lease_expires_at_unix_ms,
-                        data,
-                        expected_revision,
-                    ],
-                )
-                .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
-            if changed == 1 {
-                Ok(())
-            } else {
-                Err(MemoryExtractionError::RevisionConflict(intent.intent_id))
-            }
-        })
+        )
+        .bind(&intent.intent_id)
+        .bind(&intent.idempotency_key)
+        .bind(intent.status.storage_name())
+        .bind(sqlite_integer(intent.revision)?)
+        .bind(sqlite_optional_integer(intent.lease_expires_at_unix_ms)?)
+        .bind(data)
+        .bind(sqlite_integer(expected_revision)?)
+        .execute(&self.pool)
         .await
-        .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?
+        .map_err(sqlite_storage)?
+        .rows_affected();
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(MemoryExtractionError::RevisionConflict(intent.intent_id))
+        }
     }
 }
 

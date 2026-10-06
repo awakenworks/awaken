@@ -9,6 +9,7 @@ use awaken_provisioning_contract::{
     MemoryMaterializationEvidence, MemoryMount, MemoryMounter, MountAccess,
 };
 use awaken_sandbox_memoryd::MemoryStoreMounter;
+use sqlx::sqlite::SqliteOperation;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -41,7 +42,7 @@ impl SqlCommitGate {
     }
 }
 
-// A failed assertion must not strand spawn_blocking during runtime shutdown.
+// A failed assertion must not strand the paused SQL write during runtime shutdown.
 struct ReleaseSqlGate(Arc<SqlCommitGate>);
 impl Drop for ReleaseSqlGate {
     fn drop(&mut self) {
@@ -53,8 +54,8 @@ impl Drop for ReleaseSqlGate {
 async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
     // L1-L8: operation={create,update,delete,retain-conflict} ×
     // retry={before,after late commit}. Retention changes only its candidate row.
-    // Unlike the acknowledgement wrapper below, an AFTER SQL trigger pauses
-    // INSIDE the actual production spawn_blocking transaction. Abort only the
+    // Unlike the acknowledgement wrapper below, a SQLite row-change hook pauses
+    // INSIDE the actual production write transaction. Abort only the
     // awaiting teardown; SQL continues and must commit exactly once. An independent
     // reader observes the old committed heads while SQL is paused. Re-drive from
     // the same guard AND reopened original evidence preserves exact history/IDs.
@@ -62,33 +63,53 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
         for retry_before_commit in [false, true] {
             let root = tempfile::tempdir().unwrap();
             let database = root.path().join("memory.sqlite");
-            let conn = rusqlite::Connection::open(&database).unwrap();
+            let pool = awaken_sqlite_pool::EmbeddedSqlite::file(&database)
+                .open()
+                .await
+                .unwrap();
             let gate = Arc::new(SqlCommitGate::default());
             let _release_on_failure = ReleaseSqlGate(gate.clone());
-            conn.create_scalar_function(
-                "pause_memory_commit",
-                0,
-                rusqlite::functions::FunctionFlags::SQLITE_UTF8,
-                {
+            let (sql_operation, table) = if operation == "CONFLICT" {
+                (SqliteOperation::Insert, "memory_store_copy_conflicts")
+            } else {
+                (
+                    match operation {
+                        "INSERT" => SqliteOperation::Insert,
+                        "UPDATE" => SqliteOperation::Update,
+                        _ => SqliteOperation::Delete,
+                    },
+                    "memory_store_memories",
+                )
+            };
+            // The row-change hook runs inside the repository's own write
+            // statement, before its transaction commits, exactly where an AFTER
+            // row trigger would.
+            pool.acquire()
+                .await
+                .unwrap()
+                .lock_handle()
+                .await
+                .unwrap()
+                .set_update_hook({
                     let gate = gate.clone();
-                    move |_| {
-                        if gate.armed.swap(false, Ordering::SeqCst) {
+                    move |change| {
+                        if change.operation == sql_operation
+                            && change.table == table
+                            && gate.armed.swap(false, Ordering::SeqCst)
+                        {
                             gate.reached.notify_one();
                             let mut released = gate.released.lock().unwrap();
                             while !*released {
                                 released = gate.resume.wait(released).unwrap();
                             }
                         }
-                        Ok(0_i64)
                     }
-                },
-            )
-            .unwrap();
+                });
             let repository = Arc::new(SqliteMemoryRepository::over(
-                conn,
+                pool,
                 awaken_time::system_clock(),
             ));
-            repository.ensure_schema().unwrap();
+            repository.ensure_schema().await.unwrap();
             if operation != "INSERT" {
                 repository.create("s", "/note.md", "base").await.unwrap();
             }
@@ -96,19 +117,8 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
                 database.to_str().unwrap(),
                 awaken_time::system_clock(),
             )
+            .await
             .unwrap();
-            let schema = rusqlite::Connection::open(&database).unwrap();
-            let (sql_operation, table) = if operation == "CONFLICT" {
-                ("INSERT", "memory_store_copy_conflicts")
-            } else {
-                (operation, "memory_store_memories")
-            };
-            schema
-                .execute_batch(&format!(
-                    "CREATE TRIGGER pause_write AFTER {sql_operation} ON {table}
-                 BEGIN SELECT pause_memory_commit(); END;"
-                ))
-                .unwrap();
             let mounter = Arc::new(MemoryStoreMounter::copy_only(repository.clone()));
             let projection = root.path().join("projection");
             let mount: Arc<dyn MemoryMount> = Arc::from(
@@ -219,7 +229,6 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
                     Some("edit")
                 }
             );
-            schema.execute_batch("DROP TRIGGER pause_write").unwrap();
             drop(mount);
             drop(mounter);
             drop(repository);
@@ -228,6 +237,7 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
                     database.to_str().unwrap(),
                     awaken_time::system_clock(),
                 )
+                .await
                 .unwrap(),
             );
             MemoryStoreMounter::copy_only(reopened.clone())
@@ -281,8 +291,11 @@ fn recovery_has_no_temp_directory_dependency_even_when_cancelled() {
 async fn recovery_without_temp_child() {
     assert_eq!(std::env::var("AWAKEN_RECOVERY_TEMP_TEST").unwrap(), "1");
     for after in [false, true] {
-        let repository =
-            Arc::new(SqliteMemoryRepository::open_in_memory(awaken_time::system_clock()).unwrap());
+        let repository = Arc::new(
+            SqliteMemoryRepository::open_in_memory(awaken_time::system_clock())
+                .await
+                .unwrap(),
+        );
         let gate = Arc::new(Gate {
             after,
             error: false,
@@ -531,6 +544,7 @@ async fn interrupted_conflict_retention_retries_without_losing_the_proposal() {
                         database.to_str().unwrap(),
                         awaken_time::system_clock(),
                     )
+                    .await
                     .unwrap(),
                 );
                 if operation != "create" {
@@ -623,6 +637,7 @@ async fn interrupted_conflict_retention_retries_without_losing_the_proposal() {
                         database.to_str().unwrap(),
                         awaken_time::system_clock(),
                     )
+                    .await
                     .unwrap(),
                 );
                 let mounter = MemoryStoreMounter::copy_only(reopened.clone());
@@ -698,6 +713,7 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                             database.to_str().unwrap(),
                             awaken_time::system_clock(),
                         )
+                        .await
                         .unwrap(),
                     );
                     if operation != "create" {
@@ -832,6 +848,7 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                             database.to_str().unwrap(),
                             awaken_time::system_clock(),
                         )
+                        .await
                         .unwrap(),
                     );
                     let mut files = vec![];

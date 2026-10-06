@@ -909,7 +909,7 @@ impl awaken_session_execution_contract::LiveInboxRuntime for QueueFake {
     }
 }
 
-fn app_with_session_application(
+async fn app_with_session_application(
     fake: Arc<QueueFake>,
 ) -> (Router, Arc<awaken_session_application::SessionApplication>) {
     struct Shared(Arc<QueueFake>);
@@ -1591,7 +1591,7 @@ fn app_with_session_application(
             self.0.live_inbox_reorder(t, o).await
         }
     }
-    let state = Arc::new(ManagedState::new(Shared(fake)));
+    let state = Arc::new(ManagedState::new(Shared(fake)).await);
     let application = state.session_application();
     (
         router(state).merge(live_inbox_router(application.clone())),
@@ -1599,8 +1599,8 @@ fn app_with_session_application(
     )
 }
 
-fn app(fake: Arc<QueueFake>) -> Router {
-    app_with_session_application(fake).0
+async fn app(fake: Arc<QueueFake>) -> Router {
+    app_with_session_application(fake).await.0
 }
 
 #[tokio::test]
@@ -1618,7 +1618,7 @@ async fn workspace_scope_fences_every_live_inbox_operation() {
     // | S3 | exists | owner | POST | accepted by active queue |
     let fake = Arc::new(QueueFake::default());
     fake.active.store(true, Ordering::SeqCst);
-    let app = app(fake);
+    let app = app(fake).await;
     let session = create(&app).await;
     let base = format!("/v1/awaken/sessions/{session}/live-inbox");
 
@@ -1648,7 +1648,7 @@ async fn malformed_live_inbox_commands_are_rejected_before_application_mutation(
     // a 4xx and never reaches the application. Rule P1 C1+C3 -> E1; P2 C2 -> E2.
     let fake = Arc::new(QueueFake::default());
     fake.active.store(true, Ordering::SeqCst);
-    let app = app(fake);
+    let app = app(fake).await;
     let session = create(&app).await;
     let base = format!("/v1/awaken/sessions/{session}/live-inbox");
 
@@ -1673,7 +1673,7 @@ async fn malformed_live_inbox_commands_are_rejected_before_application_mutation(
 async fn unknown_session_is_404_before_any_queue_logic() {
     // Decision rule R1: C1 the neutral application reports an unknown Session
     // -> E1 the Awaken adapter returns 404 and never consults queue state.
-    let app = app(Arc::new(QueueFake::default()));
+    let app = app(Arc::new(QueueFake::default())).await;
     let (status, body) = call(
         &app,
         "GET",
@@ -1690,7 +1690,7 @@ async fn inactive_queue_lists_empty_and_refuses_mutations_with_410() {
     // Decision rules R2/R3: C1 known Session + inactive queue + read -> E1 an
     // empty inactive snapshot; the same state + mutation -> E2 410 with no edit.
     let fake = Arc::new(QueueFake::default());
-    let app = app(fake);
+    let app = app(fake).await;
     let session = create(&app).await;
 
     let (status, body) = call(
@@ -1742,7 +1742,8 @@ async fn inactive_live_steer_has_the_existing_durable_event_fallback() {
     // |---|---|---|---|
     // | F1 | no | LiveInbox | 410, no queue entry |
     // | F2 | no | Session events | 200, one committed user.message |
-    let (app, session_application) = app_with_session_application(Arc::new(QueueFake::default()));
+    let (app, session_application) =
+        app_with_session_application(Arc::new(QueueFake::default())).await;
     let session = create(&app).await;
     let live = format!("/v1/awaken/sessions/{session}/live-inbox");
 
@@ -1792,7 +1793,7 @@ async fn queue_edit_reorder_withdraw_round_trip() {
     // all five methods through one neutral LiveInboxApplication owner.
     let fake = Arc::new(QueueFake::default());
     fake.active.store(true, Ordering::SeqCst);
-    let app = app(fake);
+    let app = app(fake).await;
     let session = create(&app).await;
     let base = format!("/v1/awaken/sessions/{session}/live-inbox");
 

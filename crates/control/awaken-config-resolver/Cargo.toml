@@ -18,6 +18,7 @@ awaken-runtime-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-model-catalog.workspace = true
 awaken-credential-vault.workspace = true
+async-trait.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 schemars = { version = "1", optional = true }

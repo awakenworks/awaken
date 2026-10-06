@@ -1202,6 +1202,7 @@ mod durable_cancel_tests {
         let llm = Arc::new(CaptureAdvisorRequests::default());
         let store = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+                .await
                 .expect("durable advisor dispatch store"),
         );
         let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
@@ -1455,6 +1456,7 @@ mod durable_cancel_tests {
         let (_root, sandbox) = local_test_sandbox().await;
         let store = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+                .await
                 .expect("durable child dispatch store"),
         );
         let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));

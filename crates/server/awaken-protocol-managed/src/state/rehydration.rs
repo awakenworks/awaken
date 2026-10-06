@@ -180,7 +180,7 @@ mod tests {
                 "orphan transcript",
             )]);
         let order = runtime.order.clone();
-        let state = ManagedState::new(runtime);
+        let state = ManagedState::new(runtime).await;
 
         assert!(
             matches!(
@@ -205,7 +205,7 @@ mod tests {
         // Decision rules R1=!C1+!C2=>E1, R2=C1+(!C2|!C3|!C4)=>E2,
         // R3=C1+C2+C3+C4+live=>E3, R4=same+failed=>E3.
         let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-            Arc::new(ephemeral_session_repo());
+            Arc::new(ephemeral_session_repo().await);
         let id = "profiled-receipt-live";
         let receipt = awaken_session_state_contract::IdempotencyRecord {
             key: format!("profiled:create:{id}"),
@@ -219,7 +219,9 @@ mod tests {
             .get(&awaken_session_types::SessionId::from(id))
             .await
             .unwrap();
-        let restarted = ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone());
+        let restarted = ManagedState::new(RehydrateFake::default())
+            .await
+            .with_session_repo(repo.clone());
 
         assert!(
             restarted
@@ -333,7 +335,7 @@ mod tests {
         // lease liveness, owns physical custody; rehydration may rebuild only the
         // read/projection state and cannot adopt or stage Worker-owned effects.
         let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-            Arc::new(ephemeral_session_repo());
+            Arc::new(ephemeral_session_repo().await);
         let mut cases = Vec::new();
         for (owner_name, placement) in [(
             "topology",
@@ -488,7 +490,7 @@ mod tests {
         // | H3 | either | Deleted (hidden) | E2 |
         // | H4 | either | absent | E2 |
         let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-            Arc::new(ephemeral_session_repo());
+            Arc::new(ephemeral_session_repo().await);
         let mut hidden = sample_persisted("hydrate-hidden");
         hidden.disposition = awaken_session_state_contract::SessionDisposition::Deleted;
         for session in [
@@ -509,7 +511,9 @@ mod tests {
             .await
             .expect("persist durable root");
         }
-        let state = ManagedState::new(RehydrateFake::default()).with_session_repo(repo);
+        let state = ManagedState::new(RehydrateFake::default())
+            .await
+            .with_session_repo(repo);
         for (rule, id, purpose) in [
             ("H1", "hydrate-interactive", RehydrationPurpose::Interactive),
             ("H2", "hydrate-frozen", RehydrationPurpose::FrozenControl),

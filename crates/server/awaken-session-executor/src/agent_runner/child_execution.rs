@@ -1113,23 +1113,28 @@ mod tests {
                 .await
                 .unwrap();
             let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
-            let scheduler = durable.then(|| RunScheduler {
-                clock: awaken_time::system_clock(),
-                store: Arc::new(
-                    awaken_dispatch::open_sqlite_dispatch_store_in_memory(
-                        awaken_time::system_clock(),
-                    )
-                    .unwrap(),
-                ),
-                commit: commit.clone(),
-                reader: commit.clone(),
-                owner: "child-worker".into(),
-                claimed_commit: None,
-                recovery_projection: None,
-                session_resources: None,
-                publication_source: None,
-                claimed_model_request_gate: None,
-            });
+            let scheduler = if durable {
+                Some(RunScheduler {
+                    clock: awaken_time::system_clock(),
+                    store: Arc::new(
+                        awaken_dispatch::open_sqlite_dispatch_store_in_memory(
+                            awaken_time::system_clock(),
+                        )
+                        .await
+                        .unwrap(),
+                    ),
+                    commit: commit.clone(),
+                    reader: commit.clone(),
+                    owner: "child-worker".into(),
+                    claimed_commit: None,
+                    recovery_projection: None,
+                    session_resources: None,
+                    publication_source: None,
+                    claimed_model_request_gate: None,
+                })
+            } else {
+                None
+            };
             let (tx, rx) = tokio::sync::oneshot::channel();
             let model = Arc::new(Blocked {
                 entered: tokio::sync::Notify::new(),
@@ -1244,6 +1249,7 @@ mod tests {
                     &dispatch_path,
                     awaken_time::system_clock(),
                 )
+                .await
                 .expect("child dispatch store"),
             ),
             commit: commit.clone(),
@@ -1315,6 +1321,7 @@ mod tests {
                     &dispatch_path,
                     awaken_time::system_clock(),
                 )
+                .await
                 .expect("reopen child dispatch"),
             ),
             commit: commit.clone(),
@@ -1385,6 +1392,7 @@ mod tests {
                         &dispatch_path,
                         awaken_time::system_clock(),
                     )
+                    .await
                     .expect("reopen terminal child dispatch"),
                 ),
                 commit: commit.clone(),

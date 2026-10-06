@@ -36,8 +36,10 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
             .flat_map(|foreign| [false, true].map(|prior| (foreign, prior)))
         {
             let runtime = LifecycleRuntime::default();
-            let repository = Arc::new(ephemeral_session_repo());
-            let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+            let repository = Arc::new(ephemeral_session_repo().await);
+            let warm = ManagedState::new(runtime.clone())
+                .await
+                .with_session_repo(repository.clone());
             let session = warm
                 .create_session(
                     serde_json::from_value(serde_json::json!({
@@ -122,7 +124,9 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
                 )
                 .await
                 .unwrap();
-            let cold = ManagedState::new(runtime.clone()).with_session_repo(repository);
+            let cold = ManagedState::new(runtime.clone())
+                .await
+                .with_session_repo(repository);
             let mut previous = None;
             for state in [&warm, &warm, &cold] {
                 state.refresh_committed_events(&session.id).await.unwrap();
@@ -192,8 +196,10 @@ async fn cancelled_child_uses_the_same_committed_execution_classifier() {
             .lock()
             .unwrap()
             .push("researcher".into());
-        let repository = Arc::new(ephemeral_session_repo());
-        let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+        let repository = Arc::new(ephemeral_session_repo().await);
+        let warm = ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repository.clone());
         let session = warm
             .create_session(
                 serde_json::from_value(serde_json::json!({
@@ -268,7 +274,9 @@ async fn cancelled_child_uses_the_same_committed_execution_classifier() {
             .lock()
             .unwrap()
             .insert(child_id.into(), cursors);
-        let cold = ManagedState::new(runtime).with_session_repo(repository);
+        let cold = ManagedState::new(runtime)
+            .await
+            .with_session_repo(repository);
         let mut previous = None;
         for state in [&warm, &warm, &cold] {
             state.refresh_committed_events(&session.id).await.unwrap();

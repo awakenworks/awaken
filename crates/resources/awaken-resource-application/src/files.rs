@@ -493,13 +493,14 @@ mod tests {
     use super::*;
     use awaken_resource_contract::{content_id, harvest_idempotency_key};
 
-    pub(super) fn application() -> FileApplication {
+    pub(super) async fn application() -> FileApplication {
         let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
         FileApplication::new(
             files.clone(),
             files,
             Arc::new(
                 awaken_resource_store::SqliteResourceStore::in_memory()
+                    .await
                     .expect("resource reclamation"),
             ),
             awaken_time::system_clock(),
@@ -532,7 +533,7 @@ mod tests {
         // exact replay, no extra File/blob/reference. A3 deleting selected A ->
         // capture keeps the exact id but File download is denied; B is never
         // substituted. Application delegates CAS to its existing catalog.
-        let app = application();
+        let app = application().await;
         let a = app
             .create_artifact(&artifact_publication("report.txt", b"A", None))
             .await
@@ -638,7 +639,7 @@ mod tests {
         // while the FileStore may still deduplicate its immutable blob.
         // These three rules cover command replay versus content deduplication without
         // creating a second idempotency registry.
-        let app = application();
+        let app = application().await;
         let command = || CreateFileCommand {
             workspace_id: "workspace-a",
             filename: "report.txt".into(),
@@ -693,6 +694,7 @@ mod tests {
             files.clone(),
             Arc::new(
                 awaken_resource_store::SqliteResourceStore::in_memory()
+                    .await
                     .expect("resource reclamation"),
             ),
             awaken_time::system_clock(),

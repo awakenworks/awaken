@@ -16,7 +16,103 @@ use awaken_session_mcp_contract::{
 };
 
 use super::*;
+use awaken_scoped_migration::MigrationBundle;
+use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use std::time::Duration;
+
+/// A raw fixture connection with SQLite's plain defaults, outside the embedded
+/// store policy: the file is created when missing, foreign keys stay off, the
+/// journal mode is left as it is and a busy writer is waited on for 5 s.
+/// Fixtures use it to write states the repository itself never produces; close
+/// it to release the file.
+#[cfg(test)]
+pub(crate) async fn raw_sqlite(path: impl AsRef<std::path::Path>) -> sqlx::SqlitePool {
+    sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(true)
+                .foreign_keys(false),
+        )
+        .await
+        .expect("open raw SQLite fixture connection")
+}
+
+/// Close a repository's connection now, as dropping the former synchronous
+/// connection did, so the next fixture step sees a released file.
+pub(crate) async fn close_repository(repository: SqliteManagedSessionRepository) {
+    repository.close().await;
+}
+
+/// A fresh temporary directory and the path of database `file` inside it; the
+/// directory must outlive every connection to that database.
+fn temp_database(file: &str) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(file).to_string_lossy().into_owned();
+    (dir, path)
+}
+
+/// A fresh ephemeral SQLite Session repository.
+async fn memory_repository() -> SqliteManagedSessionRepository {
+    SqliteManagedSessionRepository::open_in_memory()
+        .await
+        .expect("open ephemeral SQLite Session repository")
+}
+
+/// The stored aggregate bytes of one SQLite root, read past the decoder.
+async fn stored_sqlite_aggregate<'c>(
+    executor: impl sqlx::Executor<'c, Database = sqlx::Sqlite>,
+    session_id: &str,
+) -> String {
+    sqlx::query_scalar("SELECT aggregate_json FROM managed_session WHERE session_id = ?1")
+        .bind(session_id)
+        .fetch_one(executor)
+        .await
+        .expect("read fixture aggregate")
+}
+
+/// As [`overwrite_sqlite_aggregate`], on a Postgres Session schema.
+async fn overwrite_postgres_aggregate<'c>(
+    executor: impl sqlx::Executor<'c, Database = sqlx::Postgres>,
+    session_id: &str,
+    aggregate: &str,
+) {
+    sqlx::query("UPDATE managed_session SET aggregate_json = $1 WHERE session_id = $2")
+        .bind(aggregate)
+        .bind(session_id)
+        .execute(executor)
+        .await
+        .expect("overwrite fixture aggregate");
+}
+
+/// Execute one parameterless fixture statement on any store's connection,
+/// writing a row or state the repository itself never produces.
+async fn execute_fixture<'c, DB>(executor: impl sqlx::Executor<'c, Database = DB>, sql: &str)
+where
+    DB: sqlx::Database,
+    for<'q> <DB as sqlx::Database>::Arguments<'q>: sqlx::IntoArguments<'q, DB>,
+{
+    sqlx::query(sql)
+        .execute(executor)
+        .await
+        .unwrap_or_else(|error| panic!("fixture statement `{sql}`: {error}"));
+}
+
+/// Overwrite one stored root's aggregate bytes behind the repository, the way
+/// a damaged, forged or legacy row reaches the decoder.
+async fn overwrite_sqlite_aggregate<'c>(
+    executor: impl sqlx::Executor<'c, Database = sqlx::Sqlite>,
+    session_id: &str,
+    aggregate: &str,
+) {
+    sqlx::query("UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2")
+        .bind(aggregate)
+        .bind(session_id)
+        .execute(executor)
+        .await
+        .expect("overwrite fixture aggregate");
+}
 
 #[cfg(test)]
 #[tokio::test]
@@ -31,28 +127,19 @@ async fn sqlite_normalization_and_index_repair_share_one_crash_boundary() {
     // N4 crosses N1-N3 with v1 witness upgrade: the root revision bump must
     // roll back with the index failure and occur exactly once on retry.
     for upgrade in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir
-            .path()
-            .join("atomic-normalization.db")
-            .to_string_lossy()
-            .into_owned();
-        let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+        let (_dir, path) = temp_database("atomic-normalization.db");
+        let repo = SqliteManagedSessionRepository::open(&path).await.unwrap();
         let mut first = create_fixture(&repo, "ws", sample("a-normalize"), Vec::new()).await;
         create_fixture(&repo, "ws", sample("z-fail-index"), Vec::new()).await;
-        drop(repo);
-        let conn = Connection::open(&path).unwrap();
+        close_repository(repo).await;
+        let conn = raw_sqlite(&path).await;
         let (original, canonical) = normalization_fixture(&mut first, upgrade);
-        conn.execute(
-            "UPDATE managed_session SET aggregate_json=?1 WHERE session_id='a-normalize'",
-            params![original],
-        )
-        .unwrap();
-        conn.execute("INSERT INTO managed_session_reconciliation_work(session_id,observed_revision) VALUES('a-normalize',999) ON CONFLICT(session_id) DO UPDATE SET observed_revision=999", []).unwrap();
-        conn.execute("INSERT INTO managed_session_credential_source_reference(session_id,credential_source_id) VALUES('z-fail-index','stale-source')", []).unwrap();
-        conn.execute_batch("CREATE TRIGGER fail_index_repair BEFORE DELETE ON managed_session_credential_source_reference WHEN OLD.session_id='z-fail-index' BEGIN SELECT RAISE(ABORT,'injected index repair failure'); END;").unwrap();
-        drop(conn);
-        let error = match SqliteManagedSessionRepository::open(&path) {
+        overwrite_sqlite_aggregate(&conn, "a-normalize", &original).await;
+        execute_fixture(&conn, "INSERT INTO managed_session_reconciliation_work(session_id,observed_revision) VALUES('a-normalize',999) ON CONFLICT(session_id) DO UPDATE SET observed_revision=999").await;
+        execute_fixture(&conn, "INSERT INTO managed_session_credential_source_reference(session_id,credential_source_id) VALUES('z-fail-index','stale-source')").await;
+        sqlx::raw_sql("CREATE TRIGGER fail_index_repair BEFORE DELETE ON managed_session_credential_source_reference WHEN OLD.session_id='z-fail-index' BEGIN SELECT RAISE(ABORT,'injected index repair failure'); END;").execute(&conn).await.unwrap();
+        conn.close().await;
+        let error = match SqliteManagedSessionRepository::open(&path).await {
             Ok(_) => panic!("N1 index repair must fail"),
             Err(error) => error,
         };
@@ -60,25 +147,23 @@ async fn sqlite_normalization_and_index_repair_share_one_crash_boundary() {
             error.contains("injected index repair failure"),
             "N1: {error}"
         );
-        let conn = Connection::open(&path).unwrap();
-        let bytes: String = conn
-            .query_row(
-                "SELECT aggregate_json FROM managed_session WHERE session_id='a-normalize'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let observed: i64 = conn.query_row("SELECT observed_revision FROM managed_session_reconciliation_work WHERE session_id='a-normalize'", [], |row| row.get(0)).unwrap();
+        let conn = raw_sqlite(&path).await;
+        let bytes: String = stored_sqlite_aggregate(&conn, "a-normalize").await;
+        let observed: i64 = sqlx::query_scalar("SELECT observed_revision FROM managed_session_reconciliation_work WHERE session_id='a-normalize'").fetch_one(&conn).await.unwrap();
         assert_eq!(
             bytes, original,
             "N1 root normalization rolls back with index repair"
         );
         assert_eq!(observed, 999, "N1 earlier index repair rolls back too");
-        conn.execute_batch("DROP TRIGGER fail_index_repair;")
+        sqlx::raw_sql("DROP TRIGGER fail_index_repair;")
+            .execute(&conn)
+            .await
             .unwrap();
-        drop(conn);
+        conn.close().await;
         for _ in 0..2 {
-            let repo = SqliteManagedSessionRepository::open(&path).expect("N2/N3 retry");
+            let repo = SqliteManagedSessionRepository::open(&path)
+                .await
+                .expect("N2/N3 retry");
             assert_eq!(
                 repo.get(&SessionId::from("a-normalize")).await.unwrap(),
                 first
@@ -86,16 +171,10 @@ async fn sqlite_normalization_and_index_repair_share_one_crash_boundary() {
             if upgrade {
                 assert_pre_upgrade_writer_fenced(&repo, &first).await;
             }
-            let conn = repo.conn.lock().unwrap();
-            let bytes: String = conn
-                .query_row(
-                    "SELECT aggregate_json FROM managed_session WHERE session_id='a-normalize'",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
+            let conn = &repo.pool;
+            let bytes: String = stored_sqlite_aggregate(conn, "a-normalize").await;
             assert_eq!(bytes, canonical, "N2/N3 canonical root");
-            let stale: i64 = conn.query_row("SELECT COUNT(*) FROM managed_session_credential_source_reference WHERE credential_source_id='stale-source'", [], |row| row.get(0)).unwrap();
+            let stale: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM managed_session_credential_source_reference WHERE credential_source_id='stale-source'").fetch_one(conn).await.unwrap();
             assert_eq!(stale, 0, "N2/N3 stale dependency repaired");
         }
     }
@@ -211,26 +290,19 @@ fn transactional_identity_and_create_shape_decision_table_is_closed() {
     }
 }
 
-/// Session-recovery scheduler-isolation cause/effect graph: C1 one synchronous
-/// SQLite owner holds the canonical Session connection; C2 forty recovery scans
-/// become runnable on a two-worker Tokio runtime, matching the observed hosted
-/// backlog. Effects: E1 connection waiters consume blocking-pool capacity only;
-/// E2 an authority/lease timer fires before the owner releases at 250 ms; E3 all
-/// forty scans complete after release without losing or inventing Session rows.
+/// Session-recovery scheduler-isolation cause/effect graph: C1 one owner holds
+/// the canonical Session connection; C2 forty recovery scans become runnable on
+/// a two-worker Tokio runtime, matching the observed hosted backlog. Effects: E1
+/// connection waiters occupy no Tokio worker; E2 an authority/lease timer fires
+/// while the owner still holds the connection; E3 all forty scans complete
+/// after release without losing or inventing Session rows.
 /// Decision rule S1=C1+C2=>E1+E2+E3. The 40-way fan-out is deliberate: the
 /// generic two-waiter boundary test proves mechanism, while this rule freezes
 /// the production-shaped recovery pressure that starved Control and heartbeat.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recovery_backlog_cannot_starve_session_authority_timers() {
-    let repository = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
-    let held = repository.conn.clone();
-    let (held_tx, held_rx) = std::sync::mpsc::sync_channel(1);
-    let holder = std::thread::spawn(move || {
-        let _guard = held.lock().expect("S1 connection lock");
-        held_tx.send(()).expect("S1 announce held connection");
-        std::thread::sleep(Duration::from_millis(250));
-    });
-    held_rx.recv().expect("S1 connection held");
+    let repository = Arc::new(memory_repository().await);
+    let held = repository.pool.acquire().await.expect("S1 connection held");
 
     let started = std::time::Instant::now();
     let timer = tokio::spawn(async move {
@@ -263,7 +335,7 @@ async fn recovery_backlog_cannot_starve_session_authority_timers() {
         "S1/E2 timer fired after {elapsed:?}; Session scans blocked runtime workers"
     );
 
-    holder.join().expect("S1 release connection");
+    drop(held);
     for scan in scans {
         let result = scan.await.expect("S1 recovery task").expect("S1/E3 scan");
         assert!(result.sessions.is_empty(), "S1/E3 no invented Sessions");
@@ -301,10 +373,7 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         .acquire_timeout(Duration::from_millis(10))
         .connect_lazy("postgres://localhost/awaken")
         .unwrap();
-    let postgres = PostgresManagedSessionRepository {
-        pool,
-        handle: tokio::runtime::Handle::current(),
-    };
+    let postgres = PostgresManagedSessionRepository { pool };
     postgres.pool.close().await;
     assert!(
         postgres.pending_lifecycle().await.is_err(),
@@ -328,30 +397,20 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
     let dir = tempfile::tempdir().unwrap();
     let sqlite =
         SqliteManagedSessionRepository::open(&dir.path().join("recovery.db").to_string_lossy())
+            .await
             .unwrap();
-    sqlite
-        .conn
-        .lock()
-        .unwrap()
-        .execute(
-            "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
-            params!["corrupt", "{"],
-        )
+    sqlx::query("INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)")
+        .bind("corrupt")
+        .bind("{")
+        .execute(&sqlite.pool)
+        .await
         .unwrap();
     assert!(sqlite.pending_lifecycle().await.is_err(), "R2 typed error");
 
     let recoverable =
         create_fixture(&sqlite, "workspace", sample("sesn_corrupt"), Vec::new()).await;
     create_fixture(&sqlite, "workspace", sample("sesn_healthy"), Vec::new()).await;
-    sqlite
-        .conn
-        .lock()
-        .unwrap()
-        .execute(
-            "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
-            params!["{", "sesn_corrupt"],
-        )
-        .unwrap();
+    overwrite_sqlite_aggregate(&sqlite.pool, "sesn_corrupt", "{").await;
     let scan = sqlite
         .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
         .await
@@ -392,16 +451,12 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         .unwrap();
     assert_eq!(replay.sessions.len(), 1);
     assert_eq!(replay.quarantined, scan.quarantined, "R3 idempotent replay");
-    let quarantined_rows: i64 = sqlite
-        .conn
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT COUNT(*) FROM managed_session_quarantine WHERE session_id = ?1",
-            params!["sesn_corrupt"],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let quarantined_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM managed_session_quarantine WHERE session_id = ?1")
+            .bind("sesn_corrupt")
+            .fetch_one(&sqlite.pool)
+            .await
+            .unwrap();
     assert_eq!(quarantined_rows, 1, "R3 durable quarantine");
 
     let mut recognized_legacy = serde_json::to_value(recoverable).unwrap();
@@ -413,15 +468,7 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         .as_object_mut()
         .unwrap()
         .remove("active_activity_epochs");
-    sqlite
-        .conn
-        .lock()
-        .unwrap()
-        .execute(
-            "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
-            params![recognized_legacy.to_string(), "sesn_corrupt"],
-        )
-        .unwrap();
+    overwrite_sqlite_aggregate(&sqlite.pool, "sesn_corrupt", &recognized_legacy.to_string()).await;
     let healed = sqlite
         .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
         .await
@@ -434,16 +481,12 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
             .any(|row| row.session.session_id == "sesn_corrupt"),
         "R4 recognized historical row resumes recovery"
     );
-    let quarantined_rows: i64 = sqlite
-        .conn
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT COUNT(*) FROM managed_session_quarantine WHERE session_id = ?1",
-            params!["sesn_corrupt"],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let quarantined_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM managed_session_quarantine WHERE session_id = ?1")
+            .bind("sesn_corrupt")
+            .fetch_one(&sqlite.pool)
+            .await
+            .unwrap();
     assert_eq!(quarantined_rows, 0, "R4 durable stale evidence removed");
 }
 
@@ -463,6 +506,7 @@ async fn reconciliation_keyset_pages_cover_more_than_one_fixed_batch_exactly_onc
     let sqlite = SqliteManagedSessionRepository::open(
         &dir.path().join("recovery-pages.db").to_string_lossy(),
     )
+    .await
     .unwrap();
     let total = usize::try_from(RECOVERY_BATCH_SIZE).unwrap() + 1;
     let expected = (0..total)
@@ -513,17 +557,19 @@ async fn create_and_mutation_receipts_fail_closed_on_corrupt_identity_state() {
     // replay/not-found/conflict, and no replacement aggregate or external outbox
     // fact is synthesized. These states require backend injection because the
     // repository transaction never creates them.
-    let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
-    repo.conn
-        .lock()
-        .unwrap()
-        .execute(
-            "INSERT INTO managed_session_idempotency
+    let repo = memory_repository().await;
+    sqlx::query(
+        "INSERT INTO managed_session_idempotency
                 (session_id, idempotency_key, payload_hash, committed_revision)
              VALUES (?1, ?2, ?3, ?4)",
-            params!["dangling-create", "create", "request", 1_i64],
-        )
-        .unwrap();
+    )
+    .bind("dangling-create")
+    .bind("create")
+    .bind("request")
+    .bind(1_i64)
+    .execute(&repo.pool)
+    .await
+    .unwrap();
     assert!(matches!(
         repo.replay_create(
             "workspace",
@@ -547,14 +593,7 @@ async fn create_and_mutation_receipts_fail_closed_on_corrupt_identity_state() {
     repo.create("workspace", candidate, record.clone(), Vec::new())
         .await
         .unwrap();
-    repo.conn
-        .lock()
-        .unwrap()
-        .execute(
-            "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
-            params!["{", damaged_id],
-        )
-        .unwrap();
+    overwrite_sqlite_aggregate(&repo.pool, damaged_id, "{").await;
     assert!(matches!(
         repo.replay_create("workspace", &SessionId::from(damaged_id), &record)
             .await,
@@ -571,15 +610,16 @@ async fn create_and_mutation_receipts_fail_closed_on_corrupt_identity_state() {
     repo.create("workspace", candidate, record.clone(), Vec::new())
         .await
         .unwrap();
-    repo.conn
-        .lock()
-        .unwrap()
-        .execute(
-            "UPDATE managed_session_idempotency SET committed_revision = ?1
+    sqlx::query(
+        "UPDATE managed_session_idempotency SET committed_revision = ?1
              WHERE session_id = ?2 AND idempotency_key = ?3",
-            params![2_i64, non_create_id, record.key],
-        )
-        .unwrap();
+    )
+    .bind(2_i64)
+    .bind(non_create_id)
+    .bind(&record.key)
+    .execute(&repo.pool)
+    .await
+    .unwrap();
     assert!(matches!(
         repo.replay_create("workspace", &SessionId::from(non_create_id), &record)
             .await,
@@ -596,16 +636,18 @@ async fn create_and_mutation_receipts_fail_closed_on_corrupt_identity_state() {
     repo.create("workspace", candidate, record.clone(), Vec::new())
         .await
         .unwrap();
-    repo.conn
-        .lock()
-        .unwrap()
-        .execute(
-            "INSERT INTO managed_session_tombstone
+    sqlx::query(
+        "INSERT INTO managed_session_tombstone
                 (session_id, scope_id, deleted_revision, deleted_at)
              VALUES (?1, ?2, ?3, ?4)",
-            params![dual_identity_id, "workspace", 1_i64, "now"],
-        )
-        .unwrap();
+    )
+    .bind(dual_identity_id)
+    .bind("workspace")
+    .bind(1_i64)
+    .bind("now")
+    .execute(&repo.pool)
+    .await
+    .unwrap();
     assert!(matches!(
         repo.replay_create("workspace", &SessionId::from(dual_identity_id), &record)
             .await,
@@ -615,16 +657,18 @@ async fn create_and_mutation_receipts_fail_closed_on_corrupt_identity_state() {
     let missing = sample("dangling-mutation");
     let payload = SessionMutationPayload::Replace(missing.clone());
     let payload_hash = payload.stable_hash();
-    repo.conn
-        .lock()
-        .unwrap()
-        .execute(
-            "INSERT INTO managed_session_idempotency
+    sqlx::query(
+        "INSERT INTO managed_session_idempotency
                 (session_id, idempotency_key, payload_hash, committed_revision)
              VALUES (?1, ?2, ?3, ?4)",
-            params!["dangling-mutation", "mutation", payload_hash, 1_i64],
-        )
-        .unwrap();
+    )
+    .bind("dangling-mutation")
+    .bind("mutation")
+    .bind(payload_hash)
+    .bind(1_i64)
+    .execute(&repo.pool)
+    .await
+    .unwrap();
     assert!(matches!(
         repo.commit(
             "workspace",
@@ -655,82 +699,73 @@ async fn create_and_mutation_receipts_fail_closed_on_corrupt_identity_state() {
 /// W1 is covered by every SQLite repository test; this case protects W2.
 /// SQLite itself owns W3 and returns the typed storage failure after the
 /// configured bound, so the repository does not add a parallel retry loop.
-#[test]
-fn sqlite_create_waits_for_a_competing_aggregate_writer() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("shared.db");
-    let path = path.to_string_lossy().to_string();
-    let repo = Arc::new(SqliteManagedSessionRepository::open(&path).unwrap());
-    let mut blocker = Connection::open(&path).unwrap();
-    let blocker_tx = blocker
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .unwrap();
-    let (started_tx, started_rx) = std::sync::mpsc::channel();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sqlite_create_waits_for_a_competing_aggregate_writer() {
+    let (_dir, path) = temp_database("shared.db");
+    let repo = Arc::new(SqliteManagedSessionRepository::open(&path).await.unwrap());
+    let blocker = raw_sqlite(&path).await;
+    let blocker_tx = blocker.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let writer = {
         let repo = repo.clone();
-        std::thread::spawn(move || {
+        tokio::spawn(async move {
             started_tx.send(()).unwrap();
-            tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(create_fixture(
-                    repo.as_ref(),
-                    "default",
-                    sample("sesn_waiting_writer"),
-                    Vec::new(),
-                ))
+            create_fixture(
+                repo.as_ref(),
+                "default",
+                sample("sesn_waiting_writer"),
+                Vec::new(),
+            )
+            .await
         })
     };
-    started_rx.recv().unwrap();
-    std::thread::sleep(Duration::from_millis(100));
-    blocker_tx.commit().unwrap();
+    started_rx.await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    blocker_tx.commit().await.unwrap();
 
-    let created = writer.join().unwrap();
+    let created = writer.await.unwrap();
     assert_eq!(created.session_id, "sesn_waiting_writer", "W2");
+    blocker.close().await;
 }
 
-#[test]
-fn sqlite_recovery_scan_waits_before_reading_and_repairing_quarantine() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sqlite_recovery_scan_waits_before_reading_and_repairing_quarantine() {
     // R1 another aggregate holds the writer reservation when recovery starts.
     // R2 recovery must wait before taking its read snapshot, then atomically
     // read the aggregate and repair quarantine evidence. A deferred read followed
     // by DELETE/UPSERT would instead fail with SQLITE_BUSY_SNAPSHOT.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("shared-recovery.db");
-    let path = path.to_string_lossy().to_string();
-    let repo = Arc::new(SqliteManagedSessionRepository::open(&path).unwrap());
-    tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(create_fixture(
-            repo.as_ref(),
-            "default",
-            sample("sesn_waiting_recovery"),
-            Vec::new(),
-        ));
+    let (_dir, path) = temp_database("shared-recovery.db");
+    let repo = Arc::new(SqliteManagedSessionRepository::open(&path).await.unwrap());
+    create_fixture(
+        repo.as_ref(),
+        "default",
+        sample("sesn_waiting_recovery"),
+        Vec::new(),
+    )
+    .await;
 
-    let mut blocker = Connection::open(&path).unwrap();
-    let blocker_tx = blocker
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .unwrap();
-    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let blocker = raw_sqlite(&path).await;
+    let blocker_tx = blocker.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let recovery = {
         let repo = repo.clone();
-        std::thread::spawn(move || {
+        tokio::spawn(async move {
             started_tx.send(()).unwrap();
-            tokio::runtime::Runtime::new().unwrap().block_on(repo.scan(
-                awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None },
-            ))
+            repo.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
+                .await
         })
     };
-    started_rx.recv().unwrap();
-    std::thread::sleep(Duration::from_millis(100));
-    blocker_tx.commit().unwrap();
+    started_rx.await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    blocker_tx.commit().await.unwrap();
 
-    let scan = recovery.join().unwrap().expect("R2 recovery scan");
+    let scan = recovery.await.unwrap().expect("R2 recovery scan");
     assert!(scan.quarantined.is_empty(), "R2");
+    blocker.close().await;
 }
 
-#[test]
-fn sqlite_migration_startup_is_concurrent_and_replay_safe() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sqlite_migration_startup_is_concurrent_and_replay_safe() {
     /* MIG-01/MIG-02 cause/effect decision table. Causes: C1 fresh database,
      * C2 two simultaneous Session-store starters, C3 later replay. Effects:
      * E1 exactly one V1 and one V2 receipt, E2 both migration and deterministic
@@ -739,45 +774,44 @@ fn sqlite_migration_startup_is_concurrent_and_replay_safe() {
      * A backend crash cannot expose DDL without its receipt because the shared
      * migration runner commits each migration and ledger row in one backend
      * transaction; this test exercises the competing-start boundary around it. */
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("concurrent-migration.db");
-    let path = path.to_string_lossy().to_string();
-    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let (_dir, path) = temp_database("concurrent-migration.db");
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let starters = (0..2)
         .map(|_| {
             let path = path.clone();
             let barrier = barrier.clone();
-            std::thread::spawn(move || {
-                barrier.wait();
-                SqliteManagedSessionRepository::open(&path)
+            tokio::spawn(async move {
+                barrier.wait().await;
+                SqliteManagedSessionRepository::open(&path).await
             })
         })
         .collect::<Vec<_>>();
     for starter in starters {
-        starter.join().unwrap().expect("S2 converges");
+        starter.await.unwrap().expect("S2 converges");
     }
-    SqliteManagedSessionRepository::open(&path).expect("S3 replay");
-    let conn = Connection::open(&path).unwrap();
-    let ledger_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM managed_schema_migrations WHERE bundle_id = ?1",
-            params!["awaken.managed_session"],
-            |row| row.get(0),
-        )
-        .unwrap();
+    SqliteManagedSessionRepository::open(&path)
+        .await
+        .expect("S3 replay");
+    let conn = raw_sqlite(&path).await;
+    let ledger_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM managed_schema_migrations WHERE bundle_id = ?1")
+            .bind("awaken.managed_session")
+            .fetch_one(&conn)
+            .await
+            .unwrap();
     assert_eq!(
         ledger_count as usize,
         session_bundle().unwrap().migrations().len(),
         "S1/E1 and S3/E3 current tail exactly once"
     );
-    let quarantine_exists: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
-            params!["managed_session_quarantine"],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let quarantine_exists: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1")
+            .bind("managed_session_quarantine")
+            .fetch_one(&conn)
+            .await
+            .unwrap();
     assert_eq!(quarantine_exists, 1, "S1/E1");
+    conn.close().await;
 }
 
 pub(crate) fn sample(id: &str) -> PersistedSession {
@@ -921,8 +955,8 @@ fn migration_prefix_through(
     .expect("canonical Session migration prefix")
 }
 
-fn materialize_foundation_ledger_generation(
-    conn: &Connection,
+async fn materialize_foundation_ledger_generation(
+    conn: &sqlx::SqlitePool,
     ledger_exists: bool,
     meta_exists: bool,
 ) {
@@ -930,12 +964,22 @@ fn materialize_foundation_ledger_generation(
     let [create_ledger, create_meta, stamp_version] =
         ledger.create_statements(awaken_scoped_migration::Dialect::Sqlite);
     if ledger_exists {
-        conn.execute_batch(&create_ledger).unwrap();
+        sqlx::raw_sql(&create_ledger).execute(conn).await.unwrap();
     }
     if meta_exists {
-        conn.execute_batch(&create_meta).unwrap();
-        conn.execute_batch(&stamp_version).unwrap();
+        sqlx::raw_sql(&create_meta).execute(conn).await.unwrap();
+        sqlx::raw_sql(&stamp_version).execute(conn).await.unwrap();
     }
+}
+
+/// Apply a migration prefix to a fixture database with the canonical runner,
+/// as a deployed binary of that generation would have.
+async fn migrate_fixture(conn: &sqlx::SqlitePool, prefix: &str, bundle: &MigrationBundle) {
+    SqliteMigrationRunner::with_prefix(conn.clone(), prefix)
+        .unwrap()
+        .run_bundle(bundle)
+        .await
+        .unwrap();
 }
 
 #[cfg(test)]
@@ -973,13 +1017,9 @@ async fn postgres_normalization_and_index_repair_share_one_crash_boundary() {
         create_fixture(&repo, "ws", sample("z-fail-index"), Vec::new()).await;
         drop(repo);
         let (original, canonical) = normalization_fixture(&mut first, upgrade);
-        sqlx::query("UPDATE managed_session SET aggregate_json=$1 WHERE session_id='a-normalize'")
-            .bind(original)
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO managed_session_reconciliation_work(session_id,observed_revision) VALUES('a-normalize',999) ON CONFLICT(session_id) DO UPDATE SET observed_revision=999").execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO managed_session_credential_source_reference(session_id,credential_source_id) VALUES('z-fail-index','stale-source')").execute(&pool).await.unwrap();
+        overwrite_postgres_aggregate(&pool, "a-normalize", &original).await;
+        execute_fixture(&pool, "INSERT INTO managed_session_reconciliation_work(session_id,observed_revision) VALUES('a-normalize',999) ON CONFLICT(session_id) DO UPDATE SET observed_revision=999").await;
+        execute_fixture(&pool, "INSERT INTO managed_session_credential_source_reference(session_id,credential_source_id) VALUES('z-fail-index','stale-source')").await;
         pool.execute("CREATE FUNCTION fail_index_repair() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.session_id='z-fail-index' THEN RAISE EXCEPTION 'injected index repair failure'; END IF; RETURN OLD; END $$;").await.unwrap();
         pool.execute("CREATE TRIGGER fail_index_repair BEFORE DELETE ON managed_session_credential_source_reference FOR EACH ROW EXECUTE FUNCTION fail_index_repair()").await.unwrap();
         let before = postgres_session_snapshot(&pool).await;
@@ -1123,8 +1163,8 @@ async fn postgres_session_snapshot(pool: &sqlx::postgres::PgPool) -> PostgresSes
     }
 }
 
-#[test]
-fn sqlite_existing_probe_accepts_migratable_history_and_rejects_invalid_storage_read_only() {
+#[tokio::test]
+async fn sqlite_existing_probe_accepts_migratable_history_and_rejects_invalid_storage_read_only() {
     /* Cause/effect graph: C1 an existing file has the current published and
      * converged receipt prefixes, either still present only in an open WAL or
      * checkpointed into the closed main file; C2 it has an exact original
@@ -1143,6 +1183,7 @@ fn sqlite_existing_probe_accepts_migratable_history_and_rejects_invalid_storage_
 
     let current = directory.path().join("current.db");
     let current_authority = SqliteManagedSessionRepository::open(&current.to_string_lossy())
+        .await
         .expect("SP1 current authority");
     let current_wal = std::path::PathBuf::from(format!("{}-wal", current.display()));
     assert!(
@@ -1151,12 +1192,14 @@ fn sqlite_existing_probe_accepts_migratable_history_and_rejects_invalid_storage_
     );
     let before = directory_snapshot(directory.path());
     SqliteManagedSessionRepository::verify_existing(&current.to_string_lossy())
+        .await
         .expect("SP1a current WAL prefix is ready");
     assert_eq!(directory_snapshot(directory.path()), before, "SP1a/E3");
 
-    drop(current_authority);
+    close_repository(current_authority).await;
     let before = directory_snapshot(directory.path());
     SqliteManagedSessionRepository::verify_existing(&current.to_string_lossy())
+        .await
         .expect("SP1b checkpointed current prefix is ready");
     assert_eq!(directory_snapshot(directory.path()), before, "SP1b/E3");
 
@@ -1172,27 +1215,30 @@ fn sqlite_existing_probe_accepts_migratable_history_and_rejects_invalid_storage_
     ] {
         let prefix = migration_prefix_through(source, tail);
         let legacy = directory.path().join(format!("{name}.db"));
-        let conn = Connection::open(&legacy).unwrap();
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-            .unwrap()
-            .run_bundle(&conn, &prefix)
-            .unwrap();
-        drop(conn);
+        let conn = raw_sqlite(&legacy).await;
+        migrate_fixture(&conn, NS, &prefix).await;
+        conn.close().await;
 
         let before = directory_snapshot(directory.path());
         SqliteManagedSessionRepository::verify_existing(&legacy.to_string_lossy())
+            .await
             .unwrap_or_else(|error| panic!("{rule} probe rejected {name}: {error}"));
         assert_eq!(directory_snapshot(directory.path()), before, "{rule}/E3");
 
-        drop(
+        close_repository(
             SqliteManagedSessionRepository::open(&legacy.to_string_lossy())
+                .await
                 .unwrap_or_else(|error| panic!("{rule} opener rejected {name}: {error}")),
-        );
-        drop(
+        )
+        .await;
+        close_repository(
             SqliteManagedSessionRepository::open(&legacy.to_string_lossy())
+                .await
                 .unwrap_or_else(|error| panic!("{rule} converged reopen rejected {name}: {error}")),
-        );
+        )
+        .await;
         SqliteManagedSessionRepository::verify_existing(&legacy.to_string_lossy())
+            .await
             .unwrap_or_else(|error| panic!("{rule} converged store rejected: {error}"));
     }
 
@@ -1200,6 +1246,7 @@ fn sqlite_existing_probe_accepts_migratable_history_and_rejects_invalid_storage_
     std::fs::write(&corrupt, b"SQLite format 3\0truncated").unwrap();
     let before = directory_snapshot(directory.path());
     let error = SqliteManagedSessionRepository::verify_existing(&corrupt.to_string_lossy())
+        .await
         .expect_err("SP3 corrupt SQLite cannot be ready");
     assert!(
         error.contains("integrity") || error.contains("database disk image is malformed"),
@@ -1209,8 +1256,8 @@ fn sqlite_existing_probe_accepts_migratable_history_and_rejects_invalid_storage_
 }
 
 #[cfg(unix)]
-#[test]
-fn sqlite_existing_probe_rejects_filesystem_aliases_read_only() {
+#[tokio::test]
+async fn sqlite_existing_probe_rejects_filesystem_aliases_read_only() {
     /* Alias-admission cause/effect table. Causes: C1 the configured path is a
      * direct single-link regular file; C2 its final component is a symbolic
      * link; C3 either name of its inode has multiple hard links. Effects: E1
@@ -1223,12 +1270,18 @@ fn sqlite_existing_probe_rejects_filesystem_aliases_read_only() {
 
     let directory = tempfile::tempdir().unwrap();
     let authority = directory.path().join("authority.db");
-    drop(SqliteManagedSessionRepository::open(&authority.to_string_lossy()).unwrap());
+    close_repository(
+        SqliteManagedSessionRepository::open(&authority.to_string_lossy())
+            .await
+            .unwrap(),
+    )
+    .await;
 
     let symbolic_alias = directory.path().join("symbolic.db");
     symlink(&authority, &symbolic_alias).unwrap();
     let before = directory_snapshot(directory.path());
     let error = SqliteManagedSessionRepository::verify_existing(&symbolic_alias.to_string_lossy())
+        .await
         .expect_err("AL2 symbolic alias cannot define the Session authority");
     assert!(error.contains("symbolic link"), "AL2/E2: {error}");
     assert_eq!(directory_snapshot(directory.path()), before, "AL2/E3");
@@ -1237,13 +1290,14 @@ fn sqlite_existing_probe_rejects_filesystem_aliases_read_only() {
     std::fs::hard_link(&authority, &hard_alias).unwrap();
     let before = directory_snapshot(directory.path());
     let error = SqliteManagedSessionRepository::verify_existing(&hard_alias.to_string_lossy())
+        .await
         .expect_err("AL3 hard-link alias cannot define the Session authority");
     assert!(error.contains("hard links"), "AL3/E2: {error}");
     assert_eq!(directory_snapshot(directory.path()), before, "AL3/E3");
 }
 
-#[test]
-fn sqlite_existing_probe_validates_the_foundation_ledger_generation_read_only() {
+#[tokio::test]
+async fn sqlite_existing_probe_validates_the_foundation_ledger_generation_read_only() {
     /* Cause/effect decision table derived from the ledger-generation graph:
      *
      * | Rule | ledger | meta | meta rows | version | Effect |
@@ -1306,52 +1360,61 @@ fn sqlite_existing_probe_validates_the_foundation_ledger_generation_read_only() 
         let path = directory.path().join(format!("{name}.db"));
         match damage {
             Damage::MissingBoth => {
-                let conn = Connection::open(&path).unwrap();
-                awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix("unrelated")
-                    .unwrap()
-                    .run_bundle(&conn, &session_bundle().unwrap())
-                    .unwrap();
+                let conn = raw_sqlite(&path).await;
+                migrate_fixture(&conn, "unrelated", &session_bundle().unwrap()).await;
+                conn.close().await;
             }
             Damage::MissingMeta | Damage::MissingLedger => {
-                let conn = Connection::open(&path).unwrap();
+                let conn = raw_sqlite(&path).await;
                 materialize_foundation_ledger_generation(
                     &conn,
                     matches!(damage, Damage::MissingMeta),
                     matches!(damage, Damage::MissingLedger),
-                );
+                )
+                .await;
+                conn.close().await;
             }
             Damage::EmptyMeta | Damage::DuplicateMeta | Damage::WrongVersion => {
-                drop(SqliteManagedSessionRepository::open(&path.to_string_lossy()).unwrap());
-                let conn = Connection::open(&path).unwrap();
+                close_repository(
+                    SqliteManagedSessionRepository::open(&path.to_string_lossy())
+                        .await
+                        .unwrap(),
+                )
+                .await;
+                let conn = raw_sqlite(&path).await;
                 match damage {
                     Damage::EmptyMeta => {
-                        conn.execute("DELETE FROM managed_schema_migrations_meta", [])
-                            .unwrap();
+                        execute_fixture(&conn, "DELETE FROM managed_schema_migrations_meta").await;
                     }
                     Damage::DuplicateMeta => {
-                        conn.execute(
+                        sqlx::query(
                             "INSERT INTO managed_schema_migrations_meta(ledger_version) \
                              SELECT ledger_version FROM managed_schema_migrations_meta",
-                            [],
                         )
+                        .execute(&conn)
+                        .await
                         .unwrap();
                     }
                     Damage::WrongVersion => {
-                        conn.execute(
+                        sqlx::query(
                             "UPDATE managed_schema_migrations_meta SET ledger_version = ?1",
-                            params![awaken_scoped_migration::LEDGER_VERSION + 1],
                         )
+                        .bind(awaken_scoped_migration::LEDGER_VERSION + 1)
+                        .execute(&conn)
+                        .await
                         .unwrap();
                     }
                     Damage::MissingBoth | Damage::MissingMeta | Damage::MissingLedger => {
                         unreachable!()
                     }
                 }
+                conn.close().await;
             }
         }
         let before = directory_snapshot(directory.path());
-        let error =
-            SqliteManagedSessionRepository::verify_existing(&path.to_string_lossy()).unwrap_err();
+        let error = SqliteManagedSessionRepository::verify_existing(&path.to_string_lossy())
+            .await
+            .unwrap_err();
         assert!(error.contains(expected), "{rule}: {error}");
         assert_eq!(
             directory_snapshot(directory.path()),
@@ -1361,8 +1424,8 @@ fn sqlite_existing_probe_validates_the_foundation_ledger_generation_read_only() 
     }
 }
 
-#[test]
-fn sqlite_existing_probe_rejects_receipt_schema_disagreement_read_only() {
+#[tokio::test]
+async fn sqlite_existing_probe_rejects_receipt_schema_disagreement_read_only() {
     /* Cause/effect graph: C1 exact original receipts through V13 are present;
      * C2 the canonical V13 migration body was not applied. Effects: E1 ledger
      * plan alone would accept the contiguous prefix; E2 the receipt-derived
@@ -1373,33 +1436,31 @@ fn sqlite_existing_probe_rejects_receipt_schema_disagreement_read_only() {
      * canonical bundle, not repeated as test-owned schema. */
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("forged-current-schema.db");
-    let conn = Connection::open(&path).unwrap();
+    let conn = raw_sqlite(&path).await;
     let original = original_published_session_bundle().unwrap();
-    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-        .unwrap()
-        .run_bundle(&conn, &migration_prefix_through(&original, 12))
-        .unwrap();
+    migrate_fixture(&conn, NS, &migration_prefix_through(&original, 12)).await;
     let v13 = original
         .migrations()
         .iter()
         .find(|migration| migration.version() == 13)
         .expect("canonical V13 aggregate migration");
-    conn.execute(
+    sqlx::query(
         "INSERT INTO managed_schema_migrations \
             (bundle_id, version, checksum, description, applied_by) \
          VALUES (?1, ?2, ?3, ?4, 'receipt-schema-probe')",
-        params![
-            original.bundle_id(),
-            v13.version(),
-            v13.checksum_for(awaken_scoped_migration::Dialect::Sqlite),
-            v13.ledger_description(),
-        ],
     )
+    .bind(original.bundle_id())
+    .bind(v13.version())
+    .bind(v13.checksum_for(awaken_scoped_migration::Dialect::Sqlite))
+    .bind(v13.ledger_description())
+    .execute(&conn)
+    .await
     .unwrap();
-    drop(conn);
+    conn.close().await;
 
     let before = directory_snapshot(directory.path());
     let error = SqliteManagedSessionRepository::verify_existing(&path.to_string_lossy())
+        .await
         .expect_err("RS2 receipt/schema disagreement must fail closed");
     assert!(
         error.contains("disagrees with migration receipts"),
@@ -1407,7 +1468,9 @@ fn sqlite_existing_probe_rejects_receipt_schema_disagreement_read_only() {
     );
     assert_eq!(directory_snapshot(directory.path()), before, "RS2/E3");
     assert!(
-        SqliteManagedSessionRepository::open(&path.to_string_lossy()).is_err(),
+        SqliteManagedSessionRepository::open(&path.to_string_lossy())
+            .await
+            .is_err(),
         "RS2/E1 canonical opener cannot read the forged shape"
     );
 }
@@ -1422,90 +1485,74 @@ async fn sqlite_original_history_converges_without_a_parallel_session_model() {
     // repository writes a new root without legacy-column defaults. Rule
     // M1=L1+L2+L3+L4=>E1+E2+E3+E4. Missing/invalid aggregates and orphan children
     // are negative constraints: migration must roll back before serving.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("session-original-upgrade.db");
-    let path = path.to_string_lossy().to_string();
-    let conn = Connection::open(&path).unwrap();
-    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-        .unwrap()
-        .run_bundle(&conn, &original_published_session_bundle().unwrap())
-        .unwrap();
+    let (_dir, path) = temp_database("session-original-upgrade.db");
+    let conn = raw_sqlite(&path).await;
+    migrate_fixture(&conn, NS, &original_published_session_bundle().unwrap()).await;
     let mut legacy = sample("legacy-lineage");
     legacy.revision = SessionRevision(1);
-    conn.execute(
+    sqlx::query(
         "INSERT INTO managed_session \
             (session_id,agent_id,model,title,metadata_json,environment_id,mcp_json,scope_id,revision,aggregate_json) \
          VALUES (?1,'legacy-agent','legacy-model',NULL,'{}','legacy-env','[]','legacy-space',1,?2)",
-        params![legacy.session_id.as_str(), serde_json::to_string(&legacy).unwrap()],
     )
+    .bind(legacy.session_id.as_str())
+    .bind(serde_json::to_string(&legacy).unwrap())
+    .execute(&conn)
+    .await
     .unwrap();
-    conn.execute(
-        "INSERT INTO managed_session_quarantine(session_id,reason) VALUES(?1,'audit')",
-        params![legacy.session_id.as_str()],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO managed_deployment(deployment_id,workspace_id,data,revision) VALUES('dep','legacy-space','{}',0)",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO managed_deployment_run(run_id,deployment_id,workspace_id,data) VALUES('run','dep','legacy-space','{}')",
-        [],
-    )
-    .unwrap();
-    conn.execute(
+    sqlx::query("INSERT INTO managed_session_quarantine(session_id,reason) VALUES(?1,'audit')")
+        .bind(legacy.session_id.as_str())
+        .execute(&conn)
+        .await
+        .unwrap();
+    execute_fixture(&conn, "INSERT INTO managed_deployment(deployment_id,workspace_id,data,revision) VALUES('dep','legacy-space','{}',0)").await;
+    execute_fixture(&conn, "INSERT INTO managed_deployment_run(run_id,deployment_id,workspace_id,data) VALUES('run','dep','legacy-space','{}')").await;
+    execute_fixture(
+        &conn,
         "INSERT INTO managed_deployment_claim(claim_id,run_id) VALUES('claim','run')",
-        [],
     )
-    .unwrap();
-    drop(conn);
+    .await;
+    conn.close().await;
 
-    let repo = SqliteManagedSessionRepository::open(&path).expect("M1 migration");
+    let repo = SqliteManagedSessionRepository::open(&path)
+        .await
+        .expect("M1 migration");
     assert_eq!(repo.get(&legacy.session_id).await.unwrap(), legacy, "E2");
     create_fixture(&repo, "legacy-space", sample("post-upgrade"), Vec::new()).await;
-    let conn = repo.conn.lock().unwrap();
-    let ledgers: (i64, i64) = conn
-        .query_row(
-            "SELECT \
-               (SELECT COUNT(*) FROM managed_schema_migrations WHERE bundle_id='awaken.managed_session'), \
-               (SELECT COUNT(*) FROM managed_schema_migrations WHERE bundle_id='awaken.managed_session.converged')",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
+    let conn = &repo.pool;
+    let ledgers: (i64, i64) = sqlx::query_as(
+        "SELECT \
+           (SELECT COUNT(*) FROM managed_schema_migrations WHERE bundle_id='awaken.managed_session'), \
+           (SELECT COUNT(*) FROM managed_schema_migrations WHERE bundle_id='awaken.managed_session.converged')",
+    )
+    .fetch_one(conn)
+    .await
+    .unwrap();
     assert_eq!(ledgers, (25, 1), "E1");
-    let retired_columns: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('managed_session') WHERE name IN ('agent_id','metadata_json','runtime_json')",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let retired_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('managed_session') WHERE name IN ('agent_id','metadata_json','runtime_json')",
+    )
+    .fetch_one(conn)
+    .await
+    .unwrap();
     assert_eq!(retired_columns, 0, "E2");
-    let canonical: String = conn
-        .query_row(
-            "SELECT aggregate_json FROM managed_session WHERE session_id=?1",
-            params![legacy.session_id.as_str()],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let canonical: String = stored_sqlite_aggregate(conn, legacy.session_id.as_str()).await;
     assert!(canonical.contains("\"format\":\"awaken.session.v2\""), "E2");
-    let preserved: (i64, i64) = conn
-        .query_row(
-            "SELECT \
-               (SELECT COUNT(*) FROM managed_session_quarantine WHERE session_id=?1 AND observed_revision=1), \
-               (SELECT COUNT(*) FROM managed_deployment_claim WHERE claim_id='claim')",
-            params![legacy.session_id.as_str()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
+    let preserved: (i64, i64) = sqlx::query_as(
+        "SELECT \
+           (SELECT COUNT(*) FROM managed_session_quarantine WHERE session_id=?1 AND observed_revision=1), \
+           (SELECT COUNT(*) FROM managed_deployment_claim WHERE claim_id='claim')",
+    )
+    .bind(legacy.session_id.as_str())
+    .fetch_one(conn)
+    .await
+    .unwrap();
     assert_eq!(preserved, (1, 1), "E3");
-    let foreign_key_errors: i64 = conn
-        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
+    let foreign_key_errors: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
+            .fetch_one(conn)
+            .await
+            .unwrap();
     assert_eq!(foreign_key_errors, 0, "E3");
 }
 
@@ -1555,18 +1602,13 @@ async fn postgres_original_history_converges_with_the_same_domain_effects() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO managed_deployment(deployment_id,workspace_id,data,revision) VALUES('dep','legacy-space','{}',0)")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO managed_deployment_run(run_id,deployment_id,workspace_id,data) VALUES('run','dep','legacy-space','{}')")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO managed_deployment_claim(claim_id,run_id) VALUES('claim','run')")
-        .execute(&pool)
-        .await
-        .unwrap();
+    execute_fixture(&pool, "INSERT INTO managed_deployment(deployment_id,workspace_id,data,revision) VALUES('dep','legacy-space','{}',0)").await;
+    execute_fixture(&pool, "INSERT INTO managed_deployment_run(run_id,deployment_id,workspace_id,data) VALUES('run','dep','legacy-space','{}')").await;
+    execute_fixture(
+        &pool,
+        "INSERT INTO managed_deployment_claim(claim_id,run_id) VALUES('claim','run')",
+    )
+    .await;
 
     let repo = PostgresManagedSessionRepository::with_pool(pool.clone())
         .await
@@ -1765,18 +1807,13 @@ async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
         );
 
         if rule == "PGV6" {
-            sqlx::query("DELETE FROM managed_session_reconciliation_work")
-                .execute(&pool)
-                .await
-                .unwrap();
-            sqlx::query("DELETE FROM managed_session_vault_reference")
-                .execute(&pool)
-                .await
-                .unwrap();
-            sqlx::query("DELETE FROM managed_session_credential_source_reference")
-                .execute(&pool)
-                .await
-                .unwrap();
+            execute_fixture(&pool, "DELETE FROM managed_session_reconciliation_work").await;
+            execute_fixture(&pool, "DELETE FROM managed_session_vault_reference").await;
+            execute_fixture(
+                &pool,
+                "DELETE FROM managed_session_credential_source_reference",
+            )
+            .await;
             let drifted = postgres_session_snapshot(&pool).await;
             let error = match PostgresManagedSessionRepository::connect_existing(&scoped_url).await
             {
@@ -1804,12 +1841,12 @@ async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
             );
 
             let session = seeded.as_ref().expect("PGV10 seeded Session");
-            sqlx::query("UPDATE managed_session SET aggregate_json=$2 WHERE session_id=$1")
-                .bind(session.session_id.as_str())
-                .bind(serde_json::to_string(session).unwrap())
-                .execute(&pool)
-                .await
-                .unwrap();
+            overwrite_postgres_aggregate(
+                &pool,
+                session.session_id.as_str(),
+                &serde_json::to_string(session).unwrap(),
+            )
+            .await;
             let noncanonical = postgres_session_snapshot(&pool).await;
             let error = match PostgresManagedSessionRepository::connect_existing(&scoped_url).await
             {
@@ -1894,8 +1931,8 @@ async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
     admin.close().await;
 }
 
-#[test]
-fn sqlite_legacy_upgrade_rejects_missing_roots_and_orphan_children_atomically() {
+#[tokio::test]
+async fn sqlite_legacy_upgrade_rejects_missing_roots_and_orphan_children_atomically() {
     // Negative rules for the legacy-upgrade cause graph. N1 a published row has
     // no aggregate -> reject before V23/DDL; N2 a quarantine child has no root ->
     // V23 transaction fails and rolls back. Effects: E1 legacy ledger remains at
@@ -1904,56 +1941,53 @@ fn sqlite_legacy_upgrade_rejects_missing_roots_and_orphan_children_atomically() 
     // an inner join from discarding orphan recovery evidence.
     let dir = tempfile::tempdir().unwrap();
     let missing_path = dir.path().join("missing-aggregate.db");
-    let missing = Connection::open(&missing_path).unwrap();
-    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-        .unwrap()
-        .run_bundle(&missing, &original_published_session_bundle().unwrap())
-        .unwrap();
-    missing
-        .execute(
-            "INSERT INTO managed_session \
-                (session_id,agent_id,model,title,metadata_json,environment_id,mcp_json,scope_id,revision,aggregate_json) \
-             VALUES ('missing','agent','model',NULL,'{}','env','[]','space',1,NULL)",
-            [],
-        )
-        .unwrap();
-    drop(missing);
+    let missing = raw_sqlite(&missing_path).await;
+    migrate_fixture(&missing, NS, &original_published_session_bundle().unwrap()).await;
+    sqlx::query(
+        "INSERT INTO managed_session \
+            (session_id,agent_id,model,title,metadata_json,environment_id,mcp_json,scope_id,revision,aggregate_json) \
+         VALUES ('missing','agent','model',NULL,'{}','env','[]','space',1,NULL)",
+    )
+    .execute(&missing)
+    .await
+    .unwrap();
+    missing.close().await;
     assert!(
-        SqliteManagedSessionRepository::open(missing_path.to_str().unwrap()).is_err(),
+        SqliteManagedSessionRepository::open(missing_path.to_str().unwrap())
+            .await
+            .is_err(),
         "N1"
     );
 
     let orphan_path = dir.path().join("orphan-quarantine.db");
-    let orphan = Connection::open(&orphan_path).unwrap();
-    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-        .unwrap()
-        .run_bundle(&orphan, &original_published_session_bundle().unwrap())
-        .unwrap();
-    orphan
-        .execute(
-            "INSERT INTO managed_session_quarantine(session_id,reason) VALUES('orphan','audit')",
-            [],
-        )
-        .unwrap();
-    drop(orphan);
+    let orphan = raw_sqlite(&orphan_path).await;
+    migrate_fixture(&orphan, NS, &original_published_session_bundle().unwrap()).await;
+    execute_fixture(
+        &orphan,
+        "INSERT INTO managed_session_quarantine(session_id,reason) VALUES('orphan','audit')",
+    )
+    .await;
+    orphan.close().await;
     assert!(
-        SqliteManagedSessionRepository::open(orphan_path.to_str().unwrap()).is_err(),
+        SqliteManagedSessionRepository::open(orphan_path.to_str().unwrap())
+            .await
+            .is_err(),
         "N2"
     );
 
     for path in [missing_path, orphan_path] {
-        let connection = Connection::open(path).unwrap();
-        let state: (i64, i64, i64) = connection
-            .query_row(
-                "SELECT \
-                   (SELECT MAX(version) FROM managed_schema_migrations WHERE bundle_id='awaken.managed_session'), \
-                   (SELECT COUNT(*) FROM managed_schema_migrations WHERE bundle_id='awaken.managed_session.converged'), \
-                   (SELECT COUNT(*) FROM pragma_table_info('managed_session') WHERE name='agent_id')",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
+        let connection = raw_sqlite(path).await;
+        let state: (i64, i64, i64) = sqlx::query_as(
+            "SELECT \
+               (SELECT MAX(version) FROM managed_schema_migrations WHERE bundle_id='awaken.managed_session'), \
+               (SELECT COUNT(*) FROM managed_schema_migrations WHERE bundle_id='awaken.managed_session.converged'), \
+               (SELECT COUNT(*) FROM pragma_table_info('managed_session') WHERE name='agent_id')",
+        )
+        .fetch_one(&connection)
+        .await
+        .unwrap();
         assert_eq!(state, (22, 0, 1), "E1+E2+E3");
+        connection.close().await;
     }
 }
 
@@ -1972,64 +2006,63 @@ async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
     // | B1 | absent | all valid | absent | E1 + E3 |
     // | B2 | absent/present | one corrupt | any | E2, no partial rebuild |
     // | B3 | present | repaired | absent | E3 + E4 |
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("session-source-v1-upgrade.db");
-    let path = path.to_string_lossy().to_string();
+    let (_dir, path) = temp_database("session-source-v1-upgrade.db");
     let mut healthy = sample_with_credential_source("sesn_source_v1", "source-v1");
     healthy.revision = SessionRevision(1);
-    let conn = Connection::open(&path).unwrap();
+    let conn = raw_sqlite(&path).await;
     let full = session_bundle().unwrap();
     let v1 = migration_prefix_through(&full, 1);
-    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-        .unwrap()
-        .run_bundle(&conn, &v1)
-        .unwrap();
-    conn.execute(
+    migrate_fixture(&conn, NS, &v1).await;
+    sqlx::query(
         "INSERT INTO managed_session (session_id, scope_id, revision, aggregate_json) \
          VALUES (?1, ?2, ?3, ?4)",
-        params![
-            healthy.session_id.as_str(),
-            "ws-source",
-            db_revision(healthy.revision).unwrap(),
-            aggregate_str(&healthy).unwrap(),
-        ],
     )
+    .bind(healthy.session_id.as_str())
+    .bind("ws-source")
+    .bind(db_revision(healthy.revision).unwrap())
+    .bind(aggregate_str(&healthy).unwrap())
+    .execute(&conn)
+    .await
     .unwrap();
-    conn.execute(
+    sqlx::query(
         "INSERT INTO managed_session (session_id, scope_id, revision, aggregate_json) \
          VALUES (?1, ?2, ?3, ?4)",
-        params!["sesn_source_corrupt", "ws-source", 1_i64, "{"],
     )
+    .bind("sesn_source_corrupt")
+    .bind("ws-source")
+    .bind(1_i64)
+    .bind("{")
+    .execute(&conn)
+    .await
     .unwrap();
-    drop(conn);
+    conn.close().await;
 
-    let first = SqliteManagedSessionRepository::open(&path);
+    let first = SqliteManagedSessionRepository::open(&path).await;
     assert!(first.is_err(), "B2/E2 canonical decode prevents service");
-    let conn = Connection::open(&path).unwrap();
-    let ledger_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM managed_schema_migrations \
-             WHERE bundle_id = ?1",
-            params!["awaken.managed_session"],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let conn = raw_sqlite(&path).await;
+    let ledger_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM managed_schema_migrations \
+         WHERE bundle_id = ?1",
+    )
+    .bind("awaken.managed_session")
+    .fetch_one(&conn)
+    .await
+    .unwrap();
     assert_eq!(
         ledger_count as usize,
         full.migrations().len(),
         "B2/E1 current DDL and receipts are durable"
     );
-    let dependency_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM managed_session_credential_source_reference",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let dependency_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM managed_session_credential_source_reference")
+            .fetch_one(&conn)
+            .await
+            .unwrap();
     assert_eq!(dependency_count, 0, "B2/E2 rebuild rolled back atomically");
     assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM managed_session", [], |row| row
-            .get::<_, i64>(0))
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM managed_session")
+            .fetch_one(&conn)
+            .await
             .unwrap(),
         2,
         "B2/E2 canonical roots are untouched"
@@ -2037,17 +2070,17 @@ async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
 
     let mut repaired = sample_with_credential_source("sesn_source_corrupt", "source-repaired");
     repaired.revision = SessionRevision(1);
-    conn.execute(
-        "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
-        params![
-            aggregate_str(&repaired).unwrap(),
-            repaired.session_id.as_str()
-        ],
+    overwrite_sqlite_aggregate(
+        &conn,
+        repaired.session_id.as_str(),
+        &aggregate_str(&repaired).unwrap(),
     )
-    .unwrap();
-    drop(conn);
+    .await;
+    conn.close().await;
 
-    let repo = SqliteManagedSessionRepository::open(&path).expect("B3 repaired restart");
+    let repo = SqliteManagedSessionRepository::open(&path)
+        .await
+        .expect("B3 repaired restart");
     for (source_id, session_id) in [
         ("source-v1", "sesn_source_v1"),
         ("source-repaired", "sesn_source_corrupt"),
@@ -2067,17 +2100,21 @@ async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
             "B3/E3"
         );
     }
-    drop(repo);
+    close_repository(repo).await;
 
-    let conn = Connection::open(&path).unwrap();
-    conn.execute(
+    let conn = raw_sqlite(&path).await;
+    sqlx::query(
         "DELETE FROM managed_session_credential_source_reference \
          WHERE credential_source_id = ?1",
-        params!["source-v1"],
     )
+    .bind("source-v1")
+    .execute(&conn)
+    .await
     .unwrap();
-    drop(conn);
-    let reopened = SqliteManagedSessionRepository::open(&path).expect("B3 restart repair");
+    conn.close().await;
+    let reopened = SqliteManagedSessionRepository::open(&path)
+        .await
+        .expect("B3 restart repair");
     assert_eq!(
         reopened
             .scan(
@@ -2164,10 +2201,11 @@ async fn postgres_v2_dependency_backfill_and_operational_repair_use_the_same_roo
         "P1 root"
     );
 
-    sqlx::query("DELETE FROM managed_session_credential_source_reference")
-        .execute(&pool)
-        .await
-        .unwrap();
+    execute_fixture(
+        &pool,
+        "DELETE FROM managed_session_credential_source_reference",
+    )
+    .await;
     let restarted = PostgresManagedSessionRepository::with_pool(pool.clone())
         .await
         .expect("P2 restart rebuild");
@@ -2750,19 +2788,17 @@ async fn root_mutation_decision_table<R: awaken_session_repository_contract::Ses
 
 #[tokio::test]
 async fn negative_tombstone_revision_is_rejected_at_the_schema_boundary() {
-    let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+    let repo = memory_repository().await;
     let session_id = "negative-tombstone";
-    let error = repo
-        .conn
-        .lock()
-        .unwrap()
-        .execute(
-            "INSERT INTO managed_session_tombstone
+    let error = sqlx::query(
+        "INSERT INTO managed_session_tombstone
                     (session_id, scope_id, deleted_revision, deleted_at)
                  VALUES (?1, 'ws_a', -1, 'now')",
-            params![session_id],
-        )
-        .expect_err("negative revision must never enter the repository");
+    )
+    .bind(session_id)
+    .execute(&repo.pool)
+    .await
+    .expect_err("negative revision must never enter the repository");
     assert!(error.to_string().contains("deleted_revision > 0"));
 }
 
@@ -2775,15 +2811,11 @@ async fn retained_admission_lookup_preserves_legacy_unknown_across_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("retained.db");
     let path = path.to_str().unwrap();
-    let repo = SqliteManagedSessionRepository::open(path).unwrap();
-    repo.conn.lock().unwrap().execute(
-        "INSERT INTO managed_session_tombstone(session_id,scope_id,deleted_revision,deleted_at) VALUES ('legacy','ws_a',2,'now')", [],
-    ).unwrap();
-    repo.conn.lock().unwrap().execute(
-        "INSERT INTO managed_session_tombstone(session_id,scope_id,deleted_revision,deleted_at,event_admissions_json) VALUES ('empty','ws_a',3,'now','[]'),('corrupt','ws_a',4,'now','{}')", [],
-    ).unwrap();
+    let repo = SqliteManagedSessionRepository::open(path).await.unwrap();
+    execute_fixture(&repo.pool, "INSERT INTO managed_session_tombstone(session_id,scope_id,deleted_revision,deleted_at) VALUES ('legacy','ws_a',2,'now')").await;
+    execute_fixture(&repo.pool, "INSERT INTO managed_session_tombstone(session_id,scope_id,deleted_revision,deleted_at,event_admissions_json) VALUES ('empty','ws_a',3,'now','[]'),('corrupt','ws_a',4,'now','{}')").await;
     drop(repo);
-    let repo = SqliteManagedSessionRepository::open(path).unwrap();
+    let repo = SqliteManagedSessionRepository::open(path).await.unwrap();
     let legacy = repo
         .deleted_event_admissions("ws_a", &SessionId::from("legacy"))
         .await
@@ -2943,11 +2975,9 @@ async fn extraction_intent_and_claim_survive_sqlite_reopen() {
         MemoryExtractionRepository, MemoryExtractionStatus, PutMemoryExtractionOutcome,
     };
 
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("sessions.db");
-    let path = path.to_string_lossy().to_string();
+    let (_dir, path) = temp_database("sessions.db");
     {
-        let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+        let repo = SqliteManagedSessionRepository::open(&path).await.unwrap();
         let initial = extraction("extract-1", "terminal-1");
         assert_eq!(
             repo.put_extraction_if_absent(initial.clone())
@@ -2961,7 +2991,7 @@ async fn extraction_intent_and_claim_survive_sqlite_reopen() {
         );
     }
 
-    let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+    let repo = SqliteManagedSessionRepository::open(&path).await.unwrap();
     let mut claimed = repo.get_extraction("extract-1").await.unwrap().unwrap();
     let expected_revision = claimed.revision;
     claimed.claim("worker-a", 100, 50).unwrap();
@@ -2970,12 +3000,12 @@ async fn extraction_intent_and_claim_survive_sqlite_reopen() {
         .unwrap();
     drop(repo);
 
-    let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+    let reopened = SqliteManagedSessionRepository::open(&path).await.unwrap();
     let recovered = reopened.recoverable_extractions(10).await.unwrap();
     assert_eq!(reopened.extraction_cursor("sesn-1").await.unwrap(), 1);
     put_snapshot_cursor_fixture(&reopened, "sqlite-snapshot").await;
     drop(reopened);
-    let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+    let reopened = SqliteManagedSessionRepository::open(&path).await.unwrap();
     assert_snapshot_cursor_fixture(&reopened).await;
     assert_eq!(recovered, vec![claimed]);
     assert_eq!(recovered[0].status, MemoryExtractionStatus::Claimed);
@@ -3000,12 +3030,10 @@ async fn indeterminate_extraction_is_not_reclaimed_after_sqlite_reopen() {
     // identity and diagnostic remain available for attention. Decision rules:
     // R1=C1+known retryable=>recoverable (covered by the adjacent claim test);
     // R2=C1+C2+C3=>E1,E2,E3.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("sessions-indeterminate.db");
-    let path = path.to_string_lossy().to_string();
+    let (_dir, path) = temp_database("sessions-indeterminate.db");
     let expected_run_id;
     {
-        let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+        let repo = SqliteManagedSessionRepository::open(&path).await.unwrap();
         let mut unknown = extraction("extract-unknown", "terminal-unknown");
         expected_run_id = unknown.auxiliary_run_id();
         repo.put_extraction_if_absent(unknown.clone())
@@ -3030,7 +3058,7 @@ async fn indeterminate_extraction_is_not_reclaimed_after_sqlite_reopen() {
             .unwrap();
     }
 
-    let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+    let reopened = SqliteManagedSessionRepository::open(&path).await.unwrap();
     let unknown = reopened
         .get_extraction("extract-unknown")
         .await
@@ -3061,7 +3089,7 @@ async fn indeterminate_extraction_is_not_reclaimed_after_sqlite_reopen() {
 async fn extraction_revision_overflow_is_rejected_before_storage() {
     use awaken_ext_memory::{MemoryExtractionError, MemoryExtractionRepository};
 
-    let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+    let repo = memory_repository().await;
     let mut intent = extraction("extract-overflow", "terminal-overflow");
     intent.revision = u64::MAX;
 
@@ -3073,11 +3101,9 @@ async fn extraction_revision_overflow_is_rejected_before_storage() {
 
 #[tokio::test]
 async fn lifecycle_fact_survives_the_commit_to_notification_crash_window() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("sessions-outbox.db");
-    let path = path.to_string_lossy().to_string();
+    let (_dir, path) = temp_database("sessions-outbox.db");
     {
-        let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+        let repo = SqliteManagedSessionRepository::open(&path).await.unwrap();
         create_fixture(
             &repo,
             "ws_a",
@@ -3092,7 +3118,7 @@ async fn lifecycle_fact_survives_the_commit_to_notification_crash_window() {
         // Simulated hard crash: the lifecycle sink is deliberately never called.
     }
 
-    let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+    let reopened = SqliteManagedSessionRepository::open(&path).await.unwrap();
     assert_eq!(
         reopened.owner(&SessionId::from("sesn_tx")).await.as_deref(),
         Ok("ws_a")
@@ -3108,17 +3134,15 @@ async fn lifecycle_fact_survives_the_commit_to_notification_crash_window() {
 
 #[tokio::test]
 async fn environment_state_survives_sqlite_reopen() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("sessions-binding.db");
-    let path = path.to_string_lossy().to_string();
+    let (_dir, path) = temp_database("sessions-binding.db");
     {
-        let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+        let repo = SqliteManagedSessionRepository::open(&path).await.unwrap();
         create_fixture(&repo, "ws_a", sample("sesn_bound"), Vec::new()).await;
         let mut bound = repo.get(&SessionId::from("sesn_bound")).await.unwrap();
         bound.environment.set_resident("opaque-binding");
         replace_fixture(&repo, "ws_a", bound, "test:bind", Vec::new()).await;
     }
-    let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+    let reopened = SqliteManagedSessionRepository::open(&path).await.unwrap();
     assert_eq!(
         reopened
             .get(&SessionId::from("sesn_bound"))
@@ -3148,11 +3172,9 @@ async fn environment_state_survives_sqlite_reopen() {
 
 #[tokio::test]
 async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("sessions-terminal-cleanup.db");
-    let path = path.to_string_lossy().to_string();
+    let (_dir, path) = temp_database("sessions-terminal-cleanup.db");
     {
-        let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+        let repo = SqliteManagedSessionRepository::open(&path).await.unwrap();
         create_fixture(&repo, "ws_a", sample("sesn_cleanup"), Vec::new()).await;
         let mut requested = repo.get(&SessionId::from("sesn_cleanup")).await.unwrap();
         requested
@@ -3171,7 +3193,7 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
         replace_fixture(&repo, "ws_a", requested, "test:cleanup:request", Vec::new()).await;
     }
     {
-        let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+        let repo = SqliteManagedSessionRepository::open(&path).await.unwrap();
         let mut recovered = repo.get(&SessionId::from("sesn_cleanup")).await.unwrap();
         assert!(recovered.terminal_cleanup.is_requested());
         let intent = recovered
@@ -3202,7 +3224,7 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
         )
         .await;
     }
-    let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+    let reopened = SqliteManagedSessionRepository::open(&path).await.unwrap();
     let completed = reopened
         .get(&SessionId::from("sesn_cleanup"))
         .await
@@ -3227,11 +3249,9 @@ async fn removed_cleanup_v2_converges_through_sqlite_reopen_and_cas() {
     // S3=S2+complete=>E4; S4=S3+restart=>E5. PostgreSQL uses the same decoder
     // and is exercised in its live parity test.
     let session_id = "sesn_cleanup_removed_v2";
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("sessions-cleanup-v2.db");
-    let path = path.to_string_lossy().to_string();
+    let (_dir, path) = temp_database("sessions-cleanup-v2.db");
     let legacy = {
-        let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+        let repo = SqliteManagedSessionRepository::open(&path).await.unwrap();
         let requested = create_fixture(
             &repo,
             "ws_a",
@@ -3245,26 +3265,18 @@ async fn removed_cleanup_v2_converges_through_sqlite_reopen_and_cas() {
     let mut forged = legacy.clone();
     forged["aggregate"]["terminal_cleanup"]["completions"][session_id]["receipt_fingerprint"] =
         serde_json::json!("forged");
-    let conn = Connection::open(&path).unwrap();
-    conn.execute(
-        "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
-        params![forged.to_string(), session_id],
-    )
-    .unwrap();
-    drop(conn);
-    let Err(error) = SqliteManagedSessionRepository::open(&path) else {
+    let conn = raw_sqlite(&path).await;
+    overwrite_sqlite_aggregate(&conn, session_id, &forged.to_string()).await;
+    conn.close().await;
+    let Err(error) = SqliteManagedSessionRepository::open(&path).await else {
         panic!("S1/E1 corrupt cold row must fail startup");
     };
     assert!(error.contains("not canonical"), "S1/E1: {error}");
 
-    let conn = Connection::open(&path).unwrap();
-    conn.execute(
-        "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
-        params![legacy.to_string(), session_id],
-    )
-    .unwrap();
-    drop(conn);
-    let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+    let conn = raw_sqlite(&path).await;
+    overwrite_sqlite_aggregate(&conn, session_id, &legacy.to_string()).await;
+    conn.close().await;
+    let repo = SqliteManagedSessionRepository::open(&path).await.unwrap();
     let mut recovered = repo
         .get(&SessionId::from(session_id))
         .await
@@ -3278,16 +3290,7 @@ async fn removed_cleanup_v2_converges_through_sqlite_reopen_and_cas() {
         Vec::new(),
     )
     .await;
-    let persisted: String = repo
-        .conn
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT aggregate_json FROM managed_session WHERE session_id = ?1",
-            params![session_id],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let persisted: String = stored_sqlite_aggregate(&repo.pool, session_id).await;
     assert!(!persisted.contains("artifact_bundle_receipts"), "S2/E3");
     assert!(persisted.contains("\"completions\""), "S2/E3 Requested");
 
@@ -3312,7 +3315,7 @@ async fn removed_cleanup_v2_converges_through_sqlite_reopen_and_cas() {
     .await;
     drop(repo);
 
-    let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+    let reopened = SqliteManagedSessionRepository::open(&path).await.unwrap();
     assert!(
         reopened
             .get(&SessionId::from(session_id))
@@ -3326,7 +3329,7 @@ async fn removed_cleanup_v2_converges_through_sqlite_reopen_and_cas() {
 
 #[tokio::test]
 async fn terminal_state_and_its_fact_share_one_repository_commit() {
-    let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+    let repo = memory_repository().await;
     create_fixture(
         &repo,
         "ws_a",
@@ -3382,24 +3385,22 @@ async fn terminal_state_and_its_fact_share_one_repository_commit() {
 
 #[tokio::test]
 async fn sqlite_root_mutation_decision_table_is_atomic() {
-    let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+    let repo = memory_repository().await;
     root_mutation_decision_table(&repo, "sesn_sqlite_decisions").await;
 }
 
 #[tokio::test]
 async fn round_trips_and_survives_a_reopen() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("sessions.db");
-    let path = path.to_string_lossy().to_string();
+    let (_dir, path) = temp_database("sessions.db");
 
     // First process: create + persist, then drop the repo (simulated exit).
     {
-        let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+        let repo = SqliteManagedSessionRepository::open(&path).await.unwrap();
         let expected = create_fixture(&repo, "default", sample("sesn_1"), Vec::new()).await;
         assert_eq!(repo.get(&SessionId::from("sesn_1")).await, Ok(expected));
     }
     // Second process: a fresh repo over the same file restores the row.
-    let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+    let reopened = SqliteManagedSessionRepository::open(&path).await.unwrap();
     let mut expected = sample("sesn_1");
     expected.revision = SessionRevision(1);
     assert_eq!(reopened.get(&SessionId::from("sesn_1")).await, Ok(expected));
@@ -3413,17 +3414,16 @@ async fn round_trips_and_survives_a_reopen() {
 async fn malformed_canonical_aggregate_fails_closed() {
     // The complete aggregate is the only readable truth. The current baseline
     // makes a missing aggregate impossible; malformed bytes still fail closed.
-    let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
-    repo.conn
-        .lock()
-        .unwrap()
-        .execute(
-            "INSERT INTO managed_session
+    let repo = memory_repository().await;
+    sqlx::query(
+        "INSERT INTO managed_session
                  (session_id, scope_id, revision, aggregate_json)
                  VALUES (?1, 'default', 1, '{')",
-            params!["malformed"],
-        )
-        .unwrap();
+    )
+    .bind("malformed")
+    .execute(&repo.pool)
+    .await
+    .unwrap();
 
     assert!(matches!(
         repo.get(&SessionId::from("malformed")).await,
@@ -3433,7 +3433,7 @@ async fn malformed_canonical_aggregate_fails_closed() {
 
 #[tokio::test]
 async fn save_is_an_idempotent_upsert() {
-    let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+    let repo = memory_repository().await;
     create_fixture(&repo, "default", sample("sesn_1"), Vec::new()).await;
     let mut updated = sample("sesn_1");
     updated.title = Some("Renamed".to_string());
@@ -3447,11 +3447,9 @@ async fn save_is_an_idempotent_upsert() {
 
 #[tokio::test]
 async fn owner_scope_is_recorded_and_survives_a_reopen() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("sessions.db");
-    let path = path.to_string_lossy().to_string();
+    let (_dir, path) = temp_database("sessions.db");
     {
-        let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+        let repo = SqliteManagedSessionRepository::open(&path).await.unwrap();
         create_fixture(&repo, "ws_a", sample("sesn_1"), Vec::new()).await;
         assert_eq!(
             repo.owner(&SessionId::from("sesn_1")).await,
@@ -3460,7 +3458,7 @@ async fn owner_scope_is_recorded_and_survives_a_reopen() {
     }
     // After a restart the owner is still readable — the cross-process fence input
     // for the edge ownership guard (ADR-0051).
-    let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+    let reopened = SqliteManagedSessionRepository::open(&path).await.unwrap();
     assert_eq!(
         reopened.owner(&SessionId::from("sesn_1")).await,
         Ok("ws_a".to_string())
@@ -3488,17 +3486,9 @@ async fn owner_scope_is_recorded_and_survives_a_reopen() {
 /// | P3 | F | - | fail closed |
 #[tokio::test]
 async fn corrupt_canonical_aggregate_fails_closed() {
-    let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+    let repo = memory_repository().await;
     create_fixture(&repo, "default", sample("sesn_1"), Vec::new()).await;
-    {
-        let conn = repo.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE managed_session \
-                 SET aggregate_json = ?2 WHERE session_id = ?1",
-            params!["sesn_1", "{not valid json"],
-        )
-        .unwrap();
-    }
+    overwrite_sqlite_aggregate(&repo.pool, "sesn_1", "{not valid json").await;
     let error = repo
         .get(&SessionId::from("sesn_1"))
         .await
@@ -3508,14 +3498,14 @@ async fn corrupt_canonical_aggregate_fails_closed() {
 
 #[tokio::test]
 async fn legacy_columns_are_not_a_parallel_authority() {
-    let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
-    let conn = repo.conn.lock().unwrap();
-    let mut statement = conn.prepare("PRAGMA table_info(managed_session)").unwrap();
-    let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))
+    let repo = memory_repository().await;
+    let columns = sqlx::query("PRAGMA table_info(managed_session)")
+        .fetch_all(&repo.pool)
+        .await
         .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+        .iter()
+        .map(|row| row.get::<String, _>(1))
+        .collect::<Vec<_>>();
     assert_eq!(
         columns,
         vec!["session_id", "scope_id", "revision", "aggregate_json"]
@@ -3526,7 +3516,7 @@ async fn legacy_columns_are_not_a_parallel_authority() {
 async fn noncanonical_aggregate_fields_fail_closed() {
     // The strict aggregate grammar rejects a retired protocol projection rather
     // than retaining a second tool-configuration decoder in persistence.
-    let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+    let repo = memory_repository().await;
     create_fixture(&repo, "default", sample("legacy-tools"), Vec::new()).await;
     let mut legacy = serde_json::to_value(sample("legacy-tools")).unwrap();
     legacy.as_object_mut().unwrap().remove("tools");
@@ -3542,14 +3532,12 @@ async fn noncanonical_aggregate_fields_fail_closed() {
             }
         ]),
     );
-    repo.conn
-        .lock()
-        .unwrap()
-        .execute(
-            "UPDATE managed_session SET aggregate_json = ?2 WHERE session_id = ?1",
-            params!["legacy-tools", serde_json::to_string(&legacy).unwrap()],
-        )
-        .unwrap();
+    overwrite_sqlite_aggregate(
+        &repo.pool,
+        "legacy-tools",
+        &serde_json::to_string(&legacy).unwrap(),
+    )
+    .await;
 
     assert!(matches!(
         repo.get(&SessionId::from("legacy-tools")).await,
@@ -3678,12 +3666,12 @@ async fn postgres_round_trips_and_upserts() {
         Vec::new(),
     )
     .await;
-    sqlx::query("UPDATE managed_session SET aggregate_json = $1 WHERE session_id = $2")
-        .bind(removed_bundle_v2_aggregate(&requested).to_string())
-        .bind(legacy_id)
-        .execute(&repo.pool)
-        .await
-        .unwrap();
+    overwrite_postgres_aggregate(
+        &repo.pool,
+        legacy_id,
+        &removed_bundle_v2_aggregate(&requested).to_string(),
+    )
+    .await;
     let restarted = PostgresManagedSessionRepository::with_pool(repo.pool.clone())
         .await
         .expect("S2 PostgreSQL restart");
@@ -3735,12 +3723,7 @@ async fn postgres_round_trips_and_upserts() {
      * quarantined; Q3 replay preserves the same isolation record. */
     create_fixture(&repo, "workspace", sample("sesn_pg_healthy"), Vec::new()).await;
     create_fixture(&repo, "workspace", sample("sesn_pg_corrupt"), Vec::new()).await;
-    sqlx::query("UPDATE managed_session SET aggregate_json = $1 WHERE session_id = $2")
-        .bind("{")
-        .bind("sesn_pg_corrupt")
-        .execute(&repo.pool)
-        .await
-        .unwrap();
+    overwrite_postgres_aggregate(&repo.pool, "sesn_pg_corrupt", "{").await;
     let scan = repo
         .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
         .await

@@ -59,9 +59,9 @@ fn live_executor() -> (Arc<GenaiExecutor>, String) {
     )
 }
 
-fn live_router() -> Router {
+async fn live_router() -> Router {
     let (executor, model) = live_executor();
-    build_router(executor, model)
+    build_router(executor, model).await
 }
 
 /// Concatenate the `field` of every SSE `data:` event whose `type` matches.
@@ -174,7 +174,7 @@ async fn managed_multi_run_remembers_context() {
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = live_router();
+    let app = live_router().await;
     let (_, body) = call(
         &app,
         "POST",
@@ -227,7 +227,7 @@ async fn ai_sdk_multi_run_remembers_context() {
     // Coverage rationale: `ai sdk multi run remembers context` is one independent branch selecting
     // `all output, state, side-effect, error, and terminal assertions below hold together`; a
     // multi-row decision table is not applicable, and sibling tests own alternate causes.
-    let app = live_router();
+    let app = live_router().await;
     ai_sdk_run(&app, "sdk-mt", "u1", SET).await;
     let reply = ai_sdk_run(&app, "sdk-mt", "u2", ASK).await;
     eprintln!("[ai-sdk] reply: {reply:?}");
@@ -263,7 +263,7 @@ async fn ag_ui_multi_run_remembers_context() {
     // Coverage rationale: `ag ui multi run remembers context` is one independent branch selecting
     // `all output, state, side-effect, error, and terminal assertions below hold together`; a
     // multi-row decision table is not applicable, and sibling tests own alternate causes.
-    let app = live_router();
+    let app = live_router().await;
     ag_ui_run(&app, "ag-mt", "r1", SET).await;
     let reply = ag_ui_run(&app, "ag-mt", "r2", ASK).await;
     eprintln!("[ag-ui] reply: {reply:?}");
@@ -304,7 +304,7 @@ async fn a2a_multi_run_remembers_context() {
     // Coverage rationale: `a2a multi run remembers context` is one independent branch selecting
     // `all output, state, side-effect, error, and terminal assertions below hold together`; a
     // multi-row decision table is not applicable, and sibling tests own alternate causes.
-    let app = live_router();
+    let app = live_router().await;
     a2a_run(&app, "a2a-mt", "m1", SET).await;
     let reply = a2a_run(&app, "a2a-mt", "m2", ASK).await;
     eprintln!("[a2a] reply: {reply:?}");
@@ -331,7 +331,7 @@ async fn multi_agent_graded_outcome_runs_a_judge_subagent() {
     let (executor, model) = live_executor();
     // Outcomes are graded by a judge sub-agent (a second run) driven by the same
     // live model — a genuine multi-agent flow: a worker run plus a judge sub-run.
-    let app = build_graded_router(executor, model, "assistant");
+    let app = build_graded_router(executor, model, "assistant").await;
 
     let (_, body) = call(
         &app,

@@ -78,8 +78,9 @@ async fn sqlite_dispatch_conforms() {
     // Invariant: SQL persistence cannot change neutral semantics. Decision rule:
     // bind matrix row S1 to the authoritative helpers without copying cases.
     let clock = Arc::new(ManualClock::new(0));
-    let store =
-        SqliteDispatchStore::open_in_memory(clock.clone()).expect("open sqlite conformance store");
+    let store = SqliteDispatchStore::open_in_memory(clock.clone())
+        .await
+        .expect("open sqlite conformance store");
     let set_clock = move |now_ms| clock.set(now_ms);
     assert_dispatch_conformance_with_clock(
         &store,
@@ -114,6 +115,7 @@ async fn sqlite_session_reply_activity_rotation_conforms() {
     // Invariant: rotation and staged input share one SQL transaction. Decision
     // rule: matrix row S1 delegates once to the canonical AR0-AR9 table.
     let store = SqliteDispatchStore::open_in_memory(awaken_time::system_clock())
+        .await
         .expect("open sqlite reply conformance store");
     assert_session_reply_activity_rotation_conformance(&store, "conformance-sqlite-reply").await;
 }
@@ -131,6 +133,7 @@ async fn memory_and_sqlite_refine_the_same_crash_recovery_history() {
     let sqlite_clock = Arc::new(ManualClock::new(0));
     let memory = MemoryDispatchStore::new(memory_clock.clone());
     let sqlite = SqliteDispatchStore::open_in_memory(sqlite_clock.clone())
+        .await
         .expect("open SQLite history store");
     let set_memory_clock = |now_ms| memory_clock.set(now_ms);
     let set_sqlite_clock = |now_ms| sqlite_clock.set(now_ms);

@@ -139,13 +139,14 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
     // performs no refresh; E6 failure occurs before id mint or Session write.
     // Constraints: K1 the refresh owns no Session state. Decision rules:
     // D1 C5=>E4; D2 C6=>E5; D3 C7=>E4; D4 C8=>E6.
-    let repo = Arc::new(ephemeral_session_repo());
+    let repo = Arc::new(ephemeral_session_repo().await);
     let profiles = Arc::new(RevisionedProfiles(std::sync::atomic::AtomicU64::new(7)));
     let refresh = Arc::new(RecordingProjectionRefresh {
         calls: std::sync::atomic::AtomicUsize::new(0),
         fail: std::sync::atomic::AtomicBool::new(false),
     });
     let state = ManagedState::new_with_mcp(RehydrateFake::default())
+        .await
         .with_config_source(profiles.clone())
         .with_session_repo(repo)
         .with_executable_projection_refresh(paired_projection_refresh(refresh.clone()));
@@ -213,8 +214,8 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
     );
 }
 
-#[test]
-fn cold_projection_restores_every_frozen_agent_hidden_axis() {
+#[tokio::test]
+async fn cold_projection_restores_every_frozen_agent_hidden_axis() {
     // Cause/effect graph: C1 exact Agent publication is pinned; C2 model
     // inference inherits or has a Session override; C3 system selection is
     // inherit/clear/replace; C4 durable resolved Skill pins and Vault ids exist;
@@ -223,9 +224,11 @@ fn cold_projection_restores_every_frozen_agent_hidden_axis() {
     // inference and preserve clear versus value; E3 Skill/Vault projection comes
     // only from the Session root, never C5. Decision rules H1=inherit=>E1+E3,
     // H2=override+clear=>E2+E3, H3=override+replace=>E2+E3.
-    let state = ManagedState::new_with_mcp(RehydrateFake::default()).with_config_source(Arc::new(
-        RevisionedProfiles(std::sync::atomic::AtomicU64::new(8)),
-    ));
+    let state = ManagedState::new_with_mcp(RehydrateFake::default())
+        .await
+        .with_config_source(Arc::new(RevisionedProfiles(
+            std::sync::atomic::AtomicU64::new(8),
+        )));
     let mut persisted = sample_persisted("cold-hidden-axes");
     let (inputs, _) = persisted.resources.desired().clone().into_parts();
     persisted.resources = awaken_session_state_contract::SessionResourceState::from_active(
@@ -328,7 +331,7 @@ async fn immediate_environment_binding_sink_is_durable_and_idempotent() {
     // and advance revision; R2 C1+C3 -> success without another revision.
     use awaken_session_execution_contract::SessionEnvironmentBindingSink;
 
-    let repo = Arc::new(ephemeral_session_repo());
+    let repo = Arc::new(ephemeral_session_repo().await);
     create_session_fixture(
         repo.as_ref(),
         DEFAULT_SCOPE,
@@ -490,7 +493,7 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
     // | V4 | A | A | archive | E2 |
     // | V5 | A | A absent | delete | E3 |
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     create_session_fixture(
         repo.as_ref(),
         "workspace-a",
@@ -518,6 +521,7 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
         .await
         .unwrap();
     let state = ManagedState::new_with_mcp(RehydrateFake::default())
+        .await
         .with_session_repo(repo.clone())
         .with_credential_source(Arc::new(RolloutCredentialSource));
 
@@ -633,7 +637,7 @@ async fn immediate_binding_cas_retries_once_then_fails_closed_at_the_bound() {
         ("one conflict then success", 1, true),
         ("three conflicts exhaust bound", 3, false),
     ] {
-        let inner = Arc::new(ephemeral_session_repo());
+        let inner = Arc::new(ephemeral_session_repo().await);
         create_session_fixture(
             inner.as_ref(),
             DEFAULT_SCOPE,
@@ -721,11 +725,12 @@ async fn application_root_cas_decision_table() {
     .enumerate()
     {
         let id = format!("sesn_application_cas_{index}");
-        let repo = Arc::new(ephemeral_session_repo());
+        let repo = Arc::new(ephemeral_session_repo().await);
         create_session_fixture(repo.as_ref(), "workspace-a", sample_persisted(&id)).await;
         let stale = repo.get(&SessionId::from(&id)).await.unwrap();
-        let state =
-            ManagedState::new_with_mcp(RehydrateFake::default()).with_session_repo(repo.clone());
+        let state = ManagedState::new_with_mcp(RehydrateFake::default())
+            .await
+            .with_session_repo(repo.clone());
         let applied = state
             .commit_session_snapshot(
                 "workspace-a",
@@ -772,8 +777,8 @@ async fn application_root_cas_decision_table() {
     }
 }
 
-#[test]
-fn rehydrated_session_restores_persisted_config() {
+#[tokio::test]
+async fn rehydrated_session_restores_persisted_config() {
     // Cause graph: a durable mutable tool set is the exact replacement;
     // a missing durable root is rejected by the recovery entrypoint instead of
     // deriving Runtime defaults. MCP authoring and execution visibility are
@@ -783,7 +788,7 @@ fn rehydrated_session_restores_persisted_config() {
     // |---|---|---|
     // | T1 | durable tools + Requested MCP | exact tools + accepted MCP config |
     // | T2 | no durable row | NotFound; no projection is constructed |
-    let state = ManagedState::new_with_mcp(RehydrateFake::default());
+    let state = ManagedState::new_with_mcp(RehydrateFake::default()).await;
     let mut persisted = sample_persisted("sesn_1");
     persisted.mcp.attachments[0].state = awaken_session_mcp_contract::McpAttachmentState::Requested;
     assert!(
@@ -878,7 +883,7 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
     // child tool events into the primary Thread destroys context isolation
     // (S8/O4/D6), so R2 asserts both inclusion and exclusion projections.
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     let mut persisted = sample_persisted("sesn_1");
     persisted.environment.set_resident("opaque-runtime-binding");
     persisted.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
@@ -1016,7 +1021,9 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
     let restored_environments = runtime.restored_environments.clone();
     let restored_runtimes = runtime.restored_runtimes.clone();
     let order = runtime.order.clone();
-    let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo.clone());
+    let restarted = ManagedState::new_with_mcp(runtime)
+        .await
+        .with_session_repo(repo.clone());
     restarted.ensure_session("sesn_1").await.expect("rehydrate");
     let session = restarted
         .get_session("sesn_1")
@@ -1122,7 +1129,7 @@ async fn cold_workspace_list_projects_durable_sessions_without_runtime_effects()
     // Workspace remains fenced; E3 a collection read performs no Runtime,
     // Environment, Resource, or MCP restoration.
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     create_session_fixture(
         repo.as_ref(),
         "workspace-a",
@@ -1139,7 +1146,9 @@ async fn cold_workspace_list_projects_durable_sessions_without_runtime_effects()
     let runtime = RehydrateFake::default();
     let restored = runtime.restored.clone();
     let restored_environments = runtime.restored_environments.clone();
-    let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo);
+    let restarted = ManagedState::new_with_mcp(runtime)
+        .await
+        .with_session_repo(repo);
     assert!(restarted.list_sessions().is_empty(), "C1 cold cache");
 
     let listed = restarted
@@ -1180,7 +1189,7 @@ async fn cold_workspace_list_isolates_a_missing_preview_publication() {
     // R3 C2+interactive recovery => fail closed; a collection read must never
     // make the missing publication executable.
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     create_session_fixture(
         repo.as_ref(),
         "workspace-a",
@@ -1199,7 +1208,9 @@ async fn cold_workspace_list_isolates_a_missing_preview_publication() {
 
     let runtime = RehydrateFake::default();
     let restored = runtime.restored.clone();
-    let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo);
+    let restarted = ManagedState::new_with_mcp(runtime)
+        .await
+        .with_session_repo(repo);
     let listed = restarted
         .list_sessions_scoped_durable("workspace-a")
         .await
@@ -1244,7 +1255,7 @@ async fn committed_event_refresh_merges_peer_messages_exactly_once() {
     // | warm  | one peer message | one          | append peer projection |
     // | warm  | same peer message| repeated     | no duplicate           |
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, sample_persisted("sesn_peer")).await;
     let runtime = RehydrateFake::default();
     let first = Message::text(
@@ -1253,7 +1264,9 @@ async fn committed_event_refresh_merges_peer_messages_exactly_once() {
         "first",
     );
     *runtime.committed.lock().unwrap() = Some(vec![first.clone()]);
-    let state = ManagedState::new_with_mcp(runtime.clone()).with_session_repo(repo);
+    let state = ManagedState::new_with_mcp(runtime.clone())
+        .await
+        .with_session_repo(repo);
     state.ensure_session("sesn_peer").await.expect("warm cache");
 
     let second = Message::text(
@@ -1287,7 +1300,7 @@ async fn protocol_defaults_preparer_rehydrates_the_exact_durable_baseline() {
     // recovery path that reinstalls its frozen Resource and Environment
     // snapshot before a wire adapter may execute.
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     let mut persisted = sample_persisted("external-thread");
     persisted.environment.set_resident("opaque-runtime-binding");
     create_session_fixture(repo.as_ref(), "workspace-a", persisted).await;
@@ -1295,7 +1308,9 @@ async fn protocol_defaults_preparer_rehydrates_the_exact_durable_baseline() {
     let runtime = RehydrateFake::default();
     let restored = runtime.restored.clone();
     let restored_environments = runtime.restored_environments.clone();
-    let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo);
+    let restarted = ManagedState::new_with_mcp(runtime)
+        .await
+        .with_session_repo(repo);
 
     restarted
         .session_application()
@@ -1319,9 +1334,11 @@ async fn protocol_defaults_preparer_rehydrates_the_exact_durable_baseline() {
 #[tokio::test]
 async fn session_id_mint_namespaces_restart_away_from_repository_truth() {
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, sample_persisted("sesn_0")).await;
-    let restarted = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo);
+    let restarted = ManagedState::new(EndSessionRecorder::default())
+        .await
+        .with_session_repo(repo);
     let created = restarted
         .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
@@ -1341,9 +1358,13 @@ async fn active_active_session_id_mint_is_collision_free() {
     // | S1 | different | both zero | yes | two distinct committed Sessions |
     // | S2 | same process object | increasing | yes | distinct Sessions |
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
-    let left = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
-    let right = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
+        Arc::new(ephemeral_session_repo().await);
+    let left = ManagedState::new(EndSessionRecorder::default())
+        .await
+        .with_session_repo(repo.clone());
+    let right = ManagedState::new(EndSessionRecorder::default())
+        .await
+        .with_session_repo(repo.clone());
     let (left_result, right_result) = tokio::join!(
         left.create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID),
         right.create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID),
@@ -1371,7 +1392,7 @@ async fn active_active_session_id_mint_is_collision_free() {
 #[tokio::test]
 async fn resource_reconciler_retries_and_commits_a_crash_interrupted_activation() {
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     let mut pending = sample_persisted("sesn_pending");
     let desired = pending.resources.active.clone();
     pending.resources = Default::default();
@@ -1387,7 +1408,9 @@ async fn resource_reconciler_retries_and_commits_a_crash_interrupted_activation(
 
     let runtime = RehydrateFake::default();
     let restored = runtime.restored.clone();
-    let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo.clone());
+    let restarted = ManagedState::new_with_mcp(runtime)
+        .await
+        .with_session_repo(repo.clone());
     assert_eq!(restarted.reconcile_resource_activations().await, 1);
     restarted.ensure_session("sesn_pending").await.unwrap();
 
@@ -1415,7 +1438,7 @@ async fn resource_reclaimer_finishes_terminal_release_after_restart_case() {
     // canonical release; E2 the cleanup row becomes a tombstone; E3 no
     // reconcilable Session remains. Decision rule R1=C1+C2=>E1+E2+E3.
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     let mut deleted = sample_persisted("sesn_deleted");
     deleted.disposition = SessionDisposition::Deleting;
     deleted.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
@@ -1425,8 +1448,9 @@ async fn resource_reclaimer_finishes_terminal_release_after_restart_case() {
     deleted.resources.begin_release().unwrap();
     create_session_fixture(repo.as_ref(), "workspace-a", deleted).await;
 
-    let restarted =
-        ManagedState::new_with_mcp(RehydrateFake::default()).with_session_repo(repo.clone());
+    let restarted = ManagedState::new_with_mcp(RehydrateFake::default())
+        .await
+        .with_session_repo(repo.clone());
     let report = restarted.application.reconcile_resource_activations().await;
     assert!(report.failures.is_empty(), "{:?}", report.failures);
     assert_eq!(report.settled.len(), 1);
@@ -1468,7 +1492,7 @@ async fn resource_reclaimer_never_tears_down_a_live_session_environment_case() {
     // | R4 | terminated | true | terminal | 0 | 1 | released |
     // | R5 | deleted | false | deleted | 0 | 1 | tombstoned |
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     for status in ["idle", "running", "rescheduling", "terminated"] {
         let id = format!("sesn_{status}");
         let mut session = sample_persisted(&id);
@@ -1490,7 +1514,9 @@ async fn resource_reclaimer_never_tears_down_a_live_session_environment_case() {
     let runtime = RehydrateFake::default();
     let applied = runtime.restored.clone();
     let ended = runtime.ended.clone();
-    let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo.clone());
+    let restarted = ManagedState::new_with_mcp(runtime)
+        .await
+        .with_session_repo(repo.clone());
 
     let report = restarted.application.reconcile_resource_activations().await;
     assert!(report.failures.is_empty(), "{:?}", report.failures);
@@ -1539,7 +1565,7 @@ async fn cold_rehydrate_preserves_a_running_sessions_resource_generation() {
     // The terminal and pending branches are covered by the reclaimer table
     // above and `ensure_session_retries_and_commits_a_crash_interrupted_activation`.
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     let mut running = sample_persisted("sesn_running_rehydrate");
     running.execution = SessionExecutionState::Running;
     running
@@ -1554,7 +1580,9 @@ async fn cold_rehydrate_preserves_a_running_sessions_resource_generation() {
     let applied = runtime.restored.clone();
     let ended = runtime.ended.clone();
     let restored_environment = runtime.restored_environments.clone();
-    let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo.clone());
+    let restarted = ManagedState::new_with_mcp(runtime)
+        .await
+        .with_session_repo(repo.clone());
 
     restarted
         .ensure_session("sesn_running_rehydrate")
@@ -1681,7 +1709,7 @@ async fn terminal_root_fences_mcp_recovery_before_runtime_effects() {
     // -> skip realization. The lifecycle classification table lives on
     // PersistedSession; this integration rule proves the scanner consumes it.
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     let mut failed = sample_persisted("sesn_failed_mcp");
     failed.execution = SessionExecutionState::ActivationFailed;
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, failed).await;
@@ -1697,7 +1725,9 @@ async fn terminal_root_fences_mcp_recovery_before_runtime_effects() {
 
     let runtime = RehydrateFake::default();
     let runtime_effects = runtime.restored_runtimes.clone();
-    let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo);
+    let restarted = ManagedState::new_with_mcp(runtime)
+        .await
+        .with_session_repo(repo);
     assert_eq!(
         restarted.reconcile_session_realizations().await,
         0,
@@ -1724,14 +1754,16 @@ async fn startup_mcp_recovery_adopts_the_durable_environment_before_staging() {
     // | yes | absent  | required | prepare -> stage may create one Environment |
     // | terminal | any | required | no Runtime effect (covered above) |
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        Arc::new(ephemeral_session_repo());
+        Arc::new(ephemeral_session_repo().await);
     let mut persisted = sample_persisted("sesn_startup_mcp");
     persisted.environment.set_resident("durable-k8s-binding");
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, persisted).await;
 
     let runtime = RehydrateFake::default();
     let order = runtime.order.clone();
-    let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo.clone());
+    let restarted = ManagedState::new_with_mcp(runtime)
+        .await
+        .with_session_repo(repo.clone());
 
     assert_eq!(restarted.reconcile_session_realizations().await, 1, "C1-C3");
     assert_eq!(
@@ -1763,9 +1795,10 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
     // | R2 | delete | success | revision +1, no Active | resource absent |
     let (repo, catalog, restarted, id, resource_id) = Box::pin(async {
         let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-            Arc::new(ephemeral_session_repo());
-        let catalog = Arc::new(ephemeral_resource_registry());
+            Arc::new(ephemeral_session_repo().await);
+        let catalog = Arc::new(ephemeral_resource_registry().await);
         let state = ManagedState::new_with_mcp(RehydrateFake::default())
+            .await
             .with_session_repo(repo.clone())
             .with_resource_registry(catalog.clone());
         let id = state
@@ -1814,6 +1847,7 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
             .expect("expire the crashed Runtime owner");
 
         let restarted = ManagedState::new_with_mcp(RehydrateFake::default())
+            .await
             .with_session_repo(repo.clone())
             .with_resource_registry(catalog.clone());
         restarted.ensure_session(&id).await.expect("rehydrate");
@@ -1853,6 +1887,7 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
             .await
             .expect("expire the second crashed Runtime owner");
         let second_restart = ManagedState::new_with_mcp(RehydrateFake::default())
+            .await
             .with_session_repo(repo)
             .with_resource_registry(catalog);
         second_restart
@@ -1888,7 +1923,7 @@ async fn vault_rollout_reports_busy_and_postcommit_failure_then_replays_exact_ev
     for case in ["busy", "precommit", "postcommit"] {
         let failed_refresh = case == "precommit";
         let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-            Arc::new(ephemeral_session_repo());
+            Arc::new(ephemeral_session_repo().await);
         let mut busy = persisted_with_mcp_source("busy", "source-a", "vault-event");
         busy.execution = SessionExecutionState::Running;
         if case == "busy" {
@@ -1910,6 +1945,7 @@ async fn vault_rollout_reports_busy_and_postcommit_failure_then_replays_exact_ev
             .reject_mcp_publication
             .store(case == "postcommit", std::sync::atomic::Ordering::SeqCst);
         let state = ManagedState::new_with_mcp(runtime.clone())
+            .await
             .with_session_repo(repo.clone())
             .with_credential_source(Arc::new(RolloutCredentialSource))
             .with_executable_projection_refresh(paired_projection_refresh(refresh.clone()));

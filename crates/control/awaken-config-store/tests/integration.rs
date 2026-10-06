@@ -33,6 +33,7 @@ use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, L
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 #[path = "support/revision_cas.rs"]
@@ -47,13 +48,14 @@ mod effect_retirement;
 #[tokio::test]
 async fn sqlite_publication_source_admission_preserves_rejected_frame() {
     // P1-P4 share one actual adapter decision table; no substitute CAS model.
-    revision_cas::publication_source_table(&SqliteConfigStore::open_in_memory().unwrap()).await;
+    revision_cas::publication_source_table(&SqliteConfigStore::open_in_memory().await.unwrap())
+        .await;
 }
 
 #[tokio::test]
 async fn sqlite_management_effect_stale_completion_preserves_replacement() {
     effect_retirement::stale_completion_preserves_replacement(
-        &SqliteConfigStore::open_in_memory().unwrap(),
+        &SqliteConfigStore::open_in_memory().await.unwrap(),
         &agent_config(),
     )
     .await;
@@ -62,7 +64,7 @@ async fn sqlite_management_effect_stale_completion_preserves_replacement() {
 #[tokio::test]
 async fn sqlite_audit_identity_decision_table() {
     audit_identity::decision_table(
-        &SqliteConfigStore::open_in_memory().unwrap(),
+        &SqliteConfigStore::open_in_memory().await.unwrap(),
         &agent_config(),
     )
     .await;
@@ -82,18 +84,30 @@ async fn sqlite_audit_identity_legacy_replay_and_cross_connection_begin() {
         "awaken-audit-identity-{}-{nonce}.db",
         std::process::id()
     ));
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix("config")
-        .unwrap()
-        .run_bundle(&conn, &audit_identity::compact_history())
-        .unwrap();
+    let conn = EmbeddedSqlite::file(&path).open().await.unwrap();
+    awaken_scoped_migration::sqlite::SqliteMigrationRunner::with_prefix(
+        conn.sqlx().clone(),
+        "config",
+    )
+    .unwrap()
+    .run_bundle(&audit_identity::compact_history())
+    .await
+    .unwrap();
     let record = r#"{ "summary":"body_sha256=one", "call_id":"b:调用", "tool":"http:POST:a" }"#;
-    conn.execute("INSERT INTO config_management_audit(scope_id,call_id,record) VALUES('ws','http:POST:a:b:调用',?1)", [record]).unwrap();
-    drop(conn);
+    sqlx::query("INSERT INTO config_management_audit(scope_id,call_id,record) VALUES('ws','http:POST:a:b:调用',?1)")
+        .bind(record)
+        .execute(&conn)
+        .await
+        .unwrap();
+    conn.close().await;
     let audit: ManagementAuditRecord = serde_json::from_str(record).unwrap();
     let scope = ScopeId::from("ws");
-    let first = SqliteConfigStore::open(path.to_str().unwrap()).unwrap();
-    let second = SqliteConfigStore::open(path.to_str().unwrap()).unwrap();
+    let first = SqliteConfigStore::open(path.to_str().unwrap())
+        .await
+        .unwrap();
+    let second = SqliteConfigStore::open(path.to_str().unwrap())
+        .await
+        .unwrap();
     assert_eq!(
         first
             .record_management_audit_scoped(&scope, &audit)
@@ -135,15 +149,25 @@ async fn sqlite_config_cas_missing_row_and_revision_decision_table() {
         "awaken-config-cas-race-{}-{nonce}.db",
         std::process::id()
     ));
-    let first = Arc::new(SqliteConfigStore::open(path.to_str().unwrap()).unwrap());
-    let second = Arc::new(SqliteConfigStore::open(path.to_str().unwrap()).unwrap());
+    let first = Arc::new(
+        SqliteConfigStore::open(path.to_str().unwrap())
+            .await
+            .unwrap(),
+    );
+    let second = Arc::new(
+        SqliteConfigStore::open(path.to_str().unwrap())
+            .await
+            .unwrap(),
+    );
     revision_cas::decision_table(first.as_ref()).await;
     revision_cas::concurrent_writers(&[first.clone(), second.clone()]).await;
     revision_cas::mixed_unconditional_and_cas_writers(&[first.clone(), second.clone()]).await;
     let scope = ScopeId::from("cas-concurrent");
     let before_reopen = revision_cas::frame(first.as_ref(), &scope, "race").await;
     drop((first, second));
-    let reopened = SqliteConfigStore::open(path.to_str().unwrap()).unwrap();
+    let reopened = SqliteConfigStore::open(path.to_str().unwrap())
+        .await
+        .unwrap();
     assert_eq!(
         revision_cas::frame(&reopened, &scope, "race").await,
         before_reopen,
@@ -165,18 +189,24 @@ async fn sqlite_config_cas_exhaustion_preserves_reopenable_truth() {
     ));
     let scope = ScopeId::from("exhausted");
     let config = agent_config();
-    let store = SqliteConfigStore::open(path.to_str().unwrap()).unwrap();
-    store.put_config_scoped(&scope, &config).await.unwrap();
-    rusqlite::Connection::open(&path)
-        .unwrap()
-        .execute(
-            "UPDATE config_agent SET generation = ?1 WHERE scope_id = ?2 AND id = ?3",
-            rusqlite::params![i64::MAX, scope.0, config.id],
-        )
+    let store = SqliteConfigStore::open(path.to_str().unwrap())
+        .await
         .unwrap();
+    store.put_config_scoped(&scope, &config).await.unwrap();
+    let raw = EmbeddedSqlite::file(&path).open().await.unwrap();
+    sqlx::query("UPDATE config_agent SET generation = ?1 WHERE scope_id = ?2 AND id = ?3")
+        .bind(i64::MAX)
+        .bind(&scope.0)
+        .bind(&config.id)
+        .execute(&raw)
+        .await
+        .unwrap();
+    raw.close().await;
     revision_cas::exhausted(&store, &config).await;
     drop(store);
-    let reopened = SqliteConfigStore::open(path.to_str().unwrap()).unwrap();
+    let reopened = SqliteConfigStore::open(path.to_str().unwrap())
+        .await
+        .unwrap();
     let row = reopened
         .get_config_revision_scoped(&scope, &config.id)
         .await
@@ -200,11 +230,17 @@ async fn sqlite_config_history_insert_failure_rolls_back_all_write_paths() {
         "awaken-config-history-fault-{}-{nonce}.db",
         std::process::id()
     ));
-    let store = SqliteConfigStore::open(path.to_str().unwrap()).unwrap();
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute_batch("CREATE TRIGGER inject_history_failure BEFORE INSERT ON config_agent_revision WHEN NEW.generation = 2 BEGIN SELECT RAISE(ABORT, 'injected config history failure'); END").unwrap();
+    let store = SqliteConfigStore::open(path.to_str().unwrap())
+        .await
+        .unwrap();
+    let conn = EmbeddedSqlite::file(&path).open().await.unwrap();
+    sqlx::raw_sql("CREATE TRIGGER inject_history_failure BEFORE INSERT ON config_agent_revision WHEN NEW.generation = 2 BEGIN SELECT RAISE(ABORT, 'injected config history failure'); END")
+        .execute(&conn)
+        .await
+        .unwrap();
     revision_cas::history_failure_rolls_back(&store).await;
-    drop((conn, store));
+    conn.close().await;
+    drop(store);
     std::fs::remove_file(path).unwrap();
 }
 
@@ -263,7 +299,7 @@ async fn audited_config_and_external_effect_are_journaled_atomically_and_replay_
     // | A1   | exact pending       | attempted                 | config/effect/committed atomically |
     // | A2   | exact committed     | replay                    | Replayed; no second write |
     // `record_management_audit_scoped` is the sole concurrent begin owner.
-    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let store = SqliteConfigStore::open_in_memory().await.expect("store");
     let scope = ScopeId::from("ws");
     let audit = ManagementAuditRecord {
         tool: "admin_draft_agent".into(),
@@ -361,7 +397,7 @@ async fn mutable_writes_and_archive_are_ordered_by_one_generation_fence() {
     // | G3 | capture r1 -> archive r2 -> apply | audited | pending | Conflict; audit pending, no config |
     // | G4 | capture r1 -> archive r2 -> apply | audit+effect | pending | Conflict; audit pending, no config/effect |
     // | G5 | audited r2 -> stale archive r1 -> retry r2 | both | committed | archive r3 |
-    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let store = SqliteConfigStore::open_in_memory().await.expect("store");
 
     let replay_scope = ScopeId::from("audit-replay-order");
     let original = agent_config();
@@ -572,7 +608,7 @@ async fn mutable_writes_and_archive_are_ordered_by_one_generation_fence() {
 
 #[tokio::test]
 async fn config_generation_cas_rejects_a_stale_writer_without_lost_update() {
-    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let store = SqliteConfigStore::open_in_memory().await.expect("store");
     let mut first = agent_with("cas", "v1");
     assert_eq!(
         store.put_config_if_revision(&first, 0).await.unwrap(),
@@ -619,7 +655,7 @@ async fn config_compiles_stores_and_the_runtime_executes_the_snapshot() {
 
     // Config domain: compile to a content-addressed publication, then persist.
     let publication = compile(&config, &tool_catalog()).expect("compile");
-    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let store = SqliteConfigStore::open_in_memory().await.expect("store");
     store.put_config(&config).await.expect("put config");
     let stored =
         StoredPublication::published_at_revision(publication.clone(), &config.id, 1, DEFAULT_SCOPE);
@@ -694,7 +730,9 @@ async fn legacy_publication_inherits_its_durable_configuration_scope() {
     let publication = compile(&agent_config(), &tool_catalog()).expect("compile");
     let fingerprint = publication.fingerprint.0.clone();
     {
-        let store = SqliteConfigStore::open(path.to_str().unwrap()).expect("store");
+        let store = SqliteConfigStore::open(path.to_str().unwrap())
+            .await
+            .expect("store");
         store
             .seed_publication_history_for_test(
                 &scope,
@@ -703,16 +741,21 @@ async fn legacy_publication_inherits_its_durable_configuration_scope() {
             .await
             .expect("seed current record");
     }
-    rusqlite::Connection::open(&path)
-        .unwrap()
-        .execute(
-            "UPDATE config_publication \
-             SET record=json_remove(record,'$.execution_workspace') \
-             WHERE scope_id=?1 AND fingerprint=?2",
-            (&scope.0, &fingerprint),
-        )
-        .expect("project historical bytes");
-    let store = SqliteConfigStore::open(path.to_str().unwrap()).expect("reopen");
+    let raw = EmbeddedSqlite::file(&path).open().await.unwrap();
+    sqlx::query(
+        "UPDATE config_publication \
+         SET record=json_remove(record,'$.execution_workspace') \
+         WHERE scope_id=?1 AND fingerprint=?2",
+    )
+    .bind(&scope.0)
+    .bind(&fingerprint)
+    .execute(&raw)
+    .await
+    .expect("project historical bytes");
+    raw.close().await;
+    let store = SqliteConfigStore::open(path.to_str().unwrap())
+        .await
+        .expect("reopen");
     let loaded = store
         .get_publication_scoped(&scope, &fingerprint)
         .await
@@ -732,8 +775,10 @@ async fn config_and_runtime_tables_coexist_in_one_database() {
     let _ = std::fs::remove_file(&path);
 
     // Both components migrate into the same file under their own namespaces.
-    let config = SqliteConfigStore::open(&path).expect("config store");
-    let _commit = SqliteCommitCoordinator::open(&path).expect("commit store");
+    let config = SqliteConfigStore::open(&path).await.expect("config store");
+    let _commit = SqliteCommitCoordinator::open(&path)
+        .await
+        .expect("commit store");
     config
         .put_config(&agent_config())
         .await
@@ -741,15 +786,12 @@ async fn config_and_runtime_tables_coexist_in_one_database() {
 
     // A raw view of the schema: both namespaces' tables and ledgers are present,
     // with no collision.
-    let conn = rusqlite::Connection::open(&path).expect("open raw");
-    let mut stmt = conn
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
-        .unwrap();
-    let names: Vec<String> = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
+    let conn = EmbeddedSqlite::file(&path).open().await.expect("open raw");
+    let names: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .fetch_all(&conn)
+            .await
+            .unwrap();
 
     for expected in [
         "config_agent",
@@ -765,8 +807,7 @@ async fn config_and_runtime_tables_coexist_in_one_database() {
         );
     }
 
-    drop(stmt);
-    drop(conn);
+    conn.close().await;
     let _ = std::fs::remove_file(&path);
 }
 
@@ -835,7 +876,7 @@ async fn scoped_config_isolates_portable_same_id_rows_across_scopes() {
     // B8(a)+(b)+(d): the decorator binds one scope and exposes the scope-free port.
     // Before B writes, A's row is invisible to B. B may then own the same portable
     // id independently without clobbering A's data.
-    let store = Arc::new(SqliteConfigStore::open_in_memory().expect("store"));
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.expect("store"));
     let a = ScopedConfig::new(store.clone(), ScopeId::from("ws_a"));
     let b = ScopedConfig::new(store.clone(), ScopeId::from("ws_b"));
 
@@ -880,7 +921,7 @@ async fn scoped_config_isolates_portable_same_id_rows_across_scopes() {
 async fn scoped_config_default_scope_shares_the_owner_with_scope_free_writes() {
     // B8(c): a scope-free write lands under DEFAULT_SCOPE, so a ScopedConfig bound to
     // DEFAULT_SCOPE reads it back (same owner), while a foreign scope cannot.
-    let store = Arc::new(SqliteConfigStore::open_in_memory().expect("store"));
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.expect("store"));
     // Scope-free write via the raw store's ConfigRegistry impl (DEFAULT_SCOPE).
     store.put_config(&scoped_agent("d")).await.expect("put");
 
@@ -917,7 +958,7 @@ fn agent_with(id: &str, instructions: &str) -> AgentConfig {
 async fn a_same_scope_re_put_updates_the_config_data() {
     // put_config_scoped ON CONFLICT … DO UPDATE (same-scope branch): a re-put by the
     // owner replaces the stored data (upsert, not insert-only).
-    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let store = SqliteConfigStore::open_in_memory().await.expect("store");
     let a = ScopeId::from("ws_a");
     store
         .put_config_scoped(&a, &agent_with("x", "v1"))
@@ -937,7 +978,7 @@ async fn a_same_scope_re_put_updates_the_config_data() {
 
 #[tokio::test]
 async fn scoped_migration_captures_immutable_agent_revisions() {
-    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let store = SqliteConfigStore::open_in_memory().await.expect("store");
     let workspace = ScopeId::from("ws_a");
     store
         .put_config_scoped(&workspace, &agent_with("x", "v1"))
@@ -982,7 +1023,7 @@ async fn scoped_migration_captures_immutable_agent_revisions() {
 async fn same_agent_id_has_independent_data_and_revision_history_per_scope() {
     // The isolation fence protects DATA while allowing a portable id in each
     // scope. Updating B must not modify A or share A's generation history.
-    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let store = SqliteConfigStore::open_in_memory().await.expect("store");
     let a = ScopeId::from("ws_a");
     let b = ScopeId::from("ws_b");
     store
@@ -1027,7 +1068,7 @@ async fn same_agent_id_has_independent_data_and_revision_history_per_scope() {
 #[tokio::test]
 async fn list_configs_scoped_returns_ids_ascending() {
     // list_configs_scoped ORDER BY id ASC, filtered to the scope.
-    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let store = SqliteConfigStore::open_in_memory().await.expect("store");
     let a = ScopeId::from("ws_a");
     for id in ["c", "a", "b"] {
         store
@@ -1057,7 +1098,7 @@ async fn reconciliation_scope_inventory_is_distinct_sorted_and_secret_free() {
     // S3 configs in several scopes -> distinct owners sorted by opaque ScopeId.
     // The result contains only ownership coordinates; per-scope config reads
     // remain fenced by list_configs_scoped.
-    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let store = SqliteConfigStore::open_in_memory().await.expect("store");
     assert!(store.list_config_scopes().await.unwrap().is_empty(), "S1");
     store
         .put_config_scoped(&ScopeId::from("scope-z"), &agent_with("z-1", "x"))
@@ -1095,7 +1136,7 @@ async fn a_publication_written_under_scope_a_is_invisible_to_scope_b() {
     // get_publication_scoped carries `AND scope_id = ?`: a publication owned by A is
     // unreadable by B even by its exact fingerprint (the tenancy fence on the
     // compiled artifact, not just the authoring aggregate).
-    let store = Arc::new(SqliteConfigStore::open_in_memory().expect("store"));
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.expect("store"));
     let a = ScopedConfig::new(store.clone(), ScopeId::from("ws_a"));
     let b = ScopedConfig::new(store.clone(), ScopeId::from("ws_b"));
     let publication = publication_for(&agent_with("shared", "hello"), "ws_a");
@@ -1119,7 +1160,7 @@ async fn the_same_publication_fingerprint_can_be_owned_independently_by_each_sco
     // A fingerprint is a content address, not a tenancy coordinate. Two scopes may
     // publish the same immutable bytes; the composite key keeps both ownership rows
     // isolated while preserving idempotency within each scope.
-    let store = Arc::new(SqliteConfigStore::open_in_memory().expect("store"));
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.expect("store"));
     let a = ScopedConfig::new(store.clone(), ScopeId::from("ws_a"));
     let b = ScopedConfig::new(store.clone(), ScopeId::from("ws_b"));
     let pub_a = publication_for(&agent_with("shared", "same-bytes"), "ws_a");
@@ -1161,7 +1202,7 @@ async fn source_fenced_publication_is_idempotent_by_fingerprint() {
     // first publication sequence and instant; E2 replay replaces neither;
     // E3 both reads return the same coordinate; E4 row metadata stays out of
     // Control JSON. Rules C1=>E1+E4, C1+C2=>E2, C1+C3=>E3.
-    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let store = SqliteConfigStore::open_in_memory().await.expect("store");
     let a = ScopeId::from("ws_a");
     let source = agent_with("agent", "body");
     store.put_config_scoped(&a, &source).await.expect("source");
@@ -1228,7 +1269,7 @@ async fn conditional_publication_fences_a_second_fingerprint_at_one_source_revis
     // committed; R3 dependency re-resolution produces different executable
     // bytes without a new authoring revision. R3 must conflict before a second
     // durable row can later poison executable-registration recovery.
-    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let store = SqliteConfigStore::open_in_memory().await.expect("store");
     let scope = ScopeId::from("ws_publication_revision_fence");
     let first_config = agent_with("agent", "first behavior");
     let second_config = agent_with("agent", "dependency-resolved behavior");
@@ -1272,7 +1313,7 @@ async fn conditional_publication_fences_a_second_fingerprint_at_one_source_revis
 
 #[tokio::test]
 async fn conditional_publication_allows_one_source_revision_in_distinct_execution_workspaces() {
-    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let store = SqliteConfigStore::open_in_memory().await.expect("store");
     let scope = ScopeId::from("reserved_authoring_scope");
     let first_config = agent_with("assistant", "workspace-a behavior");
     let second_config = agent_with("assistant", "workspace-b behavior");
@@ -1322,7 +1363,7 @@ async fn list_published_returns_only_published_rows_of_the_scope_in_insertion_or
     // list_published_scoped: WHERE scope_id AND state='published' ORDER BY insertion.
     // Covers the state filter (compiled excluded), scope isolation, ordering, and the
     // empty-scope case — the warm-install reload contract.
-    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let store = SqliteConfigStore::open_in_memory().await.expect("store");
     let a = ScopeId::from("ws_a");
     let b = ScopeId::from("ws_b");
 
@@ -1389,7 +1430,9 @@ async fn list_published_warm_load_latest_per_agent_is_deterministic_on_sqlite() 
         "awaken-config-publication-order-{}-{nonce}.db",
         std::process::id()
     ));
-    let store = SqliteConfigStore::open(path.to_str().unwrap()).expect("store");
+    let store = SqliteConfigStore::open(path.to_str().unwrap())
+        .await
+        .expect("store");
     let a = ScopeId::from("ws_a");
 
     let v1 = publication_for(&agent_with("dup", "v1"), "ws_a");
@@ -1414,20 +1457,23 @@ async fn list_published_warm_load_latest_per_agent_is_deterministic_on_sqlite() 
         .await
         .expect("v3");
 
-    let connection = rusqlite::Connection::open(&path).expect("historical row fixture");
+    let connection = EmbeddedSqlite::file(&path)
+        .open()
+        .await
+        .expect("historical row fixture");
     for (fingerprint, time) in [
         (&v1.fingerprint, "2025-01-01 00:00:00"),
         (&v2.fingerprint, "2026-01-01 00:00:00"),
         (&v3.fingerprint, "2024-01-01 00:00:00"),
     ] {
-        connection
-            .execute(
-                "UPDATE config_publication SET created_at = ?1 WHERE fingerprint = ?2",
-                rusqlite::params![time, fingerprint],
-            )
+        sqlx::query("UPDATE config_publication SET created_at = ?1 WHERE fingerprint = ?2")
+            .bind(time)
+            .bind(fingerprint)
+            .execute(&connection)
+            .await
             .expect("historical row clock fixture");
     }
-    drop(connection);
+    connection.close().await;
 
     let listed = store.list_published_scoped(&a).await.expect("list");
     // rowid ASC == insertion order despite the reversed clock.
@@ -1508,14 +1554,14 @@ async fn reopening_the_same_file_reruns_migrations_idempotently_and_keeps_data()
     let _ = std::fs::remove_file(&path);
 
     {
-        let store = SqliteConfigStore::open(&path).expect("first open");
+        let store = SqliteConfigStore::open(&path).await.expect("first open");
         store
             .put_config(&agent_with("persist", "keep-me"))
             .await
             .expect("put");
     }
     // Second open re-applies the bundle; idempotent, and the row is still readable.
-    let store2 = SqliteConfigStore::open(&path).expect("second open");
+    let store2 = SqliteConfigStore::open(&path).await.expect("second open");
     let got = store2
         .get_config("persist")
         .await

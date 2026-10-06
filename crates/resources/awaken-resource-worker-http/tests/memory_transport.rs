@@ -125,7 +125,11 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
     let file_application = Arc::new(awaken_resource_application::FileApplication::new(
         file_store.clone(),
         file_store,
-        Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap()),
+        Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
+                .unwrap(),
+        ),
         awaken_time::system_clock(),
     ));
     let mut file_input = memory_input("file", "unused", ResourceAccess::ReadOnly);
@@ -334,6 +338,7 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
         .unwrap();
     let storage = Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()
+            .await
             .expect("open test Resource Registry"),
     );
     let catalog = Arc::new(awaken_resource_application::RegistryApplication::new(
@@ -592,6 +597,7 @@ async fn realization_memory_is_read_only_and_fenced_by_worker_and_session_root()
         .expect("seed realization Memory");
     let storage = Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()
+            .await
             .expect("open realization Resource Registry"),
     );
     let catalog = Arc::new(awaken_resource_application::RegistryApplication::new(
@@ -766,6 +772,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         .unwrap();
     let storage = Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()
+            .await
             .expect("open test Resource Registry"),
     );
     let catalog = Arc::new(awaken_resource_application::RegistryApplication::new(
