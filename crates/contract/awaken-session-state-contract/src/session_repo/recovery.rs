@@ -57,8 +57,9 @@ impl SessionScanCursor {
 /// [`SessionRepositoryError::Corrupt`] on any undecodable row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionScanQuery<'a> {
-    /// Sessions carrying any durable Resource, MCP, environment, or WorkQueue
-    /// projection reconciliation work, in one fixed-size keyset page. The row
+    /// Sessions carrying any durable Resource, MCP, environment, WorkQueue
+    /// reconciliation work, or unfinished Worker realization ownership, in
+    /// one fixed-size keyset page. The row
     /// scan preserves the intrinsic Workspace partition and revalidates prior
     /// quarantine records; application coordinators filter by their owned state
     /// machine. One index avoids parallel per-feature recovery registries.

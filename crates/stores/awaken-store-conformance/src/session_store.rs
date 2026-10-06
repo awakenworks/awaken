@@ -851,19 +851,25 @@ pub async fn worker_realization_owner_scan_decision_table<
     r: &R,
 ) {
     // Worker-owner read cause/effect table: C1 matching/other/absent owner,
-    // C2 same/other Workspace, C3 live/expired lease. R1 either C2 with
-    // matching C1 -> one scoped root regardless of C3; R2 other/absent C1 ->
-    // no root. An expiry timestamp is never physical-exit evidence.
+    // C2 same/other Workspace, C3 live/expired lease, C4 no independent
+    // reconciliation work. R1 either C2 with matching C1 -> one scoped root
+    // regardless of C3; R2 other/absent C1 -> no root; R3 C1+C4 -> the same
+    // root enters the existing reconciliation index for capacity observation.
+    // Expiry is never physical-exit evidence.
     use awaken_session_resource_contract::SessionRealizationLease;
     use awaken_session_state_contract::SessionScanQuery;
     let with_owner = |id: &str, owner: &str, expiry| {
         let mut value = session(id, id);
+        value.resources = Default::default();
+        value.mcp = Default::default();
+        assert!(!value.needs_reconciliation(), "R3 no other indexed work");
         value.realization = Some(SessionRealizationLease {
             owner: owner.into(),
             runtime_incarnation: format!("{owner}:incarnation"),
             epoch: 1,
             expires_at_unix_ms: expiry,
         });
+        assert!(value.needs_reconciliation(), "R3 retained owner is indexed");
         value
     };
     create_session(
@@ -873,6 +879,7 @@ pub async fn worker_realization_owner_scan_decision_table<
         Vec::new(),
     )
     .await;
+
     create_session(
         r,
         "ws-affinity-b",
@@ -880,6 +887,7 @@ pub async fn worker_realization_owner_scan_decision_table<
         Vec::new(),
     )
     .await;
+
     create_session(
         r,
         "ws-affinity-b",
@@ -894,6 +902,20 @@ pub async fn worker_realization_owner_scan_decision_table<
         Vec::new(),
     )
     .await;
+
+    let indexed = r
+        .scan(SessionScanQuery::Reconcilable { after: None })
+        .await
+        .expect("R3 existing reconciliation index");
+    for id in ["affinity-a", "affinity-b", "affinity-c"] {
+        assert!(
+            indexed
+                .sessions
+                .iter()
+                .any(|scoped| scoped.session.session_id.as_str() == id),
+            "R3 retained {id} is indexed",
+        );
+    }
 
     let selected = r
         .scan(SessionScanQuery::WorkerRealizationOwner {

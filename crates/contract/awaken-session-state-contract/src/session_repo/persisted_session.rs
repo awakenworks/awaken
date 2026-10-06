@@ -1083,6 +1083,7 @@ impl PersistedSession {
                 crate::SessionEnvironmentState::Unmaterialized
             )
             || self.verified_cleanup_needs_reconciliation()
+            || self.has_unfinished_worker_realization().unwrap_or(true)
             || self.needs_work_dispatch()
     }
 
