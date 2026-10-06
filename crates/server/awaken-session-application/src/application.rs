@@ -437,10 +437,9 @@ impl SessionApplication {
                     "Worker realization-owner read disagrees with Session root",
                 ));
             }
-            if !session
-                .verified_terminal_cleanup()
+            if session
+                .has_unfinished_worker_realization()
                 .map_err(|error| RunError::unavailable(error.to_string()))?
-                .is_completed()
             {
                 return Ok(true);
             }

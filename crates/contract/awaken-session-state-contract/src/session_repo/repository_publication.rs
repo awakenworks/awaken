@@ -69,6 +69,13 @@ impl PersistedSession {
         Ok(self.is_terminal() && !cleanup.is_not_requested() && !cleanup.is_completed())
     }
 
+    /// A physical realization keeps its exact Worker until this root proves
+    /// terminal cleanup. Lease expiry and a settled Run do not release it.
+    pub fn has_unfinished_worker_realization(&self) -> Result<bool, crate::SessionCleanupError> {
+        let cleanup = self.verified_terminal_cleanup()?;
+        Ok(self.realization.is_some() && !cleanup.is_completed())
+    }
+
     pub(super) fn has_verified_completed_cleanup(&self) -> bool {
         self.verified_terminal_cleanup()
             .is_ok_and(crate::SessionCleanupOperation::is_completed)
@@ -140,19 +147,28 @@ mod tests {
 
     #[test]
     fn worker_demand_requires_terminal_requested_verified_cleanup() {
-        // Causes: C1 live/terminal execution; C2 unrequested/requested/in-progress
-        // cleanup. R1 live or unrequested -> no demand; R2 terminal with
-        // requested or in-progress cleanup -> demand. Completion is exercised
-        // through the real Session application/store in worker_affinity.rs;
-        // malformed publication sidecars are rejected by the existing root
-        // verifier tests.
+        // Causes: C1 realization absent/present; C2 live/terminal execution;
+        // C3 cleanup unrequested/requested/in-progress. Effects: R1 absent
+        // realization -> no retained owner; R2 present, live or unfinished
+        // terminal -> retained owner; R3 terminal cleanup needs a Worker only
+        // after request. Completed cleanup and expired leases are covered by
+        // the real Session store/application tests in worker_affinity.rs.
         let mut root = session("terminal-worker-demand", SessionRevision(1));
         assert!(!root.needs_terminal_cleanup_worker().unwrap(), "R1");
+        assert!(!root.has_unfinished_worker_realization().unwrap(), "R1");
+        root.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+            owner: "worker-root".into(),
+            runtime_incarnation: "worker-root:pod-uid".into(),
+            epoch: 1,
+            expires_at_unix_ms: 1,
+        });
+        assert!(root.has_unfinished_worker_realization().unwrap(), "R2");
         let id = root.session_id.clone();
         assert!(root.terminal_cleanup.request(&id));
         assert!(!root.needs_terminal_cleanup_worker().unwrap(), "R1 live");
         root.archive("2026-10-05T00:00:00Z", 1).unwrap();
         assert!(root.needs_terminal_cleanup_worker().unwrap(), "R2");
+        assert!(root.has_unfinished_worker_realization().unwrap(), "R2");
         root.freeze_terminal_cleanup_targets([], 0, 0).unwrap();
         assert!(
             root.needs_terminal_cleanup_worker().unwrap(),

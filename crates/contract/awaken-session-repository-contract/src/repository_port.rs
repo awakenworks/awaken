@@ -123,9 +123,10 @@ pub trait SessionRepository: Send + Sync {
 
 /// Read one operational capacity projection from the canonical Session roots.
 /// Multiple unfinished Sessions bound to the same logical Worker need one
-/// retained Pod; any unbound, never-materialized terminal work needs one
-/// additional first-placement Pod. This read grants no claim or recovery.
-pub async fn terminal_cleanup_worker_owners(
+/// retained Pod, including live Sessions with no claimable Dispatch. Any
+/// unbound, never-materialized terminal work needs one first-placement Pod.
+/// This read grants no claim or recovery.
+pub async fn session_worker_demand(
     repository: &dyn SessionRepository,
 ) -> Result<u64, SessionRepositoryError> {
     let mut cursor: Option<SessionScanCursor> = None;
@@ -144,19 +145,26 @@ pub async fn terminal_cleanup_worker_owners(
         }
         for scoped in scan.sessions {
             let session = scoped.session;
-            if !session
+            if session
+                .has_unfinished_worker_realization()
+                .map_err(|error| SessionRepositoryError::Corrupt(error.to_string()))?
+            {
+                let lease = session.realization.as_ref().ok_or_else(|| {
+                    SessionRepositoryError::Corrupt(
+                        "unfinished Session realization has no Worker owner".into(),
+                    )
+                })?;
+                if lease.owner.trim().is_empty() {
+                    return Err(SessionRepositoryError::Corrupt(
+                        "Session has an empty Worker owner".into(),
+                    ));
+                }
+                owners.insert(lease.owner.clone());
+            } else if !session
                 .needs_terminal_cleanup_worker()
                 .map_err(|error| SessionRepositoryError::Corrupt(error.to_string()))?
             {
                 continue;
-            }
-            if let Some(lease) = session.realization.as_ref() {
-                if lease.owner.trim().is_empty() {
-                    return Err(SessionRepositoryError::Corrupt(
-                        "terminal Session has an empty Worker owner".into(),
-                    ));
-                }
-                owners.insert(lease.owner.clone());
             } else if matches!(session.environment, SessionEnvironmentState::Unmaterialized) {
                 unbound = true;
             } else {
@@ -168,12 +176,12 @@ pub async fn terminal_cleanup_worker_owners(
         let Some(next) = scan.next_cursor else {
             let count = u64::try_from(owners.len()).map_err(|_| {
                 SessionRepositoryError::AuthorityUnavailable(
-                    "terminal Worker owner count overflow".into(),
+                    "Session Worker demand count overflow".into(),
                 )
             })?;
             return count.checked_add(u64::from(unbound)).ok_or_else(|| {
                 SessionRepositoryError::AuthorityUnavailable(
-                    "terminal Worker owner count overflow".into(),
+                    "Session Worker demand count overflow".into(),
                 )
             });
         };

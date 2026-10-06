@@ -1,14 +1,14 @@
 use super::*;
 
 #[tokio::test]
-async fn terminal_cleanup_capacity_counts_distinct_owners_from_one_root_scan() {
-    // Causes: C1 two requested terminal roots share owner A; C2 one requested
-    // root has owner B; C3 one never-materialized terminal root is unbound;
-    // C4 one live root has owner C; C5 the terminal owner leases have expired;
-    // C6 B commits its cleanup receipt.
-    // R1 C1-C4 -> three required Workers (A, B, first placement), never four
-    // Sessions or a live-only C; R2 +C5+C6 -> two. The existing Session store and
-    // root classifications own every row, with no Cloud-local index.
+async fn session_worker_demand_counts_live_affinity_and_terminal_cleanup() {
+    // Causes: C1 two terminal roots share owner A; C2 one terminal root has B;
+    // C3 one unmaterialized terminal root needs first placement; C4 one live,
+    // otherwise idle root has C; C5 owner leases expire; C6 B proves cleanup.
+    // Effects: R1 C1-C4 -> four Workers (A, B, C, first placement), with the
+    // live root present in the indexed scan; R2 +C5+C6 -> three. Expiry alone
+    // never lowers demand. This covers the delayed-Dispatch gap without a
+    // second Session index or Cloud-local state.
     let repo =
         Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
     for (id, owner) in [
@@ -37,11 +37,22 @@ async fn terminal_cleanup_capacity_counts_distinct_owners_from_one_root_scan() {
         expires_at_unix_ms: u64::MAX,
     });
     create(repo.as_ref(), live).await;
+    let indexed = repo
+        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
+        .await
+        .unwrap();
+    assert!(
+        indexed
+            .sessions
+            .iter()
+            .any(|scoped| scoped.session.session_id.as_str() == "live-c"),
+        "R1 live affinity is present in the existing recovery index",
+    );
     assert_eq!(
-        awaken_session_repository_contract::terminal_cleanup_worker_owners(repo.as_ref())
+        awaken_session_repository_contract::session_worker_demand(repo.as_ref())
             .await
             .unwrap(),
-        3,
+        4,
         "R1",
     );
     application(
@@ -53,10 +64,10 @@ async fn terminal_cleanup_capacity_counts_distinct_owners_from_one_root_scan() {
     .expect("R2 cleanup")
     .expect("R2 retained Session");
     assert_eq!(
-        awaken_session_repository_contract::terminal_cleanup_worker_owners(repo.as_ref())
+        awaken_session_repository_contract::session_worker_demand(repo.as_ref())
             .await
             .unwrap(),
-        2,
+        3,
         "R2",
     );
 }

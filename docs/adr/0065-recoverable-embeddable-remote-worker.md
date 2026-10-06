@@ -713,3 +713,17 @@ Worker PodTemplate replacement, including a Sandbox image or package registry
 wave. The field alone does not make an uncoordinated release safe. Historical
 sessions stranded by an earlier rollout retain their unknown physical effects;
 the new query cannot backfill process-exit evidence or authorize replay.
+
+## Amendment: live Session affinity remains indexed Worker demand (2026-10-06)
+
+A live resident Session may hold a Pod-bound realization while its Dispatch is
+delayed and has neither a claimable row nor a live lease. The Session aggregate's
+verified unfinished-realization predicate now keeps that root in the existing
+reconciliation index. The same predicate serves the exact Worker-domain read
+above and the repository's distinct-owner capacity projection, replacing its
+former terminal-only filter. Unbound terminal first placement remains included.
+This is a read-only demand hint; it cannot reassign an expired lease or reopen a
+foreign physical effect. Only verified terminal cleanup removes retained owner
+demand. A scalar owner count does not prove which Pod a multi-replica deployment
+may delete during scale-in, so that operation still requires exact Pod-domain
+evidence before owner preservation can be claimed.
