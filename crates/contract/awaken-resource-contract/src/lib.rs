@@ -9,7 +9,7 @@
 //! and **nothing else**: no backend, no SQL driver, no filesystem. It mirrors
 //! [`awaken-provisioning-contract`](https://docs.rs/awaken-provisioning-contract):
 //! an adapter (or a consumer reusing these stores inside its own database) can
-//! depend on the traits alone without pulling `sqlx`/`rusqlite`/`object_store` or
+//! depend on the traits alone without pulling `sqlx`/`object_store` or
 //! any concrete store.
 //!
 //! The backend crates (`awaken-file-store`, `awaken-memory-store`,

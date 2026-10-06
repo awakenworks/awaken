@@ -37,7 +37,7 @@ async-trait.workspace = true
 schemars = { version = "1", optional = true }
 # Feature `sqlite`: embedded durable admin aggregate backend over sqlx
 # (ADR-0087) and the crate's own `admin` migration scope (ADR-0043 sqlite-repos).
-awaken-sqlite-runtime = { workspace = true, optional = true }
+awaken-sqlite-pool = { workspace = true, optional = true }
 # Features `sqlite` and `postgres`: the async admin stores over the same `admin`
 # migration scope (ADR-0043).
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite", "json"], optional = true }
@@ -61,7 +61,7 @@ test-support = [
     "awaken-model-catalog/test-support",
 ]
 # SQLite-backed admin stores (`sqlite::SqliteAdminStore`), ADR-0043 sqlite-repos.
-sqlite = ["dep:awaken-sqlite-runtime", "dep:sqlx"]
+sqlite = ["dep:awaken-sqlite-pool", "dep:sqlx"]
 # Postgres-backed admin store (`postgres::PostgresAdminStore`), ADR-0043.
 postgres = ["dep:sqlx"]
 # Emit JSON Schema for the admin config DTOs (drives TS-contract generation,

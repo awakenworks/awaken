@@ -7,8 +7,8 @@ use awaken_executable_environment_contract::{
     EnvironmentImageBuildError, EnvironmentImageBuildRecord, EnvironmentImageBuildStore,
 };
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-use awaken_sqlite_runtime::EmbeddedPool;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 
 use crate::durable::{DurableEnvironmentImageBuildStore, RecordBackend, VersionedRecord, storage};
 use crate::schema::{NS, environment_image_build_bundle};
@@ -42,7 +42,7 @@ async fn open_backend(
 ) -> Result<SqliteRecordBackend, EnvironmentImageBuildError> {
     let pool = location.open().await.map_err(storage)?;
     let bundle = environment_image_build_bundle().map_err(storage)?;
-    awaken_sqlite_runtime::held(
+    awaken_sqlite_pool::held(
         SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
             .map_err(storage)?
             .run_bundle(&bundle),

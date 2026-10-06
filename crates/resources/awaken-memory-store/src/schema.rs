@@ -257,7 +257,7 @@ mod tests {
          * columns and convergence without touching rows; S2 terminal history ->
          * zero writes; S3 malformed/drifted receipt -> runner rejects atomically.
          */
-        let connection = awaken_sqlite_runtime::EmbeddedSqlite::memory()
+        let connection = awaken_sqlite_pool::EmbeddedSqlite::memory()
             .open()
             .await
             .expect("sqlite");

@@ -430,7 +430,7 @@ async fn sqlite_corrupt_capture_is_neither_read_nor_replaced() {
     let store = awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap())
         .await
         .unwrap();
-    let connection = awaken_sqlite_runtime::EmbeddedSqlite::file(path)
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(path)
         .open()
         .await
         .unwrap();
@@ -538,7 +538,7 @@ async fn sqlite_v5_upgrade_preserves_files_without_guessing_a_capture() {
     let legacy =
         awaken_scoped_migration::MigrationBundle::new(BUNDLE_ID, full.migrations()[..5].to_vec())
             .unwrap();
-    let connection = awaken_sqlite_runtime::EmbeddedSqlite::memory()
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::memory()
         .open()
         .await
         .unwrap();

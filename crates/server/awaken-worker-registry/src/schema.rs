@@ -226,7 +226,7 @@ mod tests {
     async fn sqlite_migrates_legacy_worker_json_atomically() {
         use awaken_scoped_migration::MigrationBundle;
         use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-        use awaken_sqlite_runtime::EmbeddedSqlite;
+        use awaken_sqlite_pool::EmbeddedSqlite;
 
         /* JSON cutover decision table:
          * J1 valid legacy snapshot -> one relational row with every authority
@@ -351,7 +351,7 @@ mod tests {
     #[tokio::test]
     async fn sqlite_rejects_invalid_worker_authority() {
         use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-        use awaken_sqlite_runtime::EmbeddedSqlite;
+        use awaken_sqlite_pool::EmbeddedSqlite;
 
         let conn = EmbeddedSqlite::memory().open().await.unwrap();
         let bundle = registry_bundle().unwrap();

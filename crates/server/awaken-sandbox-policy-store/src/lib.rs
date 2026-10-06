@@ -17,8 +17,8 @@ use awaken_provisioning_contract::{
 };
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
-use awaken_sqlite_runtime::EmbeddedPool;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use sqlx::{PgPool, Row};
 
 const NS: &str = "sandbox_execution_policy";
@@ -346,10 +346,10 @@ impl SqliteSandboxExecutionPolicyStore {
         let converged = converged_sandbox_policy_bundle().map_err(|error| error.to_string())?;
         let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
             .map_err(|error| error.to_string())?;
-        awaken_sqlite_runtime::held(runner.run_bundle(&published))
+        awaken_sqlite_pool::held(runner.run_bundle(&published))
             .await
             .map_err(|error| error.to_string())?;
-        awaken_sqlite_runtime::held(runner.run_bundle(&converged))
+        awaken_sqlite_pool::held(runner.run_bundle(&converged))
             .await
             .map_err(|error| error.to_string())?;
         Ok(Self { pool })

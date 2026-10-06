@@ -16,8 +16,8 @@ use awaken_environment_contract::{
 };
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
-use awaken_sqlite_runtime::EmbeddedPool;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use awaken_time::WallClock;
 use awaken_time::WallClockExt;
 #[cfg(test)]

@@ -29,7 +29,7 @@ awaken-session-types.workspace = true
 awaken-environment-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-store-runtime = { workspace = true, features = ["postgres"] }
-awaken-sqlite-runtime.workspace = true
+awaken-sqlite-pool.workspace = true
 awaken-deployment-contract = { workspace = true }
 awaken-credential-contract = { workspace = true }
 awaken-ext-memory = { workspace = true }

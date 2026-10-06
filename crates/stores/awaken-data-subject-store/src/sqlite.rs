@@ -8,8 +8,8 @@
 //! columns for lookups.
 
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-use awaken_sqlite_runtime::EmbeddedPool;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 
 use crate::schema::{CONTROL_PREFIX, control_data_subject_bundle};
 use awaken_data_subject_application::{
@@ -73,7 +73,7 @@ impl SqliteDataSubjectRepo {
     pub async fn ensure_schema(&self) -> Result<(), StoreError> {
         let bundle =
             control_data_subject_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_sqlite_runtime::held(
+        awaken_sqlite_pool::held(
             SqliteMigrationRunner::with_prefix(self.pool.sqlx().clone(), NS)
                 .map_err(|err| StoreError::Migrate(err.to_string()))?
                 .run_bundle(&bundle),

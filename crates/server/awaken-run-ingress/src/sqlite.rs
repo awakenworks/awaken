@@ -20,8 +20,8 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-use awaken_sqlite_runtime::EmbeddedPool;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use futures_util::TryStreamExt;
 use sqlx::sqlite::{Sqlite, SqliteConnection};
 
@@ -307,7 +307,7 @@ pub struct SqliteDispatchStore {
 /// dispatch operation. The connection is released before the guard.
 type HeldConnection<'a> = (
     tokio::sync::MutexGuard<'a, ()>,
-    awaken_sqlite_runtime::EmbeddedConnection,
+    awaken_sqlite_pool::EmbeddedConnection,
 );
 
 impl SqliteDispatchStore {
@@ -355,10 +355,10 @@ impl SqliteDispatchStore {
         .map_err(|err| StoreError::Migrate(err.to_string()))?;
         let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_sqlite_runtime::held(runner.run_bundle(&published))
+        awaken_sqlite_pool::held(runner.run_bundle(&published))
             .await
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_sqlite_runtime::held(runner.run_bundle(&converged))
+        awaken_sqlite_pool::held(runner.run_bundle(&converged))
             .await
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
         Ok(Self {
@@ -379,7 +379,7 @@ impl SqliteDispatchStore {
     /// Acquire the connection while the caller already owns `authority`.
     async fn with_conn_unlocked(
         &self,
-    ) -> Result<awaken_sqlite_runtime::EmbeddedConnection, DispatchError> {
+    ) -> Result<awaken_sqlite_pool::EmbeddedConnection, DispatchError> {
         self.pool
             .acquire()
             .await
@@ -510,7 +510,7 @@ fn affected(done: sqlx::sqlite::SqliteQueryResult) -> usize {
 mod migration_history_tests {
     use awaken_scoped_migration::MigrationBundle;
     use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-    use awaken_sqlite_runtime::EmbeddedSqlite;
+    use awaken_sqlite_pool::EmbeddedSqlite;
 
     use super::{NS, SqliteDispatchStore};
     use crate::dispatch_schema::{BUNDLE_ID, CONVERGED_BUNDLE_ID, expanded_dispatch_bundle};

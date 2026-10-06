@@ -40,7 +40,7 @@ impl SqliteWorkQueue {
     /// A private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn open_in_memory(clock: Arc<dyn WallClock>) -> Result<Self, String> {
-        Self::from_location(awaken_sqlite_runtime::EmbeddedSqlite::memory(), clock).await
+        Self::from_location(awaken_sqlite_pool::EmbeddedSqlite::memory(), clock).await
     }
 
     /// Open (or create) the work-queue database at `path` and apply migrations.
@@ -49,11 +49,11 @@ impl SqliteWorkQueue {
     /// for: every `*_at` this backend writes is a reading of exactly this clock,
     /// so a test can name the instant a record must carry.
     pub async fn open(path: &str, clock: Arc<dyn WallClock>) -> Result<Self, String> {
-        Self::from_location(awaken_sqlite_runtime::EmbeddedSqlite::file(path), clock).await
+        Self::from_location(awaken_sqlite_pool::EmbeddedSqlite::file(path), clock).await
     }
 
     async fn from_location(
-        location: awaken_sqlite_runtime::EmbeddedSqlite,
+        location: awaken_sqlite_pool::EmbeddedSqlite,
         clock: Arc<dyn WallClock>,
     ) -> Result<Self, String> {
         let pool = location.open().await.map_err(|error| error.to_string())?;
@@ -69,7 +69,7 @@ impl SqliteWorkQueue {
     /// the former shared-connection scheduler held it.
     pub(super) async fn connection(
         &self,
-    ) -> Result<awaken_sqlite_runtime::EmbeddedConnection, WorkQueueError> {
+    ) -> Result<awaken_sqlite_pool::EmbeddedConnection, WorkQueueError> {
         self.pool.acquire().await.map_err(storage)
     }
 

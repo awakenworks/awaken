@@ -303,7 +303,7 @@ async fn sqlite_corruption_retains_the_original_frame() {
         )
         .await
         .unwrap();
-    let connection = awaken_sqlite_runtime::EmbeddedSqlite::file(path)
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(path)
         .open()
         .await
         .unwrap();

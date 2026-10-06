@@ -15,8 +15,8 @@
 
 use async_trait::async_trait;
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-use awaken_sqlite_runtime::EmbeddedPool;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use sqlx::sqlite::SqliteConnection;
 
 use awaken_tenancy::ScopeId;
@@ -93,10 +93,10 @@ impl SqliteConfigStore {
             converged_config_bundle().map_err(|error| StoreError::Migrate(error.to_string()))?;
         let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
             .map_err(|error| StoreError::Migrate(error.to_string()))?;
-        awaken_sqlite_runtime::held(runner.run_bundle(&published))
+        awaken_sqlite_pool::held(runner.run_bundle(&published))
             .await
             .map_err(|error| StoreError::Migrate(error.to_string()))?;
-        awaken_sqlite_runtime::held(runner.run_bundle(&converged))
+        awaken_sqlite_pool::held(runner.run_bundle(&converged))
             .await
             .map_err(|error| StoreError::Migrate(error.to_string()))?;
         Ok(Self { pool })

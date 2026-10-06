@@ -94,7 +94,7 @@ async fn sqlite_execution_binding_survives_reopen_without_the_worker() {
         expected,
         "B11"
     );
-    let connection = awaken_sqlite_runtime::EmbeddedSqlite::file(path)
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(path)
         .open()
         .await
         .unwrap();
@@ -186,7 +186,7 @@ async fn sqlite_ack_retirement_survives_reopen_and_sql_bypass_is_rejected() {
         S::Applied,
         "lost ACK response"
     );
-    let connection = awaken_sqlite_runtime::EmbeddedSqlite::file(path)
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(path)
         .open()
         .await
         .unwrap();
@@ -525,7 +525,7 @@ async fn legacy_completion_without_dispatch_identity_fails_closed() {
             .await
             .expect("migrate"),
     );
-    let connection = awaken_sqlite_runtime::EmbeddedSqlite::file(&path)
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(&path)
         .open()
         .await
         .expect("open legacy fixture");
@@ -637,7 +637,7 @@ async fn latest_schema_removes_the_obsolete_delegation_table() {
         .expect("migrate");
     drop(store);
 
-    let connection = awaken_sqlite_runtime::EmbeddedSqlite::file(&path)
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(&path)
         .open()
         .await
         .expect("inspect");

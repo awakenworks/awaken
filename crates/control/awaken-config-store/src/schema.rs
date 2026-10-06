@@ -80,8 +80,8 @@ mod tests {
 
     use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
     use awaken_scoped_migration::{Dialect, Migration, MigrationBundle, MigrationError, plan};
-    use awaken_sqlite_runtime::EmbeddedPool;
-    use awaken_sqlite_runtime::EmbeddedSqlite;
+    use awaken_sqlite_pool::EmbeddedPool;
+    use awaken_sqlite_pool::EmbeddedSqlite;
 
     use super::{
         BUNDLE_ID, compact_baseline, config_bundle, converged_config_bundle, expanded,

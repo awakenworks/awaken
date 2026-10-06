@@ -10,8 +10,8 @@ use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_scoped_migration::{
     LedgerSchema, MigrationBundle, MigrationError, check_ledger_version,
 };
-use awaken_sqlite_runtime::EmbeddedPool;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use sqlx::SqliteConnection;
 use std::fs::{self, File};
 use std::io;
@@ -382,17 +382,17 @@ impl SqliteManagedSessionRepository {
             // Every supported legacy prefix first reaches the last published
             // branch shape. V1/V9/V12 do not yet carry every column consumed by
             // normalization, so reading rows before this phase is invalid.
-            awaken_sqlite_runtime::held(runner.run_bundle(pre_convergence))
+            awaken_sqlite_pool::held(runner.run_bundle(pre_convergence))
                 .await
                 .map_err(|error| error.to_string())?;
             Self::normalize_session_aggregates(pool, false)
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        awaken_sqlite_runtime::held(runner.run_bundle(&selected.complete))
+        awaken_sqlite_pool::held(runner.run_bundle(&selected.complete))
             .await
             .map_err(|error| error.to_string())?;
-        awaken_sqlite_runtime::held(runner.run_bundle(&converged))
+        awaken_sqlite_pool::held(runner.run_bundle(&converged))
             .await
             .map_err(|error| error.to_string())?;
         Self::normalize_session_aggregates(pool, true)
@@ -496,7 +496,7 @@ impl SqliteManagedSessionRepository {
     ) -> Result<(), String> {
         let runner = SqliteMigrationRunner::with_prefix(expected.sqlx().clone(), NS)
             .map_err(|error| error.to_string())?;
-        awaken_sqlite_runtime::held(runner.run_bundle(applied))
+        awaken_sqlite_pool::held(runner.run_bundle(applied))
             .await
             .map_err(|error| error.to_string())?;
         let applied_shapes = {
@@ -511,7 +511,7 @@ impl SqliteManagedSessionRepository {
         // also the ownership oracle for objects a forged database might create
         // before recording their receipts. Such premature objects would make
         // the real opener's later DDL fail even if every applied object matched.
-        awaken_sqlite_runtime::held(runner.run_bundle(bundle))
+        awaken_sqlite_pool::held(runner.run_bundle(bundle))
             .await
             .map_err(|error| error.to_string())?;
         let complete_shapes = {

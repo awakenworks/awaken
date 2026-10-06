@@ -10,8 +10,8 @@
 //! no trace), and `snapshot()` runs [`ProviderCatalog::validate`] on the reload.
 
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-use awaken_sqlite_runtime::EmbeddedPool;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use sqlx::SqliteConnection;
 
 use crate::schema::catalog_bundle;
@@ -74,7 +74,7 @@ impl SqliteCatalogRepo {
     /// when the schema is owned externally.
     pub async fn ensure_schema(&self) -> Result<(), StoreError> {
         let bundle = catalog_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_sqlite_runtime::held(
+        awaken_sqlite_pool::held(
             SqliteMigrationRunner::with_prefix(self.pool.sqlx().clone(), NS)
                 .map_err(|err| StoreError::Migrate(err.to_string()))?
                 .run_bundle(&bundle),

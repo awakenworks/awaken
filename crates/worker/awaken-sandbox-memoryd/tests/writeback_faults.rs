@@ -63,7 +63,7 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
         for retry_before_commit in [false, true] {
             let root = tempfile::tempdir().unwrap();
             let database = root.path().join("memory.sqlite");
-            let pool = awaken_sqlite_runtime::EmbeddedSqlite::file(&database)
+            let pool = awaken_sqlite_pool::EmbeddedSqlite::file(&database)
                 .open()
                 .await
                 .unwrap();

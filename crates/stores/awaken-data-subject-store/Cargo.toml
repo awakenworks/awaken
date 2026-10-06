@@ -22,7 +22,7 @@ thiserror = { workspace = true }
 # SQLite adapter; feature `postgres` adds the network-DB Control DataSubjectRepo adapter.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] }
-awaken-sqlite-runtime.workspace = true
+awaken-sqlite-pool.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

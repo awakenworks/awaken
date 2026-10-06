@@ -16,8 +16,8 @@ use awaken_runtime_contract::{
     CaptureError, CaptureSink, ContentEraser, ContentKind, DataSubjectId, Purpose,
 };
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-use awaken_sqlite_runtime::EmbeddedPool;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 
 use crate::StoreError;
 use crate::schema::{COORDINATOR_CAPTURE_PREFIX, coordinator_data_capture_bundle};
@@ -31,7 +31,7 @@ async fn open_migrated(location: EmbeddedSqlite) -> Result<EmbeddedPool, StoreEr
         .map_err(|e| StoreError::Open(e.to_string()))?;
     let bundle = coordinator_data_capture_bundle()
         .map_err(|error| StoreError::Migrate(error.to_string()))?;
-    awaken_sqlite_runtime::held(
+    awaken_sqlite_pool::held(
         SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
             .map_err(|e| StoreError::Migrate(e.to_string()))?
             .run_bundle(&bundle),

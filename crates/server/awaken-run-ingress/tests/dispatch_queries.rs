@@ -237,7 +237,7 @@ async fn sqlite_corrupt_summary_does_not_poison_identity_pages() {
             .await
             .unwrap();
     }
-    let connection = awaken_sqlite_runtime::EmbeddedSqlite::file(path)
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(path)
         .open()
         .await
         .unwrap();

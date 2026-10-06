@@ -8,9 +8,10 @@
 //! harnesses (the two migration runners + their drivers) exercising the shared
 //! bundle exactly as the SQLite and Postgres store backends do.
 
-use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
+use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_store_schema::{COMMIT_BUNDLE_ID, commit_bundle};
-use rusqlite::Connection;
+use sqlx::Row as _;
+use sqlx::SqlitePool;
 
 const NS: &str = "runtime";
 
@@ -95,13 +96,14 @@ const TABLES: [&str; 8] = [
 // `{json}`/`{timestamptz}` → TEXT, `{pk_autoinc}` → INTEGER PRIMARY KEY
 // AUTOINCREMENT, `{now}` → CURRENT_TIMESTAMP (asserted by inserting a row and
 // reading the defaulted timestamp back).
-#[test]
-fn bundle_applies_on_real_sqlite() {
-    let conn = Connection::open_in_memory().expect("open sqlite");
+#[tokio::test]
+async fn bundle_applies_on_real_sqlite() {
+    let conn = memory_sqlite().await;
     let bundle = commit_bundle().expect("bundle builds");
-    let applied = SqliteMigrationRunner::with_prefix(NS)
+    let applied = SqliteMigrationRunner::with_prefix(conn.clone(), NS)
         .expect("runner")
-        .run_bundle(&conn, &bundle)
+        .run_bundle(&bundle)
+        .await
         .expect("apply bundle on sqlite");
     assert_eq!(
         applied.len(),
@@ -110,18 +112,12 @@ fn bundle_applies_on_real_sqlite() {
     );
 
     for table in TABLES {
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-                [table],
-                |row| row.get(0),
-            )
-            .expect("query sqlite_master");
+        let count = table_count_sqlite(&conn, table).await;
         assert_eq!(count, 1, "table {table} was created");
     }
 
     // {json} → TEXT and {timestamptz} → TEXT on the commit table.
-    let commit_types = column_types_sqlite(&conn, "runtime_commit");
+    let commit_types = column_types_sqlite(&conn, "runtime_commit").await;
     assert_eq!(
         commit_types.get("phase").map(String::as_str),
         Some("TEXT"),
@@ -133,7 +129,7 @@ fn bundle_applies_on_real_sqlite() {
         "{{timestamptz}} rendered to TEXT on SQLite"
     );
     // {pk_autoinc} → INTEGER PRIMARY KEY AUTOINCREMENT on the message table.
-    let message_types = column_types_sqlite(&conn, "runtime_message");
+    let message_types = column_types_sqlite(&conn, "runtime_message").await;
     assert_eq!(
         message_types.get("id").map(String::as_str),
         Some("INTEGER"),
@@ -141,46 +137,97 @@ fn bundle_applies_on_real_sqlite() {
     );
 
     // {now} default: insert a run record without a timestamp; SQLite fills it.
-    conn.execute(
+    sqlx::query(
         "INSERT INTO runtime_run_record (run_id, thread_id, phase) VALUES ('r','t','\"Running\"')",
-        [],
     )
+    .execute(&conn)
+    .await
     .expect("insert run record");
-    let updated_at: Option<String> = conn
-        .query_row(
-            "SELECT updated_at FROM runtime_run_record WHERE run_id='r'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("read updated_at");
+    let updated_at: Option<String> =
+        sqlx::query_scalar("SELECT updated_at FROM runtime_run_record WHERE run_id='r'")
+            .fetch_one(&conn)
+            .await
+            .expect("read updated_at");
     assert!(
         updated_at.is_some_and(|s| !s.is_empty()),
         "{{now}} default (CURRENT_TIMESTAMP) populated updated_at"
     );
     assert!(
-        conn.execute(
+        sqlx::query(
             "INSERT INTO runtime_commit (sequence, thread_id, run_id, phase) VALUES (-1,'t','r-negative','\"Running\"')",
-            [],
         )
+        .execute(&conn)
+        .await
         .is_err(),
         "negative SQLite authority is rejected by the forward-compatible constraint trigger"
     );
 }
 
+/// A private in-memory SQLite database on one connection that stays open, so
+/// every statement of a test sees the same database. Foreign keys stay off, the
+/// SQLite default the migration runner is specified against.
+async fn memory_sqlite() -> SqlitePool {
+    sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .in_memory(true)
+                .foreign_keys(false),
+        )
+        .await
+        .expect("open sqlite")
+}
+
+/// How many tables named `table` exist.
+async fn table_count_sqlite(conn: &SqlitePool, table: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1")
+        .bind(table)
+        .fetch_one(conn)
+        .await
+        .expect("query sqlite_master")
+}
+
 /// Column name → declared type for a SQLite table, via `PRAGMA table_info`.
-fn column_types_sqlite(
-    conn: &Connection,
+async fn column_types_sqlite(
+    conn: &SqlitePool,
     table: &str,
 ) -> std::collections::HashMap<String, String> {
-    let mut stmt = conn
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .expect("prepare pragma");
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-        })
-        .expect("query pragma");
-    rows.map(|r| r.expect("pragma row")).collect()
+    sqlx::query(&format!("PRAGMA table_info({table})"))
+        .fetch_all(conn)
+        .await
+        .expect("query pragma")
+        .iter()
+        .map(|row| (row.get::<String, _>(1), row.get::<String, _>(2)))
+        .collect()
+}
+
+/// The column names of a SQLite index, in key order, via `PRAGMA index_info`.
+async fn index_columns_sqlite(conn: &SqlitePool, index: &str) -> Vec<String> {
+    sqlx::query(&format!("PRAGMA index_info({index})"))
+        .fetch_all(conn)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get::<String, _>(2))
+        .collect()
+}
+
+/// The detail lines of SQLite's `EXPLAIN QUERY PLAN` for one query.
+async fn query_plan_sqlite<'q>(
+    conn: &SqlitePool,
+    query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+) -> String {
+    query
+        .fetch_all(conn)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get::<String, _>(3))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // Historical-upgrade cause/effect graph: C1 the ledger is empty or ends at any
@@ -194,12 +241,12 @@ fn column_types_sqlite(
 // | H2 | 1..tip-1 | full | E1 missing suffix + E2 |
 // | H3 | tip | full | E3 no-op + E2 |
 // | H4 | any after E2 | full again | E3 no-op |
-#[test]
-fn every_sqlite_historical_prefix_migrates_to_full() {
+#[tokio::test]
+async fn every_sqlite_historical_prefix_migrates_to_full() {
     let full = commit_bundle().expect("bundle builds");
     for prefix_len in 0..=full.migrations().len() {
-        let conn = Connection::open_in_memory().expect("open sqlite");
-        let runner = SqliteMigrationRunner::with_prefix(NS).expect("runner");
+        let conn = memory_sqlite().await;
+        let runner = SqliteMigrationRunner::with_prefix(conn.clone(), NS).expect("runner");
         if prefix_len > 0 {
             let prefix = awaken_scoped_migration::MigrationBundle::new(
                 COMMIT_BUNDLE_ID,
@@ -207,44 +254,40 @@ fn every_sqlite_historical_prefix_migrates_to_full() {
             )
             .expect("historical prefix");
             runner
-                .run_bundle(&conn, &prefix)
+                .run_bundle(&prefix)
+                .await
                 .expect("apply historical prefix");
         }
-        let delta = runner.run_bundle(&conn, &full).expect("apply forward");
+        let delta = runner.run_bundle(&full).await.expect("apply forward");
         let versions: Vec<i64> = delta.iter().map(|migration| migration.version).collect();
         let expected =
             ((prefix_len + 1) as i64..=full.migrations().len() as i64).collect::<Vec<_>>();
         assert_eq!(versions, expected, "H1/H2/H3 prefix={prefix_len}");
         assert!(
             runner
-                .run_bundle(&conn, &full)
+                .run_bundle(&full)
+                .await
                 .expect("repeat full")
                 .is_empty(),
             "H4 prefix={prefix_len}"
         );
         for table in TABLES {
-            let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-                    [table],
-                    |row| row.get(0),
-                )
-                .expect("query sqlite_master");
+            let count = table_count_sqlite(&conn, table).await;
             assert_eq!(count, 1, "H1/H2/H3 {table} prefix={prefix_len}");
         }
     }
 }
 
-#[test]
-fn sqlite_v10_canonicalizes_only_historical_audit_kind_values() {
+#[tokio::test]
+async fn sqlite_v10_canonicalizes_only_historical_audit_kind_values() {
     // Causes: C1 v9 contains RunPhaseChanged; C2 it contains RunWaiting; C3 it
     // contains either current spelling; C4 it contains an unknown/corrupt value;
     // C5 the full bundle is retried. Effects: E1 C1/C2 become their current
     // names; E2 C3/C4 remain byte-for-byte values; E3 v10 is recorded once and
     // retry is a no-op. Decision table: R1=C1->E1, R2=C2->E1, R3=C3|C4->E2,
     // R4=C5->E3. Exact-match updates avoid turning migration into a decoder.
-    let connection = Connection::open_in_memory().unwrap();
-    let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
+    let connection = memory_sqlite().await;
+    let runner = SqliteMigrationRunner::with_prefix(connection.clone(), NS).unwrap();
     let full = commit_bundle().unwrap();
     let full = awaken_scoped_migration::MigrationBundle::new(
         COMMIT_BUNDLE_ID,
@@ -256,23 +299,25 @@ fn sqlite_v10_canonicalizes_only_historical_audit_kind_values() {
         full.migrations()[..9].to_vec(),
     )
     .unwrap();
-    runner.run_bundle(&connection, &v9).unwrap();
+    runner.run_bundle(&v9).await.unwrap();
     for (sequence, kind) in [
-        (1, "\"RunPhaseChanged\""),
+        (1_i64, "\"RunPhaseChanged\""),
         (2, "\"RunWaiting\""),
         (3, "\"RunStateChanged\""),
         (4, "\"RunAwaiting\""),
         (5, "\"UnknownHistoricalValue\""),
     ] {
-        connection
-            .execute(
-                "INSERT INTO runtime_event (sequence, run_id, kind, payload) VALUES (?1, 'run', ?2, 'null')",
-                rusqlite::params![sequence, kind],
-            )
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO runtime_event (sequence, run_id, kind, payload) VALUES (?1, 'run', ?2, 'null')",
+        )
+        .bind(sequence)
+        .bind(kind)
+        .execute(&connection)
+        .await
+        .unwrap();
     }
 
-    let applied = runner.run_bundle(&connection, &full).unwrap();
+    let applied = runner.run_bundle(&full).await.unwrap();
     assert_eq!(
         applied
             .iter()
@@ -281,13 +326,9 @@ fn sqlite_v10_canonicalizes_only_historical_audit_kind_values() {
         [10],
         "R1/R2/R3"
     );
-    let mut statement = connection
-        .prepare("SELECT kind FROM runtime_event ORDER BY sequence")
-        .unwrap();
-    let kinds = statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
+    let kinds: Vec<String> = sqlx::query_scalar("SELECT kind FROM runtime_event ORDER BY sequence")
+        .fetch_all(&connection)
+        .await
         .unwrap();
     assert_eq!(
         kinds,
@@ -300,21 +341,18 @@ fn sqlite_v10_canonicalizes_only_historical_audit_kind_values() {
         ],
         "R1/R2/E1 and R3/E2"
     );
-    assert!(
-        runner.run_bundle(&connection, &full).unwrap().is_empty(),
-        "R4/E3"
-    );
+    assert!(runner.run_bundle(&full).await.unwrap().is_empty(), "R4/E3");
 }
 
-#[test]
-fn sqlite_v10_rolls_back_both_updates_and_its_ledger_row() {
+#[tokio::test]
+async fn sqlite_v10_rolls_back_both_updates_and_its_ledger_row() {
     // Causes: C1 v9 contains both historical values; C2 the second UPDATE is
     // forced to fail; C3 the failure is removed and startup retries. Effects:
     // E1 neither the first UPDATE nor v10's ledger row survives C2; E2 C3 applies
     // both updates once. Decision table: R1=C1+C2->E1; R2=C1+C3->E2. This pins
     // the two-statement data upgrade to the existing runner transaction.
-    let connection = Connection::open_in_memory().unwrap();
-    let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
+    let connection = memory_sqlite().await;
+    let runner = SqliteMigrationRunner::with_prefix(connection.clone(), NS).unwrap();
     let full = commit_bundle().unwrap();
     let full = awaken_scoped_migration::MigrationBundle::new(
         COMMIT_BUNDLE_ID,
@@ -326,77 +364,71 @@ fn sqlite_v10_rolls_back_both_updates_and_its_ledger_row() {
         full.migrations()[..9].to_vec(),
     )
     .unwrap();
-    runner.run_bundle(&connection, &v9).unwrap();
-    connection
-        .execute(
-            "INSERT INTO runtime_event (sequence, run_id, kind, payload) VALUES (1, 'run', '\"RunPhaseChanged\"', 'null'), (2, 'run', '\"RunWaiting\"', 'null')",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute_batch(
-            "CREATE TRIGGER reject_waiting_upgrade BEFORE UPDATE ON runtime_event \
-             WHEN OLD.kind = '\"RunWaiting\"' BEGIN SELECT RAISE(ABORT, 'injected v10 failure'); END;",
-        )
-        .unwrap();
+    runner.run_bundle(&v9).await.unwrap();
+    sqlx::query(
+        "INSERT INTO runtime_event (sequence, run_id, kind, payload) VALUES (1, 'run', '\"RunPhaseChanged\"', 'null'), (2, 'run', '\"RunWaiting\"', 'null')",
+    )
+    .execute(&connection)
+    .await
+    .unwrap();
+    sqlx::raw_sql(
+        "CREATE TRIGGER reject_waiting_upgrade BEFORE UPDATE ON runtime_event \
+         WHEN OLD.kind = '\"RunWaiting\"' BEGIN SELECT RAISE(ABORT, 'injected v10 failure'); END;",
+    )
+    .execute(&connection)
+    .await
+    .unwrap();
 
-    assert!(runner.run_bundle(&connection, &full).is_err(), "R1");
-    let kinds: String = connection
-        .query_row(
-            "SELECT group_concat(kind, ',') FROM runtime_event ORDER BY sequence",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    assert!(runner.run_bundle(&full).await.is_err(), "R1");
+    let kinds: String =
+        sqlx::query_scalar("SELECT group_concat(kind, ',') FROM runtime_event ORDER BY sequence")
+            .fetch_one(&connection)
+            .await
+            .unwrap();
     assert_eq!(kinds, "\"RunPhaseChanged\",\"RunWaiting\"", "R1/E1");
-    let v10_rows: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM runtime_schema_migrations WHERE bundle_id=?1 AND version=10",
-            [COMMIT_BUNDLE_ID],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let v10_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM runtime_schema_migrations WHERE bundle_id=?1 AND version=10",
+    )
+    .bind(COMMIT_BUNDLE_ID)
+    .fetch_one(&connection)
+    .await
+    .unwrap();
     assert_eq!(v10_rows, 0, "R1/E1");
 
-    connection
-        .execute("DROP TRIGGER reject_waiting_upgrade", [])
+    sqlx::query("DROP TRIGGER reject_waiting_upgrade")
+        .execute(&connection)
+        .await
         .unwrap();
-    assert_eq!(
-        runner.run_bundle(&connection, &full).unwrap().len(),
-        1,
-        "R2/E2"
-    );
-    let kinds: String = connection
-        .query_row(
-            "SELECT group_concat(kind, ',') FROM runtime_event ORDER BY sequence",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    assert_eq!(runner.run_bundle(&full).await.unwrap().len(), 1, "R2/E2");
+    let kinds: String =
+        sqlx::query_scalar("SELECT group_concat(kind, ',') FROM runtime_event ORDER BY sequence")
+            .fetch_one(&connection)
+            .await
+            .unwrap();
     assert_eq!(kinds, "\"RunStateChanged\",\"RunAwaiting\"", "R2/E2");
 }
 
-#[test]
-fn sqlite_failed_migration_rolls_back_schema_and_ledger() -> Result<(), Box<dyn std::error::Error>>
-{
+#[tokio::test]
+async fn sqlite_failed_migration_rolls_back_schema_and_ledger()
+-> Result<(), Box<dyn std::error::Error>> {
     // Failure-atomicity decision table: C1=a bundle contains an earlier valid
     // DDL statement; C2=a later statement fails; C3=startup retries with a
     // corrected declaration. R1(C1+C2)->neither user schema nor ledger commits;
     // R2(C3)->the complete bundle applies from version one. This validates the
     // product runner's BEGIN IMMEDIATE guard and rollback as one boundary.
-    let connection = Connection::open_in_memory()?;
-    let runner = SqliteMigrationRunner::with_prefix("failure_atomicity")?;
+    let connection = memory_sqlite().await;
+    let runner = SqliteMigrationRunner::with_prefix(connection.clone(), "failure_atomicity")?;
     let broken = failure_atomicity_bundle("THIS IS NOT SQL")?;
-    assert!(runner.run_bundle(&connection, &broken).is_err());
-    let table_count: i64 = connection.query_row(
+    assert!(runner.run_bundle(&broken).await.is_err());
+    let table_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('failure_atomicity_value', 'failure_atomicity_schema_migrations', 'failure_atomicity_schema_migrations_meta')",
-        [],
-        |row| row.get(0),
-    )?;
+    )
+    .fetch_one(&connection)
+    .await?;
     assert_eq!(table_count, 0, "R1: failed migration leaked durable state");
 
     let corrected = failure_atomicity_bundle("ALTER TABLE {prefix}_value ADD COLUMN value TEXT")?;
-    let applied = runner.run_bundle(&connection, &corrected)?;
+    let applied = runner.run_bundle(&corrected).await?;
     assert_eq!(
         applied
             .iter()
@@ -755,8 +787,8 @@ async fn bundle_applies_on_real_postgres() {
     pool.close().await;
 }
 
-#[test]
-fn sqlite_v11_indexes_run_predecessors_without_rewriting_history() {
+#[tokio::test]
+async fn sqlite_v11_indexes_run_predecessors_without_rewriting_history() {
     // Cause/effect graph: C1 a populated v10 store interleaves repeated Run ids;
     // C2 predecessor reads use Run equality + an exclusive sequence bound;
     // C3 v11 upgrades the store; C4 startup repeats. R1=C1+C2 before/after C3
@@ -765,8 +797,8 @@ fn sqlite_v11_indexes_run_predecessors_without_rewriting_history() {
     // R3=C4 -> no migration and one index. Fresh/all-prefix/concurrent-start
     // cases are owned by the existing bundle migration tables above. No elapsed
     // time assertion: host load is not a deterministic query-plan oracle.
-    let connection = Connection::open_in_memory().unwrap();
-    let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
+    let connection = memory_sqlite().await;
+    let runner = SqliteMigrationRunner::with_prefix(connection.clone(), NS).unwrap();
     let current = commit_bundle().unwrap();
     let full = awaken_scoped_migration::MigrationBundle::new(
         COMMIT_BUNDLE_ID,
@@ -778,44 +810,36 @@ fn sqlite_v11_indexes_run_predecessors_without_rewriting_history() {
         full.migrations()[..10].to_vec(),
     )
     .unwrap();
-    runner.run_bundle(&connection, &previous).unwrap();
-    for sequence in 1..=1000 {
-        connection.execute(
+    runner.run_bundle(&previous).await.unwrap();
+    for sequence in 1..=1000_i64 {
+        sqlx::query(
             "INSERT INTO runtime_event (sequence, run_id, kind, payload) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![sequence, format!("run-{}", sequence % 100), "\"RunStateChanged\"", format!("{{\"sequence\":{sequence}}}")],
-        ).unwrap();
+        )
+        .bind(sequence)
+        .bind(format!("run-{}", sequence % 100))
+        .bind("\"RunStateChanged\"")
+        .bind(format!("{{\"sequence\":{sequence}}}"))
+        .execute(&connection)
+        .await
+        .unwrap();
     }
-    let read = || {
-        connection
-            .prepare("SELECT sequence, run_id, kind, payload FROM runtime_event ORDER BY sequence")
-            .unwrap()
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            })
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
+    let read = || async {
+        sqlx::query_as::<_, (i64, String, String, String)>(
+            "SELECT sequence, run_id, kind, payload FROM runtime_event ORDER BY sequence",
+        )
+        .fetch_all(&connection)
+        .await
+        .unwrap()
     };
-    let before = read();
-    let delta = runner.run_bundle(&connection, &full).unwrap();
+    let before = read().await;
+    let delta = runner.run_bundle(&full).await.unwrap();
     assert_eq!(
         delta.iter().map(|row| row.version).collect::<Vec<_>>(),
         [11],
         "R2"
     );
-    assert_eq!(read(), before, "R2 retains every stored byte");
-    let columns = connection
-        .prepare("PRAGMA index_info(runtime_event_run_sequence)")
-        .unwrap()
-        .query_map([], |row| row.get::<_, String>(2))
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+    assert_eq!(read().await, before, "R2 retains every stored byte");
+    let columns = index_columns_sqlite(&connection, "runtime_event_run_sequence").await;
     assert_eq!(
         columns,
         ["run_id", "sequence"],
@@ -823,33 +847,27 @@ fn sqlite_v11_indexes_run_predecessors_without_rewriting_history() {
     );
     let query = "SELECT sequence FROM runtime_event WHERE run_id=?1 AND sequence<?2 AND kind='\"RunStateChanged\"' ORDER BY sequence DESC LIMIT 1";
     for (run, bound, expected) in [
-        ("run-7", 508, Some(507)),
+        ("run-7", 508_i64, Some(507_i64)),
         ("run-7", 507, Some(407)),
         ("run-7", 7, None),
         ("missing", 1001, None),
     ] {
-        use rusqlite::OptionalExtension;
-        let actual: Option<i64> = connection
-            .query_row(query, rusqlite::params![run, bound], |row| row.get(0))
-            .optional()
+        let actual: Option<i64> = sqlx::query_scalar(query)
+            .bind(run)
+            .bind(bound)
+            .fetch_optional(&connection)
+            .await
             .unwrap();
         assert_eq!(actual, expected, "R1 run={run} bound={bound}");
     }
-    let plan = connection
-        .prepare(&format!("EXPLAIN QUERY PLAN {query}"))
-        .unwrap()
-        .query_map(rusqlite::params!["run-7", 508], |row| {
-            row.get::<_, String>(3)
-        })
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap()
-        .join("\n");
+    let explain = format!("EXPLAIN QUERY PLAN {query}");
+    let plan = query_plan_sqlite(
+        &connection,
+        sqlx::query(&explain).bind("run-7").bind(508_i64),
+    )
+    .await;
     assert!(plan.contains("runtime_event_run_sequence"), "R2 {plan}");
-    assert!(
-        runner.run_bundle(&connection, &full).unwrap().is_empty(),
-        "R3"
-    );
+    assert!(runner.run_bundle(&full).await.unwrap().is_empty(), "R3");
 }
 
 #[tokio::test]
@@ -954,8 +972,8 @@ const RECOVERY_STORED_ROWS: [&str; 3] = [
     "SELECT id, thread_id, CAST(commit_sequence AS TEXT), CAST(data AS TEXT) FROM runtime_state_command ORDER BY id",
 ];
 
-#[test]
-fn sqlite_v12_indexes_recovery_ranges_atomically_without_changing_rows() {
+#[tokio::test]
+async fn sqlite_v12_indexes_recovery_ranges_atomically_without_changing_rows() {
     // C1 populated v11 with interleaved Threads/Runs; C2 a conflicting name on
     // the SECOND new index; C3 migration retry; C4 repeated startup; C5 another
     // prefix. R1=C1+C2 => no v12 ledger row or partially installed first index,
@@ -963,138 +981,124 @@ fn sqlite_v12_indexes_recovery_ranges_atomically_without_changing_rows() {
     // all four equality/range index definitions. R3=C4 => no migration/duplicate.
     // R4=C5 => isolated index names. Query-plan checks use real normal planner
     // decisions; do not disable sequential scans or assert noisy wall time.
-    let conn = Connection::open_in_memory().unwrap();
-    let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
+    let conn = memory_sqlite().await;
+    let runner = SqliteMigrationRunner::with_prefix(conn.clone(), NS).unwrap();
     let full = commit_bundle().unwrap();
     let previous = awaken_scoped_migration::MigrationBundle::new(
         COMMIT_BUNDLE_ID,
         full.migrations()[..11].to_vec(),
     )
     .unwrap();
-    runner.run_bundle(&conn, &previous).unwrap();
+    runner.run_bundle(&previous).await.unwrap();
     // Physical access-path data; typed Runtime semantics remain tested by the
     // existing store conformance suites against the same migrated schema.
     for n in 1..=10000_i64 {
-        conn.execute(
+        sqlx::query(
             "INSERT INTO runtime_commit(sequence,thread_id,run_id,phase) VALUES(?1,?2,?3,?4)",
-            rusqlite::params![
-                n,
-                format!("thread-{}", n % 100),
-                format!("run-{}", n % 1000),
-                "\"Running\""
-            ],
         )
+        .bind(n)
+        .bind(format!("thread-{}", n % 100))
+        .bind(format!("run-{}", n % 1000))
+        .bind("\"Running\"")
+        .execute(&conn)
+        .await
         .unwrap();
         for table in ["message", "state_command"] {
-            conn.execute(
-                &format!(
-                    "INSERT INTO runtime_{table}(commit_sequence,thread_id,data) VALUES(?1,?2,?3)"
-                ),
-                rusqlite::params![
-                    n,
-                    format!("thread-{}", n % 100),
-                    format!("{{\"sequence\":{n}}}")
-                ],
-            )
+            sqlx::query(&format!(
+                "INSERT INTO runtime_{table}(commit_sequence,thread_id,data) VALUES(?1,?2,?3)"
+            ))
+            .bind(n)
+            .bind(format!("thread-{}", n % 100))
+            .bind(format!("{{\"sequence\":{n}}}"))
+            .execute(&conn)
+            .await
             .unwrap();
         }
     }
-    let stored = || {
-        RECOVERY_STORED_ROWS
-            .iter()
-            .map(|query| {
-                conn.prepare(query)
-                    .unwrap()
-                    .query_map([], |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                        ))
-                    })
-                    .unwrap()
-                    .collect::<Result<Vec<_>, _>>()
-                    .unwrap()
-            })
-            .collect::<Vec<_>>()
+    let stored = || async {
+        let mut rows = Vec::new();
+        for query in RECOVERY_STORED_ROWS {
+            rows.push(
+                sqlx::query_as::<_, (i64, String, String, String)>(query)
+                    .fetch_all(&conn)
+                    .await
+                    .unwrap(),
+            );
+        }
+        rows
     };
-    let read = |query: &str| {
-        conn.prepare(query)
-            .unwrap()
-            .query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
+    let read = |query: &'static str| {
+        let conn = conn.clone();
+        async move {
+            sqlx::query_as::<_, (i64, String)>(query)
+                .fetch_all(&conn)
+                .await
+                .unwrap()
+        }
     };
-    let before = stored();
-    let results = RECOVERY_RANGE_READS
-        .iter()
-        .map(|(_, q)| read(q))
-        .collect::<Vec<_>>();
-    conn.execute_batch("CREATE INDEX runtime_commit_run_sequence ON runtime_commit(sequence)")
+    let before = stored().await;
+    let mut results = Vec::new();
+    for (_, query) in RECOVERY_RANGE_READS {
+        results.push(read(query).await);
+    }
+    sqlx::query("CREATE INDEX runtime_commit_run_sequence ON runtime_commit(sequence)")
+        .execute(&conn)
+        .await
         .unwrap();
     assert!(
-        runner.run_bundle(&conn, &full).is_err(),
+        runner.run_bundle(&full).await.is_err(),
         "R1 collision must fail"
     );
-    assert_eq!(stored(), before);
-    let partial: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE name='runtime_commit_thread_sequence'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+    assert_eq!(stored().await, before);
+    let partial: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE name='runtime_commit_thread_sequence'",
+    )
+    .fetch_one(&conn)
+    .await
+    .unwrap();
     assert_eq!(partial, 0, "R1 first index rolled back");
-    let ledger: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM runtime_schema_migrations WHERE version=12 AND bundle_id=?1",
-            [COMMIT_BUNDLE_ID],
-            |r| r.get(0),
-        )
-        .unwrap();
+    let ledger: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM runtime_schema_migrations WHERE version=12 AND bundle_id=?1",
+    )
+    .bind(COMMIT_BUNDLE_ID)
+    .fetch_one(&conn)
+    .await
+    .unwrap();
     assert_eq!(ledger, 0, "R1 no false version receipt");
-    conn.execute_batch("DROP INDEX runtime_commit_run_sequence")
+    sqlx::query("DROP INDEX runtime_commit_run_sequence")
+        .execute(&conn)
+        .await
         .unwrap();
     assert_eq!(
         runner
-            .run_bundle(&conn, &full)
+            .run_bundle(&full)
+            .await
             .unwrap()
             .iter()
             .map(|m| m.version)
             .collect::<Vec<_>>(),
         [12]
     );
-    assert_eq!(stored(), before, "R2 unchanged facts/times/coordinates");
-    for ((name, query), expected) in RECOVERY_RANGE_READS.iter().zip(results) {
-        assert_eq!(read(query), expected, "R2 {name}");
-        let plan = conn
-            .prepare(&format!("EXPLAIN QUERY PLAN {query}"))
-            .unwrap()
-            .query_map([], |row| row.get::<_, String>(3))
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-            .join("\n");
+    assert_eq!(
+        stored().await,
+        before,
+        "R2 unchanged facts/times/coordinates"
+    );
+    for ((name, query), expected) in RECOVERY_RANGE_READS.into_iter().zip(results) {
+        assert_eq!(read(query).await, expected, "R2 {name}");
+        let explain = format!("EXPLAIN QUERY PLAN {query}");
+        let plan = query_plan_sqlite(&conn, sqlx::query(&explain)).await;
         assert!(plan.contains(&format!("runtime_{name}")), "R2 {plan}");
     }
-    assert!(runner.run_bundle(&conn, &full).unwrap().is_empty(), "R3");
-    SqliteMigrationRunner::with_prefix("peer")
+    assert!(runner.run_bundle(&full).await.unwrap().is_empty(), "R3");
+    SqliteMigrationRunner::with_prefix(conn.clone(), "peer")
         .unwrap()
-        .run_bundle(&conn, &full)
+        .run_bundle(&full)
+        .await
         .unwrap();
     for prefix in ["runtime", "peer"] {
         for (name, expected) in RECOVERY_INDEX_COLUMNS {
-            let columns = conn
-                .prepare(&format!("PRAGMA index_info({prefix}_{name})"))
-                .unwrap()
-                .query_map([], |row| row.get::<_, String>(2))
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap();
+            let columns = index_columns_sqlite(&conn, &format!("{prefix}_{name}")).await;
             assert_eq!(columns, expected, "R2/R4 {prefix}_{name}");
         }
     }

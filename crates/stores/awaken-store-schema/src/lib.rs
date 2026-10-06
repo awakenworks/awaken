@@ -10,7 +10,7 @@
 //! events, the run-record cache (a projection of the latest fact, G32), and
 //! active awaiting tickets. The schema is one portable [`MigrationBundle`] using
 //! the migrator's dialect-neutral tokens, so the *same* bundle drives both the
-//! Postgres (`sqlx`) and SQLite (`rusqlite`) runners. This crate names no SQL
+//! Postgres and SQLite runners (both on `sqlx`). This crate names no SQL
 //! driver — it owns the schema, the backends own the runner.
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};

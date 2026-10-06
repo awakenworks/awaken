@@ -67,8 +67,6 @@ awaken-agent-contract = { workspace = true }
 awaken-runtime-contract = { workspace = true }
 awaken-worker-contract.workspace = true
 awaken-provider-genai.workspace = true
-# The embedded IAM token/binding rows persist under typed <data_dir>/iam.sqlite.
-rusqlite = { version = "0.32", features = ["bundled"] }
 async-trait.workspace = true
 awaken-time.workspace = true
 awaken-lease-contract.workspace = true

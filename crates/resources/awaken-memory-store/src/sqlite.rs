@@ -8,8 +8,8 @@
 //! SQLite [`MemoryRepository`] over the crate's `memory_store` migration scope.
 
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-use awaken_sqlite_runtime::EmbeddedPool;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use awaken_store_runtime::StoredU64;
 use awaken_time::WallClock;
 use sqlx::SqliteConnection;
@@ -56,10 +56,10 @@ async fn migrate_pool(pool: &EmbeddedPool) -> Result<(), StoreError> {
         converged_memory_store_bundle().map_err(|error| StoreError::Migrate(error.to_string()))?;
     let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
         .map_err(|error| StoreError::Migrate(error.to_string()))?;
-    awaken_sqlite_runtime::held(runner.run_bundle(&published))
+    awaken_sqlite_pool::held(runner.run_bundle(&published))
         .await
         .map_err(|error| StoreError::Migrate(error.to_string()))?;
-    awaken_sqlite_runtime::held(runner.run_bundle(&converged))
+    awaken_sqlite_pool::held(runner.run_bundle(&converged))
         .await
         .map_err(|error| StoreError::Migrate(error.to_string()))?;
     Ok(())
@@ -100,7 +100,7 @@ fn next_domain_version(value: i64) -> Result<u64, MemErr> {
 async fn with_conn_mem<T, F, Fut>(pool: &EmbeddedPool, operation: F) -> Result<T, MemErr>
 where
     T: Send + 'static,
-    F: FnOnce(awaken_sqlite_runtime::EmbeddedConnection) -> Fut,
+    F: FnOnce(awaken_sqlite_pool::EmbeddedConnection) -> Fut,
     Fut: Future<Output = Result<T, MemErr>> + Send + 'static,
 {
     let connection = pool.acquire().await.map_err(mem_err)?;

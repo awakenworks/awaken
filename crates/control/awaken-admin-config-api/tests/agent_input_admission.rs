@@ -31,7 +31,7 @@ async fn sqlite_agent_input_rollback_replay_and_corrupt_key_readback() {
     let store = awaken_admin_config_api::SqliteAdminStore::open(path.to_str().unwrap())
         .await
         .unwrap();
-    let control = awaken_sqlite_runtime::EmbeddedSqlite::file(&path)
+    let control = awaken_sqlite_pool::EmbeddedSqlite::file(&path)
         .open()
         .await
         .unwrap();

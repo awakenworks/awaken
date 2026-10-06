@@ -34,7 +34,7 @@ fn storage(error: impl std::fmt::Display) -> WorkQueueError {
     WorkQueueError::Storage(error.to_string().into())
 }
 
-use awaken_sqlite_runtime::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedPool;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 

@@ -450,7 +450,7 @@ mod tests {
     #[tokio::test]
     async fn scoped_operation_index_upgrades_both_histories_without_rewriting_facts() {
         use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-        use awaken_sqlite_runtime::EmbeddedSqlite;
+        use awaken_sqlite_pool::EmbeddedSqlite;
 
         // Migration decision table I1-I3. Causes: C1 compact/expanded published
         // history; C2 converged V6 already applied; C3 one original operation;
@@ -609,7 +609,7 @@ mod tests {
     async fn expanded_sqlite_history_reaches_the_converged_schema_and_reopens() {
         use awaken_scoped_migration::MigrationBundle;
         use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-        use awaken_sqlite_runtime::EmbeddedSqlite;
+        use awaken_sqlite_pool::EmbeddedSqlite;
 
         /* Real-storage cause/effect table:
          * E1 exact expanded V1..V24 ledger -> append V25..V29 and convergence;
@@ -721,7 +721,7 @@ mod tests {
     #[tokio::test]
     async fn retired_epoch_upgrade_preserves_occupied_history_and_retires_ambiguous_empty_slots() {
         use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-        use awaken_sqlite_runtime::EmbeddedSqlite;
+        use awaken_sqlite_pool::EmbeddedSqlite;
         // M1 compact/expanded history + empty leased row => retire its epoch,
         // never infer stop. M2 occupied predecessor => preserve its exact pair
         // and allow its later ACK. M3 reopen => no repeat migration or reset.
@@ -767,7 +767,7 @@ mod tests {
     #[tokio::test]
     async fn physical_thread_constraint_preserves_history_and_rejects_conflicting_upgrade() {
         use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-        use awaken_sqlite_runtime::EmbeddedSqlite;
+        use awaken_sqlite_pool::EmbeddedSqlite;
         // Causes: C1 compact/expanded history; C2 clean/duplicate occupied
         // Thread at V2; C3 empty/occupied peer, same/different Thread at V3.
         // Effects: M1 clean history upgrades and reopens; M2 corrupt history
@@ -876,7 +876,7 @@ mod tests {
     async fn v22_normalizes_legacy_negative_millis_during_forward_migration() {
         use awaken_scoped_migration::MigrationBundle;
         use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-        use awaken_sqlite_runtime::EmbeddedSqlite;
+        use awaken_sqlite_pool::EmbeddedSqlite;
 
         // CE-TM10 decision rules:
         // R1 published V1..V21 + non-negative millis -> V22 preserves the value;
@@ -959,7 +959,7 @@ mod tests {
     #[tokio::test]
     async fn v23_rejects_negative_authority_on_insert_and_update() {
         use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-        use awaken_sqlite_runtime::EmbeddedSqlite;
+        use awaken_sqlite_pool::EmbeddedSqlite;
 
         let conn = EmbeddedSqlite::memory().open().await.expect("open sqlite");
         let full = dispatch_bundle().expect("bundle builds");
@@ -1020,7 +1020,7 @@ mod tests {
     async fn v23_fails_closed_and_rolls_back_for_corrupt_existing_rows() {
         use awaken_scoped_migration::MigrationBundle;
         use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-        use awaken_sqlite_runtime::EmbeddedSqlite;
+        use awaken_sqlite_pool::EmbeddedSqlite;
 
         // Test design. Causes: C1 a pre-V23 authority row has a negative epoch;
         // C2 the V23 constraint migration runs. Effects: E1 the migration fails;

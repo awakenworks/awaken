@@ -2136,7 +2136,7 @@ async fn sqlite_recovery_scans_reject_mismatched_durable_keys_before_secret_io()
             .with_material_ready()
             .unwrap();
 
-    let connection = awaken_sqlite_runtime::EmbeddedSqlite::file(path)
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(path)
         .open()
         .await
         .unwrap();
@@ -2189,7 +2189,7 @@ async fn sqlite_legacy_mutation_recovery_conforms() {
     let repo = SqliteCredentialRepo::open(path.to_str().unwrap())
         .await
         .unwrap();
-    let connection = awaken_sqlite_runtime::EmbeddedSqlite::file(&path)
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(&path)
         .open()
         .await
         .unwrap();

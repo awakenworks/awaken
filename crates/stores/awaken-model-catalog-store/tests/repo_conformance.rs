@@ -850,7 +850,7 @@ mod sqlite {
         SqliteCatalogRepo::open(path).await.unwrap();
         // Inject the dangling offering directly, bypassing the fail-closed write path.
         {
-            let raw = awaken_sqlite_runtime::EmbeddedSqlite::file(path)
+            let raw = awaken_sqlite_pool::EmbeddedSqlite::file(path)
                 .open()
                 .await
                 .unwrap();
@@ -889,7 +889,7 @@ mod sqlite {
         let path = path.to_str().unwrap();
         SqliteCatalogRepo::open(path).await.unwrap();
         {
-            let raw = awaken_sqlite_runtime::EmbeddedSqlite::file(path)
+            let raw = awaken_sqlite_pool::EmbeddedSqlite::file(path)
                 .open()
                 .await
                 .unwrap();

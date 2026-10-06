@@ -25,8 +25,8 @@
 //! (features `sealed-aead` + `sqlite`), which stores only `nonce ‖ ciphertext`.
 
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-use awaken_sqlite_runtime::EmbeddedPool;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use sqlx::SqliteConnection;
 
 use crate::schema::credential_bundle;
@@ -64,7 +64,7 @@ pub enum StoreError {
 /// half is each store's `over`.
 async fn run_migrations(pool: &EmbeddedPool) -> Result<(), StoreError> {
     let bundle = credential_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-    awaken_sqlite_runtime::held(
+    awaken_sqlite_pool::held(
         SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
             .map_err(|err| StoreError::Migrate(err.to_string()))?
             .run_bundle(&bundle),
@@ -1063,7 +1063,7 @@ mod tests {
     async fn sibling_writer(
         path: &str,
         setup: Option<&'static str>,
-    ) -> (EmbeddedPool, awaken_sqlite_runtime::EmbeddedConnection) {
+    ) -> (EmbeddedPool, awaken_sqlite_pool::EmbeddedConnection) {
         let pool = EmbeddedSqlite::file(path).open().await.unwrap();
         let mut connection = pool.acquire().await.unwrap();
         sqlx::query("BEGIN IMMEDIATE")
@@ -1084,7 +1084,7 @@ mod tests {
     /// Commit the sibling writer after a short hold, concurrently with the
     /// store operation that must wait for it.
     fn release_after_short_hold(
-        mut connection: awaken_sqlite_runtime::EmbeddedConnection,
+        mut connection: awaken_sqlite_pool::EmbeddedConnection,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             // awaken-wait: R2/R3/R5 hold the sibling write lock for a short, fixed span so the store must busy-wait for it.

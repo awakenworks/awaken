@@ -1,12 +1,12 @@
 // @formal entrypoint work.persisted_epoch_is_exact_nonnegative_and_nonwrapping
 // @formal evidence config.generation_is_monotonic
 // @formal evidence config.stale_writer_never_applies
-//! Canonical synchronous-port to asynchronous-store runtime bridge.
+//! Canonical synchronous-caller to asynchronous-store runtime bridge.
 //!
-//! A few durable adapters implement pre-existing synchronous repository ports
-//! with async database clients. This crate owns the one scheduling policy for
-//! that boundary so adapters cannot independently introduce runtime starvation
-//! or nested-`block_on` panics.
+//! A synchronous caller that must drive an async store to completion (the
+//! Coordinator's runtime authority, ADR-0087 item 4) uses this crate's one
+//! scheduling policy for that boundary, so it cannot independently introduce
+//! runtime starvation or nested-`block_on` panics.
 
 use std::future::Future;
 
@@ -109,23 +109,6 @@ where
             .join()
             .expect("ambient store runtime bridge thread panicked"),
     }
-}
-
-/// Drive a store future on a store-owned runtime from any caller runtime.
-///
-/// The owned runtime has independent workers and I/O drivers, so a fresh thread
-/// may synchronously enter it without occupying or nesting inside the caller's
-/// runtime. `make` constructs the future on that thread and need not be `Send`.
-pub fn block_on_owned_runtime<T, F, Fut>(handle: &Handle, make: F) -> T
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: Future<Output = T>,
-    T: Send + 'static,
-{
-    let handle = handle.clone();
-    std::thread::spawn(move || handle.block_on(make()))
-        .join()
-        .expect("owned store runtime bridge thread panicked")
 }
 
 /// Shared PostgreSQL checkout policy. Compositions select capacity; every
@@ -278,29 +261,5 @@ mod tests {
             })
         }));
         assert!(result.is_err(), "D3");
-    }
-
-    #[test]
-    fn owned_bridge_is_independent_of_a_current_thread_caller() {
-        // Owned-runtime decision rule: a distinct runtime with an active worker
-        // always uses the helper-thread path, regardless of the caller flavor.
-        // This preserves E1 completion without treating it as ambient capacity.
-        let owned = Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .expect("owned runtime");
-        let caller = Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("caller runtime");
-        let target = owned.handle().clone();
-        let scheduled = target.spawn(async { 42_u8 });
-        let value = caller.block_on(async move {
-            block_on_owned_runtime(&target, move || async move {
-                scheduled.await.expect("owned store future")
-            })
-        });
-        assert_eq!(value, 42);
     }
 }

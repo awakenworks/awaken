@@ -2,8 +2,8 @@
 //! SQLite [`SkillStore`] over the crate's `skill_store` migration scope.
 
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-use awaken_sqlite_runtime::EmbeddedPool;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use sqlx::SqliteConnection;
 
 use crate::schema::{BUNDLE_ID, converged_skill_store_bundle, selected_skill_store_bundle};

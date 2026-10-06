@@ -11,8 +11,8 @@
 
 use async_trait::async_trait;
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-use awaken_sqlite_runtime::EmbeddedPool;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqliteConnection};
 
@@ -118,7 +118,7 @@ impl SqliteFileStore {
     /// skip it when the schema is owned externally.
     pub async fn ensure_schema(&self) -> Result<(), FileStoreError> {
         let bundle = file_store_bundle().map_err(e)?;
-        awaken_sqlite_runtime::held(
+        awaken_sqlite_pool::held(
             SqliteMigrationRunner::with_prefix(self.pool.sqlx().clone(), NS)
                 .map_err(e)?
                 .run_bundle(&bundle),

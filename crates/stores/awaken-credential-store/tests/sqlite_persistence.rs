@@ -156,7 +156,7 @@ mod sealed_secrets {
         // Flip one ciphertext byte (past the 12-byte nonce) straight in the
         // database — the AEAD tag must reject the doctored at-rest bytes.
         {
-            let conn = awaken_sqlite_runtime::EmbeddedSqlite::file(path)
+            let conn = awaken_sqlite_pool::EmbeddedSqlite::file(path)
                 .open()
                 .await
                 .unwrap();
@@ -189,7 +189,7 @@ mod sealed_secrets {
         let row = enter(path).await;
         let secret_ref = row.material_ref.unwrap();
 
-        let conn = awaken_sqlite_runtime::EmbeddedSqlite::file(path)
+        let conn = awaken_sqlite_pool::EmbeddedSqlite::file(path)
             .open()
             .await
             .unwrap();

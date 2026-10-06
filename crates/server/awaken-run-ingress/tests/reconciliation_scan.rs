@@ -228,7 +228,7 @@ async fn sqlite_scan_counts_corrupt_payload_and_reaches_healthy_suffix() {
             .await
             .unwrap();
     }
-    let connection = awaken_sqlite_runtime::EmbeddedSqlite::file(path)
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(path)
         .open()
         .await
         .unwrap();

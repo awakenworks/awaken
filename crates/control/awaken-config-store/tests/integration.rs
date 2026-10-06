@@ -33,7 +33,7 @@ use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, L
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 #[path = "support/revision_cas.rs"]

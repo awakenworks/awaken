@@ -17,7 +17,7 @@ loom = []
 test-support = []
 
 [dependencies]
-awaken-sqlite-runtime.workspace = true
+awaken-sqlite-pool.workspace = true
 awaken-worker-contract.workspace = true
 async-trait.workspace = true
 serde.workspace = true

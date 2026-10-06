@@ -16,9 +16,9 @@ use awaken_resource_contract::{
 #[cfg(feature = "sqlite")]
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 #[cfg(feature = "sqlite")]
-use awaken_sqlite_runtime::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedPool;
 #[cfg(feature = "sqlite")]
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedSqlite;
 
 #[cfg(feature = "postgres")]
 mod postgres;
@@ -71,7 +71,7 @@ impl SqliteResourceStore {
     pub async fn ensure_schema(&self) -> Result<(), ResourcePurgeError> {
         let lifecycle =
             schema::resource_reclamation_bundle().map_err(|error| storage(error.to_string()))?;
-        awaken_sqlite_runtime::held(
+        awaken_sqlite_pool::held(
             SqliteMigrationRunner::with_prefix(self.pool.sqlx().clone(), schema::NS)
                 .map_err(|error| storage(error.to_string()))?
                 .run_bundle(&lifecycle),
@@ -80,7 +80,7 @@ impl SqliteResourceStore {
         .map_err(|error| storage(error.to_string()))?;
         let registry =
             schema::resource_registry_bundle().map_err(|error| storage(error.to_string()))?;
-        awaken_sqlite_runtime::held(
+        awaken_sqlite_pool::held(
             SqliteMigrationRunner::with_prefix(self.pool.sqlx().clone(), schema::REGISTRY_NS)
                 .map_err(|error| storage(error.to_string()))?
                 .run_bundle(&registry),

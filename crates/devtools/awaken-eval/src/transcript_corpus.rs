@@ -49,7 +49,7 @@ pub async fn import_codex_goals(
 ) -> io::Result<(JudgeDataset, CodexImportStats)> {
     // The goals database belongs to Codex: open it read-only so importing can
     // never write to it.
-    let pool = awaken_sqlite_runtime::EmbeddedSqlite::read_only(goals_db)
+    let pool = awaken_sqlite_pool::EmbeddedSqlite::read_only(goals_db)
         .open()
         .await
         .map_err(sqlite_error)?;

@@ -8,7 +8,7 @@
 //! rows and unavailable SQLite storage therefore become HTTP 500 responses rather
 //! than panics or false not-found results. The pool is opened under the one
 //! process-wide embedded SQLite policy.
-use awaken_sqlite_runtime::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedPool;
 
 use awaken_config_resolver::{
     AgentInputAdmission, AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError,
@@ -18,7 +18,7 @@ use awaken_config_resolver::{
     plan_agent_input_write, validate_stored_agent_inputs,
 };
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedSqlite;
 
 use crate::schema::{BUNDLE_ID, converged_admin_bundle, selected_admin_bundle};
 
@@ -116,10 +116,10 @@ async fn migrate(pool: &EmbeddedPool) -> Result<(), StoreError> {
         converged_admin_bundle().map_err(|error| StoreError::Migrate(error.to_string()))?;
     let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
         .map_err(|error| StoreError::Migrate(error.to_string()))?;
-    awaken_sqlite_runtime::held(runner.run_bundle(&published))
+    awaken_sqlite_pool::held(runner.run_bundle(&published))
         .await
         .map_err(|error| StoreError::Migrate(error.to_string()))?;
-    awaken_sqlite_runtime::held(runner.run_bundle(&converged))
+    awaken_sqlite_pool::held(runner.run_bundle(&converged))
         .await
         .map_err(|error| StoreError::Migrate(error.to_string()))?;
     Ok(())

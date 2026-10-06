@@ -59,8 +59,8 @@ use awaken_agent_contract::thread::read::recovery::{
     decode_resume_ticket_json_for_owner, project_committed_run_records,
 };
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-use awaken_sqlite_runtime::EmbeddedPool;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use awaken_store_schema::StoredU64;
 use sqlx::SqliteConnection;
 
@@ -199,7 +199,7 @@ impl SqliteCommitCoordinator {
 
     async fn from_pool(pool: EmbeddedPool) -> Result<Self, StoreError> {
         let bundle = commit_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_sqlite_runtime::held(
+        awaken_sqlite_pool::held(
             SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
                 .map_err(|err| StoreError::Migrate(err.to_string()))?
                 .run_bundle(&bundle),

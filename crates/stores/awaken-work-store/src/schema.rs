@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_session_work_contract::{WorkItem, WorkPayload, WorkState, next_heartbeat_receipt};
-use awaken_sqlite_runtime::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedPool;
 use sqlx::postgres::PgPool;
 use sqlx::sqlite::SqliteRow;
 
@@ -204,10 +204,10 @@ pub(super) async fn apply_sqlite_migrations(pool: &EmbeddedPool) -> Result<(), S
     let converged = converged_work_bundle().map_err(|error| error.to_string())?;
     let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
         .map_err(|error| error.to_string())?;
-    awaken_sqlite_runtime::held(runner.run_bundle(&published))
+    awaken_sqlite_pool::held(runner.run_bundle(&published))
         .await
         .map_err(|error| error.to_string())?;
-    awaken_sqlite_runtime::held(runner.run_bundle(&converged))
+    awaken_sqlite_pool::held(runner.run_bundle(&converged))
         .await
         .map(|_| ())
         .map_err(|error| error.to_string())
@@ -496,7 +496,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use awaken_scoped_migration::{Dialect, MigrationBundle, MigrationError, plan};
-    use awaken_sqlite_runtime::EmbeddedSqlite;
+    use awaken_sqlite_pool::EmbeddedSqlite;
 
     use super::*;
 

@@ -190,7 +190,7 @@ async fn sqlite_backfills_legacy_managed_timestamps_from_insert_time() {
     use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
     use backfill::*;
 
-    let pool = awaken_sqlite_runtime::EmbeddedSqlite::memory()
+    let pool = awaken_sqlite_pool::EmbeddedSqlite::memory()
         .open()
         .await
         .unwrap();

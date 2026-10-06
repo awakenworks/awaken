@@ -1,8 +1,8 @@
 // @formal entrypoint worker.incarnation_generation_fences_stale_processes
 use async_trait::async_trait;
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
-use awaken_sqlite_runtime::EmbeddedPool;
-use awaken_sqlite_runtime::EmbeddedSqlite;
+use awaken_sqlite_pool::EmbeddedPool;
+use awaken_sqlite_pool::EmbeddedSqlite;
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
     WorkerIdentity, WorkerObservationSource, WorkerProcessExit, WorkerRegistration,
@@ -53,10 +53,10 @@ impl SqliteWorkerDirectory {
         let converged = converged_registry_bundle().map_err(persist)?;
         let runner =
             SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS).map_err(persist)?;
-        awaken_sqlite_runtime::held(runner.run_bundle(&published))
+        awaken_sqlite_pool::held(runner.run_bundle(&published))
             .await
             .map_err(persist)?;
-        awaken_sqlite_runtime::held(runner.run_bundle(&converged))
+        awaken_sqlite_pool::held(runner.run_bundle(&converged))
             .await
             .map_err(persist)?;
         Ok(Self { pool })

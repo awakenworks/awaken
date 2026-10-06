@@ -317,7 +317,7 @@ mod tests {
         // and this test would fail at R2 or R3.
         let directory = tempfile::tempdir().expect("Registry directory");
         let path = directory.path().join("resources.db");
-        let connection = awaken_sqlite_runtime::EmbeddedSqlite::file(&path)
+        let connection = awaken_sqlite_pool::EmbeddedSqlite::file(&path)
             .open()
             .await
             .expect("open V1 database");

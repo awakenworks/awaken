@@ -213,9 +213,13 @@ mod tests {
                 .unwrap();
             assert_eq!(file.blob_id, other.blob_id);
             let intent_id = format!("purge:File:workspace-a:{}", file.id);
-            let sql = rusqlite::Connection::open(&path).unwrap();
+            let sql = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path))
+                .await
+                .unwrap();
             if let Some(event) = trigger {
-                sql.execute_batch(&format!("CREATE TRIGGER deletion_fault {event} BEGIN SELECT RAISE(ABORT, 'injected deletion failure'); END;")).unwrap();
+                sqlx::raw_sql(&format!("CREATE TRIGGER deletion_fault {event} BEGIN SELECT RAISE(ABORT, 'injected deletion failure'); END;")).execute(&sql).await.unwrap();
             }
             let first = app.delete("workspace-a", &file.id, 7).await;
             if trigger.is_some() {
@@ -264,9 +268,12 @@ mod tests {
                 .unwrap();
             assert_eq!(references.len(), if rule == "D4" { 1 } else { 2 }, "{rule}");
             if trigger.is_some() {
-                sql.execute_batch("DROP TRIGGER deletion_fault").unwrap();
+                sqlx::raw_sql("DROP TRIGGER deletion_fault")
+                    .execute(&sql)
+                    .await
+                    .unwrap();
             }
-            drop(sql);
+            sql.close().await;
             drop(app);
             drop(files);
             drop(lifecycle);
