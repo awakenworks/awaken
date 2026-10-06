@@ -412,3 +412,32 @@ through the existing constructor. Worker loss, closed/expired proof, slot ABA or
 reassignment rejects before persistence. No TTL increase or second renewal task
 is introduced. This closes the real cold-pull failure where remote receipt
 admission correctly rejected the stale pre-create expiry.
+
+## Amendment 2026-10-06: the selection and adoption kernels are designed but not wired
+
+A reader count over the workspace found that several items this ADR names have no
+production caller:
+
+- `select_provider`, `select_provider_with_policy`, `IsolationPolicy`, `OnUnmet` and
+  `PolicySelection` (§5, G-Down) are exported by `awaken-provisioning-contract` and
+  exercised only by that crate's own tests. A process today runs one configured
+  sandbox tier chosen by its composition root, so there is no runtime choice
+  between capable backends to make.
+- `reconcile_adoption`, `LeaseLiveness`, `LeaseGrant` and the other pure functions in
+  `awaken-provisioning-contract::lease` (§4, Tension B, G-Pure) have no production
+  caller. The only item of that module used in production is `LeaseTimingPolicy`, by
+  `awaken-sandbox-container`.
+
+Decision:
+
+1. These items are retained, together with their tests. They are the agreed design
+   for the two decisions they name, not dead code, and a reader-count cleanup must
+   not delete them.
+2. They are wired when the decision they own first exists in production:
+   `select_provider_with_policy` becomes the only selection path once a Session can
+   be placed on more than one capable backend (for example mixed-tier node pools or
+   `DegradeWithConsent`); `reconcile_adoption` becomes the cross-restart disposal
+   decision once that decision is shared rather than owned by each provider.
+   G-Down and G-Pure apply from that point.
+3. Until then, work that slims `awaken-provisioning-contract` excludes these items.
+
