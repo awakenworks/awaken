@@ -280,34 +280,6 @@ impl SharedHost {
         local_memory_extraction_repository(storage_dir)
     }
 
-    /// Test-support replacement of a volatile fixture's Resource lifecycle port.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn with_resource_reclamation(
-        mut self,
-        repository: Arc<dyn awaken_resource_contract::ResourceReclamationRepository>,
-    ) -> Self {
-        #[cfg(test)]
-        {
-            let application = Arc::new(awaken_resource_application::FileApplication::new(
-                self.resources.file_store.clone(),
-                self.resources.file_catalog.clone(),
-                repository.clone(),
-                self.clock.clone(),
-            ))
-                as Arc<dyn awaken_resource_contract::FileApplicationService>;
-            self.resources.file_content_source = Arc::new(
-                awaken_resource_application::ApplicationFileContentSource::new(application.clone()),
-            );
-            self.resources.artifact_publisher = Arc::new(
-                awaken_resource_application::ApplicationArtifactPublisher::new(application.clone()),
-            );
-            self.resources.file_application = Some(application);
-        }
-        self.resources.resource_reclamation = Some(repository);
-        self
-    }
-
     /// Install the one Resources-owned File command application. Runtime stores
     /// only this inward port and cannot construct a parallel implementation.
     #[must_use]
@@ -369,18 +341,6 @@ impl SharedHost {
         >,
     ) -> Self {
         self.resources.file_content_source = source;
-        self
-    }
-
-    /// Test-support replacement of a volatile fixture's Memory content port.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn with_memory_repository(
-        mut self,
-        repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
-    ) -> Self {
-        self.resources.memory_stores =
-            crate::memory_stores::MemoryStores::with_repository(repository);
         self
     }
 }

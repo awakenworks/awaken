@@ -46,19 +46,6 @@ impl SharedHost {
         self
     }
 
-    /// Install the canonical Host-owned capture sink at a late startup edge.
-    ///
-    /// This is intentionally the same storage used by [`with_capture_sink`], not
-    /// a process-global fallback. Existing sessions retain their immutable
-    /// per-session dependencies; subsequently created sessions receive this sink.
-    pub fn install_capture_sink(&self, sink: Arc<dyn awaken_runtime_contract::CaptureSink>) {
-        *self
-            .capture
-            .capture_sink
-            .write()
-            .expect("capture sink lock poisoned") = Some(sink);
-    }
-
     /// Install the Control-owned consent read port used once per attributed Run.
     #[must_use]
     pub fn with_data_subject_consent_source(

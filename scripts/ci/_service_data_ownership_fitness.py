@@ -157,14 +157,12 @@ VOLATILE_RUNTIME_HOST_APIS = (
     "with_deployment_config",
     "new_with_resources",
     "new_with_resources_and_deployment",
-    "with_resource_reclamation",
     "with_skill_store",
     "with_skill_store_backend",
     "with_skill_store_ports",
     "with_store_dir",
     "with_durable_store_dir",
     "with_file_content_source",
-    "with_memory_repository",
 )
 
 TEST_SUPPORT_GATE = (
