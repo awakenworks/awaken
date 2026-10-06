@@ -48,7 +48,17 @@ spec:
       - apiGroups: [""]
         apiVersions: ["v1"]
         operations: ["UPDATE", "DELETE"]
-        resources: ["pods"]
+        resources: ["pods", "persistentvolumeclaims", "configmaps", "secrets"]
+        scope: Namespaced
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["UPDATE", "DELETE"]
+        resources: ["jobs"]
+        scope: Namespaced
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["UPDATE", "DELETE"]
+        resources: ["daemonsets"]
         scope: Namespaced
   validations:
     - expression: "false"

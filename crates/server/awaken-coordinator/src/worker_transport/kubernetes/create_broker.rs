@@ -14,7 +14,6 @@ use std::sync::Arc;
 use awaken_agent_contract::{
     collision_resistant_fingerprint, collision_resistant_fingerprint_digest,
 };
-use awaken_lease_contract::{WallClock, WallClockExt};
 use awaken_run_ingress::{
     ApplicationError, WorkerCreateLedger, WorkerDirectory, WorkerIdentity, WorkerState,
 };
@@ -24,6 +23,7 @@ use awaken_sandbox_container::k8s::{
     K8sCreateResponse, K8sLedgerBinding, K8sWorkerCreateLedger, ORIGINAL_GUARD_FINALIZER,
     PodProcessBinding, REQUEST_DIGEST_ANNOTATION, RequestJoin, TicketAdmission, TicketResult,
 };
+use awaken_time::{WallClock, WallClockExt};
 use awaken_worker_transport_security::kubernetes::KubernetesPodIdentity;
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, authenticate_worker_request,
@@ -177,28 +177,27 @@ fn validate_create(
             "Kubernetes Create realization digest is malformed",
         ));
     }
-    if resource == "pods"
-        && (metadata
-            .get("labels")
+    if metadata
+        .get("labels")
+        .and_then(Value::as_object)
+        .is_some_and(|labels| labels.contains_key(ISOLATION_LABEL))
+        || metadata
+            .get("annotations")
             .and_then(Value::as_object)
-            .is_some_and(|labels| labels.contains_key(ISOLATION_LABEL))
-            || metadata
-                .get("annotations")
-                .and_then(Value::as_object)
-                .is_some_and(|annotations| {
-                    annotations.contains_key(ISOLATION_ID_ANNOTATION)
-                        || annotations.contains_key(REQUEST_DIGEST_ANNOTATION)
-                })
-            || metadata.get("finalizers").is_some_and(|finalizers| {
-                finalizers.as_array().is_none_or(|values| {
-                    values
-                        .iter()
-                        .any(|value| value.as_str() == Some(ORIGINAL_GUARD_FINALIZER))
-                })
-            }))
+            .is_some_and(|annotations| {
+                annotations.contains_key(ISOLATION_ID_ANNOTATION)
+                    || annotations.contains_key(REQUEST_DIGEST_ANNOTATION)
+            })
+        || metadata.get("finalizers").is_some_and(|finalizers| {
+            finalizers.as_array().is_none_or(|values| {
+                values
+                    .iter()
+                    .any(|value| value.as_str() == Some(ORIGINAL_GUARD_FINALIZER))
+            })
+        })
     {
         return Err(ApplicationError::invalid(
-            "Worker Pod Create cannot supply provider-owned isolation evidence",
+            "Worker Create cannot supply provider-owned isolation evidence",
         ));
     }
     let body = serde_json::to_vec(&create.object)
@@ -713,6 +712,55 @@ mod tests {
                 .is_err(),
                 "E2 object axis"
             );
+        }
+    }
+
+    #[test]
+    fn provider_isolation_metadata_is_reserved_on_every_brokered_kind() {
+        // Causes: C1 each of the six admitted Kubernetes collections; C2
+        // provider-owned evidence is absent, or the Worker supplies the
+        // reservation label, isolation annotation, or original guard
+        // finalizer. Constraint: exact namespace/name and realization digest
+        // are otherwise valid. Effects: E1 absent C2 admits one ticket; E2
+        // every forged C2 is refused before ledger CAS or API I/O.
+        // Decision rows M1=C1+absent->E1; M2-M4=C1+each forged axis->E2.
+        let identity = WorkerIdentity::new("k8s:ns:worker:uid", "uid", 1);
+        for path in [
+            "/api/v1/namespaces/ns/pods",
+            "/api/v1/namespaces/ns/persistentvolumeclaims",
+            "/api/v1/namespaces/ns/configmaps",
+            "/api/v1/namespaces/ns/secrets",
+            "/apis/batch/v1/namespaces/ns/jobs",
+            "/apis/apps/v1/namespaces/ns/daemonsets",
+        ] {
+            let base = json!({"metadata":{
+                "name":"target", "namespace":"ns",
+                "annotations":{"awaken.dev/realization-digest":"a".repeat(64)}
+            }});
+            let request = |object| K8sCreateRequest {
+                path: path.into(),
+                object,
+            };
+            assert!(
+                validate_create(&identity, "ns", request(base.clone())).is_ok(),
+                "M1 {path}"
+            );
+            let mut label = base.clone();
+            label["metadata"]["labels"] = json!({(ISOLATION_LABEL):"true"});
+            let mut annotation = base.clone();
+            annotation["metadata"]["annotations"][ISOLATION_ID_ANNOTATION] = "forged".into();
+            let mut finalizer = base;
+            finalizer["metadata"]["finalizers"] = json!([ORIGINAL_GUARD_FINALIZER]);
+            for (axis, object) in [
+                ("label", label),
+                ("annotation", annotation),
+                ("finalizer", finalizer),
+            ] {
+                assert!(
+                    validate_create(&identity, "ns", request(object)).is_err(),
+                    "M2-M4 {path} {axis}"
+                );
+            }
         }
     }
 

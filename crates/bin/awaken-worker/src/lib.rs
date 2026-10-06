@@ -36,6 +36,8 @@ mod attempt_decorator;
 mod bootstrap;
 mod credential_files;
 mod credential_liveness;
+#[cfg(feature = "container-k8s")]
+mod k8s_create_client;
 mod lifecycle;
 mod manifest;
 mod relay_hand;
@@ -60,6 +62,8 @@ pub use bootstrap::{
     WorkerBootstrap, WorkerBootstrapInput, WorkerDaemonConfig, WorkerUpstreamSecurity,
 };
 pub use credential_files::WorkerCredentialFileResolver;
+#[cfg(feature = "container-k8s")]
+pub use k8s_create_client::WorkerK8sCreateClient;
 pub use lifecycle::WorkerShutdown;
 pub use manifest::StandardManifestConfig;
 pub use relay_hand::relay_hand_executor_factory;
@@ -158,7 +162,7 @@ pub struct WorkerNodeBuilder {
     enclosing_sandbox_boundary: Option<InstalledSandboxBoundary>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
     #[cfg(feature = "container-k8s")]
-    k8s_create_client: Option<Arc<awaken_worker_runtime::WorkerK8sCreateClient>>,
+    k8s_create_client: Option<Arc<WorkerK8sCreateClient>>,
     prepared_local_sandbox: Option<(
         awaken_provisioning_contract::SandboxCapabilities,
         &'static str,
@@ -176,7 +180,7 @@ pub struct WorkerNodeBuilder {
 #[cfg(feature = "container-k8s")]
 fn policy_with_k8s_create_client(
     mut policy: awaken_execution_composition::ContainerTierPolicy,
-    client: Option<&Arc<awaken_worker_runtime::WorkerK8sCreateClient>>,
+    client: Option<&Arc<WorkerK8sCreateClient>>,
 ) -> awaken_execution_composition::ContainerTierPolicy {
     if let Some(client) = client {
         policy.k8s_create_transport = Some(client.clone());
@@ -686,9 +690,8 @@ impl WorkerNodeBuilder {
         if self.deployment.sandbox_tier == awaken_runtime_host::SandboxTier::K8s
             && self.k8s_create_client.is_none()
         {
-            self.k8s_create_client = Some(Arc::new(
-                awaken_worker_runtime::WorkerK8sCreateClient::new(self.upstream.clone()),
-            ));
+            self.k8s_create_client =
+                Some(Arc::new(WorkerK8sCreateClient::new(self.upstream.clone())));
         }
         let backend = self.deployment.sandbox_support().1;
         let realization_namespace = worker_realization_namespace(&self.deployment)?;
@@ -1057,7 +1060,7 @@ pub struct WorkerNode {
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
     #[cfg(feature = "container-k8s")]
-    k8s_create_client: Option<Arc<awaken_worker_runtime::WorkerK8sCreateClient>>,
+    k8s_create_client: Option<Arc<WorkerK8sCreateClient>>,
     prepared_local_sandbox: Option<(
         awaken_provisioning_contract::SandboxCapabilities,
         &'static str,

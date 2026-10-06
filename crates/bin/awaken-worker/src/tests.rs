@@ -53,7 +53,7 @@ fn trusted_launcher_incarnation_selection_is_explicit_and_validated() {
     let builder = || {
         WorkerNodeBuilder::new(
             awaken_worker_transport_security::WorkerUpstream::new("http://127.0.0.1:1"),
-            awaken_lease_contract::system_clock(),
+            awaken_time::system_clock(),
         )
     };
     assert!(builder().preselected_incarnation_id.is_none(), "B1/E1");

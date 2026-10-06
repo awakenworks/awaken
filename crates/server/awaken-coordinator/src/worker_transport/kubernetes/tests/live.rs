@@ -16,10 +16,9 @@ use awaken_sandbox_container::k8s::{
 };
 use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_time::WallClockExt;
+use awaken_worker::WorkerK8sCreateClient;
 use awaken_worker_registry::SqliteWorkerDirectory;
-use awaken_worker_runtime::{
-    WorkerControlClient, WorkerK8sCreateClient, dispatch_transport_with_upstream,
-};
+use awaken_worker_runtime::{WorkerControlClient, dispatch_transport_with_upstream};
 use awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer;
 use awaken_worker_transport_security::{FixedWorkerLeasePolicy, WorkerUpstream};
 use k8s_openapi::api::apps::v1::Deployment;

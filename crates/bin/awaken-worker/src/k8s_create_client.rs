@@ -7,11 +7,11 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use awaken_run_ingress_contract::WorkerIdentity;
 use awaken_sandbox_container::k8s::{
     K8sCreateRequest, K8sCreateResponse, K8sCreateTransport, RequestJoin,
 };
 use awaken_sandbox_container::{ContainerEffectFence, RuntimeError};
+use awaken_worker_contract::WorkerIdentity;
 use awaken_worker_transport_security::WorkerUpstream;
 use serde::Serialize;
 use serde::de::DeserializeOwned;

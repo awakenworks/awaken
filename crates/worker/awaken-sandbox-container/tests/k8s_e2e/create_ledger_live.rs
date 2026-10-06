@@ -1,8 +1,82 @@
 use super::*;
 use awaken_sandbox_container::k8s::{
-    CreateTicketRequest, K8sLedgerBinding, K8sWorkerCreateLedger, RequestJoin, TicketAdmission,
-    TicketResult,
+    CreateTicketRequest, ISOLATION_LABEL, K8sLedgerBinding, K8sWorkerCreateLedger, RequestJoin,
+    TicketAdmission, TicketResult,
 };
+
+const PROTECTED_OTHER_KINDS: [&str; 5] = [
+    "persistentvolumeclaims",
+    "configmaps",
+    "secrets",
+    "jobs",
+    "daemonsets",
+];
+
+fn protected_other_kind(
+    resource: &str,
+    namespace: &str,
+) -> (kube::core::ApiResource, kube::core::DynamicObject) {
+    use kube::core::{ApiResource, GroupVersionKind};
+    use serde_json::json;
+
+    let (group, kind, body) = match resource {
+        "persistentvolumeclaims" => (
+            "",
+            "PersistentVolumeClaim",
+            json!({"spec":{
+                "accessModes":["ReadWriteOnce"], "storageClassName":"",
+                "selector":{"matchLabels":{"awaken.dev/no-matching-pv":namespace}},
+                "resources":{"requests":{"storage":"1Mi"}}
+            }}),
+        ),
+        "configmaps" => ("", "ConfigMap", json!({"data":{"role":"reservation"}})),
+        "secrets" => ("", "Secret", json!({"type":"Opaque"})),
+        "jobs" => (
+            "batch",
+            "Job",
+            json!({"spec":{
+                "suspend":true,
+                "template":{"spec":{
+                    "restartPolicy":"Never",
+                    "containers":[{"name":"inert","image":"invalid.invalid/awaken-create-isolation:never",
+                        "imagePullPolicy":"Never","command":["/bin/false"]}]
+                }}
+            }}),
+        ),
+        "daemonsets" => (
+            "apps",
+            "DaemonSet",
+            json!({"spec":{
+                "selector":{"matchLabels":{"awaken.dev/reservation-instance":namespace}},
+                "template":{
+                    "metadata":{"labels":{"awaken.dev/reservation-instance":namespace}},
+                    "spec":{
+                        "nodeSelector":{"awaken.dev/create-isolation-node":namespace},
+                        "containers":[{"name":"inert","image":"invalid.invalid/awaken-create-isolation:never",
+                            "imagePullPolicy":"Never","command":["/bin/false"]}]
+                    }
+                }
+            }}),
+        ),
+        _ => panic!("unsupported protected reservation Kind"),
+    };
+    let gvk = GroupVersionKind::gvk(group, "v1", kind);
+    let api_resource = ApiResource::from_gvk_with_plural(&gvk, resource);
+    let mut object = json!({
+        "apiVersion":api_resource.api_version.clone(),
+        "kind":kind,
+        "metadata":{
+            "namespace":namespace,
+            "name":format!("reserved-{resource}"),
+            "labels":{(ISOLATION_LABEL):"true"}
+        }
+    });
+    object
+        .as_object_mut()
+        .unwrap()
+        .extend(body.as_object().unwrap().clone());
+    (api_resource, serde_json::from_value(object).unwrap())
+}
 
 fn generated_namespace(prefix: &str) -> k8s_openapi::api::core::v1::Namespace {
     serde_json::from_value(serde_json::json!({"metadata": {"generateName": prefix}})).unwrap()
@@ -299,11 +373,15 @@ async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
     // binding; C2 the original Pod ticket wins CAS but its Create is never
     // sent (the crash-before-send fault cut); C3 the Worker/group are sealed;
     // C4 the first reservation response or Coordinator process may be lost.
-    // Effects: E1 C1+C2+C3 yields one real unscheduled Pod UID and one
-    // Isolated ticket; E2 C4 replay retains that UID; E3 the active policy
-    // rejects exact dry-run deletion; E4 test-owned policy and objects are
-    // removed only after this no-original-request fixture is complete.
-    // Rules L1=C1+C2+C3->E1+E3, L2=L1+C4->E2, L3=teardown->E4. The
+    // C5 each other brokered Kind has one task-owned, non-executing protected
+    // reservation; C6 a Job/DaemonSet controller can advance resourceVersion
+    // after Create. Effects: E1 C1+C2+C3 yields one real unscheduled Pod UID
+    // and one Isolated ticket; E2 C4 replay retains that UID; E3 the active
+    // policy rejects exact dry-run deletion and label-removing UPDATE on every
+    // C5 Kind using a dry-run merge PATCH that cannot fail on C6's stale
+    // resourceVersion; E4 test-owned policy and objects are removed only after this
+    // no-original-request fixture is complete. Rules L1=C1+C2+C3->E1+E3,
+    // L2=L1+C4->E2, L3=C1+C5->E3, L4=teardown->E4. The
     // same-name delayed-original race and policy-denial mutant are covered by
     // the separate fault cut and unit decision table.
     if std::env::var("AWAKEN_K8S_ISOLATION_E2E").as_deref() != Ok("1") {
@@ -314,7 +392,7 @@ async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
         ValidatingAdmissionPolicy, ValidatingAdmissionPolicyBinding,
     };
     use k8s_openapi::api::core::v1::{Namespace, Pod};
-    use kube::api::{DeleteParams, PostParams, Preconditions};
+    use kube::api::{DeleteParams, Patch, PatchParams, PostParams, Preconditions};
     use kube::{Api, ResourceExt};
     use serde::Deserialize as _;
     use std::io;
@@ -434,6 +512,57 @@ async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
         {
             return Err(io::Error::other("isolated Pod changed its exact unbound UID").into());
         }
+        for resource in PROTECTED_OTHER_KINDS {
+            use kube::core::DynamicObject;
+            let (api_resource, desired) = protected_other_kind(resource, &sandbox_name);
+            let api: Api<DynamicObject> =
+                Api::namespaced_with(client.clone(), &sandbox_name, &api_resource);
+            let name = desired.name_any();
+            let created = api.create(&PostParams::default(), &desired).await?;
+            let Some(uid) = created.metadata.uid.clone() else {
+                return Err(io::Error::other("protected reservation has no API UID").into());
+            };
+            let denied = api
+                .delete(
+                    &name,
+                    &DeleteParams {
+                        dry_run: true,
+                        preconditions: Some(Preconditions {
+                            uid: Some(uid),
+                            resource_version: None,
+                        }),
+                        ..DeleteParams::default()
+                    },
+                )
+                .await;
+            if !matches!(&denied, Err(kube::Error::Api(error))
+                if matches!(error.code, 403 | 422)
+                    && error.message.contains("awaken-create-isolation"))
+            {
+                return Err(io::Error::other(format!(
+                    "{resource} selected dry-run DELETE was not denied by policy: {denied:?}"
+                ))
+                .into());
+            }
+            let denied = api
+                .patch(
+                    &name,
+                    &PatchParams::default().dry_run(),
+                    &Patch::Merge(serde_json::json!({
+                        "metadata":{"labels":{(ISOLATION_LABEL):null}}
+                    })),
+                )
+                .await;
+            if !matches!(&denied, Err(kube::Error::Api(error))
+                if matches!(error.code, 403 | 422)
+                    && error.message.contains("awaken-create-isolation"))
+            {
+                return Err(io::Error::other(format!(
+                    "{resource} label-removing UPDATE was not denied by policy: {denied:?}"
+                ))
+                .into());
+            }
+        }
         let replay = ledger.isolate_sealed_group_and_join(anchor, "old-effect").await?;
         if !matches!(replay, RequestJoin::Complete(tickets)
             if tickets.len() == 1
@@ -487,6 +616,73 @@ async fn pod_create_isolation_joins_one_real_api_uid_after_reservation() {
     }
     if let Some(sandbox) = &sandbox {
         let name = sandbox.name_any();
+        for resource in PROTECTED_OTHER_KINDS {
+            use kube::core::DynamicObject;
+            let (api_resource, desired) = protected_other_kind(resource, &name);
+            let api: Api<DynamicObject> =
+                Api::namespaced_with(client.clone(), &name, &api_resource);
+            let object_name = desired.name_any();
+            // awaken-wait: a selected admission policy can outlive its binding
+            // deletion briefly; only an exact UID-fenced DELETE and absence
+            // close each task-owned reservation.
+            for _ in 0..60 {
+                let observed = match api.get_opt(&object_name).await {
+                    Ok(None) => break,
+                    Ok(Some(observed)) => observed,
+                    Err(error) => {
+                        cleanup_errors.push(format!("{resource} read: {error}"));
+                        break;
+                    }
+                };
+                if observed
+                    .metadata
+                    .labels
+                    .as_ref()
+                    .and_then(|labels| labels.get(ISOLATION_LABEL))
+                    .map(String::as_str)
+                    != Some("true")
+                {
+                    cleanup_errors.push(format!("{resource} has a foreign reservation label"));
+                    break;
+                }
+                let Some(uid) = observed.metadata.uid.clone().filter(|uid| !uid.is_empty()) else {
+                    cleanup_errors.push(format!("{resource} reservation has no exact UID"));
+                    break;
+                };
+                let result = api
+                    .delete(
+                        &object_name,
+                        &DeleteParams::default().preconditions(Preconditions {
+                            uid: Some(uid),
+                            resource_version: None,
+                        }),
+                    )
+                    .await;
+                match result {
+                    Ok(_) => {}
+                    Err(kube::Error::Api(error)) if error.code == 404 => {}
+                    Err(kube::Error::Api(error))
+                        if matches!(error.code, 403 | 422)
+                            && error.message.contains("awaken-create-isolation") =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        continue;
+                    }
+                    Err(error) => {
+                        cleanup_errors.push(format!("{resource} deletion: {error}"));
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            match api.get_opt(&object_name).await {
+                Ok(None) => {}
+                Ok(Some(_)) => cleanup_errors.push(format!("{resource} reservation remained")),
+                Err(error) => {
+                    cleanup_errors.push(format!("{resource} final absence read: {error}"))
+                }
+            }
+        }
         let pods: Api<Pod> = Api::namespaced(client.clone(), &name);
         // awaken-wait: Admission policy removal must propagate before this test can release its exact inert Pod finalizer.
         for _ in 0..60 {

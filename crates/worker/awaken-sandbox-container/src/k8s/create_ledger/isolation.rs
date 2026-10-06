@@ -40,11 +40,24 @@ fn expected_policy_spec() -> ValidatingAdmissionPolicySpec {
             "matchPolicy": "Equivalent",
             "namespaceSelector": {},
             "objectSelector": {"matchLabels": {(ISOLATION_LABEL): "true"}},
-            "resourceRules": [{
-                "apiGroups": [""], "apiVersions": ["v1"],
-                "operations": ["UPDATE", "DELETE"], "resources": ["pods"],
-                "scope": "Namespaced"
-            }]
+            "resourceRules": [
+                {
+                    "apiGroups": [""], "apiVersions": ["v1"],
+                    "operations": ["UPDATE", "DELETE"],
+                    "resources": ["pods", "persistentvolumeclaims", "configmaps", "secrets"],
+                    "scope": "Namespaced"
+                },
+                {
+                    "apiGroups": ["batch"], "apiVersions": ["v1"],
+                    "operations": ["UPDATE", "DELETE"], "resources": ["jobs"],
+                    "scope": "Namespaced"
+                },
+                {
+                    "apiGroups": ["apps"], "apiVersions": ["v1"],
+                    "operations": ["UPDATE", "DELETE"], "resources": ["daemonsets"],
+                    "scope": "Namespaced"
+                }
+            ]
         },
         "validations": [{"expression": "false", "message": "Awaken Create isolation is retained until the original request is joined"}]
     }))
@@ -388,9 +401,9 @@ mod tests {
 
     #[test]
     fn deployment_policy_matches_the_runtime_attestation_contract() {
-        // Causes: C1 VAP/binding selector, operation or enforcement drifts;
-        // C2 Product/Worker lose read-only policy access or regain Pod
-        // deletecollection. Effects: E1 C1 fails before rollout and live
+        // Causes: C1 the six-kind VAP/binding selector, operation or
+        // enforcement drifts; C2 Product/Worker lose read-only policy access
+        // or regain Pod deletecollection. Effects: E1 C1 fails before rollout and live
         // attestation returns Unknown; E2 C2 fails the deployment contract.
         // Rules D1=!C1+!C2->pass, D2=C1|C2->fail. The policy and RBAC remain
         // deployment-owned rather than a second runtime configuration.

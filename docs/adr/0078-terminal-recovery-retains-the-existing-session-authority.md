@@ -632,3 +632,18 @@ controllers, and a pending PVC observation does not prove the old claim could
 never allocate storage. The existing Pod-only ledger remains the authority;
 non-Pod InFlight tickets and rich plans continue to return Unknown until those
 additional facts are implemented and verified in that same provider path.
+
+The first production preparation extends that existing admission policy to all
+six brokered collections and reserves its isolation label, annotations and
+guard finalizer at the common broker boundary for every Kind. The policy
+attestation still requires exact deployed spec and an actual selected-resource
+DELETE denial; a generation observation alone is insufficient. No non-Pod
+ticket gains an `Isolated` result or Session receipt from this preparation.
+
+The signed Worker-side Create client is assembled by the existing
+`awaken-worker` process composition root, which already owns both its
+`WorkerUpstream` and selected Sandbox provider. The Platform
+`awaken-worker-runtime` retains its neutral Worker control clients and no
+longer depends on the concrete Sandbox adapter across bounded contexts. The
+same client, endpoint, Registry identity and provider ticket ledger remain
+authoritative; this placement change adds no recovery or cleanup owner.
