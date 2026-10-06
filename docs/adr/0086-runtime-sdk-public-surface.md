@@ -1,7 +1,7 @@
 # ADR-0086: Runtime SDK Public Surface
 
-- Status: Proposed
-- Date: 2026-10-05
+- Status: Accepted
+- Date: 2026-10-05 (accepted 2026-10-06)
 - Builds on: ADR-0059 neutral core and leaf evolution; ADR-0081 contract layering and
   ratchet guardrails (the depth baseline and the bounded-context ratchet).
 - Leaves unchanged: ADR-0050 content capture and GDPR semantics; ADR-0051 tenancy
