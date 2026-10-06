@@ -340,7 +340,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H22"
     );
     assert_eq!(
-        host.session_slots.read("mcp-exact", |slot| slot.mcp.len()),
+        host.session_slots
+            .read("mcp-exact", |slot| slot.mcp.projection_count()),
         Some(1),
         "H22 no duplicate tombstone"
     );
@@ -433,7 +434,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     assert_eq!(
         host.session_slots
-            .read("mcp-removed-renewal", |slot| slot.mcp.len()),
+            .read("mcp-removed-renewal", |slot| slot.mcp.projection_count()),
         Some(1),
         "H28 one projection"
     );
@@ -443,8 +444,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H28 staged, not published"
     );
     host.session_slots.modify("mcp-exact", |slot| {
-        slot.mcp[0].state = crate::mcp_material::McpProjectionState::Staging;
-        slot.mcp[0].staging = Some(crate::mcp_material::McpStagingActivity::default());
+        slot.mcp.projections_mut()[0].state = crate::mcp_material::McpProjectionState::Staging;
+        slot.mcp.projections_mut()[0].staging =
+            Some(crate::mcp_material::McpStagingActivity::default());
     });
     assert_eq!(
         managed
@@ -456,8 +458,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H25"
     );
     host.session_slots.modify("mcp-exact", |slot| {
-        slot.mcp[0].state = crate::mcp_material::McpProjectionState::Staged;
-        slot.mcp[0].staging = None;
+        slot.mcp.projections_mut()[0].state = crate::mcp_material::McpProjectionState::Staged;
+        slot.mcp.projections_mut()[0].staging = None;
     });
     let mut expired = request("mcp-expired", "workspace-a", 1);
     expired.generation = expired.generation.expiring_at(0);
@@ -509,7 +511,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     assert_eq!(
         host.session_slots
-            .read("mcp-conflict", |slot| slot.mcp.len()),
+            .read("mcp-conflict", |slot| slot.mcp.projection_count()),
         Some(1),
         "H10"
     );
@@ -939,7 +941,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let default_transport = crate::mcp::project_mcp_session_transport(
         default_projection.server.as_ref().unwrap(),
         &default_projection.request,
-        default_relay_host.mcp.mcp_relay.get(),
+        default_relay_host.mcp.relay(),
         &default_projection.receipt,
         awaken_run_executor_acp::acp_adapter_policy(),
         "codex",
@@ -1115,7 +1117,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let projected = crate::mcp::project_mcp_session_transport(
         projection.server.as_ref().expect("H20 private material"),
         &projection.request,
-        secure_acp_host.mcp.mcp_relay.get(),
+        secure_acp_host.mcp.relay(),
         &projection.receipt,
         awaken_run_executor_acp::acp_adapter_policy(),
         "codex",
@@ -1137,12 +1139,11 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     secure_acp_host
         .mcp
-        .mcp_relay
-        .get()
+        .relay()
         .expect("H32 prepared relay")
         .abort_for_test();
     for _ in 0..100 {
-        if !secure_acp_host.mcp.mcp_relay.get().unwrap().is_live() {
+        if !secure_acp_host.mcp.relay().unwrap().is_live() {
             break;
         }
         tokio::task::yield_now().await;
@@ -1219,7 +1220,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             .as_ref()
             .expect("H23 private material"),
         &client_projection.request,
-        secure_acp_host.mcp.mcp_relay.get(),
+        secure_acp_host.mcp.relay(),
         &client_projection.receipt,
         awaken_run_executor_acp::acp_adapter_policy(),
         "claude",

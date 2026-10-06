@@ -628,9 +628,7 @@ impl SharedHost {
                 if !belongs_to_operation {
                     continue;
                 }
-                if let Some(relay) = self.mcp.mcp_relay.get() {
-                    relay.remove_routes(&thread_id);
-                }
+                self.mcp.remove_relay_routes(&thread_id);
                 removed |= self.session_slots.remove(&thread_id).is_some();
                 continue;
             }
@@ -657,9 +655,7 @@ impl SharedHost {
             if !belongs_to_operation {
                 continue;
             }
-            if let Some(relay) = self.mcp.mcp_relay.get() {
-                relay.remove_routes(&thread_id);
-            }
+            self.mcp.remove_relay_routes(&thread_id);
             removed |= self.session_slots.remove(&thread_id).is_some();
         }
         removed

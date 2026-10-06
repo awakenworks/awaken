@@ -175,7 +175,7 @@
         {
           "kind": "state",
           "name": "McpProjectionState::Draining",
-          "path": "crates/server/awaken-session-executor/src/mcp.rs"
+          "path": "crates/server/awaken-session-executor/src/mcp/sessions.rs"
         }
       ],
       "status": "evidenced",

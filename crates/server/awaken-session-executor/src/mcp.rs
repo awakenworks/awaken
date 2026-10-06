@@ -25,16 +25,22 @@ use awaken_ext_skills::SkillRegistry as _;
 use awaken_runtime_contract::plugin::Plugin;
 use awaken_session_configuration_contract::{McpProbe, McpProbeStatus, ProbeHttpResponse};
 
-use crate::host::HostError;
-
+mod attachment;
+mod credential_target;
+mod error;
 mod input;
 mod prompt_skills;
+mod sessions;
+
+pub use attachment::{McpCredentialMaterialization, McpStagingSession};
+pub use error::{McpError, McpErrorKind};
+pub use input::{McpInputHost, McpInputRecipients};
+pub use sessions::{McpGenerationAuthority, McpQuiescenceProof, McpSessionSlots, McpSessions};
 
 /// Native Worker-side MCP calls may legitimately outlive control-plane
 /// discovery. This policy is deliberately private runtime composition, not
 /// attachment desired state or a public Managed Agents wire extension.
 const MATERIALIZED_HTTP_MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(300);
-const MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Project private Runtime material to ACP configuration. Worker-held material
 /// becomes an exact-generation loopback route; an explicitly admitted
@@ -48,18 +54,18 @@ pub(crate) fn project_mcp_session_transport(
         awaken_runtime_contract::resolved::ProviderServerTool,
     >,
     adapter_id: &str,
-) -> Result<awaken_acp_contract::SessionMcpServer, HostError> {
+) -> Result<awaken_acp_contract::SessionMcpServer, McpError> {
     let generation = &request.generation;
     if let McpTransportMaterialKind::SandboxStdio { command, args } = &prepared.transport {
         if receipt.actual_realization_kind
             == Some(awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField)
         {
-            return Err(HostError::internal(
+            return Err(McpError::internal(
                 "process-private MCP credentials require an HTTP Session transport",
             ));
         }
         receipt.verify(request).map_err(|_| {
-            HostError::internal("MCP realization receipt does not match its exact stage request")
+            McpError::internal("MCP realization receipt does not match its exact stage request")
         })?;
         return Ok(awaken_acp_contract::SessionMcpServer {
             name: prepared.name.clone(),
@@ -74,7 +80,7 @@ pub(crate) fn project_mcp_session_transport(
         == Some(awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField);
     if process_protocol_field {
         if bearer.is_none() {
-            return Err(HostError::internal(
+            return Err(McpError::internal(
                 "process-private MCP credential projection has no material",
             ));
         }
@@ -85,7 +91,7 @@ pub(crate) fn project_mcp_session_transport(
                 awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
             )
             .map_err(|_| {
-                HostError::internal(
+                McpError::internal(
                     "MCP client-injection receipt does not match its exact stage request",
                 )
             })?;
@@ -99,13 +105,13 @@ pub(crate) fn project_mcp_session_transport(
                 awaken_runtime_contract::CredentialRealizationKind::PlatformRelay,
             )
             .map_err(|_| {
-                HostError::internal(
+                McpError::internal(
                     "MCP gateway-mediation receipt does not match its exact stage request",
                 )
             })?;
     } else {
         receipt.verify(request).map_err(|_| {
-            HostError::internal("MCP realization receipt does not match its exact stage request")
+            McpError::internal("MCP realization receipt does not match its exact stage request")
         })?;
     }
     let (url, auth) = match bearer {
@@ -116,7 +122,7 @@ pub(crate) fn project_mcp_session_transport(
                 true,
             );
             if !admitted {
-                return Err(HostError::internal(
+                return Err(McpError::internal(
                     "ACP adapter does not admit process-private MCP client injection",
                 ));
             }
@@ -139,7 +145,7 @@ pub(crate) fn project_mcp_session_transport(
             // verification plus an already-staged generation route preserves
             // its WorkerRelay behavior without permitting client injection.
             let relay = relay.ok_or_else(|| {
-                HostError::internal(format!(
+                McpError::internal(format!(
                     "authenticated MCP generation {}:{} requires the Worker relay",
                     generation.attachment_id().0,
                     generation.generation().version()
@@ -147,7 +153,7 @@ pub(crate) fn project_mcp_session_transport(
             })?;
             (
                 relay.route_url(generation).ok_or_else(|| {
-                    HostError::internal(format!(
+                    McpError::internal(format!(
                         "authenticated MCP generation {}:{} has no staged relay capability",
                         generation.attachment_id().0,
                         generation.generation().version()
@@ -161,7 +167,7 @@ pub(crate) fn project_mcp_session_transport(
         // an unusable bearer to the target. Fail closed until an explicit mediated
         // endpoint has actually been realized.
         Some(_) => {
-            return Err(HostError::internal(format!(
+            return Err(McpError::internal(format!(
                 "authenticated MCP generation {}:{} has no admitted delivery",
                 generation.attachment_id().0,
                 generation.generation().version()
@@ -272,610 +278,6 @@ impl McpProbe for ExtMcpProbe {
     }
 }
 
-impl crate::SharedHost {
-    pub(crate) fn active_mcp_projections(
-        &self,
-        thread: &str,
-    ) -> Vec<crate::mcp_material::McpGenerationProjection> {
-        self.session_slots
-            .read(thread, |slot| {
-                if slot.mcp_quiescence_fence.is_some() {
-                    return Vec::new();
-                }
-                slot.mcp
-                    .iter()
-                    .filter(|projection| {
-                        projection.state == crate::mcp_material::McpProjectionState::Active
-                            && projection.server.is_some()
-                    })
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn mcp_projection(
-        &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
-    ) -> Option<crate::mcp_material::McpGenerationProjection> {
-        self.session_slots
-            .read(generation.session_id().as_str(), |slot| {
-                slot.mcp
-                    .iter()
-                    .find(|projection| projection.request.generation == *generation)
-                    .cloned()
-            })
-            .flatten()
-    }
-
-    pub(crate) fn insert_mcp_projection(
-        &self,
-        projection: crate::mcp_material::McpGenerationProjection,
-    ) -> Result<(), HostError> {
-        let thread = projection.request.generation.session_id().clone();
-        self.session_slots.update(thread.as_str(), |slot| {
-            if slot.mcp_quiescence_fence.is_some() {
-                return Err(HostError::unavailable_classified(
-                    "session_environment_quiescing",
-                    "MCP staging is closed while the Session Environment quiesces",
-                ));
-            }
-            if slot
-                .mcp
-                .iter()
-                .any(|existing| existing.request.generation == projection.request.generation)
-            {
-                return Err(HostError::internal(
-                    "MCP generation projection already exists with another realization",
-                ));
-            }
-            slot.mcp.push(projection);
-            Ok(())
-        })
-    }
-
-    /// Transfer a freshly spawned stdio process into the already-installed
-    /// exact-generation owner before any further fallible await.
-    pub(crate) fn attach_staging_mcp_process(
-        &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
-        process: Arc<dyn awaken_provisioning_contract::ProcessHandle>,
-    ) -> Result<bool, HostError> {
-        self.session_slots
-            .modify(generation.session_id().as_str(), |slot| {
-                let admitted = slot.mcp_quiescence_fence.is_none();
-                let projection = slot
-                    .mcp
-                    .iter_mut()
-                    .find(|projection| projection.request.generation == *generation)
-                    .ok_or_else(|| HostError::internal("unknown MCP staging owner"))?;
-                if !matches!(
-                    projection.state,
-                    crate::mcp_material::McpProjectionState::Staging
-                        | crate::mcp_material::McpProjectionState::Draining
-                ) || projection.staging.is_none()
-                    || projection.mcp_process.is_some()
-                {
-                    return Err(HostError::internal(
-                        "MCP staging owner no longer admits a spawned process",
-                    ));
-                }
-                let connect_admitted = admitted
-                    && projection.state == crate::mcp_material::McpProjectionState::Staging;
-                projection.mcp_process = Some(process);
-                Ok(connect_admitted)
-            })
-            .unwrap_or_else(|| Err(HostError::internal("unknown MCP Session projection")))
-    }
-
-    /// Publish only wiring into the private staged projection. Durable publish
-    /// remains the separate `Staged -> Active` transition.
-    pub(crate) fn complete_staging_mcp_projection(
-        &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
-        wiring: crate::mcp_material::McpWiring,
-    ) -> Result<(), HostError> {
-        self.session_slots
-            .modify(generation.session_id().as_str(), |slot| {
-                if slot.mcp_quiescence_fence.is_some() {
-                    return Err(HostError::unavailable_classified(
-                        "session_environment_quiescing",
-                        "MCP staging cannot commit while the Session Environment quiesces",
-                    ));
-                }
-                let projection = slot
-                    .mcp
-                    .iter_mut()
-                    .find(|projection| projection.request.generation == *generation)
-                    .ok_or_else(|| HostError::internal("unknown MCP staging owner"))?;
-                if projection.state != crate::mcp_material::McpProjectionState::Staging
-                    || projection.mcp_process.is_none()
-                {
-                    return Err(HostError::internal(
-                        "MCP staging owner changed before connection completed",
-                    ));
-                }
-                projection.native_wiring = Some(wiring);
-                projection.staging = None;
-                projection.state = crate::mcp_material::McpProjectionState::Staged;
-                Ok(())
-            })
-            .unwrap_or_else(|| Err(HostError::internal("unknown MCP Session projection")))
-    }
-
-    /// Extend one already-staged or active exact generation without reopening
-    /// credential material or reconnecting MCP. The immutable realization
-    /// binding must be identical and only the expiry/idempotency attempt may
-    /// advance. Supporting Staged closes the race where Control renews while the
-    /// first stage effect is in flight and republishes its longer exact fence.
-    pub(crate) fn renew_mcp_projection(
-        &self,
-        request: &awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<Option<awaken_session_mcp_contract::McpRealizationReceipt>, HostError> {
-        let binding = request.renewal_binding_fingerprint();
-        self.session_slots
-            .update(request.generation.session_id().as_str(), |slot| {
-                if slot.mcp_quiescence_fence.is_some() {
-                    return Err(HostError::unavailable_classified(
-                        "session_environment_quiescing",
-                        "MCP renewal is closed while the Session Environment quiesces",
-                    ));
-                }
-                let Some(projection) = slot.mcp.iter_mut().find(|projection| {
-                    projection.request.generation.session_id() == request.generation.session_id()
-                        && projection.request.generation.attachment_id()
-                            == request.generation.attachment_id()
-                        && projection.request.generation.generation()
-                            == request.generation.generation()
-                        && projection.request.generation.runtime_incarnation()
-                            == request.generation.runtime_incarnation()
-                        && projection.request.generation.lease_epoch()
-                            == request.generation.lease_epoch()
-                }) else {
-                    return Ok(None);
-                };
-                if !matches!(
-                    projection.state,
-                    crate::mcp_material::McpProjectionState::Staged
-                        | crate::mcp_material::McpProjectionState::Active
-                ) || projection.request.realization_id != request.realization_id
-                    || projection.request.renewal_binding_fingerprint() != binding
-                    || request.generation.lease_expires_at_unix_ms()
-                        <= projection.request.generation.lease_expires_at_unix_ms()
-                {
-                    return Err(HostError::internal(
-                        "MCP lease renewal conflicts with the staged realization",
-                    ));
-                }
-                let receipt = awaken_session_mcp_contract::McpRealizationReceipt {
-                    generation: request.generation.clone(),
-                    realization_id: request.realization_id.clone(),
-                    selected_plaintext_holder: request.selected_plaintext_holder.clone(),
-                    actual_realization_kind: projection.receipt.actual_realization_kind,
-                    receipt_fingerprint: request.fingerprint(),
-                };
-                projection.request = request.clone();
-                projection.receipt = receipt.clone();
-                Ok(Some(receipt))
-            })
-    }
-
-    /// Forget an already-cleaned process-local tombstone when Control replays
-    /// the exact Stage or renews only its lease/attempt key. A removed projection
-    /// owns no remaining process, route, or credential material, so retaining
-    /// it must not permanently prevent the canonical realization driver from
-    /// recovering after a concurrent Control CAS and heartbeat. Changed immutable
-    /// bindings and non-monotonic renewals remain resident. The caller has already
-    /// checked current ownership; removing a tombstone grants no staged receipt.
-    pub(crate) fn forget_replayable_removed_mcp_projection(
-        &self,
-        request: &awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> bool {
-        let request_fingerprint = request.fingerprint();
-        let renewal_binding = request.renewal_binding_fingerprint();
-        self.session_slots
-            .modify(request.generation.session_id().as_str(), |slot| {
-                if slot.mcp_quiescence_fence.is_some() {
-                    return false;
-                }
-                let Some(index) = slot.mcp.iter().position(|projection| {
-                    projection.state == crate::mcp_material::McpProjectionState::Removed
-                        && ((projection.request == *request
-                            && projection.receipt.receipt_fingerprint == request_fingerprint)
-                            || (projection.request.renewal_binding_fingerprint()
-                                == renewal_binding
-                                && request.generation.lease_expires_at_unix_ms()
-                                    > projection.request.generation.lease_expires_at_unix_ms()))
-                }) else {
-                    return false;
-                };
-                slot.mcp.remove(index);
-                true
-            })
-            .unwrap_or(false)
-    }
-
-    pub(crate) async fn publish_mcp_projection(
-        &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
-    ) -> Result<(), HostError> {
-        if !self
-            .session_slots
-            .mcp_realization_admitted(generation.session_id().as_str())
-        {
-            return Err(HostError::unavailable_classified(
-                "session_environment_quiescing",
-                "MCP publication is closed while the Session Environment quiesces",
-            ));
-        }
-        if let Some(projection) = self.mcp_projection(generation) {
-            if matches!(
-                projection.state,
-                crate::mcp_material::McpProjectionState::Staging
-                    | crate::mcp_material::McpProjectionState::Draining
-                    | crate::mcp_material::McpProjectionState::Removed
-            ) {
-                return Err(HostError::internal(
-                    "non-visible MCP generation cannot be published",
-                ));
-            }
-            if let Some(server) = &projection.server
-                && server.bearer().is_some()
-                && projection.native_wiring.is_none()
-            {
-                match projection.receipt.actual_realization_kind {
-                    // `None` is the pre-receipt-discriminator legacy form. It
-                    // remains safe only through the same exact staged relay;
-                    // it can never fall through to process injection.
-                    Some(awaken_runtime_contract::CredentialRealizationKind::WorkerRelay)
-                    | None => {
-                        let relay = self.mcp.mcp_relay.get().ok_or_else(|| {
-                            HostError::internal("authenticated MCP generation has no staged relay")
-                        })?;
-                        if !relay.update_staged_route(generation, server) {
-                            return Err(HostError::internal(
-                                "authenticated MCP generation has no exact staged relay route",
-                            ));
-                        }
-                    }
-                    Some(
-                        awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
-                    ) => {}
-                    _ => {
-                        return Err(HostError::internal(
-                            "authenticated MCP generation has no admitted delivery",
-                        ));
-                    }
-                }
-            }
-        }
-        let changed = self
-            .session_slots
-            .modify(generation.session_id().as_str(), |slot| {
-                if slot.mcp_quiescence_fence.is_some() {
-                    return Err(HostError::unavailable_classified(
-                        "session_environment_quiescing",
-                        "MCP publication is closed while the Session Environment quiesces",
-                    ));
-                }
-                let Some(index) = slot
-                    .mcp
-                    .iter()
-                    .position(|projection| projection.request.generation == *generation)
-                else {
-                    return Err(HostError::internal("unknown MCP generation projection"));
-                };
-                match slot.mcp[index].state {
-                    crate::mcp_material::McpProjectionState::Staging => Err(HostError::internal(
-                        "MCP generation is still staging and cannot be published",
-                    )),
-                    crate::mcp_material::McpProjectionState::Staged => {
-                        for projection in &mut slot.mcp {
-                            if projection.request.generation.attachment_id()
-                                == generation.attachment_id()
-                                && projection.state
-                                    == crate::mcp_material::McpProjectionState::Active
-                            {
-                                projection.state =
-                                    crate::mcp_material::McpProjectionState::Draining;
-                            }
-                        }
-                        slot.mcp[index].state = crate::mcp_material::McpProjectionState::Active;
-                        slot.runtime = None;
-                        Ok(true)
-                    }
-                    crate::mcp_material::McpProjectionState::Active => Ok(false),
-                    crate::mcp_material::McpProjectionState::Draining
-                    | crate::mcp_material::McpProjectionState::Removed => Err(HostError::internal(
-                        "non-visible MCP generation cannot be published",
-                    )),
-                }
-            });
-        match changed {
-            Some(result) => {
-                result?;
-                Ok(())
-            }
-            None => Err(HostError::internal("unknown MCP Session projection")),
-        }
-    }
-
-    pub(crate) async fn drain_mcp_projection(
-        &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
-    ) -> Result<(), HostError> {
-        let Some(drain) = self
-            .session_slots
-            .read(generation.session_id().as_str(), |slot| {
-                slot.mcp
-                    .iter()
-                    .find(|projection| projection.request.generation == *generation)
-                    .map(|projection| projection.drain.clone())
-            })
-            .flatten()
-        else {
-            return Ok(());
-        };
-        // Keep the exact owner installed while awaiting. Cancellation releases
-        // only this serialization guard; a retry sees Draining plus the same
-        // process/activity and resumes the canonical cleanup.
-        let _drain = drain.lock().await;
-        let projected = self
-            .session_slots
-            .modify(generation.session_id().as_str(), |slot| {
-                let Some(projection) = slot
-                    .mcp
-                    .iter_mut()
-                    .find(|projection| projection.request.generation == *generation)
-                else {
-                    // Cleanup is an idempotent exact-generation command. A fresh
-                    // Runtime incarnation legitimately has no process-local copy of
-                    // an already fenced durable Draining generation.
-                    return Ok::<_, HostError>(None);
-                };
-                if !Arc::ptr_eq(&projection.drain, &drain) {
-                    return Err(HostError::unavailable_classified(
-                        "mcp_generation_owner_changed",
-                        "MCP generation projection was replaced while cleanup was waiting",
-                    ));
-                }
-                if projection.state == crate::mcp_material::McpProjectionState::Removed {
-                    return Ok::<_, HostError>(None);
-                }
-                // Visibility closes before cancellation. Existing Runtime clones may
-                // still hold the dynamic tools, so their exact transport fences are
-                // cancelled and drained below before Removed is acknowledged.
-                projection.state = crate::mcp_material::McpProjectionState::Draining;
-                let call_fences = projection
-                    .native_wiring
-                    .as_ref()
-                    .map(|wiring| wiring.call_fences.clone())
-                    .unwrap_or_default();
-                let process = projection.mcp_process.clone();
-                let staging = projection.staging.clone();
-                // The canonical Session slot must retain this Runtime owner across
-                // cancellation and timeout. Only the outer environment-quiescence
-                // transaction clears it after every MCP generation and the Hand
-                // have proved quiescent; otherwise a retry could lose the active-run
-                // fence and manufacture a Removed proof while the old Run is live.
-                let runtime = slot.runtime.clone();
-                Ok(Some((call_fences, process, staging, runtime)))
-            });
-        let Some((mut call_fences, process, staging, runtime)) = projected.transpose()?.flatten()
-        else {
-            return Ok(());
-        };
-
-        // WorkerRelay requests are not Runtime tool calls: Axum clones the
-        // exact Route before it awaits the body/upstream/stream. Add that
-        // route owner's existing MCP call fence to the same drain barrier.
-        // Removing the map entry is not quiescence because an accepted clone
-        // can still hold its credential and upstream future.
-        if let Some(relay) = self.mcp.mcp_relay.get()
-            && let Some(fence) = relay.route_call_fence(generation)
-        {
-            call_fences.push(fence);
-        }
-        // Poll every exact fence together so all admission closes before a
-        // single slow permit can consume the bounded settlement window.
-        tokio::time::timeout(
-            MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT,
-            futures_util::future::join_all(call_fences.iter().map(|fence| fence.close_and_wait())),
-        )
-        .await
-        .map_err(|_| {
-            HostError::unavailable_classified(
-                "mcp_generation_call_quiescence_timeout",
-                "MCP generation drain could not quiesce an accepted MCP call",
-            )
-        })?;
-
-        let had_staging = staging.is_some();
-        if let Some(staging) = staging {
-            staging.wait().await;
-        }
-        // Spawn may have completed after Draining was installed but before the
-        // activity barrier closed. The task transfers that process into this
-        // same projection; re-read it before reaping so no post-snapshot child
-        // can be erased as an unowned handle.
-        let process = if process.is_none() && had_staging {
-            self.session_slots
-                .read(generation.session_id().as_str(), |slot| {
-                    slot.mcp
-                        .iter()
-                        .find(|projection| projection.request.generation == *generation)
-                        .and_then(|projection| projection.mcp_process.clone())
-                })
-                .flatten()
-        } else {
-            process
-        };
-        // A missing cleanup authority may close visibility but must not
-        // cancel the active Run and then manufacture a Removed process proof.
-        // The exact Arc remains in Draining for a later retry.
-        let process_reaper = process
-            .as_ref()
-            .map(|_| self.mcp_process_reaper())
-            .transpose()?;
-
-        if let Some(runtime) = runtime {
-            if let Some(token) = runtime
-                .cancel
-                .lock()
-                .expect("cancel mutex poisoned")
-                .as_ref()
-            {
-                token.cancel();
-            }
-            let deadline =
-                awaken_time::mono::MonoDeadline::after(std::time::Duration::from_secs(10));
-            loop {
-                if runtime
-                    .active_run
-                    .lock()
-                    .expect("active run mutex poisoned")
-                    .is_none()
-                {
-                    break;
-                }
-                if deadline.has_passed() {
-                    return Err(HostError::unavailable_classified(
-                        "mcp_generation_quiescence_timeout",
-                        "MCP generation drain could not quiesce the active Session Run",
-                    ));
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        }
-
-        if let Some(process) = process {
-            process_reaper
-                .expect("a tracked MCP process required the installed reaper")
-                .reap(process.as_ref(), std::time::Duration::from_secs(5))
-                .await
-                .map_err(|error| {
-                    HostError::unavailable_classified(
-                        "mcp_generation_process_reap_failed",
-                        format!("MCP generation process did not terminate: {error}"),
-                    )
-                })?;
-        }
-
-        // This is the sole visible-route removal edge. It runs only after the
-        // exact route fence, Runtime, staging, and process owners are quiescent;
-        // cancellation or any failure above leaves the closed Route installed
-        // with the Draining projection so retry retains the same proof owner.
-        if let Some(relay) = self.mcp.mcp_relay.get() {
-            relay.remove_route(generation);
-        }
-
-        match self
-            .session_slots
-            .modify(generation.session_id().as_str(), |slot| {
-                let Some(projection) = slot
-                    .mcp
-                    .iter_mut()
-                    .find(|projection| projection.request.generation == *generation)
-                else {
-                    return Ok(());
-                };
-                if projection.state == crate::mcp_material::McpProjectionState::Removed {
-                    return Ok(());
-                }
-                if projection.state != crate::mcp_material::McpProjectionState::Draining {
-                    return Err(HostError::internal(
-                        "MCP generation changed while its drain was quiescing",
-                    ));
-                }
-                projection.server = None;
-                projection.native_wiring = None;
-                projection.mcp_process = None;
-                projection.staging = None;
-                projection.state = crate::mcp_material::McpProjectionState::Removed;
-                Ok(())
-            }) {
-            Some(result) => result,
-            None => Ok(()),
-        }
-    }
-
-    /// Drain every exact durable generation requested by the Session owner and
-    /// any additional local leak, continuing after individual failures. The
-    /// returned proof echoes the durable expected set; local slot contents are
-    /// used only to find additional cleanup work and to reject residual effects.
-    pub(crate) async fn drain_mcp_projections(
-        &self,
-        thread: &str,
-        expected: &[awaken_session_mcp_contract::McpGenerationRef],
-    ) -> Result<McpQuiescenceProof, HostError> {
-        let mut targets = Vec::with_capacity(expected.len());
-        for generation in expected {
-            if generation.session_id() != thread {
-                return Err(HostError::internal(
-                    "MCP quiescence generation belongs to another Session",
-                ));
-            }
-            if targets.iter().any(|seen| seen == generation) {
-                return Err(HostError::internal(
-                    "MCP quiescence expected set contains a duplicate generation",
-                ));
-            }
-            targets.push(generation.clone());
-        }
-        for generation in self
-            .session_slots
-            .read(thread, |slot| {
-                slot.mcp
-                    .iter()
-                    .filter(|projection| {
-                        projection.state != crate::mcp_material::McpProjectionState::Removed
-                    })
-                    .map(|projection| projection.request.generation.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-        {
-            if !targets.iter().any(|seen| seen == &generation) {
-                targets.push(generation);
-            }
-        }
-
-        let mut first_error = None;
-        for generation in &targets {
-            if let Err(error) = self.drain_mcp_projection(generation).await
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
-        }
-        let residual = self
-            .session_slots
-            .read(thread, |slot| {
-                slot.mcp.iter().any(|projection| {
-                    projection.state != crate::mcp_material::McpProjectionState::Removed
-                })
-            })
-            .unwrap_or(false);
-        if let Some(error) = first_error {
-            return Err(error);
-        }
-        if residual {
-            return Err(HostError::unavailable_classified(
-                "mcp_generation_quiescence_incomplete",
-                "MCP generation cleanup left a process-local owner unresolved",
-            ));
-        }
-        Ok(McpQuiescenceProof {
-            generations: expected.to_vec(),
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct McpQuiescenceProof {
-    pub generations: Vec<awaken_session_mcp_contract::McpGenerationRef>,
-}
-
 /// Connect every staged server and collect the discovered tools. Fail closed:
 /// a configured server that cannot connect (network, 401, bad wire) fails the
 /// build — never a silent skip — naming the server so the error is actionable.
@@ -883,7 +285,7 @@ pub(crate) struct McpQuiescenceProof {
 /// so an expired token can be exchanged without giving Runtime a Vault handle.
 pub(crate) async fn connect_materialized(
     staged: &[McpTransportMaterial],
-) -> Result<McpWiring, HostError> {
+) -> Result<McpWiring, McpError> {
     connect_materialized_with_tool_call_timeout(staged, MATERIALIZED_HTTP_MCP_TOOL_CALL_TIMEOUT)
         .await
 }
@@ -891,11 +293,11 @@ pub(crate) async fn connect_materialized(
 async fn connect_materialized_with_tool_call_timeout(
     staged: &[McpTransportMaterial],
     tool_call_timeout: Duration,
-) -> Result<McpWiring, HostError> {
+) -> Result<McpWiring, McpError> {
     let mut wiring = McpWiring::empty();
     for server in staged {
         let Some((url, bearer, refresh)) = server.http() else {
-            return Err(HostError::internal(format!(
+            return Err(McpError::internal(format!(
                 "sandbox stdio MCP server `{}` requires an attached sandbox stream",
                 server.name
             )));
@@ -926,18 +328,18 @@ fn mcp_transport_error(
     server_name: &str,
     target: &str,
     error: awaken_ext_mcp::McpTransportError,
-) -> HostError {
+) -> McpError {
     use awaken_ext_mcp::McpTransportError;
 
     let message = format!("mcp server `{server_name}` at {target}: {error}");
     match error {
         McpTransportError::ServerError(ref detail) if detail.starts_with("auth challenge:") => {
-            HostError::classified("mcp_authentication_failed", message)
+            McpError::classified("mcp_authentication_failed", message)
         }
         McpTransportError::TransportError(_) | McpTransportError::Timeout(_) => {
-            HostError::unavailable_classified("mcp_connection_failed", message)
+            McpError::unavailable_classified("mcp_connection_failed", message)
         }
-        _ => HostError::classified("mcp_protocol_failed", message),
+        _ => McpError::classified("mcp_protocol_failed", message),
     }
 }
 
@@ -947,12 +349,12 @@ fn mcp_transport_error(
 pub(crate) async fn connect_sandbox_stdio(
     server: &McpTransportMaterial,
     channel: Box<dyn awaken_agent_channel::AgentChannel>,
-) -> Result<McpWiring, HostError> {
+) -> Result<McpWiring, McpError> {
     if !matches!(
         server.transport,
         McpTransportMaterialKind::SandboxStdio { .. }
     ) {
-        return Err(HostError::internal(
+        return Err(McpError::internal(
             "attached MCP stream requires sandbox stdio material",
         ));
     }
@@ -964,7 +366,7 @@ pub(crate) async fn connect_sandbox_stdio(
     )
     .await
     .map_err(|error| {
-        HostError::internal(format!(
+        McpError::internal(format!(
             "sandbox stdio mcp server `{}`: {error}",
             server.name
         ))
@@ -981,21 +383,21 @@ async fn append_connected(
     server: &McpTransportMaterial,
     transport: Arc<dyn awaken_ext_mcp::transport::McpToolTransport>,
     list_changed: tokio::sync::broadcast::Receiver<awaken_ext_mcp::ListChangedKind>,
-) -> Result<(), HostError> {
+) -> Result<(), McpError> {
     let (transport, call_fence) = awaken_ext_mcp::transport::revocable_transport(transport);
     let connected =
         awaken_ext_mcp::McpServer::start(&server.name, Arc::clone(&transport), list_changed)
             .await
-            .map_err(|e| HostError::internal(format!("mcp server `{}`: {e}", server.name)))?;
+            .map_err(|e| McpError::internal(format!("mcp server `{}`: {e}", server.name)))?;
     if server.prompts_as_skills {
         match prompt_skills::McpPromptSkillRegistry::discover(&server.name, Arc::clone(&transport))
             .await
         {
-            Ok(registry) if !registry.list().map_err(HostError::internal)?.is_empty() => {
+            Ok(registry) if !registry.list().map_err(McpError::internal)?.is_empty() => {
                 wiring.skill_registries.push(Arc::new(registry));
             }
             Ok(_) => {}
-            Err(error) => return Err(HostError::internal(error)),
+            Err(error) => return Err(McpError::internal(error)),
         }
     }
     let plugin = connected.plugin();
@@ -1017,7 +419,7 @@ async fn append_connected(
 #[cfg(test)]
 mod acp_projection_tests {
     use super::*;
-    use crate::HostErrorKind;
+
     use awaken_agent_contract::RedactedString;
 
     fn prepared(bearer: Option<&str>) -> McpTransportMaterial {
@@ -1193,25 +595,25 @@ mod acp_projection_tests {
             (
                 "R1",
                 McpTransportError::ServerError("auth challenge: bearer".into()),
-                HostErrorKind::Internal,
+                McpErrorKind::Internal,
                 "mcp_authentication_failed",
             ),
             (
                 "R2",
                 McpTransportError::TransportError("connection refused".into()),
-                HostErrorKind::Unavailable,
+                McpErrorKind::Unavailable,
                 "mcp_connection_failed",
             ),
             (
                 "R3",
                 McpTransportError::Timeout("30s".into()),
-                HostErrorKind::Unavailable,
+                McpErrorKind::Unavailable,
                 "mcp_connection_failed",
             ),
             (
                 "R4",
                 McpTransportError::ProtocolError("bad frame".into()),
-                HostErrorKind::Internal,
+                McpErrorKind::Internal,
                 "mcp_protocol_failed",
             ),
         ] {

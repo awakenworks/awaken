@@ -71,7 +71,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     };
     let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
     assert!(
-        host.mcp.mcp_relay.set(relay.clone()).is_ok(),
+        host.mcp.install_relay(relay.clone()),
         "install the canonical Host relay"
     );
 
@@ -345,7 +345,7 @@ async fn worker_relay_drain_retains_exact_route_across_cancel_and_timeout_retry(
     // route registry, or Removed receipt.
     let host = Arc::new(host_with_process_reaper().await);
     let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
-    assert!(host.mcp.mcp_relay.set(relay.clone()).is_ok());
+    assert!(host.mcp.install_relay(relay.clone()));
     let generation = crate::test_mcp::mcp_fence(
         "mcp-worker-relay-drain",
         "docs",
@@ -1181,7 +1181,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
         ] {
             host.session_slots
                 .modify(old_generation.session_id().as_str(), |slot| {
-                    slot.mcp[0].state = live_state
+                    slot.mcp.projections_mut()[0].state = live_state
                 });
             assert!(
                 !host.forget_replayable_removed_mcp_projection(&renewed),
@@ -1194,7 +1194,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
         }
         host.session_slots
             .modify(old_generation.session_id().as_str(), |slot| {
-                slot.mcp[0].state = state
+                slot.mcp.projections_mut()[0].state = state
             });
         host.install_session_realization_lease(
             old_generation.session_id().as_str(),
@@ -1227,7 +1227,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             host.session_slots
                 .read(renewed.generation.session_id().as_str(), |slot| slot
                     .mcp
-                    .len()),
+                    .projection_count()),
             Some(1),
             "{rule}/E2"
         );
@@ -1344,7 +1344,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
     );
 
     let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
-    assert!(host.mcp.mcp_relay.set(relay.clone()).is_ok(), "S2 setup");
+    assert!(host.mcp.install_relay(relay.clone()), "S2 setup");
     assert!(
         host.publish_mcp_projection(&generation).await.is_err(),
         "S2"
@@ -1429,7 +1429,7 @@ async fn worker_authority_loss_revokes_every_session_projection() {
     host.publish_mcp_projection(&generation).await.unwrap();
     let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
     relay.set_route(&generation, &server);
-    assert!(host.mcp.mcp_relay.set(relay.clone()).is_ok(), "A1 setup");
+    assert!(host.mcp.install_relay(relay.clone()), "A1 setup");
     assert!(relay.route_url(&generation).is_some(), "A1 setup");
 
     assert_eq!(

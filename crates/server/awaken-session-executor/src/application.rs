@@ -624,9 +624,7 @@ impl crate::SharedHost {
         let retirement = self
             .retire_session_environment_for_revocation(session_id)
             .await?;
-        if let Some(relay) = self.mcp.mcp_relay.get() {
-            relay.remove_routes(session_id);
-        }
+        self.mcp.remove_relay_routes(session_id);
         Ok(retirement)
     }
 
@@ -1053,7 +1051,7 @@ impl crate::SharedHost {
                 // remains authorized to clear it with the rest of live execution
                 // state.
                 slot.session_dispatch = true;
-                slot.has_mcp_projection = has_mcp_projection;
+                slot.mcp.set_has_frozen_attachment(has_mcp_projection);
                 slot.resource_transition = Some(resource_transition);
                 Ok::<_, crate::HostError>(())
             })?;
