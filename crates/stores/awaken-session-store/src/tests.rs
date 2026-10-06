@@ -1077,7 +1077,7 @@ pub(super) fn scoped_postgres_url(base: &str, schema: &str) -> String {
 #[derive(Debug, PartialEq, Eq)]
 struct PostgresSessionSnapshot {
     roots: Vec<(String, String, i64)>,
-    reconciliation: Vec<(String, i64)>,
+    reconciliation: Vec<(String, i64, Option<String>, i64, i64, i64, i64)>,
     vaults: Vec<(String, String)>,
     credential_sources: Vec<(String, String)>,
     receipts: Vec<(String, i64, String)>,
@@ -1092,8 +1092,8 @@ async fn postgres_session_snapshot(pool: &sqlx::postgres::PgPool) -> PostgresSes
         .await
         .unwrap(),
         reconciliation: sqlx::query_as(
-            "SELECT session_id, observed_revision FROM managed_session_reconciliation_work \
-             ORDER BY session_id, observed_revision",
+            "SELECT session_id, observed_revision, worker_owner, preparation_candidate, \
+             unbound_preparation, unbound_terminal, demand_invalid FROM managed_session_reconciliation_work ORDER BY session_id, observed_revision",
         )
         .fetch_all(pool)
         .await
@@ -1474,7 +1474,7 @@ async fn sqlite_original_history_converges_without_a_parallel_session_model() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(ledgers, (24, 1), "E1");
+    assert_eq!(ledgers, (25, 1), "E1");
     let retired_columns: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('managed_session') WHERE name IN ('agent_id','metadata_json','runtime_json')",
@@ -1581,7 +1581,7 @@ async fn postgres_original_history_converges_with_the_same_domain_effects() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(ledgers, (24, 1), "E1");
+    assert_eq!(ledgers, (25, 1), "E1");
     let retired_columns: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM information_schema.columns \
          WHERE table_schema='t_session_original_upgrade' AND table_name='managed_session' \
@@ -1646,20 +1646,20 @@ async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
             &original,
             1,
             false,
-            24_usize,
+            25_usize,
         ),
-        ("PGV2", "t_session_original_v9", &original, 9, false, 24),
-        ("PGV3", "t_session_original_v12", &original, 12, false, 24),
-        ("PGV4", "t_session_original_v13", &original, 13, true, 24),
+        ("PGV2", "t_session_original_v9", &original, 9, false, 25),
+        ("PGV3", "t_session_original_v12", &original, 12, false, 25),
+        ("PGV4", "t_session_original_v13", &original, 13, true, 25),
         (
             "PGV5",
             "t_session_original_v22_matrix",
             &original,
             22,
             true,
-            24,
+            25,
         ),
-        ("PGV6", "t_session_compacted_v20", &compacted, 20, true, 22),
+        ("PGV6", "t_session_compacted_v20", &compacted, 20, true, 23),
     ] {
         let _ = admin
             .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())

@@ -214,6 +214,30 @@ fn append_current_tail(bundle: MigrationBundle) -> Result<MigrationBundle, Migra
         "retain minimal event admission evidence at Session deletion",
         "ALTER TABLE {prefix}_session_tombstone ADD COLUMN event_admissions_json TEXT",
     )?);
+    migrations.push(Migration::new(
+        next + 1,
+        "index root-owned Worker capacity and Run-free preparation obligations",
+        "ALTER TABLE {prefix}_session_reconciliation_work \
+             ADD COLUMN worker_owner TEXT; \
+         ALTER TABLE {prefix}_session_reconciliation_work \
+             ADD COLUMN preparation_candidate INTEGER NOT NULL DEFAULT 0 \
+             CHECK (preparation_candidate IN (0, 1)); \
+         ALTER TABLE {prefix}_session_reconciliation_work \
+             ADD COLUMN unbound_preparation INTEGER NOT NULL DEFAULT 0 \
+             CHECK (unbound_preparation IN (0, 1)); \
+         ALTER TABLE {prefix}_session_reconciliation_work \
+             ADD COLUMN unbound_terminal INTEGER NOT NULL DEFAULT 0 \
+             CHECK (unbound_terminal IN (0, 1)); \
+         ALTER TABLE {prefix}_session_reconciliation_work \
+             ADD COLUMN demand_invalid INTEGER NOT NULL DEFAULT 0 \
+             CHECK (demand_invalid IN (0, 1)); \
+         CREATE INDEX {prefix}_session_preparation_candidate_idx \
+             ON {prefix}_session_reconciliation_work (session_id) \
+             WHERE preparation_candidate = 1; \
+         CREATE INDEX {prefix}_session_worker_owner_idx \
+             ON {prefix}_session_reconciliation_work (worker_owner) \
+             WHERE worker_owner IS NOT NULL",
+    )?);
     MigrationBundle::new(bundle.bundle_id(), migrations)
 }
 
@@ -233,13 +257,13 @@ mod tests {
     use awaken_scoped_migration::{Dialect, MigrationError, plan};
 
     #[test]
-    fn session_schema_preserves_v1_and_adds_one_deterministic_dependency_index() {
-        // Migration cause/effect table: C1 published V1 receipt exists -> E1 its
-        // checksum remains accepted; C2 V2 is absent -> E2 apply only additive
-        // source-index DDL; C3 V2 is present -> E3 ledger replay is a no-op.
-        // M1=C1+C2=>E1+E2, M2=C1+C3=>E1+E3. Backfill is deliberately owned by
-        // repository startup because only the canonical Rust root decoder can
-        // derive desired credential dependencies without a parallel JSON model.
+    fn session_schema_preserves_v1_and_adds_owned_dependency_and_worker_indexes() {
+        // Causes: C1 published V1 receipt; C2 missing additive V2/V3/V4;
+        // C3 current receipts. Effects: E1 V1 checksum remains accepted;
+        // E2 deterministic source, tombstone and Worker-obligation DDL tails;
+        // E3 current ledger replay is a no-op. M1=C1+C2=>E1+E2;
+        // M2=C1+C3=>E1+E3. Backfill belongs to repository startup, whose
+        // canonical Rust root decoder owns derived index truth.
         let bundle = session_bundle().expect("session bundle");
         assert_eq!(
             bundle
@@ -247,7 +271,7 @@ mod tests {
                 .iter()
                 .map(awaken_scoped_migration::Migration::version)
                 .collect::<Vec<_>>(),
-            [1, 2, 3]
+            [1, 2, 3, 4]
         );
         let sql = bundle.migrations()[0].sql_for(awaken_scoped_migration::Dialect::Sqlite);
         for retired in [
@@ -268,6 +292,10 @@ mod tests {
                 .sql_for(awaken_scoped_migration::Dialect::Sqlite)
                 .contains("session_credential_source_reference")
         );
+        let worker_index_sql =
+            bundle.migrations()[3].sql_for(awaken_scoped_migration::Dialect::Sqlite);
+        assert!(worker_index_sql.contains("worker_owner"));
+        assert!(worker_index_sql.contains("preparation_candidate"));
     }
 
     #[test]
@@ -304,7 +332,7 @@ mod tests {
         );
         assert_eq!(
             original.complete.migrations().last().unwrap().version(),
-            24,
+            25,
             "E2"
         );
         let compacted_receipts = BTreeMap::from([
@@ -327,7 +355,7 @@ mod tests {
         );
         assert_eq!(
             compacted.complete.migrations().last().unwrap().version(),
-            22,
+            23,
             "E3"
         );
         let converged_original_receipts = original

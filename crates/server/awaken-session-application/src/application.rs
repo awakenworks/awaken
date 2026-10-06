@@ -168,6 +168,14 @@ pub struct SessionApplication {
     dispatch_observations: OnceLock<Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed>>,
     session_preparation_placement:
         OnceLock<Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement>>,
+    /// Disposable keyset position for one bounded preparation-candidate page
+    /// per poll. The root and its CAS remain the scheduling authority.
+    session_preparation_cursors: tokio::sync::Mutex<
+        BTreeMap<
+            String,
+            Arc<tokio::sync::Mutex<Option<awaken_session_state_contract::SessionScanCursor>>>,
+        >,
+    >,
     local_realization_owner: String,
     runtime_incarnation: String,
     mutation_sequence: AtomicU64,
@@ -268,6 +276,7 @@ impl SessionApplication {
             worker_observations: OnceLock::new(),
             dispatch_observations: OnceLock::new(),
             session_preparation_placement: OnceLock::new(),
+            session_preparation_cursors: tokio::sync::Mutex::new(BTreeMap::new()),
             local_realization_owner,
             runtime_incarnation: format!(
                 "session:{}:{started_at}:{}",
