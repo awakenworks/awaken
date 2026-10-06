@@ -609,3 +609,26 @@ same-name Create returns 409; exact guard removal then allows Pod and Namespace
 cleanup.
 It does not establish a full Flow successor or an already-sent original POST
 race in the product topology; those remain separate acceptance rows.
+
+## Amendment 2026-10-06: same-name isolation is observable for each brokered Kind
+
+The existing opt-in late-Create negative control now exercises the two
+same-name race orders for Pod, PVC, ConfigMap, Secret, Job and DaemonSet. In a
+dedicated real k3d API, each original request paused inside admission returned
+409 when an inert object of the same Kind retained the exact namespace/name;
+releasing that object before resuming the old request instead allowed a new UID
+to publish. The Pod Namespace-deletion counterexample remained reproducible.
+The fixture uses pending, non-binding PVCs, suspended Jobs, and DaemonSets with
+an unmatched node selector; it checks the Job/DaemonSet reservations have no
+controller-owned Pods at observation time. Each case removes its unique
+Namespace, resource and webhook before returning.
+
+This is only a provider-primitive qualification. A production closure witness
+still needs the original request's provider-stamped identity and retention,
+durable ticket CAS, protected immutable reservation, exact UID and projection
+read-back, and the resource's own side-effect/participant-stop proof. In
+particular, a sampled absence of Job/DaemonSet children does not stop their
+controllers, and a pending PVC observation does not prove the old claim could
+never allocate storage. The existing Pod-only ledger remains the authority;
+non-Pod InFlight tickets and rich plans continue to return Unknown until those
+additional facts are implemented and verified in that same provider path.
