@@ -326,7 +326,11 @@ async fn realize_accepted_sessions(managed: &ManagedState) {
         .session_application()
         .reconcile_session_realizations()
         .await;
-    assert!(report.failures.is_empty(), "E1 accepted Session realizes");
+    assert!(
+        report.failures.is_empty(),
+        "E1 accepted Session realizes: {:?}",
+        report.failures
+    );
 }
 
 #[tokio::test]
@@ -419,18 +423,26 @@ async fn session_carries_the_exact_frozen_environment_network() {
 
 /// Limited-network behavior cause graph:
 /// C1 Environment is limited; C2 MCP exception enabled; C3 exact MCP target is
-/// present at Session creation; C4 package-manager exception enabled.
+/// present at Session creation; C4 package-manager exception enabled; C5 the
+/// published ACP execution selects Workload MCP custody. Worker custody never
+/// authorizes a direct Sandbox-to-upstream exception (Environment unit row S3).
 /// E1 the sole snapshot compiler adds exact selected hosts; E2 Runtime receives
 /// that frozen canonical policy; E3 a disabled exception grants nothing.
 ///
 /// | Rule | C2 | C3 | C4 | Runtime effect |
 /// |---|---|---|---|---|
 /// | N1 | F | T | F | explicit hosts only; MCP denied |
-/// | N2 | T | T | F | exact MCP host added |
+/// | N2 | T | T | F | Worker custody: no direct MCP host added |
 /// | N3 | T | F | F | no ambient/default MCP host added |
 /// | N4 | F | F | T | canonical public registry hosts added |
+/// N1-N4 use C5=false (Native/Worker). C5=true direct Workload admission is
+/// the Environment compiler's S6 row, avoiding another protocol policy oracle.
 #[tokio::test]
 async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
+    // N1-N4 retain Native execution: MCP is Worker-owned, so an enabled
+    // exception still cannot grant a direct Sandbox route. C5=true Workload
+    // behavior is owned by the Environment compiler's S6 decision row in
+    // `snapshot_compilation_follows_the_network_and_runtime_decision_table`.
     let (environment_authoring, environment_execution) =
         awaken_protocol_managed_testkit::environment_components(awaken_time::system_clock());
     let egress = Arc::new(Mutex::new(Vec::new()));
@@ -518,12 +530,8 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
     create_session(&app, &managed, &enabled, true).await;
     assert_eq!(
         egress.lock().unwrap().last(),
-        Some(
-            &awaken_session_configuration_contract::SessionNetworkPolicy::Allowlist {
-                hosts: vec!["docs.example.test".into()]
-            }
-        ),
-        "N2 only the exact normalized MCP host reaches Runtime"
+        Some(&awaken_session_configuration_contract::SessionNetworkPolicy::None),
+        "N2 Worker-owned MCP never authorizes Sandbox-to-upstream bypass"
     );
     create_session(&app, &managed, &enabled, false).await;
     assert_eq!(

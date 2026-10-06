@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::{McpServer, McpToolHost, NotifySink, jsonrpc_reply};
 
-pub const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
+use awaken_mcp_wire::http::MCP_PROTOCOL_VERSION_HEADER;
 
 /// Authentication/business-context construction port for framework wrappers.
 /// The protocol core never interprets the resulting context.

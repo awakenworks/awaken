@@ -42,7 +42,7 @@ use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use crate::service::McpToolService;
 
 /// The session header of the Streamable HTTP transport.
-const SESSION_HEADER: &str = "Mcp-Session-Id";
+use awaken_mcp_wire::http::MCP_SESSION_ID_HEADER as SESSION_HEADER;
 
 /// Configuration for one mounted MCP endpoint.
 pub struct McpHttpConfig {

@@ -13,6 +13,7 @@
 //! directions speak one wire shape that cannot drift — the same precedent as
 //! `awaken-credential`.
 
+pub mod http;
 pub mod jsonrpc;
 pub mod progress;
 pub mod sse;

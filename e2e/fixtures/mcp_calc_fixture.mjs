@@ -23,6 +23,7 @@
 // form body.
 
 import http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { closeHttpServer } from '../http_server.mjs';
 
 /// Start the fixture; resolves to
@@ -66,6 +67,12 @@ export function startCalcFixture(token, options = {}) {
     opaqueResult = null,
     allowAnonymous = false,
     listenHost = '127.0.0.1',
+    listenPort = 0,
+    advertisedOrigin = null,
+    serverFactory = http.createServer,
+    stateful = false,
+    controlHandler = null,
+    beforeToolCall = null,
   } = options;
 
   // Undo application/x-www-form-urlencoded encoding ('+' is a space).
@@ -93,8 +100,10 @@ export function startCalcFixture(token, options = {}) {
   const tokenRequests = Object.create(null);
   const validTokens = new Set(expiredInitial ? [] : [token]);
   const state = { unauthorized: 0 };
+  const sessions = new Set();
 
-  const server = http.createServer((req, res) => {
+  const server = serverFactory((req, res) => {
+    if (controlHandler?.(req, res)) return;
     // HEAD is a bounded network probe, not the transport's long-lived GET
     // stream. No JSON-RPC call, grant or token receipt is produced.
     if (req.method === 'HEAD') {
@@ -157,6 +166,13 @@ export function startCalcFixture(token, options = {}) {
     }
     // The awaken-ext-mcp transport also opens a background GET SSE listener;
     // hold the stream open (no events) so the listener loop runs for real.
+    if (stateful && req.method !== 'POST' && !sessions.has(req.headers['mcp-session-id'])) {
+      res.writeHead(400); res.end(); return;
+    }
+    if (stateful && req.method === 'DELETE') {
+      sessions.delete(req.headers['mcp-session-id']);
+      res.writeHead(204); res.end(); return;
+    }
     if (req.method !== 'POST') {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.write(': keepalive\n\n');
@@ -164,7 +180,7 @@ export function startCalcFixture(token, options = {}) {
     }
     let raw = '';
     req.on('data', (chunk) => { raw += chunk; });
-    req.on('end', () => {
+    req.on('end', async () => {
       let body;
       try {
         body = JSON.parse(raw);
@@ -173,11 +189,26 @@ export function startCalcFixture(token, options = {}) {
         res.end();
         return;
       }
-      calls.push({ method: body.method, authorization: req.headers.authorization });
+      if (stateful && body.method !== 'initialize' && !sessions.has(req.headers['mcp-session-id'])) {
+        res.writeHead(400); res.end(); return;
+      }
+      const observed = {method:body.method, authorization:req.headers.authorization};
+      if (stateful) Object.assign(observed, {
+        nonce:req.headers['x-awaken-probe-id'] ?? null,
+        sessionId:req.headers['mcp-session-id'] ?? null,
+        tool:body.params?.name ?? null, completed:false,
+      });
+      calls.push(observed);
+      const responseHeaders = {'content-type':'application/json'};
 
       let result;
       switch (body.method) {
         case 'initialize':
+          if (stateful) {
+            const id = randomUUID(); sessions.add(id);
+            responseHeaders['mcp-session-id'] = id;
+            responseHeaders['mcp-protocol-version'] = '2025-06-18';
+          }
           result = {
             protocolVersion: '2025-06-18',
             // Advertise the capability before serving tools/list. Awaken's
@@ -209,6 +240,9 @@ export function startCalcFixture(token, options = {}) {
           };
           break;
         case 'tools/call': {
+          try { await beforeToolCall?.(body, req, res); }
+          catch { if (!res.destroyed) { res.writeHead(503); res.end(); } return; }
+          if (res.destroyed) return;
           if (body.params?.name === 'attest' && opaqueResult !== null) {
             result = { content: [{ type: 'text', text: opaqueResult }], isError: false };
             break;
@@ -225,18 +259,20 @@ export function startCalcFixture(token, options = {}) {
           res.end();
           return;
       }
-      res.writeHead(200, { 'content-type': 'application/json' });
+      if (stateful) observed.completed = true;
+      res.writeHead(200, responseHeaders);
       res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }));
     });
   });
 
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(0, listenHost, () => {
+    server.listen(listenPort, listenHost, () => {
       const { port } = server.address();
+      const origin = advertisedOrigin ?? `http://${listenHost}:${port}`;
       resolve({
-        url: `http://${listenHost}:${port}/`,
-        tokenUrl: `http://${listenHost}:${port}/token`,
+        url: `${origin}/`,
+        tokenUrl: `${origin}/token`,
         calls,
         grants,
         tokenRequests,
