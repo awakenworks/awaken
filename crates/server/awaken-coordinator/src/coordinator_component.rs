@@ -69,6 +69,7 @@ pub struct CoordinatorDependencies {
     pub worker_execution_bindings:
         Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub worker_execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
+    pub worker_relay_targets: Option<Arc<dyn crate::WorkerRelayTargetObserver>>,
     pub credential_deliveries:
         Option<Arc<dyn awaken_runtime_contract::AttemptCredentialDeliverySource>>,
     pub repository_transport_authorizer:
@@ -100,6 +101,10 @@ pub struct CoordinatorDependencies {
     /// Service-token verifier shared by private Control→Coordinator commands.
     /// AllInOne uses an in-process rollout target and leaves this absent.
     pub service_authenticator:
+        Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
+    /// Separate projected credential for the read-only Worker destination.
+    /// The broader Coordinator private token is never handed to the Gateway.
+    pub relay_destination_authenticator:
         Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
     /// The process's one wall clock, chosen by the binary that composes the
     /// Coordinator; every Coordinator-owned judgement of time reads it.
@@ -258,6 +263,7 @@ pub async fn build_coordinator_component(
         worker_placement_policy,
         worker_execution_bindings,
         worker_execution_stops,
+        worker_relay_targets,
         credential_deliveries,
         repository_transport_authorizer,
         worker_directory,
@@ -270,6 +276,7 @@ pub async fn build_coordinator_component(
         default_workspace,
         private_router,
         service_authenticator,
+        relay_destination_authenticator,
         clock,
     } = dependencies;
 
@@ -288,11 +295,16 @@ pub async fn build_coordinator_component(
 
     let domain_observation = service_authenticator.as_ref().map(|authenticator| {
         crate::worker_observation_boundary::domain_router_with_authenticator(
-            worker_directory.clone(),
-            host.clone(),
-            environments.clone(),
-            session_application.clone(),
-            authenticator.clone(),
+            crate::worker_observation_boundary::DomainState {
+                directory: worker_directory.clone(),
+                host: host.clone(),
+                environments: environments.clone(),
+                sessions: session_application.clone(),
+                relay_targets: worker_relay_targets.clone(),
+                clock: clock.clone(),
+                authenticator: authenticator.clone(),
+                relay_authenticator: relay_destination_authenticator.clone(),
+            },
         )
     });
     let (managed, data, application, worker_transport, dream_application) =

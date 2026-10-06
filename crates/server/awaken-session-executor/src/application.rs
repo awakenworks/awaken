@@ -348,10 +348,15 @@ impl crate::SharedHost {
                     return Some(false);
                 }
                 slot.realization_authority.lease().map(|current| {
-                    current.runtime_incarnation == generation.runtime_incarnation()
-                        && current.epoch == generation.lease_epoch().get()
-                        && current.expires_at_unix_ms >= generation.lease_expires_at_unix_ms()
-                        && slot.realization_authority.remaining().is_some()
+                    let asserted = awaken_session_resource_contract::SessionRealizationLease {
+                        owner: current.owner.clone(),
+                        runtime_incarnation: generation.runtime_incarnation().to_owned(),
+                        epoch: generation.lease_epoch().get(),
+                        expires_at_unix_ms: generation.lease_expires_at_unix_ms(),
+                    };
+                    slot.realization_authority
+                        .remaining_for(&asserted)
+                        .is_some()
                 })
             })
             .flatten()

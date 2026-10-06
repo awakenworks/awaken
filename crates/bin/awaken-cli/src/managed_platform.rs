@@ -230,6 +230,8 @@ pub(super) fn conjunctive_credential_rollout_target(
 /// add a Coordinator router.
 #[derive(Clone, Default)]
 pub struct CoordinatorServiceAdapters {
+    pub relay_destination_authenticator:
+        Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
     pub worker_authenticator:
         Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
     pub worker_placement_policy: Option<Arc<dyn awaken_dispatch::PlacementPolicy>>,
@@ -246,6 +248,15 @@ pub struct CoordinatorServiceAdapters {
 }
 
 impl CoordinatorServiceAdapters {
+    #[must_use]
+    pub fn with_relay_destination_authenticator(
+        mut self,
+        authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
+    ) -> Self {
+        self.relay_destination_authenticator = Some(authenticator);
+        self
+    }
+
     #[must_use]
     pub fn with_worker_authenticator(
         mut self,

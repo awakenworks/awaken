@@ -15,9 +15,21 @@ pub(crate) struct McpRelayCapability {
     /// bearers host-side and injects them when forwarding the sandbox's MCP calls, so the
     /// raw token never enters the sandbox. See [`crate::mcp_relay`].
     pub(crate) mcp_relay: tokio::sync::OnceCell<crate::mcp_relay::McpRelay>,
+    /// Installed only by a deployment that exposes this relay to isolated
+    /// containers. It issues existing Gateway CONNECT capabilities per call.
+    pub(crate) outbound_proxy: Option<Arc<dyn crate::McpRelayOutboundProxy>>,
 }
 
 impl crate::host::SharedHost {
+    #[must_use]
+    pub fn with_mcp_relay_outbound_proxy(
+        mut self,
+        issuer: Arc<dyn crate::McpRelayOutboundProxy>,
+    ) -> Self {
+        self.mcp.outbound_proxy = Some(issuer);
+        self
+    }
+
     #[must_use]
     pub fn with_mcp_process_reaper(
         mut self,

@@ -44,6 +44,61 @@ fn retained(mut pod: Value) -> Pod {
 }
 
 #[tokio::test]
+async fn relay_address_uses_the_same_exact_retained_pod_observation() {
+    // Causes: R1 one running Pod has the authenticated UID, retained Worker
+    // evidence and a typed address; R2 UID replacement; R3 missing retention;
+    // R4 missing or malformed address. Effects: E1 one IP from one Pod GET;
+    // E2 no route address and no mutation for every other cause.
+    // | Rule | UID | retained | Pod IP | Effect |
+    // | R1 | exact | yes | valid | E1 |
+    // | R2 | wrong | yes | valid | E2 |
+    // | R3 | exact | no | valid | E2 |
+    // | R4 | exact | yes | missing/invalid | E2 |
+    let fixture = Fixture::new(Fault::None);
+    let mut pod = running();
+    pod["status"]["podIP"] = json!("10.1.2.3");
+    fixture.facts.lock().unwrap().pod = Some(retained(pod.clone()));
+    let observer = fixture.observer();
+    assert_eq!(
+        observer.relay_ip_for("worker", "uid-a").await.unwrap(),
+        "10.1.2.3".parse::<std::net::IpAddr>().unwrap(),
+        "R1/E1"
+    );
+    assert_eq!(fixture.facts.lock().unwrap().calls.len(), 1, "R1 one GET");
+    assert!(
+        observer
+            .relay_ip_for("worker", "replacement")
+            .await
+            .is_err(),
+        "R2/E2"
+    );
+    fixture.facts.lock().unwrap().pod = Some(decode(pod.clone()));
+    assert!(
+        observer.relay_ip_for("worker", "uid-a").await.is_err(),
+        "R3/E2"
+    );
+    for address in [Value::Null, json!("not-an-ip")] {
+        let mut missing = pod.clone();
+        missing["status"]["podIP"] = address;
+        fixture.facts.lock().unwrap().pod = Some(retained(missing));
+        assert!(
+            observer.relay_ip_for("worker", "uid-a").await.is_err(),
+            "R4/E2"
+        );
+    }
+    assert!(
+        fixture
+            .facts
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .all(|(method, _)| method == "GET"),
+        "E2 read-only observation"
+    );
+}
+
+#[tokio::test]
 async fn registration_retention_is_exact_idempotent_and_rejects_deleting_pods() {
     // T1 original live UID + absent finalizer -> exact RV CAS preserves sibling
     // metadata; T2 repeat -> no second write; T3 deletion/replacement -> no

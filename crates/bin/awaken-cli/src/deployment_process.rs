@@ -249,6 +249,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
             runtime_authority: Some(persistence.runtime_authority.clone()),
             worker_observations: Some(worker_observations),
             control_service_authenticator: None,
+            relay_destination_authenticator: coordinator_services.relay_destination_authenticator,
             control_service,
             additional_lifecycle_delivery: None,
             credential_material_resolver,
