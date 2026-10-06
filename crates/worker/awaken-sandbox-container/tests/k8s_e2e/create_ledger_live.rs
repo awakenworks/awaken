@@ -45,6 +45,48 @@ async fn delete_namespace_by_uid(
     Ok(())
 }
 
+/// Namespace finalization needs every aggregated APIService available. A
+/// reachable node alone can strand an otherwise empty test Namespace.
+async fn require_namespace_finalization_discovery(client: &kube::Client) {
+    use k8s_openapi::kube_aggregator::pkg::apis::apiregistration::v1::APIService;
+    let services: kube::Api<APIService> = kube::Api::all(client.clone());
+    for attempt in 0..30 {
+        let observed = services
+            .list(&kube::api::ListParams::default())
+            .await
+            .expect("APIService list must be readable before Namespace creation");
+        let unavailable = observed
+            .items
+            .iter()
+            .filter(|item| {
+                item.spec
+                    .as_ref()
+                    .and_then(|spec| spec.service.as_ref())
+                    .is_some()
+            })
+            .filter(|item| {
+                !item
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.as_ref())
+                    .is_some_and(|conditions| {
+                        conditions.iter().any(|condition| {
+                            condition.type_ == "Available" && condition.status == "True"
+                        })
+                    })
+            })
+            .map(|item| item.metadata.name.clone().unwrap_or_default())
+            .collect::<Vec<_>>();
+        if unavailable.is_empty() {
+            return;
+        }
+        if attempt == 29 {
+            panic!("namespace cleanup requires available aggregated APIs: {unavailable:?}");
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
 #[tokio::test]
 async fn first_pod_create_verifies_the_live_api_defaulted_projection() {
     // Causes: C1 a unique, effect-fenced zero-participant plan reaches the
@@ -173,6 +215,9 @@ async fn worker_create_ledger_joins_api_requests_and_rejects_recreated_uid() {
         .await
         .unwrap();
     let namespaces: Api<Namespace> = Api::all(client.clone());
+    // C0 complete aggregated discovery; E0 a missing endpoint fails before
+    // generated Namespace creation rather than during task-owned cleanup.
+    require_namespace_finalization_discovery(&client).await;
     let sandbox = namespaces
         .create(
             &PostParams::default(),
@@ -353,6 +398,9 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
     let client = awaken_sandbox_container::k8s::connect_control_client()
         .await
         .unwrap();
+    // C0 incomplete aggregated discovery blocks Namespace finalization; E0
+    // refuse before creating any of the six task-owned reservations.
+    require_namespace_finalization_discovery(&client).await;
     let policies: Api<ValidatingAdmissionPolicy> = Api::all(client.clone());
     let bindings: Api<ValidatingAdmissionPolicyBinding> = Api::all(client.clone());
     assert!(
@@ -813,6 +861,9 @@ async fn original_create_guard_keeps_a_deleted_pod_visible_until_exact_release()
         .await
         .unwrap();
     let namespaces: Api<Namespace> = Api::all(client.clone());
+    // C0 incomplete aggregated discovery blocks Namespace finalization; E0
+    // refuse before creating the guarded task-owned Pod.
+    require_namespace_finalization_discovery(&client).await;
     let namespace = namespaces
         .create(
             &PostParams::default(),
