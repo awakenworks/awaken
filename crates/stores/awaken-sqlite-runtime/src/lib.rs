@@ -18,9 +18,12 @@ use std::sync::{Arc, LockResult, Mutex, MutexGuard};
 use std::time::Duration;
 
 use rusqlite::Connection;
+
+mod pool;
+pub use pool::{EmbeddedSqlite, SqlitePoolError};
 use tokio::sync::Semaphore;
 
-const WRITE_WAIT: Duration = Duration::from_secs(30);
+pub(crate) const WRITE_WAIT: Duration = Duration::from_secs(30);
 static JOURNAL_MODE_CHANGE: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, PartialEq, Eq)]
