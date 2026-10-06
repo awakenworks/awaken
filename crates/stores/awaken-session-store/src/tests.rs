@@ -1073,11 +1073,11 @@ pub(super) fn scoped_postgres_url(base: &str, schema: &str) -> String {
     let separator = if base.contains('?') { '&' } else { '?' };
     format!("{base}{separator}options=-c%20search_path%3D{schema}")
 }
-
+type ReconciliationSnapshot = (String, i64, Option<String>, i64, i64, i64, i64);
 #[derive(Debug, PartialEq, Eq)]
 struct PostgresSessionSnapshot {
     roots: Vec<(String, String, i64)>,
-    reconciliation: Vec<(String, i64, Option<String>, i64, i64, i64, i64)>,
+    reconciliation: Vec<ReconciliationSnapshot>,
     vaults: Vec<(String, String)>,
     credential_sources: Vec<(String, String)>,
     receipts: Vec<(String, i64, String)>,
