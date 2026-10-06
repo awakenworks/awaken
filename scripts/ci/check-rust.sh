@@ -115,8 +115,6 @@ step "dependency-sources" "use an allowlisted HTTPS Git repository and pin a ful
   python3 scripts/ci/check_dependency_sources.py
 step "authority-arithmetic" "replace lossy or saturating authority arithmetic with checked conversions" \
   python3 scripts/ci/check_authority_arithmetic.py
-step "crate-boundaries" "remove the illegal dependency shown above (a lower layer must not import a higher one)" \
-  python3 scripts/ci/check_crate_boundaries.py
 step "feature-matrix" "add the crate to [workspace.members] or register the feature's substitute verifier" \
   python3 scripts/ci/check_feature_matrix.py
 

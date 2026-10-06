@@ -403,6 +403,11 @@ def release_gate_errors(check_all: str, public_api: str, check_rust: str) -> lis
         )
     if authority_arithmetic not in check_rust:
         errors.append("check-rust does not own the authority-arithmetic check")
+    boundary = 'run static "crate-boundaries" python3 scripts/ci/check_crate_boundaries.py'
+    if (check_all.count(boundary) != 1
+            or check_all.count("python3 scripts/ci/check_crate_boundaries.py") != 1
+            or "python3 scripts/ci/check_crate_boundaries.py" in check_rust):
+        errors.append("crate boundaries must run once in static, not again in the Rust gate")
     return errors
 
 
@@ -697,7 +702,6 @@ def shared_conformance_errors(
 # checker's own source, or editing the checker never re-runs it.
 GATE_OWNED_CHECKERS = (
     "check_dependency_sources.py",
-    "check_crate_boundaries.py",
     "check_feature_matrix.py",
 )
 
@@ -761,6 +765,8 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
     owner_text = owner.group(1) if owner else ""
     if owner_text.count("run: scripts/ci/check-rust.sh --quick") != 1:
         errors.append("Rust pre-commit must delegate to the canonical gate once")
+    if hooks.count("run: python3 scripts/ci/check_crate_boundaries.py") != 1:
+        errors.append("crate boundaries must have one universal pre-commit owner")
     push_owner = re.search(r"(?m)^    rust-quick:\n((?:      .*\n)+)", pre_push)
     push_text = push_owner.group(1) if push_owner else ""
     if push_text.count("run: scripts/ci/check-rust.sh --push") != 1:
@@ -1234,10 +1240,16 @@ def self_test() -> None:
     # + static-before-Cargo -> accept. H2 duplicate direct/nested invocation ->
     # reject. H3 missing nested invocation/trigger -> reject. H4 Cargo checked
     # first -> reject, because an absent toolchain must not hide static failures.
-    # Cross H2/H3/H4 with both previously duplicated scans; no second test owner.
+    # Cross H2/H3/H4 with the remaining gate-owned scans; crate boundaries
+    # instead runs once in the universal hook and once in release static.
     hooks = (ROOT / "lefthook.yml").read_text(encoding="utf-8")
     gate = (ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8")
     assert not rust_hook_errors(hooks, gate), "H1 single owner"
+    # B1 hook and release static each own one invocation; B2 a missing or
+    # duplicated invocation, or a Rust-gate copy, must reject the graph.
+    boundary = "python3 scripts/ci/check_crate_boundaries.py"
+    assert rust_hook_errors(hooks.replace(f"run: {boundary}", "run: true"), gate), "B2 hook"
+    assert rust_hook_errors(hooks + f"\n    copy:\n      run: {boundary}\n", gate), "B2 duplicate hook"
     # Push-mode table. Causes: P1 pre-commit runs --quick; P2 pre-push runs
     # --push; P3 the gate's --push branch runs workspace clippy under
     # -D warnings; P4 it runs the formal coverage ledger; P5 pre-push still
@@ -1626,6 +1638,9 @@ def self_test() -> None:
     public_api = (ROOT / "scripts/ci/check_public_api.sh").read_text(encoding="utf-8")
     check_rust = (ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8")
     assert not release_gate_errors(check_all, public_api, check_rust), "R1/C6"
+    assert release_gate_errors(check_all.replace('run static "crate-boundaries" python3 scripts/ci/check_crate_boundaries.py', ''), public_api, check_rust), "B2 missing static"
+    assert release_gate_errors(check_all + '\nrun static "copy" python3 scripts/ci/check_crate_boundaries.py\n', public_api, check_rust), "B2 duplicate static"
+    assert release_gate_errors(check_all, public_api, check_rust + '\npython3 scripts/ci/check_crate_boundaries.py\n'), "B2 duplicate Rust"
     # C11 coverage invokes the canonical deterministic suite once; C12 the
     # browser suite executes at the frontend boundary. Effects: duplicates or
     # omission reject the graph (R16/R17), rather than silently losing evidence.
