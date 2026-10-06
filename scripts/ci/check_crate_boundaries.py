@@ -6,8 +6,8 @@ from __future__ import annotations
 # The checker reads every crate's manifest and sources, the root manifest, the
 # fitness modules and baselines under scripts/ci, and test trees outside crates/
 # (e2e). That is effectively the whole repository, so it declares the sentinel
-# and runs on every commit as its own fast hook, independent of the slower
-# rust shell gate that also runs it.
+# and runs on every commit through its own hook. The release static group
+# invokes the same checker once; the Rust gate does not repeat it.
 INPUT_GLOBS: tuple[str, ...] = ("**/*",)
 
 import argparse

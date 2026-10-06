@@ -132,6 +132,7 @@ run static "repository-hygiene self-test" python3 scripts/ci/check_repository_hy
 run static "repository-hygiene" python3 scripts/ci/check_repository_hygiene.py
 run static "dependency-sources self-test" python3 scripts/ci/check_dependency_sources.py --self-test
 run static "authority-arithmetic self-test" python3 scripts/ci/check_authority_arithmetic.py --self-test
+run static "crate-boundaries" python3 scripts/ci/check_crate_boundaries.py
 run static "hook-glob generator self-test" python3 scripts/ci/generate_hooks.py --self-test
 run static "hook-glob generation" python3 scripts/ci/generate_hooks.py --check
 run static "test-orchestration self-test" python3 scripts/ci/check_test_orchestration.py --self-test
