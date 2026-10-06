@@ -176,3 +176,21 @@ For a new adapter, implement only this first slice:
 ## Guardrails
 
 G10, G19, and G26 in [INVARIANTS](../INVARIANTS.md).
+
+## MCP HTTP relay responses
+
+The direction-neutral `awaken-mcp-wire` crate owns MCP HTTP header vocabulary
+and the response header projection shared by Worker and deployment transport
+adapters. The relay preserves upstream session identity, protocol version,
+content type, authentication challenge, retry and cache semantics. It never
+forwards connection-level framing, cookies, or arbitrary upstream headers.
+An upstream MCP session id remains upstream-owned transport data: no Awaken
+Session, route mapping, or persistence authority is added for it.
+
+The shared Host MCP fixture exercises both stateless and stateful upstreams.
+A stateful upstream returns its session id at initialization and rejects
+subsequent requests without that same id. This is required regression evidence
+for transparent authenticated relay transport. Optional live-provider tests are
+explicitly ignored in ordinary runs; selecting one for qualification requires
+its credentials and fails when they are absent. Such a test alone does not
+prove isolated ACP reachability or deployment-specific no-bypass networking.

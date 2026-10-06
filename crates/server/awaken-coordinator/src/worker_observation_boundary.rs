@@ -27,6 +27,8 @@ pub const WORKER_OBSERVATIONS_PATH: &str = "/internal/v1/workers/observations";
 pub const WORKER_OBSERVE_PERMISSION: &str = "worker:observe";
 pub(crate) const WORKER_DOMAIN_PATH: &str = "/internal/v1/workers/domain";
 pub use awaken_worker_contract::WORKER_RELAY_DESTINATION_PATH;
+#[cfg(all(test, feature = "test-support"))]
+mod relay_tests;
 /// Total per-attempt deadline for one private control-plane call.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const ATTEMPTS: usize = 3;

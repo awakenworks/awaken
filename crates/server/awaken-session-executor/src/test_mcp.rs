@@ -2,6 +2,7 @@
 // @formal owner crates/server/awaken-session-executor/src/mcp.rs
 // @formal reason: In-process MCP protocol emulator declared under cfg(test) and used only by runtime-host
 // @formal reason: tests.
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,45 +16,82 @@ pub(crate) type SeenMcpRequests = Arc<Mutex<Vec<(String, String)>>>;
 /// protocol emulator here prevents each security test from growing a subtly
 /// different initialize/list/call implementation.
 pub(crate) async fn start(required_bearer: Option<&str>) -> (String, SeenMcpRequests) {
-    start_with_options(required_bearer, false, Duration::ZERO).await
+    start_with_options(required_bearer, false, Duration::ZERO, false).await
+}
+
+pub(crate) async fn start_stateful(required_bearer: Option<&str>) -> (String, SeenMcpRequests) {
+    start_with_options(required_bearer, false, Duration::ZERO, true).await
 }
 
 pub(crate) async fn start_with_prompts(
     required_bearer: Option<&str>,
     prompts: bool,
 ) -> (String, SeenMcpRequests) {
-    start_with_options(required_bearer, prompts, Duration::ZERO).await
+    start_with_options(required_bearer, prompts, Duration::ZERO, false).await
 }
 
 pub(crate) async fn start_with_tool_call_delay(delay: Duration) -> (String, SeenMcpRequests) {
-    start_with_options(None, false, delay).await
+    start_with_options(None, false, delay, false).await
+}
+
+#[derive(Clone)]
+struct FixtureState {
+    seen: SeenMcpRequests,
+    required_bearer: Option<String>,
+    prompts: bool,
+    tool_call_delay: Duration,
+    stateful: bool,
+    session_live: Arc<AtomicBool>,
 }
 
 async fn start_with_options(
     required_bearer: Option<&str>,
     prompts: bool,
     tool_call_delay: Duration,
+    stateful: bool,
 ) -> (String, SeenMcpRequests) {
-    async fn mcp(
-        State((seen, required_bearer, prompts, tool_call_delay)): State<(
-            SeenMcpRequests,
-            Option<String>,
-            bool,
-            Duration,
-        )>,
-        req: Request,
-    ) -> Response {
+    async fn mcp(State(state): State<FixtureState>, req: Request) -> Response {
+        use awaken_mcp_wire::http::{MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER};
+        const SESSION: &str = "host-test-session";
         let bearer = req
             .headers()
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .unwrap_or("<none>")
             .to_string();
-        if required_bearer
+        if state
+            .required_bearer
             .as_deref()
             .is_some_and(|required| required != bearer)
         {
             return StatusCode::UNAUTHORIZED.into_response();
+        }
+        let has_session = req
+            .headers()
+            .get(MCP_SESSION_ID_HEADER)
+            .is_some_and(|value| value == SESSION)
+            && state.session_live.load(Ordering::Acquire);
+        if req.method() != axum::http::Method::POST {
+            if !state.stateful {
+                return StatusCode::METHOD_NOT_ALLOWED.into_response();
+            }
+            if !has_session {
+                return StatusCode::BAD_REQUEST.into_response();
+            }
+            state
+                .seen
+                .lock()
+                .unwrap()
+                .push((req.method().to_string(), bearer));
+            return match *req.method() {
+                axum::http::Method::GET => ([(header::CONTENT_TYPE, "text/event-stream")],
+                    "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n").into_response(),
+                axum::http::Method::DELETE => {
+                    state.session_live.store(false, Ordering::Release);
+                    StatusCode::NO_CONTENT.into_response()
+                }
+                _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
+            };
         }
         let body = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
             Ok(body) => body,
@@ -72,13 +110,17 @@ async fn start_with_options(
             .and_then(serde_json::Value::as_str)
             .unwrap_or("<missing>")
             .to_string();
-        seen.lock().unwrap().push((method.clone(), bearer));
+        if state.stateful && method != "initialize" && !has_session {
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+        state.seen.lock().unwrap().push((method.clone(), bearer));
         let Some(id) = value.get("id").cloned() else {
             return StatusCode::ACCEPTED.into_response();
         };
         let result = match method.as_str() {
             "initialize" => {
-                let capabilities = if prompts {
+                state.session_live.store(true, Ordering::Release);
+                let capabilities = if state.prompts {
                     serde_json::json!({ "tools": {}, "prompts": {} })
                 } else {
                     serde_json::json!({ "tools": {} })
@@ -101,13 +143,13 @@ async fn start_with_options(
                 }]
             }),
             "tools/call" => {
-                tokio::time::sleep(tool_call_delay).await;
+                tokio::time::sleep(state.tool_call_delay).await;
                 serde_json::json!({
                     "content": [{ "type": "text", "text": value["params"]["arguments"]["value"] }],
                     "isError": false
                 })
             }
-            "prompts/list" if prompts => serde_json::json!({
+            "prompts/list" if state.prompts => serde_json::json!({
                 "prompts": [{
                     "name": "review",
                     "title": "Review",
@@ -115,7 +157,7 @@ async fn start_with_options(
                     "arguments": [{ "name": "focus", "required": true }]
                 }]
             }),
-            "prompts/get" if prompts => serde_json::json!({
+            "prompts/get" if state.prompts => serde_json::json!({
                 "description": "Rendered review instructions",
                 "messages": [{
                     "role": "user",
@@ -139,25 +181,40 @@ async fn start_with_options(
                 .into_response();
             }
         };
-        axum::Json(serde_json::json!({
+        let mut response = axum::Json(serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
             "result": result
         }))
-        .into_response()
+        .into_response();
+        if state.stateful && method == "initialize" {
+            response
+                .headers_mut()
+                .insert(MCP_SESSION_ID_HEADER, SESSION.parse().unwrap());
+            response
+                .headers_mut()
+                .insert(MCP_PROTOCOL_VERSION_HEADER, "2025-06-18".parse().unwrap());
+            // These transport/credential fields must never escape the relay.
+            response
+                .headers_mut()
+                .insert("set-cookie", "secret=forbidden".parse().unwrap());
+        }
+        response
     }
 
     let seen = SeenMcpRequests::default();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let app = axum::Router::new()
-        .route("/mcp", axum::routing::post(mcp))
-        .with_state((
-            seen.clone(),
-            required_bearer.map(str::to_string),
+        .route("/mcp", axum::routing::any(mcp))
+        .with_state(FixtureState {
+            seen: seen.clone(),
+            required_bearer: required_bearer.map(str::to_string),
             prompts,
             tool_call_delay,
-        ));
+            stateful,
+            session_live: Arc::new(AtomicBool::new(false)),
+        });
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
