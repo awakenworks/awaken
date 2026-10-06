@@ -336,6 +336,51 @@ async fn deployment_binding_freezes_restart_policy_through_the_same_transport_ow
 }
 
 #[tokio::test]
+async fn relay_target_reuses_the_selected_worker_pod_observer() {
+    // Causes: R1 exact Worker identity with retained running Pod and Pod IP;
+    // R2 foreign namespace or incarnation; R3 missing Pod IP or retention.
+    // Effects: E1 one address after one API read; E2 no target, with foreign
+    // identities rejected before Kubernetes I/O and no mutation in every row.
+    // | Rule | Worker | Pod evidence | Effect |
+    // | R1 | exact | complete | E1 |
+    // | R2 | foreign | any | E2, no API read |
+    // | R3 | exact | incomplete | E2 |
+    let (transport, facts) = fixture();
+    let targets = transport
+        .relay_target_source()
+        .expect("Kubernetes target port");
+    let worker = WorkerIdentity::new("k8s:workers:worker-a:uid-a", "uid-a", 1);
+    let mut pod = running();
+    pod["status"]["podIP"] = json!("10.1.2.3");
+    *facts.pod.lock().unwrap() = (StatusCode::OK, pod.clone());
+    assert_eq!(
+        targets.ip_for(&worker).await.unwrap(),
+        "10.1.2.3".parse::<std::net::IpAddr>().unwrap(),
+        "R1/E1"
+    );
+    let reads = facts.reads.load(Ordering::SeqCst);
+    assert_eq!(reads, 1, "R1 one physical observation");
+    for foreign in [
+        WorkerIdentity::new("k8s:foreign:worker-a:uid-a", "uid-a", 1),
+        WorkerIdentity::new("k8s:workers:worker-a:uid-a", "replaced", 1),
+    ] {
+        assert!(targets.ip_for(&foreign).await.is_err(), "R2/E2");
+    }
+    assert_eq!(facts.reads.load(Ordering::SeqCst), reads, "R2 no Pod read");
+    for missing in [Value::Null, json!("not-an-ip")] {
+        pod["status"]["podIP"] = missing;
+        *facts.pod.lock().unwrap() = (StatusCode::OK, pod.clone());
+        assert!(targets.ip_for(&worker).await.is_err(), "R3/E2");
+    }
+    pod["status"]["podIP"] = json!("10.1.2.3");
+    pod["metadata"]["finalizers"] = json!([]);
+    *facts.pod.lock().unwrap() = (StatusCode::OK, pod);
+    assert!(targets.ip_for(&worker).await.is_err(), "R3/E2 retention");
+    assert!(facts.deletes.lock().unwrap().is_empty(), "E2 no delete");
+    assert!(facts.updates.lock().unwrap().is_empty(), "E2 no update");
+}
+
+#[tokio::test]
 async fn independent_stop_consumes_only_original_closed_binding_and_preserves_dispatch_veto() {
     use awaken_dispatch::{DispatchQueue, WorkerDirectory};
     use awaken_store_inmem::MemoryCommitCoordinator;

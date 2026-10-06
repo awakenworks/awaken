@@ -284,10 +284,10 @@ pub const fn credential_realization_selection(
     cloud_environment: bool,
     hosted_profile_installed: bool,
 ) -> CredentialRealizationSelection {
-    if acp_runtime {
-        CredentialRealizationSelection::SelfHostedAcp
-    } else if cloud_environment && hosted_profile_installed {
+    if cloud_environment && hosted_profile_installed {
         CredentialRealizationSelection::HostedCloud
+    } else if acp_runtime {
+        CredentialRealizationSelection::SelfHostedAcp
     } else {
         CredentialRealizationSelection::SelfHostedNative
     }
@@ -946,6 +946,38 @@ impl<T> WorkerLocalCredentialResolver for T where
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn credential_profile_selection_prioritizes_an_installed_cloud_policy() {
+        // Causes: C1 Cloud Environment, C2 hosted profile installed, C3 ACP
+        // runtime. Effects: E1 the installed Hosted profile owns the frozen
+        // holder; E2 standalone ACP retains its Workload holder; E3 ordinary
+        // Native execution retains the self-hosted Worker holder. C1 without
+        // C2 cannot manufacture a Hosted credential policy.
+        // | Rule | C1 | C2 | C3 | Effect |
+        // | H1 | yes | yes | any | E1 |
+        // | H2 | any | no | yes | E2 |
+        // | H3 | no | any | yes | E2 |
+        // | H4 | otherwise | any | no | E3 |
+        for cloud in [false, true] {
+            for installed in [false, true] {
+                for acp in [false, true] {
+                    let expected = if cloud && installed {
+                        CredentialRealizationSelection::HostedCloud
+                    } else if acp {
+                        CredentialRealizationSelection::SelfHostedAcp
+                    } else {
+                        CredentialRealizationSelection::SelfHostedNative
+                    };
+                    assert_eq!(
+                        credential_realization_selection(acp, cloud, installed),
+                        expected,
+                        "C1={cloud} C2={installed} C3={acp}"
+                    );
+                }
+            }
+        }
+    }
 
     /// Cause-effect graph for the credential evidence codec:
     ///

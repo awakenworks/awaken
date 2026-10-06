@@ -63,6 +63,10 @@ pub struct ContainerProvider<R: ContainerRuntime> {
     /// advertise support: the runtime must independently attest that direct
     /// workload egress cannot bypass this proxy.
     pub(super) allowlist_proxy: Option<AllowlistProxy>,
+    /// Deployment selected the existing Worker MCP relay and Gateway route.
+    /// Capability publication still requires independently attested runtime
+    /// no-bypass policy and the installed signed proxy issuer.
+    pub(super) worker_mcp_relay_substitution: bool,
     /// In-memory blob seed for `File`/`Resource`/`Secret` mounts (keyed by content id),
     /// consulted before the store — the test/seed path, mirroring `LocalProvider`.
     pub(super) blobs: Arc<std::collections::HashMap<String, Vec<u8>>>,
@@ -85,12 +89,14 @@ pub struct ContainerProvider<R: ContainerRuntime> {
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     pub(super) fn runtime_sandbox_capabilities(&self) -> pc::SandboxCapabilities {
+        let allowlist = allowlist_capability_advertised(
+            self.runtime.enforces_network_allowlist(),
+            self.allowlist_proxy.is_some(),
+        );
         container_capabilities(
             self.runtime.enforces_network_none(),
-            allowlist_capability_advertised(
-                self.runtime.enforces_network_allowlist(),
-                self.allowlist_proxy.is_some(),
-            ),
+            allowlist,
+            self.worker_mcp_relay_substitution,
             self.runtime.supports_package_provisioning() || self.package_provisioner.is_some(),
             self.runtime.sandbox_control_services(),
         )
@@ -110,6 +116,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             default_image: default_image.into(),
             forward_proxy: None,
             allowlist_proxy: None,
+            worker_mcp_relay_substitution: false,
             blobs: Arc::new(std::collections::HashMap::new()),
             file_store: None,
             secret_broker: std::sync::RwLock::new(None),
@@ -163,6 +170,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     #[must_use]
     pub fn with_allowlist_proxy(mut self, proxy: AllowlistProxy) -> Self {
         self.allowlist_proxy = Some(proxy);
+        self
+    }
+
+    #[must_use]
+    pub fn with_worker_mcp_relay_substitution(mut self) -> Self {
+        self.worker_mcp_relay_substitution = true;
         self
     }
 

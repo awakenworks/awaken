@@ -144,6 +144,7 @@ pub struct WorkerNodeBuilder {
     application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
+    mcp_relay_outbound_proxy: Option<Arc<dyn awaken_session_executor::McpRelayOutboundProxy>>,
     brokered_acp_model_access:
         Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
     remote_attempt: Option<awaken_session_executor::RemoteAttemptInstallation>,
@@ -268,6 +269,7 @@ impl WorkerNodeBuilder {
             application: WorkerApplicationSource::default(),
             tool_gate: None,
             credential_materializer: None,
+            mcp_relay_outbound_proxy: None,
             brokered_acp_model_access: None,
             remote_attempt: None,
             hand_executor_factory: None,
@@ -519,6 +521,17 @@ impl WorkerNodeBuilder {
         credentials: awaken_credential_materializer::PinnedCredentialMaterializer,
     ) -> Self {
         self.credential_materializer = Some(credentials);
+        self
+    }
+
+    /// Install the deployment's existing authenticated HTTPS CONNECT issuer
+    /// for a Worker MCP relay exposed to isolated containers.
+    #[must_use]
+    pub fn with_mcp_relay_outbound_proxy(
+        mut self,
+        issuer: Arc<dyn awaken_session_executor::McpRelayOutboundProxy>,
+    ) -> Self {
+        self.mcp_relay_outbound_proxy = Some(issuer);
         self
     }
 
@@ -889,6 +902,7 @@ impl WorkerNodeBuilder {
             application: self.application,
             tool_gate: self.tool_gate,
             credential_materializer: self.credential_materializer,
+            mcp_relay_outbound_proxy: self.mcp_relay_outbound_proxy,
             brokered_acp_model_access: self.brokered_acp_model_access,
             remote_attempt: self.remote_attempt,
             hand_executor_factory: self.hand_executor_factory,
@@ -982,6 +996,7 @@ pub struct WorkerNode {
     application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
+    mcp_relay_outbound_proxy: Option<Arc<dyn awaken_session_executor::McpRelayOutboundProxy>>,
     brokered_acp_model_access:
         Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
     remote_attempt: Option<awaken_session_executor::RemoteAttemptInstallation>,
@@ -1455,6 +1470,9 @@ impl WorkerNode {
         }
         if let Some(credentials) = managed_credential_materializer.clone() {
             host = host.with_credential_materializer(credentials);
+        }
+        if let Some(issuer) = self.mcp_relay_outbound_proxy {
+            host = host.with_mcp_relay_outbound_proxy(issuer);
         }
         // Serve only the ACP CLI capability this worker advertises. The run's snapshot
         // selects the matching backend and supplies its published provider access.

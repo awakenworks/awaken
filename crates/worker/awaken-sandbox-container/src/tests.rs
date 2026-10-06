@@ -151,14 +151,14 @@ fn future_host_bind_handle() -> pc::SandboxHandle {
 
 #[test]
 fn container_capabilities_are_the_strongest_tier() {
-    let c = container_capabilities(true, false, false, Default::default());
+    let c = container_capabilities(true, false, false, false, Default::default());
     assert_eq!(c.isolation, pc::IsolationClass::Container);
     assert!(c.tool_transparent && c.enforced_readonly && c.network_isolation);
     assert!(c.resource_limits && c.custom_rootfs);
     assert!(!c.enforced_network_allowlist);
     assert!(
         !c.secret_egress_substitution,
-        "the current container provider must not advertise an unimplemented secret guarantee"
+        "an unconfigured container provider cannot advertise substitution"
     );
 }
 
@@ -255,7 +255,7 @@ fn current_container_provider_rejects_egress_only_secret_injection() {
     assert_eq!(
         pc::prepare_environment(
             &requested,
-            &container_capabilities(true, false, false, Default::default()),
+            &container_capabilities(true, false, false, false, Default::default()),
         ),
         Err(pc::PrepareError::EgressSecretUnsupported("API_KEY".into())),
         "an unsupported provider must fail before materializing or launching the sandbox"
@@ -274,7 +274,7 @@ fn container_runtime_without_package_builder_rejects_before_launch() {
     assert_eq!(
         pc::prepare_environment(
             &requested,
-            &container_capabilities(true, false, false, Default::default()),
+            &container_capabilities(true, false, false, false, Default::default()),
         ),
         Err(pc::PrepareError::PackageProvisioningUnsupported),
         "Kubernetes and out-of-tree runtimes without immutable image builds must fail before a workload exists"
@@ -2882,6 +2882,7 @@ type RuntimePathObservation = (
 
 #[derive(Default)]
 struct FakeState {
+    network_allowlist: bool,
     checkpoint_expected: Option<(
         pc::SandboxHandle,
         pc::SandboxEffectFence,
@@ -2965,6 +2966,39 @@ struct FakeState {
 #[derive(Default)]
 struct FakeRuntime {
     st: Mutex<FakeState>,
+}
+
+#[test]
+fn worker_relay_substitution_requires_live_runtime_proxy_and_selected_route() {
+    // Causes: C1 runtime attests no-bypass allowlist, C2 signed proxy issuer
+    // installed, C3 deployment selected the existing Worker relay route.
+    // Effects: E1 one admissible substitution capability; E2 every missing
+    // cause refuses it. Decision table: R1 C1+C2+C3 -> E1; R2 any missing ->
+    // E2. This tests the composed provider capability used by Worker admission,
+    // not the standalone boolean helper.
+    for runtime_attested in [false, true] {
+        for issuer_installed in [false, true] {
+            for relay_selected in [false, true] {
+                let runtime = Arc::new(FakeRuntime::default());
+                runtime.st.lock().unwrap().network_allowlist = runtime_attested;
+                let mut provider = ContainerProvider::for_test(runtime, "fixture");
+                if issuer_installed {
+                    provider = provider.with_allowlist_proxy(
+                        AllowlistProxy::new("http://gateway.test:8091", [7; 32], 60).unwrap(),
+                    );
+                }
+                if relay_selected {
+                    provider = provider.with_worker_mcp_relay_substitution();
+                }
+                let caps = provider.capabilities();
+                assert_eq!(
+                    caps.supports_secret_egress_without_bypass(),
+                    runtime_attested && issuer_installed && relay_selected,
+                    "C1={runtime_attested} C2={issuer_installed} C3={relay_selected}"
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -3273,6 +3307,10 @@ impl ContainerRuntime for FakeRuntime {
 
     fn enforces_network_none(&self) -> bool {
         true
+    }
+
+    fn enforces_network_allowlist(&self) -> bool {
+        self.st.lock().unwrap().network_allowlist
     }
 
     fn sandbox_control_services(&self) -> std::collections::BTreeSet<SandboxControlServiceKind> {

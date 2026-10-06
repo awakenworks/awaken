@@ -1213,6 +1213,10 @@ mod process_role_surface_tests {
                 worker_transport: Some(worker_transport_security::WorkerTransport::unbound(
                     Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator),
                 )),
+                relay_destination_authenticator: Some(
+                    awaken_service_auth_contract::static_token_authenticator("relay-token")
+                        .unwrap(),
+                ),
                 ..Default::default()
             },
             None,
@@ -1301,6 +1305,7 @@ mod process_role_surface_tests {
         }
 
         let retired_private_launch = app
+            .clone()
             .oneshot(
                 Request::post("/internal/v1/deployment-sessions/launch")
                     .header("content-type", "application/json")
@@ -1312,6 +1317,80 @@ mod process_role_surface_tests {
         assert_eq!(retired_private_launch.status(), StatusCode::NOT_FOUND);
 
         let private_coordinator = coordinator_routers.private_router;
+        // Relay destination causes: C1 public/private listener; C2 observer
+        // dedicated relay authentication; C3 exact query shape; C4 Pod target
+        // observer wired; C5 broad Coordinator token used instead of relay token.
+        // Effects: E1 public route absent; E2 unauthenticated request refused
+        // before query parsing; E3 invalid query refused; E4 no target evidence
+        // fails closed; E5 broad token cannot read relay destinations.
+        // Decision rules: R1 public -> E1; R2 private + !C2 -> E2;
+        // R3 private + C2 + !C3 -> E3; R4 private + C2 + C3 + !C4 -> E4;
+        // R5 C5 -> E5 before query parsing.
+        let relay_path = format!(
+            "{}?session_id=domain-session&attachment_id=mcp&version=1",
+            awaken_coordinator::worker_observation_boundary::WORKER_RELAY_DESTINATION_PATH
+        );
+        let public_relay = app
+            .clone()
+            .oneshot(Request::get(&relay_path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(public_relay.status(), StatusCode::NOT_FOUND, "R1/E1");
+        let unauthenticated_relay = private_coordinator
+            .clone()
+            .oneshot(
+                Request::get("/internal/v1/workers/mcp-relay-destination?version=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            unauthenticated_relay.status(),
+            StatusCode::UNAUTHORIZED,
+            "R2/E2"
+        );
+        let malformed_relay = private_coordinator
+            .clone()
+            .oneshot(
+                Request::get("/internal/v1/workers/mcp-relay-destination?version=0")
+                    .header("authorization", "Bearer relay-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(malformed_relay.status(), StatusCode::BAD_REQUEST, "R3/E3");
+        let broad_token_relay = private_coordinator
+            .clone()
+            .oneshot(
+                Request::get(&relay_path)
+                    .header("authorization", "Bearer registration-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            broad_token_relay.status(),
+            StatusCode::UNAUTHORIZED,
+            "R5/E5"
+        );
+        let unbound_relay = private_coordinator
+            .clone()
+            .oneshot(
+                Request::get(&relay_path)
+                    .header("authorization", "Bearer relay-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            unbound_relay.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "R4/E4"
+        );
         let domain_path = format!(
             "/internal/v1/workers/domain?worker_id={}&incarnation_id={}&generation={}",
             domain_identity.worker_id, domain_identity.incarnation_id, domain_identity.generation
@@ -1322,6 +1401,21 @@ mod process_role_surface_tests {
             .await
             .unwrap();
         assert_eq!(no_token.status(), StatusCode::UNAUTHORIZED, "R1");
+        let relay_token_domain = private_coordinator
+            .clone()
+            .oneshot(
+                Request::get(&domain_path)
+                    .header("authorization", "Bearer relay-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            relay_token_domain.status(),
+            StatusCode::UNAUTHORIZED,
+            "R5/E5"
+        );
         let observed = private_coordinator
             .clone()
             .oneshot(

@@ -3,6 +3,25 @@
 
 use std::sync::Arc;
 
+#[derive(Debug, thiserror::Error)]
+pub enum WorkerRelayTargetError {
+    #[error("Worker Pod identity is invalid or foreign")]
+    InvalidIdentity,
+    #[error("exact Worker Pod route evidence is unavailable")]
+    Unavailable,
+}
+
+/// Observe the address of an already selected Worker. The provider must bind
+/// its identity, Pod UID and IP in one observation; it cannot select a Worker
+/// or grant an MCP route.
+#[async_trait::async_trait]
+pub trait WorkerRelayTargetObserver: Send + Sync {
+    async fn ip_for(
+        &self,
+        worker: &awaken_worker_contract::WorkerIdentity,
+    ) -> Result<std::net::IpAddr, WorkerRelayTargetError>;
+}
+
 #[cfg(feature = "container-k8s")]
 mod kubernetes;
 
@@ -12,6 +31,7 @@ pub struct WorkerTransport {
     authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
     bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
+    relay_targets: Option<Arc<dyn WorkerRelayTargetObserver>>,
 }
 
 impl WorkerTransport {
@@ -22,6 +42,7 @@ impl WorkerTransport {
             authenticator,
             bindings: None,
             stops: None,
+            relay_targets: None,
         }
     }
 
@@ -39,6 +60,10 @@ impl WorkerTransport {
 
     pub fn stop_source(&self) -> Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>> {
         self.stops.clone()
+    }
+
+    pub fn relay_target_source(&self) -> Option<Arc<dyn WorkerRelayTargetObserver>> {
+        self.relay_targets.clone()
     }
 }
 
@@ -91,5 +116,6 @@ mod tests {
         assert!(Arc::ptr_eq(&auth, &transport.authenticator()));
         assert!(transport.binding_source().is_none());
         assert!(transport.stop_source().is_none());
+        assert!(transport.relay_target_source().is_none());
     }
 }

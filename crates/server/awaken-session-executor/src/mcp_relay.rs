@@ -55,6 +55,14 @@ type Routes = Arc<Mutex<HashMap<RouteKey, Route>>>;
 type GenerationAuthority =
     Arc<dyn Fn(&awaken_session_mcp_contract::McpGenerationRef, u64) -> bool + Send + Sync>;
 
+/// Deployment-owned issuer for the existing authenticated HTTPS CONNECT path.
+/// It never chooses an MCP target or handles the upstream bearer; the relay
+/// supplies the exact staged host for each call. Generation authority remains
+/// solely in the Worker relay's capability, lease and call fence.
+pub trait McpRelayOutboundProxy: Send + Sync {
+    fn issue_for(&self, upstream_host: &str, now_unix_ms: u64) -> Result<String, String>;
+}
+
 /// A relayed MCP call may stream a long SSE response, so the bound is on
 /// connecting and on upstream silence, never on total elapsed time.
 const RELAY_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -66,9 +74,10 @@ struct RelayState {
     authority: GenerationAuthority,
     /// The clock route admission reads: the owning Host's process clock.
     clock: Arc<dyn awaken_time::WallClock>,
-    /// One upstream client for the life of the relay. Building one inside the
-    /// handler discarded the connection pool on every forwarded call.
+    /// Local self-hosted traffic reuses one direct client. External container
+    /// traffic obtains a fresh host-scoped CONNECT capability for every call.
     client: reqwest::Client,
+    outbound_proxy: Option<Arc<dyn McpRelayOutboundProxy>>,
 }
 
 impl RelayState {
@@ -78,6 +87,39 @@ impl RelayState {
                 &route.generation,
                 awaken_time::WallClockExt::now_ms(self.clock.as_ref()),
             )
+    }
+
+    fn client_for(&self, route: &Route) -> Result<reqwest::Client, ()> {
+        let Some(issuer) = &self.outbound_proxy else {
+            return Ok(self.client.clone());
+        };
+        let target = reqwest::Url::parse(&route.url).map_err(|_| ())?;
+        if target.scheme() != "https"
+            || !target.username().is_empty()
+            || target.password().is_some()
+        {
+            return Err(());
+        }
+        let host = target
+            .host_str()
+            .and_then(awaken_container_contract::normalize_allowlist_host)
+            .ok_or(())?;
+        let proxy_url = issuer
+            .issue_for(
+                &host,
+                awaken_time::WallClockExt::now_ms(self.clock.as_ref()),
+            )
+            .map_err(|_| ())?;
+        let proxy = reqwest::Proxy::https(proxy_url).map_err(|_| ())?;
+        awaken_outbound_http::rustls_client_builder(
+            awaken_outbound_http::TransportDeadline::Streaming {
+                connect: RELAY_CONNECT_TIMEOUT,
+                read: RELAY_READ_TIMEOUT,
+            },
+        )
+        .proxy(proxy)
+        .build()
+        .map_err(|_| ())
     }
 }
 
@@ -111,8 +153,14 @@ impl McpRelay {
             .upgrade()
             .ok_or_else(|| std::io::Error::other("MCP relay Host authority is unavailable"))?;
         let exposure = owner.deployment.sandbox.container_mcp_relay.clone();
+        let outbound_proxy = owner.mcp.outbound_proxy.clone();
         let clock = owner.clock.clone();
         drop(owner);
+        if exposure.is_some() && outbound_proxy.is_none() {
+            return Err(std::io::Error::other(
+                "external MCP relay requires an installed authenticated outbound proxy",
+            ));
+        }
         Self::start_with_authority_and_exposure(
             Arc::new(move |generation, _now| {
                 host.upgrade().is_some_and(|host| {
@@ -122,6 +170,7 @@ impl McpRelay {
             }),
             exposure.as_ref(),
             clock,
+            outbound_proxy,
         )
         .await
     }
@@ -152,6 +201,7 @@ impl McpRelay {
             }),
             None,
             awaken_time::system_clock(),
+            None,
         )
         .await
     }
@@ -160,6 +210,7 @@ impl McpRelay {
         authority: GenerationAuthority,
         exposure: Option<&crate::ContainerMcpRelayExposure>,
         clock: Arc<dyn awaken_time::WallClock>,
+        outbound_proxy: Option<Arc<dyn McpRelayOutboundProxy>>,
     ) -> std::io::Result<Self> {
         let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
         let bind = exposure.map_or_else(
@@ -188,8 +239,10 @@ impl McpRelay {
                     read: RELAY_READ_TIMEOUT,
                 },
             )
+            .no_proxy()
             .build()
             .map_err(std::io::Error::other)?,
+            outbound_proxy,
         };
         let app = axum::Router::new()
             .route(
@@ -418,13 +471,16 @@ async fn forward(
     let auth_retry_safety = serde_json::from_slice::<serde_json::Value>(&bytes)
         .map(|body| awaken_ext_mcp::auth_retry_safety(&body))
         .unwrap_or(awaken_ext_mcp::AuthRetrySafety::Never);
+    let client = match state.client_for(&route) {
+        Ok(client) => client,
+        Err(()) => return (StatusCode::BAD_GATEWAY, "relay egress unavailable").into_response(),
+    };
     // Bridge axum (http 1.0) → reqwest (http 0.2) by string/bytes: the two crates pull
     // different `http` versions, so headers/method/status don't share types.
     let method = reqwest::Method::from_bytes(parts.method.as_str().as_bytes())
         .unwrap_or(reqwest::Method::POST);
     let send = |route: &Route| {
-        let mut request = state
-            .client
+        let mut request = client
             .request(method.clone(), &route.url)
             .body(bytes.to_vec());
         // Pass every header EXCEPT workload-supplied Authorization and the loopback Host.
@@ -584,6 +640,77 @@ mod tests {
         }
     }
 
+    struct FixedProxyIssuer {
+        hosts: Mutex<Vec<String>>,
+        fails: bool,
+    }
+
+    impl McpRelayOutboundProxy for FixedProxyIssuer {
+        fn issue_for(&self, upstream_host: &str, _now_unix_ms: u64) -> Result<String, String> {
+            self.hosts.lock().unwrap().push(upstream_host.to_owned());
+            if self.fails {
+                Err("issuer unavailable".into())
+            } else {
+                Ok("http://capability:x@127.0.0.1:8091".into())
+            }
+        }
+    }
+
+    #[test]
+    fn exposed_relay_uses_exact_host_issuer_and_never_falls_back_to_direct_egress() {
+        // Causes: C1 HTTPS target with canonical host, C2 issuer available,
+        // C3 HTTP/invalid target or issuer failure. Effects: E1 one host-scoped
+        // proxy client; E2 closed refusal, never the reusable direct client.
+        // Decision rows: R1 C1+C2+!C3 -> E1; R2 C3 -> E2.
+        let issuer = Arc::new(FixedProxyIssuer {
+            hosts: Mutex::new(Vec::new()),
+            fails: false,
+        });
+        let state = RelayState {
+            routes: Arc::new(Mutex::new(HashMap::new())),
+            authority: Arc::new(|_, _| true),
+            clock: awaken_time::system_clock(),
+            client: reqwest::Client::builder().no_proxy().build().unwrap(),
+            outbound_proxy: Some(issuer.clone()),
+        };
+        let route = |url: &str| Route {
+            url: url.into(),
+            bearer: None,
+            refresh: None,
+            capability: "cap".into(),
+            generation: generation("session", "attachment", 1),
+            call_fence: awaken_ext_mcp::transport::McpCallFence::open(),
+        };
+        assert!(
+            state
+                .client_for(&route("https://Mcp.Example.test/rpc"))
+                .is_ok()
+        );
+        assert_eq!(
+            issuer.hosts.lock().unwrap().clone(),
+            vec!["mcp.example.test".to_owned()],
+            "R1/E1"
+        );
+        assert!(
+            state
+                .client_for(&route("http://mcp.example.test/rpc"))
+                .is_err()
+        );
+        assert_eq!(issuer.hosts.lock().unwrap().len(), 1, "R2/E2 no issuer");
+        let failed = RelayState {
+            outbound_proxy: Some(Arc::new(FixedProxyIssuer {
+                hosts: Mutex::new(Vec::new()),
+                fails: true,
+            })),
+            ..state
+        };
+        assert!(
+            failed
+                .client_for(&route("https://mcp.example.test/rpc"))
+                .is_err()
+        );
+    }
+
     /// A fake upstream MCP server that echoes back the `Authorization` header it received, so
     /// the test can prove the relay injected the real bearer.
     async fn fake_upstream() -> SocketAddr {
@@ -640,6 +767,7 @@ mod tests {
             Arc::new(|_, _| true),
             Some(&exposure),
             awaken_time::system_clock(),
+            None,
         )
         .await
         .unwrap();

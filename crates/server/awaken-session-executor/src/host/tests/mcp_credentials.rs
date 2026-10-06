@@ -762,6 +762,12 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let relay_port = relay_reservation.local_addr().unwrap().port();
     drop(relay_reservation);
     let relay_host = "relay.awaken-cloud.svc";
+    struct StagingOnlyProxy;
+    impl crate::McpRelayOutboundProxy for StagingOnlyProxy {
+        fn issue_for(&self, _upstream_host: &str, _now_unix_ms: u64) -> Result<String, String> {
+            Err("stage-only fixture has no upstream egress".into())
+        }
+    }
     let mut secure_deployment = crate::DeploymentConfig::ephemeral();
     secure_deployment.sandbox.container_mcp_relay = Some(
         crate::ContainerMcpRelayExposure::new(
@@ -770,8 +776,25 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         )
         .unwrap(),
     );
+    // Causes: external relay exposure without/with the installed signed
+    // outbound proxy. Effects: missing issuer refuses before Worker Ready;
+    // installed issuer permits transport staging without asserting public
+    // upstream reachability. R1 no issuer -> refusal; R2 issuer -> bind.
+    let missing_proxy_host = Arc::new(SharedHost::new_with_deployment(
+        Arc::new(OkModel),
+        "stub",
+        secure_deployment.clone(),
+    ));
+    assert!(
+        missing_proxy_host
+            .prepare_container_mcp_relay()
+            .await
+            .is_err(),
+        "R1 external relay without signed CONNECT issuer"
+    );
     let secure_acp_host = Arc::new(
         SharedHost::new_with_deployment(Arc::new(OkModel), "stub", secure_deployment)
+            .with_mcp_relay_outbound_proxy(Arc::new(StagingOnlyProxy))
             .with_acp(executor.clone())
             .with_session_container_provider(
                 Arc::new(SecureExternalProvider),
@@ -983,6 +1006,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     let mut backend_secure_host =
         SharedHost::new_with_deployment(Arc::new(OkModel), "stub", backend_deployment)
+            .with_mcp_relay_outbound_proxy(Arc::new(StagingOnlyProxy))
             .with_acp(executor.clone());
     backend_secure_host.env.backend_owned_session_provider = Some(
         crate::session_environment::SandboxEnvironmentProvider::container(

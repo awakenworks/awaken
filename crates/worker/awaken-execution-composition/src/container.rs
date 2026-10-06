@@ -15,7 +15,7 @@ use awaken_session_environment_contract::ContainerHandResidency;
 /// Deployment-owned security coordinates of the container tier that the plain
 /// deployment configuration cannot synthesize: a no-bypass allowlist proxy
 /// (whose signing key is mounted only into the Worker and Gateway) and the
-/// hosted Repository Gateway trust. Standalone configuration leaves both
+/// hosted Repository Gateway trust. Standalone configuration leaves these
 /// absent; a downstream composition that owns them sets them here.
 /// Consumer: [`build_container_environment_for_realization`].
 #[derive(Clone, Debug, Default)]
@@ -23,6 +23,10 @@ pub struct ContainerTierPolicy {
     /// Capability-authenticated proxy used only when the container runtime has
     /// independently attested a no-bypass allowlist network boundary.
     pub allowlist_proxy: Option<awaken_sandbox_container::AllowlistProxy>,
+    /// True only when the deployment installed the existing Worker MCP relay
+    /// and its Gateway route; runtime policy and issuer evidence still gate
+    /// the advertised provider capability.
+    pub worker_mcp_relay_substitution: bool,
     /// Public CA and exact host alias for the hosted private Repository Gateway.
     /// This is transport trust, not a credential or Repository authority.
     pub repository_gateway_trust: Option<awaken_sandbox_container::K8sRepositoryGatewayTrust>,
@@ -140,6 +144,9 @@ async fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     }
     if let Some(proxy) = &policy.allowlist_proxy {
         provider = provider.with_allowlist_proxy(proxy.clone());
+    }
+    if policy.worker_mcp_relay_substitution {
+        provider = provider.with_worker_mcp_relay_substitution();
     }
     wrap(provider, leased, settings, clock).await
 }

@@ -36,18 +36,20 @@ pub(super) fn assemble(
     let stopper = PodProcessStopper::new(
         PodProcessObserver::new(client, namespace).map_err(|error| error.to_string())?,
     );
+    let binding_source = Arc::new(KubernetesWorkerBindings {
+        observer,
+        namespace: namespace.to_owned(),
+        provider_id: provider_id.to_owned(),
+    });
     Ok(WorkerTransport {
         authenticator: Arc::new(authenticator),
-        bindings: Some(Arc::new(KubernetesWorkerBindings {
-            observer,
-            namespace: namespace.to_owned(),
-            provider_id: provider_id.to_owned(),
-        })),
+        bindings: Some(binding_source.clone()),
         stops: Some(Arc::new(KubernetesWorkerStops {
             stopper,
             namespace: namespace.to_owned(),
             provider_id: provider_id.to_owned(),
         })),
+        relay_targets: Some(binding_source),
     })
 }
 
@@ -104,6 +106,24 @@ impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
             .map_err(|_| ApplicationError::internal("Worker process binding encoding failed"))?;
         AttemptExecutionBinding::new(worker.clone(), &self.provider_id, reference)
             .map_err(|error| ApplicationError::invalid(error.to_string()))
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkerRelayTargetObserver for KubernetesWorkerBindings {
+    async fn ip_for(
+        &self,
+        worker: &WorkerIdentity,
+    ) -> Result<std::net::IpAddr, WorkerRelayTargetError> {
+        let pod = KubernetesPodIdentity::from_worker_id(&worker.worker_id)
+            .map_err(|_| WorkerRelayTargetError::InvalidIdentity)?;
+        if pod.namespace() != self.namespace || !pod.matches_worker(worker) {
+            return Err(WorkerRelayTargetError::InvalidIdentity);
+        }
+        self.observer
+            .relay_ip_for(pod.name(), pod.uid())
+            .await
+            .map_err(|_| WorkerRelayTargetError::Unavailable)
     }
 }
 
