@@ -29,7 +29,8 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
-pub use awaken_runtime_contract::{ContentCapture, DataSubjectId, ErasureReceipt, Purpose};
+pub use awaken_data_governance_contract::ErasureReceipt;
+pub use awaken_runtime_contract::{ContentCapture, DataSubjectId, Purpose};
 
 const CAS_RETRY_LIMIT: usize = 16;
 
@@ -460,9 +461,9 @@ impl ErasureProgress {
         &mut self,
         target: ErasureTarget,
         removed: usize,
-    ) -> Result<(), awaken_runtime_contract::ErasureError> {
+    ) -> Result<(), awaken_data_governance_contract::ErasureError> {
         self.records_removed = self.records_removed.checked_add(removed).ok_or_else(|| {
-            awaken_runtime_contract::ErasureError("erasure receipt overflow".into())
+            awaken_data_governance_contract::ErasureError("erasure receipt overflow".into())
         })?;
         self.completed_targets.push(target);
         Ok(())
@@ -975,7 +976,7 @@ impl DataSubjectApplication {
         &self,
         org: &str,
         id: &str,
-        resolver: &dyn awaken_runtime_contract::DataSubjectResolver,
+        resolver: &dyn awaken_data_governance_contract::DataSubjectResolver,
     ) -> Result<ErasureReceipt, DataSubjectApplicationError> {
         self.load_scoped(org, id).await?;
         resolver
@@ -1202,14 +1203,14 @@ impl DataSubjectApplication {
 /// and the one subject erasure resolver.
 pub struct RepoOrganizationPrivacyResolver {
     repo: Arc<dyn DataSubjectRepo>,
-    subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
+    subjects: Arc<dyn awaken_data_governance_contract::DataSubjectResolver>,
 }
 
 impl RepoOrganizationPrivacyResolver {
     #[must_use]
     pub fn new(
         repo: Arc<dyn DataSubjectRepo>,
-        subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
+        subjects: Arc<dyn awaken_data_governance_contract::DataSubjectResolver>,
     ) -> Self {
         Self { repo, subjects }
     }
@@ -1218,36 +1219,36 @@ impl RepoOrganizationPrivacyResolver {
         &self,
         organization_id: &str,
         subject: Option<&DataSubjectId>,
-    ) -> Result<Vec<DataSubject>, awaken_runtime_contract::PrivacyExportError> {
+    ) -> Result<Vec<DataSubject>, awaken_data_governance_contract::PrivacyExportError> {
         match subject {
             Some(subject) => match self.repo.get(subject).await {
                 Ok(record) if record.org == organization_id => Ok(vec![record]),
                 Ok(_) | Err(DataSubjectError::NotFound(_)) => {
-                    Err(awaken_runtime_contract::PrivacyExportError(
+                    Err(awaken_data_governance_contract::PrivacyExportError(
                         "data subject is not owned by the requested organization".into(),
                     ))
                 }
-                Err(error) => Err(awaken_runtime_contract::PrivacyExportError(
+                Err(error) => Err(awaken_data_governance_contract::PrivacyExportError(
                     error.to_string(),
                 )),
             },
-            None => self
-                .repo
-                .list(organization_id)
-                .await
-                .map_err(|error| awaken_runtime_contract::PrivacyExportError(error.to_string())),
+            None => self.repo.list(organization_id).await.map_err(|error| {
+                awaken_data_governance_contract::PrivacyExportError(error.to_string())
+            }),
         }
     }
 }
 
 #[async_trait]
-impl awaken_runtime_contract::OrganizationPrivacyResolver for RepoOrganizationPrivacyResolver {
+impl awaken_data_governance_contract::OrganizationPrivacyResolver
+    for RepoOrganizationPrivacyResolver
+{
     async fn erase_organization(
         &self,
         organization_id: &str,
-    ) -> Result<ErasureReceipt, awaken_runtime_contract::ErasureError> {
+    ) -> Result<ErasureReceipt, awaken_data_governance_contract::ErasureError> {
         let mut subjects = self.repo.list(organization_id).await.map_err(|error| {
-            awaken_runtime_contract::ErasureError(format!(
+            awaken_data_governance_contract::ErasureError(format!(
                 "organization subject inventory failed: {error}"
             ))
         })?;
@@ -1257,7 +1258,7 @@ impl awaken_runtime_contract::OrganizationPrivacyResolver for RepoOrganizationPr
             records_removed = records_removed
                 .checked_add(self.subjects.erase(&subject.id).await?.records_removed)
                 .ok_or_else(|| {
-                    awaken_runtime_contract::ErasureError(
+                    awaken_data_governance_contract::ErasureError(
                         "organization erasure receipt overflow".into(),
                     )
                 })?;
@@ -1270,8 +1271,8 @@ impl awaken_runtime_contract::OrganizationPrivacyResolver for RepoOrganizationPr
         organization_id: &str,
         subject: Option<&DataSubjectId>,
     ) -> Result<
-        awaken_runtime_contract::OrganizationPrivacyExport,
-        awaken_runtime_contract::PrivacyExportError,
+        awaken_data_governance_contract::OrganizationPrivacyExport,
+        awaken_data_governance_contract::PrivacyExportError,
     > {
         let mut subjects = self.selected_subjects(organization_id, subject).await?;
         subjects.sort_by(|left, right| left.id.0.cmp(&right.id.0));
@@ -1281,19 +1282,21 @@ impl awaken_runtime_contract::OrganizationPrivacyResolver for RepoOrganizationPr
                 let id = subject.id.clone();
                 serde_json::to_value(subject)
                     .map(
-                        |payload| awaken_runtime_contract::OrganizationPrivacyRecord {
+                        |payload| awaken_data_governance_contract::OrganizationPrivacyRecord {
                             subject: id,
                             payload,
                         },
                     )
-                    .map_err(|error| awaken_runtime_contract::PrivacyExportError(error.to_string()))
+                    .map_err(|error| {
+                        awaken_data_governance_contract::PrivacyExportError(error.to_string())
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(awaken_runtime_contract::OrganizationPrivacyExport { records })
+        Ok(awaken_data_governance_contract::OrganizationPrivacyExport { records })
     }
 }
 
-/// Bridges the neutral [`DataSubjectResolver`](awaken_runtime_contract::DataSubjectResolver)
+/// Bridges the neutral [`DataSubjectResolver`](awaken_data_governance_contract::DataSubjectResolver)
 /// port to a [`DataSubjectRepo`] (ADR-0050 D10a). An unknown subject resolves to
 /// `Structured` (no content without a known, consenting subject). Holds an
 /// `Arc`-shared repo so a consent-write path and the resolver see one store.
@@ -1304,8 +1307,8 @@ pub struct RepoDataSubjectResolver {
     /// over the same repository holds: the erasure stamp also moves the
     /// aggregate's `updated_at`, which that application stamped before.
     clock: Arc<dyn WallClock>,
-    coordinator: Option<Arc<dyn awaken_runtime_contract::ContentEraser>>,
-    resources: Option<Arc<dyn awaken_runtime_contract::ContentEraser>>,
+    coordinator: Option<Arc<dyn awaken_data_governance_contract::ContentEraser>>,
+    resources: Option<Arc<dyn awaken_data_governance_contract::ContentEraser>>,
 }
 
 impl RepoDataSubjectResolver {
@@ -1331,7 +1334,7 @@ impl RepoDataSubjectResolver {
     pub fn with_target(
         mut self,
         target: ErasureTarget,
-        eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
+        eraser: Arc<dyn awaken_data_governance_contract::ContentEraser>,
     ) -> Self {
         match target {
             ErasureTarget::Coordinator => self.coordinator = Some(eraser),
@@ -1343,13 +1346,13 @@ impl RepoDataSubjectResolver {
     async fn stamp_accountability(
         &self,
         subject: &DataSubjectId,
-    ) -> Result<(), awaken_runtime_contract::ErasureError> {
+    ) -> Result<(), awaken_data_governance_contract::ErasureError> {
         for _ in 0..CAS_RETRY_LIMIT {
             let mut aggregate = match self.repo.get(subject).await {
                 Ok(aggregate) => aggregate,
                 Err(DataSubjectError::NotFound(_)) => return Ok(()),
                 Err(error) => {
-                    return Err(awaken_runtime_contract::ErasureError(format!(
+                    return Err(awaken_data_governance_contract::ErasureError(format!(
                         "accountability read failed: {error}"
                     )));
                 }
@@ -1364,7 +1367,7 @@ impl RepoDataSubjectResolver {
             }
             aggregate.mark_erased(self.clock.now().as_epoch_ms_i64());
             let expected = advance_revision(&mut aggregate).map_err(|error| {
-                awaken_runtime_contract::ErasureError(format!(
+                awaken_data_governance_contract::ErasureError(format!(
                     "accountability write failed: {error}"
                 ))
             })?;
@@ -1372,13 +1375,13 @@ impl RepoDataSubjectResolver {
                 Ok(()) => return Ok(()),
                 Err(DataSubjectError::Conflict(_)) => continue,
                 Err(error) => {
-                    return Err(awaken_runtime_contract::ErasureError(format!(
+                    return Err(awaken_data_governance_contract::ErasureError(format!(
                         "accountability write failed: {error}"
                     )));
                 }
             }
         }
-        Err(awaken_runtime_contract::ErasureError(
+        Err(awaken_data_governance_contract::ErasureError(
             "accountability write failed: conflict retry budget exhausted".into(),
         ))
     }
@@ -1387,18 +1390,20 @@ impl RepoDataSubjectResolver {
 fn advance_erasure_progress(
     progress: &mut ErasureProgress,
     expected_revision: Option<u64>,
-) -> Result<(), awaken_runtime_contract::ErasureError> {
+) -> Result<(), awaken_data_governance_contract::ErasureError> {
     progress.revision = match expected_revision {
         None => 0,
         Some(expected) => expected.checked_add(1).ok_or_else(|| {
-            awaken_runtime_contract::ErasureError("erasure checkpoint revision exhausted".into())
+            awaken_data_governance_contract::ErasureError(
+                "erasure checkpoint revision exhausted".into(),
+            )
         })?,
     };
     Ok(())
 }
 
 #[async_trait]
-impl awaken_runtime_contract::DataSubjectConsentSource for RepoDataSubjectResolver {
+impl awaken_data_governance_contract::DataSubjectConsentSource for RepoDataSubjectResolver {
     async fn consent_ceiling(&self, subject: &DataSubjectId, purpose: Purpose) -> ContentCapture {
         match self.repo.get(subject).await {
             Ok(s) => s.consent_ceiling(purpose),
@@ -1408,21 +1413,19 @@ impl awaken_runtime_contract::DataSubjectConsentSource for RepoDataSubjectResolv
 }
 
 #[async_trait]
-impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
+impl awaken_data_governance_contract::DataSubjectResolver for RepoDataSubjectResolver {
     async fn erase(
         &self,
         subject: &DataSubjectId,
-    ) -> Result<ErasureReceipt, awaken_runtime_contract::ErasureError> {
+    ) -> Result<ErasureReceipt, awaken_data_governance_contract::ErasureError> {
         // Cause ordering is durable and common to every caller: the next target
         // effect, accountability stamp, then terminal receipt. Multiple replicas
         // may replay an idempotent target effect, but only one revision-CAS may
         // count it; losers reload the winning checkpoint and continue.
         for _ in 0..CAS_RETRY_LIMIT {
-            let loaded = self
-                .jobs
-                .load(subject)
-                .await
-                .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
+            let loaded = self.jobs.load(subject).await.map_err(|error| {
+                awaken_data_governance_contract::ErasureError(error.to_string())
+            })?;
             let expected_revision = loaded.as_ref().map(|progress| progress.revision);
             let mut progress = loaded.unwrap_or_default();
             let completing = match progress.next_action([
@@ -1430,7 +1433,7 @@ impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
                 (ErasureTarget::Resources, self.resources.as_ref()),
             ]) {
                 ErasureAction::InvalidCheckpoint => {
-                    return Err(awaken_runtime_contract::ErasureError(
+                    return Err(awaken_data_governance_contract::ErasureError(
                         "invalid erasure checkpoint".into(),
                     ));
                 }
@@ -1466,11 +1469,13 @@ impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
                 }
                 Ok(()) | Err(DataSubjectError::Conflict(_)) => continue,
                 Err(error) => {
-                    return Err(awaken_runtime_contract::ErasureError(error.to_string()));
+                    return Err(awaken_data_governance_contract::ErasureError(
+                        error.to_string(),
+                    ));
                 }
             }
         }
-        Err(awaken_runtime_contract::ErasureError(
+        Err(awaken_data_governance_contract::ErasureError(
             "erasure checkpoint conflict retry budget exhausted".into(),
         ))
     }

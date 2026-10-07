@@ -181,7 +181,7 @@ pub(crate) struct CaptureContextAttemptExecutor {
     inner: Arc<dyn RunAttemptExecutor>,
     decision: awaken_runtime_contract::CaptureDecision,
     sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
-    consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+    consent: Arc<dyn awaken_data_governance_contract::DataSubjectConsentSource>,
 }
 
 impl CaptureContextAttemptExecutor {
@@ -189,7 +189,7 @@ impl CaptureContextAttemptExecutor {
         inner: Arc<dyn RunAttemptExecutor>,
         decision: awaken_runtime_contract::CaptureDecision,
         sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
-        consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+        consent: Arc<dyn awaken_data_governance_contract::DataSubjectConsentSource>,
     ) -> Self {
         Self {
             inner,

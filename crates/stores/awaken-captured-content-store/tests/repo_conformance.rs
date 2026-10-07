@@ -2,9 +2,8 @@
 
 use async_trait::async_trait;
 use awaken_captured_content_store::{InMemoryCapturedContentStore, SqliteCapturedContentStore};
-use awaken_runtime_contract::{
-    CaptureError, CaptureSink, ContentEraser, ContentKind, DataSubjectId, Purpose,
-};
+use awaken_data_governance_contract::ContentEraser;
+use awaken_runtime_contract::{CaptureError, CaptureSink, ContentKind, DataSubjectId, Purpose};
 
 #[async_trait]
 trait CapturedContentBackend {

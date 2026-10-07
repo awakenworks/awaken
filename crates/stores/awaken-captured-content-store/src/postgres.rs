@@ -13,9 +13,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_runtime_contract::{
-    CaptureError, CaptureSink, ContentEraser, ContentKind, DataSubjectId, Purpose,
-};
+use awaken_data_governance_contract::ContentEraser;
+use awaken_runtime_contract::{CaptureError, CaptureSink, ContentKind, DataSubjectId, Purpose};
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 
@@ -248,26 +247,25 @@ impl ContentEraser for PgCapturedContentStore {
     async fn erase_subject(
         &self,
         subject: &DataSubjectId,
-    ) -> Result<usize, awaken_runtime_contract::ErasureError> {
+    ) -> Result<usize, awaken_data_governance_contract::ErasureError> {
         // Restricted (Art. 18) rows survive erasure until released. A DELETE that
         // errors is surfaced (fail-closed) rather than swallowed to a `0` count.
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
+        let mut tx =
+            self.pool.begin().await.map_err(|error| {
+                awaken_data_governance_contract::ErasureError(error.to_string())
+            })?;
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
             .bind(&subject.0)
             .execute(&mut *tx)
             .await
-            .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
+            .map_err(|error| awaken_data_governance_contract::ErasureError(error.to_string()))?;
         let previous: i64 = sqlx::query_scalar(&format!(
             "SELECT records_removed FROM {NS}_fence WHERE subject = $1"
         ))
         .bind(&subject.0)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?
+        .map_err(|error| awaken_data_governance_contract::ErasureError(error.to_string()))?
         .unwrap_or(0);
         let removed = sqlx::query(&format!(
             "DELETE FROM {NS}_captured WHERE subject = $1 AND restricted = 0"
@@ -276,9 +274,9 @@ impl ContentEraser for PgCapturedContentStore {
         .execute(&mut *tx)
         .await
         .map(|r| r.rows_affected() as usize)
-        .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))?;
+        .map_err(|e| awaken_data_governance_contract::ErasureError(e.to_string()))?;
         let receipt = previous.checked_add(removed as i64).ok_or_else(|| {
-            awaken_runtime_contract::ErasureError("erasure receipt overflow".into())
+            awaken_data_governance_contract::ErasureError("erasure receipt overflow".into())
         })?;
         sqlx::query(&format!(
             "INSERT INTO {NS}_fence (subject, erased_at, records_removed) VALUES ($1, $2, $3) \
@@ -289,12 +287,14 @@ impl ContentEraser for PgCapturedContentStore {
         .bind(receipt)
         .execute(&mut *tx)
         .await
-        .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
+        .map_err(|error| awaken_data_governance_contract::ErasureError(error.to_string()))?;
         tx.commit()
             .await
-            .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
+            .map_err(|error| awaken_data_governance_contract::ErasureError(error.to_string()))?;
         usize::try_from(receipt).map_err(|error| {
-            awaken_runtime_contract::ErasureError(format!("invalid erasure receipt: {error}"))
+            awaken_data_governance_contract::ErasureError(format!(
+                "invalid erasure receipt: {error}"
+            ))
         })
     }
 }

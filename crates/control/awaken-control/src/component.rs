@@ -126,8 +126,8 @@ pub struct ControlDependencies {
         Option<awaken_credential_contract::CredentialMaterialDelivery>,
     pub data_subjects: Arc<dyn DataSubjectRepo>,
     pub erasure_jobs: Arc<dyn ErasureJobRepo>,
-    pub coordinator_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
-    pub resource_content_eraser: Option<Arc<dyn awaken_runtime_contract::ContentEraser>>,
+    pub coordinator_content_eraser: Arc<dyn awaken_data_governance_contract::ContentEraser>,
+    pub resource_content_eraser: Option<Arc<dyn awaken_data_governance_contract::ContentEraser>>,
     pub content_capture_ceiling: awaken_runtime_contract::ContentCapture,
     pub iam: Option<Arc<ManagementAuthz>>,
     pub local_browser_auth: Option<awaken_iam_host::LocalBrowserAuth>,
@@ -153,13 +153,13 @@ pub struct ControlComponent {
     pub repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
     /// The same Control-owned consent source exposed locally to AllInOne. A
     /// split Coordinator consumes its authenticated HTTP projection instead.
-    pub data_subject_consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+    pub data_subject_consent: Arc<dyn awaken_data_governance_contract::DataSubjectConsentSource>,
     /// The same Control-owned resolver projected through the authenticated
     /// private boundary for hosted compliance orchestration.
-    pub data_subject_resolver: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
+    pub data_subject_resolver: Arc<dyn awaken_data_governance_contract::DataSubjectResolver>,
     /// The one organization-level privacy process manager, projected through
     /// the same private Control boundary as subject erasure.
-    pub organization_privacy: Arc<dyn awaken_runtime_contract::OrganizationPrivacyResolver>,
+    pub organization_privacy: Arc<dyn awaken_data_governance_contract::OrganizationPrivacyResolver>,
 }
 
 /// Build the one authoritative Control application component.
@@ -358,14 +358,16 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         None => resolver,
     };
     let resolver = Arc::new(resolver);
-    let data_subject_consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource> =
+    let data_subject_consent: Arc<dyn awaken_data_governance_contract::DataSubjectConsentSource> =
         resolver.clone();
-    let data_subject_resolver: Arc<dyn awaken_runtime_contract::DataSubjectResolver> = resolver;
-    let organization_privacy: Arc<dyn awaken_runtime_contract::OrganizationPrivacyResolver> =
-        Arc::new(RepoOrganizationPrivacyResolver::new(
-            data_subjects,
-            data_subject_resolver.clone(),
-        ));
+    let data_subject_resolver: Arc<dyn awaken_data_governance_contract::DataSubjectResolver> =
+        resolver;
+    let organization_privacy: Arc<
+        dyn awaken_data_governance_contract::OrganizationPrivacyResolver,
+    > = Arc::new(RepoOrganizationPrivacyResolver::new(
+        data_subjects,
+        data_subject_resolver.clone(),
+    ));
     let router = control_router(ControlRouterInput {
         catalog,
         credentials,

@@ -20,7 +20,7 @@ pub(crate) async fn for_runtime_role(
     role: Role,
     deployment: &ResolvedDeployment,
     schema: PostgresSchemaMode,
-    captured_content: Arc<dyn awaken_runtime_contract::ContentEraser>,
+    captured_content: Arc<dyn awaken_data_governance_contract::ContentEraser>,
     references: Arc<dyn awaken_resource_contract::ResourceReferenceIndex>,
     postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
 ) -> Result<ExecutableAgentWiring, String> {
@@ -61,7 +61,8 @@ pub(crate) struct ExecutableAgentWiring {
     pub(crate) registrar: Arc<dyn ExecutableAgentRegistrar>,
     pub(crate) projection_refresher: Option<Arc<PostgresExecutableAgentRegistrar>>,
     pub(crate) private_router: Router,
-    pub(crate) coordinator_content_eraser: Option<Arc<dyn awaken_runtime_contract::ContentEraser>>,
+    pub(crate) coordinator_content_eraser:
+        Option<Arc<dyn awaken_data_governance_contract::ContentEraser>>,
     pub(crate) credential_rollout_target:
         Option<Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>>,
     pub(crate) service_authenticator:
@@ -166,7 +167,7 @@ impl ExecutableAgentWiring {
     pub(crate) async fn coordinator(
         deployment: &ResolvedDeployment,
         schema: PostgresSchemaMode,
-        captured_content: Arc<dyn awaken_runtime_contract::ContentEraser>,
+        captured_content: Arc<dyn awaken_data_governance_contract::ContentEraser>,
         references: Arc<dyn awaken_resource_contract::ResourceReferenceIndex>,
         postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
     ) -> Result<Self, String> {
@@ -237,7 +238,7 @@ type ProcessParts = (
     Arc<dyn ExecutableAgentRegistrar>,
     Router,
     Option<Arc<PostgresExecutableAgentRegistrar>>,
-    Option<Arc<dyn awaken_runtime_contract::ContentEraser>>,
+    Option<Arc<dyn awaken_data_governance_contract::ContentEraser>>,
     Option<Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>>,
     Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
 );

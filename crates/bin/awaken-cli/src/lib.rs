@@ -154,7 +154,7 @@ struct ControlServices {
     credentials: Arc<dyn awaken_session_application::SessionCredentialSource>,
     repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
     webhooks: Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>,
-    consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+    consent: Arc<dyn awaken_data_governance_contract::DataSubjectConsentSource>,
 }
 
 impl ControlServices {

@@ -5,7 +5,7 @@
 //! prompt/completion/tool content is written to, tagged by data subject so GDPR
 //! Art. 17 erasure removes exactly that subject's content and a TTL sweep
 //! enforces storage limitation (Art. 5(e)). Implements
-//! [`ContentEraser`](awaken_runtime_contract::ContentEraser) so Coordinator's
+//! [`ContentEraser`](awaken_data_governance_contract::ContentEraser) so Coordinator's
 //! erasure application can invoke it as one internal adapter.
 
 use std::collections::HashMap;
@@ -13,9 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_runtime_contract::{
-    CaptureError, CaptureSink, ContentEraser, ContentKind, DataSubjectId, Purpose,
-};
+use awaken_data_governance_contract::ContentEraser;
+use awaken_runtime_contract::{CaptureError, CaptureSink, ContentKind, DataSubjectId, Purpose};
 
 /// One captured-content record, tagged by subject + purpose + record time.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,7 +169,7 @@ impl ContentEraser for InMemoryCapturedContentStore {
     async fn erase_subject(
         &self,
         subject: &DataSubjectId,
-    ) -> Result<usize, awaken_runtime_contract::ErasureError> {
+    ) -> Result<usize, awaken_data_governance_contract::ErasureError> {
         let mut state = self.state.lock().unwrap();
         let before = state.records.len();
         // Restricted (Art. 18) records survive erasure — kept for the legal
@@ -181,7 +180,7 @@ impl ContentEraser for InMemoryCapturedContentStore {
         let removed = before - state.records.len();
         let receipt = state.erasure_receipts.entry(subject.0.clone()).or_default();
         *receipt = receipt.checked_add(removed).ok_or_else(|| {
-            awaken_runtime_contract::ErasureError("erasure receipt overflow".into())
+            awaken_data_governance_contract::ErasureError("erasure receipt overflow".into())
         })?;
         Ok(*receipt)
     }

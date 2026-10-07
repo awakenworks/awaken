@@ -43,7 +43,7 @@ pub(super) async fn control_component_for_process(
     inference_geo_policy: Option<Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>>,
     managed_request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
     credential_material_delivery: Option<awaken_credential_contract::CredentialMaterialDelivery>,
-    coordinator_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
+    coordinator_content_eraser: Arc<dyn awaken_data_governance_contract::ContentEraser>,
     content_capture_ceiling: awaken_runtime_contract::ContentCapture,
     iam: Option<Arc<ManagementAuthz>>,
     local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
@@ -587,7 +587,7 @@ async fn standalone_control_rejects_missing_environment_registration_wiring() {
 }
 
 #[cfg(test)]
-fn test_coordinator_content_eraser() -> Arc<dyn awaken_runtime_contract::ContentEraser> {
+fn test_coordinator_content_eraser() -> Arc<dyn awaken_data_governance_contract::ContentEraser> {
     Arc::new(
         awaken_captured_content_store::InMemoryCapturedContentStore::new(
             awaken_time::system_clock(),
@@ -596,6 +596,6 @@ fn test_coordinator_content_eraser() -> Arc<dyn awaken_runtime_contract::Content
 }
 
 #[cfg(not(test))]
-fn test_coordinator_content_eraser() -> Arc<dyn awaken_runtime_contract::ContentEraser> {
+fn test_coordinator_content_eraser() -> Arc<dyn awaken_data_governance_contract::ContentEraser> {
     panic!("split Control requires Coordinator content-erasure adapter")
 }

@@ -13,6 +13,7 @@ separation = "process"
 
 
 [dependencies]
+awaken-data-governance-contract.workspace = true
 awaken-service-lifecycle.workspace = true
 # The extracted service layer: SharedHost / ManagedHost / RunApplicationHost and all
 # host modules live here; Coordinator startup selects the served router modes.

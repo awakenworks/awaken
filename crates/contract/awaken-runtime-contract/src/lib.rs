@@ -60,11 +60,7 @@ pub use credential::{
     credential_realization_persistence_decision, require_exact_available_worker_reference,
     verify_attempt_credential_delivery, verify_credential_realization_receipt,
 };
-pub use data_subject::{
-    CaptureError, CaptureSink, ContentEraser, DataSubjectConsentSource, DataSubjectId,
-    DataSubjectResolver, ErasureError, ErasureReceipt, NullResolver, OrganizationPrivacyExport,
-    OrganizationPrivacyRecord, OrganizationPrivacyResolver, PrivacyExportError, Purpose,
-};
+pub use data_subject::{CaptureError, CaptureSink, DataSubjectId, Purpose};
 pub use delegation::{
     ChildRunCancellation, ChildRunResult, ChildRunResultInbox, DelegationExecutionError,
     DelegationFailureKind, DelegationLimits, DelegationRequest, DelegationResultError,

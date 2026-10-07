@@ -5,10 +5,11 @@
 
 use std::sync::Arc;
 
+use awaken_data_governance_contract::{DataSubjectResolver, ErasureReceipt};
 use awaken_data_subject_application::{
     CaptureDecisionRecord, ConsentRecord, DataSubjectApplication, DataSubjectApplicationError,
 };
-use awaken_runtime_contract::{ContentCapture, DataSubjectResolver, ErasureReceipt, Purpose};
+use awaken_runtime_contract::{ContentCapture, Purpose};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Html;

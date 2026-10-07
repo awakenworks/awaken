@@ -13,6 +13,7 @@ authority = "data-subject"
 separation = "sole-in-layer"
 
 [dependencies]
+awaken-data-governance-contract.workspace = true
 awaken-time.workspace = true
 awaken-runtime-contract.workspace = true
 async-trait.workspace = true

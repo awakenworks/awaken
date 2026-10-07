@@ -89,10 +89,11 @@ impl AcpSessionExecutorFactory for BoundAcpSessionFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_data_governance_contract::ContentEraser;
     use awaken_run_executor_acp::{
         ConfigHome, FsSessionBlobStore, SessionBlobStore, SessionHomeKey, SessionHomePlan,
     };
-    use awaken_runtime_contract::{ContentEraser, DataSubjectId};
+    use awaken_runtime_contract::DataSubjectId;
 
     #[tokio::test]
     async fn deployment_session_blob_root_is_the_only_recovery_and_erasure_scope() {

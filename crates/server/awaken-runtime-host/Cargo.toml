@@ -15,6 +15,7 @@ separation = "isolation"
 isolates = ["axum"]
 
 [dependencies]
+awaken-data-governance-contract.workspace = true
 awaken-executable-agent-contract.workspace = true
 # The backend-erased container environment ports the Session owner holds.
 awaken-container-contract.workspace = true

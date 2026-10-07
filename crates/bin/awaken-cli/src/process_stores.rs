@@ -126,7 +126,7 @@ pub(super) struct CoordinatorStores {
     pub(super) capture_sink: Arc<dyn awaken_runtime_contract::CaptureSink>,
     /// A second view of the exact same captured-content adapter for Control's
     /// authenticated erasure command.
-    pub(super) captured_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
+    pub(super) captured_content_eraser: Arc<dyn awaken_data_governance_contract::ContentEraser>,
     pub(super) environment_work: Arc<dyn awaken_session_work_contract::WorkQueue>,
 }
 
@@ -465,7 +465,7 @@ pub(super) async fn open_process_stores(
             .expect("Managed Execution opens the canonical Session repository first");
         let (capture_sink, captured_content_eraser): (
             Arc<dyn awaken_runtime_contract::CaptureSink>,
-            Arc<dyn awaken_runtime_contract::ContentEraser>,
+            Arc<dyn awaken_data_governance_contract::ContentEraser>,
         ) = match &coordinator_cfg.captured_content {
             StoreBackend::Sqlite(p) => {
                 let store = Arc::new(
