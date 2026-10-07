@@ -730,7 +730,7 @@ impl ContainerRuntime for K8sRuntime {
             pods,
             state: tokio::sync::Mutex::new(K8sExecState {
                 completion: Some(completion),
-                status: None,
+                outcome: None,
             }),
         }))
     }
@@ -787,7 +787,7 @@ impl ContainerRuntime for K8sRuntime {
                     completion: Some(tokio::spawn(super::process::observe_attached_completion(
                         attached, completion,
                     ))),
-                    status: None,
+                    outcome: None,
                 }),
             }),
             channel: Box::new(SplitChannel::new(stdout, stdin)),

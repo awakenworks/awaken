@@ -817,7 +817,7 @@ fn exec_process(completion: Option<tokio::task::JoinHandle<Option<Status>>>) -> 
         pods: rt.pods(),
         state: tokio::sync::Mutex::new(K8sExecState {
             completion,
-            status: None,
+            outcome: None,
         }),
     }
 }
@@ -1969,13 +1969,19 @@ async fn remote_completion_requires_explicit_process_exit_evidence() {
         }),
     ] {
         let process = exec_process(Some(tokio::spawn(async move { status })));
+        let first = process.wait().await.unwrap_err().to_string();
+        let repeated = process.poll().await.unwrap_err().to_string();
+        assert_eq!(first, repeated, "D10 repeat retains the original diagnosis");
         assert!(
-            process.wait().await.is_err(),
-            "D10 absent/malformed exit evidence"
-        );
-        assert!(
-            process.poll().await.is_err(),
-            "D10 repeated observer cannot fabricate exit"
+            process
+                .state
+                .lock()
+                .await
+                .outcome
+                .as_ref()
+                .unwrap()
+                .is_err(),
+            "D10 observation failure is not cached as an exit"
         );
     }
     for code in [0, 7, 137] {
@@ -1987,6 +1993,58 @@ async fn remote_completion_requires_explicit_process_exit_evidence() {
             process.poll().await.unwrap().unwrap().code,
             Some(code),
             "D11 stable exact exit"
+        );
+    }
+}
+
+#[tokio::test]
+async fn failed_exec_observation_retains_safe_diagnostics_without_claiming_exit() {
+    // Cause/effect graph: C1 no exit receipt; C2 API failure frame / cancelled
+    // observer / panicked observer; C3 repeated poll or wait. R1 C1+C2 -> error,
+    // never exit/stop authority; R2 C1+C2+C3 -> identical cached diagnosis. R3 an
+    // API code is retained but arbitrary provider message/reason and panic text
+    // are excluded. D11 above is the positive exact-exit control.
+    let task = tokio::spawn(async {
+        Some(Status {
+            status: Some("Failure".into()),
+            code: Some(502),
+            reason: Some("fixture-sensitive-reason".into()),
+            message: Some("fixture-sensitive-message".into()),
+            ..Default::default()
+        })
+    });
+    let cancelled = tokio::spawn(std::future::pending::<Option<Status>>());
+    cancelled.abort();
+    let panicked = tokio::spawn(async { panic!("fixture-sensitive-panic") });
+    for (completion, expected) in [
+        (task, "api_code=Some(502)"),
+        (cancelled, "observer was cancelled"),
+        (panicked, "observer failed"),
+    ] {
+        let process = exec_process(Some(completion));
+        let first = process.wait().await.unwrap_err().to_string();
+        assert!(first.contains(expected), "R1/R3 {first}");
+        assert!(!first.contains("fixture-sensitive"), "R3 no arbitrary text");
+        assert_eq!(
+            process.poll().await.unwrap_err().to_string(),
+            first,
+            "R2 poll"
+        );
+        assert_eq!(
+            process.wait().await.unwrap_err().to_string(),
+            first,
+            "R2 wait"
+        );
+        assert!(
+            process
+                .state
+                .lock()
+                .await
+                .outcome
+                .as_ref()
+                .unwrap()
+                .is_err(),
+            "R1 no exit"
         );
     }
 }
