@@ -1636,7 +1636,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-client"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=1faa2e30fb7bdca178817ee3e3989377c69f62b7#1faa2e30fb7bdca178817ee3e3989377c69f62b7"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=c36316f53b80355fe7344c396f4521faaed2997a#c36316f53b80355fe7344c396f4521faaed2997a"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -1653,7 +1653,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-contract"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=1faa2e30fb7bdca178817ee3e3989377c69f62b7#1faa2e30fb7bdca178817ee3e3989377c69f62b7"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=c36316f53b80355fe7344c396f4521faaed2997a#c36316f53b80355fe7344c396f4521faaed2997a"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -1665,7 +1665,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-core"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=1faa2e30fb7bdca178817ee3e3989377c69f62b7#1faa2e30fb7bdca178817ee3e3989377c69f62b7"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=c36316f53b80355fe7344c396f4521faaed2997a#c36316f53b80355fe7344c396f4521faaed2997a"
 dependencies = [
  "argon2",
  "awaken-iam-contract",
@@ -1681,7 +1681,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-host"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=1faa2e30fb7bdca178817ee3e3989377c69f62b7#1faa2e30fb7bdca178817ee3e3989377c69f62b7"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=c36316f53b80355fe7344c396f4521faaed2997a#c36316f53b80355fe7344c396f4521faaed2997a"
 dependencies = [
  "awaken-iam-client",
  "awaken-iam-contract",
@@ -1700,7 +1700,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-preset"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=1faa2e30fb7bdca178817ee3e3989377c69f62b7#1faa2e30fb7bdca178817ee3e3989377c69f62b7"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=c36316f53b80355fe7344c396f4521faaed2997a#c36316f53b80355fe7344c396f4521faaed2997a"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -1709,7 +1709,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-server"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=1faa2e30fb7bdca178817ee3e3989377c69f62b7#1faa2e30fb7bdca178817ee3e3989377c69f62b7"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=c36316f53b80355fe7344c396f4521faaed2997a#c36316f53b80355fe7344c396f4521faaed2997a"
 dependencies = [
  "async-trait",
  "awaken-iam-client",
@@ -4555,7 +4555,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6865,7 +6865,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7323,7 +7323,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7392,7 +7392,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8229,7 +8229,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9113,7 +9113,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
