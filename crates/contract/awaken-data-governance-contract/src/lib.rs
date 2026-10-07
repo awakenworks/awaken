@@ -7,6 +7,8 @@
 //! lives here (ADR-0086 §2). The consent port is consulted at the Run boundary,
 //! never on the inference hot path.
 
+#![warn(unreachable_pub)]
+
 use async_trait::async_trait;
 use awaken_runtime_contract::ContentCapture;
 use awaken_runtime_contract::data_subject::{DataSubjectId, Purpose};
