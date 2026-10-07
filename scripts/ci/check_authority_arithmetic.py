@@ -49,7 +49,7 @@ def persistence_authority_sources(root: Path = ROOT) -> list[Path]:
     """Discover SQL authority adapters from crate metadata and implemented ports.
 
     Every crate declaring a domain authority and a SQL driver contributes its
-    concrete SQL adapter files. Runtime stores that use the shared codec are
+    concrete SQL adapter files. Runtime stores built on the commit schema's codec are
     additionally discovered from the authoritative ports they implement. This
     keeps one mechanical discovery path without treating unrelated sizes or
     presentation timestamps as durable identity.
@@ -113,7 +113,7 @@ def violations(root: Path = ROOT) -> list[str]:
         for token in PERSISTED_INTEGER_FORBIDDEN:
             if token in text:
                 errors.append(
-                    f"{relative}: persisted authority must use the shared StoredU64 codec; "
+                    f"{relative}: persisted authority must use this context's StoredU64 codec; "
                     f"forbidden {token!r}"
                 )
     return errors
@@ -172,6 +172,7 @@ def self_test() -> int:
         fixture_errors = violations(fixture)
         assert len(fixture_errors) == 1 and "revision as i64" not in fixture_errors[0]
         assert "forbidden ' as i64'" in fixture_errors[0], "D1/E2; size cast is ignored"
+        assert "this context's StoredU64 codec" in fixture_errors[0], "D1/E2 names the owner"
     print("authority arithmetic guard self-test passed")
     return 0
 

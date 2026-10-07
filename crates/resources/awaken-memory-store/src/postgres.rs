@@ -8,7 +8,7 @@
 //! Postgres [`MemoryRepository`] over the crate's `memory_store` migration scope — the
 //! multi-node sibling of the SQLite backend over the same portable bundle.
 
-use awaken_store_runtime::StoredU64;
+use crate::stored_u64::StoredU64;
 use awaken_time::WallClock;
 use sqlx::Row;
 use sqlx::postgres::PgPool;

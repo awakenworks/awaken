@@ -42,6 +42,10 @@ mod postgres;
 mod schema;
 #[cfg(feature = "sqlite")]
 mod sqlite;
+// The codec is copied verbatim into each storage context; this context uses
+// only part of it outside tests.
+#[cfg_attr(not(test), allow(dead_code))]
+mod stored_u64;
 
 #[cfg(feature = "postgres")]
 pub use postgres::{PgStoreError, PostgresMemoryRepository};

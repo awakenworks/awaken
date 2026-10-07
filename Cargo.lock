@@ -606,6 +606,7 @@ dependencies = [
  "awaken-store-sqlite",
  "awaken-tenancy",
  "awaken-time",
+ "proptest",
  "serde",
  "serde_json",
  "sqlx",
@@ -1453,6 +1454,7 @@ dependencies = [
  "blake3",
  "futures",
  "object_store",
+ "proptest",
  "serde_json",
  "sqlx",
  "tempfile",
@@ -1679,6 +1681,7 @@ dependencies = [
  "awaken-sqlite-pool",
  "awaken-store-runtime",
  "awaken-time",
+ "proptest",
  "serde_json",
  "sqlx",
  "tempfile",
@@ -3359,9 +3362,7 @@ dependencies = [
 name = "awaken-store-runtime"
 version = "1.0.0"
 dependencies = [
- "proptest",
  "sqlx",
- "thiserror",
  "tokio",
 ]
 
@@ -3370,8 +3371,9 @@ name = "awaken-store-schema"
 version = "1.0.0"
 dependencies = [
  "awaken-scoped-migration",
- "awaken-store-runtime",
+ "proptest",
  "sqlx",
+ "thiserror",
  "tokio",
 ]
 
@@ -3507,6 +3509,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tempfile",
+ "thiserror",
  "tokio",
  "url",
  "uuid",
