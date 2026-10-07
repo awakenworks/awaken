@@ -85,34 +85,42 @@ impl ResourcePurgeGuard for SessionResourcePurgeGuard {
         _config_version: Option<u64>,
         _now_unix_ms: u64,
     ) -> Result<Vec<ResourceReference>, ResourcePurgeError> {
-        let mut blockers = std::collections::BTreeSet::new();
-        let sessions = crate::scan_all_reconcilable_sessions(self.sessions.as_ref())
-            .await
-            .map_err(|error| ResourcePurgeError::Indeterminate {
-                detail: error.to_string(),
-            })?;
-        if !sessions.quarantined.is_empty() {
-            return Err(ResourcePurgeError::IncompleteReferenceObservation {
-                detail: "Session recovery quarantine blocks physical Resource purge".into(),
-            });
-        }
-        for scoped in sessions.sessions {
-            let workspace = scoped.workspace_id;
-            let session = scoped.session;
-            let references = session.resources.resource_references();
-            let candidates = resource_targets(self.files.as_ref(), &workspace, &references).await?;
-            let matches = candidates.iter().any(|candidate| {
-                if target.kind == ResourceKind::File {
-                    candidate.kind == ResourceKind::File
-                        && candidate.resource_id == target.resource_id
-                } else {
-                    candidate == target
+        let (blockers, _) = crate::recovery_scan::fold_reconcilable_sessions(
+            self.sessions.as_ref(),
+            std::collections::BTreeSet::new(),
+            |mut blockers, page| async move {
+                if !page.quarantined.is_empty() {
+                    return Err(ResourcePurgeError::IncompleteReferenceObservation {
+                        detail: "Session recovery quarantine blocks physical Resource purge".into(),
+                    });
                 }
-            });
-            if matches {
-                blockers.insert(session.session_id);
-            }
-        }
+                for scoped in page.sessions {
+                    let workspace = scoped.workspace_id;
+                    let session = scoped.session;
+                    let references = session.resources.resource_references();
+                    let candidates =
+                        resource_targets(self.files.as_ref(), &workspace, &references).await?;
+                    let matches = candidates.iter().any(|candidate| {
+                        if target.kind == ResourceKind::File {
+                            candidate.kind == ResourceKind::File
+                                && candidate.resource_id == target.resource_id
+                        } else {
+                            candidate == target
+                        }
+                    });
+                    if matches {
+                        blockers.insert(session.session_id);
+                    }
+                }
+                Ok(blockers)
+            },
+            |error| ResourcePurgeError::Indeterminate {
+                detail: error.to_string(),
+            },
+        )
+        .await?;
+        // Only EOF can publish a zero-blocker observation. Catalog reads above
+        // have no physical effect and a later-page error discards the prefix.
         Ok(blockers
             .into_iter()
             .map(|session_id| ResourceReference {

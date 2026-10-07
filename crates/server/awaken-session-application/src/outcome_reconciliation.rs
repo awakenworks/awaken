@@ -31,8 +31,8 @@ impl SessionApplication {
     #[cfg(test)]
     pub(crate) async fn reconcile_outcome_continuations(&self) -> OutcomeReconciliation {
         let candidates =
-            match super::scan_all_reconcilable_sessions(self.session_repository()).await {
-                Ok(scan) => SessionRecoveryCandidates::from(scan),
+            match super::scan_recovery_candidates(self.session_repository(), true).await {
+                Ok(candidates) => candidates,
                 Err(error) => {
                     let mut report = OutcomeReconciliation::default();
                     report

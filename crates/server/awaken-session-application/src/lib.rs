@@ -22,45 +22,8 @@ use awaken_session_state_contract::SessionExecutionState;
 use awaken_session_state_contract::{PersistedSession, SessionRecoveryQuarantine, SessionScan};
 use awaken_session_types::RunError;
 
-/// Drain the repository's one typed keyset index before any reconciler starts
-/// effects. The cursor is process-local loop state only: the repository remains
-/// the sole durable scheduling and row authority.
-async fn scan_all_reconcilable_sessions(
-    repository: &dyn SessionRepository,
-) -> Result<SessionScan, awaken_session_state_contract::SessionRepositoryError> {
-    let mut complete = SessionScan::default();
-    let mut quarantined = std::collections::BTreeMap::new();
-    let mut cursor = None;
-    loop {
-        let page = repository
-            .scan(
-                awaken_session_state_contract::SessionScanQuery::Reconcilable {
-                    after: cursor.as_ref(),
-                },
-            )
-            .await?;
-        let next_cursor = page.next_cursor;
-        if let (Some(current), Some(next)) = (cursor.as_ref(), next_cursor.as_ref())
-            && next.session_id() <= current.session_id()
-        {
-            return Err(
-                awaken_session_state_contract::SessionRepositoryError::Corrupt(
-                    "Session reconciliation cursor did not advance".into(),
-                ),
-            );
-        }
-        complete.sessions.extend(page.sessions);
-        for isolation in page.quarantined {
-            quarantined.insert(isolation.session_id.clone(), isolation);
-        }
-        let Some(next_cursor) = next_cursor else {
-            break;
-        };
-        cursor = Some(next_cursor);
-    }
-    complete.quarantined = quarantined.into_values().collect();
-    Ok(complete)
-}
+mod recovery_scan;
+use recovery_scan::scan_recovery_candidates;
 
 /// Single Session-application projection from repository policy into the Run
 /// error vocabulary. Repository callers reuse the contract-owned recovery
@@ -165,32 +128,20 @@ struct SessionRecoveryCandidates {
     quarantined: Vec<SessionRecoveryQuarantine>,
 }
 
-impl From<SessionScan> for SessionRecoveryCandidates {
-    fn from(scan: SessionScan) -> Self {
-        Self::from_scan(scan, true)
-    }
-}
-
 impl SessionRecoveryCandidates {
-    fn from_scan(scan: SessionScan, audit_resource_references: bool) -> Self {
-        Self {
-            sessions: scan
-                .sessions
-                .into_iter()
-                .map(|scoped| {
-                    let interests = SessionRecoveryInterests::from_session(
-                        &scoped.session,
-                        audit_resource_references,
-                    );
-                    SessionRecoveryCandidate {
-                        workspace_id: scoped.workspace_id,
-                        session_id: scoped.session.session_id,
-                        interests,
-                    }
-                })
-                .collect(),
-            quarantined: scan.quarantined,
-        }
+    fn append_page(&mut self, scan: SessionScan, audit_resource_references: bool) {
+        self.sessions
+            .extend(scan.sessions.into_iter().map(|scoped| {
+                let interests = SessionRecoveryInterests::from_session(
+                    &scoped.session,
+                    audit_resource_references,
+                );
+                SessionRecoveryCandidate {
+                    workspace_id: scoped.workspace_id,
+                    session_id: scoped.session.session_id,
+                    interests,
+                }
+            }));
     }
 }
 
