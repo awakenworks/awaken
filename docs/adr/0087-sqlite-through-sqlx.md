@@ -63,8 +63,8 @@ lockfile already resolves rusqlite 0.32.1, and awaken-cloud pins
    and the synchronous functions of `awaken-store-sqlite` become async. Their
    PostgreSQL adapters drop the matching `block_on` bridges from
    `awaken-sql-storage`. The coordinator's `runtime_authority` use of
-   `block_on_ambient_runtime` is a deliberate cancellation-safety device and is
-   outside this decision.
+   `block_on_ambient_runtime` (now a private helper of that module) is a
+   deliberate cancellation-safety device and is outside this decision.
 
 5. **Migrations move to foundation's sqlx backend.** awaken-foundation's
    `awaken-scoped-migration` gains a `sqlite` feature beside its existing
