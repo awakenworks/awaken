@@ -147,7 +147,7 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
 
     let worker = SharedHost::new(Arc::new(OkModel), "stub")
         .await
-        .with_database_less_worker_role_for_test();
+        .with_authority(crate::UpstreamAuthority::default());
     let error = match worker
         .ctx_for_snapshot(
             "background-worker",

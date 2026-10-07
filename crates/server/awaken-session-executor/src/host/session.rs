@@ -159,22 +159,6 @@ impl CanonicalSessionProjection<'_> {
 }
 
 impl SharedHost {
-    /// Select the only commit boundary available to this process: a database-less
-    /// Worker's claim-fenced remote projection or the Coordinator-injected local
-    /// authority. Runtime Host never selects a Store backend.
-    pub(crate) async fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
-        if self.is_database_less_worker() {
-            return Ok(HostCommit::Remote(crate::store::RemoteHostCommit::new()));
-        }
-        self.authority
-            .as_ref()
-            .ok_or_else(|| HostError::internal("local Runtime requires an injected authority"))?
-            .open_commit(thread)
-            .await
-            .map(HostCommit::Local)
-            .map_err(HostError::from)
-    }
-
     /// Open only the authoritative commit/read boundary for a query. A resident
     /// context already owns the exact adapter (including a Worker's recovery
     /// projection); otherwise reconstruct the configured durable adapter without
@@ -203,7 +187,7 @@ impl SharedHost {
         {
             return Ok(commit);
         }
-        self.build_commit(thread).await.map(Arc::new)
+        self.authority.open_commit(thread).await.map(Arc::new)
     }
 
     pub(crate) async fn ctx_for(
@@ -543,7 +527,7 @@ impl SharedHost {
                     "background_task requires the Native backend so the canonical tool executor remains process-addressable",
                 ));
             }
-            if background_tasks_enabled && self.is_database_less_worker() {
+            if background_tasks_enabled && !self.authority.hosts_session_application() {
                 return Err(HostError::bad_request(
                     "background_task requires a co-located Session application until completion attention has a claim-fenced Worker transport",
                 ));
@@ -712,10 +696,10 @@ impl SharedHost {
                 None => None,
             };
             let thread_id = ThreadId(thread.to_string());
-            let commit = Arc::new(self.build_commit(thread).await?);
+            let commit = Arc::new(self.authority.open_commit(thread).await?);
             // Durable interrupted-stream checkpoints follow the commit's durability
             // (Phase 3): a mid-recovery crash resumes from the flushed partial.
-            let stream_checkpoint = self.build_stream_checkpoint(thread)?;
+            let stream_checkpoint = self.authority.stream_checkpoint(thread)?;
             // Runtime selection is known before MCP realization. Native execution
             // connects staged servers as in-process McpPlugins; ACP hands the same
             // typed server set to the CLI's own MCP client and must not open a second
@@ -1673,21 +1657,22 @@ impl SharedHost {
             // Memory observation, after Coordinator commit and before settlement, so
             // the durable intent lands beside authoritative Session truth. Local
             // execution observes here because its commit authority is in this Host.
-            let mut terminal_observers: Vec<_> = if self.is_database_less_worker() {
-                Vec::new()
-            } else {
-                self.memory_terminal_observer(
-                    thread,
-                    &config,
-                    &fallback_model_ref,
-                    None,
-                    publication_source.as_ref(),
-                    commit.clone(),
-                )
-                .await?
-                .into_iter()
-                .collect()
-            };
+            let mut terminal_observers: Vec<_> =
+                if !self.authority.observes_terminal_memory_locally() {
+                    Vec::new()
+                } else {
+                    self.memory_terminal_observer(
+                        thread,
+                        &config,
+                        &fallback_model_ref,
+                        None,
+                        publication_source.as_ref(),
+                        commit.clone(),
+                    )
+                    .await?
+                    .into_iter()
+                    .collect()
+                };
             let tool_executor = if a2a_only {
                 None
             } else if content_delivery

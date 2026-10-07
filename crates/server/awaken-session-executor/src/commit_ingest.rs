@@ -17,7 +17,6 @@ use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
 use awaken_run_ingress_application_contract::{
     ApplicationError, ClaimedOperationCoordinatorResolver,
 };
-use awaken_dispatch_contract::ClaimedRunCommit;
 
 use crate::host::HostError;
 use crate::host::SharedHost;
@@ -60,25 +59,6 @@ fn map_host_error(error: HostError) -> ApplicationError {
     }
 }
 
-impl SharedHost {
-    /// The claim-fenced commit transport this Host's claimed Runs write
-    /// through: `None` for a store-owning Host, which commits via its own
-    /// authority; the injected transport for a database-less Worker, which
-    /// fails closed when startup never installed one.
-    pub(crate) fn worker_claimed_commit(
-        &self,
-    ) -> Result<Option<Arc<dyn ClaimedRunCommit>>, HostError> {
-        if !self.is_database_less_worker() {
-            return Ok(None);
-        }
-        self.worker.claimed_commit.clone().map(Some).ok_or_else(|| {
-            HostError::internal(
-                "database-less Worker requires an injected claimed-commit transport",
-            )
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,6 +76,7 @@ mod tests {
         ApplicationErrorKind, ClaimedCommitRequest, MemoryDispatchStore, WorkerIdentity,
         WorkerResolver as _,
     };
+    use awaken_dispatch_contract::ClaimedRunCommit;
     use awaken_dispatch_contract::DispatchQueue;
     use awaken_dispatch_contract::{RunClaim, RunDispatch};
     use awaken_runtime_contract::RunActivation;
@@ -832,8 +813,6 @@ mod tests {
 
         let child_partition_exists = host
             .authority
-            .as_ref()
-            .expect("test Host has an injected authority")
             .durable_thread_exists(child_thread)
             .await
             .expect("query child physical partition");
@@ -901,12 +880,13 @@ mod tests {
 
     #[tokio::test]
     async fn worker_claimed_commit_is_the_injected_port_only_for_a_worker() {
-        // Decision table: C1 the Host role is database-less Worker (selected
-        // by its product constructor, varied by the test-only role seam here);
-        // C2 startup injected a claimed-commit transport.
-        // W1 !C1 (any C2) -> None: a store-owning
-        // Host commits through its own authority. W2 C1+C2 -> exactly the
-        // injected port. W3 C1+!C2 -> fails closed instead of a local fallback.
+        // Decision table: C1 the Host holds a database-less Worker's upstream
+        // authority (given by its product constructor, by the test fixture
+        // here); C2 startup injected a claimed-commit transport. A store-owning
+        // Host's local authority has no place for the transport at all.
+        // W1 !C1 -> None: a store-owning Host commits through its own
+        // authority. W2 C1+C2 -> exactly the injected port. W3 C1+!C2 -> fails
+        // closed instead of a local fallback.
         struct SelectedOnly;
         #[async_trait::async_trait]
         impl ClaimedRunCommit for SelectedOnly {
@@ -924,30 +904,24 @@ mod tests {
         let injected: Arc<dyn ClaimedRunCommit> = Arc::new(SelectedOnly);
         let host = || SharedHost::new(Arc::new(crate::NoModelConfiguredExecutor), "stub");
         assert!(
-            host().await.worker_claimed_commit().unwrap().is_none(),
+            host().await.authority.claimed_commit().unwrap().is_none(),
             "W1"
-        );
-        assert!(
-            host()
-                .await
-                .with_worker_claimed_commit(injected.clone())
-                .worker_claimed_commit()
-                .unwrap()
-                .is_none(),
-            "W1 injected"
         );
         let selected = host()
             .await
-            .with_database_less_worker_role_for_test()
-            .with_worker_claimed_commit(injected.clone())
-            .worker_claimed_commit()
+            .with_authority(
+                crate::UpstreamAuthority::default().with_claimed_commit(injected.clone()),
+            )
+            .authority
+            .claimed_commit()
             .unwrap()
             .expect("W2");
         assert!(Arc::ptr_eq(&selected, &injected), "W2 exact port");
         let error = match host()
             .await
-            .with_database_less_worker_role_for_test()
-            .worker_claimed_commit()
+            .with_authority(crate::UpstreamAuthority::default())
+            .authority
+            .claimed_commit()
         {
             Ok(_) => panic!("W3 must fail closed"),
             Err(error) => error,

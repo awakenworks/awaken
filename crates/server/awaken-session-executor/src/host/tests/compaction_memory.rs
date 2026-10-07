@@ -576,8 +576,6 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
         assert!(
             !host
                 .authority
-                .as_ref()
-                .expect("local authority")
                 .durable_thread_exists(&child.0)
                 .await
                 .expect("child partition lookup"),

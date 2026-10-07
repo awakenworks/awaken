@@ -244,7 +244,8 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         if claimed.session_activity_admission_required {
             let thread_id = claimed.request.session_thread_id();
             let commit = Arc::new(
-                host.build_commit(&thread_id.0)
+                host.authority
+                    .open_commit(&thread_id.0)
                     .await
                     .map_err(|error| Self::execution_error(error.to_string()))?,
             );
@@ -493,7 +494,8 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         let host = self.host()?;
         let thread_id = claimed.request.session_thread_id();
         let commit = Arc::new(
-            host.build_commit(&thread_id.0)
+            host.authority
+                .open_commit(&thread_id.0)
                 .await
                 .map_err(|commit_error| Self::execution_error(commit_error.to_string()))?,
         );
@@ -512,7 +514,8 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         let host = self.host()?;
         let thread_id = claimed.request.session_thread_id();
         let commit = Arc::new(
-            host.build_commit(&thread_id.0)
+            host.authority
+                .open_commit(&thread_id.0)
                 .await
                 .map_err(|error| Self::execution_error(error.to_string()))?,
         );

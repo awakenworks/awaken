@@ -88,15 +88,6 @@ pub type AttemptExecutorDecorator = Arc<
         + Sync,
 >;
 
-/// Whether this Host owns its commit store or executes as a database-less
-/// Worker. The constructor selects the role; an injected transport alone never
-/// changes it or grants the Worker a local write authority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HostAuthorityRole {
-    StoreOwning,
-    DatabaseLessWorker,
-}
-
 /// One remote-attempt adapter plus the exact credential realization evidence
 /// installed beside it. Bundling both prevents Worker/direct admission from
 /// drifting away from the transport resolver that performs the effect.
@@ -212,17 +203,15 @@ pub struct SharedHost {
     /// `store_dir/<thread>.db`, so an awaiting run survives a process restart. When
     /// `None`, sessions use an in-memory coordinator (ephemeral).
     pub(crate) store_dir: Option<PathBuf>,
-    /// The process role selected by the Host constructor. A database-less
-    /// Worker reads a non-authoritative recovery projection and commits through
-    /// the separately injected claim-fenced transport; it retains no HTTP client.
-    pub(crate) authority_role: HostAuthorityRole,
     /// The deployment axes (store/dispatch backend, durable ingress, wake), parsed
     /// once from the environment at construction. The runtime reads this typed
     /// config instead of reaching into process env at each call site.
     pub(crate) deployment: crate::deployment_config::DeploymentConfig,
-    /// Coordinator-owned durable capability. Runtime and Worker builds contain
-    /// no concrete Store acquisition; a database-less Worker leaves this absent.
-    pub(crate) authority: Option<Arc<dyn crate::RuntimeAuthority>>,
+    /// Where Session truth lives: the Coordinator-owned durable capability
+    /// ([`crate::LocalAuthority`]) or a database-less Worker's claim-fenced
+    /// upstream transports ([`crate::UpstreamAuthority`]). Every role-dependent
+    /// decision is asked of it; the Host never asks which role it plays.
+    pub(crate) authority: Arc<dyn crate::SessionAuthority>,
     /// The process's one wall clock, chosen by the composition that builds this
     /// Host. The dispatch pool, the reconciler, recovery drives and child
     /// schedulers all drive their Workers on it, so every time the attempt

@@ -717,11 +717,7 @@ impl SharedHost {
         thread_id: &ThreadId,
     ) -> Result<(), HostError> {
         self.interrupt_session_thread(session_id, thread_id).await?;
-        if let Some(wake) = self
-            .authority
-            .as_ref()
-            .and_then(|authority| authority.dispatch_wake())
-        {
+        if let Some(wake) = self.authority.dispatch_wake() {
             // This is only a latency hint. The durable cancellation intent and
             // dispatch row remain the recovery authority if the hint is lost.
             awaken_dispatch_execution::publish_dispatch_hint(
