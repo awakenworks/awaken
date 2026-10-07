@@ -104,6 +104,29 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
         .expect("terminal aggregate");
     create(inner.as_ref(), terminal).await;
 
+    // V7/V8: page one was already reduced, but page two fails or stalls.
+    // The partial scalar must not publish or advance the previous generation.
+    for (rule, stalled) in [("V7", false), ("V8", true)] {
+        let second_page = repository.recovery_scan_count.load(Ordering::SeqCst) + 2;
+        if stalled {
+            repository.stall_recovery_cursor_on_call(second_page);
+        } else {
+            repository.fail_recovery_scan_on_call(second_page);
+        }
+        assert!(
+            application
+                .refresh_event_batch_cutover_validation(7)
+                .await
+                .is_err(),
+            "{rule}"
+        );
+        assert_eq!(
+            validation.snapshot(),
+            Some(first),
+            "{rule}: failed prefix preserves generation"
+        );
+    }
+
     let second = application
         .refresh_event_batch_cutover_validation(2)
         .await

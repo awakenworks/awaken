@@ -1013,8 +1013,8 @@ async fn reconcile_work_dispatches(
     environments: &dyn SessionEnvironmentSource,
 ) -> WorkDispatchReconciliation {
     let mut report = WorkDispatchReconciliation::default();
-    let sessions = match scan_all_reconcilable_sessions(sessions).await {
-        Ok(sessions) => sessions,
+    let candidates = match scan_recovery_candidates(sessions, false).await {
+        Ok(candidates) => candidates,
         Err(error) => {
             report.failures.push(WorkDispatchFailure {
                 session_id: "<repository>".to_string(),
@@ -1024,10 +1024,23 @@ async fn reconcile_work_dispatches(
             return report;
         }
     };
-    report.pending = sessions.sessions.len();
-    report.quarantined.clone_from(&sessions.quarantined);
-    for scoped in sessions.sessions {
-        let session = scoped.session;
+    report.pending = candidates.sessions.len();
+    report.quarantined = candidates.quarantined;
+    for candidate in candidates.sessions {
+        // The complete scan retains identities only. Reuse the ordinary fresh
+        // root read and dispatch policy before an external WorkQueue effect.
+        let session = match sessions.get(&candidate.session_id).await {
+            Ok(session) => session,
+            Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => continue,
+            Err(error) => {
+                report.failures.push(WorkDispatchFailure {
+                    session_id: candidate.session_id.to_string(),
+                    environment_id: String::new(),
+                    message: error.to_string(),
+                });
+                continue;
+            }
+        };
         match dispatch_session_work(environments, &session).await {
             Ok(true) => report.settled += 1,
             Ok(false) => {}

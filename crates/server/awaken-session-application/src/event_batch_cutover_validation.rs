@@ -58,20 +58,21 @@ impl SessionEventBatchCutoverValidationSource {
         event_batch_failures: usize,
         restoring_sessions: u64,
     ) -> SessionEventBatchCutoverValidationSnapshot {
-        self.complete_scan(scan, event_batch_failures, restoring_sessions)
+        self.complete_scan(
+            terminal_incomplete_count(scan),
+            scan.quarantined.len(),
+            event_batch_failures,
+            restoring_sessions,
+        )
     }
 
     fn complete_scan(
         &self,
-        scan: &SessionScan,
+        terminal_with_incomplete_event_batches: u64,
+        quarantined: usize,
         event_batch_failures: usize,
         restoring_sessions: u64,
     ) -> SessionEventBatchCutoverValidationSnapshot {
-        let terminal_with_incomplete_event_batches = scan
-            .sessions
-            .iter()
-            .filter(|row| row.session.is_terminal() && row.session.has_incomplete_event_batches())
-            .count();
         let mut latest = self
             .latest
             .write()
@@ -79,16 +80,23 @@ impl SessionEventBatchCutoverValidationSource {
         let generation = latest.map_or(1, |snapshot| snapshot.generation.saturating_add(1));
         let snapshot = SessionEventBatchCutoverValidationSnapshot {
             generation,
-            terminal_with_incomplete_event_batches: count_as_u64(
-                terminal_with_incomplete_event_batches,
-            ),
+            terminal_with_incomplete_event_batches,
             event_batch_failures: count_as_u64(event_batch_failures),
-            quarantined: count_as_u64(scan.quarantined.len()),
+            quarantined: count_as_u64(quarantined),
             restoring_sessions,
         };
         *latest = Some(snapshot);
         snapshot
     }
+}
+
+fn terminal_incomplete_count(scan: &SessionScan) -> u64 {
+    count_as_u64(
+        scan.sessions
+            .iter()
+            .filter(|row| row.session.is_terminal() && row.session.has_incomplete_event_batches())
+            .count(),
+    )
 }
 
 fn count_as_u64(count: usize) -> u64 {
@@ -112,13 +120,20 @@ impl SessionApplication {
         &self,
         event_batch_failures: usize,
     ) -> Result<SessionEventBatchCutoverValidationSnapshot, SessionRepositoryError> {
-        let scan = super::scan_all_reconcilable_sessions(self.session_repository()).await?;
+        let (terminal_incomplete, quarantined) = super::recovery_scan::fold_reconcilable_sessions(
+            self.session_repository(),
+            0_u64,
+            |count, page| async move { Ok(count.saturating_add(terminal_incomplete_count(&page))) },
+            std::convert::identity,
+        )
+        .await?;
         let restoring_sessions = self
             .session_repository()
             .count_environment_phase(SessionEnvironmentPhase::Restoring)
             .await?;
         Ok(self.event_batch_cutover_validation.complete_scan(
-            &scan,
+            terminal_incomplete,
+            quarantined.len(),
             event_batch_failures,
             restoring_sessions,
         ))
@@ -147,7 +162,7 @@ mod tests {
         // | Q2 | Q1 | clean | generation 2, all counts 0 |
         let projection = SessionEventBatchCutoverValidationSource::new();
         assert_eq!(projection.snapshot(), None, "E1");
-        let first = projection.complete_scan(
+        let first = projection.complete_scan_for_test(
             &SessionScan {
                 sessions: Vec::new(),
                 quarantined: vec![SessionRecoveryQuarantine {
@@ -163,7 +178,7 @@ mod tests {
         assert_eq!(first.quarantined, 1, "Q1/E2");
         assert_eq!(first.restoring_sessions, 2, "Q1/E2");
 
-        let second = projection.complete_scan(&SessionScan::default(), 0, 0);
+        let second = projection.complete_scan_for_test(&SessionScan::default(), 0, 0);
         assert_eq!(
             second,
             SessionEventBatchCutoverValidationSnapshot {

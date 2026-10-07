@@ -4982,6 +4982,7 @@ mod event_batch_cutover_validation;
 mod event_batches;
 mod execution_observation;
 mod realization;
+mod recovery_scan;
 mod recovery_sweep;
 mod resource_resume;
 mod run_admission;
