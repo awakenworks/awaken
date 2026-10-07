@@ -1,5 +1,5 @@
 // One HTTP MCP client for ACP process fixtures; no credential custody.
-export async function mcpRequest(url, method, params, state) {
+async function postMcp(url, method, fields, state) {
   const headers = {
     accept: 'application/json, text/event-stream',
     'content-type': 'application/json',
@@ -9,9 +9,14 @@ export async function mcpRequest(url, method, params, state) {
   const response = await fetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ jsonrpc: '2.0', id: state.nextId++, method, params }),
+    body: JSON.stringify({ jsonrpc: '2.0', method, ...fields }),
   });
   if (!response.ok) throw new Error(`MCP ${method} returned ${response.status}: ${await response.text()}`);
+  return response;
+}
+
+export async function mcpRequest(url, method, params, state) {
+  const response = await postMcp(url, method, { id: state.nextId++, params }, state);
   state.sessionId ??= response.headers.get('mcp-session-id');
   const body = await response.text();
   const payload = body.split('\n')
@@ -25,15 +30,5 @@ export async function mcpRequest(url, method, params, state) {
 }
 
 export async function mcpNotify(url, method, state) {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      accept: 'application/json, text/event-stream',
-      'content-type': 'application/json',
-    ...state.headers,
-      ...(state.sessionId ? { 'mcp-session-id': state.sessionId } : {}),
-    },
-    body: JSON.stringify({ jsonrpc: '2.0', method }),
-  });
-  if (!response.ok) throw new Error(`MCP ${method} returned ${response.status}: ${await response.text()}`);
+  await postMcp(url, method, {}, state);
 }

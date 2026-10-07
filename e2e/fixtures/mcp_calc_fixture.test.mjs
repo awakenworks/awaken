@@ -40,7 +40,8 @@ test('unassigned MCP bind address rejects startup', {timeout:5000}, async()=>{
 test('stateful MCP fixture requires one upstream session throughout the shared client flow', {timeout:5000}, async()=>{
   // C1 authorized stateful initialize, C2 captured session id, C3 DELETE.
   // R1 C1+C2 -> list/call; R2 !C2 -> 400 without a recorded call;
-  // R3 C3 -> following use fails. Existing stateless fixture behavior remains
+  // R3 C3 -> following use fails; R4 missing/wrong bearer -> both request and
+  // notification reject 401 before any recorded call. Stateless behavior remains
   // covered above; the shared client is the sole ACP fixture HTTP transport.
   const fixture = await startCalcFixture('synthetic-token',{stateful:true,opaqueResult:'opaque',
     controlHandler:(req,res)=>{
@@ -49,6 +50,14 @@ test('stateful MCP fixture requires one upstream session throughout the shared c
     }});
   try {
     assert.equal(await (await fetch(new URL('/observe',fixture.url))).text(),'observer');
+    for (const headers of [{}, {authorization:'Bearer wrong'}]) {
+      const denied={nextId:1,sessionId:null,headers};
+      await assert.rejects(()=>mcpRequest(fixture.url,'initialize',{},denied),/returned 401/);
+      await assert.rejects(()=>mcpNotify(fixture.url,'notifications/initialized',denied),/returned 401/);
+      assert.equal(denied.nextId,2,'notifications allocate no request id');
+      assert.equal(denied.sessionId,null);
+    }
+    assert.equal(fixture.calls.length,0,'refused transport creates no MCP call');
     const state={nextId:1,sessionId:null,headers:{authorization:'Bearer synthetic-token',
       'x-awaken-probe-id':'0123456789abcdef0123456789abcdef'}};
     await mcpRequest(fixture.url,'initialize',{protocolVersion:'2025-06-18'},state);

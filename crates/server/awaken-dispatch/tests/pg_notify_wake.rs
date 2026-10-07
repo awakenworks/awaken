@@ -23,11 +23,9 @@ fn pg_url() -> Option<String> {
 const LISTENING_BACKENDS: &str = "SELECT pid FROM pg_stat_activity \
      WHERE btrim(query, ';') = $1 AND datname = current_database()";
 
-/// The pids of the backends currently holding `LISTEN "<channel>"`.
-///
-/// This is the durable fact every LISTEN-establishment wait in this file
-/// settles on: the row exists once the backend has actually issued its LISTEN,
-/// so a NOTIFY published after it is observed cannot be missed.
+/// Backends whose last statement names this channel. This identifies a
+/// listener's pool ownership, but does not prove LISTEN has committed or a
+/// local waiter has registered. Actual hint delivery is observed separately.
 async fn listening_pids(observer: &sqlx::PgPool, channel: &str) -> Vec<i32> {
     sqlx::query_scalar::<_, i32>(LISTENING_BACKENDS)
         .bind(format!("LISTEN \"{channel}\""))
@@ -36,35 +34,87 @@ async fn listening_pids(observer: &sqlx::PgPool, channel: &str) -> Vec<i32> {
         .expect("read the listening backends")
 }
 
-/// Settle on a backend listening to `channel` that is not one of `excluded`.
-///
-/// Excluding the pids observed beforehand is what makes this *this* listener's
-/// LISTEN rather than any listener's: a concurrent suite, or the backend this
-/// test just terminated, cannot satisfy it.
-///
-/// A fixed sleep in this position guesses how long the listener task needs to
-/// reach its LISTEN. The guess is the same whether the connection is instant or
-/// the pool is contended, it names nothing, and when it is wrong the NOTIFY is
-/// published into a channel nobody is listening to yet -- so the test fails as
-/// "the wake was never delivered", blaming the product for the fixture.
-async fn wait_for_listener(observer: &sqlx::PgPool, channel: &str, excluded: &[i32]) -> Vec<i32> {
+/// Observe this lifecycle fixture's unique LISTEN query before testing pool
+/// ownership. Delivery tests use the actual completed waiter instead.
+async fn wait_for_listener(observer: &sqlx::PgPool, channel: &str) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         let pids = listening_pids(observer, channel).await;
-        let established: Vec<i32> = pids
-            .iter()
-            .copied()
-            .filter(|pid| !excluded.contains(pid))
-            .collect();
-        if !established.is_empty() {
-            return established;
+        if !pids.is_empty() {
+            return;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "no backend established LISTEN \"{channel}\" outside {excluded:?}; \
+            "no backend issued LISTEN \"{channel}\"; \
              currently listening: {pids:?}"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// One bounded delivery observation for both initial connection and reconnect.
+/// C1 LISTEN/local waiter may still be registering; C2 hints are lossy and
+/// duplicate-safe; C3 the real waiter completes or the whole budget expires.
+/// R1 C1+C2 -> republish until C3(completion); R2 C3(timeout/panic) -> false.
+/// The deadline also bounds pool acquisition/publication and aborts a retained
+/// waiter on timeout, so a timed-out fixture cannot leave its listener alive.
+async fn publish_until_woken(
+    publisher: &dyn WakeSignal,
+    mut wait_task: tokio::task::JoinHandle<()>,
+    budget: Duration,
+) -> bool {
+    // awaken-wait: settle on delivered wake, never a sleep or LISTEN query.
+    let outcome = tokio::time::timeout(budget, async {
+        loop {
+            publisher.publish().await.expect("publish wake hint");
+            if let Ok(joined) =
+                tokio::time::timeout(Duration::from_millis(100), &mut wait_task).await
+            {
+                return joined.is_ok();
+            }
+        }
+    })
+    .await;
+    if outcome.is_err() {
+        wait_task.abort();
+        let _ = wait_task.await;
+    }
+    outcome.unwrap_or(false)
+}
+
+#[tokio::test(start_paused = true)]
+async fn delivery_observation_requires_completion_and_reaps_a_timed_out_waiter() {
+    // Delivery-observation decision table: C1 successful publisher; C2 waiter
+    // returns/panics/remains pending. R1 C1+return -> true; R2 C1+panic -> false;
+    // R3 C1+pending -> false. E1 every waiter drops, including cancellation.
+    // Reuse the existing local WakeSignal adapter to isolate this fixture
+    // contract; the PostgreSQL cases below separately prove real transport.
+    struct Dropped(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    for mode in 0..3 {
+        let publisher = awaken_dispatch_execution::wake::LocalWakeSignal::new();
+        let waiter = publisher.clone();
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let guard = Dropped(dropped.clone());
+        let task = tokio::spawn(async move {
+            let _guard = guard;
+            match mode {
+                0 => waiter.wait().await,
+                1 => panic!("fixture waiter failed"),
+                _ => std::future::pending().await,
+            }
+        });
+        assert_eq!(
+            publish_until_woken(&publisher, task, Duration::from_secs(1)).await,
+            mode == 0,
+            "R{}",
+            mode + 1
+        );
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst), "E1");
     }
 }
 
@@ -86,17 +136,12 @@ async fn publish_wakes_a_waiter_on_another_connection() {
     let waiter = PgNotifyWake::new(pool.clone(), channel);
     let publisher = PgNotifyWake::new(pool.clone(), channel);
 
-    // Waiter awaits; a publish on a *different* connection must wake it. The
-    // notify may only fire once this waiter's own LISTEN backend is committed
-    // to pg_stat_activity.
-    let before = listening_pids(&pool, channel).await;
+    // R1 separate publisher/waiter connections + eventual listener/local
+    // registration -> a delivered wake within the bound. A hint before either
+    // registration may be lost; repeated hints must still reach this waiter.
     let wait_task = tokio::spawn(async move { waiter.wait().await });
-    wait_for_listener(&pool, channel, &before).await;
-    publisher.publish().await.expect("publish");
-
-    let woke = tokio::time::timeout(Duration::from_secs(5), wait_task).await;
     assert!(
-        woke.is_ok(),
+        publish_until_woken(&publisher, wait_task, Duration::from_secs(5)).await,
         "PgNotifyWake.wait did not return after a cross-connection publish"
     );
 }
@@ -138,31 +183,15 @@ async fn listener_reconnects_after_its_connection_is_dropped() {
     let waiter = PgNotifyWake::new(pool.clone(), channel);
     let publisher = PgNotifyWake::new(pool.clone(), channel);
 
-    // Prove the hint path is live before the fault: a waiter awaits, and a
-    // cross-connection publish wakes it once its LISTEN backend is committed.
+    // R2 a delivered wake before the fault establishes the real hint path;
+    // a visible LISTEN statement alone cannot establish that precondition.
     {
-        let before = listening_pids(&pool, channel).await;
         let probe = PgNotifyWake::new(pool.clone(), channel);
-        let mut probe_task = tokio::spawn(async move { probe.wait().await });
-        wait_for_listener(&pool, channel, &before).await;
-        // Republish on the same bounded-loop rule the reconnect arm below already
-        // uses, and for the same reason. `wait_for_listener` proves the LISTEN
-        // *statement* is visible in pg_stat_activity, which is not the same fact
-        // as the backend being registered to receive: a NOTIFY landing in that
-        // window is dropped, and a single publish then waits out the timeout for
-        // a hint that no longer exists. Retrying costs nothing — a wake hint is
-        // idempotent — and keeps the failure exact: a listener that never
-        // delivers still fails here, saying the wake never arrived.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        let woke = loop {
-            publisher.publish().await.expect("first publish");
-            match tokio::time::timeout(Duration::from_millis(100), &mut probe_task).await {
-                Ok(joined) => break joined.is_ok(),
-                Err(_) if tokio::time::Instant::now() < deadline => {}
-                Err(_) => break false,
-            }
-        };
-        assert!(woke, "the listener delivers a wake before the drop");
+        let probe_task = tokio::spawn(async move { probe.wait().await });
+        assert!(
+            publish_until_woken(&publisher, probe_task, Duration::from_secs(5)).await,
+            "the listener delivers a wake before the drop"
+        );
     }
 
     // C1 this fixture's listener is connected; C2 its backend is terminated.
@@ -197,22 +226,12 @@ async fn listener_reconnects_after_its_connection_is_dropped() {
     // keeps the failure exact: a listener that never returns still fails here,
     // and it fails saying the wake never arrived rather than blaming a sleep
     // that was too short.
-    let mut wait_task = tokio::spawn(async move { waiter.wait().await });
+    let wait_task = tokio::spawn(async move { waiter.wait().await });
     let republisher = PgNotifyWake::new(pool.clone(), channel);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    let woke = loop {
-        republisher
-            .publish()
-            .await
-            .expect("publish after reconnect");
-        match tokio::time::timeout(Duration::from_millis(100), &mut wait_task).await {
-            Ok(joined) => break joined.is_ok(),
-            Err(_) if tokio::time::Instant::now() < deadline => {}
-            Err(_) => break false,
-        }
-    };
+    // R3 terminated listener + reconnect + duplicate-safe hints -> delivered
+    // wake; a permanently broken listener still fails at the common deadline.
     assert!(
-        woke,
+        publish_until_woken(&republisher, wait_task, Duration::from_secs(20)).await,
         "the listener reconnected and delivered a wake after its connection dropped"
     );
 }
@@ -240,7 +259,7 @@ async fn listener_ownership_releases_connection_on_shutdown_and_last_drop() {
         let wake = std::sync::Arc::new(PgNotifyWake::new(pool.clone(), "awaken_wake_lifecycle"));
         // Pool num_idle=0 also occurs while a prior connection is being
         // returned. Observe the actual LISTEN, not that ambiguous count.
-        wait_for_listener(&observer, "awaken_wake_lifecycle", &[]).await;
+        wait_for_listener(&observer, "awaken_wake_lifecycle").await;
         let peer = wake.clone();
         drop(wake);
         assert!(
