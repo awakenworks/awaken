@@ -62,7 +62,7 @@ mod tests {
         // Decision table: U1 any purpose from the uninstalled factory =>
         // refused as not ready, naming that purpose; no sandbox is realized.
         let spec = crate::provisioning::agent_run_sandbox_spec("aux-thread");
-        for purpose in ["compact", "mem", "mem-select", "skill-fork"] {
+        for purpose in ["compact", "mem", "mem-select"] {
             let error = match UninstalledAuxiliarySandboxes
                 .provider(purpose)
                 .create_rooted_sandbox(&spec)

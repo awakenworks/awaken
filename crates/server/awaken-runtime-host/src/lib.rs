@@ -141,7 +141,6 @@ pub use crate::deployment_config::{
     PackageImageBuilder, SandboxPackageSettingsInput, SandboxSettings, SandboxTier, StoreKind,
     Wake, default_postgres_max_connections,
 };
-pub use crate::skills::SkillForkPlacement;
 use managed_adapter_error::{to_live_inbox_error, to_run_error};
 pub(crate) use managed_input_projection::{session_system_message, user_message};
 // The model-route seam (R1/R2/R5): a process startup supplies its own

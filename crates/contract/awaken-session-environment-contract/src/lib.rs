@@ -109,7 +109,7 @@ pub trait AuxiliarySandboxProvider: Send + Sync {
 /// Consumer: the Runtime Host, which the process composition hands one factory.
 pub trait AuxiliarySandboxFactory: Send + Sync {
     /// A provider at a fresh root dedicated to `purpose` (for example
-    /// `compact`, `mem-select`, `mem`, `skill-fork`).
+    /// `compact`, `mem-select`, `mem`).
     fn provider(&self, purpose: &str) -> Arc<dyn AuxiliarySandboxProvider>;
 }
 
