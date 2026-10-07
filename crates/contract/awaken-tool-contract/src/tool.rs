@@ -71,7 +71,7 @@ pub struct ToolOperationContext {
     pub call_id: Option<String>,
     /// Trusted Workspace ownership inherited from the current attempt. This is
     /// absent for legacy/direct unit invocations and is never model input.
-    pub execution_scope: Option<awaken_tenancy::ExecutionScopeRef>,
+    pub execution_scope: Option<awaken_agent_contract::ExecutionScopeRef>,
 }
 
 /// Canonical, non-model-authored identity of one tool effect.
@@ -83,7 +83,7 @@ pub struct ToolOperationContext {
 pub struct ToolOperationToken {
     run_id: Option<RunId>,
     operation_id: String,
-    execution_scope: Option<awaken_tenancy::ExecutionScopeRef>,
+    execution_scope: Option<awaken_agent_contract::ExecutionScopeRef>,
 }
 
 impl ToolOperationToken {
@@ -131,7 +131,7 @@ impl ToolOperationToken {
     }
 
     #[must_use]
-    pub fn execution_scope(&self) -> Option<&awaken_tenancy::ExecutionScopeRef> {
+    pub fn execution_scope(&self) -> Option<&awaken_agent_contract::ExecutionScopeRef> {
         self.execution_scope.as_ref()
     }
 }
@@ -1514,9 +1514,9 @@ mod recovery_tests {
             thread_id: Some(ThreadId("thread-1".into())),
             operation_id: "operation-1".into(),
             call_id: Some("call-1".into()),
-            execution_scope: Some(awaken_tenancy::ExecutionScopeRef(awaken_tenancy::ScopeId(
-                "workspace-a".into(),
-            ))),
+            execution_scope: Some(awaken_agent_contract::ExecutionScopeRef(
+                awaken_agent_contract::ScopeId("workspace-a".into()),
+            )),
         };
         let token = ToolOperationToken::from_context(&base).unwrap();
         let exact = token.ledger_id(Some("session-1"));
@@ -1565,8 +1565,8 @@ mod recovery_tests {
         );
 
         let mut another_workspace = base;
-        another_workspace.execution_scope = Some(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId("workspace-b".into()),
+        another_workspace.execution_scope = Some(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId("workspace-b".into()),
         ));
         assert_ne!(
             exact,

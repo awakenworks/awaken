@@ -24,32 +24,17 @@
 //! the PDP adapter (the ACL boundary), so this crate never depends on the authz
 //! engine.
 
-use serde::{Deserialize, Serialize};
+// The coordinate itself is a Runtime SDK value (ADR-0086 §6): the engine carries
+// it as a label and never interprets it. Re-exported so Platform paths, type
+// identity and the serialized shape are unchanged; every check that gives the
+// coordinate meaning stays in this crate.
+pub use awaken_agent_contract::{ExecutionScopeRef, ScopeId};
 
 /// Seeded Workspace used by the anonymous single-machine composition.
 ///
 /// This is an ownership coordinate, not an authorization decision. Authenticated
 /// compositions replace it at the edge with the Workspace selected by their PEP.
 pub const DEFAULT_WORKSPACE_ID: &str = "default";
-
-/// An opaque tenant/ownership handle. The core never interprets it — it does not
-/// know whether the id denotes a workspace, an org, or any tier. Identity only.
-///
-/// It is deliberately a thin newtype: isolation is `WHERE scope_id = ?` at the
-/// persistence boundary, and a change to the tenancy model leaves this type
-/// untouched because the value is opaque.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct ScopeId(pub String);
-
-/// Opaque execution ownership coordinate carried by a durable dispatch.
-///
-/// This value is serializable and therefore is an identity claim, not proof of
-/// authorization. An ingress edge must resolve it against an authenticated
-/// [`Authority`] and pass the resulting [`VerifiedExecutionScope`] to trusted
-/// composition code before constructing a dispatch.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ExecutionScopeRef(pub ScopeId);
 
 /// A scope whose membership in an authenticated principal's authority has been
 /// checked. It deliberately does not implement serialization: only the opaque
@@ -118,32 +103,6 @@ pub struct PresentedThreadId(pub String);
 /// An Agent id selected and allow-listed by a trusted ingress policy layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedAgentId(pub String);
-
-impl ScopeId {
-    /// Borrow the underlying id.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<String> for ScopeId {
-    fn from(value: String) -> Self {
-        ScopeId(value)
-    }
-}
-
-impl From<&str> for ScopeId {
-    fn from(value: &str) -> Self {
-        ScopeId(value.to_string())
-    }
-}
-
-impl std::fmt::Display for ScopeId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
 
 /// A scope claimed by one ingress vehicle, before authorization.
 ///
@@ -350,6 +309,33 @@ pub fn resolve_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scope_coordinates_are_the_runtime_sdk_types_with_their_shape() {
+        // The re-export is the same type, not a copy: a Platform value passes
+        // where the SDK expects one without conversion, and the wire shape is
+        // the bare string it had before the move (ADR-0086 §6).
+        fn sdk_scope(id: awaken_agent_contract::ScopeId) -> ScopeId {
+            id
+        }
+        fn sdk_execution(scope: ExecutionScopeRef) -> awaken_agent_contract::ExecutionScopeRef {
+            scope
+        }
+        let scope = sdk_scope(ScopeId::from("ws-1"));
+        let execution = sdk_execution(ExecutionScopeRef(scope.clone()));
+        assert_eq!(
+            serde_json::to_value(&scope).unwrap(),
+            serde_json::json!("ws-1")
+        );
+        assert_eq!(
+            serde_json::to_value(&execution).unwrap(),
+            serde_json::json!("ws-1")
+        );
+        let verified = Authority::bound(scope.clone())
+            .verify_execution_scope(&execution)
+            .expect("a bound principal reaches its own scope");
+        assert_eq!(verified.into_ref(), execution);
+    }
 
     fn ws(s: &str) -> ScopeId {
         ScopeId(s.to_string())

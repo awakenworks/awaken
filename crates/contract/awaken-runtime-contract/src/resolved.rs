@@ -724,7 +724,7 @@ pub enum ModelProvisioning {
         /// Opaque ownership coordinate for the pinned credential. It denotes a
         /// Workspace today but deliberately carries no action/capability: scope
         /// range and authorization function remain orthogonal.
-        scope_id: awaken_tenancy::ScopeId,
+        scope_id: awaken_agent_contract::ScopeId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credential: Option<Box<crate::CredentialAccess>>,
         endpoint: Box<crate::InferenceEndpoint>,
@@ -749,7 +749,7 @@ pub enum ModelProvisioning {
     /// Agent Card permits anonymous access.
     Remote {
         /// Opaque ownership coordinate for the pinned credential.
-        scope_id: awaken_tenancy::ScopeId,
+        scope_id: awaken_agent_contract::ScopeId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credential: Option<Box<crate::CredentialAccess>>,
         /// Fingerprint of the Agent Card security declaration accepted at
@@ -867,7 +867,7 @@ impl ResolvedModelCandidate {
     /// Build one publication-pinned A2A transport demand.
     pub fn try_remote(
         binding: ModelBinding,
-        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        scope_id: impl Into<awaken_agent_contract::ScopeId>,
         credential: Option<crate::CredentialAccess>,
         security_fingerprint: impl Into<String>,
     ) -> Result<Self, InvalidResolvedModelCandidate> {

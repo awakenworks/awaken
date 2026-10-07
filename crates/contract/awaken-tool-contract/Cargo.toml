@@ -18,7 +18,6 @@ separation = "publish"
 
 [dependencies]
 awaken-agent-contract.workspace = true
-awaken-tenancy.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
