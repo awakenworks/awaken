@@ -262,8 +262,9 @@
     {
       "name": "node",
       "locate": "path",
-      "gates": ["static", "e2e", "frontend", "contracts"],
+      "gates": ["static", "rust", "e2e", "frontend", "contracts"],
       "requirement": "required",
+      "note": "Scenario Host's embedded ACP fixture test launches the real Node module graph from an empty directory.",
       "install": "https://nodejs.org (this repo pins it through nvm)"
     },
     {

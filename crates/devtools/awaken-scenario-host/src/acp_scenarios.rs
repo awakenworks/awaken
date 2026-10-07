@@ -219,6 +219,33 @@ pub async fn build_acp_permission_router_with_deployment(
     .await
 }
 
+/// Embed the fixture module graph for its deployment-owned `--eval` launch.
+fn embedded_acp_tool_bridge_fixture() -> String {
+    let fixture = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../e2e/fixtures/acp_awaken_tool_bridge_fixture.mjs"
+    ))
+    .strip_prefix("#!/usr/bin/env node\n")
+    .unwrap_or_else(|| panic!("ACP tool bridge fixture must retain its canonical Node shebang"));
+    // --eval has no fixture directory inside the Namespace. Import the same
+    // canonical client bytes as a self-contained module, preserving its exports
+    // rather than copying its transport implementation or exposing host files.
+    const HTTP_IMPORT: &str =
+        "import { mcpRequest, mcpNotify } from './mcp_http_fixture_client.mjs';";
+    assert_eq!(fixture.matches(HTTP_IMPORT).count(), 1);
+    let client = serde_json::to_string(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../e2e/fixtures/mcp_http_fixture_client.mjs"
+    )))
+    .expect("serialize the embedded fixture module");
+    fixture.replace(
+        HTTP_IMPORT,
+        &format!(
+            "const {{ mcpRequest, mcpNotify }} = await import('data:text/javascript,' + encodeURIComponent({client}));"
+        ),
+    )
+}
+
 /// Product-composed ACP tool bridge fixture. Unlike `acp-permission`, the
 /// external process consumes the Session MCP projection and performs the real
 /// rooted write/read after Awaken resumes the durable permission ticket. The
@@ -226,18 +253,12 @@ pub async fn build_acp_permission_router_with_deployment(
 /// other ACP fixture; the bridge only adds its immutable Hand publication.
 pub async fn build_acp_tool_bridge_router() -> Router {
     let deployment = scenario_deployment();
-    let fixture = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../e2e/fixtures/acp_awaken_tool_bridge_fixture.mjs"
-    ))
-    .strip_prefix("#!/usr/bin/env node\n")
-    .unwrap_or_else(|| panic!("ACP tool bridge fixture must retain its canonical Node shebang"));
     let mut launch = awaken_run_executor_acp::AcpLaunch::custom(
         vec![
             "node".into(),
             "--input-type=module".into(),
             "--eval".into(),
-            fixture.into(),
+            embedded_acp_tool_bridge_fixture(),
         ],
         vec![],
     );
@@ -839,4 +860,49 @@ pub async fn build_acp_container_router() -> Router {
     // Use the same shared Resource Registry + Managed ACL assembly as every other
     // scenario, with the exact Environment Execution application mounted by the API.
     mount_with_environments_and_agent_source(platform, Some(publication)).await
+}
+
+#[cfg(test)]
+mod embedded_fixture_tests {
+    #[test]
+    fn embedded_tool_bridge_initializes_without_host_fixture_files() {
+        // C1 the production Scenario --eval source imports the shared MCP
+        // client; C2 cwd is empty, matching the Namespace's absent host tree.
+        // R1 C1+C2 -> actual Node ACP initialization succeeds. An unresolved
+        // relative import must fail this test before any protocol reply.
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let root = tempfile::tempdir().unwrap();
+        let mut child = Command::new("node")
+            .args([
+                "--input-type=module",
+                "--eval",
+                &super::embedded_acp_tool_bridge_fixture(),
+            ])
+            .current_dir(root.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Node is required by the ACP fixture");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n")
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(reply["id"], 1);
+        assert_eq!(reply["result"]["protocolVersion"], 1);
+        assert_eq!(
+            reply["result"]["agentCapabilities"]["mcpCapabilities"]["http"],
+            true
+        );
+    }
 }
