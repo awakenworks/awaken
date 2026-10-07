@@ -2994,6 +2994,7 @@ dependencies = [
  "awaken-dispatch-execution",
  "awaken-dispatch-testkit",
  "awaken-environment-contract",
+ "awaken-executable-agent-contract",
  "awaken-ext-background-task",
  "awaken-ext-builtin-tools",
  "awaken-ext-compact",
