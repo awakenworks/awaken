@@ -27,7 +27,6 @@ thiserror.workspace = true
 # for (SQLite embedded / Postgres distributed, at parity).
 awaken-session-types.workspace = true
 awaken-session-work-contract.workspace = true
-awaken-agent-contract.workspace = true
 awaken-sqlite-pool.workspace = true
 awaken-sql-storage = { workspace = true, features = ["postgres"] }
 async-trait.workspace = true

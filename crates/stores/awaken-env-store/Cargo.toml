@@ -20,7 +20,6 @@ awaken-sql-storage = { workspace = true, features = ["postgres"] }
 awaken-environment-contract.workspace = true
 # The shared wall-clock port: every observation timestamp this store writes is a
 # reading of an injected `Clock`, rendered by the port's own UTC codec.
-awaken-agent-contract.workspace = true
 async-trait.workspace = true
 awaken-time.workspace = true
 serde_json.workspace = true

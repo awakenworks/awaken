@@ -19,7 +19,6 @@ awaken-session-executor.workspace = true
 # The frozen backend/tool vocabulary and the neutral ACP policy port.
 awaken-runtime-contract.workspace = true
 awaken-acp-contract.workspace = true
-awaken-credential-contract.workspace = true
 # The exact claim-fenced materializer consumed by the sole ACP launch resolver.
 awaken-credential-materializer.workspace = true
 # The one authoritative ACP adapter catalog queried by that policy.
@@ -60,6 +59,7 @@ awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-credential-materializer = { workspace = true, features = ["authority"] }
 tempfile = "3"
 serde_json.workspace = true
+awaken-credential-contract.workspace = true
 
 [lints]
 workspace = true

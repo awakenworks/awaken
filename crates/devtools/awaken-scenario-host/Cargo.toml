@@ -10,6 +10,7 @@ product = "devtools"
 layer = "tooling"
 authority = "scenario-host"
 separation = "process"
+enables = ["awaken-admin-config-api", "awaken-credential-store", "awaken-model-catalog-store", "awaken-resource-store"]
 
 [[bin]]
 name = "awaken-scenario-host"
@@ -25,7 +26,6 @@ awaken-session-mcp.workspace = true
 awaken-installation-workspace.workspace = true
 awaken-dispatch-http.workspace = true
 awaken-config-service.workspace = true
-awaken-ext-permission.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-ext-memory.workspace = true
 awaken-ext-skills.workspace = true
@@ -42,22 +42,16 @@ awaken-tenancy = { workspace = true }
 awaken-observability = { workspace = true }
 # Open enforcement (S1): the session-axis guard + RequestTenancy the project
 # ingress stamps. The standalone wraps the session router with it.
-awaken-authz-enforce = { workspace = true }
 awaken-protocol-managed = { workspace = true, features = ["test-support"] }
 awaken-protocol-managed-testkit.workspace = true
 awaken-runtime-host-testkit.workspace = true
 awaken-protocol-awaken = { workspace = true }
-awaken-protocol-ai-sdk = { workspace = true }
-awaken-protocol-ag-ui = { workspace = true }
-awaken-protocol-a2a = { workspace = true }
 awaken-service-lifecycle.workspace = true
 # The ordinary A2A Run-attempt adapter used by the remote delegation scenario.
-awaken-run-executor-a2a = { workspace = true }
 awaken-agent-config.workspace = true
 awaken-config-store = { workspace = true, features = ["test-support"] }
 # Canonical Memory data plane used by API, mount, recall, extraction, history, and
 # redaction. Scenario startup selects its durable or ephemeral adapter once.
-awaken-memory-store = { workspace = true }
 # Scenario resource modes also install the canonical
 # in-memory lifecycle adapter explicitly instead of relying on Host-local truth.
 awaken-resource-store = { workspace = true, features = ["test-support"] }
@@ -100,7 +94,6 @@ awaken-executable-agent-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-executable-agent-catalog.workspace = true
-awaken-runtime = { workspace = true }
 async-trait.workspace = true
 serde_json.workspace = true
 serde.workspace = true

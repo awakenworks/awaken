@@ -26,10 +26,8 @@ awaken-session-budget-contract.workspace = true
 awaken-session-dream-contract.workspace = true
 awaken-session-event-contract.workspace = true
 awaken-session-mcp-contract.workspace = true
-awaken-session-resource-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-environment-contract.workspace = true
-awaken-resource-contract.workspace = true
 awaken-sql-storage = { workspace = true, features = ["postgres"] }
 awaken-sqlite-pool.workspace = true
 awaken-deployment-contract = { workspace = true }
@@ -56,6 +54,8 @@ awaken-reliability-testkit.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # Property-based verification of the tenant-isolation fence (ADR-0059).
 proptest = { workspace = true }
+awaken-resource-contract.workspace = true
+awaken-session-resource-contract.workspace = true
 
 [features]
 # Private SQLite Session authority for unit/integration/scenario fixtures.

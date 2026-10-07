@@ -15,7 +15,6 @@ isolates = ["sqlx"]
 
 [dependencies]
 awaken-agent-contract.workspace = true
-awaken-runtime-contract.workspace = true
 awaken-store-schema = { workspace = true }
 awaken-sql-storage = { workspace = true, features = ["postgres"] }
 awaken-scoped-migration = { workspace = true, features = ["postgres"] }
