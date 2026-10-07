@@ -371,7 +371,7 @@ async fn attributed_run_meets_deployment_capture_with_control_consent() {
     struct CountingCaptureSink(AtomicUsize);
 
     #[async_trait::async_trait]
-    impl awaken_runtime_contract::DataSubjectConsentSource for SubjectConsent {
+    impl awaken_data_governance_contract::DataSubjectConsentSource for SubjectConsent {
         async fn consent_ceiling(
             &self,
             subject: &awaken_runtime_contract::DataSubjectId,

@@ -72,8 +72,11 @@ ALLOWED_CONTEXT_PAIRS: dict[str, frozenset[str]] = {
     "environment": frozenset(
         {"access", "credentials", "dispatch", "execution", "resources", "sandbox", "session"}
     ),
+    # execution -> governance: the Run boundary consults the consent port and the
+    # ACP session home erases captured content; ADR-0086 §2 moved those ports out
+    # of the Runtime SDK into awaken-data-governance-contract.
     "execution": frozenset(
-        {"access", "config", "credentials", "dispatch", "environment", "protocols", "resources", "sandbox", "session"}
+        {"access", "config", "credentials", "dispatch", "environment", "governance", "protocols", "resources", "sandbox", "session"}
     ),
     "protocols": frozenset(
         {"access", "config", "credentials", "deployment", "dispatch", "environment", "governance", "resources", "session"}
