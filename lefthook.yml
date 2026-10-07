@@ -286,6 +286,14 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/formal_budget.py --self-test
 
+    # The declared deadline subjects select their existing process tests here;
+    # full CI uses the same owner through check-all.sh's static lane.
+    command-deadline:
+      # >>> generated glob from test_deadline.py INPUT_GLOBS — do not edit
+      glob: "{scripts/ci/_deadline.sh,scripts/ci/deadline.py,scripts/ci/test_deadline.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/test_deadline.py
+
     # Generated wire artifacts are derived from the admin-config and Managed
     # DTOs; a DTO edit without regeneration is refused here, not at release.
     generated-contracts:
