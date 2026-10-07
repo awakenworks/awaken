@@ -269,7 +269,9 @@ impl PostgresManagedSessionRepository {
         // Coordinator startup memory proportional to the entire Session DB.
         let mut after: Option<String> = None;
         loop {
-            let rows = sqlx::query(
+            let cursor = keyset_predicate("root.session_id", "$1::text", after.is_some());
+            let limit = RECOVERY_BATCH_SIZE;
+            let sql = format!(
                 "SELECT root.session_id, root.aggregate_json, root.revision, \
                         work.observed_revision, work.worker_owner, \
                         work.preparation_candidate::bigint AS preparation_candidate, \
@@ -285,14 +287,14 @@ impl PostgresManagedSessionRepository {
                  FROM managed_session root \
                  LEFT JOIN managed_session_reconciliation_work work \
                    ON work.session_id = root.session_id \
-                 WHERE ($1::text IS NULL OR root.session_id > $1) \
-                 ORDER BY root.session_id LIMIT $2",
-            )
-            .bind(after.as_deref())
-            .bind(RECOVERY_BATCH_SIZE)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(storage)?;
+                 WHERE {cursor} \
+                 ORDER BY root.session_id LIMIT {limit}",
+            );
+            let rows = sqlx::query(&sql)
+                .bind(after.as_deref())
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(storage)?;
             if rows.is_empty() {
                 break;
             }
@@ -887,24 +889,10 @@ impl SessionRepository for PostgresManagedSessionRepository {
         &self,
         phase: SessionEnvironmentPhase,
     ) -> Result<u64, SessionRepositoryError> {
-        let rows = sqlx::query(
-            "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(storage)?
-        .into_iter()
-        .map(|row| {
-            Ok((
-                row.try_get("session_id").map_err(storage)?,
-                EncodedSessionRow {
-                    aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
-                    revision: row.try_get("revision").map_err(storage)?,
-                },
-            ))
-        })
-        .collect::<Result<Vec<_>, SessionRepositoryError>>()?;
-        count_environment_phase(rows, phase)
+        let rows = sqlx::query_as::<_, (String, String, i64)>(ENVIRONMENT_COUNT_SQL)
+            .fetch(&self.pool)
+            .map_err(storage);
+        count_environment_phase(rows, phase).await
     }
 
     async fn idempotency_receipt(
@@ -994,22 +982,9 @@ impl PostgresManagedSessionRepository {
         let page_size = usize::try_from(RECOVERY_BATCH_SIZE)
             .map_err(|error| storage(format!("invalid recovery batch size: {error}")))?;
         let mut scan = SessionScan::default();
-        let predicate = if preparation_only {
-            "work.preparation_candidate = 1 AND "
-        } else {
-            ""
-        };
-        let sql = format!(
-            "SELECT session.scope_id, session.session_id, session.aggregate_json, \
-                    session.revision, work.observed_revision \
-             FROM managed_session_reconciliation_work work \
-             JOIN managed_session session ON session.session_id = work.session_id \
-             WHERE {predicate}($1::text IS NULL OR work.session_id > $1) \
-             ORDER BY work.session_id LIMIT $2"
-        );
+        let sql = reconciliation_scan_sql(preparation_only, after.is_some(), "$1::text");
         let mut rows = sqlx::query(&sql)
             .bind(after.map(|cursor| cursor.session_id().as_str()))
-            .bind(RECOVERY_BATCH_SIZE + 1)
             .fetch_all(&mut *tx)
             .await
             .map_err(storage)?;
