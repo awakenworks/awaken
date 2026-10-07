@@ -1014,8 +1014,6 @@ impl SharedHost {
                         &self.agent.model_ref,
                         thread,
                         base_gate.clone(),
-                        self.env.auxiliary_sandboxes.provider("skill-fork"),
-                        self.tools.skill_fork_placement,
                         commit.clone(),
                     );
                     if installed.is_some() && !is_acp {

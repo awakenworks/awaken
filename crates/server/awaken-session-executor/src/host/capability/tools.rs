@@ -15,9 +15,6 @@ pub(crate) struct ToolOffering {
     /// `/v1/skills` catalog, and its sync-read cache — grouped behind one type that
     /// owns the cache↔store coherence invariant. See [`crate::skill_catalog`].
     pub(crate) skills: crate::skill_catalog::SkillCatalog,
-    /// Whether a `context: fork` Skill reuses the parent Session environment.
-    /// Ordinary delegated child Runs always share that environment.
-    pub(crate) skill_fork_placement: crate::skills::SkillForkPlacement,
     /// Runtime plugins this host activates on every thread, and their config
     /// sections (e.g. the tool state machine). Empty by default.
     pub(crate) plugin_ids: Vec<String>,
@@ -46,8 +43,6 @@ impl ToolOffering {
         Self {
             client_tools: HashSet::new(),
             skills,
-            // Subagents share the parent's sandbox by default (`默认共用`).
-            skill_fork_placement: crate::skills::SkillForkPlacement::SharedSession,
             plugin_ids: Vec::new(),
             plugin_config: std::collections::BTreeMap::new(),
             web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
@@ -139,16 +134,6 @@ impl SharedHost {
     /// a call awaits and the client supplies the result.
     pub fn with_client_tools(mut self, client_tools: HashSet<String>) -> Self {
         self.tools.client_tools.extend(client_tools);
-        self
-    }
-
-    /// Whether `context: fork` Skills reuse the Session environment. Ordinary
-    /// delegated child Runs are unaffected and always share it.
-    pub fn with_skill_fork_placement(
-        mut self,
-        placement: crate::skills::SkillForkPlacement,
-    ) -> Self {
-        self.tools.skill_fork_placement = placement;
         self
     }
 
