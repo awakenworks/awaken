@@ -8,7 +8,7 @@ license.workspace = true
 [package.metadata.awaken]
 context = "shared"
 product = "platform"
-bounded_context = "environment"
+bounded_context = "session"
 layer = "domain"
 authority = "session-realization"
 

@@ -168,7 +168,7 @@ def selftest() -> None:
     assert rules(spec("a", "platform", "session", "application", ["f", "s"]),
                  spec("f", "platform", "fencing", "domain"),
                  spec("s", "platform", "storage", "infrastructure")) == {}, "B8"
-    assert rules(spec("a", "platform", "worker", "infrastructure", ["p"]),
+    assert rules(spec("a", "platform", "execution", "infrastructure", ["p"]),
                  spec("p", "platform", "protocols", "interface")) == {"protocol-leaf": {("a", "p")}}, "B9"
     assert rules(spec("a", "platform", "protocols", "interface", ["p"]),
                  spec("p", "platform", "protocols", "interface")) == {}, "B10"
