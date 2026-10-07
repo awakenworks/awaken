@@ -1,0 +1,126 @@
+# ADR-0088: Bounded Context Map and SDK–Platform Contract
+
+- Status: Accepted
+- Date: 2026-10-07
+- Builds on: ADR-0081 contract layering and ratchet guardrails; ADR-0086 Runtime SDK
+  public surface; ADR-0087 SQLite through sqlx.
+- Affects: crate `bounded_context` metadata, the crate-boundary guards, and
+  awaken-cloud only through later renames (none in this ADR).
+
+## Context
+
+Crates already carry `product` and `bounded_context` metadata, and guards ratchet
+dependency direction between contexts. The tactical model is sound: the Session
+aggregate and its pure transition laws live apart from persistence and application
+services; `SessionRepository`, the lifecycle outbox and the Managed timeline
+projection are standard.
+
+The strategic layer is not. Contexts were drawn by where code runs, not by which
+domain problem it solves:
+
+- `session` holds 26 crates that mix four concerns: the Session lifecycle, the Run
+  execution host (`awaken-session-executor`, `awaken-session-mcp`), the runtime's thread
+  commit storage (`awaken-store-*`), and the executable Agent catalog that Control
+  publishes.
+- `worker` is a deployment shape, not a domain. Run execution happens both in a
+  Coordinator process and on a Worker.
+- Languages that cross contexts have no stated owner. `FrozenSessionProjection` and
+  the realization actions describe the Session, but live in a contract tagged
+  `environment`. Session-specific remote ports (`ClaimedSessionRealizationControl`,
+  `ClaimedSessionControl`) live in the dispatch contract.
+- The relationship between the Runtime SDK and the Platform was never written down.
+  The guard `sdk-standalone` forbids SDK → Platform edges, but nothing says what the
+  Platform may use from the SDK. Measured on main: Platform crates depend on
+  `awaken-agent-contract` 59 times, `awaken-time` 55 times and
+  `awaken-runtime-contract` 48 times. Once Run execution is counted as its own
+  context, engine-SPI modules of `runtime-contract` are used outside it at about 57
+  sites. Most other Platform uses are values: the Agent definition (`resolved`,
+  `snapshot`, `agent_bindings`, `delegation`, `permission`) and the Run, message and
+  thread vocabulary of `agent-contract`.
+
+## Decision
+
+1. **Subdomains.** Session (lifecycle and authority of managed sessions) and
+   Execution (running Runs in isolated environments) are core. Environment,
+   Dispatch, Committed Truth, Resources, Config, Credentials and Governance are
+   supporting. Storage, Fencing, Protocols, Access and Deployment are generic. The
+   Runtime SDK is a separate product with one context, `agent-runtime`.
+
+2. **Contexts follow domain problems.** Membership changes through metadata only:
+   - **Execution** (new): `awaken-session-executor`, `awaken-session-mcp`, the future
+     `awaken-session-realizer`, `awaken-run-executor-acp`, `awaken-run-executor-a2a`,
+     `awaken-execution-composition`, `awaken-agent-channel`, `awaken-acp-contract`,
+     `awaken-dispatch-execution`.
+   - **The `worker` context is retired.** `awaken-coordinator-client`,
+     `awaken-worker-registry`, `awaken-worker-contract`,
+     `awaken-worker-transport-security` and `awaken-connection-plan` join Dispatch. A
+     separate Fleet context waits until they show an independent change rhythm.
+   - **Committed Truth** (new): `awaken-store-schema`, `awaken-store-sqlite`,
+     `awaken-store-postgres`, `awaken-store-fs`, `awaken-store-conformance`. They
+     implement the SDK's commit SPI; they are not the Session aggregate.
+   - **Config** gains the executable Agent catalog: `awaken-executable-agent-contract`,
+     `awaken-executable-agent-catalog`, `awaken-acp-application`.
+   - **Session** keeps the lifecycle: state, configuration, resource, mcp, event,
+     budget and error contracts, the repository and application contracts,
+     `awaken-session-application`, `awaken-session-store`, the Dream application, and
+     the neutral `awaken-session-realization-driver`, which executes actions the
+     Session aggregate projects for both topologies.
+
+3. **Published languages belong to the upstream context.**
+   - What the Session publishes to Execution (`FrozenSessionProjection`, the projected
+     realization actions) belongs to Session. Environment-side control ports stay in
+     Environment. They are split into two crates only if their reader sets differ;
+     otherwise only the metadata changes.
+   - `awaken-session-execution-contract` is split by direction when it is next changed:
+     the roles the Session requires from Execution, and the callbacks Execution makes
+     into the Session application.
+   - Session-specific remote ports leave the dispatch contract after the Session
+     authority port lands. Dispatch carries them; it does not own them.
+
+4. **The SDK–Platform contract is one explicit list.**
+
+   | Part | Content | Who may depend on it |
+   |---|---|---|
+   | Published language (values) | `awaken-agent-contract` (Run, message, thread read, content, event, audit; `ScopeId` and `ExecutionScopeRef` after ADR-0086 #6); `awaken-tool-contract` values; the Agent definition (`resolved`, `snapshot`, with `resolution` and the builder per ADR-0086 #5); credential reference vocabulary in `awaken-credential` (ADR-0086 #7); capture values (ADR-0086 #1, #2) | Any context |
+   | SPI (implemented by the Platform) | `RunExecutor`, `LlmExecutor`, `ToolExecutor`, `Plugin`, `CaptureSink`; commit SPI `OperationCoordinator`, `CheckpointReader`, `RunRecoverySource` | Execution and Committed Truth only |
+   | Shared kernel | `awaken-time`, `awaken-lease-contract` | Any context |
+   | Direction | SDK → Platform is forbidden | Existing guard `sdk-standalone` |
+   | Change control | public-api snapshots for all 22 publishable SDK crates, semver | Release process |
+
+   A per-module tier table appended to ADR-0086 (value / SPI / leaves the public
+   surface) is the single source for this list; the guard reads it. The Platform
+   translates its own concepts into SDK inputs in one place: Execution.
+   `awaken-time` stays a separate SDK leaf: it is cohesive, has no internal
+   dependencies and 75 dependents; merging it into `awaken-lease-contract` or
+   `awaken-agent-contract` would give 54 or 27 crates a dependency they do not need.
+
+5. **The map is executable.** Two guard rules are added, each ratcheted from the
+   current state (may only decrease): Platform crates may depend on context pairs
+   that this ADR lists; engine-SPI modules and crates may be used only by Execution
+   and Committed Truth.
+
+6. **Order.** This ADR first. Then the metadata changes and the two guard rules,
+   before the Session authority port. The realization-language split comes before
+   the realization crate moves out of the runtime host; the remote-port move after
+   the Session authority port; the `session-runtime-contract` split and glossary
+   renames with the session-domain rename. ADR-0086 is implemented in its own order
+   (4, 3, 2, 6, 7).
+
+## Alternatives
+
+- **Keep contexts by process.** Every guard would keep enforcing a deployment shape;
+  realization and execution code would keep landing in `session`.
+- **New crates for every context seam now.** Most seams share reader sets today;
+  splitting before readers differ adds crates without narrowing anyone's dependency.
+- **Opaque SDK interfaces for all Platform use.** The Agent definition and the Run
+  vocabulary are genuinely shared; wrapping them would duplicate a published language.
+
+## Consequences
+
+- Contexts describe domain problems; `session` shrinks to the lifecycle; Execution
+  and Committed Truth become visible owners.
+- Two new ratchets make the context map and the SDK boundary fail closed.
+- The Platform side of the SDK boundary is reduced to a counted list of sites to
+  clean up, most of which disappear when Run execution is classified as Execution.
+- No public paths change in this ADR; later renames list their awaken-cloud impact
+  when they are made.
