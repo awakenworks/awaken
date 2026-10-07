@@ -3213,6 +3213,7 @@ dependencies = [
  "awaken-sqlite-pool",
  "awaken-store-conformance",
  "awaken-store-runtime",
+ "futures-util",
  "proptest",
  "serde",
  "serde_json",

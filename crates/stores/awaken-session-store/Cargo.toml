@@ -36,6 +36,7 @@ awaken-ext-memory = { workspace = true }
 # The opaque tenancy `ScopeId` the in-memory scoped-session store keys its isolation
 # fence by (the durable backends bind it as an opaque column).
 async-trait.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 serde.workspace = true
 serde_json.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }

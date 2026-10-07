@@ -449,15 +449,21 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
 async fn postgres_session_capacity_reference_and_indexed_observation() {
     use awaken_session_repository_contract::SessionRepository as _;
     use awaken_session_resource_contract::SessionRealizationLease;
-    use awaken_session_state_contract::{SessionScanQuery, SessionWorkerObligation};
+    use awaken_session_state_contract::{
+        SessionEnvironmentPhase, SessionEnvironmentState, SessionScanQuery, SessionWorkerObligation,
+    };
     use awaken_session_store::PostgresManagedSessionRepository;
 
     // Causes: C1 10k..1M otherwise idle, canonical Session roots retain one
     // physical owner; C2 their root-derived index rows have exact revisions;
     // C3 the old paged/full-decode algorithm, indexed aggregate and cold Server
-    // audit read the same PostgreSQL schema. Effects: P1=C1+C2+C3 -> all three
+    // audit read the same PostgreSQL schema; C4 the complete global Environment
+    // count streams every root to EOF. Effects: P1=C1+C2+C3 -> all three
     // agree on one owner; P2 prints separate reference/index/startup times and
-    // process high-water RSS. This observation has no universal latency pass
+    // process high-water RSS; P3=C4 -> roots+1 exact Unmaterialized count,
+    // including the template, with separate streaming time. No recovery page
+    // limit or index-only zero substitutes for this complete decode barrier.
+    // This observation has no universal latency pass
     // threshold and cannot establish a multi-Cell Agent-capacity claim.
     let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
         panic!("explicit capacity run requires AWAKEN_TEST_DATABASE_URL");
@@ -474,6 +480,10 @@ async fn postgres_session_capacity_reference_and_indexed_observation() {
     let mut template = session("capacity-template", "capacity-template");
     template.resources = Default::default();
     template.mcp = Default::default();
+    assert!(matches!(
+        template.environment,
+        SessionEnvironmentState::Unmaterialized
+    ));
     template.realization = Some(SessionRealizationLease {
         owner: "capacity-owner".into(),
         runtime_incarnation: "capacity-owner:pod".into(),
@@ -547,6 +557,17 @@ async fn postgres_session_capacity_reference_and_indexed_observation() {
             .unwrap(),
     );
     let startup_ms = startup_started.elapsed().as_secs_f64() * 1_000.0;
+    let count_started = std::time::Instant::now();
+    let global_count = repo
+        .count_environment_phase(SessionEnvironmentPhase::Unmaterialized)
+        .await
+        .unwrap();
+    let count_ms = count_started.elapsed().as_secs_f64() * 1_000.0;
+    assert_eq!(
+        global_count,
+        u64::try_from(rows).unwrap().checked_add(1).unwrap(),
+        "P3 complete canonical-root count"
+    );
     let high_water_kib = std::fs::read_to_string("/proc/self/status")
         .ok()
         .and_then(|status| {
@@ -558,7 +579,7 @@ async fn postgres_session_capacity_reference_and_indexed_observation() {
         })
         .unwrap_or(0);
     println!(
-        "session_capacity roots={rows} reference_ms={reference_ms:.3} indexed_ms={indexed_ms:.3} startup_ms={startup_ms:.3} high_water_kib={high_water_kib} owners={indexed}"
+        "session_capacity roots={rows} reference_ms={reference_ms:.3} indexed_ms={indexed_ms:.3} startup_ms={startup_ms:.3} count_ms={count_ms:.3} global_count={global_count} high_water_kib={high_water_kib} owners={indexed}"
     );
     drop(repo);
     close_postgres_pool(pool, &schema).await;

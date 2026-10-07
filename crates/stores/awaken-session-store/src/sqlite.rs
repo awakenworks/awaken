@@ -1253,23 +1253,10 @@ impl SessionRepository for SqliteManagedSessionRepository {
         &self,
         phase: SessionEnvironmentPhase,
     ) -> Result<u64, SessionRepositoryError> {
-        let rows = sqlx::query_as::<_, (String, String, i64)>(
-            "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(storage)?
-        .into_iter()
-        .map(|(session_id, aggregate_json, revision)| {
-            (
-                session_id,
-                EncodedSessionRow {
-                    aggregate_json,
-                    revision,
-                },
-            )
-        });
-        count_environment_phase(rows, phase)
+        let rows = sqlx::query_as::<_, (String, String, i64)>(ENVIRONMENT_COUNT_SQL)
+            .fetch(&self.pool)
+            .map_err(storage);
+        count_environment_phase(rows, phase).await
     }
 
     async fn idempotency_receipt(
@@ -1364,22 +1351,9 @@ impl SqliteManagedSessionRepository {
         let page_size = usize::try_from(RECOVERY_BATCH_SIZE)
             .map_err(|error| storage(format!("invalid recovery batch size: {error}")))?;
         let mut scan = SessionScan::default();
-        let predicate = if preparation_only {
-            "work.preparation_candidate = 1 AND "
-        } else {
-            ""
-        };
-        let sql = format!(
-            "SELECT session.scope_id, session.session_id, session.aggregate_json, \
-                    session.revision, work.observed_revision \
-             FROM managed_session_reconciliation_work work \
-             JOIN managed_session session ON session.session_id = work.session_id \
-             WHERE {predicate}(?1 IS NULL OR work.session_id > ?1) \
-             ORDER BY work.session_id LIMIT ?2"
-        );
+        let sql = reconciliation_scan_sql(preparation_only, after.is_some(), "?1");
         let rows = sqlx::query_as::<_, (String, String, String, i64, i64)>(&sql)
             .bind(&after)
-            .bind(RECOVERY_BATCH_SIZE + 1)
             .fetch_all(&mut *tx)
             .await
             .map_err(storage)?

@@ -34,6 +34,7 @@ use awaken_session_state_contract::{
     SessionWorkerObligation,
 };
 use awaken_session_types::SessionRevision;
+use futures_util::TryStreamExt;
 
 mod deployments;
 mod dream;
@@ -141,40 +142,84 @@ fn corrupt(error: impl std::fmt::Display) -> SessionRepositoryError {
     SessionRepositoryError::Corrupt(error.to_string())
 }
 
-fn count_environment_phase(
-    rows: impl IntoIterator<Item = (String, EncodedSessionRow)>,
+const ENVIRONMENT_COUNT_SQL: &str =
+    "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id";
+
+/// Keep the bound exclusive key in the index condition of a cached plan.
+/// A nullable-parameter OR instead leaves it as a prefix filter in PostgreSQL
+/// generic plans and SQLite scans. Callers pass only fixed SQL identifiers and
+/// placeholders here; the actual cursor always remains a bound value.
+fn keyset_predicate(column: &str, parameter: &str, has_after: bool) -> String {
+    if has_after {
+        format!("{column} > {parameter}")
+    } else {
+        format!("{parameter} IS NULL")
+    }
+}
+
+fn reconciliation_scan_sql(
+    preparation_only: bool,
+    has_after: bool,
+    after_parameter: &str,
+) -> String {
+    let preparation = if preparation_only {
+        "work.preparation_candidate = 1 AND "
+    } else {
+        ""
+    };
+    let cursor = keyset_predicate("work.session_id", after_parameter, has_after);
+    let limit = RECOVERY_BATCH_SIZE + 1;
+    format!(
+        "SELECT session.scope_id, session.session_id, session.aggregate_json, \
+                session.revision, work.observed_revision \
+         FROM managed_session_reconciliation_work work \
+         JOIN managed_session session ON session.session_id = work.session_id \
+         WHERE {preparation}{cursor} ORDER BY work.session_id LIMIT {limit}"
+    )
+}
+
+async fn count_environment_phase(
+    rows: impl futures_util::TryStream<Ok = (String, String, i64), Error = SessionRepositoryError>,
     phase: SessionEnvironmentPhase,
 ) -> Result<u64, SessionRepositoryError> {
-    rows.into_iter().try_fold(0_u64, |count, (stored_id, row)| {
-        let session = decode(row).map_err(corrupt)?;
-        if session.session_id != stored_id {
-            return Err(corrupt(
-                "managed Session aggregate id does not match its global phase-count index",
-            ));
-        }
-        let selected = matches!(
-            (phase, &session.environment),
-            (
-                SessionEnvironmentPhase::Unmaterialized,
-                SessionEnvironmentState::Unmaterialized
-            ) | (
-                SessionEnvironmentPhase::Resident,
-                SessionEnvironmentState::Resident { .. }
-            ) | (
-                SessionEnvironmentPhase::Suspending,
-                SessionEnvironmentState::Suspending { .. }
-            ) | (
-                SessionEnvironmentPhase::Hibernated,
-                SessionEnvironmentState::Hibernated { .. }
-            ) | (
-                SessionEnvironmentPhase::Restoring,
-                SessionEnvironmentState::Restoring { .. }
-            )
-        );
-        count
-            .checked_add(u64::from(selected))
-            .ok_or_else(|| corrupt("Session Environment phase count overflow"))
-    })
+    rows.try_fold(
+        0_u64,
+        |count, (stored_id, aggregate_json, revision)| async move {
+            let session = decode(EncodedSessionRow {
+                aggregate_json,
+                revision,
+            })
+            .map_err(corrupt)?;
+            if session.session_id != stored_id {
+                return Err(corrupt(
+                    "managed Session aggregate id does not match its global phase-count index",
+                ));
+            }
+            let selected = matches!(
+                (phase, &session.environment),
+                (
+                    SessionEnvironmentPhase::Unmaterialized,
+                    SessionEnvironmentState::Unmaterialized
+                ) | (
+                    SessionEnvironmentPhase::Resident,
+                    SessionEnvironmentState::Resident { .. }
+                ) | (
+                    SessionEnvironmentPhase::Suspending,
+                    SessionEnvironmentState::Suspending { .. }
+                ) | (
+                    SessionEnvironmentPhase::Hibernated,
+                    SessionEnvironmentState::Hibernated { .. }
+                ) | (
+                    SessionEnvironmentPhase::Restoring,
+                    SessionEnvironmentState::Restoring { .. }
+                )
+            );
+            count
+                .checked_add(u64::from(selected))
+                .ok_or_else(|| corrupt("Session Environment phase count overflow"))
+        },
+    )
+    .await
 }
 
 /// One transaction's complete view of a Session identity. Backends populate
