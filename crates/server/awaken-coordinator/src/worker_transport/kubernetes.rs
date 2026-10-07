@@ -174,10 +174,10 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
             ));
         }
         self.stopper
-            .release_closed_idle_pod_evidence(pod.name(), pod.uid())
+            .retire_closed_idle_pod(pod.name(), pod.uid())
             .await
             .map_err(|_| {
-                ApplicationError::unavailable("idle Worker process evidence release is unavailable")
+                ApplicationError::unavailable("closed-idle Worker Pod retirement is unavailable")
             })
     }
     async fn stop_closed_worker(

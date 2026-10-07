@@ -211,6 +211,171 @@ async fn closed_idle_release_removes_only_the_original_uid_retention_metadata() 
 }
 
 #[tokio::test]
+async fn closed_idle_retirement_closes_restartable_pods_before_releasing_exact_evidence() {
+    // Cause/effect graph: C1 Coordinator proved closed admission + no physical
+    // slots; C2 exact Pod UID/RV; C3 Always restart; C4 zero configured grace;
+    // C5 Worker retention present/previously released; C6 deletion already begun.
+    // Rules IR1=C1+C2+C3+C4+!C6 -> one conditional DELETE with positive grace,
+    // then remove only C5's Worker finalizer. IR2=C6 -> no duplicate DELETE.
+    // C5 is not admission: its absence must not strand an old closed-idle Pod.
+    // Result is unit, not a process-exit/Dispatch/Session settlement receipt.
+    for retained_evidence in [true, false] {
+        let fixture = Fixture::new(Fault::None);
+        let mut pod = running();
+        pod["spec"]["restartPolicy"] = json!("Always");
+        pod["spec"]["terminationGracePeriodSeconds"] = json!(0);
+        fixture.facts.lock().unwrap().pod = Some(if retained_evidence {
+            retained(pod)
+        } else {
+            pod["metadata"]["finalizers"] = json!(["other.example/keep"]);
+            decode(pod)
+        });
+        fixture
+            .stopper()
+            .retire_closed_idle_pod("worker", "uid-a")
+            .await
+            .unwrap();
+        {
+            let facts = fixture.facts.lock().unwrap();
+            assert_eq!(facts.accepted, 1, "IR1 immutable Pod domain closed");
+            assert_eq!(facts.released, usize::from(retained_evidence), "IR1 C5");
+            let delete = facts.calls.iter().find(|(m, _)| m == "DELETE").unwrap();
+            assert_eq!(
+                delete.1["preconditions"],
+                json!({"uid":"uid-a", "resourceVersion":"1"})
+            );
+            assert_eq!(delete.1["gracePeriodSeconds"], 1, "IR1 positive grace");
+            let finalizers = facts
+                .pod
+                .as_ref()
+                .unwrap()
+                .metadata
+                .finalizers
+                .as_ref()
+                .unwrap();
+            assert_eq!(finalizers, &["other.example/keep"], "IR1 sibling retention");
+            if retained_evidence {
+                assert!(
+                    facts.calls.iter().position(|(m, _)| m == "DELETE").unwrap()
+                        < facts.calls.iter().position(|(m, _)| m == "PUT").unwrap(),
+                    "IR1 close before release"
+                );
+            }
+        }
+        fixture
+            .stopper()
+            .retire_closed_idle_pod("worker", "uid-a")
+            .await
+            .unwrap();
+        assert_eq!(fixture.facts.lock().unwrap().accepted, 1, "IR2");
+        assert_eq!(
+            fixture.facts.lock().unwrap().released,
+            usize::from(retained_evidence),
+            "IR2"
+        );
+    }
+}
+
+#[tokio::test]
+async fn closed_idle_retirement_retries_api_faults_without_touching_successor_uid() {
+    // Causes: F1 DELETE fails before acceptance; F2 response lost after acceptance;
+    // F3 exact RV conflicts; F4 UID replaced during DELETE; F5 release response
+    // lost; F6 release CAS conflict. Rules RF1(F1/F3) -> error, retain metadata,
+    // retry same UID. RF2(F2/F5) -> error, retry observed deletion without another
+    // DELETE. RF3(F4) -> conflict then read-only completion for the old UID.
+    // RF4(F6) -> existing finalizer CAS retries. No fault creates an exit fact.
+    for fault in [
+        Fault::BeforeDelete,
+        Fault::AfterDelete,
+        Fault::Conflict,
+        Fault::Replacement,
+        Fault::ReleaseResponseLost,
+        Fault::ReleaseConflict,
+    ] {
+        let fixture = Fixture::new(fault);
+        let result = fixture
+            .stopper()
+            .retire_closed_idle_pod("worker", "uid-a")
+            .await;
+        if matches!(fault, Fault::ReleaseConflict) {
+            result.unwrap();
+        } else {
+            assert!(result.is_err(), "RF1/RF2/RF3");
+        }
+        if matches!(
+            fault,
+            Fault::BeforeDelete | Fault::AfterDelete | Fault::Conflict | Fault::Replacement
+        ) {
+            assert_eq!(
+                fixture.facts.lock().unwrap().released,
+                0,
+                "failed delete retains evidence"
+            );
+        }
+        fixture
+            .stopper()
+            .retire_closed_idle_pod("worker", "uid-a")
+            .await
+            .unwrap();
+        let facts = fixture.facts.lock().unwrap();
+        if matches!(fault, Fault::Replacement) {
+            assert_eq!(facts.accepted, 0, "RF3 successor never deleted");
+            assert_eq!(facts.released, 0, "RF3 successor retention untouched");
+            assert!(evidence_is_retained(facts.pod.as_ref().unwrap()));
+        } else {
+            assert_eq!(facts.accepted, 1, "RF1/RF2/RF4 one accepted deletion");
+            assert_eq!(facts.released, 1, "RF1/RF2/RF4 one release");
+        }
+    }
+}
+
+#[tokio::test]
+async fn closed_idle_retirement_missing_or_unavailable_coordinates_never_mutate() {
+    // Cause/effect table: RC1 absent Pod -> old domain complete, no mutation;
+    // RC2 successor UID -> no mutation; RC3 empty UID or absent/blank RV -> error;
+    // RC4 API unavailable -> retryable error. Only IR1's exact observable UID/RV
+    // admits deletion. None of RC1..RC4 is a physical-exit assertion.
+    for case in [
+        "missing",
+        "successor",
+        "empty-uid",
+        "missing-rv",
+        "blank-rv",
+        "unavailable",
+    ] {
+        let fixture = Fixture::new(Fault::None);
+        {
+            let mut facts = fixture.facts.lock().unwrap();
+            match case {
+                "missing" => facts.pod = None,
+                "successor" => facts.pod.as_mut().unwrap().metadata.uid = Some("uid-b".into()),
+                "missing-rv" => facts.pod.as_mut().unwrap().metadata.resource_version = None,
+                "blank-rv" => {
+                    facts.pod.as_mut().unwrap().metadata.resource_version = Some(" ".into())
+                }
+                "unavailable" => facts.read_status = 503,
+                _ => {}
+            }
+        }
+        let uid = if case == "empty-uid" { "" } else { "uid-a" };
+        let result = fixture
+            .stopper()
+            .retire_closed_idle_pod("worker", uid)
+            .await;
+        assert_eq!(
+            result.is_ok(),
+            matches!(case, "missing" | "successor"),
+            "{case}"
+        );
+        let facts = fixture.facts.lock().unwrap();
+        assert!(
+            facts.calls.iter().all(|(m, _)| m == "GET"),
+            "{case}: no mutation"
+        );
+    }
+}
+
+#[tokio::test]
 async fn deployment_stop_uses_existing_exact_delete_then_observes_original_exits() {
     // C1 frozen retained Always Pod; C2 exact UID/RV; C3 deletion accepted;
     // C4 original containers exited. P1(C1+C2) => one conditional DELETE and
@@ -308,7 +473,16 @@ impl Fixture {
                             )
                         }
                         "DELETE" => {
-                            let fault = std::mem::take(&mut state.fault);
+                            // Finalizer faults belong to PUT, even when the same
+                            // production operation first requests Pod deletion.
+                            let fault = if matches!(
+                                state.fault,
+                                Fault::ReleaseConflict | Fault::ReleaseResponseLost
+                            ) {
+                                Fault::None
+                            } else {
+                                std::mem::take(&mut state.fault)
+                            };
                             if matches!(fault, Fault::BeforeDelete) {
                                 return Err(disconnected());
                             }

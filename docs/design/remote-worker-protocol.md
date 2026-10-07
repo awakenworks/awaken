@@ -219,6 +219,16 @@ mutation also requires the exact live claim epoch. Session realization requires
 the exact realization lease and generation receipts. No one of those facts
 substitutes for another.
 
+A Kubernetes Worker incarnation is the Pod UID. After irreversible Registry
+closure, container restart in the same Pod cannot reopen admission. The existing
+maintenance/withdrawal path proves the original Dispatch physical slots empty,
+then retires only that UID through the provider's conditional deletion command
+and releases its Worker evidence finalizer. Kubernetes supplies a new Pod UID.
+An accepted deletion and an empty slot scan create no process-exit receipt,
+Session cleanup receipt, or replay permission; occupied or unavailable scans keep
+the original recovery veto. See the
+[closed-idle retirement amendment](../adr/0065-recoverable-embeddable-remote-worker.md#amendment-retire-closed-idle-kubernetes-worker-pods-2026-10-07).
+
 ### 7.1 PostgreSQL Active-Active Control Nodes
 
 SQLite deployments retain physical single-writer restrictions. PostgreSQL may
