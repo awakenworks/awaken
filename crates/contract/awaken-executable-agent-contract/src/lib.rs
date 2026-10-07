@@ -9,6 +9,7 @@ use async_trait::async_trait;
 pub use awaken_runtime_contract::ExecutableAgentSnapshot;
 use serde::{Deserialize, Serialize};
 
+pub mod capability;
 mod session_profile;
 mod snapshot_pin;
 

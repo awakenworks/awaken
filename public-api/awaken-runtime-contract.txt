@@ -249,21 +249,6 @@ pub awaken_runtime_contract::boundary::BoundaryOutcome::Continue
 pub awaken_runtime_contract::boundary::BoundaryOutcome::Continue::fold: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_runtime_contract::boundary::BoundaryOutcome::Idle
 pub fn awaken_runtime_contract::boundary::evaluate_boundary(&awaken_runtime_contract::runtime_context::RuntimeRunContext, &awaken_agent_contract::agent::run::Id, &[awaken_agent_contract::agent::message::Message]) -> awaken_runtime_contract::boundary::BoundaryOutcome
-pub mod awaken_runtime_contract::capability
-pub struct awaken_runtime_contract::capability::PluginCapability
-pub awaken_runtime_contract::capability::PluginCapability::bound: awaken_runtime_contract::CapabilityBound
-pub awaken_runtime_contract::capability::PluginCapability::config_schema: core::option::Option<serde_json::value::Value>
-pub awaken_runtime_contract::capability::PluginCapability::id: alloc::string::String
-pub awaken_runtime_contract::capability::PluginCapability::schema_keys: alloc::vec::Vec<alloc::string::String>
-pub struct awaken_runtime_contract::capability::RuntimeCapabilityCatalog
-pub awaken_runtime_contract::capability::RuntimeCapabilityCatalog::catalog_fingerprint: awaken_runtime_contract::resolved::CatalogFingerprint
-pub awaken_runtime_contract::capability::RuntimeCapabilityCatalog::plugins: alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
-pub awaken_runtime_contract::capability::RuntimeCapabilityCatalog::runtime_version: alloc::string::String
-pub awaken_runtime_contract::capability::RuntimeCapabilityCatalog::tools: alloc::vec::Vec<awaken_runtime_contract::capability::ToolCapability>
-pub struct awaken_runtime_contract::capability::ToolCapability
-pub awaken_runtime_contract::capability::ToolCapability::id: alloc::string::String
-pub trait awaken_runtime_contract::capability::RuntimeCapabilitySource
-pub fn awaken_runtime_contract::capability::RuntimeCapabilitySource::runtime_capabilities(&self) -> awaken_runtime_contract::capability::RuntimeCapabilityCatalog
 pub mod awaken_runtime_contract::capture
 pub enum awaken_runtime_contract::capture::ContentCapture
 pub awaken_runtime_contract::capture::ContentCapture::Full

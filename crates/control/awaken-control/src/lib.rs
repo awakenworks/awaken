@@ -97,12 +97,12 @@ use awaken_config_service::{ConfigPlane, ManagementAuditPlane, config_router};
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_deployment_contract::AgentArchiveCascade;
+use awaken_executable_agent_contract::capability::PluginCapability;
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_protocol_managed::{
     AgentRegistryState, ManagedAgentRepository, VaultState, agents_router, user_profiles_router,
     vault_router,
 };
-use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
 use axum::body::{Body, to_bytes};

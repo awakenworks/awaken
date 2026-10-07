@@ -4,7 +4,6 @@ pub mod activation;
 pub mod agent_bindings;
 pub mod attempt_termination;
 pub mod boundary;
-pub mod capability;
 pub mod capture;
 pub mod compaction;
 pub mod control;

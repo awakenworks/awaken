@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Message, Role};
+use awaken_executable_agent_contract::capability::PluginCapability;
 use awaken_ext_builtin_tools::{
     AGENT_RUN, Toolset, WebFetchPlugin, WebSearchPlugin, WebSearchProviderRegistry, all_hand_tools,
     builtin_tools,
@@ -21,7 +22,6 @@ use awaken_ext_permission::{
 };
 use awaken_ext_state_machine::{STATE_MACHINE_PLUGIN_ID, StateMachinePlugin};
 use awaken_runtime::{PermissionGate, Runtime};
-use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::{ToolGateHook, ToolPermissionPolicy};
 use awaken_runtime_contract::plugin::Plugin;

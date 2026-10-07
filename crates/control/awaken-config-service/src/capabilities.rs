@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_runtime_contract::capability::PluginCapability;
+use awaken_executable_agent_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use axum::extract::State;
 use axum::routing::get;
