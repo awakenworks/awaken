@@ -20,6 +20,9 @@ use awaken_scoped_migration::MigrationBundle;
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use std::time::Duration;
 
+mod environment_count_stream;
+mod keyset_query_plans;
+
 /// A raw fixture connection with SQLite's plain defaults, outside the embedded
 /// store policy: the file is created when missing, foreign keys stay off, the
 /// journal mode is left as it is and a busy writer is waited on for 5 s.

@@ -750,3 +750,19 @@ but keyset pages and per-root comparison bound process memory independently of
 historical Session count. Audit duration still grows with the number and size
 of roots; a production RTO claim requires an explicit million-root measurement.
 No second Session queue, lease, registry, or recovery authority is introduced.
+
+The global Environment phase count retains its complete canonical-root read.
+SQLite and PostgreSQL stream the same query through one decoder and checked
+counter instead of collecting every encoded root first. The counter is returned
+only after the stream reaches EOF; a transport, identity, or codec failure on
+any row rejects the entire observation. This bounds retained application rows
+without weakening the final cutover barrier or changing its failure policy.
+
+The same keyset reads select their SQL shape from cursor presence while keeping
+the cursor value bound. A subsequent page uses an exclusive indexed key range;
+it does not combine that range with a nullable-parameter OR. PostgreSQL's cached
+generic plan must retain this index condition for recovery and startup audit,
+and SQLite shares the recovery-query producer and the same range semantics.
+The fixed page bound is emitted from the same repository constant as a SQL
+literal, including recovery lookahead, so a cached generic plan can cost the
+actual small page instead of estimating a parameterized fraction of the table.
