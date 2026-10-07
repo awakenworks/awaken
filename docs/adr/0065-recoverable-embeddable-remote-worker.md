@@ -764,6 +764,20 @@ The fixed page bound is emitted from the same repository constant as a SQL
 literal, including recovery lookahead, so a cached generic plan can cost the
 actual small page instead of estimating a parameterized fraction of the table.
 
+SessionApplication now reduces the same recovery pages as they arrive instead
+of retaining every complete aggregate until EOF. The sole scan loop still
+checks cursor progress and deduplicates quarantine by Session identity. The
+supervisor retains only identity/interest candidates; every effect reloads its
+current root, including Work projection. Purge observation retains only exact
+blocker identities, and final cutover validation retains counts. Reducers may
+perform read-only catalog observations, but no external effect or published
+result starts until a complete scan succeeds. A late-page outage or stalled
+cursor discards the partial result. Candidate identities, blockers, and exact
+quarantine diagnostics retain output-proportional memory; full aggregate
+retention is limited to one repository page. This does not claim constant
+memory for arbitrarily many active candidates or relax the complete purge and
+cutover barriers.
+
 ## Amendment: retire closed-idle Kubernetes Worker Pods (2026-10-07)
 
 Kubernetes registration selects the immutable Pod UID, so restarting a container

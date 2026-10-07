@@ -258,21 +258,22 @@ impl SessionApplication {
         trigger: SessionRecoveryTrigger,
     ) -> SessionRecoveryCycle {
         let cycle_started = awaken_time::mono::Stopwatch::start();
-        let candidates =
-            match super::scan_all_reconcilable_sessions(self.session_repository()).await {
-                Ok(scan) => super::SessionRecoveryCandidates::from_scan(
-                    scan,
-                    trigger == SessionRecoveryTrigger::Scheduled,
-                ),
-                Err(error) => {
-                    tracing::warn!(error = ?error, "Session recovery candidate scan failed");
-                    return SessionRecoveryCycle {
-                        retryable_failures: 1,
-                        settled: 0,
-                        elapsed: cycle_started.elapsed(),
-                    };
-                }
-            };
+        let candidates = match super::scan_recovery_candidates(
+            self.session_repository(),
+            trigger == SessionRecoveryTrigger::Scheduled,
+        )
+        .await
+        {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                tracing::warn!(error = ?error, "Session recovery candidate scan failed");
+                return SessionRecoveryCycle {
+                    retryable_failures: 1,
+                    settled: 0,
+                    elapsed: cycle_started.elapsed(),
+                };
+            }
+        };
         let scan_elapsed = cycle_started.elapsed();
         let resources = self.reconcile_resource_activations_from(&candidates).await;
         let resources_elapsed = cycle_started.elapsed();
@@ -709,8 +710,8 @@ impl SessionApplication {
     /// environment or MCP path. Terminal and Worker-owned Sessions remain untouched.
     pub async fn reconcile_session_realizations(&self) -> SessionReconciliation {
         let candidates =
-            match super::scan_all_reconcilable_sessions(self.session_repository()).await {
-                Ok(scan) => super::SessionRecoveryCandidates::from(scan),
+            match super::scan_recovery_candidates(self.session_repository(), true).await {
+                Ok(candidates) => candidates,
                 Err(error) => {
                     let mut report = SessionReconciliation::default();
                     report.failures.push(SessionReconciliationFailure {

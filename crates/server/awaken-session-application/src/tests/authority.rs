@@ -8213,8 +8213,8 @@ async fn complete_recovery_scan_reaches_page_two_and_purge_fails_closed() {
     // purge guard returns its exact Session blocker and therefore grants zero
     // physical-purge authority; E3 any incomplete or invalid full scan fails
     // closed before a partial recovery effect or purge decision. The repository
-    // keyset remains the sole row authority; the application owns no cursor or
-    // recovery list.
+    // keyset remains the sole row authority; the application retains only
+    // disposable identities and owns no durable cursor or recovery registry.
     //
     // | Rule | page one | page two | Effect |
     // |---|---|---|---|
