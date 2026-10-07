@@ -88,7 +88,7 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     // async SQLite adapter. R1 C1+C2+C3+C4 -> awaiting ticket and history
     // recover; R2 !C1 -> fail closed/no implicit Host store; R3 C1+!C2 -> clean
     // independent state; R4 !C4 -> the canonical bridge fails fast rather than
-    // deadlocking (proved by awaken-sql-storage's current-thread test).
+    // deadlocking (proved by the runtime authority's current-thread bridge test).
     // This case proves R1 end to end; the in-memory case below proves the R2/R3
     // non-recovery effect without reintroducing a second Host-owned store path.
     // 1. First "process": execute a Run that awaits on the client tool, then drop the
