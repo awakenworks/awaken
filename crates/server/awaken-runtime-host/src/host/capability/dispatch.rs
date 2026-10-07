@@ -197,11 +197,10 @@ impl SharedHost {
     pub(crate) fn optional_dispatch_store(
         &self,
     ) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>> {
-        self.dispatch.dispatch_store_override.clone().or_else(|| {
-            self.authority
-                .as_ref()
-                .map(|authority| authority.dispatch_store())
-        })
+        self.dispatch
+            .dispatch_store_override
+            .clone()
+            .or_else(|| self.authority.durable_dispatch_store())
     }
 
     /// Whether this process owns a co-located dispatch pool. Process startup uses
@@ -276,10 +275,7 @@ impl SharedHost {
         // spawn the pool with the cross-node wake so a peer's enqueue nudges this pool
         // without busy-poll; otherwise the in-process `LocalWakeSignal` suffices.
         let completion = self.completion.clone() as Arc<dyn CompletionSink>;
-        let shared_wake = self
-            .authority
-            .as_ref()
-            .and_then(|authority| authority.dispatch_wake());
+        let shared_wake = self.authority.dispatch_wake();
         let pool = match shared_wake {
             Some(wake) => DispatchPool::spawn_with_wake_and_completion(
                 store,

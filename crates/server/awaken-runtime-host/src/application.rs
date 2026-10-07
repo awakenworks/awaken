@@ -460,15 +460,11 @@ impl crate::SharedHost {
         const MAX_ASSIGNMENTS_PER_RECOVERY_SWEEP: usize = 64;
         const MAX_CONCURRENT_TERMINAL_CLEANUPS: usize = 4;
 
-        let control = self
-            .worker
-            .terminal_cleanup_control
-            .as_ref()
-            .ok_or_else(|| {
-                crate::HostError::internal(
-                    "active Worker Session projection has no terminal cleanup Control client",
-                )
-            })?;
+        let control = &self.authority.terminal_cleanup_control().ok_or_else(|| {
+            crate::HostError::internal(
+                "active Worker Session projection has no terminal cleanup Control client",
+            )
+        })?;
         let mut recovered = 0;
         let mut terminal_error = None;
         let mut claims_exhausted = false;

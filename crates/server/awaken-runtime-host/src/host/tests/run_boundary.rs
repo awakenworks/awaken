@@ -231,7 +231,7 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
     let ctx = local.ctx_for("worker-stop", None).await.unwrap();
     let worker = SharedHost::new(Arc::new(OkModel), "stub")
         .await
-        .with_database_less_worker_role_for_test();
+        .with_authority(crate::UpstreamAuthority::default());
     for direct in [true, false] {
         let run_id = RunId(format!("worker-stop-{direct}"));
         let cancelled = awaken_runtime_contract::CancellationToken::new();

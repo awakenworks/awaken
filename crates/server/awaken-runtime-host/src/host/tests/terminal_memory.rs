@@ -194,11 +194,14 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub")
             .await
-            .with_database_less_worker_role_for_test()
-            .with_memory_reference_encoder(Arc::new(RecordingTerminalMemoryReferenceEncoder {
-                events: events.clone(),
-                realization_attempts: realization_attempts.clone(),
-            })),
+            .with_authority(
+                crate::UpstreamAuthority::default().with_memory_reference_encoder(Arc::new(
+                    RecordingTerminalMemoryReferenceEncoder {
+                        events: events.clone(),
+                        realization_attempts: realization_attempts.clone(),
+                    },
+                )),
+            ),
     );
     let managed = crate::ManagedHost::new(host);
     let input = awaken_session_resource_contract::ResolvedInput {
@@ -972,11 +975,14 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
     });
     let raw_host = SharedHost::new(Arc::new(OkModel), "stub")
         .await
-        .with_database_less_worker_role_for_test()
-        .with_memory_reference_encoder(Arc::new(RecordingTerminalMemoryReferenceEncoder {
-            events: events.clone(),
-            realization_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        }))
+        .with_authority(
+            crate::UpstreamAuthority::default().with_memory_reference_encoder(Arc::new(
+                RecordingTerminalMemoryReferenceEncoder {
+                    events: events.clone(),
+                    realization_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                },
+            )),
+        )
         .with_session_container_provider(
             provider,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
@@ -1904,11 +1910,14 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
         });
         let raw_host = SharedHost::new(Arc::new(OkModel), "stub")
             .await
-            .with_database_less_worker_role_for_test()
-            .with_memory_reference_encoder(Arc::new(RecordingTerminalMemoryReferenceEncoder {
-                events: events.clone(),
-                realization_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            }))
+            .with_authority(
+                crate::UpstreamAuthority::default().with_memory_reference_encoder(Arc::new(
+                    RecordingTerminalMemoryReferenceEncoder {
+                        events: events.clone(),
+                        realization_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    },
+                )),
+            )
             .with_session_container_provider(
                 provider,
                 Arc::new(crate::session_environment::UnusedHandExecutorFactory),

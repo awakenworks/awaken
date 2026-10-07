@@ -795,7 +795,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub")
         .await
-        .with_session_recovery_control(control.clone());
+        .with_session_realization_control(control.clone());
     raw_host.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root.clone(),
@@ -1359,7 +1359,10 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
 
     let mut raw_replacement = SharedHost::new(Arc::new(OkModel), "stub")
         .await
-        .with_session_recovery_control(control.clone())
+        .with_session_realization_control(control.clone())
+        .with_authority(
+            crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
+        )
         .with_local_workspace(workspace_id);
     raw_replacement.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(

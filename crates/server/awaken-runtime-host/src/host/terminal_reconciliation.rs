@@ -167,7 +167,7 @@ impl SharedHost {
         agent: Option<&str>,
     ) -> Result<bool, HostError> {
         if self.deployment.durable
-            || self.is_database_less_worker()
+            || !self.authority.observes_terminal_memory_locally()
             || self
                 .session_slots
                 .read(thread, |slot| slot.runtime.is_some())
@@ -237,7 +237,7 @@ impl SharedHost {
     pub fn ensure_terminal_dispatch_reconciliation(self: &Arc<Self>) -> bool {
         if !self.deployment.durable
             || self.runs_local_dispatch_pool()
-            || self.is_database_less_worker()
+            || !self.authority.scans_committed_terminals()
             || self
                 .dispatch
                 .terminal_reconciliation
@@ -256,8 +256,7 @@ impl SharedHost {
             });
         let wake = self
             .authority
-            .as_ref()
-            .and_then(|authority| authority.dispatch_wake())
+            .dispatch_wake()
             .unwrap_or_else(|| Arc::new(awaken_dispatch_execution::LocalWakeSignal::new()));
         let reconciler = awaken_dispatch_execution::DispatchReconciler::spawn(
             store,
@@ -286,7 +285,8 @@ impl HostWorkerResolver {
     > {
         let thread_id = claimed.request.session_thread_id();
         let commit = Arc::new(
-            host.build_commit(&thread_id.0)
+            host.authority
+                .open_commit(&thread_id.0)
                 .await
                 .map_err(|error| Self::execution_error(error.to_string()))?,
         );
@@ -324,7 +324,7 @@ impl HostWorkerResolver {
             worker = worker.with_session_run_admission_observer(observer);
         }
         let mut context = context;
-        if !host.is_database_less_worker()
+        if host.authority.observes_terminal_memory_locally()
             && let Some(observer) = host
                 .dispatched_memory_terminal_observer(&claimed.request, commit.clone())
                 .await
@@ -361,7 +361,8 @@ impl HostWorkerResolver {
             worker.install_attempt_executor(executor);
         }
         if let Some(claimed_commit) = host
-            .worker_claimed_commit()
+            .authority
+            .claimed_commit()
             .map_err(|error| Self::execution_error(error.to_string()))?
         {
             worker = worker.with_claimed_commit(claimed_commit);
@@ -380,7 +381,7 @@ pub(super) async fn reconcile_committed_terminals(
     let host = resolver.host()?;
     // A database-less Worker delegates committed truth upstream and has no
     // process-local registry from which to discover every Thread reader.
-    if host.is_database_less_worker() || limit == 0 {
+    if !host.authority.scans_committed_terminals() || limit == 0 {
         return Ok(Vec::new());
     }
 
@@ -403,7 +404,8 @@ pub(super) async fn reconcile_committed_terminals(
                 // the read/claim race without introducing another recovery registry.
                 let commit_thread = row.session_thread_id.as_ref().unwrap_or(&row.thread_id);
                 let commit = Arc::new(
-                    host.build_commit(&commit_thread.0)
+                    host.authority
+                        .open_commit(&commit_thread.0)
                         .await
                         .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?,
                 );
@@ -1030,7 +1032,8 @@ mod tests {
             true,
         );
         let commit = host
-            .build_commit("direct-terminal-observer-failure")
+            .authority
+            .open_commit("direct-terminal-observer-failure")
             .await
             .expect("commit authority");
         commit_run(
@@ -1136,7 +1139,8 @@ mod tests {
             .expect("quiesce terminal candidate");
 
         let commit = host
-            .build_commit("thread-terminal")
+            .authority
+            .open_commit("thread-terminal")
             .await
             .expect("terminal Thread commit");
         commit_run(
@@ -1467,7 +1471,8 @@ mod tests {
             .await
             .expect("park child");
         let parent_commit = host
-            .build_commit(&parent.0)
+            .authority
+            .open_commit(&parent.0)
             .await
             .expect("parent physical commit");
         commit_run(

@@ -560,8 +560,6 @@ mod tests {
         assert!(
             !host
                 .authority
-                .as_ref()
-                .expect("test Runtime authority")
                 .durable_thread_exists(&child_id.0)
                 .await
                 .expect("R1 child partition probe"),
@@ -750,8 +748,6 @@ mod tests {
         assert!(
             !host
                 .authority
-                .as_ref()
-                .expect("test Runtime authority")
                 .durable_thread_exists(&child_id.0)
                 .await
                 .expect("R2 child partition probe"),

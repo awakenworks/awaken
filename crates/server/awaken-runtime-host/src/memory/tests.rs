@@ -1151,8 +1151,8 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
     // | R3   | local    | RO                   | any         | any    | any | E3      |
     // | R4   | upstream | RW                   | unavailable | any    | yes | E4      |
     // | R5   | upstream | direct authority call| unavailable | any   | any | E5      |
-    // R0 the actual Worker constructor selects that role before any optional
-    // claimed-commit port; W1-W3 in commit_ingest cover missing/extra ports.
+    // R0 the actual Worker constructor gives the upstream authority before any
+    // optional claimed-commit port; W1-W3 in commit_ingest cover missing/extra ports.
     // R1-R3 are exercised by
     // `parent_rehydration_recovers_a_child_intent_after_enqueue_crash`;
     // R5 is owned by `every_worker_extraction_authority_operation_fails_closed`.
@@ -1170,10 +1170,11 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
             deployment: crate::DeploymentConfig::ephemeral(),
             clock: awaken_time::system_clock(),
         },
+        crate::UpstreamAuthority::default(),
     ));
     assert!(
-        host.is_database_less_worker(),
-        "the Worker constructor alone selects the database-less role"
+        !host.authority.observes_terminal_memory_locally(),
+        "the Worker constructor alone gives the Host its upstream authority"
     );
     let config = awaken_resource_contract::MemoryStoreConfigVersion {
         memory_store_id: "worker-memory-store".into(),
@@ -1200,7 +1201,12 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
         host.memory_for_thread(session).is_none(),
         "R4/C5 no automatic Memory binding is selected"
     );
-    let commit = Arc::new(host.build_commit(session).await.expect("R4 Worker commit"));
+    let commit = Arc::new(
+        host.authority
+            .open_commit(session)
+            .await
+            .expect("R4 Worker commit"),
+    );
 
     assert_eq!(
         host.bind_thread_memory_recovery(session, commit)

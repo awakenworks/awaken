@@ -300,7 +300,7 @@ mod tests {
                     let mut host =
                         SharedHost::new(Arc::new(crate::host::MemoryHostModel), "test-model").await;
                     if database_less_worker {
-                        host = host.with_database_less_worker_role_for_test();
+                        host = host.with_authority(crate::UpstreamAuthority::default());
                     }
                     if material_access {
                         host = host.with_credential_materializer(

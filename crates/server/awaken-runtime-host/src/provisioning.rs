@@ -843,7 +843,7 @@ impl SharedHost {
         });
         let publication_transport = match (
             publication_authority.as_ref(),
-            self.is_database_less_worker(),
+            self.authority.fetches_resources_upstream(),
         ) {
             (Some(fence), true) => {
                 let verifier = self
