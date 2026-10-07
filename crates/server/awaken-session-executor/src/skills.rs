@@ -163,16 +163,6 @@ pub(crate) fn read_pinned_skill(
     })())
 }
 
-/// Placement policy for Skill `context: fork` auxiliary Runs.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum SkillForkPlacement {
-    /// Execute in the Session-owned environment.
-    #[default]
-    SharedSession,
-    /// Provision a new isolated environment for the auxiliary Run.
-    FreshIsolation,
-}
-
 /// Bridges the sandbox [`LocalSandbox`] to the [`SkillSource`] port: scans the
 /// workspace skill dir live, returning neutral file data. The host owns this bridge
 /// so `awaken-ext-skills` stays sandbox-unaware and the root stays hidden.
@@ -270,17 +260,15 @@ impl SkillSource for SnapshotSkillSource {
 }
 
 /// Runs a `context: fork` skill as an Agent with the capabilities declared by its
-/// config, returning its reply. Placement is explicit and defaults to the
-/// Session-owned environment. Implements the neutral
+/// config, returning its reply. The fork runs in the Session-owned environment.
+/// Implements the neutral
 /// ordinary Agent-backed tool — the same generic capability used by the goal
 /// judge and compactor.
 struct ForkAgentTool {
     llm: Arc<dyn LlmExecutor>,
     model_ref: String,
-    provider: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
-    /// The parent agent's sandbox, shared with the fork by default.
+    /// The parent agent's sandbox, shared with the fork.
     sandbox: Arc<crate::session_environment::SessionEnvironment>,
-    placement: SkillForkPlacement,
     execution: Arc<crate::store::HostCommit>,
 }
 
@@ -297,14 +285,7 @@ impl RawTool for ForkAgentTool {
         // activation is out-of-band housekeeping, so its usage stays isolated (this
         // port surfaces only the reply text).
         let name = format!("skill-{}", request.agent_id);
-        let sandbox = match self.placement {
-            SkillForkPlacement::SharedSession => {
-                crate::agent_runner::AgentRunSandbox::Shared(self.sandbox.as_ref())
-            }
-            SkillForkPlacement::FreshIsolation => {
-                crate::agent_runner::AgentRunSandbox::Fresh(self.provider.as_ref())
-            }
-        };
+        let sandbox = crate::agent_runner::AgentRunSandbox::Shared(self.sandbox.as_ref());
         let delegates = std::collections::HashSet::new();
         crate::agent_runner::run_agent(
             self.llm.clone(),
@@ -506,10 +487,7 @@ pub(crate) async fn build_skill_registry(
 }
 
 /// Adapt one canonical registry to the legacy/direct semantic tool contract.
-/// `base_gate` is wrapped so conditional (`paths`) Skills surface on file touch;
-/// `fork_sandboxes` realizes the fresh sandbox of an isolated `context: fork`
-/// Skill.
-#[allow(clippy::too_many_arguments)]
+/// `base_gate` is wrapped so conditional (`paths`) Skills surface on file touch.
 pub(crate) fn semantic_skill_adapter(
     registry: Arc<dyn SkillRegistry>,
     env: Option<Arc<crate::session_environment::SessionEnvironment>>,
@@ -517,8 +495,6 @@ pub(crate) fn semantic_skill_adapter(
     model_ref: &str,
     session_id: &str,
     base_gate: Arc<dyn ToolGateHook>,
-    fork_sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
-    placement: SkillForkPlacement,
     execution: Arc<crate::store::HostCommit>,
 ) -> SemanticSkillAdapter {
     let activations = PathActivations::new();
@@ -536,9 +512,7 @@ pub(crate) fn semantic_skill_adapter(
         let agent_tool: Arc<dyn RawTool> = Arc::new(ForkAgentTool {
             llm,
             model_ref: model_ref.to_string(),
-            provider: fork_sandboxes,
             sandbox: env,
-            placement,
             execution,
         });
         activate = activate.with_agent_tool(agent_tool);
