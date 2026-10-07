@@ -107,6 +107,25 @@ if(args[0]==='image'){
         runtimeIds === 'all' ? [] : runtimeIds.split(','));
     }
 
+    // Immutable-coordinate graph: D1 digest reference; D2 complete base/role/
+    // runtime acceptance; D3 exact current binary, contract and fingerprint.
+    // I8 D1+D2+D3 -> reuse unchanged. I9 D1+(!D2 or !D3) -> refuse before
+    // Docker build; a digest cannot name new bytes. The earlier mutable rows
+    // retain the repair effect. Each failed acceptance cause is selected here
+    // independently, while the current row covers stale source inputs.
+    const immutableImage = `registry.test/awaken-sandbox@sha256:${'a'.repeat(64)}`;
+    for (const mode of ['ok', 'absent', 'label', 'base', 'roles', 'hand', 'publish',
+      'reader', 'tools', 'runtime', 'unrepairable', 'current']) {
+      await fs.writeFile(calls, ''); await fs.rm(state, { force:true });
+      process.env.ADMISSION_MODE = mode;
+      process.env.ADMISSION_FINGERPRINT = hash(Buffer.from(`runtime_ids=claude\n${inputHashes.join('\n')}\n`));
+      const run = () => ensureCanonicalSandboxImage({engine:'docker',image:immutableImage,repoRoot:root,runtimeIds:'claude'});
+      if (mode === 'ok') run(); else assert.throws(run, `immutable/${mode}`);
+      const commands = (await fs.readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse);
+      assert.equal(commands.filter(args => args[0] === 'build').length, 0, `immutable/${mode} must never rebuild`);
+      assert.equal(await fs.stat(state).then(() => true, () => false), false, 'immutable admission never replaces bytes');
+    }
+
     // Toolchain-seed decision table: C1 an existing image passes every full
     // admission check; C2 only its current-source fingerprint is stale; C3 no
     // explicit seed is configured. Effect E1 rebuild once with that accepted
