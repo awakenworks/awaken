@@ -873,10 +873,6 @@ pub fn awaken_runtime_contract::model_operation::current_model_attempt_timing() 
 pub fn awaken_runtime_contract::model_operation::current_model_operation_context() -> core::option::Option<awaken_runtime_contract::model_operation::ModelOperationContext>
 pub async fn awaken_runtime_contract::model_operation::with_model_invocation_context<T>(core::option::Option<awaken_runtime_contract::model_operation::ModelOperationContext>, awaken_runtime_contract::llm::ModelAttemptTiming, impl core::future::future::Future<Output = T>) -> T
 pub async fn awaken_runtime_contract::model_operation::with_model_operation_context<T>(core::option::Option<awaken_runtime_contract::model_operation::ModelOperationContext>, impl core::future::future::Future<Output = T>) -> T
-pub mod awaken_runtime_contract::model_routing
-pub fn awaken_runtime_contract::model_routing::exact_candidate_identity(&awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_runtime_contract::resolved::ResolvedModelCandidate) -> bool
-pub fn awaken_runtime_contract::model_routing::pinned_candidate_at<'a, T>(&'a T, &'a [T], usize) -> core::option::Option<&'a T>
-pub const fn awaken_runtime_contract::model_routing::route_pin_axes_are_exact(bool, bool, bool, bool) -> bool
 pub mod awaken_runtime_contract::pause
 pub struct awaken_runtime_contract::pause::PauseSignal(_)
 impl awaken_runtime_contract::pause::PauseSignal
