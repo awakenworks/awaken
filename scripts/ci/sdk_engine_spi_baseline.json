@@ -1,0 +1,101 @@
+{
+  "crate-dependencies": {
+    "awaken-credential-materializer -> awaken-ext-builtin-tools": "it registers web-search provider routes into the extension's registry; the Execution composition does that registration instead",
+    "awaken-protocol-managed -> awaken-ext-skills": "it parses SKILL.md with the extension's parser; move the parser into a skill value crate the Platform may read",
+    "awaken-dispatch -> awaken-runtime": "Dispatch's Coordinator adapter builds the engine Runtime for its worker pool; the Execution side hands it a RunExecutor instead",
+    "awaken-dispatch-http -> awaken-runtime": "it calls awaken_runtime::fresh_process_id for message ids; take the id from a value crate instead of the engine",
+    "awaken-sandbox-local -> awaken-ext-builtin-tools": "the sandbox mounts the extension's hand tools; Execution composes the tool set and passes it in",
+    "awaken-session-environment -> awaken-ext-builtin-tools": "the environment lists the extension's hand tools; Execution composes the tool set and passes it in",
+    "awaken-session-store -> awaken-ext-memory": "it stores the extension's memory-extraction intents; persist an opaque extraction value owned by the Session instead"
+  },
+  "spi-paths": {
+    "awaken-credential-materializer": {
+      "awaken_runtime_contract::activation": 2,
+      "awaken_runtime_contract::execution": 4,
+      "awaken_runtime_contract::llm": 3,
+      "awaken_runtime_contract::runtime_context": 2
+    },
+    "awaken-dispatch-erasure": {
+      "awaken_agent_contract::stream::checkpoint": 1,
+      "awaken_runtime_contract::resume": 1
+    },
+    "awaken-managed-session-events": {
+      "awaken_runtime_contract::compaction": 3,
+      "awaken_runtime_contract::llm": 2,
+      "awaken_runtime_contract::model_operation": 1
+    },
+    "awaken-protocol-a2a": {
+      "awaken_agent_contract::stream::sink": 2
+    },
+    "awaken-protocol-ag-ui": {
+      "awaken_agent_contract::stream::sink": 2
+    },
+    "awaken-protocol-ai-sdk": {
+      "awaken_agent_contract::stream::sink": 2
+    },
+    "awaken-protocol-managed": {
+      "awaken_agent_contract::stream::sink": 4,
+      "awaken_runtime_contract::llm": 9
+    },
+    "awaken-protocol-mcp": {
+      "awaken_runtime_contract::plugin": 1
+    },
+    "awaken-resource-worker-http": {
+      "awaken_agent_contract::thread::read::RunRecoverySource": 1
+    },
+    "awaken-dispatch": {
+      "awaken_agent_contract::stream::checkpoint": 4,
+      "awaken_agent_contract::stream::sink": 1,
+      "awaken_agent_contract::thread::commit": 3,
+      "awaken_agent_contract::thread::read::RunRecoverySource": 2,
+      "awaken_runtime_contract::activation": 1,
+      "awaken_runtime_contract::attempt_termination": 1,
+      "awaken_runtime_contract::control": 1,
+      "awaken_runtime_contract::execution": 2,
+      "awaken_runtime_contract::model_operation": 2,
+      "awaken_runtime_contract::resume": 4
+    },
+    "awaken-run-ingress-application-contract": {
+      "awaken_agent_contract::thread::commit": 1
+    },
+    "awaken-dispatch-contract": {
+      "awaken_agent_contract::stream::checkpoint": 2,
+      "awaken_agent_contract::stream::sink": 1,
+      "awaken_agent_contract::thread::commit": 5,
+      "awaken_runtime_contract::activation": 1,
+      "awaken_runtime_contract::resume": 1
+    },
+    "awaken-dispatch-http": {
+      "awaken_agent_contract::stream::checkpoint": 1,
+      "awaken_agent_contract::stream::sink": 1,
+      "awaken_agent_contract::thread::read::RunRecoverySource": 1
+    },
+    "awaken-sandbox-local": {
+      "awaken_runtime_contract::llm": 1
+    },
+    "awaken-session-application": {
+      "awaken_agent_contract::stream::sink": 10,
+      "awaken_runtime_contract::llm": 2
+    },
+    "awaken-session-application-contract": {
+      "awaken_agent_contract::stream::sink": 1,
+      "awaken_runtime_contract::llm": 1
+    },
+    "awaken-session-environment": {
+      "awaken_runtime_contract::llm": 2
+    },
+    "awaken-session-environment-contract": {
+      "awaken_runtime_contract::execution": 1,
+      "awaken_runtime_contract::resume": 1
+    },
+    "awaken-session-execution-contract": {
+      "awaken_agent_contract::stream::sink": 8
+    },
+    "awaken-coordinator-client": {
+      "awaken_agent_contract::stream::checkpoint": 1,
+      "awaken_agent_contract::stream::sink": 1,
+      "awaken_agent_contract::thread::commit": 3,
+      "awaken_runtime_contract::resume": 1
+    }
+  }
+}
