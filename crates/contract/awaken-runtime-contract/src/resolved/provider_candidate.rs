@@ -15,7 +15,7 @@ impl ResolvedModelCandidate {
         binding: ModelBinding,
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
-        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        scope_id: impl Into<awaken_agent_contract::ScopeId>,
         credential: Option<crate::CredentialAccess>,
         endpoint: crate::InferenceEndpoint,
     ) -> Result<Self, InvalidResolvedModelCandidate> {
@@ -34,7 +34,7 @@ impl ResolvedModelCandidate {
         binding: ModelBinding,
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
-        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        scope_id: impl Into<awaken_agent_contract::ScopeId>,
         credential: Option<crate::CredentialAccess>,
         endpoint: crate::InferenceEndpoint,
         unspecified_reasoning: UnspecifiedReasoning,
@@ -60,7 +60,7 @@ impl ResolvedModelCandidate {
         binding: ModelBinding,
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
-        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        scope_id: impl Into<awaken_agent_contract::ScopeId>,
         endpoint: crate::InferenceEndpoint,
     ) -> Result<Self, InvalidResolvedModelCandidate> {
         Self::try_brokered_provider_with_reasoning(
@@ -77,7 +77,7 @@ impl ResolvedModelCandidate {
         binding: ModelBinding,
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
-        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        scope_id: impl Into<awaken_agent_contract::ScopeId>,
         endpoint: crate::InferenceEndpoint,
         unspecified_reasoning: UnspecifiedReasoning,
     ) -> Result<Self, InvalidResolvedModelCandidate> {
@@ -98,7 +98,7 @@ impl ResolvedModelCandidate {
         binding: ModelBinding,
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
-        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        scope_id: impl Into<awaken_agent_contract::ScopeId>,
         endpoint: crate::InferenceEndpoint,
         acp: AcpExecutionProfile,
     ) -> Result<Self, InvalidResolvedModelCandidate> {
@@ -119,7 +119,7 @@ impl ResolvedModelCandidate {
         binding: ModelBinding,
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
-        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        scope_id: impl Into<awaken_agent_contract::ScopeId>,
         endpoint: crate::InferenceEndpoint,
         profile: ProviderExecutionProfile,
     ) -> Result<Self, InvalidResolvedModelCandidate> {
@@ -142,7 +142,7 @@ impl ResolvedModelCandidate {
         binding: ModelBinding,
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
-        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        scope_id: impl Into<awaken_agent_contract::ScopeId>,
         credential: Option<crate::CredentialAccess>,
         endpoint: crate::InferenceEndpoint,
         acp: AcpExecutionProfile,
@@ -165,7 +165,7 @@ impl ResolvedModelCandidate {
         binding: ModelBinding,
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
-        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        scope_id: impl Into<awaken_agent_contract::ScopeId>,
         credential: Option<crate::CredentialAccess>,
         endpoint: crate::InferenceEndpoint,
         profile: ProviderExecutionProfile,

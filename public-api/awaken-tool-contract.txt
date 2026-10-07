@@ -88,7 +88,7 @@ pub const fn awaken_tool_contract::tool::ToolExecutionWave::len(self) -> usize
 pub const fn awaken_tool_contract::tool::ToolExecutionWave::range(self) -> core::ops::range::Range<usize>
 pub struct awaken_tool_contract::tool::ToolOperationContext
 pub awaken_tool_contract::tool::ToolOperationContext::call_id: core::option::Option<alloc::string::String>
-pub awaken_tool_contract::tool::ToolOperationContext::execution_scope: core::option::Option<awaken_tenancy::ExecutionScopeRef>
+pub awaken_tool_contract::tool::ToolOperationContext::execution_scope: core::option::Option<awaken_agent_contract::scope::ExecutionScopeRef>
 pub awaken_tool_contract::tool::ToolOperationContext::operation_id: alloc::string::String
 pub awaken_tool_contract::tool::ToolOperationContext::run_id: core::option::Option<awaken_agent_contract::agent::run::Id>
 pub awaken_tool_contract::tool::ToolOperationContext::thread_id: core::option::Option<awaken_agent_contract::agent::thread::Id>
@@ -96,7 +96,7 @@ impl awaken_tool_contract::tool::ToolOperationContext
 pub fn awaken_tool_contract::tool::ToolOperationContext::for_run(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_tool_contract::tool::ToolOperationToken
 impl awaken_tool_contract::tool::ToolOperationToken
-pub fn awaken_tool_contract::tool::ToolOperationToken::execution_scope(&self) -> core::option::Option<&awaken_tenancy::ExecutionScopeRef>
+pub fn awaken_tool_contract::tool::ToolOperationToken::execution_scope(&self) -> core::option::Option<&awaken_agent_contract::scope::ExecutionScopeRef>
 pub fn awaken_tool_contract::tool::ToolOperationToken::from_context(&awaken_tool_contract::tool::ToolOperationContext) -> core::option::Option<Self>
 pub fn awaken_tool_contract::tool::ToolOperationToken::ledger_id(&self, core::option::Option<&str>) -> alloc::string::String
 pub fn awaken_tool_contract::tool::ToolOperationToken::operation_id(&self) -> &str
@@ -475,7 +475,7 @@ pub const fn awaken_tool_contract::tool::ToolExecutionWave::len(self) -> usize
 pub const fn awaken_tool_contract::tool::ToolExecutionWave::range(self) -> core::ops::range::Range<usize>
 pub struct awaken_tool_contract::ToolOperationToken
 impl awaken_tool_contract::tool::ToolOperationToken
-pub fn awaken_tool_contract::tool::ToolOperationToken::execution_scope(&self) -> core::option::Option<&awaken_tenancy::ExecutionScopeRef>
+pub fn awaken_tool_contract::tool::ToolOperationToken::execution_scope(&self) -> core::option::Option<&awaken_agent_contract::scope::ExecutionScopeRef>
 pub fn awaken_tool_contract::tool::ToolOperationToken::from_context(&awaken_tool_contract::tool::ToolOperationContext) -> core::option::Option<Self>
 pub fn awaken_tool_contract::tool::ToolOperationToken::ledger_id(&self, core::option::Option<&str>) -> alloc::string::String
 pub fn awaken_tool_contract::tool::ToolOperationToken::operation_id(&self) -> &str

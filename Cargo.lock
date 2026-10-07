@@ -2393,7 +2393,6 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-credential-contract",
- "awaken-tenancy",
  "awaken-time",
  "awaken-tool-contract",
  "futures-util",
@@ -3402,6 +3401,7 @@ dependencies = [
 name = "awaken-tenancy"
 version = "1.0.0"
 dependencies = [
+ "awaken-agent-contract",
  "serde",
  "serde_json",
 ]
@@ -3420,7 +3420,6 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-tenancy",
  "schemars 1.2.1",
  "serde",
  "serde_json",

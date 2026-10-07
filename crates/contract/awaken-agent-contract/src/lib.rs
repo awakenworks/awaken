@@ -14,6 +14,7 @@ pub mod model_target;
 pub mod observation;
 pub mod page;
 pub mod resilience;
+pub mod scope;
 pub mod secret;
 pub mod skill;
 pub mod stream;
@@ -44,6 +45,7 @@ pub use mcp_tool_id::{
 pub use model_spec::ModelSpec;
 pub use model_target::ModelTarget;
 pub use observation::{Observed, UnknownCause};
+pub use scope::{ExecutionScopeRef, ScopeId};
 pub use secret::{RedactedString, RedactedStringSource, StructuredCredentialMaterial};
 pub use skill::{ANTHROPIC_SKILL_IDS, AgentSkillBinding, AgentSkillKind, validate_agent_skills};
 pub use stream::event::Event as StreamEvent;

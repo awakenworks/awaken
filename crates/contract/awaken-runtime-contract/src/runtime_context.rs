@@ -292,10 +292,10 @@ pub struct RuntimeRunContext {
     /// it only for process TZ; the shared request-context message owns task time.
     pub request_timezone: Option<String>,
     /// Authorized Workspace ownership for this attempt. The ingress/session
-    /// boundary supplies the same [`awaken_tenancy::ExecutionScopeRef`] that is
+    /// boundary supplies the same [`awaken_agent_contract::ExecutionScopeRef`] that is
     /// persisted on durable dispatch; tools may consume it as trusted execution
     /// context, but models and provider-authored arguments can never set it.
-    pub execution_scope: Option<awaken_tenancy::ExecutionScopeRef>,
+    pub execution_scope: Option<awaken_agent_contract::ExecutionScopeRef>,
     /// Request-only context assembled for this attempt. Executors may project
     /// these messages into the model request, but must never append them to the
     /// durable Thread transcript.
@@ -428,7 +428,7 @@ impl RuntimeRunContext {
 
     /// Bind the Workspace ownership already verified by Session admission.
     #[must_use]
-    pub fn with_execution_scope(mut self, scope: awaken_tenancy::ExecutionScopeRef) -> Self {
+    pub fn with_execution_scope(mut self, scope: awaken_agent_contract::ExecutionScopeRef) -> Self {
         self.execution_scope = Some(scope);
         self
     }

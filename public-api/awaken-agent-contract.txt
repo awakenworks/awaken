@@ -800,6 +800,17 @@ pub fn awaken_agent_contract::resilience::Disposition::prefers_failover(self) ->
 pub fn awaken_agent_contract::resilience::Disposition::retry_after(self) -> core::option::Option<core::time::Duration>
 pub trait awaken_agent_contract::resilience::Classify
 pub fn awaken_agent_contract::resilience::Classify::disposition(&self) -> awaken_agent_contract::resilience::Disposition
+pub mod awaken_agent_contract::scope
+pub struct awaken_agent_contract::scope::ExecutionScopeRef(pub awaken_agent_contract::scope::ScopeId)
+pub struct awaken_agent_contract::scope::ScopeId(pub alloc::string::String)
+impl awaken_agent_contract::scope::ScopeId
+pub fn awaken_agent_contract::scope::ScopeId::as_str(&self) -> &str
+impl core::convert::From<&str> for awaken_agent_contract::scope::ScopeId
+pub fn awaken_agent_contract::scope::ScopeId::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for awaken_agent_contract::scope::ScopeId
+pub fn awaken_agent_contract::scope::ScopeId::from(alloc::string::String) -> Self
+impl core::fmt::Display for awaken_agent_contract::scope::ScopeId
+pub fn awaken_agent_contract::scope::ScopeId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod awaken_agent_contract::secret
 pub struct awaken_agent_contract::secret::RedactedString(_)
 impl awaken_agent_contract::secret::RedactedString
@@ -1357,6 +1368,7 @@ pub awaken_agent_contract::EventRecord::kind: awaken_agent_contract::audit::kind
 pub awaken_agent_contract::EventRecord::payload: serde_json::value::Value
 pub awaken_agent_contract::EventRecord::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_agent_contract::EventRecord::sequence: u64
+pub struct awaken_agent_contract::ExecutionScopeRef(pub awaken_agent_contract::scope::ScopeId)
 pub struct awaken_agent_contract::HttpMcpTarget
 pub awaken_agent_contract::HttpMcpTarget::fingerprint: alloc::string::String
 pub awaken_agent_contract::HttpMcpTarget::url: alloc::string::String
@@ -1451,6 +1463,15 @@ pub awaken_agent_contract::SandboxStdioMcpTarget::args: alloc::vec::Vec<alloc::s
 pub awaken_agent_contract::SandboxStdioMcpTarget::command: alloc::string::String
 pub awaken_agent_contract::SandboxStdioMcpTarget::fingerprint: alloc::string::String
 pub awaken_agent_contract::SandboxStdioMcpTarget::kind: awaken_agent_contract::mcp_target::SandboxStdioMcpTargetKind
+pub struct awaken_agent_contract::ScopeId(pub alloc::string::String)
+impl awaken_agent_contract::scope::ScopeId
+pub fn awaken_agent_contract::scope::ScopeId::as_str(&self) -> &str
+impl core::convert::From<&str> for awaken_agent_contract::scope::ScopeId
+pub fn awaken_agent_contract::scope::ScopeId::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for awaken_agent_contract::scope::ScopeId
+pub fn awaken_agent_contract::scope::ScopeId::from(alloc::string::String) -> Self
+impl core::fmt::Display for awaken_agent_contract::scope::ScopeId
+pub fn awaken_agent_contract::scope::ScopeId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_agent_contract::StateKey(pub alloc::string::String)
 pub struct awaken_agent_contract::StreamEvent
 pub awaken_agent_contract::StreamEvent::kind: awaken_agent_contract::event::agent::AgentEvent
