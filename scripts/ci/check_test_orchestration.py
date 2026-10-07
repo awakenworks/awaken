@@ -19,6 +19,10 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import generate_hooks
+from _k8s_container_gate_fitness import (
+    k8s_container_gate_errors,
+    self_test as k8s_container_gate_self_test,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = ROOT / "e2e/package.json"
@@ -450,29 +454,6 @@ def generated_hook_glob_errors(
             f"scripts/ci/{script} declares INPUT_GLOBS but no lefthook pre-commit "
             "command runs it, so the declaration triggers nothing"
         )
-    return errors
-
-
-def k8s_container_gate_errors(gate: str) -> list[str]:
-    """Require the canonical live K8s runner to execute its control-path case."""
-
-    errors: list[str] = []
-    if 'CONTROL_IMAGE="${AWAKEN_K8S_CONTROL_IMAGE:-}"' not in gate or 'k3d_validate_image_digest "$CONTROL_IMAGE"' not in gate:
-        errors.append("Kubernetes gate does not require an exact control-image digest")
-    if 'CONTROL_IMAGE=$(k3d_image_digest "$SESSION_IMAGE")' not in gate or (
-        'build.sh" "$SESSION_IMAGE" ""' not in gate
-    ):
-        errors.append("Kubernetes gate cannot qualify the current source without an external image override")
-    if not re.search(r'^k3d_create_cluster "\$CLUSTER" 0$', gate, re.MULTILINE):
-        errors.append("Kubernetes gate must use the nested-node reserve with shared capacity admission")
-    if 'k3d_import_storage_images "$CLUSTER" "$FIXTURE_IMAGE" "$SESSION_IMAGE" "$CONTROL_IMAGE"' not in gate:
-        errors.append("Kubernetes gate does not import the exact control image")
-    if not re.search(
-        r'AWAKEN_K8S_E2E=1 AWAKEN_K8S_CONTROL_E2E=1\s*\\?\s*\n'
-        r'\s*AWAKEN_K8S_CONTROL_IMAGE="\$CONTROL_IMAGE"',
-        gate,
-    ):
-        errors.append("Kubernetes gate can still skip the required control roundtrip")
     return errors
 
 
@@ -1701,24 +1682,9 @@ def self_test() -> None:
         check_rust,
     ), "R7 independently sharded release group"
 
-    # Kubernetes-control gate decision table: C12 an exact operator digest is
-    # admitted; C13 that image enters the shared importer; C14 both live-test
-    # gates are set on the one canonical k8s_e2e invocation; C15 absent override
-    # builds current source and resolves a manifest (not config) digest; C16 the
-    # nested node uses the shared absolute reserve and actual capacity preflight.
-    # K1 all true => helper/marker executes. K2 any false => reject orchestration
-    # before a skipped test, stale image or host-size-driven eviction can qualify.
-    k8s_gate = (ROOT / K8S_CONTAINER_GATE).read_text(encoding="utf-8")
-    assert not k8s_container_gate_errors(k8s_gate), "K1 required control roundtrip"
-    for mutation in (
-        k8s_gate.replace('k3d_validate_image_digest "$CONTROL_IMAGE"', 'true', 1),
-        k8s_gate.replace('CONTROL_IMAGE=$(k3d_image_digest "$SESSION_IMAGE")', 'CONTROL_IMAGE=old:tag', 1),
-        k8s_gate.replace('build.sh" "$SESSION_IMAGE" ""', 'build.sh" --ensure-hand "$SESSION_IMAGE" ""', 1),
-        k8s_gate.replace('k3d_create_cluster "$CLUSTER" 0', 'k3d_create_cluster "$CLUSTER" 0 2', 1),
-        k8s_gate.replace(' "$CONTROL_IMAGE"\n', '\n', 1),
-        k8s_gate.replace('AWAKEN_K8S_CONTROL_E2E=1', 'AWAKEN_K8S_CONTROL_E2E=0', 1),
-    ):
-        assert k8s_container_gate_errors(mutation), "K2 false-green control gate"
+    k8s_container_gate_self_test(
+        (ROOT / K8S_CONTAINER_GATE).read_text(encoding="utf-8")
+    )
 
     # Workflow cause/effect decision table: C14 the candidate SHA is exact;
     # C15 one full-gate invocation owns all groups; C16 PR/main/release enter
