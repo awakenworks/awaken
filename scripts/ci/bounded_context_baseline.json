@@ -14,7 +14,6 @@
     "awaken-execution-composition -> awaken-sandbox-container": "reach the sandbox context through its contract instead of awaken-sandbox-container (infrastructure), or re-home awaken-execution-composition",
     "awaken-execution-composition -> awaken-sandbox-local": "reach the sandbox context through its contract instead of awaken-sandbox-local (infrastructure), or re-home awaken-execution-composition",
     "awaken-execution-composition -> awaken-session-environment": "reach the environment context through its contract instead of awaken-session-environment (infrastructure), or re-home awaken-execution-composition",
-    "awaken-installation-workspace -> awaken-sandbox-fs": "reach the sandbox context through its contract instead of awaken-sandbox-fs (infrastructure), or re-home awaken-installation-workspace",
     "awaken-protocol-awaken -> awaken-environment-application": "reach the config context through its contract instead of awaken-environment-application (application), or re-home awaken-protocol-awaken",
     "awaken-protocol-managed -> awaken-credential-vault": "reach the credentials context through its contract instead of awaken-credential-vault (application), or re-home awaken-protocol-managed",
     "awaken-protocol-managed -> awaken-data-subject-application": "reach the governance context through its contract instead of awaken-data-subject-application (application), or re-home awaken-protocol-managed",
@@ -36,7 +35,6 @@
     "awaken-session-environment -> awaken-sandbox-container": "reach the sandbox context through its contract instead of awaken-sandbox-container (infrastructure), or re-home awaken-session-environment",
     "awaken-session-environment -> awaken-sandbox-local": "reach the sandbox context through its contract instead of awaken-sandbox-local (infrastructure), or re-home awaken-session-environment",
     "awaken-session-mcp -> awaken-credential-materializer": "reach the credentials context through its contract instead of awaken-credential-materializer (infrastructure), or re-home awaken-session-mcp",
-    "awaken-store-fs -> awaken-sandbox-fs": "reach the sandbox context through its contract instead of awaken-sandbox-fs (infrastructure), or re-home awaken-store-fs",
     "awaken-coordinator-client -> awaken-dispatch-execution": "reach the execution context through its contract instead of awaken-dispatch-execution (infrastructure), or re-home awaken-coordinator-client"
   },
   "extension-engine-split": {},

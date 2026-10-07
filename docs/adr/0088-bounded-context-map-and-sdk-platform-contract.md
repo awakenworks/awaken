@@ -158,6 +158,16 @@ to turn on features is listed in `metadata.awaken.enables`. Adopting it removed 
 moved 47 declarations and two context pairs that only such edges held
 (dispatch → config, dispatch → resources).
 
+**Published languages re-homed after the coupling review.** Five crates were labelled
+with a context their readers do not share; correcting the metadata removed seven
+context pairs and two `context-contract-seam` baseline entries without moving code:
+`awaken-session-realization-contract` → session (decision 3: the Session publishes it);
+`awaken-environment-contract`, `awaken-agent-channel` and `awaken-acp-contract` →
+environment (the language for reaching an agent process in an environment, read by
+sandbox, dispatch, credentials and execution alike); `awaken-sandbox-fs` → storage
+(capability file-system infrastructure). `awaken-connection-plan` stays in dispatch:
+moving it to execution would add a sandbox → execution edge.
+
 **Decisions made with it.**
 - The SDK extensions stay separate crates (`publish`): SDK users pick plugins and
   their dependencies; a merge would not remove a single dependency edge.
