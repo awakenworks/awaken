@@ -25,8 +25,8 @@ use awaken_config_resolver::{
     InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
 };
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
+use awaken_executable_agent_contract::capability::PluginCapability;
 use awaken_model_catalog::repo::CatalogRepo;
-use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::current_tool_operation_context;
 use awaken_tenancy::ScopeId;
