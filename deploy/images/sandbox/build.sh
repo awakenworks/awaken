@@ -351,6 +351,15 @@ if { [[ $ensure_existing == full ]] && [[ $accepted_image == 1 ]]; } \
   exit 0
 fi
 
+# A digest can be admitted unchanged, but cannot be the destination of repair.
+# I8 immutable + accepted/current => the reuse branch above; I9 immutable +
+# failed admission/current inputs => refuse before any Docker build. Operators
+# build and publish a mutable tag, then select its resulting immutable digest.
+if [[ $image == *@* ]]; then
+  echo "immutable sandbox image did not pass requested admission: $image; build and publish a current image under a mutable tag, then supply its new digest" >&2
+  exit 2
+fi
+
 # Current-source rebuild decision table. C1 the target image passed the full
 # production admission above; C2 current binary/contract bytes differ; C3 the
 # caller did/did not explicitly select a toolchain seed. Effects: C1+C2+!C3

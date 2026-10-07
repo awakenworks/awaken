@@ -51,12 +51,17 @@ COPY --from=ruby-toolchain /usr/local/ /usr/local/
 COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
 COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
 
+# Bootstrap verified HTTPS from the already pinned Rust toolchain; the minimal
+# Ubuntu base has no CA bundle until its first package installation completes.
+COPY --from=rust-toolchain /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
 # Agent tooling most CLIs assume on PATH (curl for service readiness, git for
 # repo work, rg for search), plus the six package-manager runtimes supported by
 # Managed Environment provisioning.
 # Python packages live in an image-owned virtual environment so pip never mutates
 # the distribution's externally-managed system interpreter.
-RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+RUN sed -i 's#^URIs: http://#URIs: https://#' /etc/apt/sources.list.d/ubuntu.sources \
+    && DEBIAN_FRONTEND=noninteractive apt-get -o APT::Update::Error-Mode=any update \
     && apt-get install -y --no-install-recommends \
       ca-certificates curl git libgmp10 libyaml-0-2 python3 python3-venv ripgrep tini \
     && python3 -m venv /opt/awaken-python \
