@@ -23,6 +23,13 @@ struct Facts {
     updates: Mutex<Vec<Value>>,
 }
 
+fn manifest() -> awaken_dispatch::WorkerManifest {
+    let mut manifest = awaken_dispatch::WorkerManifest::default();
+    manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest
+}
+
 fn model_only_activation(tag: &str) -> awaken_runtime_contract::activation::RunActivation {
     let mut activation = awaken_dispatch_testkit::worker_http::activation(tag);
     // The generic HTTP fixture deliberately owns two opaque consistency tokens;
@@ -381,6 +388,152 @@ async fn relay_target_reuses_the_selected_worker_pod_observer() {
 }
 
 #[tokio::test]
+async fn closed_idle_retirement_uses_registry_and_exact_dispatch_owner_without_minting_exit() {
+    use awaken_dispatch::{DispatchQueue, WorkerDirectory};
+    // Causes: C1 Registry Starting/Ready/Draining versus Quiesced/Dead;
+    // C2 a physical slot owned by the exact incarnation; C3 an unbound slot has
+    // unknown execution; C4 a slot belongs to another owner. Effects: E1 retire
+    // only the closed-idle original Pod; E2 preserve every physical slot and no
+    // exit/Session/attempt receipt. Decision rules CI1=!closed -> no API;
+    // CI2=closed+C2+C3 -> no API, retain unknown slot; CI3=closed+!C2 -> exact
+    // DELETE/finalizer release, including C4 without touching its slot.
+    for case in [
+        "starting",
+        "ready",
+        "draining",
+        "quiesced",
+        "dead",
+        "occupied",
+        "foreign-slot",
+    ] {
+        let (transport, facts) = fixture();
+        facts.pod.lock().unwrap().1["spec"]["restartPolicy"] = json!("Always");
+        let directory = awaken_worker_registry::MemoryWorkerDirectory::new();
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(100));
+        let store = awaken_dispatch::MemoryDispatchStore::new(clock);
+        let record = directory
+            .register(
+                awaken_dispatch::WorkerRegistration {
+                    worker_id: "k8s:workers:worker-a:uid-a".into(),
+                    incarnation_id: "uid-a".into(),
+                    manifest: manifest(),
+                },
+                100,
+                1_000,
+            )
+            .await
+            .unwrap();
+        let identity = record.snapshot.identity.clone();
+        let mut occupied_run = None;
+        if matches!(case, "occupied" | "foreign-slot") {
+            store
+                .enqueue(
+                    awaken_dispatch::RunDispatch::new(model_only_activation("idle-retirement"))
+                        .with_placement(
+                            awaken_dispatch::PlacementRequirements::remote_required(),
+                        ),
+                )
+                .await
+                .unwrap();
+            let mut snapshot = record.snapshot.clone();
+            snapshot.state = awaken_dispatch::WorkerState::Ready;
+            if case == "foreign-slot" {
+                snapshot.identity = WorkerIdentity::new("foreign-worker", "foreign-boot", 1);
+            }
+            let claim = awaken_dispatch::RunClaim::from(
+                &store
+                    .claim_compatible(&snapshot, 50)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .lease,
+            );
+            assert_eq!(
+                store.begin_attempt(&claim, None).await.unwrap(),
+                awaken_dispatch::AttemptAdmission::Applied
+            );
+            occupied_run = Some((
+                claim.run_id.clone(),
+                store.load_physical_attempt(&claim.run_id).await.unwrap(),
+            ));
+        }
+        match case {
+            "ready" => {
+                directory
+                    .heartbeat(
+                        &identity,
+                        awaken_dispatch::WorkerHeartbeat {
+                            sequence: 1,
+                            ready: true,
+                            in_flight: 0,
+                            warm_environment_shapes: Default::default(),
+                            credential_observations: Default::default(),
+                            acp_capability_observations: Default::default(),
+                        },
+                        100,
+                        1_000,
+                    )
+                    .await
+                    .unwrap();
+            }
+            "draining" | "quiesced" => {
+                directory.begin_drain(&identity, 500).await.unwrap();
+                if case == "quiesced" {
+                    directory.mark_quiesced(&identity).await.unwrap();
+                }
+            }
+            "dead" | "occupied" | "foreign-slot" => {
+                directory.deregister(&identity).await.unwrap();
+            }
+            _ => {}
+        }
+        awaken_dispatch::release_closed_idle_worker_evidence(
+            &store,
+            &directory,
+            transport.stop_source().unwrap().as_ref(),
+            &identity,
+        )
+        .await
+        .unwrap();
+        let admitted = matches!(case, "quiesced" | "dead" | "foreign-slot");
+        assert_eq!(
+            facts.deletes.lock().unwrap().len(),
+            usize::from(admitted),
+            "{case}: CI1/CI2/CI3"
+        );
+        assert_eq!(
+            facts.updates.lock().unwrap().len(),
+            usize::from(admitted),
+            "{case}: E1"
+        );
+        assert!(
+            directory
+                .incarnation(&identity)
+                .await
+                .unwrap()
+                .unwrap()
+                .process_exit
+                .is_none(),
+            "{case}: E2"
+        );
+        if let Some((run, before)) = occupied_run {
+            assert_eq!(
+                store.load_physical_attempt(&run).await.unwrap(),
+                before,
+                "{case}: E2 original slot retained"
+            );
+        }
+        if !admitted {
+            assert_eq!(
+                facts.reads.load(Ordering::SeqCst),
+                0,
+                "{case}: refusal before provider I/O"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn independent_stop_consumes_only_original_closed_binding_and_preserves_dispatch_veto() {
     use awaken_dispatch::{DispatchQueue, WorkerDirectory};
     use awaken_store_inmem::MemoryCommitCoordinator;
@@ -405,9 +558,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
         let bindings = transport.binding_source();
         let stops = transport.stop_source();
         let directory = awaken_worker_registry::MemoryWorkerDirectory::new();
-        let mut manifest = awaken_dispatch::WorkerManifest::default();
-        manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
-        manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+        let manifest = manifest();
         let old = directory
             .register(
                 awaken_dispatch::WorkerRegistration {

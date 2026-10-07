@@ -845,3 +845,10 @@
 - Domain commits, durable receipts, recovery snapshots and claim fences retain
   their existing owners. Corrected the ownership index's retired whole-history
   projection description to the current asynchronous read authority.
+
+## 2026-10-07 — Retire closed-idle Worker execution domains
+
+- The [existing Worker lifecycle](../adr/0065-recoverable-embeddable-remote-worker.md#amendment-retire-closed-idle-kubernetes-worker-pods-2026-10-07)
+  retires an exact closed-idle Kubernetes Pod before releasing its evidence,
+  allowing the Deployment to supply a new UID without reviving old admission.
+  Deletion intent grants no process-exit, Session cleanup, or replay receipt.

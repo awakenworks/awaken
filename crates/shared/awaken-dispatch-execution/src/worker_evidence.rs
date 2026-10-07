@@ -1,4 +1,4 @@
-//! Exact closed-idle Worker evidence release port for the process maintenance scan.
+//! Exact closed-idle Worker retirement port for the process maintenance scan.
 
 use awaken_run_ingress_application_contract::ApplicationError;
 use awaken_dispatch_contract::{ControlDispatchQueue, WorkerDirectory, WorkerIdentity};
@@ -11,8 +11,9 @@ pub trait WorkerEvidenceRelease: Send + Sync {
     /// Provider retention is optional. Registry expiry is independent of it.
     fn owns_worker_evidence(&self, identity: &WorkerIdentity) -> bool;
 
-    /// Release only the original closed incarnation after the exact physical
-    /// slot scan; unavailable or unprovable closure remains retryable.
+    /// Retire only the original closed-idle domain after the exact physical slot
+    /// scan; unavailable or unprovable closure remains retryable. No exit receipt
+    /// or attempt-settlement authority crosses this port.
     async fn release_closed_idle_worker_evidence(
         &self,
         dispatch: &dyn ControlDispatchQueue,
