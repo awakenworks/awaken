@@ -64,7 +64,6 @@ awaken-authority-clock.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
-awaken-environment-contract.workspace = true
 awaken-worker-transport-security.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "fs"] }
 # The cloud-native admin surface (readyz / livez / metrics / drain) on a separate
@@ -101,6 +100,7 @@ awaken-session-executor = { workspace = true, features = ["test-support"] }
 awaken-tool-relay = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 awaken-ext-mcp.workspace = true
+awaken-environment-contract.workspace = true
 
 [lints]
 workspace = true

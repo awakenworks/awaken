@@ -17,7 +17,6 @@ isolates = ["sqlx"]
 awaken-sql-storage = { workspace = true, features = ["postgres"] }
 awaken-time.workspace = true
 async-trait.workspace = true
-awaken-environment-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-sqlite-pool.workspace = true
@@ -35,6 +34,7 @@ awaken-environment-execution-application.workspace = true
 awaken-executable-environment-catalog.workspace = true
 awaken-work-store = { workspace = true, features = ["test-support"] }
 tempfile = "3"
+awaken-environment-contract.workspace = true
 
 [features]
 # Process-local build state and private SQLite databases for fixtures.
