@@ -100,10 +100,13 @@ BOUNDED_CONTEXTS: dict[str, frozenset[str]] = {
             "credentials",
             "governance",
             "session",
+            # ADR-0088: running Runs in isolated environments (the run host and executors).
+            "execution",
+            # ADR-0088: the runtime's commit storage, implementing the SDK commit SPI.
+            "committed-truth",
             "dispatch",
             "environment",
             "sandbox",
-            "worker",
             "resources",
             "deployment",
             "protocols",

@@ -10,7 +10,7 @@ license.workspace = true
 # channel, so it sits in the shared ring both planes may use.
 context = "shared"
 product = "platform"
-bounded_context = "worker"
+bounded_context = "dispatch"
 layer = "infrastructure"
 authority = "connection-plan"
 
