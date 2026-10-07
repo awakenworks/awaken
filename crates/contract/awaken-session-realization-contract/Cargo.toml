@@ -7,7 +7,7 @@ license.workspace = true
 [package.metadata.awaken]
 context = "coordinator"
 product = "platform"
-bounded_context = "environment"
+bounded_context = "session"
 layer = "contract"
 kinds = ["types", "spi", "api", "remote"]
 authority = "session-realization"

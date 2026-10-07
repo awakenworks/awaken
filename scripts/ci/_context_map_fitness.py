@@ -54,25 +54,24 @@ SPI_BASELINE = Path(__file__).with_name("sdk_engine_spi_baseline.json")
 # pair is an accepted crossing until a reviewer prunes it. Read as
 # "<from> may depend on <to>".
 ALLOWED_CONTEXT_PAIRS: dict[str, frozenset[str]] = {
-    "access": frozenset({"sandbox"}),
     "committed-truth": frozenset(
-        {"config", "credentials", "deployment", "dispatch", "environment", "resources", "sandbox", "session"}
+        {"credentials", "deployment", "dispatch", "environment", "resources", "session"}
     ),
     "config": frozenset({"access", "credentials", "environment", "execution", "resources", "session"}),
-    "credentials": frozenset({"dispatch", "environment", "execution"}),
+    "credentials": frozenset({"dispatch", "environment"}),
     "deployment": frozenset({"config", "resources", "session"}),
     "dispatch": frozenset({"access", "credentials", "environment", "execution", "session"}),
     "environment": frozenset(
-        {"access", "config", "credentials", "dispatch", "execution", "resources", "sandbox", "session"}
+        {"access", "credentials", "dispatch", "execution", "resources", "sandbox", "session"}
     ),
     "execution": frozenset(
         {"access", "config", "credentials", "dispatch", "environment", "protocols", "resources", "sandbox", "session"}
     ),
     "protocols": frozenset(
-        {"access", "config", "credentials", "deployment", "dispatch", "environment", "execution", "governance", "resources", "session"}
+        {"access", "config", "credentials", "deployment", "dispatch", "environment", "governance", "resources", "session"}
     ),
     "resources": frozenset({"dispatch", "environment", "session"}),
-    "sandbox": frozenset({"dispatch", "environment", "execution", "resources", "session"}),
+    "sandbox": frozenset({"dispatch", "environment", "resources", "session"}),
     "session": frozenset(
         {"config", "credentials", "deployment", "dispatch", "environment", "protocols", "resources"}
     ),
