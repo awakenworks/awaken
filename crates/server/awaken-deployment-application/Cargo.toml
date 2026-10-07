@@ -20,7 +20,6 @@ awaken-time.workspace = true
 awaken-deployment-contract.workspace = true
 awaken-executable-agent-contract.workspace = true
 awaken-session-application-contract.workspace = true
-awaken-session-repository-contract.workspace = true
 async-trait.workspace = true
 chrono-tz = "0.10"
 serde.workspace = true
@@ -31,6 +30,7 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 awaken-session-store = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+awaken-session-repository-contract.workspace = true
 
 [lints]
 workspace = true

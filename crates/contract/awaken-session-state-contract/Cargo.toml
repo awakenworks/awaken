@@ -16,7 +16,6 @@ separation = "contract"
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true
-awaken-environment-contract.workspace = true
 awaken-time.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-resource-contract.workspace = true
@@ -35,6 +34,7 @@ thiserror.workspace = true
 awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
 proptest.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
+awaken-environment-contract.workspace = true
 
 [lints]
 workspace = true

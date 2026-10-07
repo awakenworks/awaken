@@ -10,6 +10,7 @@ product = "apps"
 layer = "bootstrap"
 authority = "control"
 separation = "process"
+enables = ["awaken-model-catalog-store"]
 
 # The authoring / authz plane (Stage B2): the management CRUD surfaces (admin
 # config, vault front door, webhook subscriptions, user profiles, config authoring,
@@ -70,7 +71,6 @@ awaken-worker-contract.workspace = true
 awaken-provider-genai.workspace = true
 async-trait.workspace = true
 awaken-time.workspace = true
-awaken-lease-contract.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
@@ -106,6 +106,7 @@ awaken-worker-registry = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+awaken-lease-contract.workspace = true
 
 [lints]
 workspace = true

@@ -39,12 +39,9 @@ awaken-deployment-application.workspace = true
 awaken-environment-execution-application.workspace = true
 awaken-worker-registry = { workspace = true }
 awaken-worker-contract.workspace = true
-awaken-acp-contract = { workspace = true }
-awaken-admin-assistant = { workspace = true }
 awaken-tenancy = { workspace = true }
 # Cross-cutting telemetry: the tracing subscriber + OTLP/AWAKEN_TRACE_FILE span
 # export + W3C traceparent propagator + ingress span middleware (not an ext).
-awaken-observability = { workspace = true }
 awaken-outbound-http = { workspace = true }
 # Open enforcement (S1): the session-axis guard + RequestTenancy the project
 # ingress stamps. The standalone wraps the session router with it.
@@ -57,7 +54,6 @@ awaken-protocol-ag-ui = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
 awaken-protocol-mcp = { workspace = true }
 awaken-agent-config.workspace = true
-awaken-config-store = { workspace = true }
 awaken-resource-persistence = { workspace = true, optional = true }
 awaken-session-store = { workspace = true }
 # Volatile Environment execution for test/scenario startup only.
@@ -94,7 +90,6 @@ awaken-iam-host = { workspace = true }
 awaken-scoped-migration = { workspace = true, features = ["sqlite"] }
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-ext-mcp.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-error-contract.workspace = true
@@ -204,3 +199,4 @@ awaken-ext-background-task.workspace = true
 awaken-lease-testkit.workspace = true
 # Restart-persistence test: a management router rebuilt over the same tempdir.
 tempfile = "3"
+awaken-observability = { workspace = true }

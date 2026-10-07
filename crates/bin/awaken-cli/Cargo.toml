@@ -44,7 +44,6 @@ awaken-ui-artifact.workspace = true
 # The Control and Coordinator services started by this product process.
 awaken-control = { workspace = true }
 awaken-coordinator = { workspace = true }
-awaken-authz-enforce = { workspace = true }
 # The production Worker executor: the Worker role delegates lifecycle to it while
 # this CLI startup still supplies the selected Credential/Resource adapters.
 awaken-worker = { workspace = true }
@@ -80,13 +79,9 @@ awaken-resource-contract = { workspace = true }
 awaken-resource-application = { workspace = true }
 awaken-resource-persistence.workspace = true
 awaken-session-application-contract.workspace = true
-awaken-session-configuration-contract.workspace = true
 awaken-session-repository-contract.workspace = true
-awaken-session-state-contract.workspace = true
 awaken-session-budget-contract.workspace = true
 awaken-session-dream-contract.workspace = true
-awaken-session-resource-contract.workspace = true
-awaken-session-types.workspace = true
 awaken-session-work-contract.workspace = true
 awaken-environment-contract.workspace = true
 awaken-service-auth-contract = { workspace = true }
@@ -103,7 +98,6 @@ awaken-session-store = { workspace = true }
 # (AWAKEN_ACP_ARGV) into the worker's configured sandbox tier.
 awaken-run-executor-acp = { workspace = true }
 awaken-acp-application = { workspace = true }
-awaken-acp-contract = { workspace = true }
 awaken-protocol-acp = { workspace = true, features = ["real-acp"] }
 awaken-observability = { workspace = true }
 # The admin `/metrics` gauges are OTel observable instruments (rendered via the
@@ -233,6 +227,11 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+awaken-acp-contract = { workspace = true }
+awaken-session-configuration-contract.workspace = true
+awaken-session-resource-contract.workspace = true
+awaken-session-state-contract.workspace = true
+awaken-session-types.workspace = true
 
 [[test]]
 name = "deployment_sessions"

@@ -149,6 +149,15 @@ checks it:
 The 20 crates without a checkable reason at adoption are listed in `UNJUSTIFIED`.
 The list only shrinks. Being listed is not an order to merge.
 
+**A dependency is declared where it is used.** The context map and every crate-graph
+ratchet read the declared graph, so a declared edge nobody uses becomes an accepted
+crossing. `scripts/ci/_dependency_use_fitness.py` requires each normal dependency on
+a workspace crate to be named in production code (`cfg(kani)` code counts, `cfg(test)`
+code does not); a dependency named only by tests is a dev-dependency, and one kept only
+to turn on features is listed in `metadata.awaken.enables`. Adopting it removed or
+moved 47 declarations and two context pairs that only such edges held
+(dispatch → config, dispatch → resources).
+
 **Decisions made with it.**
 - The SDK extensions stay separate crates (`publish`): SDK users pick plugins and
   their dependencies; a merge would not remove a single dependency edge.
