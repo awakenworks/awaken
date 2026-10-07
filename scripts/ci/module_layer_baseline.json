@@ -1,0 +1,111 @@
+{
+  "upward-edges": {
+    "environment_continuation -> crate": [
+      "ManagedHost",
+      "to_run_error"
+    ],
+    "environment_continuation -> host": [
+      "BoundEnvironmentPreparationMode"
+    ],
+    "environment_continuation -> session_slot": [
+      "McpQuiescenceAdmissionFence"
+    ],
+    "host::build::environment_capacity -> host::build": [
+      "*"
+    ],
+    "host::session::environment_lifecycle -> host::session": [
+      "*"
+    ],
+    "host::session::environment_lifecycle -> session_slot": [
+      "BoundSessionEnvironment",
+      "BoundSessionEnvironmentIdentity",
+      "LegacyDirectEnvironmentProvenance",
+      "LegacyEnvironmentEffect",
+      "RetiringEnvironmentOwner",
+      "RetiringSessionEnvironment",
+      "SessionEnvironmentOwner",
+      "SessionEnvironmentPreparation",
+      "SessionEnvironmentRestoration",
+      "SessionEnvironmentRetirementCause",
+      "SessionRuntimeSlot",
+      "UnboundSessionEnvironment",
+      "UnboundSessionEnvironmentOrigin"
+    ],
+    "host::session::environment_realization -> host::session": [
+      "*"
+    ],
+    "host::session::environment_realization -> session_slot": [
+      "SessionRuntimeSlot"
+    ],
+    "host::terminal_reconciliation -> host": [
+      "*"
+    ],
+    "host::terminal_reconciliation -> store": [
+      "HostCommit"
+    ],
+    "host::worker_resolver::session_realization -> host": [
+      "CanonicalSessionProjection"
+    ],
+    "host::worker_resolver::session_realization -> host::completion": [
+      "requires_local_environment"
+    ],
+    "host::worker_resolver::session_realization -> host::session": [
+      "SessionEnvironmentAdoptionDisposition"
+    ],
+    "host::worker_resolver::session_realization -> host::worker_resolver": [
+      "*"
+    ],
+    "host::worker_resolver::session_realization -> managed_adapter_error": [
+      "to_run_error"
+    ],
+    "host::worker_resolver::session_realization -> session_slot": [
+      "SessionRealizationPermit"
+    ],
+    "managed_resource_projection -> crate": [
+      "ManagedHost"
+    ],
+    "managed_resource_projection -> host": [
+      "CanonicalSessionProjection"
+    ],
+    "managed_resource_projection -> managed_adapter_error": [
+      "to_run_error"
+    ],
+    "managed_resource_projection -> memory": [
+      "BoundMemory"
+    ],
+    "managed_resource_projection -> session_slot": [
+      "SessionRuntimeSlot"
+    ],
+    "managed_resource_projection -> skill_catalog": [
+      "skill_store_run_error"
+    ],
+    "managed_resource_projection -> skills": [
+      "DELIVERED_SKILLS_SUBDIR",
+      "materialize_delivered_skill"
+    ],
+    "provisioning -> host": [
+      "HostError",
+      "SharedHost"
+    ],
+    "provisioning -> session_slot": [
+      "SessionRuntimeSlots"
+    ],
+    "terminal_repository_publication -> crate": [
+      "ManagedHost"
+    ],
+    "terminal_repository_publication -> host": [
+      "BoundEnvironmentPreparationMode"
+    ],
+    "terminal_repository_publication -> managed_adapter_error": [
+      "to_run_error"
+    ]
+  },
+  "shared-host-impl": {
+    "host::build::environment_capacity": 11,
+    "host::session::environment_lifecycle": 47,
+    "host::session::environment_realization": 25,
+    "host::terminal_reconciliation": 4,
+    "managed_resource_projection": 5,
+    "provisioning": 21
+  }
+}
