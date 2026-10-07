@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "protocols"
 layer = "interface"
 authority = "protocol-awaken"
+separation = "protocol"
+protocol = "awaken-http"
 
 [dependencies]
 awaken-agent-contract.workspace = true

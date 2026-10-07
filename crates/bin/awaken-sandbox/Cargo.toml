@@ -9,6 +9,7 @@ context = "apps"
 product = "apps"
 layer = "bootstrap"
 authority = "sandbox"
+separation = "process"
 
 [lib]
 name = "awaken_sandbox"

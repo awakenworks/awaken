@@ -10,6 +10,7 @@ product = "sdk"
 bounded_context = "agent-runtime"
 layer = "infrastructure"
 authority = "observability"
+separation = "publish"
 
 # Cross-cutting telemetry infrastructure (NOT a runtime `ext-*`): the process-global
 # `tracing` subscriber, optional typed OTLP / trace-file span export, the W3C

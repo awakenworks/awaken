@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "config"
 layer = "application"
 authority = "config"
+separation = "isolation"
+isolates = ["axum"]
 
 # The config-authoring plane (ADR-0036/slice A), extracted from the data-plane host
 # so BOTH planes can share it without the authoring/authz plane (awaken-control)

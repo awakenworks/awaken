@@ -10,6 +10,7 @@ product = "platform"
 bounded_context = "deployment"
 layer = "application"
 authority = "deployment"
+separation = "sole-in-layer"
 
 [features]
 test-support = []

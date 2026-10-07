@@ -20,6 +20,7 @@ import _arch_fitness
 import _bounded_context_fitness
 import _cancel_safety_fitness
 import _context_map_fitness
+import _crate_separation_fitness
 import _coordinator_authority_fitness
 import _crate_dependency_fitness
 import _execution_ownership_fitness
@@ -1676,6 +1677,7 @@ def main() -> int:
     _crate_dependency_fitness.selftest()
     _bounded_context_fitness.selftest()
     _context_map_fitness.selftest()
+    _crate_separation_fitness.selftest()
     _arch_fitness.selftest()
     _coordinator_authority_fitness.selftest()
     _migration_fitness.selftest()
@@ -1705,6 +1707,7 @@ def main() -> int:
         _crate_dependency_fitness.check_all(dependency_fitness_specs())
         + _bounded_context_fitness.check_all(dependency_fitness_specs())
         + _context_map_fitness.check_all(dependency_fitness_specs(), CRATES)
+        + _crate_separation_fitness.check_all(CRATES)
         + check_neutral_code_boundaries()
         + check_builtin_tool_ownership()
         + check_background_task_is_state_only()

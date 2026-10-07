@@ -11,6 +11,7 @@ product = "devtools"
 layer = "tooling"
 authority = "protocol-managed"
 description = "Volatile Session, Work, Environment and sandbox-policy store fixtures handed to the Managed adapter behind their ports"
+separation = "test-support"
 
 [dependencies]
 awaken-protocol-managed = { workspace = true, features = ["test-support"] }

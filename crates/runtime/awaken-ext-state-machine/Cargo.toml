@@ -11,6 +11,7 @@ bounded_context = "agent-runtime"
 layer = "infrastructure"
 authority = "ext-state-machine"
 description = "Stateful tool-call ordering constraints (loadable FSM DSL) for Awaken"
+separation = "publish"
 
 [dependencies]
 awaken-agent-contract.workspace = true

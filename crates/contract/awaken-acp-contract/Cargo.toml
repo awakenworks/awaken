@@ -12,6 +12,7 @@ layer = "contract"
 # ADR-0081 §1 interface kinds this crate may hold (types | spi | api | remote | ext).
 kinds = ["types", "spi"]
 authority = "acp-capability"
+separation = "contract"
 
 [dependencies]
 awaken-agent-channel.workspace = true

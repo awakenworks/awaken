@@ -11,6 +11,7 @@ bounded_context = "dispatch"
 layer = "tooling"
 authority = "run-ingress"
 description = "Reusable conformance suite for DispatchQueue implementations and decorators"
+separation = "test-support"
 
 [dependencies]
 awaken-agent-contract.workspace = true

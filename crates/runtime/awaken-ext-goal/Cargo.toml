@@ -10,6 +10,7 @@ product = "sdk"
 bounded_context = "agent-runtime"
 layer = "infrastructure"
 authority = "ext-goal"
+separation = "publish"
 
 [dependencies]
 serde.workspace = true

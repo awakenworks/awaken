@@ -11,6 +11,7 @@ bounded_context = "session"
 layer = "contract"
 kinds = ["types", "spi", "api"]
 authority = "session-dream"
+separation = "contract"
 
 [dependencies]
 async-trait.workspace = true

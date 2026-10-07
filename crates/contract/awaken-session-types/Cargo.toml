@@ -11,6 +11,7 @@ bounded_context = "session"
 layer = "contract"
 kinds = ["types"]
 authority = "session-identity"
+separation = "contract"
 
 [dependencies]
 serde.workspace = true

@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "dispatch"
 layer = "infrastructure"
 authority = "worker-runtime-transport"
+separation = "isolation"
+isolates = ["reqwest"]
 
 [dependencies]
 awaken-agent-contract.workspace = true

@@ -11,6 +11,7 @@ bounded_context = "dispatch"
 layer = "contract"
 kinds = ["types", "spi"]
 authority = "durable-run-application-port"
+separation = "contract"
 
 [dependencies]
 awaken-agent-contract.workspace = true

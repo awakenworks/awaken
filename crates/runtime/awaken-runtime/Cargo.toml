@@ -12,6 +12,7 @@ product = "sdk"
 bounded_context = "agent-runtime"
 layer = "application"
 authority = "runtime"
+separation = "publish"
 
 [dependencies]
 awaken-time.workspace = true

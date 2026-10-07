@@ -13,6 +13,8 @@ product = "platform"
 bounded_context = "protocols"
 layer = "interface"
 authority = "protocol-acp"
+separation = "protocol"
+protocol = "acp"
 
 [dependencies]
 awaken-agent-contract.workspace = true

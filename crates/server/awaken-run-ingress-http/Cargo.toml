@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "dispatch"
 layer = "interface"
 authority = "run-ingress-http"
+separation = "isolation"
+isolates = ["axum"]
 
 [dependencies]
 awaken-time.workspace = true

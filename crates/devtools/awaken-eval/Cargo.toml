@@ -9,6 +9,7 @@ context = "devtools"
 product = "devtools"
 layer = "tooling"
 authority = "eval"
+separation = "process"
 
 # Fixture-driven evaluation harness (#4): replays recorded cases through the REAL
 # runtime (a scripted `LlmExecutor` feeds the recorded model responses back into

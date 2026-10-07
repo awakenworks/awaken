@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "resources"
 layer = "infrastructure"
 authority = "memory"
+separation = "isolation"
+isolates = ["sqlx"]
 
 # Durable path-addressed memory persistence for the resources plane, with ephemeral,
 # SQLite, and Postgres backends. The adapter receives only opaque store

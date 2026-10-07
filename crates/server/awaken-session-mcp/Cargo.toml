@@ -11,6 +11,8 @@ product = "platform"
 bounded_context = "execution"
 layer = "infrastructure"
 authority = "session-mcp"
+separation = "isolation"
+isolates = ["axum", "reqwest"]
 
 [dependencies]
 awaken-acp-contract.workspace = true

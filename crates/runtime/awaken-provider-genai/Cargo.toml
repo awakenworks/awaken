@@ -10,6 +10,7 @@ product = "sdk"
 bounded_context = "agent-runtime"
 layer = "infrastructure"
 authority = "provider-genai"
+separation = "publish"
 
 [dependencies]
 awaken-time.workspace = true

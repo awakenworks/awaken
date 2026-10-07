@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "resources"
 layer = "interface"
 authority = "resource-worker-http"
+separation = "isolation"
+isolates = ["axum"]
 
 [dependencies]
 awaken-agent-contract.workspace = true

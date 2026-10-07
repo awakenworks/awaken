@@ -11,6 +11,7 @@ bounded_context = "session"
 layer = "contract"
 kinds = ["spi"]
 authority = "session-repository"
+separation = "contract"
 
 [dependencies]
 awaken-session-state-contract.workspace = true

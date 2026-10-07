@@ -9,6 +9,7 @@ context = "shared"
 product = "apps"
 layer = "infrastructure"
 authority = "service-lifecycle"
+separation = "process"
 
 [features]
 standalone-release-admission = []

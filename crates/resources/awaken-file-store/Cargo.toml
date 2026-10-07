@@ -13,6 +13,8 @@ product = "platform"
 bounded_context = "resources"
 layer = "infrastructure"
 authority = "file"
+separation = "isolation"
+isolates = ["object_store", "sqlx"]
 
 [dependencies]
 # Port-only contract: the FileStore trait + FileStoreError live here; this crate

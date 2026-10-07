@@ -14,6 +14,7 @@ product = "platform"
 bounded_context = "fencing"
 layer = "infrastructure"
 authority = "authority-clock"
+separation = "sole-in-layer"
 
 [dependencies]
 awaken-time.workspace = true

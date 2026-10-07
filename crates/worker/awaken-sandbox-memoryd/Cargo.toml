@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "sandbox"
 layer = "infrastructure"
 authority = "sandbox-memoryd"
+separation = "isolation"
+isolates = ["fuser", "libc"]
 
 # ADR-0053: a write-through FUSE filesystem projecting a path-addressed memory store
 # (awaken-memory-store's `MemoryRepository`) as `/mnt/memory/{store}/*`, so an LLM edits

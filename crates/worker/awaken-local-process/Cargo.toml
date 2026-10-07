@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "sandbox"
 layer = "infrastructure"
 authority = "local-process"
+separation = "isolation"
+isolates = ["libc", "nix", "rustix", "seccompiler"]
 
 [dependencies]
 async-trait.workspace = true

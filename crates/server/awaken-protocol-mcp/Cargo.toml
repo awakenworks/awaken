@@ -11,6 +11,8 @@ bounded_context = "protocols"
 layer = "interface"
 authority = "protocol-mcp"
 description = "MCP protocol adapter (server side): exposes awaken runtime tools to external MCP clients"
+separation = "protocol"
+protocol = "mcp"
 
 [dependencies]
 awaken-session-environment-contract.workspace = true

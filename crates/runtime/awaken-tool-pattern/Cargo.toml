@@ -11,6 +11,7 @@ bounded_context = "agent-runtime"
 layer = "domain"
 authority = "tool-pattern"
 description = "Glob and regex pattern matching for tool calls in Awaken"
+separation = "publish"
 
 [dependencies]
 serde.workspace = true

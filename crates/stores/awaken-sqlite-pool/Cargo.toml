@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "storage"
 layer = "infrastructure"
 authority = "sqlite-connection"
+separation = "isolation"
+isolates = ["sqlx"]
 
 [dependencies]
 futures-core = { version = "0.3", default-features = false }

@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "session"
 layer = "infrastructure"
 authority = "session"
+separation = "isolation"
+isolates = ["sqlx"]
 
 [dependencies]
 awaken-agent-contract.workspace = true
