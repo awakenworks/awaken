@@ -11,11 +11,15 @@ mod codec;
 mod postgres;
 mod schema;
 mod sqlite;
+// The codec is copied verbatim into each storage context; this context uses
+// only part of it outside tests.
+#[cfg_attr(not(test), allow(dead_code))]
+mod stored_u64;
 
 #[cfg(any(test, kani))]
 use awaken_agent_config::PublicationWrite;
 use awaken_agent_config::{ManagementEffect, ManagementEffectReceipt};
-use awaken_sql_storage::{StoredU64, StoredU64Error};
+use stored_u64::{StoredU64, StoredU64Error};
 
 pub use postgres::{PostgresConfigStore, StoreError as PostgresStoreError};
 pub use schema::config_bundle;
@@ -83,7 +87,7 @@ fn publication_source_admission_requires_present_exact_revision() {
     check_publication_source_admission(kani::any(), kani::any());
 }
 
-/// Config owns the create/update choice; store-runtime owns integer encoding.
+/// Config owns the create/update choice; the context's StoredU64 owns integer encoding.
 /// Both SQL CAS seams consume this plan at their existing transaction position,
 /// after audit replay admission. This does not execute or model a transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

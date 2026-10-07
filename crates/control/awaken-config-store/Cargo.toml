@@ -27,6 +27,7 @@ awaken-sqlite-pool.workspace = true
 awaken-sql-storage = { workspace = true, features = ["postgres"] }
 
 [dev-dependencies]
+proptest.workspace = true
 awaken-agent-contract.workspace = true
 awaken-time.workspace = true
 awaken-reliability-testkit.workspace = true

@@ -191,7 +191,7 @@ type checking are valuable executable evidence, but are not formal proofs.
   and are not accepted evidence: recursive heap/payload framing, revision/clock
   admission, async driver refinement and journey composition remain open.
 - WorkQueue ordinary/token-bearing claims and Session acquisition all consume
-  the existing `lease_epoch` transition, now backed by shared `StoredU64` rather
+  the existing `lease_epoch` transition, now backed by the work store's `StoredU64` rather
   than parallel SQL increments. Kani checks its full signed input domain and
   observe/advance decisions; SQL adapters validate before minting a token.
   A live SQLite regression caught MAX-epoch claims succeeding through integer

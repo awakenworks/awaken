@@ -7,10 +7,10 @@
 // @formal entrypoint memory.stale_conditional_delete_never_removes_live_head
 //! SQLite [`MemoryRepository`] over the crate's `memory_store` migration scope.
 
+use crate::stored_u64::StoredU64;
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_sqlite_pool::EmbeddedPool;
 use awaken_sqlite_pool::EmbeddedSqlite;
-use awaken_sql_storage::StoredU64;
 use awaken_time::WallClock;
 use sqlx::SqliteConnection;
 use std::future::Future;

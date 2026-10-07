@@ -17,7 +17,7 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
-use awaken_sql_storage::StoredU64;
+use crate::stored_u64::StoredU64;
 use awaken_tenancy::ScopeId;
 
 use crate::codec::{attach_publication_row, decode_publication_value};
