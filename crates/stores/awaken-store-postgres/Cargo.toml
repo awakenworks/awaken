@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "committed-truth"
 layer = "infrastructure"
 authority = "store-postgres"
+separation = "isolation"
+isolates = ["sqlx"]
 
 [dependencies]
 awaken-agent-contract.workspace = true

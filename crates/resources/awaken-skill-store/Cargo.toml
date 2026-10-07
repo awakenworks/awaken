@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "resources"
 layer = "infrastructure"
 authority = "skill"
+separation = "isolation"
+isolates = ["sqlx"]
 
 # Durable skill catalog for the resources plane: the `SkillStore` port (mirroring
 # awaken-file-store's `FileStore`) with pluggable backends — in-memory / filesystem /

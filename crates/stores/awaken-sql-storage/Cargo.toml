@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "storage"
 layer = "infrastructure"
 authority = "store"
+separation = "isolation"
+isolates = ["sqlx"]
 
 [dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }

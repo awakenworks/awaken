@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "governance"
 layer = "infrastructure"
 authority = "data-subject-store"
+separation = "isolation"
+isolates = ["sqlx"]
 
 # SQLite/PostgreSQL adapters for the Data Subject application ports. Volatile
 # storage is compiled only for tests or the explicit `test-support` feature.

@@ -11,6 +11,8 @@ product = "platform"
 bounded_context = "execution"
 layer = "infrastructure"
 authority = "runtime-host"
+separation = "isolation"
+isolates = ["axum"]
 
 [dependencies]
 # The backend-erased container environment ports the Session owner holds.

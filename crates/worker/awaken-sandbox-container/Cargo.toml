@@ -13,6 +13,8 @@ product = "platform"
 bounded_context = "sandbox"
 layer = "infrastructure"
 authority = "sandbox-container"
+separation = "isolation"
+isolates = ["bollard", "k8s-openapi", "kube", "tar"]
 
 [dependencies]
 # The backend-erased container ports this provider implements.

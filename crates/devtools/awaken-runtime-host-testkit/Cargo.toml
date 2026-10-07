@@ -11,6 +11,7 @@ product = "devtools"
 layer = "tooling"
 authority = "runtime-host"
 description = "Local Resources, Skill and Memory-extraction adapters handed to test and scenario Runtime Hosts behind their ports"
+separation = "test-support"
 
 [dependencies]
 awaken-session-executor = { workspace = true, features = ["test-support"] }

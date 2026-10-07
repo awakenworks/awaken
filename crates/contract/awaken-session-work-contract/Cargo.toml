@@ -11,6 +11,7 @@ bounded_context = "dispatch"
 layer = "contract"
 kinds = ["types", "spi"]
 authority = "session-work"
+separation = "contract"
 
 [dependencies]
 async-trait.workspace = true

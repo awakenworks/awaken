@@ -9,6 +9,7 @@ context = "coordinator"
 product = "apps"
 layer = "bootstrap"
 authority = "coordinator"
+separation = "process"
 
 
 [dependencies]

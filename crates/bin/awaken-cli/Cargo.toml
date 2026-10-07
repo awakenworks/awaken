@@ -10,6 +10,7 @@ context = "apps"
 product = "apps"
 layer = "bootstrap"
 authority = "cli"
+separation = "process"
 
 [lib]
 name = "awaken_cli"

@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "dispatch"
 layer = "infrastructure"
 authority = "worker-transport-security"
+separation = "isolation"
+isolates = ["axum", "k8s-openapi", "kube", "reqwest"]
 
 [dependencies]
 awaken-time.workspace = true

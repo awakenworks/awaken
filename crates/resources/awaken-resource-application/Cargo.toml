@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "resources"
 layer = "application"
 authority = "resource"
+separation = "isolation"
+isolates = ["zip"]
 
 [dependencies]
 async-trait.workspace = true

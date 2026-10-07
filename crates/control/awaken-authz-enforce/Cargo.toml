@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "access"
 layer = "application"
 authority = "authz-enforce"
+separation = "isolation"
+isolates = ["axum"]
 
 [dependencies]
 # The shared authz engine (in-memory ApiTokenDirectory + PolicySet + preset role
