@@ -30,6 +30,8 @@ async fn missing_permission_and_blocked_health_check_fail_within_their_boundary(
     // same health function returns PoolTimedOut at its 500 ms boundary. The
     // isolated catalog lock cannot disturb another case; an outer deadline
     // bounds the test if the health timeout itself regresses.
+    // R6 requires successful password authentication before the exact 42501
+    // language-permission error; an authentication error cannot witness R6.
     let url = database_url();
     let options: sqlx::postgres::PgConnectOptions = url.parse().unwrap();
     let admin = PgPool::connect(&url).await.unwrap();
@@ -38,12 +40,18 @@ async fn missing_permission_and_blocked_health_check_fail_within_their_boundary(
         .await
         .unwrap();
     let name = format!("awaken_checkout_permission_{pid}");
+    let password = format!("checkout_fixture_{pid}");
+    let role_options = options
+        .clone()
+        .username(&name)
+        .password(&password)
+        .database(&name);
     let mut role_created = false;
     let mut database_created = false;
     let mut isolated = None;
     let outcome = async {
         admin
-            .execute(format!("CREATE ROLE {name} LOGIN").as_str())
+            .execute(format!("CREATE ROLE {name} LOGIN PASSWORD '{password}'").as_str())
             .await?;
         role_created = true;
         admin
@@ -54,10 +62,21 @@ async fn missing_permission_and_blocked_health_check_fail_within_their_boundary(
         pool.execute("REVOKE USAGE ON LANGUAGE plpgsql FROM PUBLIC")
             .await?;
         isolated = Some(pool);
+        let mut connection = sqlx::PgConnection::connect_with(&role_options).await?;
+        let permission_error = super::verify_postgres_checkout(&mut connection)
+            .await
+            .expect_err("R6 authenticated connection lacks plpgsql USAGE");
+        assert_eq!(
+            permission_error
+                .as_database_error()
+                .and_then(|error| error.code()),
+            Some("42501".into()),
+            "R6 permission rejection, not transport or authentication failure"
+        );
         let denied = match super::postgres_pool_options()
             .max_connections(1)
             .acquire_timeout(Duration::from_secs(1))
-            .connect_with(options.clone().username(&name).database(&name))
+            .connect_with(role_options.clone())
             .await
         {
             Ok(pool) => {
@@ -70,8 +89,6 @@ async fn missing_permission_and_blocked_health_check_fail_within_their_boundary(
         scoped
             .execute("GRANT USAGE ON LANGUAGE plpgsql TO PUBLIC")
             .await?;
-        let role_options = options.clone().username(&name).database(&name);
-        let mut connection = sqlx::PgConnection::connect_with(&role_options).await?;
         let mut lock = scoped.begin().await?;
         sqlx::query("LOCK TABLE pg_language IN ACCESS EXCLUSIVE MODE")
             .execute(&mut *lock)
@@ -313,8 +330,13 @@ async fn untracked_aborted_transaction_is_retired_before_another_borrower() {
     // must retire that exact backend; a replacement must execute a normal query
     // instead of inheriting 25P02. This partitions the failure from R1's open,
     // non-aborted BEGIN and R3's properly owned cancelled transaction.
+    // R4/T1 clean initial checkout completes within five seconds; T2 stalled
+    // checkout fails here, before injecting the aborted-transaction fault.
     let (observer, pool) = fixture().await;
-    let mut connection = pool.acquire().await.unwrap();
+    let mut connection = tokio::time::timeout(Duration::from_secs(5), pool.acquire())
+        .await
+        .expect("R4 initial backend checkout stalled before fault injection")
+        .unwrap();
     let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
         .fetch_one(&mut *connection)
         .await
@@ -346,8 +368,13 @@ async fn checkout_supports_read_only_role_without_schema_create_permission() {
     // + existing plpgsql USAGE -> successful checkout with unchanged identity.
     // These conditions interact: a superuser-only or schema-writing health
     // check would pass R2 yet reject the deployed read-only capability boundary.
+    // R5/T1 initial checkout completes within five seconds; T2 stalled checkout
+    // fails before changing the role, preserving the permission-test boundary.
     let (observer, pool) = fixture().await;
-    let mut connection = pool.acquire().await.unwrap();
+    let mut connection = tokio::time::timeout(Duration::from_secs(5), pool.acquire())
+        .await
+        .expect("R5 initial backend checkout stalled before permission change")
+        .unwrap();
     let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
         .fetch_one(&mut *connection)
         .await

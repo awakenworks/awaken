@@ -47,4 +47,8 @@ fi
 # itself belongs to the cargo-target authority, shared with the batch runner.
 awaken_configure_kani_driver_target
 
-exec cargo kani "$@"
+# Direct harness runs and the full gate share the same execution budget and
+# deadline owner; Cargo admission precedes that clock in both entry points.
+source scripts/ci/_deadline.sh
+kani_batch_timeout_seconds="$(python3 scripts/ci/formal_budget.py kani-batch-timeout-seconds)"
+run_with_deadline "$kani_batch_timeout_seconds" cargo kani "$@"

@@ -57,6 +57,14 @@ def run(seconds: float, command: list[str]) -> int:
 
 
 def main(argv: list[str]) -> int:
+    # Cargo's external-command protocol inserts the subcommand name. The entry
+    # is a temporary symlink to this owner, so admission completes before run()
+    # starts its clock. Direct invocation retains exactly the same parser.
+    entry = Path(argv[0]).name
+    if entry.startswith("cargo-"):
+        if argv[1:2] != [entry.removeprefix("cargo-")]:
+            return 2
+        argv = [argv[0], *argv[2:]]
     if len(argv) < 3:
         print(f"usage: {Path(argv[0]).name} SECONDS -- COMMAND [ARG ...]", file=sys.stderr)
         return 2
