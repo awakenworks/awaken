@@ -137,9 +137,10 @@ async fn native_probe_rejects_failure_and_bounds_a_stuck_launcher() {
     // and termination request, never readiness. The fixture uses exec (no
     // detached descendants); whole-tree death has its own OS integration test.
     // P8 probes carry no ambient HOME/loader/token environment into the child.
-    // A real process start may need more than 100 ms under loaded macOS; P5/P6
-    // classify its exit, while only P7 owns the short timeout bound.
-    let normal_timeout = Duration::from_secs(1);
+    // A real process start can exceed one second under Rosetta and concurrent
+    // builds. P5/P6 classify the exit without a latency claim; only P7 owns
+    // the short timeout bound, so its 100 ms deadline remains unchanged.
+    let normal_timeout = Duration::from_secs(5);
     for (argv, expected) in [
         (
             vec![
