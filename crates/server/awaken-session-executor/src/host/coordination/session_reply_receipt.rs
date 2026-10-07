@@ -33,9 +33,9 @@ pub(in crate::host) fn validate_awaiting_tool_authority(
         ));
     };
     let state = Store::rebuild(state_commands);
-    let batch = awaken_runtime_contract::ActiveToolBatch::load(&state)
+    let batch = awaken_tool_contract::ActiveToolBatch::load(&state)
         .map_err(|error| HostError::internal(error.to_string()))?;
-    let validate_batch = |batch: &awaken_runtime_contract::ToolBatch| {
+    let validate_batch = |batch: &awaken_tool_contract::ToolBatch| {
         batch
             .validate_awaiting_ticket(thread_id, ticket)
             .map_err(|_| {

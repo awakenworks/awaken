@@ -26,10 +26,10 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{
     CommittedTerminalRun, RunTerminalObserver, RunTerminalObserverError,
 };
-use awaken_runtime_contract::tool::{ToolOutput, ToolTaskHandle, ToolTaskPoll, ToolTaskStart};
 use awaken_session_application_contract::SessionRunBackgroundApplication;
-use awaken_session_error_contract::RunErrorKind;
+use awaken_session_types::RunErrorKind;
 use awaken_time::WallClockExt;
+use awaken_tool_contract::tool::{ToolOutput, ToolTaskHandle, ToolTaskPoll, ToolTaskStart};
 
 use crate::background::{BackgroundRuns, BackgroundWorkClass};
 use crate::store::CommittedAuthority;
@@ -852,7 +852,7 @@ mod tests {
     };
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ToolDescriptor};
     use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
-    use awaken_runtime_contract::tool::{
+    use awaken_tool_contract::tool::{
         DurableTaskTool, RawTool, ToolCall, ToolConcurrency, ToolError, ToolOutputSpiller,
         ToolRecoveryPolicy, ToolResource, ToolResourceAccess,
     };
@@ -911,7 +911,7 @@ mod tests {
                     traceparent,
                 });
             if self.definitive_rejection {
-                return Err(awaken_session_error_contract::RunError::bad_request(
+                return Err(awaken_session_types::RunError::bad_request(
                     "definitive test rejection",
                 ));
             }
@@ -922,7 +922,7 @@ mod tests {
                 })
                 .is_ok()
             {
-                return Err(awaken_session_error_contract::RunError::unavailable(
+                return Err(awaken_session_types::RunError::unavailable(
                     "transient test failure",
                 ));
             }
@@ -1251,7 +1251,7 @@ mod tests {
         async fn invoke(
             &self,
             call: ToolCall,
-        ) -> Result<ToolOutput, awaken_runtime_contract::tool::ToolError> {
+        ) -> Result<ToolOutput, awaken_tool_contract::tool::ToolError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(ToolOutput::ok(call.call_id, "done"))
         }

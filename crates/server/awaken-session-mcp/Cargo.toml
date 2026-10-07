@@ -32,7 +32,7 @@ awaken-runtime-contract.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-environment-contract.workspace = true
-awaken-session-error-contract.workspace = true
+awaken-session-types.workspace = true
 awaken-session-mcp-contract.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
@@ -59,6 +59,7 @@ default = []
 test-support = []
 
 [dev-dependencies]
+awaken-tool-contract.workspace = true
 # Projection tests admit adapters through the production ACP adapter policy.
 awaken-run-executor-acp = { workspace = true }
 

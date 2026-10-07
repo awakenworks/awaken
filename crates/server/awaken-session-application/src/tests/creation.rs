@@ -129,7 +129,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
-    ) -> Result<usize, awaken_session_error_contract::RunError> {
+    ) -> Result<usize, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
             .await
@@ -185,7 +185,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
         &self,
         thread: &str,
         lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
             .await
@@ -201,7 +201,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
         &self,
         thread: &str,
         lease: &awaken_session_resource_contract::SessionRealizationLease,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
             .await
@@ -232,7 +232,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingCreateRuntim
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<u64, awaken_session_error_contract::RunError> {
+    ) -> Result<u64, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
             .await
@@ -256,10 +256,8 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingCreateRuntim
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<
-        Option<awaken_session_execution_contract::OutcomeDrive>,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await
@@ -738,7 +736,7 @@ async fn worker_checkpoint_retention_is_rejected_before_durable_creation() {
     };
     assert_eq!(
         error.kind,
-        awaken_session_error_contract::RunErrorKind::BadRequest,
+        awaken_session_types::RunErrorKind::BadRequest,
         "T1/E1",
     );
     assert!(matches!(
@@ -911,10 +909,7 @@ async fn model_override_decision_reuses_only_an_equal_id_and_resolves_every_mism
         )
         .await
         .expect_err("malformed resolver output must fail before persistence");
-    assert_eq!(
-        error.kind,
-        awaken_session_error_contract::RunErrorKind::BadRequest
-    );
+    assert_eq!(error.kind, awaken_session_types::RunErrorKind::BadRequest);
     assert!(error.message.contains("duplicate model candidate"));
 }
 
@@ -1793,7 +1788,7 @@ async fn session_application_admits_new_and_existing_protocol_threads() {
         .expect_err("A3/E3");
     assert_eq!(
         error.kind,
-        awaken_session_error_contract::RunErrorKind::BadRequest,
+        awaken_session_types::RunErrorKind::BadRequest,
         "A3/E3"
     );
 }

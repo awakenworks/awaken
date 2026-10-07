@@ -1004,7 +1004,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     managed
         .environment()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "EnvironmentRuntime is unsupported by this runtime",
             )
         })
@@ -1086,7 +1086,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
             let error = managed
                 .environment()
                 .ok_or_else(|| {
-                    awaken_session_error_contract::RunError::unavailable(
+                    awaken_session_types::RunError::unavailable(
                         "EnvironmentRuntime is unsupported by this runtime",
                     )
                 })
@@ -1117,7 +1117,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     let error = managed
         .environment()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "EnvironmentRuntime is unsupported by this runtime",
             )
         })

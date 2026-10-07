@@ -122,7 +122,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     managed
         .environment()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "EnvironmentRuntime is unsupported by this runtime",
             )
         })
@@ -207,7 +207,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     managed
         .environment()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "EnvironmentRuntime is unsupported by this runtime",
             )
         })
@@ -341,7 +341,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     let error = managed
         .environment()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "EnvironmentRuntime is unsupported by this runtime",
             )
         })
@@ -527,7 +527,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
     managed
         .environment()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "EnvironmentRuntime is unsupported by this runtime",
             )
         })
@@ -615,7 +615,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     let error = managed
         .environment()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "EnvironmentRuntime is unsupported by this runtime",
             )
         })
@@ -1213,7 +1213,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     managed
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -1230,7 +1230,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     let conflict = managed
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -1248,7 +1248,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     let local_error = managed
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })

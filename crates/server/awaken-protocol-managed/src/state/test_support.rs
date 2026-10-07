@@ -367,7 +367,7 @@ impl RehydrateFake {
         ));
         assert_eq!(
             link.created_by_operation_id,
-            awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
+            awaken_tool_contract::tool_batch::ToolBatch::operation_id_for_step(
                 &root_run_id,
                 step,
                 call_id,
@@ -565,7 +565,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RehydrateFake {
         &self,
     ) -> Result<
         awaken_lease_contract::authority::AuthorityProofStarted,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         crate::test_support::observe_realization_request()
     }
@@ -581,7 +581,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RehydrateFake {
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
-    ) -> Result<usize, awaken_session_error_contract::RunError> {
+    ) -> Result<usize, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
             .await
@@ -598,7 +598,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RehydrateFake {
         &self,
         thread: &str,
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .validate_session_sandbox_layout(thread, layout)
     }
@@ -625,7 +625,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RehydrateFake {
         if adopts_environment && let Some(binding) = projection.environment.binding() {
             self.environment()
                 .ok_or_else(|| {
-                    awaken_session_error_contract::RunError::unavailable(
+                    awaken_session_types::RunError::unavailable(
                         "EnvironmentRuntime is unsupported by this runtime",
                     )
                 })?
@@ -644,7 +644,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RehydrateFake {
         &self,
         thread: &str,
         lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
             .await
@@ -660,7 +660,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RehydrateFake {
         &self,
         thread: &str,
         lease: &awaken_session_resource_contract::SessionRealizationLease,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
             .await
@@ -689,7 +689,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
         command: awaken_session_execution_contract::AdmitSessionRun,
     ) -> Result<
         awaken_session_execution_contract::SessionRunReservation,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .reserve_session_run(command)
@@ -703,10 +703,8 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
     async fn activate_session_run(
         &self,
         delivery: awaken_session_execution_contract::SessionRunDelivery,
-    ) -> Result<
-        awaken_session_execution_contract::SessionRunActivation,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<awaken_session_execution_contract::SessionRunActivation, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .activate_session_run(delivery)
             .await
@@ -727,10 +725,8 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
         admission: awaken_session_execution_contract::AdmittedSessionRun,
         input_message_ids: Vec<String>,
         sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-    ) -> Result<
-        awaken_session_application_contract::StepOutcome,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .activate_and_observe_session_run(admission, input_message_ids, sink)
             .await
@@ -745,10 +741,8 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
         &self,
         session_id: &awaken_session_types::SessionId,
         run_id: &awaken_agent_contract::agent::run::Id,
-    ) -> Result<
-        Option<awaken_agent_contract::agent::run::RunState>,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .session_run_state(session_id, run_id)
             .await
@@ -770,7 +764,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
         command: awaken_session_execution_contract::CoordinatedRunCommand,
     ) -> Result<
         awaken_session_execution_contract::SessionAgentMessageReceipt,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .admit_coordinated_run(command)
@@ -803,7 +797,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
         thread_id: &str,
     ) -> Result<
         Option<Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>>,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .subscribe_session_thread_live(session_id, thread_id)
@@ -818,7 +812,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
     async fn continue_session_agent_report(
         &self,
         command: awaken_session_execution_contract::SessionAgentReportContinuation,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .continue_session_agent_report(command)
             .await
@@ -832,7 +826,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
         &self,
         session_id: &awaken_session_types::SessionId,
         child_thread_id: &awaken_agent_contract::agent::thread::Id,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .interrupt_session_thread(session_id, child_thread_id)
             .await
@@ -912,10 +906,8 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
         &self,
         delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-    ) -> Result<
-        awaken_session_application_contract::StepOutcome,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .reply_and_observe_session_thread_tool(delivery, stream_sink)
             .await
@@ -930,11 +922,11 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
         thread: &str,
     ) -> Result<
         awaken_session_application_contract::DelegatedRunSnapshot,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         self.streaming_runs()
             .ok_or_else(|| {
-                awaken_session_error_contract::RunError::unavailable(
+                awaken_session_types::RunError::unavailable(
                     "StreamingRunRuntime is unsupported by this runtime",
                 )
             })?
@@ -947,7 +939,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
             runtime_commit_cursor: self
                 .thread_reads()
                 .ok_or_else(|| {
-                    awaken_session_error_contract::RunError::unavailable(
+                    awaken_session_types::RunError::unavailable(
                         "ThreadReadRuntime is unsupported by this runtime",
                     )
                 })?
@@ -977,7 +969,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
         command: &awaken_session_execution_contract::SessionAgentMessageCommand,
     ) -> Result<
         awaken_session_execution_contract::SessionAgentMessageCommand,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .validate_session_agent_message_source(command)
@@ -997,7 +989,7 @@ impl awaken_session_execution_contract::BudgetRuntime for RehydrateFake {
         delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,
     ) -> Result<
         awaken_session_application_contract::SessionBudgetResumeDisposition,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .resume_budget_reached(delivery)
@@ -1014,7 +1006,7 @@ impl awaken_session_execution_contract::BudgetRuntime for RehydrateFake {
         session_id: &awaken_session_types::SessionId,
     ) -> Result<
         Vec<awaken_session_application_contract::SessionBudgetResumeTicket>,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .session_budget_resume_tickets(session_id)
@@ -1071,10 +1063,8 @@ impl awaken_session_execution_contract::StreamingRunRuntime for RehydrateFake {
         thread: &str,
         content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
         _data_subject_id: Option<String>,
-    ) -> Result<
-        awaken_session_application_contract::StepOutcome,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
+    {
         self.run(agent, thread, content).await
     }
 
@@ -1092,10 +1082,8 @@ impl awaken_session_execution_contract::StreamingRunRuntime for RehydrateFake {
         thread: &str,
         content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
         _sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<
-        awaken_session_application_contract::StepOutcome,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
+    {
         self.run(agent, thread, content).await
     }
 
@@ -1109,10 +1097,8 @@ impl awaken_session_execution_contract::StreamingRunRuntime for RehydrateFake {
         content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
         _data_subject_id: Option<String>,
         sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<
-        awaken_session_application_contract::StepOutcome,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
+    {
         self.run_streaming(agent, thread, content, sink).await
     }
 
@@ -1120,7 +1106,7 @@ impl awaken_session_execution_contract::StreamingRunRuntime for RehydrateFake {
     // answered this role method with anything but the refusal below.
     /// Interrupt the run in flight on `thread` (a `user.interrupt`): cancel it so
     /// an in-progress outcome ends `interrupted`. A no-op when nothing is running.
-    async fn interrupt(&self, thread: &str) -> Result<(), awaken_session_error_contract::RunError> {
+    async fn interrupt(&self, thread: &str) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .interrupt(thread)
             .await
@@ -1136,7 +1122,7 @@ impl awaken_session_execution_contract::StreamingRunRuntime for RehydrateFake {
         &self,
         thread: &str,
         model: &str,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .rebind_model(thread, model)
             .await
@@ -1173,7 +1159,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
         &self,
         thread: &str,
         tools: awaken_session_configuration_contract::SessionToolConfiguration,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .replace_session_tools(thread, tools)
             .await
@@ -1213,10 +1199,8 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
         source_binding: &str,
         generation: &awaken_session_state_contract::SandboxGeneration,
         expected_mcp_generations: &[awaken_session_mcp_contract::McpGenerationRef],
-    ) -> Result<
-        awaken_session_state_contract::QuiescenceReceipt,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<awaken_session_state_contract::QuiescenceReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .quiesce_session_environment(
                 thread,
@@ -1237,10 +1221,8 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
         &self,
         thread: &str,
         request: awaken_session_state_contract::SandboxCheckpointRequest,
-    ) -> Result<
-        awaken_session_state_contract::CheckpointReceipt,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<awaken_session_state_contract::CheckpointReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .checkpoint_session_environment(thread, request)
             .await
@@ -1259,7 +1241,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
         source_binding: &str,
     ) -> Result<
         awaken_session_state_contract::SourceReleasePreparedReceipt,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
@@ -1274,10 +1256,8 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
         &self,
         thread: &str,
         disposal: &awaken_session_state_contract::SourceReleaseDisposal,
-    ) -> Result<
-        awaken_session_state_contract::SourceDisposedReceipt,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .dispose_prepared_checkpoint_source(thread, disposal)
             .await
@@ -1289,10 +1269,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
     async fn restore_checkpointed_session_environment(
         &self,
         request: awaken_session_state_contract::SandboxRestoreRequest,
-    ) -> Result<
-        awaken_session_state_contract::RestoreReceipt,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<awaken_session_state_contract::RestoreReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .restore_checkpointed_session_environment(request)
             .await
@@ -1306,7 +1283,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
         &self,
         thread: &str,
         checkpoint: &awaken_session_state_contract::SandboxCheckpointRef,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .delete_session_checkpoint(thread, checkpoint)
             .await
@@ -1323,7 +1300,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
         skills: &[awaken_agent_contract::AgentSkillBinding],
     ) -> Result<
         Vec<awaken_session_resource_contract::ResolvedSkillBinding>,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .resolve_session_skills(workspace_id, skills)
@@ -1354,10 +1331,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
     /// MUST answer without materializing any per-thread state (no context
     /// build, no cache entry) — probing must be free of side effects. The
     /// default reports nothing, so an ephemeral host mints densely from 0.
-    async fn owns_thread(
-        &self,
-        thread: &str,
-    ) -> Result<bool, awaken_session_error_contract::RunError> {
+    async fn owns_thread(&self, thread: &str) -> Result<bool, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .owns_thread(thread)
             .await
@@ -1692,7 +1666,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<
         Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         let Some(mut snapshot) = self
             .session_thread_recovery_snapshot(session_id, thread_id)
@@ -1773,7 +1747,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RehydrateFake
         lease: &awaken_session_resource_contract::SessionRealizationLease,
     ) -> Result<
         awaken_session_state_contract::SessionRepositoryPublicationEffect,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .execute_terminal_repository_publication_for_lease(command, lease)
@@ -1868,7 +1842,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for RehydrateFake {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<u64, awaken_session_error_contract::RunError> {
+    ) -> Result<u64, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
             .await
@@ -1892,10 +1866,8 @@ impl awaken_session_execution_contract::OutcomeRuntime for RehydrateFake {
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<
-        Option<awaken_session_execution_contract::OutcomeDrive>,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await

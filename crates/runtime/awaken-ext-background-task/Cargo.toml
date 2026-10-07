@@ -16,6 +16,7 @@ separation = "publish"
 loom = []
 
 [dependencies]
+awaken-tool-contract.workspace = true
 async-trait.workspace = true
 awaken-agent-contract.workspace = true
 awaken-time.workspace = true

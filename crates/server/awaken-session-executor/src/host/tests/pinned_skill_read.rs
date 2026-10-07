@@ -1,6 +1,6 @@
 //! Integration coverage of the existing Managed projection and lazy executor.
 use super::*;
-use awaken_runtime_contract::tool::{ToolCall, ToolError, ToolExecutor};
+use awaken_tool_contract::tool::{ToolCall, ToolError, ToolExecutor};
 
 fn read_call(path: &str, range: Option<[i64; 2]>) -> ToolCall {
     ToolCall {
@@ -72,7 +72,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for GatedS
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         self.inner.authorize(intent).await
     }
@@ -82,7 +82,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for GatedS
         receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         if matches!(
             receipt.kind,

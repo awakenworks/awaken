@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use awaken_agent_channel::AgentChannel;
 use awaken_provisioning_contract as pc;
-use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
 use awaken_sandbox_local::{LocalSandbox, NamespaceSandbox};
+use awaken_tool_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
 
 use super::HandExecutorFactory;
 use super::container_skills::ContainerSkillCache;
@@ -38,7 +38,7 @@ pub enum SandboxEnvironment {
 impl SandboxEnvironment {
     pub(crate) async fn tool_execution_domain(
         &self,
-    ) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, pc::SandboxError> {
+    ) -> Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, pc::SandboxError> {
         match self {
             Self::Workdir {
                 hand: Some(hand), ..

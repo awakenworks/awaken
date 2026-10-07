@@ -665,7 +665,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     managed
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -696,7 +696,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         .flatten()
         .expect("deferred executor");
     let error = deferred
-        .invoke(&awaken_runtime_contract::tool::ToolCall {
+        .invoke(&awaken_tool_contract::tool::ToolCall {
             call_id: "stale-read".into(),
             tool_id: "read".into(),
             arguments: serde_json::json!({"path": "missing"}),
@@ -741,7 +741,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     loss_managed
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -771,7 +771,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         .flatten()
         .expect("D4 deferred executor");
     let error = loss_deferred
-        .invoke(&awaken_runtime_contract::tool::ToolCall {
+        .invoke(&awaken_tool_contract::tool::ToolCall {
             call_id: "crash-gap-read".into(),
             tool_id: "read".into(),
             arguments: serde_json::json!({"path": "missing"}),
@@ -841,10 +841,8 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
     async fn stage_mcp_attachment(
         &self,
         request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<
-        awaken_session_mcp_contract::McpRealizationReceipt,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, awaken_session_types::RunError>
+    {
         self.calls.lock().unwrap().push("stage");
         if let Some((host, thread)) = &self.required_physical_environment {
             let physical_only = host.upgrade().is_some_and(|host| {
@@ -855,14 +853,14 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
                     .unwrap_or(false)
             });
             if !physical_only {
-                return Err(awaken_session_error_contract::RunError::classified(
+                return Err(awaken_session_types::RunError::classified(
                     "test_session_physical_environment_missing",
                     "claimed MCP stage requires the physical Environment but no parent Runtime",
                 ));
             }
         }
         if self.fail_stage.load(Ordering::SeqCst) {
-            return Err(awaken_session_error_contract::RunError::classified(
+            return Err(awaken_session_types::RunError::classified(
                 "test_mcp_stage_failed",
                 "test MCP stage failed",
             ));
@@ -879,7 +877,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
     async fn publish_mcp_generation(
         &self,
         _generation: awaken_session_mcp_contract::McpGenerationRef,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         self.calls.lock().unwrap().push("publish");
         Ok(())
     }
@@ -887,7 +885,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
     async fn drain_mcp_generation(
         &self,
         _generation: awaken_session_mcp_contract::McpGenerationRef,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         self.calls.lock().unwrap().push("drain");
         Ok(())
     }

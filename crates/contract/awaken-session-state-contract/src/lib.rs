@@ -1,8 +1,6 @@
 //! Durable Session aggregate state and pure transition laws.
 
 mod environment;
-mod event_retention;
-mod lifecycle;
 mod realization_progress;
 mod resource_activation;
 mod session_repo;
@@ -56,8 +54,9 @@ pub use environment::{
     SourceReleasePreparationEffect, SourceReleasePreparedReceipt, SuspendPhase,
     checkpoint_source_disposal_authorized, checkpoint_source_preparation_authorized,
 };
-pub use event_retention::{DeletedSessionEventAdmissions, RetainedEventAdmission};
-pub use lifecycle::{
+// These values occur in the root persistence surface; their owner is Event admission.
+pub use awaken_session_event_contract::{DeletedSessionEventAdmissions, RetainedEventAdmission};
+pub use awaken_session_event_contract::{
     ManagedLifecycleFact, SessionRuntimeInterval, SessionRuntimeIntervalObservation,
     SessionRuntimeIntervalStart,
 };

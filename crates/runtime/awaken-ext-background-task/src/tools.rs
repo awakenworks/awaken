@@ -11,11 +11,11 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::state::{Scope, Store};
 use awaken_runtime_contract::plugin::DynamicTool;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{
+use awaken_time::WallClockExt;
+use awaken_tool_contract::tool::{
     RawTool, ToolCall, ToolError, ToolOutput, ToolRecoveryCapability, current_tool_execution_facts,
     current_tool_operation_context, current_tool_state, parse_tool_args,
 };
-use awaken_time::WallClockExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -407,7 +407,7 @@ mod tests {
     use crate::{BackgroundTaskOrigin, BackgroundWait, TaskExecutionPolicy};
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_runtime_contract::tool::{ToolConcurrency, ToolRecoveryPolicy, ToolTaskHandle};
+    use awaken_tool_contract::tool::{ToolConcurrency, ToolRecoveryPolicy, ToolTaskHandle};
 
     fn remote_task() -> BackgroundTask {
         let mut task = BackgroundTask::requested(

@@ -12,7 +12,6 @@
 //! exact evidence through `SessionRealizationControl`; it persists no cursor,
 //! retry record, receipt, or topology-specific state.
 
-use awaken_session_error_contract::RunError;
 use awaken_session_realization_contract::{
     SessionRealizationControlFailure, SessionRealizationDriveError, SessionTerminalCleanupControl,
     SessionTerminalCleanupWork, realization_lease_generation_authorizes,
@@ -21,6 +20,7 @@ use awaken_session_state_contract::{
     SessionRepositoryPublicationEffect, SessionTerminalCleanupAction,
     SessionTerminalCleanupDisposalEffect, SessionTerminalCleanupEffect,
 };
+use awaken_session_types::RunError;
 
 /// Observable result of one bounded drive of an already-admitted terminal
 /// assignment. `Pending` means the same aggregate currently exposes no
@@ -710,7 +710,7 @@ mod tests {
             owner: &str,
             runtime_incarnation: &str,
             timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
-        ) -> Result<usize, awaken_session_error_contract::RunError> {
+        ) -> Result<usize, awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
                 .await
@@ -727,7 +727,7 @@ mod tests {
             &self,
             thread: &str,
             layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-        ) -> Result<(), awaken_session_error_contract::RunError> {
+        ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .validate_session_sandbox_layout(thread, layout)
         }
@@ -743,7 +743,7 @@ mod tests {
             thread: &str,
             projection: awaken_session_realization_contract::FrozenSessionProjection,
             mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-        ) -> Result<(), awaken_session_error_contract::RunError> {
+        ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .install_session_projection(thread, projection, mode)
                 .await
@@ -758,7 +758,7 @@ mod tests {
             &self,
             thread: &str,
             lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
-        ) -> Result<(), awaken_session_error_contract::RunError> {
+        ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_lease(thread, lease)
                 .await
@@ -774,7 +774,7 @@ mod tests {
             &self,
             thread: &str,
             lease: &awaken_session_resource_contract::SessionRealizationLease,
-        ) -> Result<(), awaken_session_error_contract::RunError> {
+        ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .invalidate_session_realization_lease(thread, lease)
                 .await
@@ -801,7 +801,7 @@ mod tests {
             lease: &awaken_session_resource_contract::SessionRealizationLease,
         ) -> Result<
             awaken_session_state_contract::SessionRepositoryPublicationEffect,
-            awaken_session_error_contract::RunError,
+            awaken_session_types::RunError,
         > {
             self.events.lock().unwrap().push(format!(
                 "publish:{}:{}",

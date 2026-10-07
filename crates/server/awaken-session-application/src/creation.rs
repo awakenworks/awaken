@@ -14,12 +14,12 @@ use awaken_session_budget_contract::SessionBudgetState;
 use awaken_session_configuration_contract::{
     CompiledSessionCreation, SessionCreationIntent, SessionToolConfiguration,
 };
-use awaken_session_error_contract::RunError;
 use awaken_session_mcp_contract::SessionMcpAttachmentSet;
 use awaken_session_realization_contract::SessionRealizationControlDisposition;
 use awaken_session_state_contract::{
     IdempotencyRecord, PersistedSession, SessionExecutionState, SessionMutationPayload,
 };
+use awaken_session_types::RunError;
 
 use super::{SessionApplication, SessionMutationError, SessionRealizationError};
 

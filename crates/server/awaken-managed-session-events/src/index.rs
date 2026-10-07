@@ -458,7 +458,7 @@ impl<'a> OrderIndex<'a> {
             return None;
         }
         let message = thread.snapshot.messages.get(positions[0])?;
-        awaken_runtime_contract::ActiveToolBatch::operation_for_message(
+        awaken_tool_contract::ActiveToolBatch::operation_for_message(
             thread.snapshot,
             message,
             call_id,
@@ -1540,7 +1540,7 @@ mod tests {
                 root.message_commit_cursors.push(7);
             }
             if rule == "recorded" {
-                let batch = awaken_runtime_contract::ToolBatch::for_step(
+                let batch = awaken_tool_contract::ToolBatch::for_step(
                     run_id.clone(),
                     0,
                     [(
@@ -1549,16 +1549,16 @@ mod tests {
                             tool_id: awaken_runtime_contract::resolved::ADVISOR_TOOL_ID.into(),
                             arguments: serde_json::json!({}),
                         },
-                        awaken_runtime_contract::tool::ToolRecoveryPolicy::durable_request(),
+                        awaken_tool_contract::tool::ToolRecoveryPolicy::durable_request(),
                     )],
                 )
                 .unwrap();
-                let mut command = awaken_runtime_contract::ActiveToolBatch::write(&Some(batch));
+                let mut command = awaken_tool_contract::ActiveToolBatch::write(&Some(batch));
                 command.bind_run(&run_id);
                 root.state.push(command);
                 root.state_commit_cursors.push(7);
             }
-            let expected = awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
+            let expected = awaken_tool_contract::tool_batch::ToolBatch::operation_id_for_step(
                 &run_id,
                 if rule == "recorded" { 0 } else { 2 },
                 "root-call",
@@ -1724,7 +1724,7 @@ mod tests {
         }
         let advisor = index.advisor_operation_orders();
         let operation = |step, call| {
-            awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(&run, step, call)
+            awaken_tool_contract::tool_batch::ToolBatch::operation_id_for_step(&run, step, call)
         };
         let late_call = advisor.get(&operation(0, "late-call")).copied();
         let short_call = advisor.get(&operation(1, "short-call")).copied();

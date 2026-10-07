@@ -3,7 +3,7 @@ use std::sync::Arc;
 use awaken_mcp_server_core::NullSink;
 use awaken_protocol_mcp::{McpExportedTool, McpToolService, StaticExports};
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
+use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use serde_json::json;
 
 struct ObservedTool(tokio::sync::mpsc::UnboundedSender<ToolCall>);

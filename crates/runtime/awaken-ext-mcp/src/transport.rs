@@ -547,7 +547,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoked_generation_preserves_effect_uncertainty_at_the_raw_tool_boundary() {
-        use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError};
+        use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError};
         // G1 enter call then revoke => Indeterminate despite local drain.
         // G2 call the same closed generation => known pre-dispatch rejection.
         // G3 a separate generation remains callable. This verifies generation

@@ -468,6 +468,7 @@ pub async fn build_container_environment_for_realization(
 #[cfg(all(test, feature = "podman"))]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use awaken_provisioning_contract as pc;
 
     #[tokio::test]

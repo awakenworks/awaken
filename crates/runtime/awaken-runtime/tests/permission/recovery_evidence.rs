@@ -9,8 +9,8 @@ use awaken_agent_contract::stream::checkpoint::{
 use awaken_runtime_contract::model_operation::{
     ActiveModelOperation, ModelExecutionEvidence, ModelOperation,
 };
-use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatchPhase};
 use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
+use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolBatchPhase};
 
 #[derive(Clone, Copy)]
 enum RecoveryFault {

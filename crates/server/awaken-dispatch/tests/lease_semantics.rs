@@ -548,7 +548,7 @@ async fn a_returned_unknown_tool_result_cannot_release_the_durable_physical_slot
     // logical Indeterminate is committed; U3 successor claims after expiry.
     // => one effect, retained predecessor slot, and Blocked successor. A logical
     // return/terminal commit is not an ACK. No synthetic latch injection here.
-    use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
+    use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
     struct UnknownTool(Arc<std::sync::atomic::AtomicUsize>);
     #[async_trait::async_trait]
     impl RawTool for UnknownTool {

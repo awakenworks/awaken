@@ -9,7 +9,7 @@ use awaken_mcp_wire::progress::McpProgressUpdate;
 use awaken_protocol_mcp::{McpExportedTool, McpToolService, ProgressRawTool, StaticExports};
 use awaken_runtime_contract::permission::ToolCall;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 

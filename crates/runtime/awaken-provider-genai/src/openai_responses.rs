@@ -802,7 +802,7 @@ mod tests {
             )
             .with_provider_server_tool(ProviderServerTool::openrouter_tool_search(
                 Some(
-                    awaken_runtime_contract::tool_discovery::ToolSearchLimit::new(5)
+                    awaken_tool_contract::tool_discovery::ToolSearchLimit::new(5)
                         .expect("valid documented limit"),
                 ),
             )),
@@ -953,7 +953,7 @@ mod tests {
             )
             .with_provider_server_tool(ProviderServerTool::openrouter_tool_search(
                 Some(
-                    awaken_runtime_contract::tool_discovery::ToolSearchLimit::new(5)
+                    awaken_tool_contract::tool_discovery::ToolSearchLimit::new(5)
                         .expect("valid documented limit"),
                 ),
             )),

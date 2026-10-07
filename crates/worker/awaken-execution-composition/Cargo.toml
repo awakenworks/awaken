@@ -14,6 +14,7 @@ authority = "execution-composition"
 separation = "process"
 
 [dependencies]
+awaken-tool-contract.workspace = true
 # The Session owner whose container-tier provider this crate selects and installs.
 awaken-session-executor.workspace = true
 # The frozen backend/tool vocabulary and the neutral ACP policy port.

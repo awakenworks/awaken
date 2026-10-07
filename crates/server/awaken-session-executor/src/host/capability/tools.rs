@@ -33,7 +33,7 @@ pub(crate) struct ToolOffering {
     /// reserved-scope assistant's compiled config *names* them, so no other run can
     /// invoke them. Their ids are also pre-authorized on the gate (read-only tools).
     /// Empty by default.
-    pub(crate) admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+    pub(crate) admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
 }
 
 impl ToolOffering {
@@ -81,7 +81,7 @@ impl SharedHost {
     #[must_use]
     pub fn with_admin_tools(
         mut self,
-        tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+        tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
     ) -> Self {
         self.tools.admin_tools = tools;
         self

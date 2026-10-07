@@ -17,12 +17,12 @@ use awaken_agent_contract::stream::sink::Sink;
 use awaken_session_application_contract::{DelegatedRun, Pending, StepOutcome};
 use awaken_session_budget_contract::SessionUsage;
 use awaken_session_configuration_contract::AgentCapabilities;
-use awaken_session_error_contract::RunError;
 use awaken_session_resource_contract::ResolvedSkillBinding;
 use awaken_session_execution_contract::{
     CommittedOutcomeProjection, OutcomeDrive, ToolPermissionDecision,
 };
 use awaken_session_state_contract::{PersistedSession, SessionRepositoryError};
+use awaken_session_types::RunError;
 
 use crate::{
     CredentialMaterialIngressCommand, CredentialMaterialIngressReceipt, CredentialMaterialInput,
@@ -1162,8 +1162,8 @@ mod input_error_tests {
         // -> Internal; R3 invalid caller binding -> BadRequest. Identical
         // diagnostic text in every row proves the type owns the decision.
         use awaken_resource_contract::ResourceRegistryError;
-        use awaken_session_error_contract::RunErrorKind;
         use awaken_session_resource_contract::SessionInputError;
+        use awaken_session_types::RunErrorKind;
         for (error, expected) in [
             (
                 SessionInputError::Registry(ResourceRegistryError::AuthorityUnavailable {

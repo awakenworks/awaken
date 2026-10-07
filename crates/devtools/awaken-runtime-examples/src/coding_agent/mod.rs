@@ -37,8 +37,8 @@ use awaken_runtime_contract::resolved::{InvalidModelBinding, ModelBinding, ToolD
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-use awaken_runtime_contract::tool::RawToolRegistry;
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::tool::RawToolRegistry;
 
 pub mod scripted;
 pub use scripted::ScriptedCoder;

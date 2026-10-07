@@ -316,7 +316,7 @@ mod tests {
             next_commit_ordinal: 0,
         };
         let operation =
-            awaken_runtime_contract::ActiveToolBatch::operation_for_message(&base, &call, "call")
+            awaken_tool_contract::ActiveToolBatch::operation_for_message(&base, &call, "call")
                 .unwrap()
                 .expect("committed Assistant call owns an operation");
         let link = CoordinatedThreadLink {

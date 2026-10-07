@@ -209,7 +209,7 @@ pub fn remote_worker_placement(
     placement.required_sandbox_tool_recovery =
         awaken_ext_builtin_tools::selected_hand_recovery_modes(&models.tool_descriptors)
             .into_iter()
-            .filter(|mode| *mode != awaken_runtime_contract::tool::ToolRecoveryMode::NeverReplay)
+            .filter(|mode| *mode != awaken_tool_contract::tool::ToolRecoveryMode::NeverReplay)
             .collect();
     let requires_local_environment = requires_local_environment(models);
     let requires_opaque_process = crate::provisioning::model_candidates_require_opaque_process(

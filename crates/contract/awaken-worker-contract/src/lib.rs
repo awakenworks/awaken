@@ -77,8 +77,8 @@ use std::collections::{BTreeMap, BTreeSet};
 mod verification {
     use super::*;
 
-    fn symbolic_recovery_capability() -> awaken_runtime_contract::tool::ToolRecoveryCapability {
-        use awaken_runtime_contract::tool::ToolRecoveryCapability;
+    fn symbolic_recovery_capability() -> awaken_tool_contract::tool::ToolRecoveryCapability {
+        use awaken_tool_contract::tool::ToolRecoveryCapability;
         match kani::any::<u8>() % 4 {
             0 => ToolRecoveryCapability::NonRecoverable,
             1 => ToolRecoveryCapability::ReplaySafe,
@@ -87,8 +87,8 @@ mod verification {
         }
     }
 
-    fn symbolic_recovery_mode() -> awaken_runtime_contract::tool::ToolRecoveryMode {
-        use awaken_runtime_contract::tool::ToolRecoveryMode;
+    fn symbolic_recovery_mode() -> awaken_tool_contract::tool::ToolRecoveryMode {
+        use awaken_tool_contract::tool::ToolRecoveryMode;
         match kani::any::<u8>() % 4 {
             0 => ToolRecoveryMode::NeverReplay,
             1 => ToolRecoveryMode::ReplaySafe,
@@ -168,7 +168,7 @@ mod verification {
     /// @obligation worker.sandbox_tool_recovery_is_a_hard_claim_axis
     #[kani::proof]
     fn sandbox_tool_recovery_claim_axis_is_exact_and_non_widening() {
-        use awaken_runtime_contract::tool::{ToolRecoveryCapability, ToolRecoveryMode};
+        use awaken_tool_contract::tool::{ToolRecoveryCapability, ToolRecoveryMode};
 
         let required = symbolic_recovery_mode();
         let installed = symbolic_recovery_capability();
@@ -594,7 +594,7 @@ mod tests {
 
     #[test]
     fn sandbox_tool_recovery_is_a_hard_claim_axis() {
-        use awaken_runtime_contract::tool::{ToolRecoveryCapability, ToolRecoveryMode};
+        use awaken_tool_contract::tool::{ToolRecoveryCapability, ToolRecoveryMode};
 
         // Cause/effect decision table:
         // C1=a snapshot demands no non-default Sandbox recovery; C2=it demands

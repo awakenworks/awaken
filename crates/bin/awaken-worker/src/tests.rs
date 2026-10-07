@@ -851,7 +851,7 @@ fn explicit_manifest_cannot_overstate_session_environment_recovery() {
         ..Default::default()
     };
     manifest.sandbox_tool_recovery =
-        awaken_runtime_contract::tool::ToolRecoveryCapability::DurableRequest;
+        awaken_tool_contract::tool::ToolRecoveryCapability::DurableRequest;
     let error = validate_worker_manifest(&manifest, &deployment()).expect_err("R2 fail closed");
     assert!(
         error

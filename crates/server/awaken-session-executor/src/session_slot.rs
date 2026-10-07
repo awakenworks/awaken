@@ -288,7 +288,7 @@ pub(crate) struct SessionRuntimeSlot {
     /// projection; the Session aggregate receipt remains the only transition
     /// authority and clears it after durable publication.
     pub environment_rebuild_source: Option<(String, Option<String>)>,
-    pub deferred_executor: Option<Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
+    pub deferred_executor: Option<Arc<dyn awaken_tool_contract::tool::ToolExecutor>>,
     /// Current durable dispatch claim used by claim-fenced Resource effects.
     /// This process-local projection is replaced at every claimed resolve; the
     /// dispatch store remains the lease/epoch authority.

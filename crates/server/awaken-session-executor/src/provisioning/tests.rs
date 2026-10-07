@@ -1665,7 +1665,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
     let preparation = managed
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })
@@ -1713,7 +1713,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
     managed
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })
@@ -2373,7 +2373,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
     let error = crate::ManagedHost::new(host.clone())
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })

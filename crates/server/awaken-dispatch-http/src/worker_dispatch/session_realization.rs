@@ -559,7 +559,7 @@ pub(super) async fn authorize_session_environment_effect(
             awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned
         ) {
             return Err(RealizationHttpError::from(
-                awaken_session_error_contract::RunError::classified(
+                awaken_session_types::RunError::classified(
                     "session_environment_unowned",
                     "authenticated Worker cannot realize a Session without a durable root",
                 ),

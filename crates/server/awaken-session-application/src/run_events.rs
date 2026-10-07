@@ -7,7 +7,7 @@ use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::run::RunState;
 use awaken_dispatch_contract::{DispatchCursor, DispatchPage, SessionRunEventPage};
-use awaken_session_error_contract::RunError;
+use awaken_session_types::RunError;
 use awaken_session_types::SessionId;
 
 use crate::{SessionApplication, SessionProjectionRecoveryError};

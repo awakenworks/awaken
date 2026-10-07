@@ -6,7 +6,7 @@
 //! The unit is [`McpExportedTool`] — a pinned
 //! [`ToolDescriptor`](awaken_runtime_contract::resolved::ToolDescriptor) paired
 //! with its executable, which is either a plain
-//! [`RawTool`](awaken_runtime_contract::tool::RawTool) or a
+//! [`RawTool`](awaken_tool_contract::tool::RawTool) or a
 //! [`ProgressRawTool`] that streams progress while it runs. A
 //! [`ToolExportSource`] supplies the set to [`McpToolService`](crate::service::McpToolService)
 //! and versions it, so transports can emit `notifications/tools/list_changed`
@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use awaken_mcp_wire::progress::McpProgressUpdate;
 use awaken_runtime_contract::plugin::DynamicTool;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
+use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use tokio::sync::{mpsc, watch};
 
 /// A tool that reports progress while it runs. The server threads the per-call

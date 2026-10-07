@@ -12,7 +12,6 @@ use awaken_environment_contract::EnvItem;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
 use awaken_session_application_contract::LifecycleFactNotifier;
 use awaken_session_configuration_contract::{SandboxProvisioning, SessionRuntimePlacement};
-use awaken_session_error_contract::RunError;
 use awaken_session_mcp_contract::McpTarget;
 use awaken_session_repository_contract::SessionRepository;
 use awaken_session_execution_contract::{
@@ -21,6 +20,7 @@ use awaken_session_execution_contract::{
 #[cfg(test)]
 use awaken_session_state_contract::SessionExecutionState;
 use awaken_session_state_contract::{PersistedSession, SessionRecoveryQuarantine, SessionScan};
+use awaken_session_types::RunError;
 
 /// Drain the repository's one typed keyset index before any reconciler starts
 /// effects. The cursor is process-local loop state only: the repository remains

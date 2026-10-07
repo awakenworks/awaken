@@ -131,9 +131,7 @@ impl McpNotificationHandler for SessionMcpInput {
                 .await
             {
                 Ok(_) => return,
-                Err(error)
-                    if error.kind == awaken_session_error_contract::RunErrorKind::BadRequest =>
-                {
+                Err(error) if error.kind == awaken_session_types::RunErrorKind::BadRequest => {
                     tracing::warn!(
                         code = "mcp_input_rejected",
                         "MCP input admission rejected; provider payload omitted"

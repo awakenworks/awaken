@@ -22,7 +22,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::Store;
 use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{
+use awaken_tool_contract::tool::{
     RawTool, ToolCall, ToolError, ToolOutput, invoke_raw_tool, parse_tool_args_or_error_output,
 };
 use schemars::JsonSchema;
@@ -714,7 +714,7 @@ mod tests {
         let tool = ListSkillsTool::new(registry());
         assert_eq!(
             tool.execution_target(),
-            awaken_runtime_contract::tool::ToolExecutionTarget::Brain
+            awaken_tool_contract::tool::ToolExecutionTarget::Brain
         );
         let out = tool
             .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))

@@ -22,7 +22,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Respon
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         self.authorize_calls.fetch_add(1, Ordering::SeqCst);
         if let Some((effect_id, binding)) = self.committed.lock().unwrap().as_ref()
@@ -43,7 +43,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Respon
         receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         self.persist_calls.fetch_add(1, Ordering::SeqCst);
         let mut committed = self.committed.lock().unwrap();
@@ -51,7 +51,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Respon
             return Ok(test_committed_environment(receipt));
         }
         *committed = Some((receipt.effect_id, receipt.binding));
-        Err(awaken_session_error_contract::RunError::unavailable(
+        Err(awaken_session_types::RunError::unavailable(
             "root CAS response was lost",
         ))
     }
@@ -64,19 +64,17 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Moving
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         self.authorize_calls.fetch_add(1, Ordering::SeqCst);
         let asserted_epoch = intent.realization().map_or(0, |lease| lease.epoch);
         if asserted_epoch == self.accepted_epoch.load(Ordering::SeqCst) {
             Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized)
         } else {
-            Err(
-                awaken_session_error_contract::RunError::unavailable_classified(
-                    "session_realization_stale",
-                    "a newer exact realization fence owns the Session",
-                ),
-            )
+            Err(awaken_session_types::RunError::unavailable_classified(
+                "session_realization_stale",
+                "a newer exact realization fence owns the Session",
+            ))
         }
     }
 
@@ -85,19 +83,17 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Moving
         receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let asserted_epoch = receipt.realization.as_ref().map_or(0, |lease| lease.epoch);
         if asserted_epoch == self.accepted_epoch.load(Ordering::SeqCst) {
             Ok(test_committed_environment(receipt))
         } else {
-            Err(
-                awaken_session_error_contract::RunError::unavailable_classified(
-                    "session_realization_stale",
-                    "a newer exact realization fence owns the Session",
-                ),
-            )
+            Err(awaken_session_types::RunError::unavailable_classified(
+                "session_realization_stale",
+                "a newer exact realization fence owns the Session",
+            ))
         }
     }
 }
@@ -133,7 +129,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     install_test_dispatch_runtime(&host)
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -201,7 +197,7 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
     install_test_dispatch_runtime(&host)
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -234,7 +230,7 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
     install_test_dispatch_runtime(&host)
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -337,7 +333,7 @@ async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
     install_test_dispatch_runtime(&host)
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -520,7 +516,7 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
     install_test_dispatch_runtime(&host)
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -570,7 +566,7 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
     install_test_dispatch_runtime(&host)
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -686,7 +682,7 @@ async fn binding_commit_failure_is_retryable_and_never_publishes_the_environment
     install_test_dispatch_runtime(&host)
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -742,7 +738,7 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
     managed
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -773,12 +769,12 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
         .as_ref()
         .expect("deferred hand")
         .clone();
-    let left = awaken_runtime_contract::tool::ToolCall {
+    let left = awaken_tool_contract::tool::ToolCall {
         call_id: "read-left".into(),
         tool_id: "read".into(),
         arguments: serde_json::json!({"path": "missing-left"}),
     };
-    let right = awaken_runtime_contract::tool::ToolCall {
+    let right = awaken_tool_contract::tool::ToolCall {
         call_id: "read-right".into(),
         tool_id: "read".into(),
         arguments: serde_json::json!({"path": "missing-right"}),
@@ -816,7 +812,7 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
     managed
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -846,7 +842,7 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
         .as_ref()
         .expect("deferred hand")
         .clone();
-    let call = awaken_runtime_contract::tool::ToolCall {
+    let call = awaken_tool_contract::tool::ToolCall {
         call_id: "read-failure".into(),
         tool_id: "read".into(),
         arguments: serde_json::json!({"path": "missing"}),

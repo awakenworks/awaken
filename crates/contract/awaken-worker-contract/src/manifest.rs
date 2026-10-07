@@ -175,7 +175,7 @@ pub struct WorkerManifest {
     /// executor. Production derives this from the same typed deployment value
     /// that constructs the executor; it is never an Agent-authored claim.
     #[serde(default)]
-    pub sandbox_tool_recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
+    pub sandbox_tool_recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
     #[serde(default)]
     pub sandbox_backends: BTreeSet<String>,
     #[serde(default)]
@@ -199,7 +199,7 @@ impl Default for WorkerManifest {
             trusted_host_sandbox: None,
             sandbox: SandboxCapabilities::default(),
             sandbox_tool_recovery:
-                awaken_runtime_contract::tool::ToolRecoveryCapability::NonRecoverable,
+                awaken_tool_contract::tool::ToolRecoveryCapability::NonRecoverable,
             sandbox_backends: BTreeSet::new(),
             dispatch_contract: VersionRange::ANY,
             runtime_protocol: VersionRange::ANY,

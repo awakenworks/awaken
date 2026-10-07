@@ -288,7 +288,8 @@ fn map_application_error(error: EnvironmentApplicationError) -> StatusCode {
             awaken_environment_contract::EnvironmentStoreError::InvalidConfig(_),
         ) => StatusCode::UNPROCESSABLE_ENTITY,
         EnvironmentApplicationError::Store(
-            awaken_environment_contract::EnvironmentStoreError::RevisionConflict,
+            awaken_environment_contract::EnvironmentStoreError::RevisionConflict
+            | awaken_environment_contract::EnvironmentStoreError::RevisionExhausted,
         ) => StatusCode::CONFLICT,
         EnvironmentApplicationError::Create(
             awaken_environment_contract::CreateEnvironmentError::Store(_),
@@ -383,12 +384,16 @@ mod tests {
         );
         // C5c another author advances the Environment after policy validation
         // -> E5c 409, so the caller retries against the new aggregate revision.
-        assert_eq!(
-            map_application_error(EnvironmentApplicationError::Store(
-                awaken_environment_contract::EnvironmentStoreError::RevisionConflict,
-            )),
-            StatusCode::CONFLICT
-        );
+        // A stale or exhausted revision is a domain conflict, never a backend outage.
+        for error in [
+            awaken_environment_contract::EnvironmentStoreError::RevisionConflict,
+            awaken_environment_contract::EnvironmentStoreError::RevisionExhausted,
+        ] {
+            assert_eq!(
+                map_application_error(EnvironmentApplicationError::Store(error)),
+                StatusCode::CONFLICT
+            );
+        }
         // C6 outbox unavailable or structurally inconsistent -> E6 503; callers
         // must not observe authoring success before executable acknowledgement.
         assert_eq!(

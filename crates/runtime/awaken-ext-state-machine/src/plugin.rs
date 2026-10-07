@@ -17,7 +17,7 @@ use awaken_runtime_contract::plugin::{
     PhaseHook, PhaseHookPoint, PhaseKind, Plugin, PluginConfigError, PluginManifest, RunEndContext,
     RunEndDecision, RunEndGuard, ToolConcurrencyConstraint,
 };
-use awaken_runtime_contract::tool::{ToolConcurrency, ToolResource, ToolResourceAccess};
+use awaken_tool_contract::tool::{ToolConcurrency, ToolResource, ToolResourceAccess};
 use serde_json::{Value, json};
 
 use crate::config::{ContinuationSettings, StateMachineConfig, StateMachineConfigError};

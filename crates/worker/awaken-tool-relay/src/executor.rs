@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
-use awaken_runtime_contract::tool::{
+use awaken_tool_contract::tool::{
     ToolCall, ToolError, ToolExecutor, ToolOutput, ToolRecoveryCapability,
     current_tool_operation_token,
 };

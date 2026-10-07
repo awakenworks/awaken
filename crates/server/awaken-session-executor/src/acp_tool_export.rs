@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
-use awaken_runtime_contract::tool::{
+use awaken_tool_contract::tool::{
     RawTool, ToolCall, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput,
 };
 
@@ -265,18 +265,18 @@ impl RawTool for PermissionGuardedAcpTool {
         self.inner.id()
     }
 
-    fn execution_target(&self) -> awaken_runtime_contract::tool::ToolExecutionTarget {
+    fn execution_target(&self) -> awaken_tool_contract::tool::ToolExecutionTarget {
         self.inner.execution_target()
     }
 
-    fn recovery_capability(&self) -> awaken_runtime_contract::tool::ToolRecoveryCapability {
+    fn recovery_capability(&self) -> awaken_tool_contract::tool::ToolRecoveryCapability {
         self.inner.recovery_capability()
     }
 
     fn concurrency(
         &self,
         arguments: &serde_json::Value,
-    ) -> awaken_runtime_contract::tool::ToolConcurrency {
+    ) -> awaken_tool_contract::tool::ToolConcurrency {
         self.inner.concurrency(arguments)
     }
 
@@ -305,12 +305,12 @@ impl RawTool for PermissionGuardedAcpTool {
 /// owns neither a tool registry nor a second execution/sandbox lifecycle.
 pub(crate) struct EnvironmentAcpTool {
     id: String,
-    executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor>,
+    executor: Arc<dyn awaken_tool_contract::tool::ToolExecutor>,
 }
 impl EnvironmentAcpTool {
     pub(crate) fn new(
         id: String,
-        executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor>,
+        executor: Arc<dyn awaken_tool_contract::tool::ToolExecutor>,
     ) -> Self {
         Self { id, executor }
     }
@@ -323,13 +323,10 @@ impl RawTool for EnvironmentAcpTool {
     fn id(&self) -> &str {
         &self.id
     }
-    fn recovery_capability(&self) -> awaken_runtime_contract::tool::ToolRecoveryCapability {
+    fn recovery_capability(&self) -> awaken_tool_contract::tool::ToolRecoveryCapability {
         self.executor.recovery_capability(&self.id)
     }
-    fn concurrency(
-        &self,
-        args: &serde_json::Value,
-    ) -> awaken_runtime_contract::tool::ToolConcurrency {
+    fn concurrency(&self, args: &serde_json::Value) -> awaken_tool_contract::tool::ToolConcurrency {
         self.executor.concurrency(&self.id, args)
     }
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
@@ -350,7 +347,7 @@ pub(crate) async fn export_tools(
     exporter: &dyn AcpToolExporter,
     namespace: &str,
     descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-    executors: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+    executors: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
 ) -> Result<
     (
         Vec<awaken_acp_contract::SessionMcpServer>,
@@ -397,7 +394,7 @@ impl AcpToolExporter for RecordingAcpToolExporter {
         &self,
         server_name: &str,
         descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-        _tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+        _tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
     ) -> Result<AcpToolExport, String> {
         self.0.lock().unwrap().push((
             server_name.into(),
@@ -422,24 +419,22 @@ impl AcpToolExporter for RecordingAcpToolExporter {
 mod tests {
     use super::*;
     use awaken_runtime_contract::permission::ToolPermissionVerdict;
-    use awaken_runtime_contract::tool::{ToolConcurrency, ToolRecoveryCapability};
+    use awaken_tool_contract::tool::{ToolConcurrency, ToolRecoveryCapability};
 
     struct Echo(&'static str);
 
     #[async_trait::async_trait]
-    impl awaken_runtime_contract::tool::RawTool for Echo {
+    impl awaken_tool_contract::tool::RawTool for Echo {
         fn id(&self) -> &str {
             self.0
         }
 
         async fn invoke(
             &self,
-            call: awaken_runtime_contract::tool::ToolCall,
-        ) -> Result<
-            awaken_runtime_contract::tool::ToolOutput,
-            awaken_runtime_contract::tool::ToolError,
-        > {
-            Ok(awaken_runtime_contract::tool::ToolOutput::ok(
+            call: awaken_tool_contract::tool::ToolCall,
+        ) -> Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>
+        {
+            Ok(awaken_tool_contract::tool::ToolOutput::ok(
                 call.call_id,
                 self.0,
             ))
@@ -753,9 +748,8 @@ mod tests {
         use awaken_runtime_contract::snapshot::{
             AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
         };
-        use awaken_runtime_contract::{
-            ActiveToolBatch, CommittedThreadView, RuntimeRunContext, ToolBatch, ToolWaitKind,
-        };
+        use awaken_runtime_contract::{CommittedThreadView, RuntimeRunContext};
+        use awaken_tool_contract::{ActiveToolBatch, ToolBatch, ToolWaitKind};
 
         struct RecordingTool(Arc<std::sync::Mutex<Vec<ToolCall>>>);
         #[async_trait::async_trait]
@@ -934,13 +928,13 @@ mod environment_tool_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Executor(AtomicUsize);
     #[async_trait::async_trait]
-    impl awaken_runtime_contract::tool::ToolExecutor for Executor {
+    impl awaken_tool_contract::tool::ToolExecutor for Executor {
         fn concurrency(
             &self,
             _: &str,
             _: &serde_json::Value,
-        ) -> awaken_runtime_contract::tool::ToolConcurrency {
-            awaken_runtime_contract::tool::ToolConcurrency::Serial
+        ) -> awaken_tool_contract::tool::ToolConcurrency {
+            awaken_tool_contract::tool::ToolConcurrency::Serial
         }
         async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
             self.0.fetch_add(1, Ordering::SeqCst);
@@ -968,7 +962,7 @@ mod environment_tool_tests {
         };
         assert!(matches!(
             tool.concurrency(&call.arguments),
-            awaken_runtime_contract::tool::ToolConcurrency::Serial
+            awaken_tool_contract::tool::ToolConcurrency::Serial
         ));
         tool.invoke(call.clone()).await.unwrap();
         call.tool_id = "bash".into();

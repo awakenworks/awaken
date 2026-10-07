@@ -383,7 +383,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     };
     assert_eq!(
         stale_error.kind,
-        awaken_session_error_contract::RunErrorKind::Internal,
+        awaken_session_types::RunErrorKind::Internal,
         "R4 encoder rejection remains closed"
     );
     let mut foreign_input = input.clone();
@@ -403,7 +403,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     };
     assert_eq!(
         foreign_error.kind,
-        awaken_session_error_contract::RunErrorKind::Internal,
+        awaken_session_types::RunErrorKind::Internal,
         "R5 encoder rejection remains closed"
     );
     assert_eq!(
@@ -427,7 +427,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     };
     assert_eq!(
         zero_error.kind,
-        awaken_session_error_contract::RunErrorKind::BadRequest,
+        awaken_session_types::RunErrorKind::BadRequest,
         "R3 zero revision rejects at outer admission"
     );
     assert_eq!(
@@ -1070,7 +1070,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         managed
             .terminal_cleanup()
             .ok_or_else(|| {
-                awaken_session_error_contract::RunError::unavailable(
+                awaken_session_types::RunError::unavailable(
                     "TerminalCleanupRuntime is unsupported by this runtime",
                 )
             })?
@@ -1233,7 +1233,7 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
     let preparation = managed
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })
@@ -1266,7 +1266,7 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
     let disposal = managed
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })
@@ -1356,7 +1356,7 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
     let preparation = managed
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })
@@ -1408,7 +1408,7 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
     let disposal = managed
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })
@@ -1527,7 +1527,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
     let preparation = managed
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })
@@ -1561,7 +1561,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
     managed
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })
@@ -1688,7 +1688,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
             let error = managed
                 .terminal_cleanup()
                 .ok_or_else(|| {
-                    awaken_session_error_contract::RunError::unavailable(
+                    awaken_session_types::RunError::unavailable(
                         "TerminalCleanupRuntime is unsupported by this runtime",
                     )
                 })
@@ -1698,7 +1698,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                 .expect_err("M0 unavailable writable Memory must fail before source effects");
             assert_eq!(
                 error.kind,
-                awaken_session_error_contract::RunErrorKind::Unavailable,
+                awaken_session_types::RunErrorKind::Unavailable,
                 "M0/E2",
             );
             assert_eq!(
@@ -1793,7 +1793,7 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
     let preparation = managed
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })
@@ -2033,7 +2033,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 let error = managed
                     .terminal_cleanup()
                     .ok_or_else(|| {
-                        awaken_session_error_contract::RunError::unavailable(
+                        awaken_session_types::RunError::unavailable(
                             "TerminalCleanupRuntime is unsupported by this runtime",
                         )
                     })
@@ -2071,7 +2071,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
         let preparation = managed
             .terminal_cleanup()
             .ok_or_else(|| {
-                awaken_session_error_contract::RunError::unavailable(
+                awaken_session_types::RunError::unavailable(
                     "TerminalCleanupRuntime is unsupported by this runtime",
                 )
             })
@@ -2175,7 +2175,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
         let disposal = managed
             .terminal_cleanup()
             .ok_or_else(|| {
-                awaken_session_error_contract::RunError::unavailable(
+                awaken_session_types::RunError::unavailable(
                     "TerminalCleanupRuntime is unsupported by this runtime",
                 )
             })

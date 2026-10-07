@@ -12,7 +12,6 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Command, Key, MergePolicy, Scope, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
-use awaken_runtime_contract::ToolSearchLimit;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -29,8 +28,9 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::ToolSearchLimit;
+use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 
 /// A trivial dynamic tool that echoes its id.
 struct EchoDyn(String);

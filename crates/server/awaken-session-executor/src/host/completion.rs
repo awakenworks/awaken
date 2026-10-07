@@ -1068,7 +1068,7 @@ mod completion_tests {
 
     #[test]
     fn hand_recovery_policy_compiles_into_the_existing_worker_requirement() {
-        use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
+        use awaken_tool_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
 
         // Cause/effect decision table: C1=a selected canonical Hand descriptor
         // freezes DurableRequest; C2=a non-Hand coordination descriptor has the

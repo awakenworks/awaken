@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{Tool, ToolError};
+use awaken_tool_contract::tool::{Tool, ToolError};
 
 /// One small typed fixture used by every live compatibility surface. Keeping it
 /// here proves the Rust authoring path itself: the tests never maintain a JSON

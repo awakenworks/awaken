@@ -3,10 +3,10 @@
 // @formal entrypoint session_resources.terminal_assignment_retains_desired_generation
 //! Neutral frozen Session and MCP realization projections.
 
-use awaken_session_error_contract::RunError;
 use awaken_session_mcp_contract::{McpGenerationRef, SessionMcpAttachment, StageMcpAttachment};
 use awaken_session_realization_contract::FrozenSessionProjection;
 use awaken_session_state_contract::PersistedSession;
+use awaken_session_types::RunError;
 
 use super::SessionApplication;
 

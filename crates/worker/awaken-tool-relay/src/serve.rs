@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use awaken_agent_channel::AgentChannel;
-use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolError, ToolExecutor};
+use awaken_tool_contract::tool::{RawTool, RawToolRegistry, ToolError, ToolExecutor};
 use futures_util::{SinkExt, StreamExt};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 

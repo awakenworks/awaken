@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use awaken_ext_builtin_tools::{AuxiliaryAgentInput, invoke_auxiliary_agent};
 use awaken_ext_compact::{CompactArtifact, CompactBackend, CompactRequest};
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_contract::tool::RawTool;
+use awaken_tool_contract::tool::RawTool;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::background::{BackgroundRuns, BackgroundWorkClass};

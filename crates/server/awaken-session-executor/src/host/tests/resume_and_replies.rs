@@ -5,14 +5,14 @@ use super::*;
 fn awaiting_tool_batch_state(
     run_id: &RunId,
     ticket: &ResumeTicket,
-    wait_kind: awaken_runtime_contract::ToolWaitKind,
+    wait_kind: awaken_tool_contract::ToolWaitKind,
 ) -> awaken_agent_contract::agent::state::Command {
     let awaken_agent_contract::agent::awaiting::AwaitTarget::ToolCall { call_id, tool, .. } =
         ticket.target()
     else {
         panic!("awaiting tool-batch fixture requires a tool ticket")
     };
-    let mut batch = awaken_runtime_contract::ToolBatch::for_step(
+    let mut batch = awaken_tool_contract::ToolBatch::for_step(
         run_id.clone(),
         0,
         [(
@@ -21,14 +21,14 @@ fn awaiting_tool_batch_state(
                 tool_id: tool.tool_id.clone(),
                 arguments: tool.arguments.clone(),
             },
-            awaken_runtime_contract::ToolRecoveryPolicy::default(),
+            awaken_tool_contract::ToolRecoveryPolicy::default(),
         )],
     )
     .expect("valid awaiting tool-batch fixture");
     batch
         .mark_awaiting(call_id, wait_kind, ticket.correlation_id.clone())
         .expect("ticket and tool batch enter one exact wait");
-    awaken_runtime_contract::ActiveToolBatch::write(&Some(batch))
+    awaken_tool_contract::ActiveToolBatch::write(&Some(batch))
 }
 
 async fn host_requiring_write_confirmation(model: Arc<dyn LlmExecutor>) -> Arc<SharedHost> {
@@ -591,7 +591,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
             vec![awaiting_tool_batch_state(
                 &child_run,
                 &ticket,
-                awaken_runtime_contract::ToolWaitKind::ToolPermission,
+                awaken_tool_contract::ToolWaitKind::ToolPermission,
             )],
             Vec::new(),
         ))
@@ -1070,7 +1070,7 @@ fn tool_reply_authority_decision_table_preserves_runtime_and_executor_owners() {
     let exact_state = [awaiting_tool_batch_state(
         &run,
         &runtime,
-        awaken_runtime_contract::ToolWaitKind::ToolPermission,
+        awaken_tool_contract::ToolWaitKind::ToolPermission,
     )];
     assert!(
         crate::host::coordination::validate_awaiting_tool_authority(
@@ -1373,7 +1373,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
                 vec![awaiting_tool_batch_state(
                     &run_id,
                     &ticket,
-                    awaken_runtime_contract::ToolWaitKind::ExternalResult,
+                    awaken_tool_contract::ToolWaitKind::ExternalResult,
                 )],
                 Vec::new(),
             ))
@@ -1444,7 +1444,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
             "PR2/E3"
         );
 
-        let mut conflicting_batch = awaken_runtime_contract::ToolBatch::for_step(
+        let mut conflicting_batch = awaken_tool_contract::ToolBatch::for_step(
             run_id.clone(),
             0,
             [(
@@ -1453,14 +1453,14 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
                     tool_id: "client_lookup".into(),
                     arguments: serde_json::json!({"query": "another request"}),
                 },
-                awaken_runtime_contract::ToolRecoveryPolicy::default(),
+                awaken_tool_contract::ToolRecoveryPolicy::default(),
             )],
         )
         .expect("PR3 internally valid conflicting batch");
         conflicting_batch
             .mark_awaiting(
                 "primary-reply-tool-use",
-                awaken_runtime_contract::ToolWaitKind::ExternalResult,
+                awaken_tool_contract::ToolWaitKind::ExternalResult,
                 ticket.correlation_id.clone(),
             )
             .expect("PR3 conflicting batch awaits");
@@ -1470,7 +1470,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
                 RunDisposition::awaiting(ticket.clone()),
                 true,
                 Vec::new(),
-                vec![awaken_runtime_contract::ActiveToolBatch::write(&Some(
+                vec![awaken_tool_contract::ActiveToolBatch::write(&Some(
                     conflicting_batch,
                 ))],
                 Vec::new(),
@@ -1497,7 +1497,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
                 vec![awaiting_tool_batch_state(
                     &run_id,
                     &ticket,
-                    awaken_runtime_contract::ToolWaitKind::ExternalResult,
+                    awaken_tool_contract::ToolWaitKind::ExternalResult,
                 )],
                 Vec::new(),
             ))

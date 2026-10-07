@@ -199,7 +199,7 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
         managed
             .environment()
             .ok_or_else(|| {
-                awaken_session_error_contract::RunError::unavailable(
+                awaken_session_types::RunError::unavailable(
                     "EnvironmentRuntime is unsupported by this runtime",
                 )
             })
@@ -649,7 +649,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
     managed
         .environment()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "EnvironmentRuntime is unsupported by this runtime",
             )
         })
@@ -690,7 +690,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
     managed
         .environment()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "EnvironmentRuntime is unsupported by this runtime",
             )
         })

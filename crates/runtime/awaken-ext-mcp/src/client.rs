@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::RawTool;
+use awaken_tool_contract::tool::RawTool;
 
 use crate::error::McpError;
 use crate::tool::{McpRawTool, mcp_tool_descriptor_for_transport, validate_tools_task_negotiation};
@@ -70,7 +70,7 @@ mod tests {
         CallToolResult, CreateTaskResult, McpTask, McpToolDefinition, TaskStatus, ToolContent,
     };
     use awaken_runtime_contract::resolved::ToolKind;
-    use awaken_runtime_contract::tool::{ToolCall, ToolTaskStart};
+    use awaken_tool_contract::tool::{ToolCall, ToolTaskStart};
     use serde_json::Value;
 
     struct FakeTransport {
@@ -204,7 +204,7 @@ mod tests {
         );
         // The erased tool advertises its durable-task capability, so the
         // generic detached start reaches the negotiated task protocol.
-        let started = awaken_runtime_contract::tool::start_tool_task(
+        let started = awaken_tool_contract::tool::start_tool_task(
             connection.tools[0].as_ref(),
             ToolCall {
                 call_id: "call-1".into(),

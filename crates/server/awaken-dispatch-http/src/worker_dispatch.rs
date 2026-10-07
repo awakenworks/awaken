@@ -730,7 +730,7 @@ fn respond(result: Result<Value, HostError>) -> (StatusCode, Json<Value>) {
 enum RealizationHttpError {
     Boundary(HostError),
     Control(awaken_session_realization_contract::SessionRealizationControlFailure),
-    Binding(awaken_session_error_contract::RunError),
+    Binding(awaken_session_types::RunError),
 }
 
 impl From<HostError> for RealizationHttpError {
@@ -747,8 +747,8 @@ impl From<awaken_session_realization_contract::SessionRealizationControlFailure>
     }
 }
 
-impl From<awaken_session_error_contract::RunError> for RealizationHttpError {
-    fn from(error: awaken_session_error_contract::RunError) -> Self {
+impl From<awaken_session_types::RunError> for RealizationHttpError {
+    fn from(error: awaken_session_types::RunError) -> Self {
         Self::Binding(error)
     }
 }
@@ -759,13 +759,9 @@ fn respond_realization(result: Result<Value, RealizationHttpError>) -> (StatusCo
         Err(RealizationHttpError::Boundary(error)) => respond(Err(error)),
         Err(RealizationHttpError::Binding(error)) => {
             let status = match error.kind {
-                awaken_session_error_contract::RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
-                awaken_session_error_contract::RunErrorKind::Unavailable => {
-                    StatusCode::SERVICE_UNAVAILABLE
-                }
-                awaken_session_error_contract::RunErrorKind::Internal => {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                }
+                awaken_session_types::RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
+                awaken_session_types::RunErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+                awaken_session_types::RunErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             };
             (
                 status,

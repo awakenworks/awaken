@@ -773,7 +773,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
     managed
         .environment()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "EnvironmentRuntime is unsupported by this runtime",
             )
         })
@@ -837,7 +837,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
     managed
         .environment()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "EnvironmentRuntime is unsupported by this runtime",
             )
         })

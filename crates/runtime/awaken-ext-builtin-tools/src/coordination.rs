@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_runtime_contract::tool::{
+use awaken_tool_contract::tool::{
     RawTool, Tool, ToolError, ToolRecoveryCapability, current_tool_operation_context,
 };
 use serde::{Deserialize, Serialize};

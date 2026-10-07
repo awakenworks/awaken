@@ -126,7 +126,7 @@ def session_state_ownership_violations(sources: dict[str, str]) -> list[str]:
 
 def check_all(repo_root: Path) -> list[str]:
     sources = {
-        str(path.relative_to(repo_root)): path.read_text(encoding="utf-8")
+        _crate_boundary_workspace.repository_path(path, repo_root): path.read_text(encoding="utf-8")
         for path in sorted((repo_root / "crates").glob("**/src/**/*.rs"))
     }
     return session_state_ownership_violations(sources)

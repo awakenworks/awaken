@@ -85,8 +85,8 @@ mod tests {
     };
     use awaken_lease_testkit::ManualClock;
     use awaken_runtime::{PreparedToolExecutor, Runtime};
-    use awaken_runtime_contract::tool::{ToolCall, ToolError, ToolRecoveryPolicy};
-    use awaken_runtime_contract::{ToolConcurrency, ToolExecutionAdmission, ToolExecutionPermit};
+    use awaken_tool_contract::tool::{ToolCall, ToolError, ToolRecoveryPolicy};
+    use awaken_tool_contract::{ToolConcurrency, ToolExecutionAdmission, ToolExecutionPermit};
 
     use super::super::tests::{RemoteTaskTool, remote_snapshot};
     use crate::background::BackgroundRuns;

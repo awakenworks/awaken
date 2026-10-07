@@ -11,7 +11,7 @@ use awaken_ext_background_task::{
     BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundWait, TaskClaim, TaskExecutionPolicy,
 };
 use awaken_lease_contract::fence::{Epoch, Tenure};
-use awaken_runtime_contract::tool::{
+use awaken_tool_contract::tool::{
     ToolCall, ToolConcurrency, ToolRecoveryMode, ToolRecoveryPolicy, ToolTaskHandle,
 };
 

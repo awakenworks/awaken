@@ -1,7 +1,9 @@
 //! Canonical rootless Podman child-process environment.
 
 use std::ffi::{OsStr, OsString};
+#[cfg(unix)]
 use std::os::unix::fs::FileTypeExt as _;
+#[cfg(unix)]
 use std::path::Path;
 
 use tokio::process::Command as OsCommand;
@@ -13,6 +15,7 @@ use tokio::process::Command as OsCommand;
 /// own `org.freedesktop.systemd1`; the XDG runtime bus is therefore the sole
 /// authority for this Podman subprocess. A missing/non-socket endpoint is not
 /// papered over: Podman remains the authority for the fail-closed diagnostic.
+#[cfg(unix)]
 pub(super) fn rootless_systemd_bus(runtime_dir: Option<&OsStr>) -> Option<OsString> {
     let bus = Path::new(runtime_dir?).join("bus");
     let metadata = std::fs::symlink_metadata(&bus).ok()?;
@@ -20,6 +23,11 @@ pub(super) fn rootless_systemd_bus(runtime_dir: Option<&OsStr>) -> Option<OsStri
         return None;
     }
     Some(format!("unix:path={}", bus.to_str()?).into())
+}
+
+#[cfg(not(unix))]
+pub(super) fn rootless_systemd_bus(_runtime_dir: Option<&OsStr>) -> Option<OsString> {
+    None
 }
 
 /// Sole production constructor for Podman child processes. Keeping the

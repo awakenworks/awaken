@@ -32,7 +32,7 @@ pub struct PreparedLocalAcp {
 pub struct PreparedLocalWorker {
     resolver: Option<Arc<AcpLocalCredentialResolver>>,
     stores: awaken_control::InferenceMaterializationStores,
-    admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+    admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
 }
 
 /// Prepare the embedded Worker selected by an AllInOne deployment. Host ACP
@@ -287,7 +287,7 @@ impl PreparedLocalAcp {
 impl PreparedLocalWorker {
     pub fn with_admin_tools(
         mut self,
-        tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+        tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
     ) -> Self {
         self.admin_tools = tools;
         self

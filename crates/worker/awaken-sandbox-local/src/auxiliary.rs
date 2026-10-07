@@ -11,10 +11,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
-use awaken_runtime_contract::tool::RawTool;
 use awaken_session_environment_contract::{
     AuxiliarySandboxFactory, AuxiliarySandboxProvider, RootedToolSandbox,
 };
+use awaken_tool_contract::tool::RawTool;
 
 use crate::{LocalProvider, LocalSandbox};
 

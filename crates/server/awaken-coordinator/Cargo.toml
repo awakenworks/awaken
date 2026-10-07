@@ -13,6 +13,7 @@ separation = "process"
 
 
 [dependencies]
+awaken-tool-contract.workspace = true
 awaken-data-governance-contract.workspace = true
 awaken-service-lifecycle.workspace = true
 # The extracted service layer: SharedHost / ManagedHost / RunApplicationHost and all
@@ -93,7 +94,6 @@ awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
-awaken-session-error-contract.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-repository-contract.workspace = true
 awaken-session-execution-contract.workspace = true

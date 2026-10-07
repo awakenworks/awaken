@@ -8,10 +8,10 @@
 //! Managed Session projection for the Host-owned Outcome controller.
 
 use awaken_ext_goal::controller::CommittedOutcome;
-use awaken_session_error_contract::RunError;
 use awaken_session_execution_contract::{
     CommittedOutcomeProjection, OutcomeDrive, OutcomeFailure, OutcomeIteration, OutcomeReport,
 };
+use awaken_session_types::RunError;
 
 use crate::host::{HostOutcomeDrive, HostOutcomeReport, SharedHost};
 use crate::managed_adapter_error::to_run_error;

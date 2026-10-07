@@ -107,7 +107,7 @@
       "catch_all_errors": 1
     },
     "awaken-session-application-contract": {
-      "depth": 6,
+      "depth": 3,
       "growth_reasons": {
         "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it"
       }
@@ -132,11 +132,11 @@
         "depth": "Move the sole per-Session ACP executor factory into the existing Session Environment SPI and the sole validated tool-pair kernel into runtime tool export to remove the Host-to-ACP executor construction edge."
       }
     },
-    "awaken-session-error-contract": {
-      "depth": 0
-    },
     "awaken-session-event-contract": {
-      "depth": 1
+      "depth": 2,
+      "growth_reasons": {
+        "depth": "Converge Session error vocabulary into Session Types and move retained lifecycle/admission payloads from State to Event. Preserve the upstream SDK Clock/Lease separation; Event depends on Budget only for the unchanged exact usage value. Application loses State, no port or wire field changes, and no unrelated contract depth is relaxed."
+      }
     },
     "awaken-session-mcp-contract": {
       "depth": 2

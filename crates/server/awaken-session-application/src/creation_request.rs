@@ -23,8 +23,8 @@ use awaken_agent_contract::AgentSkillBinding;
 use awaken_executable_agent_contract::ExecutableAgentSessionProfile;
 use awaken_runtime_contract::agent_bindings::InferenceOptions;
 use awaken_session_configuration_contract::{AgentCapabilities, SessionToolConfiguration};
-use awaken_session_error_contract::RunError;
 use awaken_session_state_contract::PersistedSession;
+use awaken_session_types::RunError;
 
 use super::session_input::{self, SessionInputRequest};
 use super::{

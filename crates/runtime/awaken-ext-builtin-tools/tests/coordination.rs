@@ -6,11 +6,11 @@ use awaken_ext_builtin_tools::{
     AgentCoordinator, AgentListRequest, AgentMessageReceipt, AgentMessageRequest,
     AgentMessageTarget, AgentRosterEntry, LIST_AGENTS, SEND_MESSAGE, Toolset, coordination_tools,
 };
-use awaken_runtime_contract::tool::{
+use awaken_runtime_contract::{RunId, ThreadId};
+use awaken_tool_contract::tool::{
     RawTool, ToolCall, ToolError, ToolOperationContext, ToolRecoveryCapability, ToolRecoveryPolicy,
     with_tool_operation_context,
 };
-use awaken_runtime_contract::{RunId, ThreadId};
 
 #[derive(Default)]
 struct RecordingCoordinator {
@@ -67,7 +67,7 @@ fn find(tools: &[Arc<dyn RawTool>], id: &str) -> Arc<dyn RawTool> {
 async fn invoke(
     tool: Arc<dyn RawTool>,
     arguments: serde_json::Value,
-) -> Result<awaken_runtime_contract::tool::ToolOutput, ToolError> {
+) -> Result<awaken_tool_contract::tool::ToolOutput, ToolError> {
     let id = tool.id().to_string();
     with_tool_operation_context(
         ToolOperationContext {

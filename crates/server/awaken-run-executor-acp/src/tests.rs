@@ -25,7 +25,7 @@ use awaken_runtime_contract::snapshot::{
 use awaken_runtime_contract::terminal::{
     CommittedTerminalRun, RunTerminalObserver, RunTerminalObserverError,
 };
-use awaken_runtime_contract::tool::{ToolError, ToolOutputSpiller};
+use awaken_tool_contract::tool::{ToolError, ToolOutputSpiller};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use super::*;
@@ -167,7 +167,7 @@ async fn owned_client_result_uses_the_shared_tool_batch_before_reopening_acp() {
     .expect("C1 commits one ExternalResult batch");
     let command = ResumeCommand::from_ticket(
         &ticket,
-        ResumeResult::ToolResult(awaken_runtime_contract::tool::ToolOutput::ok(
+        ResumeResult::ToolResult(awaken_tool_contract::tool::ToolOutput::ok(
             "client-call",
             "found",
         )),
@@ -1163,7 +1163,7 @@ async fn unreissued_permission_is_settled_with_the_continuation_commit() {
             drop(commits);
             assert!(recorded.resume_ticket_for(&active.run_id).is_none(), "E2");
             assert!(
-                awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
+                awaken_tool_contract::ActiveToolBatch::load(&Store::rebuild(
                     &recorded.committed_state(&active.thread_id)
                 ))
                 .unwrap()
@@ -3566,7 +3566,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
         );
         assert!(!results[0].2);
         assert_eq!(ticket.call_id(), Some("tool-1"), "AS2 original wait target");
-        let batch = awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
+        let batch = awaken_tool_contract::ActiveToolBatch::load(&Store::rebuild(
             &committed.committed_state(&ticket.thread_id),
         ))
         .unwrap();
@@ -3630,7 +3630,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
             Some(awaken_agent_contract::agent::awaiting::ToolCallAuthority::RunAttemptExecutor)
         );
         assert!(
-            awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
+            awaken_tool_contract::ActiveToolBatch::load(&Store::rebuild(
                 &committed.committed_state(&ticket.thread_id),
             ))
             .unwrap()
@@ -3707,7 +3707,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                 ticket.tool_call_authority()
             );
             assert!(
-                awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
+                awaken_tool_contract::ActiveToolBatch::load(&Store::rebuild(
                     &committed.committed_state(&ticket.thread_id),
                 ))
                 .unwrap()
@@ -3792,7 +3792,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
         }
         assert_eq!(resumed, RunState::Ended(EndCause::NaturalEnd));
         assert!(
-            awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
+            awaken_tool_contract::ActiveToolBatch::load(&Store::rebuild(
                 &committed.committed_state(&ticket.thread_id)
             ))
             .unwrap()
@@ -5508,7 +5508,7 @@ async fn owned_permission_uses_the_host_port_before_opening_an_acp_process() {
                 .unwrap();
                 // P1/P2 owned => the exact batch validates the ticket; P3
                 // external => no competing Runtime batch is committed.
-                let batch = awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
+                let batch = awaken_tool_contract::ActiveToolBatch::load(&Store::rebuild(
                     &committed.committed_state(&ticket.thread_id),
                 ))
                 .unwrap();
@@ -5762,7 +5762,7 @@ async fn owned_recovery_selects_only_the_current_runs_exact_execution_owner() {
                 arguments: serde_json::json!({}),
             });
         }
-        let mut batch = awaken_runtime_contract::ToolBatch::for_step(
+        let mut batch = awaken_tool_contract::ToolBatch::for_step(
             owner.clone(),
             0,
             calls.into_iter().map(|call| (call, Default::default())),
@@ -5771,7 +5771,7 @@ async fn owned_recovery_selects_only_the_current_runs_exact_execution_owner() {
         if case == "finalized" {
             batch.mark_executing("recover-call").unwrap();
             batch
-                .complete(awaken_runtime_contract::tool::ToolOutput::ok(
+                .complete(awaken_tool_contract::tool::ToolOutput::ok(
                     "recover-call",
                     "done",
                 ))
@@ -5784,9 +5784,7 @@ async fn owned_recovery_selects_only_the_current_runs_exact_execution_owner() {
                 RunDisposition::running(owner),
                 true,
                 Vec::new(),
-                vec![awaken_runtime_contract::ActiveToolBatch::write(&Some(
-                    batch,
-                ))],
+                vec![awaken_tool_contract::ActiveToolBatch::write(&Some(batch))],
                 Vec::new(),
             ))
             .await

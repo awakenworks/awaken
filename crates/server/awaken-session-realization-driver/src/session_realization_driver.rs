@@ -13,7 +13,6 @@
 //! Publish/Drain and Acknowledge effects it projects. The directive, lease and
 //! receipt algebra stay in `awaken-session-realization-contract`.
 
-use awaken_session_error_contract::{RunError, RunErrorKind};
 use awaken_session_mcp_contract::{McpGenerationRef, McpProjectionEffectKind};
 use awaken_session_realization_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, FailSessionRealization,
@@ -23,6 +22,7 @@ use awaken_session_realization_contract::{
 use awaken_session_resource_contract::SessionRealizationLease;
 use awaken_session_execution_contract::McpAttachmentRealizer;
 use awaken_session_types::SessionId;
+use awaken_session_types::{RunError, RunErrorKind};
 
 async fn publish_mcp_projection(
     mcp: &dyn McpAttachmentRealizer,

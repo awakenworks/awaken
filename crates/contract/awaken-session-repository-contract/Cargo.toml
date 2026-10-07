@@ -18,5 +18,8 @@ awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true
 async-trait.workspace = true
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
 [lints]
 workspace = true

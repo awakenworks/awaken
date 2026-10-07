@@ -13,6 +13,7 @@ layer = "infrastructure"
 authority = "session-environment"
 
 [dependencies]
+awaken-tool-contract.workspace = true
 # The per-role ports this crate implements.
 awaken-session-environment-contract.workspace = true
 # The backend-erased container environments the Container tier adapts.

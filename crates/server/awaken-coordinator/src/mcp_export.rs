@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::RawTool;
+use awaken_tool_contract::tool::RawTool;
 use axum::Router;
 
 /// Mount an explicit tool set at `/v1/mcp` when `bearer_token` is configured.

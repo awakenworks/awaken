@@ -13,7 +13,7 @@ use awaken_runtime_contract::resolved::{
     AcpBackend, AcpSessionConfiguration, ContextPolicy, ExactModelRef, InvalidModelBinding,
     ModelBinding, ToolDescriptor,
 };
-use awaken_runtime_contract::tool::ToolRecoveryPolicy;
+use awaken_tool_contract::tool::ToolRecoveryPolicy;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// How an agent config's model is chosen at authoring time (ADR-0052 D5). This is

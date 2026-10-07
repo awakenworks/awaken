@@ -163,7 +163,7 @@ pub struct WorkerNodeBuilder {
     mcp_attachment_realizer:
         Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
-    admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+    admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
     credential_probe_interval: std::time::Duration,
@@ -312,7 +312,7 @@ impl WorkerNodeBuilder {
     #[must_use]
     pub fn with_admin_tools(
         mut self,
-        tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+        tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
     ) -> Self {
         self.admin_tools = tools;
         self
@@ -1014,7 +1014,7 @@ pub struct WorkerNode {
     mcp_attachment_realizer:
         Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
-    admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+    admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
     credential_probe_interval: std::time::Duration,

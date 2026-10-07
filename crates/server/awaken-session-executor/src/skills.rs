@@ -22,9 +22,9 @@ use awaken_resource_contract::SkillVersion;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::ToolGateHook;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 #[cfg(test)]
 use awaken_sandbox_local::LocalProvider;
+use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 
 /// The default workspace subdir the agent authors skills under, scanned live so a
 /// skill written this run is discovered (ADR-0036 D8). A hand/agent definition can
@@ -280,7 +280,7 @@ impl RawTool for ForkAgentTool {
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         let request: AuxiliaryAgentInput =
-            awaken_runtime_contract::tool::parse_tool_args(call.arguments)?;
+            awaken_tool_contract::tool::parse_tool_args(call.arguments)?;
         // The skill id names the sub-run; the seed is the resolved skill body. Skill
         // activation is out-of-band housekeeping, so its usage stays isolated (this
         // port surfaces only the reply text).

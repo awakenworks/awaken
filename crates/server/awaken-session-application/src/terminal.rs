@@ -7,12 +7,12 @@
 
 use awaken_provisioning_contract::RepositoryPublicationExpectation;
 use awaken_resource_contract::{BindingId, ResourceAccess};
-use awaken_session_error_contract::RunError;
 use awaken_session_resource_contract::{ResolvedInput, ResolvedInputSource};
 use awaken_session_state_contract::{
     ManagedLifecycleFact, PersistedSession, SessionDisposition, SessionExecutionState,
     SessionRepositoryPublicationIntent, SessionRepositoryPublicationReceipt,
 };
+use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 
 use super::{
@@ -557,7 +557,7 @@ impl SessionApplication {
             .map(|_| ())
             .map_err(|error| {
                 SessionPreparationError::Rejected(
-                    awaken_session_error_contract::RunError::unavailable_classified(
+                    awaken_session_types::RunError::unavailable_classified(
                         "session_work_retire_failed",
                         format!("Session Work could not be retired: {error}"),
                     ),

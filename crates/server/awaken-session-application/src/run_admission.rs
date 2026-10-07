@@ -21,13 +21,13 @@ use awaken_session_configuration_contract::{
     ControlSessionCreationInputs, SessionBaselineState, SessionCreationIntent,
     SessionMcpAuthoringContext, SessionNetworkPolicy, SessionToolConfiguration,
 };
-use awaken_session_error_contract::RunError;
 use awaken_session_mcp_contract::McpAttachmentOrigin;
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivityReceiptPlan, SessionRunDelivery,
     session_run_activity_operation_id, session_run_activity_receipt_plan,
 };
 use awaken_session_state_contract::SessionRepositoryError;
+use awaken_session_types::RunError;
 use awaken_session_types::SessionRevision;
 
 use crate::creation::SessionCreationCompletion;
@@ -1046,10 +1046,7 @@ impl SessionApplication {
                     Ok(revision) => Ok(revision),
                     // Concurrent first Runs race only at the durable create fence;
                     // every loser adopts the exact winner through the same recovery.
-                    Err(error)
-                        if error.kind
-                            == awaken_session_error_contract::RunErrorKind::Unavailable =>
-                    {
+                    Err(error) if error.kind == awaken_session_types::RunErrorKind::Unavailable => {
                         match self
                             .session(&awaken_session_types::SessionId::from(thread_id))
                             .await

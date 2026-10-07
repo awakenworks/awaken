@@ -28,8 +28,8 @@ use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_executable_agent_contract::capability::PluginCapability;
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::current_tool_operation_context;
 use awaken_tenancy::ScopeId;
+use awaken_tool_contract::tool::current_tool_operation_context;
 use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use serde_json::{Value, json};
 
@@ -1287,7 +1287,7 @@ mod tests {
         );
         let mut draft = admin_assistant_config();
         draft.id = "tenant-draft".into();
-        let context = awaken_runtime_contract::tool::ToolOperationContext {
+        let context = awaken_tool_contract::tool::ToolOperationContext {
             run_id: Some(awaken_agent_contract::agent::run::Id("run-tenant".into())),
             thread_id: None,
             operation_id: "operation-tenant".into(),
@@ -1301,7 +1301,7 @@ mod tests {
             call_id: "hosted-draft".into(),
             summary: "hosted draft scope".into(),
         };
-        awaken_runtime_contract::tool::with_tool_operation_context(context, async {
+        awaken_tool_contract::tool::with_tool_operation_context(context, async {
             assert_eq!(
                 store.record_audit(&audit).await?,
                 AuditedConfigWrite::Applied,

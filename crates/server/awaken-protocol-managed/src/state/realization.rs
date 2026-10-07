@@ -4,8 +4,8 @@
 //! Managed wire-cache coordination around the Session application realization owner.
 
 use super::*;
-use awaken_session_error_contract::RunError;
 use awaken_session_realization_contract::SessionRealizationControlFailure;
+use awaken_session_types::RunError;
 
 impl ManagedState {
     fn map_realization_failure(error: SessionRealizationControlFailure) -> StateError {
@@ -168,7 +168,7 @@ mod tests {
             &self,
         ) -> Result<
             awaken_lease_contract::authority::AuthorityProofStarted,
-            awaken_session_error_contract::RunError,
+            awaken_session_types::RunError,
         > {
             crate::test_support::observe_realization_request()
         }
@@ -184,7 +184,7 @@ mod tests {
             owner: &str,
             runtime_incarnation: &str,
             timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
-        ) -> Result<usize, awaken_session_error_contract::RunError> {
+        ) -> Result<usize, awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
                 .await
@@ -201,7 +201,7 @@ mod tests {
             &self,
             thread: &str,
             layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-        ) -> Result<(), awaken_session_error_contract::RunError> {
+        ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .validate_session_sandbox_layout(thread, layout)
         }
@@ -234,7 +234,7 @@ mod tests {
             &self,
             thread: &str,
             lease: &awaken_session_resource_contract::SessionRealizationLease,
-        ) -> Result<(), awaken_session_error_contract::RunError> {
+        ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .invalidate_session_realization_lease(thread, lease)
                 .await
@@ -267,7 +267,7 @@ mod tests {
             description: &str,
             rubric: &str,
             max_iterations: u32,
-        ) -> Result<u64, awaken_session_error_contract::RunError> {
+        ) -> Result<u64, awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
                 .await
@@ -293,7 +293,7 @@ mod tests {
             thread: &str,
         ) -> Result<
             Option<awaken_session_execution_contract::OutcomeDrive>,
-            awaken_session_error_contract::RunError,
+            awaken_session_types::RunError,
         > {
             awaken_session_execution_contract::NeutralRuntime
                 .continue_outcome(thread)

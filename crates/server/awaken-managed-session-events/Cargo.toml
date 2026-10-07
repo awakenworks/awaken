@@ -14,6 +14,7 @@ authority = "managed-session-events"
 separation = "sole-in-layer"
 
 [dependencies]
+awaken-tool-contract.workspace = true
 awaken-agent-contract.workspace = true
 # Compaction markers, the Advisor tool identity and tool-batch operation ids.
 awaken-runtime-contract.workspace = true

@@ -42,8 +42,8 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 
 const FP: &str = "catalog-a";
 const SNAP: &str = "snapshot-1";
@@ -598,7 +598,7 @@ impl RawTool for PermissionEffectProbe {
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         use awaken_agent_contract::agent::state::{StateKey, Store};
-        use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolCallPhase};
+        use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolCallPhase};
         assert_eq!(
             self.commit.run_state(&RunId("run-1".into())),
             Some(RunState::Running)

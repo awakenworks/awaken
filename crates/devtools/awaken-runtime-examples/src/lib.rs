@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 
 /// A deterministic stand-in for a model: it calls the `echo` tool once, then ends
 /// with text. Swap `ScriptedLlm` for `awaken_provider_genai::GenAiExecutor::new()`

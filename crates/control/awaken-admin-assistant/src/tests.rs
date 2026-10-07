@@ -1767,7 +1767,7 @@ async fn repeated_provider_call_id_in_distinct_runs_does_not_collide() {
     let h = Harness::new();
     let tool = h.tool(CREATE_DRAFT_TOOL);
 
-    let first = awaken_runtime_contract::tool::with_tool_operation_id(
+    let first = awaken_tool_contract::tool::with_tool_operation_id(
         "tool-batch:run-1:0:call#admin_draft_agent#0".into(),
         tool.invoke(call(
             CREATE_DRAFT_TOOL,
@@ -1778,7 +1778,7 @@ async fn repeated_provider_call_id_in_distinct_runs_does_not_collide() {
     .unwrap();
     assert!(!first.is_error, "first run: {first:?}");
 
-    let second = awaken_runtime_contract::tool::with_tool_operation_id(
+    let second = awaken_tool_contract::tool::with_tool_operation_id(
         "tool-batch:run-2:0:call#admin_draft_agent#0".into(),
         tool.invoke(call(
             CREATE_DRAFT_TOOL,

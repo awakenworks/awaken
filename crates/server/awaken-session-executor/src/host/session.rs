@@ -1519,7 +1519,7 @@ impl SharedHost {
                                 permission.clone(),
                                 grants.clone(),
                             ))
-                                as Arc<dyn awaken_runtime_contract::tool::RawTool>
+                                as Arc<dyn awaken_tool_contract::tool::RawTool>
                         })
                         .collect();
                     let exporter = self.exec.acp_tool_exporter.as_ref().ok_or_else(|| {
@@ -1689,7 +1689,7 @@ impl SharedHost {
                     crate::config::FilesystemFreeAgentToolExecutor::try_new(tools)
                         .map_err(HostError::internal)?,
                 )
-                    as Arc<dyn awaken_runtime_contract::tool::ToolExecutor>)
+                    as Arc<dyn awaken_tool_contract::tool::ToolExecutor>)
             } else if let Some(environment) = env.as_ref() {
                 // Every realized tier owns the Hand for its Session. Container uses
                 // the channel-backed process; Workdir/Namespace use their rooted

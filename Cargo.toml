@@ -64,7 +64,6 @@ awaken-session-realization-contract = { path = "crates/contract/awaken-session-r
 awaken-session-state-contract = { path = "crates/contract/awaken-session-state-contract" }
 awaken-session-budget-contract = { path = "crates/contract/awaken-session-budget-contract" }
 awaken-session-dream-contract = { path = "crates/contract/awaken-session-dream-contract" }
-awaken-session-error-contract = { path = "crates/contract/awaken-session-error-contract" }
 awaken-session-event-contract = { path = "crates/contract/awaken-session-event-contract" }
 awaken-session-work-contract = { path = "crates/contract/awaken-session-work-contract" }
 awaken-session-application = { path = "crates/server/awaken-session-application" }
