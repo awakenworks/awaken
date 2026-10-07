@@ -27,6 +27,13 @@ crate placement metadata as `_bounded_context_fitness` and only ever shrink.
   `sdk_engine_spi_baseline.json`; a count may only go down, and a lower count
   is recorded in the same commit.
 
+* `context-order`: the ADR-0088 amendment of 2026-10-07 orders the Platform
+  contexts (`CONTEXT_ORDER`, top depends on bottom). A Platform crate edge from
+  a lower context to a higher one is an upward edge; today's are listed in
+  `context_order_baseline.json`, each with the change that removes it. A new
+  upward edge fails, and one that is gone must leave the baseline in the same
+  commit. A context the order does not place fails closed.
+
 Known limits of the path rule: the mixed modules `capture`, `permission` and
 `data_subject` hold values beside SPI traits, and a path cannot tell which one a
 crate names, so they are not checked yet; `awaken-tool-contract`'s executor and
@@ -48,6 +55,7 @@ from _bounded_context_fitness import SHARED_CONTEXTS, Edge
 from _crate_dependency_fitness import CrateSpec
 
 SPI_BASELINE = Path(__file__).with_name("sdk_engine_spi_baseline.json")
+ORDER_BASELINE = Path(__file__).with_name("context_order_baseline.json")
 
 # ADR-0088 decision 5: the context pairs a Platform crate may cross. Seeded from
 # the dependency graph when the map was adopted, so the rule started green; each
@@ -146,6 +154,68 @@ def context_pair_errors(
         "remove it from ALLOWED_CONTEXT_PAIRS in this commit"
         for origin, target in sorted(listed - set(used))
     ]
+    return errors
+
+
+# ADR-0088 amendment of 2026-10-07: the Platform contexts from the top (depends on
+# the contexts below it) to the bottom. The shared `fencing` kernel and `storage`
+# infrastructure sit under all of them and are not listed.
+CONTEXT_ORDER: tuple[str, ...] = (
+    "committed-truth",
+    "protocols",
+    "deployment",
+    "config",
+    "execution",
+    "sandbox",
+    "resources",
+    "dispatch",
+    "environment",
+    "access",
+    "session",
+    "credentials",
+    "governance",
+)
+
+
+def context_order_errors(
+    specs: Iterable[CrateSpec], baseline: dict, order: tuple[str, ...] = CONTEXT_ORDER
+) -> list[str]:
+    by_name = {spec.name: spec for spec in specs}
+    position = {context: index for index, context in enumerate(order)}
+    errors: list[str] = []
+    upward: dict[str, tuple[str, str]] = {}
+    for source in sorted(by_name.values()):
+        if source.product != "platform" or source.bounded_context in SHARED_CONTEXTS:
+            continue
+        if source.bounded_context not in position:
+            errors.append(
+                f"context-order: {source.name} is in context {source.bounded_context!r}, which "
+                "CONTEXT_ORDER does not place; add it to the ADR-0088 order"
+            )
+            continue
+        for dependency in sorted(source.normal_deps):
+            target = by_name.get(dependency)
+            if (
+                target is None
+                or target.product != "platform"
+                or target.bounded_context in (source.bounded_context, *SHARED_CONTEXTS)
+                or target.bounded_context not in position
+            ):
+                continue
+            if position[target.bounded_context] < position[source.bounded_context]:
+                upward[f"{source.name} -> {target.name}"] = (source.bounded_context, target.bounded_context)
+    recorded: dict[str, str] = baseline.get("upward-edges", {})
+    for key, (origin, target) in sorted(upward.items()):
+        if key not in recorded:
+            errors.append(
+                f"context-order: {key} depends upward from {origin} on {target} (ADR-0088 order); "
+                "move the shared part down into a contract the lower context owns, or invert it through a port"
+            )
+    for key in sorted(set(recorded) - set(upward)):
+        errors.append(f"context-order: {key} no longer depends upward; remove it from {ORDER_BASELINE.name} in this commit")
+    for key, reason in sorted(recorded.items()):
+        if not str(reason).strip():
+            errors.append(f"context-order: baseline entry {key} must name the change that removes it")
     return errors
 
 
@@ -308,7 +378,12 @@ def check_all(
     specs = list(specs)
     paths, dependencies = spi_findings(specs, _production_sources(crates))
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-    return context_pair_errors(specs) + spi_ratchet_errors(paths, dependencies, baseline)
+    order = json.loads(ORDER_BASELINE.read_text(encoding="utf-8"))
+    return (
+        context_pair_errors(specs)
+        + spi_ratchet_errors(paths, dependencies, baseline)
+        + context_order_errors(specs, order)
+    )
 
 
 def selftest() -> None:
@@ -335,6 +410,16 @@ def selftest() -> None:
     | S9   | agent-contract `thread::commit`, `stream::{sink, checkpoint}` | counted |
     | S10  | `thread::read::{CheckpointReader, transcript::X}`            | the reader counted, transcript not |
     | S11  | `model_operation` from credentials / from another context   | exempt / counted |
+
+    Context order (Platform crates, contexts other than fencing / storage):
+    | Rule | cause                                              | effect |
+    | O1   | edge from a higher context to a lower one          | accept |
+    | O2   | upward edge not in the baseline                    | error |
+    | O3   | upward edge in the baseline                        | accept |
+    | O4   | baseline edge no longer upward, or gone            | stale error |
+    | O5   | source context not placed by the order             | error |
+    | O6   | target in fencing / storage, or not Platform       | ignored |
+    | O7   | baseline entry without a reason                    | error |
     """
 
     def spec(name: str, context: str, deps: Iterable[str] = (), layer: str = "infrastructure",
@@ -413,5 +498,18 @@ def selftest() -> None:
     assert len(gone) == 1 and "no longer violates" in gone[0], "S7 gone"
     unreasoned = {**held, "crate-dependencies": {**held["crate-dependencies"], "b -> awaken-runtime": " "}}
     assert spi_ratchet_errors(paths, dependencies, unreasoned), "S7 reason"
+    order = ("top", "middle", "bottom")
+    graph = [spec("t", "top", ["m", "f"]), spec("m", "middle", ["b"]), spec("b", "bottom", ["k"]),
+             spec("f", "fencing"), spec("k", "agent-runtime", product="sdk")]
+    assert context_order_errors(graph, {}, order) == [], "O1/O6"
+    upward = [spec("t", "top"), spec("b", "bottom", ["t"])]
+    found = context_order_errors(upward, {}, order)
+    assert len(found) == 1 and "b -> t depends upward" in found[0], "O2"
+    held = {"upward-edges": {"b -> t": "moves with the port"}}
+    assert context_order_errors(upward, held, order) == [], "O3"
+    stale = context_order_errors([spec("t", "top"), spec("b", "bottom")], held, order)
+    assert len(stale) == 1 and "no longer depends upward" in stale[0], "O4"
+    assert "does not place" in context_order_errors([spec("x", "elsewhere")], {}, order)[0], "O5"
+    assert "must name" in context_order_errors(upward, {"upward-edges": {"b -> t": " "}}, order)[0], "O7"
     print("_context_map_fitness selftest: the decision tables hold")
 

@@ -168,6 +168,19 @@ sandbox, dispatch, credentials and execution alike); `awaken-sandbox-fs` → sto
 (capability file-system infrastructure). `awaken-connection-plan` stays in dispatch:
 moving it to execution would add a sandbox → execution edge.
 
+**Contexts are ordered.** Listing allowed context pairs does not stop cycles: the 70
+pairs seeded from the graph held 19 two-way pairs, and all eleven Platform contexts
+formed one strongly connected set. The Platform contexts are therefore ordered, each
+depending only on contexts below it (top to bottom): committed-truth, protocols,
+deployment, config, execution, sandbox, resources, dispatch, environment, access,
+session, credentials, governance; the shared `fencing` kernel and `storage`
+infrastructure sit under all of them. The order is the one that left the fewest upward
+edges on 2026-10-07 while keeping the Session's published language low. The
+`context-order` rule in `_context_map_fitness.py` counts every upward crate edge;
+today's 39 are listed in `context_order_baseline.json`, each naming the change that
+removes it, and a new one fails. The order is reviewed when fewer than ten remain;
+changing it amends this ADR.
+
 **Decisions made with it.**
 - The SDK extensions stay separate crates (`publish`): SDK users pick plugins and
   their dependencies; a merge would not remove a single dependency edge.
