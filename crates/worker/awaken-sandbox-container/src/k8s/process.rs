@@ -14,7 +14,9 @@ use crate::RuntimeError;
 
 pub(super) struct K8sExecState {
     pub(super) completion: Option<tokio::task::JoinHandle<Option<Status>>>,
-    pub(super) status: Option<pc::ExitStatus>,
+    // One disposable observation cache covers both exit and failed observation.
+    // An error is never physical exit evidence or a durable stop receipt.
+    pub(super) outcome: Option<Result<pc::ExitStatus, String>>,
 }
 
 pub(super) struct K8sExecProcess {
@@ -160,30 +162,46 @@ impl pc::ProcessHandle for K8sExecProcess {
 
     async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
         let mut state = self.state.lock().await;
-        if let Some(status) = &state.status {
-            return Ok(Some(status.clone()));
+        if state.outcome.is_none() {
+            let Some(completion) = state.completion.as_ref() else {
+                return Err(pc::SandboxError::transport(
+                    "k8s exec completion is unavailable",
+                ));
+            };
+            if !completion.is_finished() {
+                return Ok(None);
+            }
+            let completion = state.completion.take().expect("checked above");
+            state.outcome = Some(match completion.await {
+                Ok(observation) => {
+                    let status = k8s_exit_status(observation.clone());
+                    if status.code.is_some() {
+                        Ok(status)
+                    } else {
+                        // Numeric API code and frame presence diagnose observation
+                        // failure without copying arbitrary provider text/commands.
+                        Err(format!(
+                            "Kubernetes exec ended without an observed exit status (status_frame={}, api_code={:?})",
+                            observation.is_some(),
+                            observation.as_ref().and_then(|value| value.code),
+                        ))
+                    }
+                }
+                Err(error) => Err(if error.is_cancelled() {
+                    "Kubernetes exec completion observer was cancelled"
+                } else {
+                    "Kubernetes exec completion observer failed"
+                }
+                .into()),
+            });
         }
-        let Some(completion) = state.completion.as_ref() else {
-            return Err(pc::SandboxError::transport(
-                "k8s exec completion is unavailable",
-            ));
-        };
-        if !completion.is_finished() {
-            return Ok(None);
-        }
-        let completion = state.completion.take().expect("checked above");
-        let status = completion
-            .await
-            .map_err(|error| pc::SandboxError::backend("poll", error))?;
-        let status = k8s_exit_status(status);
-        if status.code.is_none() {
-            return Err(pc::SandboxError::backend(
-                "poll",
-                "Kubernetes exec ended without an observed exit status",
-            ));
-        }
-        state.status = Some(status.clone());
-        Ok(Some(status))
+        state
+            .outcome
+            .as_ref()
+            .expect("finished observer is cached")
+            .clone()
+            .map(Some)
+            .map_err(|error| pc::SandboxError::backend("poll", error))
     }
 
     async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
