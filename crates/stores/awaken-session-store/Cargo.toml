@@ -19,7 +19,6 @@ awaken-agent-contract.workspace = true
 # backend for (SQLite embedded / Postgres distributed, at parity).
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
-awaken-session-error-contract.workspace = true
 awaken-session-repository-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-budget-contract.workspace = true

@@ -56,6 +56,6 @@ pub fn task_state_cell(
 /// committed value fails closed instead of disappearing from reconciliation.
 pub fn tasks_from_state(
     state: &awaken_agent_contract::agent::state::Store,
-) -> Result<Vec<BackgroundTask>, awaken_runtime_contract::tool::ToolError> {
+) -> Result<Vec<BackgroundTask>, awaken_tool_contract::tool::ToolError> {
     tools::load_tasks(state)
 }

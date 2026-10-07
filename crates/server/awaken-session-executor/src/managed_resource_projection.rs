@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};
 use awaken_resource_contract::RepositoryBindingVerifier;
-use awaken_session_error_contract::RunError;
+use awaken_session_types::RunError;
 
 use crate::managed_input_layout::{
     ManagedLayoutProjection, ManagedLayoutValidationScope, ResourcePromptProjection,
@@ -1273,7 +1273,7 @@ impl crate::ManagedHost {
         &self,
         thread: &str,
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         let environment = crate::provisioning::project_environment(&layout.environment);
         let (_, candidate) = self
             .host
@@ -1283,9 +1283,7 @@ impl crate::ManagedHost {
                 None,
                 None,
             )
-            .map_err(|error| {
-                awaken_session_error_contract::RunError::bad_request(error.to_string())
-            })?;
+            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
         let result = if layout.runtime_placement
             == awaken_session_configuration_contract::SessionRuntimePlacement::Worker
         {
@@ -1306,9 +1304,7 @@ impl crate::ManagedHost {
                     &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                 )
             }
-            .map_err(|error| {
-                awaken_session_error_contract::RunError::bad_request(error.to_string())
-            })?;
+            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
             self.host.validate_managed_binding_layout(
                 thread,
                 &layout.resources,
@@ -1318,27 +1314,21 @@ impl crate::ManagedHost {
                 Some(&environment),
             )
         };
-        result.map_err(|error| {
-            awaken_session_error_contract::RunError::bad_request(error.to_string())
-        })
+        result.map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))
     }
 
     pub(super) fn validate_effective_resource_layout(
         &self,
         thread: &str,
         resources: &awaken_session_resource_contract::ResolvedSessionResources,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         let provider = self
             .host
             .projected_session_environment_provider(thread, None)
-            .map_err(|error| {
-                awaken_session_error_contract::RunError::bad_request(error.to_string())
-            })?;
+            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
         self.host
             .validate_managed_resource_layout(thread, resources, provider, None, None, None)
-            .map_err(|error| {
-                awaken_session_error_contract::RunError::bad_request(error.to_string())
-            })
+            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))
     }
 
     /// Compile one frozen Managed input into the provisioning vocabulary. This
@@ -1356,8 +1346,7 @@ impl crate::ManagedHost {
             &awaken_session_resource_contract::SessionRealizationLease,
         )>,
         environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
-    ) -> Result<crate::staged_resources::StagedResources, awaken_session_error_contract::RunError>
-    {
+    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
         let authority = if let (Some((session_id, resource_revision, lease)), true) = (
             realization,
             self.host.authority.fetches_resources_upstream(),
@@ -1370,7 +1359,7 @@ impl crate::ManagedHost {
                         input.clone(),
                         lease.clone(),
                     )
-                    .map_err(awaken_session_error_contract::RunError::bad_request)?,
+                    .map_err(awaken_session_types::RunError::bad_request)?,
                 ),
             )
         } else {
@@ -1398,17 +1387,17 @@ impl crate::ManagedHost {
         workspace: &str,
         command: &awaken_session_state_contract::SessionRepositoryPublicationCommand,
         lease: &awaken_session_resource_contract::SessionRealizationLease,
-    ) -> Result<crate::staged_resources::StagedResources, awaken_session_error_contract::RunError>
-    {
-        command.intent.validate().map_err(|error| {
-            awaken_session_error_contract::RunError::bad_request(error.to_string())
-        })?;
+    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
+        command
+            .intent
+            .validate()
+            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
         let input = &command.intent.input;
         if !matches!(
             input.source,
             awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
         ) {
-            return Err(awaken_session_error_contract::RunError::bad_request(
+            return Err(awaken_session_types::RunError::bad_request(
                 "terminal Repository publication input is not a Repository",
             ));
         }
@@ -1437,10 +1426,9 @@ impl crate::ManagedHost {
             &awaken_session_resource_contract::SessionRealizationLease,
         )>,
         environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
-    ) -> Result<crate::staged_resources::StagedResources, awaken_session_error_contract::RunError>
-    {
-        use awaken_session_error_contract::RunError;
+    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
         use awaken_session_resource_contract::ResolvedInputSource;
+        use awaken_session_types::RunError;
 
         let claim = resource_authority.and_then(|authority| match authority {
             awaken_dispatch_contract::ResourceOperationFence::Run(claim) => Some(claim),

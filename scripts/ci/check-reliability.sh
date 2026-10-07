@@ -37,7 +37,7 @@ if [ "${1:-}" = "--session-observations" ]; then
     -p awaken-session-event-contract -p awaken-session-configuration-contract \
     -p awaken-session-application-contract -p awaken-session-execution-contract \
     -p awaken-session-realization-contract -p awaken-session-state-contract \
-    -p awaken-session-repository-contract -p awaken-session-error-contract \
+    -p awaken-session-repository-contract \
     -p awaken-session-resource-contract -p awaken-session-work-contract \
     -p awaken-session-application \
     -p awaken-store-inmem -p awaken-store-fs -p awaken-store-sqlite -p awaken-protocol-managed
@@ -69,7 +69,7 @@ cleanup_mutation_artifacts() {
   cargo clean -p awaken-tool-contract -p awaken-agent-contract -p awaken-lease-contract -p awaken-time \
     -p awaken-session-types >/dev/null 2>&1 || true
   cargo clean -p awaken-session-application-contract -p awaken-session-configuration-contract \
-    -p awaken-session-error-contract -p awaken-session-event-contract -p awaken-session-realization-contract \
+    -p awaken-session-event-contract -p awaken-session-realization-contract \
     -p awaken-session-repository-contract -p awaken-session-execution-contract \
     -p awaken-session-state-contract >/dev/null 2>&1 || true
   cargo clean -p awaken-session-executor >/dev/null 2>&1 || true

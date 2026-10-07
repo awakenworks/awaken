@@ -1194,7 +1194,7 @@ mod terminal_cleanup_drive_error_tests {
         let effect = terminal_cleanup_drive_error(
             "session-a",
             awaken_session_realization_contract::SessionRealizationDriveError::Effect(
-                awaken_session_error_contract::RunError::unavailable_classified(
+                awaken_session_types::RunError::unavailable_classified(
                     "terminal_provider_retry",
                     "provider is temporarily unavailable",
                 ),

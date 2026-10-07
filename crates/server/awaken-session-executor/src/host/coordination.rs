@@ -25,12 +25,12 @@ use awaken_agent_contract::agent::delegation::{DelegationId, DelegationOrigin};
 use awaken_agent_contract::thread::read::lifecycle::{RunLifecycleCursor, RunLifecycleFeed as _};
 use awaken_ext_builtin_tools::{AgentMessageReceipt, SendMessageArgs};
 use awaken_dispatch_contract::Outbox as _;
-use awaken_runtime_contract::tool_batch::ToolBatch;
 use awaken_session_execution_contract::{
     CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadKind, CoordinatedThreadLink,
     CoordinatedThreadTarget, SessionAgentMessageCommand, SessionAgentMessageReceipt,
     SessionAgentReportContinuation, coordinated_thread_closed,
 };
+use awaken_tool_contract::tool_batch::ToolBatch;
 
 const MAX_LIFECYCLE_PAGE: usize = 1_024;
 

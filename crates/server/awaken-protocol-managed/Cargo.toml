@@ -29,6 +29,7 @@ test-support = [
 ]
 
 [dependencies]
+awaken-tool-contract.workspace = true
 awaken-data-subject-application.workspace = true
 awaken-agent-contract.workspace = true
 awaken-executable-agent-contract.workspace = true
@@ -38,7 +39,6 @@ awaken-executable-environment-contract.workspace = true
 # shim so consumers stay unchanged until flipped to the contract directly.
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
-awaken-session-error-contract.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-repository-contract.workspace = true
 awaken-session-execution-contract.workspace = true

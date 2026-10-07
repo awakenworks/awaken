@@ -5,7 +5,6 @@
 use awaken_time::WallClockExt as _;
 use std::{future::Future, pin::Pin};
 
-use awaken_session_error_contract::RunError;
 use awaken_session_realization_contract::{
     RenewSessionRealization, SessionRealizationControlFailure, SessionRealizationDriveError,
     SessionTerminalCleanupAssignment,
@@ -13,6 +12,7 @@ use awaken_session_realization_contract::{
 use awaken_session_state_contract::{
     PersistedSession, SandboxRestoreRequest, SessionTerminalCleanupAction,
 };
+use awaken_session_types::RunError;
 
 use super::{internal, mutation_failure, repository_preparation};
 use crate::{SessionApplication, SessionPreparationError, SessionTerminalCleanupDriveOutcome};
@@ -696,7 +696,7 @@ mod tests {
             owner: &str,
             runtime_incarnation: &str,
             timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
-        ) -> Result<usize, awaken_session_error_contract::RunError> {
+        ) -> Result<usize, awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
                 .await
@@ -713,7 +713,7 @@ mod tests {
             &self,
             thread: &str,
             layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-        ) -> Result<(), awaken_session_error_contract::RunError> {
+        ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .validate_session_sandbox_layout(thread, layout)
         }
@@ -729,7 +729,7 @@ mod tests {
             thread: &str,
             projection: awaken_session_realization_contract::FrozenSessionProjection,
             mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-        ) -> Result<(), awaken_session_error_contract::RunError> {
+        ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .install_session_projection(thread, projection, mode)
                 .await
@@ -744,7 +744,7 @@ mod tests {
             &self,
             thread: &str,
             lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
-        ) -> Result<(), awaken_session_error_contract::RunError> {
+        ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_lease(thread, lease)
                 .await
@@ -760,7 +760,7 @@ mod tests {
             &self,
             thread: &str,
             lease: &awaken_session_resource_contract::SessionRealizationLease,
-        ) -> Result<(), awaken_session_error_contract::RunError> {
+        ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .invalidate_session_realization_lease(thread, lease)
                 .await
@@ -798,7 +798,7 @@ mod tests {
             lease: &awaken_session_resource_contract::SessionRealizationLease,
         ) -> Result<
             awaken_session_state_contract::SessionRepositoryPublicationEffect,
-            awaken_session_error_contract::RunError,
+            awaken_session_types::RunError,
         > {
             awaken_session_execution_contract::NeutralRuntime
                 .execute_terminal_repository_publication_for_lease(command, lease)
@@ -815,7 +815,7 @@ mod tests {
             authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
         ) -> Result<
             awaken_session_state_contract::SessionCleanupPreparation,
-            awaken_session_error_contract::RunError,
+            awaken_session_types::RunError,
         > {
             awaken_session_execution_contract::NeutralRuntime
                 .prepare_terminal_cleanup_for_effect(effect, authorization)
@@ -846,7 +846,7 @@ mod tests {
             effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
         ) -> Result<
             awaken_session_state_contract::SessionCleanupDisposalReceipt,
-            awaken_session_error_contract::RunError,
+            awaken_session_types::RunError,
         > {
             awaken_session_execution_contract::NeutralRuntime
                 .dispose_terminal_cleanup_for_effect(effect)
@@ -898,7 +898,7 @@ mod tests {
                 .remaining_at(
                     self.realization()
                         .ok_or_else(|| {
-                            awaken_session_error_contract::RunError::unavailable(
+                            awaken_session_types::RunError::unavailable(
                                 "RealizationRuntime is unsupported by this runtime",
                             )
                         })?

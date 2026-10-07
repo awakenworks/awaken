@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_runtime_contract::tool::{ToolError, ToolOutputSpiller};
+use awaken_tool_contract::tool::{ToolError, ToolOutputSpiller};
 use sha2::{Digest, Sha256};
 
 use crate::session_environment::SessionEnvironment;
@@ -42,9 +42,9 @@ impl ToolOutputSpiller for SandboxToolOutputSpiller {
         _run_id: &RunId,
         _call_id: &str,
         content: &str,
-    ) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, ToolError> {
+    ) -> Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, ToolError> {
         if !needs_materialization(content) {
-            return Ok(awaken_runtime_contract::tool_batch::ToolExecutionDomain::Worker {});
+            return Ok(awaken_tool_contract::tool_batch::ToolExecutionDomain::Worker {});
         }
         self.environment
             .agent_tools()

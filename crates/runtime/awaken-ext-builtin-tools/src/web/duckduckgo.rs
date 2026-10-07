@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use awaken_credential::Credential;
-use awaken_runtime_contract::tool::ToolError;
+use awaken_tool_contract::tool::ToolError;
 use serde::Deserialize;
 use serde_json::json;
 

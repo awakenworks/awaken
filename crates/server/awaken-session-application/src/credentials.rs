@@ -6,11 +6,11 @@
 use awaken_credential_contract::{
     CredentialExecutionPolicy, CredentialSourceId, ModelExposurePolicy, PlaintextHolder,
 };
-use awaken_session_error_contract::RunError;
 use awaken_session_resource_contract::{
     ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,
 };
 use awaken_session_state_contract::PersistedSession;
+use awaken_session_types::RunError;
 
 use super::{
     SessionApplication, SessionCredentialAccessRequest, SessionMutationError,

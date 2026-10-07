@@ -15,6 +15,7 @@ authority = "runtime"
 separation = "publish"
 
 [dependencies]
+awaken-tool-contract.workspace = true
 awaken-time.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true

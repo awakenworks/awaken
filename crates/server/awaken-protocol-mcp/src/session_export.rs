@@ -5,7 +5,7 @@
 //! MCP assembly for the existing Session tool export port.
 
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::RawTool;
+use awaken_tool_contract::tool::RawTool;
 use std::sync::Arc;
 
 /// Product adapter for Session-owned tools handed to an ACP CLI. The neutral
@@ -142,10 +142,10 @@ impl awaken_session_environment_contract::tool_export::AcpToolExporter for Sessi
 mod tests {
     use super::*;
     use awaken_ext_mcp::{Credential, HttpTransport, McpToolTransport};
-    use awaken_runtime_contract::tool::{ToolCall, ToolOutput};
     use awaken_session_environment_contract::tool_export::{
         AcpToolExporter, AttachedChannelToolExporter,
     };
+    use awaken_tool_contract::tool::{ToolCall, ToolOutput};
 
     struct EchoTool(&'static str);
 
@@ -158,7 +158,7 @@ mod tests {
         async fn invoke(
             &self,
             call: ToolCall,
-        ) -> Result<ToolOutput, awaken_runtime_contract::tool::ToolError> {
+        ) -> Result<ToolOutput, awaken_tool_contract::tool::ToolError> {
             Ok(ToolOutput::ok(
                 call.call_id,
                 format!("same-tool:{}:{}", self.0, call.arguments),

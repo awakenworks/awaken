@@ -428,7 +428,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     first_managed
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -494,7 +494,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     managed
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })

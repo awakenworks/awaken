@@ -28,8 +28,8 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 
 /// (step, committed message count, committed state) captured inside a step.
 type Observations = Arc<std::sync::Mutex<Vec<(usize, usize, Option<RunState>)>>>;

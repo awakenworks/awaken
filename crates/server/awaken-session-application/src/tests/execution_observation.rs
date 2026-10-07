@@ -988,7 +988,7 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
     };
     assert_eq!(
         error.kind,
-        awaken_session_error_contract::RunErrorKind::Internal,
+        awaken_session_types::RunErrorKind::Internal,
         "R7"
     );
     let Err(SessionProjectionRecoveryError::Rejected(error)) = application
@@ -999,7 +999,7 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
     };
     assert_eq!(
         error.kind,
-        awaken_session_error_contract::RunErrorKind::Internal,
+        awaken_session_types::RunErrorKind::Internal,
         "R8"
     );
 }

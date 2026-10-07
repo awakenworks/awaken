@@ -588,7 +588,13 @@ def self_test() -> None:
         with mock.patch.dict(os.environ, {"GIT_DIR": str(root / "elsewhere.git"), "GIT_INDEX_FILE": str(partial)}):
             staged = {row["id"]: row for row in load(root)["obligations"]}
         assert staged["run.safe"]["status"] == "modeled_only", "C10 a foreign hook repository"
-        shutil.rmtree(root / ".git")
+        # Git objects are read-only on Windows; the fixture owns this tree.
+        assert git_dir.resolve().parent == root.resolve()
+        if os.name == "nt":
+            for path in git_dir.rglob("*"):
+                if path.is_file():
+                    path.chmod(path.stat().st_mode | 0o200)
+        shutil.rmtree(git_dir)
         safe.write_text(original)
         on_disk = {row["id"]: row for row in load(root)["obligations"]}
         assert on_disk["run.safe"]["status"] == "kernel_proved", "C8/E4"

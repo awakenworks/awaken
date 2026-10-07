@@ -11,7 +11,7 @@ use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, DynamicTool, IdBound, Plugin, PluginManifest,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::RawTool;
+use awaken_tool_contract::tool::RawTool;
 
 pub(crate) struct SessionToolPlugin {
     id: String,
@@ -90,12 +90,10 @@ mod tests {
 
         async fn invoke(
             &self,
-            call: awaken_runtime_contract::tool::ToolCall,
-        ) -> Result<
-            awaken_runtime_contract::tool::ToolOutput,
-            awaken_runtime_contract::tool::ToolError,
-        > {
-            Ok(awaken_runtime_contract::tool::ToolOutput::ok(
+            call: awaken_tool_contract::tool::ToolCall,
+        ) -> Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>
+        {
+            Ok(awaken_tool_contract::tool::ToolOutput::ok(
                 call.call_id,
                 "ok",
             ))

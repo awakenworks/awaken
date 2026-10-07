@@ -576,7 +576,7 @@ async fn restored_model_evidence_is_run_scoped_and_invalid_coordinates_fail_clos
         if let Some(expected) = expected {
             assert!(result.is_ok(), "{owner}/{ordinal}");
             let commands = durable.committed_state(&ThreadId("thread-1".into()));
-            let own = awaken_runtime_contract::tool_batch::store_from_run_commands(
+            let own = awaken_tool_contract::tool_batch::store_from_run_commands(
                 commands,
                 &RunId("run-1".into()),
             );
@@ -1590,7 +1590,7 @@ fn advisor_activation(with_candidate: bool) -> RunActivation {
             serde_json::json!({"type":"object"}),
         )
         .with_kind(ToolKind::Advisor)
-        .with_recovery(awaken_runtime_contract::tool::ToolRecoveryPolicy::durable_request()),
+        .with_recovery(awaken_tool_contract::tool::ToolRecoveryPolicy::durable_request()),
     ];
     if with_candidate {
         activation

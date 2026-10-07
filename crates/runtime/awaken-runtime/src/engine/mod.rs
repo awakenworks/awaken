@@ -66,19 +66,19 @@ use awaken_runtime_contract::runtime_context::{
     RuntimeRunContext, TranscriptContextDestination, transcript_prefix_projects_to,
 };
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
-use awaken_runtime_contract::tool::{
+use awaken_tool_contract::tool::{
     RawTool, ToolConcurrency, ToolError, ToolExecutionFacts, ToolExecutionFactsResolver,
     ToolExecutionTarget, ToolExecutionWave, ToolExecutor, ToolOperationContext, ToolOutput,
     with_tool_execution_facts, with_tool_operation_context, with_tool_state_context,
 };
-use awaken_runtime_contract::tool::{
+use awaken_tool_contract::tool::{
     ToolRecoveryCapability, ToolRecoveryPolicy, ToolTaskHandle, ToolTaskPoll, ToolTaskStart,
 };
-use awaken_runtime_contract::tool_batch::{
+use awaken_tool_contract::tool_batch::{
     ActiveToolBatch, ToolBatch, ToolBatchPhase, ToolCallPhase, ToolExecutionAdmission,
     ToolRecoveryAction, ToolWaitKind, store_from_run_commands,
 };
-use awaken_runtime_contract::tool_discovery::ToolSearchInput;
+use awaken_tool_contract::tool_discovery::ToolSearchInput;
 
 use crate::tool_discovery::{ToolDiscoveryState, ToolDiscoveryStateKey, ToolSearchQuery};
 

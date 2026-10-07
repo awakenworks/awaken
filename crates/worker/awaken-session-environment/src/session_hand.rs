@@ -15,8 +15,8 @@ use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::Sandbox as _;
 use awaken_runtime_contract::llm::ToolCall;
-use awaken_runtime_contract::tool::{ToolError, ToolExecutor, ToolOutput, ToolRecoveryCapability};
 use awaken_sandbox_local::{LocalSandbox, NamespaceSandbox};
+use awaken_tool_contract::tool::{ToolError, ToolExecutor, ToolOutput, ToolRecoveryCapability};
 use tokio::sync::Mutex;
 
 use super::container_skills::ContainerSkillCache;
@@ -34,8 +34,8 @@ pub(super) enum SessionAgentLauncher {
 impl SessionAgentLauncher {
     async fn execution_domain(
         &self,
-    ) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, pc::SandboxError> {
-        use awaken_runtime_contract::tool_batch::ToolExecutionDomain;
+    ) -> Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, pc::SandboxError> {
+        use awaken_tool_contract::tool_batch::ToolExecutionDomain;
         match self {
             Self::Container { sandbox } => Ok(sandbox.owned_process_binding().await?.map_or(
                 ToolExecutionDomain::Opaque {},
@@ -560,7 +560,7 @@ impl HandMode {
 impl SessionHandExecutor {
     pub(super) async fn contained_execution_domain(
         &self,
-    ) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, pc::SandboxError> {
+    ) -> Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, pc::SandboxError> {
         self.launcher.execution_domain().await
     }
 
@@ -898,7 +898,7 @@ impl ToolExecutor for SessionHandExecutor {
     async fn execution_domain(
         &self,
         _call: &ToolCall,
-    ) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, ToolError> {
+    ) -> Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, ToolError> {
         self.contained_execution_domain()
             .await
             .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))

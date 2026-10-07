@@ -321,7 +321,7 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
     let thread = "direct-deferred-brain";
     host.install_environment_projection(thread, &on_tool_use_environment())
         .unwrap();
-    let deferred: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> = Arc::new(
+    let deferred: Arc<dyn awaken_tool_contract::tool::ToolExecutor> = Arc::new(
         crate::lazy_sandbox::DeferredSandboxExecutor::new(Arc::downgrade(&host), thread),
     );
     host.session_slots.update(thread, |slot| {
@@ -644,7 +644,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .flatten()
         .unwrap();
     let read = deferred
-        .invoke(&awaken_runtime_contract::tool::ToolCall {
+        .invoke(&awaken_tool_contract::tool::ToolCall {
             call_id: "read-pinned".into(),
             tool_id: "read".into(),
             arguments: serde_json::json!({"file_path": ".skills/release-signal/SKILL.md"}),
@@ -658,7 +658,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
             .is_none()
     );
     let script = deferred
-        .invoke(&awaken_runtime_contract::tool::ToolCall {
+        .invoke(&awaken_tool_contract::tool::ToolCall {
             call_id: "first-hand".into(),
             tool_id: "bash".into(),
             arguments: serde_json::json!({"command": "sh .skills/release-signal/scripts/check.sh"}),

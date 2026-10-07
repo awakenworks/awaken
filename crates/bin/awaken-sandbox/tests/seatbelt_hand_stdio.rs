@@ -87,7 +87,7 @@ async fn seatbelt_hand_reads_the_session_mount_when_the_host_mnt_exists() {
             write,
             HandResult::Err { .. }
                 | HandResult::Ok {
-                    output: awaken_runtime_contract::tool::ToolOutput { is_error: true, .. }
+                    output: awaken_tool_contract::tool::ToolOutput { is_error: true, .. }
                 }
         ),
         "read-only mount accepted a write: {write:?}"

@@ -144,7 +144,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ContinuationRunti
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
-    ) -> Result<usize, awaken_session_error_contract::RunError> {
+    ) -> Result<usize, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
             .await
@@ -161,7 +161,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ContinuationRunti
         &self,
         thread: &str,
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .validate_session_sandbox_layout(thread, layout)
     }
@@ -191,7 +191,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ContinuationRunti
         &self,
         thread: &str,
         lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
             .await
@@ -207,7 +207,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ContinuationRunti
         &self,
         thread: &str,
         lease: &awaken_session_resource_contract::SessionRealizationLease,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
             .await
@@ -236,7 +236,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ContinuationRunti
         &self,
         thread: &str,
         tools: awaken_session_configuration_contract::SessionToolConfiguration,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .replace_session_tools(thread, tools)
             .await
@@ -423,7 +423,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ContinuationRunti
         skills: &[awaken_agent_contract::AgentSkillBinding],
     ) -> Result<
         Vec<awaken_session_resource_contract::ResolvedSkillBinding>,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .resolve_session_skills(workspace_id, skills)
@@ -440,7 +440,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ContinuationRunti
         &self,
         thread: &str,
         transition: &awaken_session_resource_contract::SessionResourceTransition,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .apply_session_inputs(thread, transition)
             .await
@@ -456,10 +456,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ContinuationRuntim
     /// MUST answer without materializing any per-thread state (no context
     /// build, no cache entry) — probing must be free of side effects. The
     /// default reports nothing, so an ephemeral host mints densely from 0.
-    async fn owns_thread(
-        &self,
-        thread: &str,
-    ) -> Result<bool, awaken_session_error_contract::RunError> {
+    async fn owns_thread(&self, thread: &str) -> Result<bool, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .owns_thread(thread)
             .await
@@ -474,10 +471,8 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ContinuationRuntim
     async fn committed_messages(
         &self,
         thread: &str,
-    ) -> Result<
-        Vec<awaken_agent_contract::agent::message::Message>,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<Vec<awaken_agent_contract::agent::message::Message>, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .committed_messages(thread)
             .await
@@ -510,7 +505,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ContinuationRuntim
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<
         Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         let Some(mut snapshot) = self
             .session_thread_recovery_snapshot(session_id, thread_id)
@@ -534,8 +529,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ContinuationRuntim
         &self,
         session_id: &awaken_session_types::SessionId,
         thread_id: &str,
-    ) -> Result<awaken_agent_contract::ThreadDisposition, awaken_session_error_contract::RunError>
-    {
+    ) -> Result<awaken_agent_contract::ThreadDisposition, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .session_thread_disposition(session_id, thread_id)
             .await
@@ -550,7 +544,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ContinuationRuntim
         &self,
         session_id: &awaken_session_types::SessionId,
         thread_id: &str,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .archive_session_thread(session_id, thread_id)
             .await
@@ -568,7 +562,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ContinuationRuntim
         outcome_id: &str,
     ) -> Result<
         Option<awaken_session_execution_contract::CommittedOutcomeProjection>,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .committed_outcome_projection(thread, outcome_id)
@@ -593,7 +587,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ContinuationR
         lease: &awaken_session_resource_contract::SessionRealizationLease,
     ) -> Result<
         awaken_session_state_contract::SessionRepositoryPublicationEffect,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .execute_terminal_repository_publication_for_lease(command, lease)
@@ -695,7 +689,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for ContinuationRuntime {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<u64, awaken_session_error_contract::RunError> {
+    ) -> Result<u64, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
             .await
@@ -719,10 +713,8 @@ impl awaken_session_execution_contract::OutcomeRuntime for ContinuationRuntime {
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<
-        Option<awaken_session_execution_contract::OutcomeDrive>,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await

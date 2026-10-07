@@ -4,8 +4,8 @@
 
 use super::*;
 use awaken_ext_builtin_tools::{AgentMessageTarget, SendMessageArgs};
-use awaken_runtime_contract::tool_batch::ToolCallPhase;
 use awaken_session_execution_contract::SessionAgentTarget;
+use awaken_tool_contract::tool_batch::ToolCallPhase;
 
 pub(super) fn validate(
     snapshot: &RunRecoverySnapshot,
@@ -19,7 +19,7 @@ pub(super) fn validate(
         ));
     }
     let state = Store::rebuild(&snapshot.state);
-    let batch = awaken_runtime_contract::ActiveToolBatch::load(&state)
+    let batch = awaken_tool_contract::ActiveToolBatch::load(&state)
         .map_err(|error| HostError::internal(error.to_string()))?
         .ok_or_else(|| HostError::bad_request("Agent message source has no active tool batch"))?;
     if batch.run_id() != &command.source_run_id {
@@ -171,8 +171,8 @@ fn session_agent_message_admission_requires_every_committed_field() {
 mod tests {
     use super::*;
     use awaken_runtime_contract::llm::ToolCall;
-    use awaken_runtime_contract::tool::ToolRecoveryPolicy;
-    use awaken_runtime_contract::tool_batch::ToolBatch;
+    use awaken_tool_contract::tool::ToolRecoveryPolicy;
+    use awaken_tool_contract::tool_batch::ToolBatch;
 
     #[test]
     fn command_is_refined_from_one_committed_tool_call() {
@@ -214,7 +214,7 @@ mod tests {
             if executing {
                 batch.mark_executing(call_id).unwrap();
             }
-            let mut state = awaken_runtime_contract::ActiveToolBatch::write(&Some(batch));
+            let mut state = awaken_tool_contract::ActiveToolBatch::write(&Some(batch));
             state.bind_run(&run);
             RunRecoverySnapshot {
                 commit_timestamps: Default::default(),

@@ -25,8 +25,8 @@ use std::sync::Arc;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider as _;
 use awaken_runtime_contract::llm::ToolCall;
-use awaken_runtime_contract::tool::RawTool;
 use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
+use awaken_tool_contract::tool::RawTool;
 
 const EPERM: i64 = libc::EPERM as i64;
 const ENOSYS: i64 = libc::ENOSYS as i64;
@@ -211,7 +211,7 @@ async fn workdir_missing_trusted_launcher_participant() {
         .await
         .unwrap_err();
     assert!(
-        matches!(&error, awaken_runtime_contract::tool::ToolError::DefinitiveFailure(cause) if cause.contains("Worker's absolute PATH")),
+        matches!(&error, awaken_tool_contract::tool::ToolError::DefinitiveFailure(cause) if cause.contains("Worker's absolute PATH")),
         "L2 authoritative refusal: {error:?}"
     );
     assert!(!marker.exists(), "L2 no forged host program executed");

@@ -15,7 +15,7 @@ use awaken_runtime_contract::plugin::{
     AfterToolContext, HookReaction, PhaseContext, PhaseHook, PhaseKind, Plugin, RunEndContext,
     RunEndDecision, enforce_bound,
 };
-use awaken_runtime_contract::tool::{ToolConcurrency, ToolOutput, ToolResourceAccess};
+use awaken_tool_contract::tool::{ToolConcurrency, ToolOutput, ToolResourceAccess};
 use serde_json::json;
 
 /// Drive the state-machine observer (now a `PhaseHook` at `AfterTool`, ADR-0055)

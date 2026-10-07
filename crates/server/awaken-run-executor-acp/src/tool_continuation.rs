@@ -64,15 +64,14 @@ impl AcpRunExecutor {
                 Error::Execution("ACP owned tool continuation requires committed history".into())
             })?;
             {
-                let store = awaken_runtime_contract::tool_batch::store_from_run_commands(
+                let store = awaken_tool_contract::tool_batch::store_from_run_commands(
                     reader.committed_state(&activation.thread_id),
                     &activation.run_id,
                 );
-                if let Some(batch) = awaken_runtime_contract::ActiveToolBatch::load(&store)
+                if let Some(batch) = awaken_tool_contract::ActiveToolBatch::load(&store)
                     .map_err(|error| Error::Execution(error.to_string()))?
                     .filter(|batch| {
-                        batch.phase()
-                            != awaken_runtime_contract::tool_batch::ToolBatchPhase::Finalized
+                        batch.phase() != awaken_tool_contract::tool_batch::ToolBatchPhase::Finalized
                     })
                     && batch.calls().iter().any(|entry| {
                         continuation

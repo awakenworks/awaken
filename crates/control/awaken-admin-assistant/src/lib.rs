@@ -40,7 +40,7 @@ use awaken_environment_contract::{
 };
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::resolved::{ContextPolicy, ToolDescriptor};
-use awaken_runtime_contract::tool::{
+use awaken_tool_contract::tool::{
     RawTool, ToolCall, ToolError, ToolOutput, current_tool_operation_id,
     parse_tool_args_or_error_output,
 };

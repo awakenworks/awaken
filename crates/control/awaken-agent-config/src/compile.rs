@@ -245,7 +245,7 @@ fn compile_with_models(
             // The host materializes an advisor consultation as an ordinary
             // durable child request. ToolBatch recovery reconnects to that
             // request; it never samples a second inline advisor executor.
-            .with_recovery(awaken_runtime_contract::tool::ToolRecoveryPolicy::durable_request()),
+            .with_recovery(awaken_tool_contract::tool::ToolRecoveryPolicy::durable_request()),
         );
     }
 

@@ -12,13 +12,13 @@ use awaken_agent_channel::AgentChannel as AgentChannelType;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::{IsolationClass, NetworkPolicy, ResourceLimits, SandboxSpec};
 use awaken_runtime_contract::llm::ToolCall;
-use awaken_runtime_contract::tool::ToolExecutor;
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::{
     PublishedSandboxControlService, SandboxControlPublishError, SandboxControlService,
     SandboxControlServiceKind, SandboxControlServicePublisher,
 };
 use awaken_session_environment_contract::HandExecutorFactory;
+use awaken_tool_contract::tool::ToolExecutor;
 use tokio::io::AsyncReadExt;
 
 #[derive(Default)]
@@ -84,7 +84,7 @@ impl HandExecutorFactory for FakeHandExecutorFactory {
         &self,
         _channel: Box<dyn AgentChannelType>,
         _operation_scope: &str,
-        _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
+        _recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
     ) -> Arc<dyn ToolExecutor> {
         Arc::new(FakeHandExecutor)
     }
@@ -95,9 +95,8 @@ impl ToolExecutor for FakeHandExecutor {
     async fn invoke(
         &self,
         call: &ToolCall,
-    ) -> Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
-    {
-        Ok(awaken_runtime_contract::tool::ToolOutput::ok(
+    ) -> Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError> {
+        Ok(awaken_tool_contract::tool::ToolOutput::ok(
             call.call_id.clone(),
             "bound-hand-ok",
         ))
@@ -509,20 +508,19 @@ impl ToolExecutor for ScriptedHandExecutor {
     async fn invoke(
         &self,
         call: &ToolCall,
-    ) -> Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
-    {
+    ) -> Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError> {
         match self.outcome {
-            ScriptedHandOutcome::Success => Ok(awaken_runtime_contract::tool::ToolOutput::ok(
+            ScriptedHandOutcome::Success => Ok(awaken_tool_contract::tool::ToolOutput::ok(
                 &call.call_id,
                 "recovered",
             )),
             ScriptedHandOutcome::UnavailableBeforeDispatch => Err(
-                awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(
+                awaken_tool_contract::tool::ToolError::UnavailableBeforeDispatch(
                     "expired attached exec".into(),
                 ),
             ),
             ScriptedHandOutcome::Indeterminate => {
-                Err(awaken_runtime_contract::tool::ToolError::Indeterminate(
+                Err(awaken_tool_contract::tool::ToolError::Indeterminate(
                     "indeterminate: hand connection lost during dispatch".into(),
                 ))
             }
@@ -549,7 +547,7 @@ impl HandExecutorFactory for ScriptedHandFactory {
         &self,
         _channel: Box<dyn AgentChannelType>,
         _operation_scope: &str,
-        _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
+        _recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
     ) -> Arc<dyn ToolExecutor> {
         self.binds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Arc::new(ScriptedHandExecutor {
@@ -775,7 +773,7 @@ impl HandExecutorFactory for UnusedHandExecutorFactory {
         &self,
         _channel: Box<dyn AgentChannelType>,
         _operation_scope: &str,
-        _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
+        _recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
     ) -> Arc<dyn ToolExecutor> {
         panic!("this test does not dispatch a Session Hand tool")
     }

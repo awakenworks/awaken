@@ -15,6 +15,7 @@ authority = "tool-relay"
 test-support = []
 
 [dependencies]
+awaken-tool-contract.workspace = true
 # The one wall-clock port: the instant a request deadline is judged at.
 awaken-time.workspace = true
 awaken-fs-durability.workspace = true

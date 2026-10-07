@@ -102,12 +102,10 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         &self,
     ) -> Result<
         awaken_lease_contract::authority::AuthorityProofStarted,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         awaken_authority_clock::authority_proof_started().map_err(|error| {
-            awaken_session_error_contract::RunError::unavailable(format!(
-                "authority clock: {error}"
-            ))
+            awaken_session_types::RunError::unavailable(format!("authority clock: {error}"))
         })
     }
 
@@ -117,7 +115,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         projection: &awaken_session_realization_contract::FrozenSessionProjection,
         lease: &awaken_session_realization_contract::ObservedSessionRealizationLease,
         prepare_session: bool,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         let retained_publication = self
             .host
             .session_slots
@@ -133,7 +131,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
                     | awaken_session_realization_contract::FrozenAgentPublicationDecision::Exact
             )
         {
-            return Err(awaken_session_error_contract::RunError::classified(
+            return Err(awaken_session_types::RunError::classified(
                 "session_runtime_publication_conflict",
                 "claimed Run does not match the frozen Session Agent publication",
             ));
@@ -151,13 +149,13 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             | awaken_session_realization_contract::FrozenAgentPublicationDecision::OptionalMissing
             | awaken_session_realization_contract::FrozenAgentPublicationDecision::Exact => {}
             awaken_session_realization_contract::FrozenAgentPublicationDecision::MissingRequired => {
-                return Err(awaken_session_error_contract::RunError::classified(
+                return Err(awaken_session_types::RunError::classified(
                     "session_runtime_publication_missing",
                     "Worker Session realization requires its exact frozen Agent publication",
                 ));
             }
             awaken_session_realization_contract::FrozenAgentPublicationDecision::Mismatch => {
-                return Err(awaken_session_error_contract::RunError::classified(
+                return Err(awaken_session_types::RunError::classified(
                     "session_runtime_publication_conflict",
                     "Worker Agent publication does not match the frozen Session identity, revision, or runtime",
                 ));
@@ -196,7 +194,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             let has_environment_binding = self.claimed_environment_binding.is_some()
                 || projection.environment.binding().is_some();
             if a2a_only && (has_environment_binding || has_local_environment_owner) {
-                return Err(awaken_session_error_contract::RunError::classified(
+                return Err(awaken_session_types::RunError::classified(
                     "session_runtime_remote_environment_conflict",
                     "remote A2A Session realization cannot consume a local Environment binding or owner",
                 ));
@@ -284,7 +282,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             && published_snapshot.is_none()
             && !runtime_authority_resident
         {
-            return Err(awaken_session_error_contract::RunError::classified(
+            return Err(awaken_session_types::RunError::classified(
                 "session_runtime_publication_missing",
                 "sandbox stdio MCP realization requires the exact claimed Agent snapshot before effects",
             ));
@@ -365,7 +363,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         &self,
         session_id: &awaken_session_types::SessionId,
         lease: &awaken_session_resource_contract::SessionRealizationLease,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         self.host
             .invalidate_session_realization_lease(session_id.as_str(), lease);
         Ok(())
@@ -381,24 +379,22 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for WorkerMcpEffec
     async fn stage_mcp_attachment(
         &self,
         request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<
-        awaken_session_mcp_contract::McpRealizationReceipt,
-        awaken_session_error_contract::RunError,
-    > {
+    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, awaken_session_types::RunError>
+    {
         self.0.stage_dispatched_mcp(request).await
     }
 
     async fn publish_mcp_generation(
         &self,
         generation: awaken_session_mcp_contract::McpGenerationRef,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         self.0.publish_dispatched_mcp(generation).await
     }
 
     async fn drain_mcp_generation(
         &self,
         generation: awaken_session_mcp_contract::McpGenerationRef,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         self.0.drain_dispatched_mcp(generation).await
     }
 }
@@ -429,7 +425,7 @@ mod tests {
             _intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
         ) -> Result<
             awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
-            awaken_session_error_contract::RunError,
+            awaken_session_types::RunError,
         > {
             Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned)
         }
@@ -439,7 +435,7 @@ mod tests {
             _receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
         ) -> Result<
             awaken_session_state_contract::SessionEnvironmentState,
-            awaken_session_error_contract::RunError,
+            awaken_session_types::RunError,
         > {
             panic!("legacy aggregate-Unowned recovery must not persist a durable binding")
         }

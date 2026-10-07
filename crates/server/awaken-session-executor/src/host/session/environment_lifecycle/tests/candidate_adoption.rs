@@ -15,7 +15,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
         _intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned)
     }
@@ -25,7 +25,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
         _receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         panic!("a non-owning binding sink must not persist")
     }
@@ -73,7 +73,7 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
             crate::ManagedHost::new(host.clone())
                 .realization()
                 .ok_or_else(|| {
-                    awaken_session_error_contract::RunError::unavailable(
+                    awaken_session_types::RunError::unavailable(
                         "RealizationRuntime is unsupported by this runtime",
                     )
                 })
@@ -349,7 +349,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         crate::ManagedHost::new(host.clone())
             .realization()
             .ok_or_else(|| {
-                awaken_session_error_contract::RunError::unavailable(
+                awaken_session_types::RunError::unavailable(
                     "RealizationRuntime is unsupported by this runtime",
                 )
             })

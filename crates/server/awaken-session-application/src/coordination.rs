@@ -15,7 +15,6 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_session_application_contract::{Pending, RunResume, StepOutcome};
-use awaken_session_error_contract::RunError;
 use awaken_session_execution_contract::{
     CoordinatedRunCommand, CoordinatedRunIntent, SessionAgentBoundaryAction,
     SessionAgentBoundaryCommand, SessionAgentBoundaryRole, SessionAgentBoundaryVisibility,
@@ -26,6 +25,7 @@ use awaken_session_execution_contract::{
     SessionThreadToolReplyDelivery, coordinated_thread_closed, session_agent_boundary_action,
     session_agent_report_text, session_agent_run_boundary, session_run_activity_operation_id,
 };
+use awaken_session_types::RunError;
 
 use crate::SessionApplication;
 
@@ -46,9 +46,10 @@ impl SessionApplication {
         activity_epoch: u64,
         result: &Result<T, RunError>,
     ) -> Result<(), RunError> {
-        if result.as_ref().is_err_and(|error| {
-            error.kind == awaken_session_error_contract::RunErrorKind::BadRequest
-        }) {
+        if result
+            .as_ref()
+            .is_err_and(|error| error.kind == awaken_session_types::RunErrorKind::BadRequest)
+        {
             // A caller rejection proves the Runtime did not durably accept the
             // operation. Dependency/internal failures deliberately retain the
             // activity receipt: enqueue/delivery may have committed before its
@@ -499,7 +500,7 @@ impl SessionAgentCoordination for SessionApplication {
                 session_activity_epoch,
             }),
             Err(error)
-                if error.kind == awaken_session_error_contract::RunErrorKind::BadRequest
+                if error.kind == awaken_session_types::RunErrorKind::BadRequest
                     || error.code == "budget_reached" =>
             {
                 Ok(SessionRunActivityAdmission::Rejected)

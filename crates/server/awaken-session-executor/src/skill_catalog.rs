@@ -18,8 +18,8 @@ use awaken_ext_skills::SkillSpec;
 #[cfg(test)]
 use awaken_resource_contract::SkillDefinition;
 use awaken_resource_contract::{SkillStoreError, SkillVersion};
-use awaken_session_error_contract::RunError;
 use awaken_session_resource_contract::ResolvedSkillBinding;
+use awaken_session_types::RunError;
 
 use awaken_session_configuration_contract::{SkillBundleSource, SkillCatalogApplication};
 
@@ -441,7 +441,7 @@ impl SkillCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_session_error_contract::RunErrorKind;
+    use awaken_session_types::RunErrorKind;
     use awaken_skill_store::{InMemorySkillStore, SkillBundleFile, bundle_sha256};
 
     fn version(id: &str, ordinal: u64, body: &str) -> SkillVersion {

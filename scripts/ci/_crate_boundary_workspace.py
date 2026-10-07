@@ -6,7 +6,7 @@ import re
 import tomllib
 from collections.abc import Callable, Iterable
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
 import _arch_fitness
 import _crate_dependency_fitness
@@ -15,6 +15,11 @@ import _crate_dependency_fitness
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CRATES = REPO_ROOT / "crates"
 _RUST_PROJECTION_CACHE_SIZE = 2048
+
+
+def repository_path(path: PurePath, repo_root: PurePath) -> str:
+    """Stable repository identity for source inventories and ownership keys."""
+    return path.relative_to(repo_root).as_posix()
 
 
 def load_manifest(path: Path) -> dict:
@@ -96,11 +101,11 @@ def check_crate_manifests_match_workspace(repo_root: Path = REPO_ROOT) -> list[s
     discovered = {path.parent.resolve() for path in crate_manifests(repo_root / "crates")}
     members = set(workspace_member_dirs(repo_root))
     errors = [
-        f"{path.relative_to(root)}: crate under crates/ is not a workspace member"
+        f"{repository_path(path, root)}: crate under crates/ is not a workspace member"
         for path in sorted(discovered - members)
     ]
     errors += [
-        f"{path.relative_to(root)}: workspace member is not discovered under crates/"
+        f"{repository_path(path, root)}: workspace member is not discovered under crates/"
         for path in sorted(members - discovered)
     ]
     return errors
@@ -746,6 +751,18 @@ def selftest() -> None:
     | R2   | no          | yes           | no      | E1     |
     | R3   | no          | no            | yes     | E2     |
     """
+    # P1/P2 identical POSIX/Windows subjects match the same ownership key;
+    # P3 different subjects stay distinct; P4 an outside path is never admitted.
+    expected = "crates/server/example/src/lib.rs"
+    for root in (PurePosixPath("/repo"), PureWindowsPath("C:/repo")):
+        assert repository_path(root / expected, root) == expected, "P1/P2"
+        assert repository_path(root / "crates/server/other/src/lib.rs", root) != expected, "P3"
+        try:
+            repository_path(root.parent / "outside/src/lib.rs", root)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("P4 outside source must not become an ownership key")
     _selftest_projection_cache()
     _selftest_crate_discovery()
     # Production-source cause/effect table: C4 an exact/`all` cfg predicate is

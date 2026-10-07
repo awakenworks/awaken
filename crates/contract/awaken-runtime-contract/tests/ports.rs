@@ -8,7 +8,7 @@ use awaken_runtime_contract::permission::{
     GateDecision, GateOutcome, ToolGateHook, ToolPermissionPolicy, ToolPermissionRuling,
     ToolPermissionVerdict,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolExecutor, ToolOutput};
+use awaken_tool_contract::tool::{RawTool, ToolError, ToolExecutor, ToolOutput};
 
 struct EchoTool;
 

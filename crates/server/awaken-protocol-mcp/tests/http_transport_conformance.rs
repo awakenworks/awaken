@@ -15,7 +15,7 @@ use awaken_mcp_wire::progress::McpProgressUpdate;
 use awaken_protocol_mcp::export::ProgressRawTool;
 use awaken_protocol_mcp::{McpExportedTool, McpHttpConfig, McpToolService, StaticExports, router};
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{ToolCall, ToolError, ToolOutput};
+use awaken_tool_contract::tool::{ToolCall, ToolError, ToolOutput};
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request};
 use serde_json::{Value, json};

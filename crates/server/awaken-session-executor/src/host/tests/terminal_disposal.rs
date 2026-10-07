@@ -235,7 +235,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     let (archive, recovery) = tokio::join!(
             managed
                 .terminal_cleanup()
-                .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+                .ok_or_else(|| awaken_session_types::RunError::unavailable(
                     "TerminalCleanupRuntime is unsupported by this runtime"
                 ))
                 .expect("runtime role")
@@ -245,7 +245,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
                 ),
             managed
                 .terminal_cleanup()
-                .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+                .ok_or_else(|| awaken_session_types::RunError::unavailable(
                     "TerminalCleanupRuntime is unsupported by this runtime"
                 ))
                 .expect("runtime role")
@@ -317,7 +317,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     managed
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })
@@ -364,7 +364,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     managed
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })
@@ -381,7 +381,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     let replay_error = managed
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })
@@ -391,7 +391,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         .expect_err("T4 retired generation fails closed");
     assert_eq!(
         replay_error.kind,
-        awaken_session_error_contract::RunErrorKind::Unavailable
+        awaken_session_types::RunErrorKind::Unavailable
     );
     let mut missing = awaken_session_state_contract::SessionCleanupOperation::default();
     assert!(missing.request(&awaken_session_types::SessionId::from("never-existed")));
@@ -428,7 +428,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     let missing_error = managed
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })
@@ -438,7 +438,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         .expect_err("T4 unknown generation fails closed");
     assert_eq!(
         missing_error.kind,
-        awaken_session_error_contract::RunErrorKind::Unavailable
+        awaken_session_types::RunErrorKind::Unavailable
     );
 }
 
@@ -560,7 +560,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         let preparation = managed
             .terminal_cleanup()
             .ok_or_else(|| {
-                awaken_session_error_contract::RunError::unavailable(
+                awaken_session_types::RunError::unavailable(
                     "TerminalCleanupRuntime is unsupported by this runtime",
                 )
             })
@@ -593,7 +593,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         assert!(
             managed
                 .terminal_cleanup()
-                .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+                .ok_or_else(|| awaken_session_types::RunError::unavailable(
                     "TerminalCleanupRuntime is unsupported by this runtime"
                 ))
                 .expect("runtime role")
@@ -675,7 +675,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         let first = managed
             .terminal_cleanup()
             .ok_or_else(|| {
-                awaken_session_error_contract::RunError::unavailable(
+                awaken_session_types::RunError::unavailable(
                     "TerminalCleanupRuntime is unsupported by this runtime",
                 )
             })
@@ -687,7 +687,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         let replay = managed
             .terminal_cleanup()
             .ok_or_else(|| {
-                awaken_session_error_contract::RunError::unavailable(
+                awaken_session_types::RunError::unavailable(
                     "TerminalCleanupRuntime is unsupported by this runtime",
                 )
             })
@@ -722,7 +722,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         managed
             .terminal_cleanup()
             .ok_or_else(|| {
-                awaken_session_error_contract::RunError::unavailable(
+                awaken_session_types::RunError::unavailable(
                     "TerminalCleanupRuntime is unsupported by this runtime",
                 )
             })

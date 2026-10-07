@@ -13,7 +13,7 @@
 //! two protocols can freeze different layouts for the same request.
 
 use super::SessionApplication;
-use awaken_session_error_contract::RunError;
+use awaken_session_types::RunError;
 
 /// Most File inputs one Session carries.
 pub const MAX_SESSION_FILE_RESOURCES: usize = 500;

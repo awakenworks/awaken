@@ -37,6 +37,7 @@ container-podman = ["awaken-execution-composition/podman"]
 container-k8s = ["awaken-execution-composition/k8s", "awaken-worker-transport-security/kubernetes"]
 
 [dependencies]
+awaken-tool-contract.workspace = true
 # The Hand factory port this Worker implements for its Session environments.
 awaken-session-environment-contract.workspace = true
 # Assembles the container-tier Session environment the deployment names.

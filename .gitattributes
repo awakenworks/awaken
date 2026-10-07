@@ -1,0 +1,2 @@
+# Embedded SQL has published byte checksums; preserve them on every platform.
+*.sql text eol=lf

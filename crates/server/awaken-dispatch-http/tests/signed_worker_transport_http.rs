@@ -127,7 +127,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         self.intents.lock().unwrap().push(intent.clone());
         match self.mode.lock().unwrap().clone() {
@@ -143,7 +143,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
                 Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned)
             }
             EnvironmentAuthorizationMode::Unavailable => {
-                Err(awaken_session_error_contract::RunError::unavailable_classified(
+                Err(awaken_session_types::RunError::unavailable_classified(
                     "session_environment_authorization_unavailable",
                     "binding authority is temporarily unavailable",
                 ))
@@ -156,15 +156,13 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
         receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         if self.reject_persist.load(Ordering::SeqCst) {
-            return Err(
-                awaken_session_error_contract::RunError::unavailable_classified(
-                    "session_environment_persist_unavailable",
-                    "binding persistence is temporarily unavailable",
-                ),
-            );
+            return Err(awaken_session_types::RunError::unavailable_classified(
+                "session_environment_persist_unavailable",
+                "binding persistence is temporarily unavailable",
+            ));
         }
         self.receipts.lock().unwrap().push(receipt);
         Ok(self.persisted_environment.lock().unwrap().clone())
@@ -591,9 +589,9 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
         _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
     ) -> Result<
         awaken_session_execution_contract::SessionRunActivityAdmission,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
-        Err(awaken_session_error_contract::RunError::bad_request(
+        Err(awaken_session_types::RunError::bad_request(
             "signed coordination fixture does not admit Session activity",
         ))
     }
@@ -603,8 +601,8 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
         _session_id: &SessionId,
         _thread_id: &ThreadId,
         _run_id: &RunId,
-    ) -> Result<bool, awaken_session_error_contract::RunError> {
-        Err(awaken_session_error_contract::RunError::bad_request(
+    ) -> Result<bool, awaken_session_types::RunError> {
+        Err(awaken_session_types::RunError::bad_request(
             "signed coordination fixture does not admit model requests",
         ))
     }
@@ -614,7 +612,7 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
         _session_id: &SessionId,
     ) -> Result<
         Vec<awaken_session_execution_contract::SessionAgentRosterEntry>,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         self.agent_lists.fetch_add(1, Ordering::SeqCst);
         Ok(vec![
@@ -631,7 +629,7 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
         command: awaken_session_execution_contract::SessionAgentMessageCommand,
     ) -> Result<
         awaken_session_execution_contract::SessionAgentMessageReceipt,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         self.agent_messages.lock().unwrap().push(command);
         Ok(
@@ -644,7 +642,7 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
     async fn settle_session_agent_boundary(
         &self,
         command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         self.agent_boundaries.lock().unwrap().push(command);
         Ok(())
     }
@@ -652,8 +650,8 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
     async fn finalize_session_agent_boundary(
         &self,
         _command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
-        Err(awaken_session_error_contract::RunError::bad_request(
+    ) -> Result<(), awaken_session_types::RunError> {
+        Err(awaken_session_types::RunError::bad_request(
             "signed coordination fixture does not finalize post-Dispatch roots",
         ))
     }
@@ -662,8 +660,8 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
         &self,
         _session_id: &SessionId,
         _child_thread_id: &ThreadId,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
-        Err(awaken_session_error_contract::RunError::internal(
+    ) -> Result<(), awaken_session_types::RunError> {
+        Err(awaken_session_types::RunError::internal(
             "signed Worker transport does not own public Thread interruption",
         ))
     }
@@ -671,8 +669,8 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
     async fn reply_session_thread_tool(
         &self,
         _command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
-        Err(awaken_session_error_contract::RunError::internal(
+    ) -> Result<(), awaken_session_types::RunError> {
+        Err(awaken_session_types::RunError::internal(
             "signed Worker transport does not own public Thread replies",
         ))
     }
@@ -1488,7 +1486,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     .expect_err("B4 unavailable root authority remains retryable");
     assert_eq!(
         unavailable.kind,
-        awaken_session_error_contract::RunErrorKind::Unavailable,
+        awaken_session_types::RunErrorKind::Unavailable,
         "B4"
     );
     assert_eq!(
@@ -1563,7 +1561,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     .expect_err("B6 retryable persistence failure");
     assert_eq!(
         unavailable.kind,
-        awaken_session_error_contract::RunErrorKind::Unavailable,
+        awaken_session_types::RunErrorKind::Unavailable,
         "B6"
     );
     environment_bindings

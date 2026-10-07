@@ -182,8 +182,7 @@ pub(super) async fn run_tool_calls(
         .iter()
         .map(|call| call_concurrency(runtime, context, delegation_origin, resolved, env, call))
         .collect::<Vec<_>>();
-    let waves =
-        awaken_runtime_contract::tool_execution_waves(&claims, context.max_parallel_tools());
+    let waves = awaken_tool_contract::tool_execution_waves(&claims, context.max_parallel_tools());
     let has_parallel_wave = waves.iter().any(|wave| wave.len() > 1);
     let supports_concurrent_path = calls.iter().all(|call| {
         !requires_sequential_dispatch(resolved, call)
@@ -875,8 +874,7 @@ async fn record_tool_output(
             .observe_return(spiller.execution_domain(run_id, &output.call_id, &output.text()))
             .await
             .map_err(|error| Error::Execution(error.to_string()))?;
-        let effectful =
-            domain != awaken_runtime_contract::tool_batch::ToolExecutionDomain::Worker {};
+        let effectful = domain != awaken_tool_contract::tool_batch::ToolExecutionDomain::Worker {};
         batch
             .bind_materialization_domain(&output.call_id, domain)
             .map_err(|error| Error::Execution(error.to_string()))?;
@@ -1381,13 +1379,13 @@ fn recovery_capability(
 
 #[cfg(test)]
 fn routed_recovery_capability(
-    target: Option<awaken_runtime_contract::tool::ToolExecutionTarget>,
+    target: Option<awaken_tool_contract::tool::ToolExecutionTarget>,
     tool: ToolRecoveryCapability,
     sandbox_executor: Option<ToolRecoveryCapability>,
 ) -> ToolRecoveryCapability {
     match target {
-        Some(awaken_runtime_contract::tool::ToolExecutionTarget::Brain) => tool,
-        Some(awaken_runtime_contract::tool::ToolExecutionTarget::Sandbox) => {
+        Some(awaken_tool_contract::tool::ToolExecutionTarget::Brain) => tool,
+        Some(awaken_tool_contract::tool::ToolExecutionTarget::Sandbox) => {
             sandbox_executor.unwrap_or(ToolRecoveryCapability::NonRecoverable)
         }
         None => ToolRecoveryCapability::NonRecoverable,
@@ -1458,7 +1456,7 @@ async fn persist_batch(
 #[cfg(test)]
 mod execution_target_recovery_tests {
     use super::*;
-    use awaken_runtime_contract::tool::ToolExecutionTarget::{Brain, Sandbox};
+    use awaken_tool_contract::tool::ToolExecutionTarget::{Brain, Sandbox};
 
     #[test]
     fn recovery_capability_follows_the_execution_target_decision_table() {

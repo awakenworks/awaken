@@ -23,7 +23,6 @@ awaken-dispatch-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
-awaken-session-error-contract.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-repository-contract.workspace = true
 awaken-session-execution-contract.workspace = true

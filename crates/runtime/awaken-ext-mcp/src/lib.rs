@@ -1,7 +1,7 @@
 //! Model Context Protocol (MCP) client extension.
 //!
 //! Connects to external MCP servers and exposes their tools as awaken runtime
-//! tools ([`RawTool`](awaken_runtime_contract::tool::RawTool)), namespaced
+//! tools ([`RawTool`](awaken_tool_contract::tool::RawTool)), namespaced
 //! `mcp__<server>__<tool>`. The wire protocol is spoken through the `mcp` SDK,
 //! which stays the anti-corruption boundary: only neutral runtime values
 //! (`ToolOutput`, `ToolDescriptor`) cross out of this crate.

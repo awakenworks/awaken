@@ -32,8 +32,8 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use awaken_store_inmem::{MemoryCommitCoordinator, replay_state};
+use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 use serde_json::json;
 use tokio::sync::Barrier;
 

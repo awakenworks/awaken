@@ -7,7 +7,7 @@ use awaken_runtime_contract::attempt_termination::{
     ActiveNativeAttemptCoverage, NativeAttemptCoverage,
 };
 use awaken_runtime_contract::model_operation::ActiveModelOperation;
-use awaken_runtime_contract::tool_batch::ActiveToolBatch;
+use awaken_tool_contract::tool_batch::ActiveToolBatch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeAttemptTermination {
@@ -94,19 +94,19 @@ pub struct NativeAttemptFootprint {
     covered: bool,
     all_models_stopped: bool,
     all_model_effects_closed: bool,
-    domains: Vec<awaken_runtime_contract::tool_batch::ToolExecutionDomain>,
+    domains: Vec<awaken_tool_contract::tool_batch::ToolExecutionDomain>,
 }
 
 impl NativeAttemptFootprint {
-    pub fn process_domains(&self) -> &[awaken_runtime_contract::tool_batch::ToolExecutionDomain] {
+    pub fn process_domains(&self) -> &[awaken_tool_contract::tool_batch::ToolExecutionDomain] {
         &self.domains
     }
 
     pub fn classify(
         &self,
-        closed: &[awaken_runtime_contract::tool_batch::ToolExecutionDomain],
+        closed: &[awaken_tool_contract::tool_batch::ToolExecutionDomain],
     ) -> NativeAttemptTermination {
-        use awaken_runtime_contract::tool_batch::ToolExecutionDomain;
+        use awaken_tool_contract::tool_batch::ToolExecutionDomain;
         let tools_closed = self.domains.iter().all(|domain| match domain {
             ToolExecutionDomain::Worker {} => true,
             ToolExecutionDomain::ControlledProcess { .. } => closed.contains(domain),
@@ -264,14 +264,14 @@ mod tests {
         TerminalReceipt,
     };
     use awaken_runtime_contract::resolved::ModelBinding;
-    use awaken_runtime_contract::tool::ToolRecoveryPolicy;
-    use awaken_runtime_contract::tool_batch::ToolBatch;
+    use awaken_tool_contract::tool::ToolRecoveryPolicy;
+    use awaken_tool_contract::tool_batch::ToolBatch;
     use std::num::NonZeroU64;
 
     #[test]
     fn journalled_closure_requires_every_exact_domain_and_preserves_unknown_results() {
         use awaken_runtime_contract::model_operation::ModelEffectScope;
-        use awaken_runtime_contract::tool_batch::ToolExecutionDomain;
+        use awaken_tool_contract::tool_batch::ToolExecutionDomain;
         // C1 pre-effect coverage; C2 model is response-only/opaque; C3 exact
         // process closure delivered/missing/wrong. R1=C1+response-only+exact
         // => controlled closure, original Unknown unchanged, no model replay.

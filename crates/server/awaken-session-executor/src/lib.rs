@@ -100,11 +100,11 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_runtime_contract::live_inbox::{LiveInboxMessageId, MessageOrigin, Offer};
 use awaken_session_application_contract::{DelegatedRun, Pending, StepOutcome};
 use awaken_session_configuration_contract::{AgentCapabilities, BuiltinTool, CustomTool};
-use awaken_session_error_contract::RunError;
 use awaken_session_execution_contract::{
     LiveInboxEntry, LiveInboxError, LiveInboxSnapshot, OutcomeDrive, SessionRuntime,
     ToolPermissionDecision,
 };
+use awaken_session_types::RunError;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::authority::EphemeralRuntimeAuthority;
@@ -351,7 +351,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
         {
             self.environment()
                 .ok_or_else(|| {
-                    awaken_session_error_contract::RunError::unavailable(
+                    awaken_session_types::RunError::unavailable(
                         "EnvironmentRuntime is unsupported by this runtime",
                     )
                 })?

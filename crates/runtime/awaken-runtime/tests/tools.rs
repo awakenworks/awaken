@@ -27,11 +27,11 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{
+use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
+use awaken_tool_contract::tool::{
     DurableTaskTool, RawTool, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput,
     ToolOutputSpiller, ToolTaskHandle, ToolTaskPoll, ToolTaskStart,
 };
-use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 
 /// First inference asks for a tool call; the second ends with text.
 struct ToolThenText {
@@ -87,7 +87,7 @@ struct InvalidatesContinuation {
 struct MultimodalTool;
 
 struct OperationProbe {
-    seen: Arc<Mutex<Option<awaken_runtime_contract::tool::ToolOperationContext>>>,
+    seen: Arc<Mutex<Option<awaken_tool_contract::tool::ToolOperationContext>>>,
 }
 
 struct SpillProbe {
@@ -122,8 +122,7 @@ impl RawTool for OperationProbe {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        *self.seen.lock().unwrap() =
-            awaken_runtime_contract::tool::current_tool_operation_context();
+        *self.seen.lock().unwrap() = awaken_tool_contract::tool::current_tool_operation_context();
         Ok(ToolOutput::ok(call.call_id, "ok"))
     }
 }
@@ -660,10 +659,9 @@ async fn executor_receives_the_attempt_execution_workspace() {
         }
 
         async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-            *self.0.lock().unwrap() =
-                awaken_runtime_contract::tool::current_tool_operation_context()
-                    .and_then(|context| context.execution_scope)
-                    .map(|scope| scope.0.0);
+            *self.0.lock().unwrap() = awaken_tool_contract::tool::current_tool_operation_context()
+                .and_then(|context| context.execution_scope)
+                .map(|scope| scope.0.0);
             Ok(ToolOutput::ok(call.call_id, "ok"))
         }
     }
@@ -1277,7 +1275,7 @@ async fn fresh_and_recovered_tool_uncertainty_use_the_same_terminal_decision() {
     // Requested recovery needs no replay permission because no prior entry was
     // recorded. This test does not grant a crash-recovery physical-slot bypass.
     use awaken_agent_contract::agent::state::StateKey;
-    use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatch};
+    use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolBatch};
     for recovered in [false, true] {
         let entered = Arc::new(AtomicUsize::new(0));
         let model = Arc::new(ToolThenText::new());
@@ -1666,7 +1664,7 @@ async fn gate_set_result_skips_execution_and_stages_supplied_result() {
         .with_llm(Arc::new(ToolThenText::new()))
         .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
         .with_gate(Arc::new(ConstGate(GateOutcome::SetResult(
-            awaken_runtime_contract::tool::ToolOutput::ok("call-1", "injected"),
+            awaken_tool_contract::tool::ToolOutput::ok("call-1", "injected"),
         ))));
 
     let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));

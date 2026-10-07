@@ -25,8 +25,8 @@ use awaken_ext_skills::{
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use awaken_runtime_examples::prelude::*;
+use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 
 /// A deterministic model that drives the whole combined surface: discover →
 /// touch a rust file → discover again (the conditional skill surfaces) →

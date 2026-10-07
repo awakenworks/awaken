@@ -18,10 +18,10 @@ use awaken_managed_session_events::{
     CommittedSessionFacts, ProjectionThreadSnapshots, SessionProjectionReadTimings,
     committed_lifecycle_prefix,
 };
-use awaken_session_error_contract::RunError;
 use awaken_session_event_contract::{SessionEventBatch, SessionEventCommand};
 use awaken_session_execution_contract::{CoordinatedThreadLink, SessionProjectionSource};
 use awaken_session_state_contract::PersistedSession;
+use awaken_session_types::RunError;
 
 use super::SessionApplication;
 

@@ -399,7 +399,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             })
             .unwrap_or(false);
         if needs_deferred_executor {
-            let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> =
+            let executor: Arc<dyn awaken_tool_contract::tool::ToolExecutor> =
                 Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
                     Arc::downgrade(&host),
                     &thread_id.0,

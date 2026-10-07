@@ -21,8 +21,8 @@ use awaken_runtime_contract::plugin::{
     exact_plugin_selection,
 };
 use awaken_runtime_contract::snapshot::{ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
-use awaken_runtime_contract::tool::{RawTool, RawToolRegistry};
 use awaken_runtime_contract::{AttemptOwnershipVerifier, RuntimeRunContext};
+use awaken_tool_contract::tool::{RawTool, RawToolRegistry};
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 

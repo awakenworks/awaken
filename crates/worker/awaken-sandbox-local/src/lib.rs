@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use awaken_ext_builtin_tools::{HandToolContext, all_hand_tools_in};
 use awaken_runtime_contract::ContentBlock;
 use awaken_runtime_contract::llm::ToolCall;
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolExecutionTarget, ToolOutput};
+use awaken_tool_contract::tool::{RawTool, ToolError, ToolExecutionTarget, ToolOutput};
 
 #[path = "namespace/memory_mount.rs"]
 mod memory_mount;

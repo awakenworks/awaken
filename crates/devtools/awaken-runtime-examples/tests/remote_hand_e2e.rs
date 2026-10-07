@@ -26,8 +26,8 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolExecutionTarget, ToolOutput};
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::tool::{RawTool, ToolError, ToolExecutionTarget, ToolOutput};
 use awaken_tool_relay::{HandSession, RemoteToolExecutor, serve_hand};
 
 /// First inference asks for `echo`; the second ends with text.

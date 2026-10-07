@@ -1,8 +1,8 @@
 //! Error translation owned by the Managed `SessionRuntime` adapter.
 
 use awaken_runtime_contract::live_inbox::EditError;
-use awaken_session_error_contract::RunError;
 use awaken_session_execution_contract::LiveInboxError;
+use awaken_session_types::RunError;
 
 use crate::{HostError, HostErrorKind};
 
@@ -34,9 +34,9 @@ pub(crate) fn from_run_error(error: RunError) -> HostError {
     HostError {
         message: error.message,
         kind: match error.kind {
-            awaken_session_error_contract::RunErrorKind::BadRequest => HostErrorKind::BadRequest,
-            awaken_session_error_contract::RunErrorKind::Internal => HostErrorKind::Internal,
-            awaken_session_error_contract::RunErrorKind::Unavailable => HostErrorKind::Unavailable,
+            awaken_session_types::RunErrorKind::BadRequest => HostErrorKind::BadRequest,
+            awaken_session_types::RunErrorKind::Internal => HostErrorKind::Internal,
+            awaken_session_types::RunErrorKind::Unavailable => HostErrorKind::Unavailable,
         },
         code: error.code,
     }

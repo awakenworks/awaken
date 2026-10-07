@@ -9,7 +9,7 @@ use std::sync::Arc;
 use awaken_ext_mcp::transport::McpToolTransport;
 use awaken_ext_mcp::{DEFAULT_TIMEOUT, StdioTransport, connect_tools};
 use awaken_runtime_contract::ContentBlock;
-use awaken_runtime_contract::tool::ToolCall;
+use awaken_tool_contract::tool::ToolCall;
 
 async fn demo_server() -> StdioTransport {
     let executable = std::env::var("CARGO_BIN_EXE_awaken-mcp-stdio-demo")

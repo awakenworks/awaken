@@ -782,7 +782,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     branch_managed
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -960,7 +960,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(
             managed
                 .thread_reads()
-                .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+                .ok_or_else(|| awaken_session_types::RunError::unavailable(
                     "ThreadReadRuntime is unsupported by this runtime"
                 ))
                 .expect("runtime role")
@@ -1019,7 +1019,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(
             managed
                 .thread_reads()
-                .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+                .ok_or_else(|| awaken_session_types::RunError::unavailable(
                     "ThreadReadRuntime is unsupported by this runtime"
                 ))
                 .expect("runtime role")
@@ -1160,7 +1160,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert_eq!(
         managed
             .coordination()
-            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_types::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -1173,7 +1173,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert_eq!(
         managed
             .coordination()
-            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_types::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -1188,7 +1188,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert_eq!(
         managed
             .coordination()
-            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_types::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -1203,7 +1203,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert!(
         managed
             .coordination()
-            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_types::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -1215,7 +1215,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert_eq!(
         managed
             .coordination()
-            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_types::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -1262,7 +1262,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert_eq!(
         managed
             .coordination()
-            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_types::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -1280,7 +1280,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert!(
         managed
             .coordination()
-            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_types::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -1300,7 +1300,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert_eq!(
         managed
             .coordination()
-            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_types::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -1328,7 +1328,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert_eq!(
         managed
             .coordination()
-            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_types::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -1365,7 +1365,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert_eq!(
         managed
             .coordination()
-            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_types::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -1451,7 +1451,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert_eq!(
         managed
             .coordination()
-            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_types::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -1513,7 +1513,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert_eq!(
         managed
             .coordination()
-            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_types::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -1529,7 +1529,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     let completed_operation_error = managed
         .coordination()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime",
             )
         })
@@ -1539,7 +1539,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         .expect_err("R2 completed operation change conflicts");
     assert_eq!(
         completed_operation_error.kind,
-        awaken_session_error_contract::RunErrorKind::BadRequest,
+        awaken_session_types::RunErrorKind::BadRequest,
         "R2/E6 Completed"
     );
     let mut completed_added_capability = empty_capabilities;
@@ -1550,7 +1550,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     let completed_capability_error = managed
         .coordination()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime",
             )
         })
@@ -1560,7 +1560,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         .expect_err("R3 completed empty-to-present capability change conflicts");
     assert_eq!(
         completed_capability_error.kind,
-        awaken_session_error_contract::RunErrorKind::BadRequest,
+        awaken_session_types::RunErrorKind::BadRequest,
         "R3/E6 Completed"
     );
 }

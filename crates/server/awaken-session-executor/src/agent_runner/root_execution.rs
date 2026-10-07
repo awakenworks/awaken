@@ -22,9 +22,9 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{
     CommittedTerminalProjection, committed_terminal_projection, deliver_committed_terminal,
 };
-use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
 #[cfg(test)]
 use awaken_sandbox_local::LocalSandbox;
+use awaken_tool_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
 
 use super::{AgentRunBoundary, settled_agent_boundary};
 #[cfg(test)]

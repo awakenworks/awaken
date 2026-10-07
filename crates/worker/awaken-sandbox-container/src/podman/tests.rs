@@ -4,6 +4,7 @@
 //! This remains a child of `podman`, retaining access to the private adapter
 //! seams and the original cause/effect decision tables.
 
+#[cfg(unix)]
 use std::ffi::OsString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -130,8 +131,10 @@ async fn restored_disposal_keeps_immutable_id_and_current_authority_at_each_adap
     }
 }
 
+#[cfg(unix)]
 struct FixedBroker;
 
+#[cfg(unix)]
 #[async_trait]
 impl pc::SecretBroker for FixedBroker {
     async fn materialize(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
@@ -515,15 +518,20 @@ fn rootless_systemd_bus_decision_table_selects_only_user_manager_authority() {
         None,
         "B2 a regular file is not trusted as a user-manager bus",
     );
-    std::fs::remove_file(runtime.path().join("bus")).expect("remove regular file");
-    let _listener = std::os::unix::net::UnixListener::bind(runtime.path().join("bus"))
-        .expect("user bus fixture");
-    let expected: OsString = format!("unix:path={}", runtime.path().join("bus").display()).into();
-    assert_eq!(
-        rootless_systemd_bus(Some(runtime.path().as_os_str())),
-        Some(expected),
-        "B1 the canonical user-manager socket is selected for Podman",
-    );
+    // B1 requires a Unix user manager; B2 still executes on every platform.
+    #[cfg(unix)]
+    {
+        std::fs::remove_file(runtime.path().join("bus")).expect("remove regular file");
+        let _listener = std::os::unix::net::UnixListener::bind(runtime.path().join("bus"))
+            .expect("user bus fixture");
+        let expected: OsString =
+            format!("unix:path={}", runtime.path().join("bus").display()).into();
+        assert_eq!(
+            rootless_systemd_bus(Some(runtime.path().as_os_str())),
+            Some(expected),
+            "B1 the canonical user-manager socket is selected for Podman",
+        );
+    }
 }
 
 #[tokio::test]

@@ -36,12 +36,12 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{
+use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_store_sqlite::SqliteCommitCoordinator;
+use awaken_tool_contract::tool::{
     RawTool, ToolConcurrency, ToolOutput, ToolRecoveryCapability, ToolRecoveryMode,
     ToolRecoveryPolicy, ToolResource, ToolResourceAccess,
 };
-use awaken_store_inmem::MemoryCommitCoordinator;
-use awaken_store_sqlite::SqliteCommitCoordinator;
 
 struct Bash;
 
@@ -64,7 +64,7 @@ impl RawTool for Bash {
     async fn invoke(
         &self,
         call: ToolCall,
-    ) -> Result<ToolOutput, awaken_runtime_contract::tool::ToolError> {
+    ) -> Result<ToolOutput, awaken_tool_contract::tool::ToolError> {
         Ok(ToolOutput::ok(call.call_id, "unused by submission test"))
     }
 }

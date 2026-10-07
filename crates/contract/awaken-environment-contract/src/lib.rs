@@ -99,6 +99,8 @@ pub enum EnvironmentStoreError {
     InvalidConfig(#[from] InvalidEnvironmentConfig),
     #[error("Environment revision changed before the update was committed")]
     RevisionConflict,
+    #[error("Environment revision exhausted")]
+    RevisionExhausted,
     #[error("Environment store failed: {0}")]
     Backend(String),
 }
@@ -110,6 +112,24 @@ pub enum EnvironmentStoreError {
 pub enum InvalidEnvironmentConfig {
     #[error("packages require package-manager network access")]
     PackagesRequirePackageManager,
+}
+
+/// A rejected mutation leaves the Environment and its revision unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum EnvironmentMutationError {
+    #[error(transparent)]
+    InvalidConfig(#[from] InvalidEnvironmentConfig),
+    #[error("Environment revision exhausted")]
+    RevisionExhausted,
+}
+
+impl From<EnvironmentMutationError> for EnvironmentStoreError {
+    fn from(error: EnvironmentMutationError) -> Self {
+        match error {
+            EnvironmentMutationError::InvalidConfig(error) => Self::InvalidConfig(error),
+            EnvironmentMutationError::RevisionExhausted => Self::RevisionExhausted,
+        }
+    }
 }
 
 /// Installation-global identity of the immutable built-in local Environment.
@@ -423,7 +443,7 @@ impl EnvItem {
     /// mapped to `null` deletes it. Returns whether canonical facts changed; a
     /// no-op replay retains the revision and produces no new delivery intent.
     /// One patch definition is shared by every backend so semantics cannot drift.
-    pub fn apply(&mut self, patch: EnvUpdate) -> Result<bool, InvalidEnvironmentConfig> {
+    pub fn apply(&mut self, patch: EnvUpdate) -> Result<bool, EnvironmentMutationError> {
         let mut next = self.clone();
         if let Some(name) = patch.name {
             next.name = name;
@@ -469,7 +489,7 @@ impl EnvItem {
             next.revision
                 .0
                 .checked_add(1)
-                .expect("Environment revision exhausted"),
+                .ok_or(EnvironmentMutationError::RevisionExhausted)?,
         );
         *self = next;
         Ok(true)
@@ -946,8 +966,103 @@ mod tests {
                 }),
                 ..Default::default()
             }),
-            Err(InvalidEnvironmentConfig::PackagesRequirePackageManager)
+            Err(EnvironmentMutationError::InvalidConfig(
+                InvalidEnvironmentConfig::PackagesRequirePackageManager
+            ))
         );
         assert_eq!(item, before);
+    }
+
+    #[test]
+    fn revision_boundary_rejects_changes_atomically_and_admits_noop_replay() {
+        // R1 MAX-1 accepts one change; R2 MAX admits an empty/equal-fact replay;
+        // R3 MAX rejects a real change; R4 invalid configuration wins before
+        // revision admission at either boundary. Every rejection preserves all facts.
+        let invalid = EnvUpdate {
+            name: Some("must roll back".into()),
+            config: Some(EnvironmentConfigMutation::Replace(
+                EnvironmentConfig::Cloud {
+                    networking: EnvironmentNetworking::Limited {
+                        allowed_hosts: Vec::new(),
+                        allow_mcp_servers: false,
+                        allow_package_managers: false,
+                    },
+                    packages: EnvironmentPackages {
+                        npm: vec!["tsx".into()],
+                        ..Default::default()
+                    },
+                },
+            )),
+            ..Default::default()
+        };
+        for (revision, patch, expected) in [
+            (
+                u64::MAX - 1,
+                EnvUpdate {
+                    name: Some("after".into()),
+                    ..Default::default()
+                },
+                Ok(true),
+            ),
+            (u64::MAX, EnvUpdate::default(), Ok(false)),
+            (
+                u64::MAX,
+                EnvUpdate {
+                    name: Some("before".into()),
+                    ..Default::default()
+                },
+                Ok(false),
+            ),
+            (
+                u64::MAX,
+                EnvUpdate {
+                    name: Some("after".into()),
+                    ..Default::default()
+                },
+                Err(EnvironmentMutationError::RevisionExhausted),
+            ),
+            (
+                u64::MAX - 1,
+                invalid.clone(),
+                Err(EnvironmentMutationError::InvalidConfig(
+                    InvalidEnvironmentConfig::PackagesRequirePackageManager,
+                )),
+            ),
+            (
+                u64::MAX,
+                invalid,
+                Err(EnvironmentMutationError::InvalidConfig(
+                    InvalidEnvironmentConfig::PackagesRequirePackageManager,
+                )),
+            ),
+        ] {
+            let mut item = EnvItem {
+                id: "env-boundary".into(),
+                revision: EnvironmentRevision(revision),
+                name: "before".into(),
+                description: Some("retained".into()),
+                metadata: BTreeMap::from([("retained".into(), "value".into())]),
+                scope: Some("workspace".into()),
+                config: EnvironmentConfig::SelfHosted,
+                sandbox_policy: None,
+                archived_at: None,
+                created_at: Some("2026-02-03T04:05:06.007Z".into()),
+                updated_at: Some("2026-02-03T04:05:06.007Z".into()),
+            };
+            let before = item.clone();
+            assert_eq!(item.apply(patch), expected);
+            if expected == Ok(true) {
+                let mut after = before;
+                after.name = "after".into();
+                after.revision = EnvironmentRevision(u64::MAX);
+                assert_eq!(item, after);
+            } else {
+                assert_eq!(item, before);
+            }
+        }
+        assert_eq!(
+            EnvironmentStoreError::from(EnvironmentMutationError::RevisionExhausted),
+            EnvironmentStoreError::RevisionExhausted,
+        );
     }
 }

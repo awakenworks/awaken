@@ -493,7 +493,7 @@ fn discovered_tool_options_schema(routes: &[BrokeredToolRoute]) -> serde_json::V
 impl awaken_ext_builtin_tools::ManagedWebRouteResolver for HttpBrokeredInferenceClient {
     async fn resolve(
         &self,
-        context: &awaken_runtime_contract::tool::ToolOperationContext,
+        context: &awaken_tool_contract::tool::ToolOperationContext,
         tool_id: &str,
         route_ref: &str,
     ) -> Result<
@@ -1109,7 +1109,7 @@ mod tests {
 
         let endpoint = awaken_ext_builtin_tools::ManagedWebRouteResolver::resolve(
             &client,
-            &awaken_runtime_contract::tool::ToolOperationContext::for_run("run-7", "op-7"),
+            &awaken_tool_contract::tool::ToolOperationContext::for_run("run-7", "op-7"),
             "web_search",
             "web-search:brave@7",
         )
@@ -1443,7 +1443,7 @@ mod tests {
         };
         use awaken_runtime_contract::{AttemptOwnershipError, AttemptOwnershipVerifier};
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use tokio::io::AsyncWriteExt;
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
         struct MutableOwnership(Mutex<Result<(), AttemptOwnershipError>>);
         #[async_trait]
@@ -1476,8 +1476,38 @@ mod tests {
                 let server = tokio::spawn(async move {
                     loop {
                         let (mut socket, _) = listener.accept().await.unwrap();
+                        // Read the full request before closing the response.
+                        // Dropping a socket with unread input can reset TCP on
+                        // Windows, which correctly yields Unknown evidence.
+                        {
+                            let mut reader = tokio::io::BufReader::new(&mut socket);
+                            let mut line = String::new();
+                            let mut content_length = None;
+                            loop {
+                                line.clear();
+                                assert_ne!(reader.read_line(&mut line).await.unwrap(), 0);
+                                if line == "\r\n" {
+                                    break;
+                                }
+                                if let Some((name, value)) = line.split_once(':')
+                                    && name.eq_ignore_ascii_case("content-length")
+                                {
+                                    content_length = Some(value.trim().parse::<u64>().unwrap());
+                                }
+                            }
+                            let length =
+                                content_length.expect("native JSON request has a body length");
+                            assert_eq!(
+                                tokio::io::copy(&mut reader.take(length), &mut tokio::io::sink())
+                                    .await
+                                    .unwrap(),
+                                length,
+                                "native request body must be complete"
+                            );
+                        }
                         observed.fetch_add(1, Ordering::SeqCst);
-                        let _ = socket.write_all(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}").await;
+                        socket.write_all(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}").await.unwrap();
+                        socket.shutdown().await.unwrap();
                     }
                 });
                 let gate = Arc::new(tokio::sync::Barrier::new(2));

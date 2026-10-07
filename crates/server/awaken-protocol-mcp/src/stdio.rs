@@ -168,7 +168,7 @@ mod tests {
     use crate::export::{McpExportedTool, SharedExports, StaticExports};
     use awaken_runtime_contract::permission::ToolCall;
     use awaken_runtime_contract::resolved::ToolDescriptor;
-    use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+    use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
     use std::future::Future;
     use std::task::Poll;
     use std::time::Duration;

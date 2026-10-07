@@ -757,7 +757,7 @@ mod verification {
         ContainerHandResidency, DispatchBackend, SandboxBackend, SandboxTier,
         durable_dispatch_is_admitted, sandbox_support_projection,
     };
-    use awaken_runtime_contract::tool::ToolRecoveryCapability;
+    use awaken_tool_contract::tool::ToolRecoveryCapability;
 
     fn symbolic_dispatch_backend(value: bool) -> DispatchBackend {
         if value {

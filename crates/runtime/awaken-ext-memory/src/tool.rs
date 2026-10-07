@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{Tool, ToolError};
+use awaken_tool_contract::tool::{Tool, ToolError};
 
 use crate::localfs::{MemoryDir, MemoryStoreHandle};
 use std::sync::Arc;
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn missing_fields_are_rejected_at_the_single_erasure_boundary() {
-        use awaken_runtime_contract::tool::parse_tool_args;
+        use awaken_tool_contract::tool::parse_tool_args;
 
         assert!(parse_tool_args::<WriteMemoryArgs>(serde_json::json!({ "name": "a" })).is_err());
         assert!(parse_tool_args::<WriteMemoryArgs>(serde_json::json!({ "content": "b" })).is_err());
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn non_string_name_or_content_is_rejected_at_the_single_erasure_boundary() {
-        use awaken_runtime_contract::tool::parse_tool_args;
+        use awaken_tool_contract::tool::parse_tool_args;
 
         for name in [
             serde_json::json!(42),

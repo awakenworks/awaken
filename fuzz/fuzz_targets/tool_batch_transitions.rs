@@ -1,8 +1,8 @@
 #![no_main]
 
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_runtime_contract::tool::{ToolCall, ToolOutput, ToolRecoveryMode, ToolRecoveryPolicy};
-use awaken_runtime_contract::tool_batch::{ToolBatch, ToolBatchPhase, ToolWaitKind};
+use awaken_tool_contract::tool::{ToolCall, ToolOutput, ToolRecoveryMode, ToolRecoveryPolicy};
+use awaken_tool_contract::tool_batch::{ToolBatch, ToolBatchPhase, ToolWaitKind};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

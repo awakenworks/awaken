@@ -99,7 +99,7 @@ const SESSION_MOUNT_ROOT: &str = "/mnt";
 /// `/workspace` remains the writable working directory. Managed Files, Memory,
 /// and run outputs are projected below `/mnt`; the Namespace/Container boundary
 /// owns that tree, so allowing it here does not widen access to host paths.
-fn sandbox_hand_tools() -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+fn sandbox_hand_tools() -> Vec<Arc<dyn awaken_tool_contract::tool::RawTool>> {
     // Network/resident deployments expose their mount namespace at /mnt.
     // Local stdio embeddings supply an explicit physical projection instead;
     // neither the OS name nor cwd tells us which isolation boundary is active.
@@ -109,7 +109,7 @@ fn sandbox_hand_tools() -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> 
 fn sandbox_hand_tools_at(
     physical_mount_root: impl Into<std::path::PathBuf>,
     physical_workspace_root: Option<std::path::PathBuf>,
-) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+) -> Vec<Arc<dyn awaken_tool_contract::tool::RawTool>> {
     let mut context =
         HandToolContext::default().with_path_projection(SESSION_MOUNT_ROOT, physical_mount_root);
     if let Some(workspace) = physical_workspace_root {
@@ -381,7 +381,7 @@ async fn run_nats(
 mod tests {
     use super::*;
     use awaken_runtime_contract::llm::ToolCall;
-    use awaken_runtime_contract::tool::ToolError;
+    use awaken_tool_contract::tool::ToolError;
 
     #[tokio::test]
     async fn stdio_channel_forwards_flush_and_shutdown_to_its_writer() {

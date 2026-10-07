@@ -113,7 +113,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
     };
-    use awaken_runtime_contract::tool::ToolCall;
+    use awaken_tool_contract::tool::ToolCall;
 
     struct SemanticMemoryModel {
         fetch_url: Mutex<Option<String>>,
@@ -700,7 +700,7 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
     managed
         .environment()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "EnvironmentRuntime is unsupported by this runtime",
             )
         })
@@ -839,7 +839,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     managed
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -1218,7 +1218,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     let first = managed
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })
@@ -1229,7 +1229,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     let replay = managed
         .terminal_cleanup()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "TerminalCleanupRuntime is unsupported by this runtime",
             )
         })
@@ -1388,7 +1388,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     replacement_managed
         .realization()
         .ok_or_else(|| {
-            awaken_session_error_contract::RunError::unavailable(
+            awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })

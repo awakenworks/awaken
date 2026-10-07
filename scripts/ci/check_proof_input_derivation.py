@@ -300,7 +300,7 @@ def kani_fork_findings(
     path: pathlib.Path, text: str, entrypoints: set[str]
 ) -> list[dict[str, str]]:
     """Rule 1: a `#[cfg(kani)]` conditional inside a production function body."""
-    relative = str(path.relative_to(ROOT))
+    relative = path.relative_to(ROOT).as_posix()
     if relative not in entrypoints:
         return []
     found = []
@@ -329,7 +329,7 @@ def harness_findings(
 ) -> list[dict[str, str]]:
     """Rules 2 and 3, per `#[kani::proof]` harness in one file."""
     owners = owners or {}
-    relative = str(path.relative_to(ROOT))
+    relative = path.relative_to(ROOT).as_posix()
     local: dict[str, tuple[str, str]] = {}
     for name, parameters, body, _start in functions(text):
         local.setdefault(name, (parameters, body))

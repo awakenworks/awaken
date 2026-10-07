@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use awaken_run_executor_acp::AgentChannelType;
-use awaken_runtime_contract::tool::ToolExecutor;
+use awaken_tool_contract::tool::ToolExecutor;
 
 struct RelayHandExecutorFactory;
 
@@ -17,12 +17,12 @@ impl awaken_session_environment_contract::HandExecutorFactory for RelayHandExecu
         &self,
         channel: Box<dyn AgentChannelType>,
         operation_scope: &str,
-        recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
+        recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
     ) -> Arc<dyn ToolExecutor> {
         let executor = awaken_tool_relay::RemoteToolExecutor::new(channel)
             .with_operation_scope(operation_scope);
         Arc::new(
-            if recovery == awaken_runtime_contract::tool::ToolRecoveryCapability::DurableRequest {
+            if recovery == awaken_tool_contract::tool::ToolRecoveryCapability::DurableRequest {
                 executor.with_durable_request_recovery()
             } else {
                 executor
@@ -43,7 +43,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use awaken_runtime_contract::llm::ToolCall;
-    use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+    use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 
     struct Echo;
 
@@ -74,7 +74,7 @@ mod tests {
         let executor = relay_hand_executor_factory().bind(
             Box::new(brain),
             "session-a",
-            awaken_runtime_contract::tool::ToolRecoveryCapability::NonRecoverable,
+            awaken_tool_contract::tool::ToolRecoveryCapability::NonRecoverable,
         );
         let output = executor
             .invoke(&ToolCall {
@@ -90,7 +90,7 @@ mod tests {
     #[tokio::test]
     async fn cancelled_relay_preserves_operation_uncertainty_and_admits_only_a_new_request_after_rebind()
      {
-        use awaken_runtime_contract::tool::{
+        use awaken_tool_contract::tool::{
             ToolOperationContext, ToolRecoveryCapability, with_tool_operation_context,
         };
         use std::sync::atomic::{AtomicUsize, Ordering};

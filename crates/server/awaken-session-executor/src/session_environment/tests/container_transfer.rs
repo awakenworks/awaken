@@ -50,7 +50,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         managed
             .realization()
             .ok_or_else(|| {
-                awaken_session_error_contract::RunError::unavailable(
+                awaken_session_types::RunError::unavailable(
                     "RealizationRuntime is unsupported by this runtime",
                 )
             })
@@ -138,7 +138,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             managed
                 .realization()
                 .ok_or_else(|| {
-                    awaken_session_error_contract::RunError::unavailable(
+                    awaken_session_types::RunError::unavailable(
                         "RealizationRuntime is unsupported by this runtime",
                     )
                 })

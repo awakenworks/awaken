@@ -207,7 +207,6 @@
     "awaken-session-dream-contract",
     "awaken-session-environment",
     "awaken-session-environment-contract",
-    "awaken-session-error-contract",
     "awaken-session-event-contract",
     "awaken-session-mcp",
     "awaken-session-mcp-contract",

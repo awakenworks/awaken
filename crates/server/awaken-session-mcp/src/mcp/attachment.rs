@@ -14,7 +14,7 @@ use std::sync::{Arc, Weak};
 use awaken_credential_materializer::{
     CredentialRefreshFactory, PinnedCredentialMaterializer, PlatformMcpEgressProvisioner,
 };
-use awaken_session_error_contract::RunError;
+use awaken_session_types::RunError;
 
 use crate::mcp::credential_target::exact_credential_realization_target;
 use crate::mcp::error::run_error;

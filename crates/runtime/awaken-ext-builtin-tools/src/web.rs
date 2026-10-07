@@ -17,11 +17,11 @@ use awaken_runtime_contract::plugin::{
 use awaken_runtime_contract::resolved::{
     OpenRouterWebFetchParameters, OpenRouterWebSearchParameters, ProviderServerTool, ToolDescriptor,
 };
-use awaken_runtime_contract::tool::{RawTool, Tool, ToolError, ToolExecutionTarget};
 use awaken_runtime_contract::{
     CredentialAccess, CredentialRef, CredentialTarget, CredentialUsage, ModelExposurePolicy,
     PlaintextBoundary,
 };
+use awaken_tool_contract::tool::{RawTool, Tool, ToolError, ToolExecutionTarget};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -1140,7 +1140,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::Mutex;
 
-    use awaken_runtime_contract::tool::ToolCall;
+    use awaken_tool_contract::tool::ToolCall;
 
     use super::*;
 

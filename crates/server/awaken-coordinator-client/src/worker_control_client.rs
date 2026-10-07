@@ -125,7 +125,7 @@ impl WorkerControlClient {
     fn session_environment_error(
         status: reqwest::StatusCode,
         body: &Value,
-    ) -> awaken_session_error_contract::RunError {
+    ) -> awaken_session_types::RunError {
         let code = body.get("code").and_then(Value::as_str).unwrap_or(
             if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
                 "unavailable"
@@ -138,9 +138,9 @@ impl WorkerControlClient {
             .and_then(Value::as_str)
             .unwrap_or("Session Environment control request rejected");
         if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
-            awaken_session_error_contract::RunError::unavailable_classified(code, message)
+            awaken_session_types::RunError::unavailable_classified(code, message)
         } else {
-            awaken_session_error_contract::RunError::classified(code, message)
+            awaken_session_types::RunError::classified(code, message)
         }
     }
 
@@ -150,7 +150,7 @@ impl WorkerControlClient {
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         let (status, body) = self
             .post_response(
@@ -158,15 +158,13 @@ impl WorkerControlClient {
                 json!({ "identity": identity, "intent": intent }),
             )
             .await
-            .map_err(|error| {
-                awaken_session_error_contract::RunError::unavailable(error.to_string())
-            })?;
+            .map_err(|error| awaken_session_types::RunError::unavailable(error.to_string()))?;
         if !status.is_success() {
             return Err(Self::session_environment_error(status, &body));
         }
         serde_json::from_value(body.get("authorization").cloned().unwrap_or(Value::Null)).map_err(
             |error| {
-                awaken_session_error_contract::RunError::internal(format!(
+                awaken_session_types::RunError::internal(format!(
                     "Session Environment authorization decode: {error}"
                 ))
             },
@@ -179,7 +177,7 @@ impl WorkerControlClient {
         receipt: &awaken_session_state_contract::SessionEnvironmentReceipt,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         let (status, body) = self
             .post_response(
@@ -187,15 +185,13 @@ impl WorkerControlClient {
                 json!({ "identity": identity, "receipt": receipt }),
             )
             .await
-            .map_err(|error| {
-                awaken_session_error_contract::RunError::unavailable(error.to_string())
-            })?;
+            .map_err(|error| awaken_session_types::RunError::unavailable(error.to_string()))?;
         if !status.is_success() {
             return Err(Self::session_environment_error(status, &body));
         }
         serde_json::from_value(body.get("environment").cloned().unwrap_or(Value::Null)).map_err(
             |error| {
-                awaken_session_error_contract::RunError::internal(format!(
+                awaken_session_types::RunError::internal(format!(
                     "Session Environment authority decode: {error}"
                 ))
             },

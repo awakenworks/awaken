@@ -13,6 +13,7 @@ authority = "ext-skills"
 separation = "publish"
 
 [dependencies]
+awaken-tool-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 async-trait.workspace = true

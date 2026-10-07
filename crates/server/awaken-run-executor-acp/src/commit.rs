@@ -86,7 +86,7 @@ pub(super) async fn commit(
             ToolAwaitReason::Permission | ToolAwaitReason::ClientExecution
         )
     {
-        let mut batch = awaken_runtime_contract::ToolBatch::for_step(
+        let mut batch = awaken_tool_contract::ToolBatch::for_step(
             ticket.run_id.clone(),
             messages.len(),
             [(
@@ -95,7 +95,7 @@ pub(super) async fn commit(
                     tool_id: tool.tool_id.clone(),
                     arguments: tool.arguments.clone(),
                 },
-                awaken_runtime_contract::tool::ToolRecoveryPolicy::default(),
+                awaken_tool_contract::tool::ToolRecoveryPolicy::default(),
             )],
         )
         .map_err(|error| Error::Commit(error.to_string()))?;
@@ -104,21 +104,19 @@ pub(super) async fn commit(
                 call_id,
                 match reason {
                     ToolAwaitReason::Permission => {
-                        awaken_runtime_contract::ToolWaitKind::ToolPermission
+                        awaken_tool_contract::ToolWaitKind::ToolPermission
                     }
                     ToolAwaitReason::ClientExecution => {
-                        awaken_runtime_contract::ToolWaitKind::ExternalResult
+                        awaken_tool_contract::ToolWaitKind::ExternalResult
                     }
                     _ => unreachable!("guarded by the owned wait reason"),
                 },
                 &ticket.correlation_id,
             )
             .map_err(|error| Error::Commit(error.to_string()))?;
-        state.push(awaken_runtime_contract::ActiveToolBatch::write(&Some(
-            batch,
-        )));
+        state.push(awaken_tool_contract::ActiveToolBatch::write(&Some(batch)));
     } else {
-        state.push(awaken_runtime_contract::ActiveToolBatch::remove());
+        state.push(awaken_tool_contract::ActiveToolBatch::remove());
     }
     let terminal = match disposition.state() {
         RunState::Ended(cause) => Some(CommittedTerminalRun {

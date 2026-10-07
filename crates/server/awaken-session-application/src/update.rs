@@ -9,10 +9,10 @@ use std::collections::BTreeMap;
 
 use awaken_agent_contract::stable_fingerprint;
 use awaken_session_configuration_contract::SessionToolConfiguration;
-use awaken_session_error_contract::RunError;
 use awaken_session_mcp_contract::McpAttachmentState;
 use awaken_session_realization_contract::realization_lease_is_live_at;
 use awaken_session_state_contract::{IdempotencyRecord, PersistedSession, SessionExecutionState};
+use awaken_session_types::RunError;
 use awaken_session_types::SessionRevision;
 
 use super::{
@@ -590,9 +590,7 @@ impl SessionApplication {
                 .await
             {
                 Ok(disposition) => disposition,
-                Err(source)
-                    if source.kind == awaken_session_error_contract::RunErrorKind::BadRequest =>
-                {
+                Err(source) if source.kind == awaken_session_types::RunErrorKind::BadRequest => {
                     // The runtime definitively rejected this exact delivery
                     // before executing it. Reclaim the just-opened activity;
                     // dependency/internal failures remain active because their

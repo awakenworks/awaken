@@ -16,7 +16,7 @@ enum ReadOutcome {
 struct RecoveryTool(AtomicUsize);
 
 #[async_trait::async_trait]
-impl awaken_runtime_contract::tool::RawTool for RecoveryTool {
+impl awaken_tool_contract::tool::RawTool for RecoveryTool {
     fn id(&self) -> &str {
         "recovery-tool"
     }
@@ -24,10 +24,9 @@ impl awaken_runtime_contract::tool::RawTool for RecoveryTool {
     async fn invoke(
         &self,
         call: ToolCall,
-    ) -> Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
-    {
+    ) -> Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError> {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(awaken_runtime_contract::tool::ToolOutput::ok(
+        Ok(awaken_tool_contract::tool::ToolOutput::ok(
             call.call_id,
             "done",
         ))
@@ -346,7 +345,7 @@ async fn successful_slow_checkpoint_observation_preserves_execution_admission() 
 
 #[tokio::test]
 async fn checkpoint_observation_precedes_committed_tool_batch_recovery() {
-    use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatch};
+    use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolBatch};
     // C1 durable Requested tool (safe to enter, not NeverReplay ambiguity);
     // C2 prior model Terminated; C3 checkpoint read Storage/confirmed None.
     // R1 C1+C2+Storage => zero tool effects and no new model ordinal.

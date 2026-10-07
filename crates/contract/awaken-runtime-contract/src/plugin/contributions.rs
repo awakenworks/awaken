@@ -26,7 +26,7 @@ use super::phase::PhaseHook;
 /// use std::sync::Arc;
 /// use awaken_runtime_contract::plugin::DynamicTool;
 /// use awaken_runtime_contract::resolved::ToolDescriptor;
-/// use awaken_runtime_contract::tool::RawTool;
+/// use awaken_tool_contract::tool::RawTool;
 ///
 /// fn bypass(descriptor: ToolDescriptor, tool: Arc<dyn RawTool>) {
 ///     let _ = DynamicTool { descriptor, tool };

@@ -29,7 +29,6 @@ use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationErr
 use awaken_session_application_contract::{ExecutableProjectionAdmission, SessionEventAdmission};
 use awaken_session_budget_contract::SessionUsage;
 use awaken_session_configuration_contract::AgentCapabilities;
-use awaken_session_error_contract::RunError;
 use awaken_session_event_contract::{SessionEventBatch, SessionEventInput};
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, CoordinatedThreadLink, SessionRunActivation,
@@ -39,6 +38,7 @@ use awaken_session_state_contract::{
     DeletedSessionEventAdmissions, IdempotencyRecord, ManagedLifecycleFact, PersistedSession,
     SessionRepositoryError, SessionScan, SessionScanQuery,
 };
+use awaken_session_types::RunError;
 use awaken_session_types::SessionId;
 
 use crate::{

@@ -64,7 +64,7 @@ pub struct PlacementRequirements {
     /// Every non-default recovery mode frozen on a Sandbox-target tool. The
     /// selected Worker executor must support all of them before it may claim.
     #[serde(default)]
-    pub required_sandbox_tool_recovery: BTreeSet<awaken_runtime_contract::tool::ToolRecoveryMode>,
+    pub required_sandbox_tool_recovery: BTreeSet<awaken_tool_contract::tool::ToolRecoveryMode>,
     pub sandbox_backend: Option<String>,
     #[serde(default)]
     pub dispatch_contract_version: u32,
@@ -182,8 +182,8 @@ pub enum Incompatibility {
     SandboxCapabilities,
     #[error("sandbox tool recovery mode {required:?} is unsupported by {actual:?}")]
     SandboxToolRecovery {
-        required: awaken_runtime_contract::tool::ToolRecoveryMode,
-        actual: awaken_runtime_contract::tool::ToolRecoveryCapability,
+        required: awaken_tool_contract::tool::ToolRecoveryMode,
+        actual: awaken_tool_contract::tool::ToolRecoveryCapability,
     },
     #[error("sandbox backend {0} is unsupported")]
     SandboxBackend(String),
@@ -202,8 +202,8 @@ pub enum Incompatibility {
 /// ranking hint that an incompatible Worker could ignore.
 #[must_use]
 pub const fn sandbox_tool_recovery_is_compatible(
-    required: awaken_runtime_contract::tool::ToolRecoveryMode,
-    installed: awaken_runtime_contract::tool::ToolRecoveryCapability,
+    required: awaken_tool_contract::tool::ToolRecoveryMode,
+    installed: awaken_tool_contract::tool::ToolRecoveryCapability,
 ) -> bool {
     required.is_supported_by(installed)
 }
@@ -212,8 +212,8 @@ pub const fn sandbox_tool_recovery_is_compatible(
 /// the executor that this process actually installs.
 #[must_use]
 pub fn manifest_recovery_matches_installed(
-    advertised: awaken_runtime_contract::tool::ToolRecoveryCapability,
-    installed: awaken_runtime_contract::tool::ToolRecoveryCapability,
+    advertised: awaken_tool_contract::tool::ToolRecoveryCapability,
+    installed: awaken_tool_contract::tool::ToolRecoveryCapability,
 ) -> bool {
     advertised == installed
 }

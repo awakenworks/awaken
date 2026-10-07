@@ -7,7 +7,6 @@
 use awaken_time::WallClockExt as _;
 use std::collections::BTreeSet;
 
-use awaken_session_error_contract::RunError;
 use awaken_session_mcp_contract::{McpAttachmentState, McpGenerationRef, StageMcpAttachment};
 use awaken_session_realization_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
@@ -21,6 +20,7 @@ use awaken_session_state_contract::{
     ManagedLifecycleFact, PersistedSession, SessionEnvironmentState, SessionExecutionState,
     SessionRepositoryError,
 };
+use awaken_session_types::RunError;
 
 /// The same Environment phase gate owns scan and direct realization entry.
 /// Continuation has closed process admission until restore commits Resident.

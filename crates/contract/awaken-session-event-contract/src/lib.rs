@@ -18,6 +18,14 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_session_types::{SessionId, SessionRevision};
 use serde::{Deserialize, Serialize};
 
+mod lifecycle;
+mod retention;
+pub use lifecycle::{
+    ManagedLifecycleFact, SessionRuntimeInterval, SessionRuntimeIntervalObservation,
+    SessionRuntimeIntervalStart,
+};
+pub use retention::{DeletedSessionEventAdmissions, RetainedEventAdmission};
+
 mod identity;
 pub use identity::*;
 
