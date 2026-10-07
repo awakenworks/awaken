@@ -15,6 +15,7 @@ authority = "tenancy"
 separation = "contract"
 
 [dependencies]
+awaken-agent-contract.workspace = true
 serde = { workspace = true }
 
 [dev-dependencies]

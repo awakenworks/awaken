@@ -10,10 +10,10 @@
     },
     "awaken-agent-contract": {
       "depth": 0,
-      "production_lines": 4895,
+      "production_lines": 4924,
       "catch_all_errors": 5,
       "growth_reasons": {
-        "production_lines": "Keep typed continuation provenance beside MessageId minting and existing steer/report classifiers; seven net production lines after consolidating duplicate Session-scoped identity formatting. No new contract dependency, port, protocol field, or stored authority. This slice adds the versioned caller toolset value beside Agent toolsets and the committed ResumeTicket, one pure fact shared by activation and recovery. Bind durable ToolResult MessageId to the existing ToolBatch Run and Step coordinate instead of response-local provider call IDs, and recognize canonical new IDs while reading legacy committed results; no new port, protocol field, or stored authority."
+        "production_lines": "Keep typed continuation provenance beside MessageId minting and existing steer/report classifiers; seven net production lines after consolidating duplicate Session-scoped identity formatting. No new contract dependency, port, protocol field, or stored authority. This slice adds the versioned caller toolset value beside Agent toolsets and the committed ResumeTicket, one pure fact shared by activation and recovery. Bind durable ToolResult MessageId to the existing ToolBatch Run and Step coordinate instead of response-local provider call IDs, and recognize canonical new IDs while reading legacy committed results; no new port, protocol field, or stored authority.; then: ADR-0086 \u00a76: ScopeId and ExecutionScopeRef move unchanged into awaken-agent-contract (the SDK coordinate) and awaken-tenancy re-exports them, adding one contract level to awaken-tenancy"
       }
     },
     "awaken-container-contract": {
@@ -181,7 +181,10 @@
       }
     },
     "awaken-tenancy": {
-      "depth": 0
+      "depth": 1,
+      "growth_reasons": {
+        "depth": "ADR-0086 \u00a76: ScopeId and ExecutionScopeRef move unchanged into awaken-agent-contract (the SDK coordinate) and awaken-tenancy re-exports them, adding one contract level to awaken-tenancy"
+      }
     },
     "awaken-time": {
       "depth": 0
