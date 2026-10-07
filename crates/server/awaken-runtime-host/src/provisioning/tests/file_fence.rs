@@ -188,12 +188,12 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
             (Ok(staged), true) => assert_eq!(staged.mounts.len(), 1, "{rule}"),
             (Err(error), false) if rule == "R5" => assert_eq!(
                 error.kind,
-                awaken_session_error_contract::RunErrorKind::BadRequest,
+                awaken_session_types::RunErrorKind::BadRequest,
                 "{rule} rejects at the outer intent admission"
             ),
             (Err(error), false) => assert_eq!(
                 error.kind,
-                awaken_session_error_contract::RunErrorKind::Internal,
+                awaken_session_types::RunErrorKind::Internal,
                 "{rule} fails at the exact File source",
             ),
             (Ok(_), false) => panic!("{rule} unexpectedly accepted a foreign fence"),
@@ -251,9 +251,6 @@ async fn terminal_repository_guard_rejects_file_before_any_source_read() {
         Ok(_) => panic!("R6 terminal File unexpectedly accepted"),
         Err(error) => error,
     };
-    assert_eq!(
-        error.kind,
-        awaken_session_error_contract::RunErrorKind::BadRequest
-    );
+    assert_eq!(error.kind, awaken_session_types::RunErrorKind::BadRequest);
     assert!(source.seen().is_empty(), "R6 no File source read");
 }

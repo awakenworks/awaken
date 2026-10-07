@@ -47,11 +47,11 @@ use awaken_runtime_contract::runtime_context::{
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{
+use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::tool::{
     RawTool, ToolConcurrency, ToolError, ToolOutput, ToolRecoveryPolicy,
 };
-use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatchPhase, ToolCallPhase};
-use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolBatchPhase, ToolCallPhase};
 
 const FINGERPRINT: &str = "catalog-a";
 const SNAPSHOT_ID: &str = "snapshot-1";
@@ -979,7 +979,7 @@ async fn interrupted_or_awaiting_parallel_child_preserves_returned_regular_sibli
         );
         let run = activation_with_regular_tool().run_id;
         let store =
-            awaken_runtime_contract::tool_batch::store_from_run_commands(committed.state, &run);
+            awaken_tool_contract::tool_batch::store_from_run_commands(committed.state, &run);
         let batch = ActiveToolBatch::load(&store).unwrap().unwrap();
         let regular = batch
             .calls()

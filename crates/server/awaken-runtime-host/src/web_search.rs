@@ -17,7 +17,7 @@ use awaken_credential_materializer::PinnedCredentialMaterializer;
 
 pub(crate) type ConfiguredWebTool = (
     awaken_runtime_contract::resolved::ToolDescriptor,
-    Arc<dyn awaken_runtime_contract::tool::RawTool>,
+    Arc<dyn awaken_tool_contract::tool::RawTool>,
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +33,7 @@ enum AcpWebToolRealization {
     NotConfigured,
     HostTool {
         descriptor: awaken_runtime_contract::resolved::ToolDescriptor,
-        tool: Arc<dyn awaken_runtime_contract::tool::RawTool>,
+        tool: Arc<dyn awaken_tool_contract::tool::RawTool>,
     },
     ProviderServer(awaken_runtime_contract::resolved::ProviderServerTool),
 }
@@ -330,11 +330,11 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use awaken_runtime_contract::tool::{ToolCall, ToolError};
     use awaken_runtime_contract::{
         CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef, CredentialUsage,
         ModelExposurePolicy,
     };
+    use awaken_tool_contract::tool::{ToolCall, ToolError};
 
     #[test]
     fn acp_web_tools_are_exported_or_native_but_never_both() {
@@ -449,7 +449,7 @@ mod tests {
     struct ProbeTool(&'static str);
 
     #[async_trait::async_trait]
-    impl awaken_runtime_contract::tool::RawTool for ProbeTool {
+    impl awaken_tool_contract::tool::RawTool for ProbeTool {
         fn id(&self) -> &str {
             self.0
         }
@@ -457,8 +457,8 @@ mod tests {
         async fn invoke(
             &self,
             call: ToolCall,
-        ) -> Result<awaken_runtime_contract::tool::ToolOutput, ToolError> {
-            Ok(awaken_runtime_contract::tool::ToolOutput::ok(
+        ) -> Result<awaken_tool_contract::tool::ToolOutput, ToolError> {
+            Ok(awaken_tool_contract::tool::ToolOutput::ok(
                 call.call_id,
                 "probe",
             ))
@@ -492,14 +492,14 @@ mod tests {
         let host_fetch = (
             awaken_ext_builtin_tools::web_fetch_descriptor(),
             Arc::new(ProbeTool(awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID))
-                as Arc<dyn awaken_runtime_contract::tool::RawTool>,
+                as Arc<dyn awaken_tool_contract::tool::RawTool>,
         );
         let provider_search = (
             awaken_ext_builtin_tools::web_search_descriptor().with_provider_server_tool(
                 awaken_runtime_contract::resolved::ProviderServerTool::OpenAiWebSearch,
             ),
             Arc::new(ProbeTool(awaken_ext_builtin_tools::WEB_SEARCH_TOOL_ID))
-                as Arc<dyn awaken_runtime_contract::tool::RawTool>,
+                as Arc<dyn awaken_tool_contract::tool::RawTool>,
         );
         let empty = host
             .realize_configured_web_tools_for_acp("codex", &AgentBindings::default(), None, None)

@@ -342,7 +342,7 @@ mod fixtures {
     pub(super) fn wait_candidate(epoch: u64) -> BackgroundTaskWaitCandidate {
         BackgroundTaskWaitCandidate {
             fence: fixtures::tenure("worker", epoch),
-            wait: BackgroundWait::Remote(awaken_runtime_contract::tool::ToolTaskHandle {
+            wait: BackgroundWait::Remote(awaken_tool_contract::tool::ToolTaskHandle {
                 owner: "mcp".into(),
                 binding: "mcp-generation".into(),
                 task_id: "remote-task".into(),

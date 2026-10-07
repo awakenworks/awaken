@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
 use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory, bind_tcp};
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolExecutor, ToolOutput};
+use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolExecutor, ToolOutput};
 use awaken_tool_relay::wire::HandResult;
 use awaken_tool_relay::{HandSession, RemoteToolExecutor, serve_hand};
 

@@ -758,8 +758,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             &self,
             _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
             _operation_scope: &str,
-            _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
-        ) -> Arc<dyn awaken_runtime_contract::tool::ToolExecutor> {
+            _recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
+        ) -> Arc<dyn awaken_tool_contract::tool::ToolExecutor> {
             panic!("H20 does not launch an Agent process")
         }
     }
@@ -1409,10 +1409,10 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         async fn stage_mcp_attachment(
             &self,
             request: StageMcpAttachment,
-        ) -> Result<McpRealizationReceipt, awaken_session_error_contract::RunError> {
+        ) -> Result<McpRealizationReceipt, awaken_session_types::RunError> {
             self.calls.lock().unwrap().push("stage");
             if self.fail_stage.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(awaken_session_error_contract::RunError::classified(
+                return Err(awaken_session_types::RunError::classified(
                     "external_stage_rejected",
                     "external realizer rejected stage",
                 ));
@@ -1430,7 +1430,7 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         async fn publish_mcp_generation(
             &self,
             _generation: McpGenerationRef,
-        ) -> Result<(), awaken_session_error_contract::RunError> {
+        ) -> Result<(), awaken_session_types::RunError> {
             self.calls.lock().unwrap().push("publish");
             Ok(())
         }
@@ -1438,7 +1438,7 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         async fn drain_mcp_generation(
             &self,
             _generation: McpGenerationRef,
-        ) -> Result<(), awaken_session_error_contract::RunError> {
+        ) -> Result<(), awaken_session_types::RunError> {
             self.calls.lock().unwrap().push("drain");
             Ok(())
         }

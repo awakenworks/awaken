@@ -764,7 +764,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
     assert_eq!(
         runtime
             .realization()
-            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -1087,7 +1087,7 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
     assert!(
         managed
             .realization()
-            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_types::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")

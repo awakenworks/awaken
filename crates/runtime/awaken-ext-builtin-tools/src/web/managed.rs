@@ -40,7 +40,7 @@ impl std::fmt::Display for ManagedWebRouteError {
 pub trait ManagedWebRouteResolver: Send + Sync {
     async fn resolve(
         &self,
-        context: &awaken_runtime_contract::tool::ToolOperationContext,
+        context: &awaken_tool_contract::tool::ToolOperationContext,
         tool_id: &str,
         route_ref: &str,
     ) -> Result<ManagedWebGatewayEndpoint, ManagedWebRouteError>;
@@ -171,7 +171,7 @@ async fn resolve_managed_route(
     let route_ref = managed_web_route_ref(tool_id, options)
         .ok_or_else(|| ToolError::DefinitiveFailure("managed Web route is not published".into()))?;
     let context =
-        awaken_runtime_contract::tool::current_tool_operation_context().ok_or_else(|| {
+        awaken_tool_contract::tool::current_tool_operation_context().ok_or_else(|| {
             ToolError::DefinitiveFailure("managed Web route requires an active Run".into())
         })?;
     resolver
@@ -382,7 +382,7 @@ mod tests {
     impl ManagedWebRouteResolver for FixedManagedResolver {
         async fn resolve(
             &self,
-            context: &awaken_runtime_contract::tool::ToolOperationContext,
+            context: &awaken_tool_contract::tool::ToolOperationContext,
             tool_id: &str,
             route_ref: &str,
         ) -> Result<ManagedWebGatewayEndpoint, ManagedWebRouteError> {
@@ -452,8 +452,8 @@ mod tests {
             "G5"
         );
 
-        let search = awaken_runtime_contract::tool::with_tool_operation_context(
-            awaken_runtime_contract::tool::ToolOperationContext::for_run("run-search", "op-search"),
+        let search = awaken_tool_contract::tool::with_tool_operation_context(
+            awaken_tool_contract::tool::ToolOperationContext::for_run("run-search", "op-search"),
             provider.search(
                 WebSearchRequest {
                     query: "bounded contexts".into(),
@@ -468,8 +468,8 @@ mod tests {
         .unwrap();
         assert_eq!(search[0].snippet, "Found", "G1");
 
-        let fetched = awaken_runtime_contract::tool::with_tool_operation_context(
-            awaken_runtime_contract::tool::ToolOperationContext::for_run("run-fetch", "op-fetch"),
+        let fetched = awaken_tool_contract::tool::with_tool_operation_context(
+            awaken_tool_contract::tool::ToolOperationContext::for_run("run-fetch", "op-fetch"),
             provider.fetch(
                 WebFetchRequest {
                     url: "https://docs.example/page".into(),

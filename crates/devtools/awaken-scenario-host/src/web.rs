@@ -8,7 +8,7 @@ use awaken_ext_builtin_tools::{
 };
 use awaken_runtime_contract::CredentialUsage;
 use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_runtime_contract::tool::ToolError;
+use awaken_tool_contract::tool::ToolError;
 use axum::Router;
 use serde_json::json;
 

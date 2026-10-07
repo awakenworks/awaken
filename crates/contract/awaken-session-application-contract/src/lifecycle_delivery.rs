@@ -1,6 +1,6 @@
 //! Lifecycle delivery ports over the durable Session outbox.
 
-use awaken_session_state_contract::ManagedLifecycleFact;
+use awaken_session_event_contract::ManagedLifecycleFact;
 
 /// Cross-context delivery port for one durable lifecycle fact. Coordinator owns
 /// the outbox and calls this port; Control implements it over authored webhook

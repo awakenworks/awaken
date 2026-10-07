@@ -9,7 +9,6 @@
 //! Durable Session Resource recovery and terminal reclamation.
 
 use awaken_resource_contract::{ResourceReference, ResourceReferenceKind, ResourceReferenceRecord};
-use awaken_session_error_contract::RunError;
 use awaken_session_realization_contract::SessionRealizationControlFailure;
 use awaken_session_resource_contract::{
     ResolvedInput, ResolvedInputSource, ResolvedSessionResources, SessionRealizationLease,
@@ -19,6 +18,7 @@ use awaken_session_state_contract::{
     SessionExecutionState, SessionMutation, SessionMutationPayload, SessionMutationResult,
     SessionTombstone,
 };
+use awaken_session_types::RunError;
 use awaken_session_types::SessionRevision;
 use awaken_time::WallClockExt as _;
 

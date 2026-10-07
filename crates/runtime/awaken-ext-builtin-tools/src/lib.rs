@@ -45,18 +45,18 @@ pub use web::{
 /// `web_fetch` and `web_search` are deliberately absent because their configured
 /// plugins are the sole execution owners; all other built-in Sandbox tools live
 /// here.
-pub fn all_hand_tools() -> Vec<std::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+pub fn all_hand_tools() -> Vec<std::sync::Arc<dyn awaken_tool_contract::tool::RawTool>> {
     all_hand_tools_in(HandToolContext::default())
 }
 
 pub fn all_hand_tools_in(
     context: HandToolContext,
-) -> Vec<std::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+) -> Vec<std::sync::Arc<dyn awaken_tool_contract::tool::RawTool>> {
     hand::hand_tools_in(context)
 }
 
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
-use awaken_runtime_contract::tool::{Tool, ToolRecoveryMode, ToolRecoveryPolicy};
+use awaken_tool_contract::tool::{Tool, ToolRecoveryMode, ToolRecoveryPolicy};
 use serde::Deserialize;
 
 /// The delegation tool id. The model-visible descriptor and the runtime resolver
@@ -200,7 +200,7 @@ pub use agent::{AuxiliaryAgentInput, invoke_auxiliary_agent};
 #[cfg(test)]
 mod tests {
     use super::{Toolset, all_hand_tools, builtin_tools, selected_hand_recovery_modes};
-    use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
+    use awaken_tool_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
 
     #[test]
     fn delegation_uses_one_stable_agent_run_tool_id() {

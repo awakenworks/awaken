@@ -1,6 +1,6 @@
 //! Shared WebFetch policy kernel used by the configured plugin.
 
-use awaken_runtime_contract::tool::ToolError;
+use awaken_tool_contract::tool::ToolError;
 
 use super::{EffectiveWebFetchConfiguration, url_matches_filters};
 

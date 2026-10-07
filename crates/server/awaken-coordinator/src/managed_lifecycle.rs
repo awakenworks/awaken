@@ -1,11 +1,11 @@
 // @formal surface exclude=composition_wiring
-// @formal owner crates/contract/awaken-session-state-contract/src/lifecycle.rs
+// @formal owner crates/contract/awaken-session-event-contract/src/lifecycle.rs
 // @formal owner crates/server/awaken-session-application/src/lifecycle_outbox_relay.rs
 // @formal reason: Static owner: Coordinator assembly of existing lifecycle delivery ports. Dynamic path:
 // @formal reason: committed lifecycle facts flow through CompositeLifecycleFactDelivery to the existing
 // @formal reason: LifecycleOutboxRelay; no lifecycle transition, retry, or durable-outbox decision is
 // @formal reason: reimplemented here. Evidence:
-// @formal reason: crates/contract/awaken-session-state-contract/src/lifecycle.rs and
+// @formal reason: crates/contract/awaken-session-event-contract/src/lifecycle.rs and
 // @formal reason: crates/server/awaken-session-application/src/lifecycle_outbox_relay.rs.
 //! One Coordinator composition for Session lifecycle delivery.
 //!

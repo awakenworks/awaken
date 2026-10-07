@@ -28,7 +28,7 @@ use awaken_provisioning_contract as pc;
 
 use std::sync::Arc;
 
-use awaken_runtime_contract::tool::RawTool;
+use awaken_tool_contract::tool::RawTool;
 
 use crate::FilesystemHandleCodec as _;
 use crate::read_only_tree::materialize_read_only_tree_at;

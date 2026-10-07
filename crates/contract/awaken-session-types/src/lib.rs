@@ -1,9 +1,12 @@
-//! The opaque identity of one Session root.
+//! Low-level Session identity, source ordering and runtime failure vocabulary.
 
 use std::borrow::Borrow;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+
+pub mod error;
+pub use error::{RunError, RunErrorKind};
 
 mod monotone;
 pub use monotone::{MonotoneAdmission, SourceOrder, monotone_admission};

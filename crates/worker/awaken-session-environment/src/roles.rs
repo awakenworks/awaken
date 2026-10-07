@@ -9,13 +9,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
-use awaken_runtime_contract::tool::{RawTool, ToolExecutor};
 use awaken_session_environment_contract::{
     AgentFilesystemClient, AgentFilesystemView, AgentToolEnvironment, CapturedArtifact,
     DiscoveredSkillFile, EnvironmentHarvest, EnvironmentLifecycle, EnvironmentProjection,
     EnvironmentQuiescenceProof, EnvironmentStopProof, LiveProjectionUpdate, SessionEnvironment,
     SkillFilesystem,
 };
+use awaken_tool_contract::tool::{RawTool, ToolExecutor};
 
 use super::SandboxEnvironment;
 
@@ -262,7 +262,7 @@ impl AgentToolEnvironment for SandboxEnvironment {
 
     async fn tool_execution_domain(
         &self,
-    ) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, pc::SandboxError> {
+    ) -> Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, pc::SandboxError> {
         SandboxEnvironment::tool_execution_domain(self).await
     }
 

@@ -196,8 +196,8 @@ impl awaken_session_environment_contract::HandExecutorFactory for NoHandFactory 
         &self,
         _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
         _operation_scope: &str,
-        _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
-    ) -> Arc<dyn awaken_runtime_contract::tool::ToolExecutor> {
+        _recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
+    ) -> Arc<dyn awaken_tool_contract::tool::ToolExecutor> {
         panic!("lifecycle fixture never binds a hand channel")
     }
 }

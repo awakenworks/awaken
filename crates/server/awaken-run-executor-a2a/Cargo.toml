@@ -17,6 +17,7 @@ separation = "protocol"
 protocol = "a2a"
 
 [dependencies]
+awaken-tool-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-protocol-a2a.workspace = true

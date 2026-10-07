@@ -32,14 +32,14 @@ pub trait AcpToolExporter: Send + Sync {
         &self,
         server_name: &str,
         descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-        tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+        tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
     ) -> Result<AcpToolExport, String>;
 
     async fn export(
         &self,
         server_name: &str,
         descriptor: awaken_runtime_contract::resolved::ToolDescriptor,
-        tool: Arc<dyn awaken_runtime_contract::tool::RawTool>,
+        tool: Arc<dyn awaken_tool_contract::tool::RawTool>,
     ) -> Result<AcpToolExport, String> {
         self.export_set(server_name, vec![descriptor], vec![tool])
             .await
@@ -51,14 +51,14 @@ pub trait AcpToolExporter: Send + Sync {
 pub struct AttachedToolSet {
     exporter: Arc<dyn AcpToolExporter>,
     descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-    executors: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+    executors: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
 }
 
 impl AttachedToolSet {
     pub fn new(
         exporter: Arc<dyn AcpToolExporter>,
         descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-        executors: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+        executors: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
     ) -> Result<Self, String> {
         let (descriptors, executors) = pair_tools(descriptors, executors)?;
         Ok(Self {
@@ -79,7 +79,7 @@ impl AttachedToolSet {
     }
 
     #[must_use]
-    pub fn executors(&self) -> &[Arc<dyn awaken_runtime_contract::tool::RawTool>] {
+    pub fn executors(&self) -> &[Arc<dyn awaken_tool_contract::tool::RawTool>] {
         &self.executors
     }
 }
@@ -88,12 +88,12 @@ impl AttachedToolSet {
 /// process-local and attached ACP MCP exports.
 type PairedTools = (
     Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-    Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+    Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
 );
 
 pub fn pair_tools(
     descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-    executors: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+    executors: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
 ) -> Result<PairedTools, String> {
     let descriptor_ids = descriptors
         .iter()
@@ -149,7 +149,7 @@ pub trait AttachedChannelToolExporter: AcpToolExporter {
         &self,
         server: awaken_runtime_contract::resolved::AcpMcpServer,
         descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-        tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+        tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
         reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
         writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
     ) -> Result<AcpToolExport, String>;
@@ -162,18 +162,16 @@ mod tests {
     struct TestTool(&'static str);
 
     #[async_trait::async_trait]
-    impl awaken_runtime_contract::tool::RawTool for TestTool {
+    impl awaken_tool_contract::tool::RawTool for TestTool {
         fn id(&self) -> &str {
             self.0
         }
 
         async fn invoke(
             &self,
-            _: awaken_runtime_contract::tool::ToolCall,
-        ) -> Result<
-            awaken_runtime_contract::tool::ToolOutput,
-            awaken_runtime_contract::tool::ToolError,
-        > {
+            _: awaken_tool_contract::tool::ToolCall,
+        ) -> Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>
+        {
             unreachable!("identity admission never invokes a tool")
         }
     }
@@ -192,7 +190,7 @@ mod tests {
             &self,
             _: &str,
             _: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-            _: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+            _: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
         ) -> Result<AcpToolExport, String> {
             unreachable!("identity admission never opens an export")
         }
@@ -202,7 +200,7 @@ mod tests {
         awaken_runtime_contract::resolved::ToolDescriptor::for_args::<TestArgs>("test", id, id)
     }
 
-    fn tool(id: &'static str) -> Arc<dyn awaken_runtime_contract::tool::RawTool> {
+    fn tool(id: &'static str) -> Arc<dyn awaken_tool_contract::tool::RawTool> {
         Arc::new(TestTool(id))
     }
 

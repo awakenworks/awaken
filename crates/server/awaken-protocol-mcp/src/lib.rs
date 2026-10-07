@@ -1,6 +1,6 @@
 //! Model Context Protocol (MCP) protocol adapter — the *server* side.
 //!
-//! Exposes runtime tools ([`RawTool`](awaken_runtime_contract::tool::RawTool) +
+//! Exposes runtime tools ([`RawTool`](awaken_tool_contract::tool::RawTool) +
 //! [`ToolDescriptor`](awaken_runtime_contract::resolved::ToolDescriptor)) to
 //! external MCP clients, over stdio ([`McpStdioServer`]) and Streamable HTTP
 //! ([`router`]). It is the egress mirror of `awaken-ext-mcp` (the client,

@@ -17,6 +17,7 @@ name = "awaken-scenario-host"
 path = "src/main.rs"
 
 [dependencies]
+awaken-tool-contract.workspace = true
 awaken-execution-composition.workspace = true
 awaken-protocol-mcp.workspace = true
 # The extracted service layer: SharedHost / ManagedHost / RunApplicationHost and all

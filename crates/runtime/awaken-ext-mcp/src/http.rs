@@ -1358,7 +1358,7 @@ mod tests {
 
     #[tokio::test]
     async fn raw_tool_preserves_effect_reply_certainty_over_http() {
-        use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError};
+        use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError};
         // H1/H2 complete success/tool-error result -> original ToolOutput;
         // H3 malformed reply, H4 JSON-RPC server error, H5 response lost ->
         // Indeterminate. Every row uses one real HTTP request and never retries

@@ -1528,7 +1528,7 @@ struct CollectingAppender {
     run_id: RunId,
     namespace: String,
     next_assistant_step: usize,
-    spiller: Option<Arc<dyn awaken_runtime_contract::tool::ToolOutputSpiller>>,
+    spiller: Option<Arc<dyn awaken_tool_contract::tool::ToolOutputSpiller>>,
     ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
     last: u64,
     messages: Vec<Message>,
@@ -1551,7 +1551,7 @@ impl CollectingAppender {
         run_id: RunId,
         namespace: String,
         next_assistant_step: usize,
-        spiller: Option<Arc<dyn awaken_runtime_contract::tool::ToolOutputSpiller>>,
+        spiller: Option<Arc<dyn awaken_tool_contract::tool::ToolOutputSpiller>>,
         ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
         resumed_call: Option<&PermissionResume>,
     ) -> Self {

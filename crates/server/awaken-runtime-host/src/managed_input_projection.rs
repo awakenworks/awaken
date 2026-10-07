@@ -2,7 +2,7 @@
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_session_error_contract::RunError;
+use awaken_session_types::RunError;
 
 /// Mint a fresh user message from plain text (Managed `user.message` content is
 /// concatenated to text before it enters the host).

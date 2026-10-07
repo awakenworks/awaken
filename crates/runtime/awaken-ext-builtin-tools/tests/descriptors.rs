@@ -1,7 +1,7 @@
 //! Placement and descriptor-kind drift guards for the closed builtin catalog.
 
 use awaken_ext_builtin_tools::{Toolset, all_hand_tools, builtin_tools};
-use awaken_runtime_contract::tool::ToolExecutionTarget;
+use awaken_tool_contract::tool::ToolExecutionTarget;
 use std::collections::BTreeSet;
 
 #[test]

@@ -70,7 +70,7 @@ fn map_claimed_session_control_error(
 fn control_projection_matches_dispatched_manifest(
     projection: &awaken_session_realization_contract::FrozenSessionProjection,
     dispatched: &awaken_session_resource_contract::SessionResourceManifest,
-) -> Result<bool, awaken_session_error_contract::RunError> {
+) -> Result<bool, awaken_session_types::RunError> {
     Ok(projection
         .resource_transition(
             awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,

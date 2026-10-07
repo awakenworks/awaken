@@ -9,11 +9,11 @@
 //! owns only durable orchestration and retries.
 
 use awaken_session_configuration_contract::EnvironmentIdleRetentionMode;
-use awaken_session_error_contract::RunError;
 use awaken_session_state_contract::{
     PersistedSession, SessionEnvironmentState, SessionEnvironmentTransitionError,
     SessionExecutionState, SuspendPhase,
 };
+use awaken_session_types::RunError;
 
 use super::realization::repository_control;
 use super::{

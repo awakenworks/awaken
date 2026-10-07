@@ -1,9 +1,9 @@
 use super::*;
 use awaken_agent_contract::agent::run::Failure;
-use awaken_runtime_contract::tool::{
+use awaken_tool_contract::tool::{
     RawTool, ToolConcurrency, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput,
 };
-use awaken_runtime_contract::tool_batch::{
+use awaken_tool_contract::tool_batch::{
     ActiveToolBatch, ToolBatch, ToolBatchPhase, ToolExecutionDomain,
 };
 use std::sync::Mutex;

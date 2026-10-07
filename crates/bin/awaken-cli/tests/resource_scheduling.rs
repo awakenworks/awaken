@@ -9,9 +9,9 @@ use async_trait::async_trait;
 use awaken_cli::build_all_in_one_router_with_host_customizer;
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_runtime_contract::tool::ToolExecutor;
 use awaken_sandbox_container::{ContainerEnvironment, ContainerEnvironmentProvider};
 use awaken_scenario_host::EchoModel;
+use awaken_tool_contract::tool::ToolExecutor;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -170,7 +170,7 @@ impl awaken_session_environment_contract::HandExecutorFactory for UnusedHandFact
         &self,
         _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
         _operation_scope: &str,
-        _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
+        _recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
     ) -> Arc<dyn ToolExecutor> {
         panic!("resource projection stops before Hand execution")
     }

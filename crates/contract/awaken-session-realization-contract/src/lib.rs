@@ -14,7 +14,6 @@ pub(crate) use awaken_session_configuration_contract::{
     SessionBaseline, SessionInit, SessionModelOverride, SessionRuntimePlacement,
     SessionSandboxLayout, SessionSystemPromptSelection, SessionToolConfiguration,
 };
-pub(crate) use awaken_session_error_contract::RunError;
 #[cfg(feature = "test-support")]
 pub(crate) use awaken_session_mcp_contract::McpGeneration;
 pub(crate) use awaken_session_mcp_contract::{
@@ -33,6 +32,7 @@ pub(crate) use awaken_session_state_contract::{
     SessionTerminalCleanupAction, SessionTerminalCleanupDisposalEffect,
     SessionTerminalCleanupEffect, SessionTerminalMemoryIntent, SessionTerminalMemoryTarget,
 };
+pub(crate) use awaken_session_types::RunError;
 pub(crate) use awaken_session_types::{SessionId, SessionRevision};
 
 pub use session_realization::*;

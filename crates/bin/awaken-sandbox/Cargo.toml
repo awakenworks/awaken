@@ -37,7 +37,7 @@ hand = [
     "dep:awaken-tool-relay",
     "dep:awaken-ext-builtin-tools",
     "dep:awaken-connection-plan",
-    "dep:awaken-runtime-contract",
+    "dep:awaken-tool-contract",
     "dep:async-nats",
     "dep:futures",
     "dep:serde_json",
@@ -45,6 +45,7 @@ hand = [
 ]
 
 [dependencies]
+awaken-tool-contract = { workspace = true, optional = true }
 # The one wall-clock port: chosen by `main`, handed to the Hand and the Git
 # credential helper.
 awaken-time.workspace = true
@@ -72,7 +73,6 @@ tokio = { workspace = true, features = [
 awaken-tool-relay = { workspace = true, optional = true }
 awaken-ext-builtin-tools = { workspace = true, optional = true }
 awaken-connection-plan = { workspace = true, optional = true }
-awaken-runtime-contract = { workspace = true, optional = true }
 async-nats = { version = "0.50", optional = true }
 futures = { version = "0.3", optional = true }
 serde_json = { workspace = true, optional = true }
@@ -88,6 +88,7 @@ rustix = { version = "1", features = ["stdio"], optional = true }
 awaken-sandbox-local.workspace = true
 
 [dev-dependencies]
+awaken-runtime-contract.workspace = true
 awaken-lease-testkit.workspace = true
 async-trait.workspace = true
 awaken-agent-channel.workspace = true

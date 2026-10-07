@@ -19,11 +19,11 @@ use awaken_runtime_contract::permission::GateOutcome;
 use awaken_runtime_contract::plugin::ResolvedExecutionEnv;
 use awaken_runtime_contract::resolved::{ResolvedRun, ToolKind};
 use awaken_runtime_contract::resolver::RunResolver;
-use awaken_runtime_contract::tool::{
+use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
+use awaken_tool_contract::tool::{
     ToolCall, ToolConcurrency, ToolOutput, ToolRecoveryPolicy, ToolTaskHandle, ToolTaskPoll,
     ToolTaskStart,
 };
-use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
 
 use crate::Runtime;
 use crate::engine::convert::executable_tool_descriptors;

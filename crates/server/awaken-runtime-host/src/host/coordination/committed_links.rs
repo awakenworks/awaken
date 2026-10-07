@@ -53,16 +53,15 @@ pub(super) fn project_committed_coordination_links(
                     )?;
                     active.push(PendingCoordinationCall {
                         run_id: run_id.clone(),
-                        operation_id:
-                            awaken_runtime_contract::ActiveToolBatch::operation_for_message(
-                                committed, message, id,
+                        operation_id: awaken_tool_contract::ActiveToolBatch::operation_for_message(
+                            committed, message, id,
+                        )
+                        .map_err(|error| HostError::internal(error.to_string()))?
+                        .ok_or_else(|| {
+                            HostError::internal(
+                                "committed coordination call has no operation identity",
                             )
-                            .map_err(|error| HostError::internal(error.to_string()))?
-                            .ok_or_else(|| {
-                                HostError::internal(
-                                    "committed coordination call has no operation identity",
-                                )
-                            })?,
+                        })?,
                         call_id: id.clone(),
                         args,
                     });
@@ -72,7 +71,7 @@ pub(super) fn project_committed_coordination_links(
                     apply_advisor_call(
                         session_id,
                         run_id,
-                        awaken_runtime_contract::ActiveToolBatch::operation_for_message(
+                        awaken_tool_contract::ActiveToolBatch::operation_for_message(
                             committed, message, id,
                         )
                         .map_err(|error| HostError::internal(error.to_string()))?
@@ -115,7 +114,7 @@ pub(super) fn project_committed_coordination_links(
     // so the existing ActiveToolBatch remains the sole crash authority during
     // that publication gap; no relationship row or second read is introduced.
     let state = Store::rebuild(&committed.state);
-    let active_batch = awaken_runtime_contract::ActiveToolBatch::load(&state)
+    let active_batch = awaken_tool_contract::ActiveToolBatch::load(&state)
         .map_err(|error| HostError::internal(error.to_string()))?;
     apply_active_batch_coordination_results(
         session_id,
@@ -306,7 +305,7 @@ fn apply_active_batch_coordination_results(
 mod tests {
     use super::*;
     use awaken_runtime_contract::llm::ToolCall;
-    use awaken_runtime_contract::tool::{ToolOutput, ToolRecoveryPolicy};
+    use awaken_tool_contract::tool::{ToolOutput, ToolRecoveryPolicy};
 
     #[test]
     fn coordination_uses_the_neutral_assistant_decoder_for_exact_run_membership() {
@@ -629,7 +628,7 @@ mod tests {
             )
             .unwrap();
         let batch_for_identity_rules = batch.clone();
-        let mut batch_state = awaken_runtime_contract::ActiveToolBatch::write(&Some(batch));
+        let mut batch_state = awaken_tool_contract::ActiveToolBatch::write(&Some(batch));
         batch_state.bind_run(&run_id);
         let snapshot = RunRecoverySnapshot {
             commit_timestamps: Default::default(),
@@ -779,7 +778,7 @@ mod tests {
                     )],
                 )
                 .unwrap();
-            let mut command = awaken_runtime_contract::ActiveToolBatch::write(&Some(changed_batch));
+            let mut command = awaken_tool_contract::ActiveToolBatch::write(&Some(changed_batch));
             command.bind_run(&run_id);
             let mut changed = snapshot.clone();
             changed.state = vec![command];
@@ -879,14 +878,14 @@ mod tests {
             )],
         )
         .unwrap();
-        let mut requested = awaken_runtime_contract::ActiveToolBatch::write(&Some(batch.clone()));
+        let mut requested = awaken_tool_contract::ActiveToolBatch::write(&Some(batch.clone()));
         requested.bind_run(&run);
         batch.mark_executing(call_id).unwrap();
         batch.complete(ToolOutput::ok(call_id, "accepted")).unwrap();
         batch
             .set_result_messages(call_id, vec![result.clone()])
             .unwrap();
-        let mut completed = awaken_runtime_contract::ActiveToolBatch::write(&Some(batch));
+        let mut completed = awaken_tool_contract::ActiveToolBatch::write(&Some(batch));
         completed.bind_run(&run);
         let base = RunRecoverySnapshot {
             thread_id: ThreadId(session.as_str().to_owned()),

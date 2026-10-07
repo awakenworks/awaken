@@ -217,7 +217,7 @@ mod tests {
     use std::sync::Mutex;
 
     use awaken_ext_mcp::{CallToolResult, McpPromptMessage, McpToolDefinition, McpTransportError};
-    use awaken_runtime_contract::tool::{RawTool, ToolCall};
+    use awaken_tool_contract::tool::{RawTool, ToolCall};
 
     use super::*;
 

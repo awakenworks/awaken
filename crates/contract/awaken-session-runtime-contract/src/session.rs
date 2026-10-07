@@ -693,30 +693,6 @@ mod tests {
         );
     }
 
-    // Cause/effect decision table: R1 runtime faults map to Internal/internal;
-    // R2 caller faults map to BadRequest/invalid_request; R3 temporary dependency
-    // faults map to Unavailable/unavailable. The wire adapter owns 500/400/503.
-    // Constraints/invariants: the contract preserves three distinct stable kinds
-    // and codes; transport status selection remains outside this value object.
-    #[test]
-    fn run_error_display_and_kind_mapping() {
-        let internal = RunError::internal("provider blew up");
-        assert_eq!(internal.to_string(), "run failed: provider blew up");
-        assert_eq!(internal.kind, RunErrorKind::Internal);
-
-        let bad = RunError::bad_request("no such await");
-        assert_eq!(bad.to_string(), "run failed: no such await");
-        assert_eq!(bad.kind, RunErrorKind::BadRequest);
-
-        let unavailable = RunError::unavailable("image is still building");
-        assert_eq!(unavailable.kind, RunErrorKind::Unavailable);
-        assert_eq!(unavailable.code, "unavailable");
-
-        // The three causes remain distinct.
-        assert_ne!(internal.kind, bad.kind);
-        assert_ne!(bad.kind, unavailable.kind);
-    }
-
     // Item 5: `LiveInboxSnapshot::inactive()` invariants.
     #[test]
     fn inactive_snapshot_is_empty_versionless_and_inactive() {

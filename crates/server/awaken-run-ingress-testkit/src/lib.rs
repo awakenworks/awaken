@@ -371,6 +371,17 @@ impl ConformanceCapabilities {
 /// `namespace` is incorporated into every id so a PostgreSQL schema can safely run
 /// this alongside other suites. The caller must still provide a store with no live
 /// rows using that namespace.
+///
+/// Failure coverage is shared by every backend binding below:
+///
+/// | Failure boundary | Required durable observation | Owning rule |
+/// |---|---|---|
+/// | Cancellation before activation | no unreceipted execution | Session reservation SR7 |
+/// | Worker crash at lease expiry | newer claim; stale owner fenced | exact claim recovery |
+/// | Settlement response lost | one retained completion; retry fenced | completion replay |
+/// | Command replay after Done | no new runnable row | caller identity / reservation SR6 |
+/// | Terminal repair crash | repair epoch advances; one completion | terminal recovery T7/T8 |
+/// | Missing physical cleanup ACK | occupied slot retained | occupied recovery |
 pub async fn assert_dispatch_conformance<S: ControlDispatch>(
     store: &S,
     namespace: &str,

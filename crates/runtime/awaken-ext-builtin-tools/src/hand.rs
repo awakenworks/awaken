@@ -14,7 +14,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_runtime_contract::tool::{RawTool, Tool, ToolError, ToolExecutionTarget};
+use awaken_tool_contract::tool::{RawTool, Tool, ToolError, ToolExecutionTarget};
 use serde::Deserialize;
 
 use crate::erasure::erase_for;

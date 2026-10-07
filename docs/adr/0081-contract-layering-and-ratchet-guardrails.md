@@ -466,6 +466,31 @@ needs a separate product decision and its own ADR.
 
 ## Consequences
 
+The 2026-10-08 convergence removes `awaken-session-error-contract`: its unchanged
+Run error vocabulary and classification test now belong to
+`awaken-session-types::error`. Identity, source ordering and failure values share
+that dependency-light Session vocabulary owner; it adds no port or backend.
+After rebasing onto the SDK Clock/Lease separation, there are now 36 contract
+crates (37 on that mainline before this merge). Deleted Event admission receipts,
+lifecycle facts and their runtime interval payloads belong to
+`awaken-session-event-contract`,
+so Application no longer depends on the durable Session State contract. State
+still exposes these values used by its own persistence surface. Event depends on
+Budget for the unchanged exact usage payload: its depth rises from one to two,
+while Application depth falls from six to three and State depth stays five.
+The ratchet records this ownership tradeoff. Wire bytes, unknown-versus-empty
+admission evidence and root authority are unchanged.
+
+Workspace tool consumers name `awaken-tool-contract` directly. The historical
+Runtime tool module paths remain compatible for external SDK consumers, while
+the Worker contract drops its otherwise unnecessary Runtime contract dependency.
+Contract count is not a target: a merge must remove a redundant ownership boundary
+without adding backend dependencies, weakening typed roles or widening authority.
+Failure verification reuses the existing dispatch/backend and Session cleanup
+tables; additional tests cover revision exhaustion and rollback, lost settlement
+responses, cold lifecycle acknowledgement replay, and fail-closed paged Worker
+demand. Backend execution and pure receipt vocabulary remain separately tested.
+
 - New backend-named contract types, catch-all String errors, capability-style `Err`
   defaults, contract cycles, deeper contract chains and over-budget growth fail at
   commit time, with the crate, rule, baseline, current value and fix in the message.

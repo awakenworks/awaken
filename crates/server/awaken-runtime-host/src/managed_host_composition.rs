@@ -153,7 +153,7 @@ impl ManagedHost {
         if environment.sandbox_provisioning
             == awaken_session_configuration_contract::SandboxProvisioning::OnToolUse
         {
-            let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> =
+            let executor: Arc<dyn awaken_tool_contract::tool::ToolExecutor> =
                 Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
                     Arc::downgrade(&self.host),
                     thread,

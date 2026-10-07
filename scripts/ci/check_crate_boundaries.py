@@ -767,7 +767,7 @@ def check_generation_witnesses_are_complete(
         for name in declaration.findall(production):
             exemption = INCOMPLETE_GENERATION_EXEMPTIONS.get(name)
             if exemption is not None:
-                if exemption == str(relative):
+                if exemption == relative.as_posix():
                     continue
                 errors.append(
                     f"{relative}: {name} is exempted from CompleteGeneration at "
@@ -813,9 +813,7 @@ def selftest_generation_witnesses() -> None:
         )
         assert not check_generation_witnesses_are_complete(root, crates)  # G2
         source.write_text("pub struct ExemptGeneration { id: String }\n", encoding="utf-8")
-        INCOMPLETE_GENERATION_EXEMPTIONS["ExemptGeneration"] = str(
-            source.relative_to(root)
-        )
+        INCOMPLETE_GENERATION_EXEMPTIONS["ExemptGeneration"] = source.relative_to(root).as_posix()
         try:
             assert not check_generation_witnesses_are_complete(root, crates)  # G3
             INCOMPLETE_GENERATION_EXEMPTIONS["ExemptGeneration"] = "crates/other/src/lib.rs"
@@ -947,7 +945,7 @@ def check_tenancy_is_not_optional(
         )
         for match in OPTIONAL_TENANCY_EXTRACTOR.finditer(production):
             handle = match.group(1)
-            if f"{relative}::{handle}" in OPTIONAL_TENANCY_EXEMPTIONS:
+            if f"{relative.as_posix()}::{handle}" in OPTIONAL_TENANCY_EXEMPTIONS:
                 continue
             line = production[: match.start()].count("\n") + 1
             errors.append(
@@ -985,7 +983,7 @@ def check_no_ambient_tenant_default(
             if not (named or literal):
                 continue
             owner = _enclosing_rust_fn(production, match.start())
-            if f"{relative}::{owner}" in AMBIENT_TENANT_DEFAULT_EXEMPTIONS:
+            if f"{relative.as_posix()}::{owner}" in AMBIENT_TENANT_DEFAULT_EXEMPTIONS:
                 continue
             line = production[: match.start()].count("\n") + 1
             errors.append(
@@ -1040,7 +1038,7 @@ def selftest_tenancy_is_required() -> None:
             "async fn handler(scope: Option<Extension<WorkspaceScope>>) {}\n",
             encoding="utf-8",
         )
-        key = f"{source.relative_to(root)}::WorkspaceScope"
+        key = f"{source.relative_to(root).as_posix()}::WorkspaceScope"
         OPTIONAL_TENANCY_EXEMPTIONS[key] = "selftest"
         try:
             assert not check_tenancy_is_not_optional(root, crates)  # T4
@@ -1111,7 +1109,7 @@ def selftest_no_ambient_tenant_default() -> None:
             "    s.unwrap_or_else(|| DEFAULT_SCOPE.to_string())\n}\n",
             encoding="utf-8",
         )
-        key = f"{source.relative_to(root)}::owner"
+        key = f"{source.relative_to(root).as_posix()}::owner"
         AMBIENT_TENANT_DEFAULT_EXEMPTIONS[key] = "selftest"
         try:
             assert not check_no_ambient_tenant_default(root, crates)  # A5

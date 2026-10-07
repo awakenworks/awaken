@@ -20,7 +20,7 @@ use awaken_mcp_wire::{
 };
 use awaken_runtime_contract::ContentBlock;
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
-use awaken_runtime_contract::tool::{
+use awaken_tool_contract::tool::{
     DurableTaskTool, RawTool, ToolCall, ToolError, ToolOutput, ToolTaskHandle, ToolTaskPoll,
     ToolTaskStart,
 };
@@ -361,7 +361,7 @@ mod tests {
     use super::*;
     use awaken_mcp_wire::McpTransportError;
     use awaken_mcp_wire::{CallToolResult, CreateTaskResult};
-    use awaken_runtime_contract::tool::{ToolRecoveryCapability, ToolRecoveryMode};
+    use awaken_tool_contract::tool::{ToolRecoveryCapability, ToolRecoveryMode};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A transport whose single `call_tool` outcome is fixed, so each of the
@@ -560,11 +560,11 @@ mod tests {
         assert_eq!(tool.id(), "mcp__srv__echo");
         assert_eq!(
             tool.execution_target(),
-            awaken_runtime_contract::tool::ToolExecutionTarget::Brain
+            awaken_tool_contract::tool::ToolExecutionTarget::Brain
         );
         assert_eq!(
             tool.concurrency(&serde_json::json!({"q": "hi"})),
-            awaken_runtime_contract::tool::ToolConcurrency::Parallel,
+            awaken_tool_contract::tool::ToolConcurrency::Parallel,
             "MCP tools use maximum parallelism unless host configuration narrows it"
         );
         let out = tool.invoke(call()).await.expect("invokes");

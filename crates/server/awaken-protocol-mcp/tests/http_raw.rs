@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_protocol_mcp::{McpExportedTool, McpHttpConfig, McpToolService, StaticExports, router};
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
+use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::json;

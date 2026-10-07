@@ -173,7 +173,7 @@ def check_all(repo_root: Path) -> list[str]:
     }
     dialect_groups: dict[tuple[Path, str], dict[str, Path]] = {}
     for path in sorted(crates.rglob("*.sql")):
-        relative = str(path.relative_to(repo_root))
+        relative = _crate_boundary_workspace.repository_path(path, repo_root)
         legacy_owner = PUBLISHED_LEGACY_SQL_AUTHORITIES.get(relative)
         if legacy_owner is not None:
             migration_root = path.parents[1]
@@ -262,14 +262,14 @@ def check_all(repo_root: Path) -> list[str]:
             for constructor in LEGACY_CONSTRUCTORS:
                 if (
                     constructor in migration_source
-                    and str(path.relative_to(repo_root))
+                    and _crate_boundary_workspace.repository_path(path, repo_root)
                     not in PUBLISHED_LEGACY_RUST_AUTHORITIES
                 ):
                     errors.append(
                         f"{path.relative_to(repo_root)}: `{constructor[:-1]}` is a parallel "
                         "unreleased-history path; use Migration::new/per_dialect"
                     )
-            relative = str(path.relative_to(repo_root))
+            relative = _crate_boundary_workspace.repository_path(path, repo_root)
             if relative in PUBLISHED_LEGACY_RUST_AUTHORITIES:
                 sql_files = sum(
                     owner == relative

@@ -1,6 +1,6 @@
 //! Repository binding failures mapped at the Managed resource boundary.
 use awaken_resource_contract::RepositoryBindingVerifierError;
-use awaken_session_error_contract::RunError;
+use awaken_session_types::RunError;
 
 pub(super) fn repository_binding_run_error(error: RepositoryBindingVerifierError) -> RunError {
     let message = error.to_string();
@@ -21,7 +21,7 @@ fn repository_binding_failure_controls_run_retry_semantics() {
     // authority outage or unknown read -> Unavailable; corrupt authority ->
     // Internal. RunError has no conflict kind, so a stale selection remains a
     // caller-correctable request failure rather than a retryable outage.
-    use awaken_session_error_contract::RunErrorKind as K;
+    use awaken_session_types::RunErrorKind as K;
     let cases = [
         (
             RepositoryBindingVerifierError::InvalidRequest { detail: "x".into() },

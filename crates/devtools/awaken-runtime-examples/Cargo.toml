@@ -15,6 +15,7 @@ publish = false
 separation = "test-support"
 
 [dependencies]
+awaken-tool-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-runtime = { workspace = true }

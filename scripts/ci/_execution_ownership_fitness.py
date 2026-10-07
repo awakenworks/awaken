@@ -318,7 +318,7 @@ def check_all(repo_root: Path) -> list[str]:
     rust_sources: dict[str, str] = {}
     for path in sorted((repo_root / "crates").glob("**/src/**/*.rs")):
         text = path.read_text(encoding="utf-8")
-        rust_sources[str(path.relative_to(repo_root))] = text
+        rust_sources[_crate_boundary_workspace.repository_path(path, repo_root)] = text
         for symbol, owner in RETIRED_EXECUTION_PATHS.items():
             if re.search(rf"\b{re.escape(symbol)}\b", text):
                 errors.append(
@@ -335,7 +335,7 @@ def check_all(repo_root: Path) -> list[str]:
             if _is_this_checker(path) or "node_modules" in path.parts:
                 continue
             try:
-                fixture_sources[str(path.relative_to(repo_root))] = path.read_text(encoding="utf-8")
+                fixture_sources[_crate_boundary_workspace.repository_path(path, repo_root)] = path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
                 continue
     errors.extend(retired_deployment_selector_violations(fixture_sources))
@@ -352,7 +352,7 @@ def check_all(repo_root: Path) -> list[str]:
             if "tests" in path.parts or path.name.endswith("_tests.rs"):
                 continue
             if _owned_routes(path):
-                discovered.add(str(path.relative_to(repo_root)))
+                discovered.add(_crate_boundary_workspace.repository_path(path, repo_root))
     for relative in sorted(discovered - registered):
         errors.append(
             f"unregistered public route owner source {relative}; add it to ROUTE_OWNER_FILES"

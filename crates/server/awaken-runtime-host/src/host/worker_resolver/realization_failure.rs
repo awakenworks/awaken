@@ -75,7 +75,7 @@ impl HostWorkerResolver {
     ) -> awaken_dispatch_execution::Error {
         match error {
             awaken_session_realization_contract::SessionRealizationDriveError::Effect(error)
-                if error.kind == awaken_session_error_contract::RunErrorKind::Unavailable =>
+                if error.kind == awaken_session_types::RunErrorKind::Unavailable =>
             {
                 Self::execution_error(error.to_string())
             }
@@ -145,7 +145,7 @@ mod tests {
         // | R4 | permanent effect/invalid Control | TerminalResolution |
         let retryable_effect = HostWorkerResolver::map_session_realization_drive_error(
             awaken_session_realization_contract::SessionRealizationDriveError::Effect(
-                awaken_session_error_contract::RunError::unavailable_classified(
+                awaken_session_types::RunError::unavailable_classified(
                     "mcp_material_source_unavailable",
                     "materializer unavailable",
                 ),
@@ -180,7 +180,7 @@ mod tests {
 
         for permanent in [
             awaken_session_realization_contract::SessionRealizationDriveError::Effect(
-                awaken_session_error_contract::RunError::classified(
+                awaken_session_types::RunError::classified(
                     "mcp_credential_revision_mismatch",
                     "invalid revision",
                 ),

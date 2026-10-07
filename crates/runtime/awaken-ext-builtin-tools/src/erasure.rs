@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_runtime_contract::tool::{
+use awaken_tool_contract::tool::{
     RawTool, Tool, ToolCall, ToolConcurrency, ToolError, ToolExecutionTarget, ToolOutput,
     ToolRecoveryCapability, parse_tool_args, render_tool_output,
 };
@@ -52,7 +52,7 @@ impl<T: Tool> RawTool for Erased<T> {
 
 #[cfg(test)]
 mod tests {
-    use awaken_runtime_contract::tool::{ToolResource, ToolResourceAccess};
+    use awaken_tool_contract::tool::{ToolResource, ToolResourceAccess};
     use schemars::JsonSchema;
     use serde::Deserialize;
 

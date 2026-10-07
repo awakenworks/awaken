@@ -1631,6 +1631,25 @@ async fn completion_is_atomic_and_prevents_resurrection(
     assert_eq!(first_page.len(), 1);
     assert_eq!(first_page[0].run_id, done);
     assert!(first_page[0].sequence > cursor);
+    // Lost-settlement-ACK matrix: the caller cannot distinguish a committed
+    // Done from a failed response. Retrying the same or an older claim must
+    // observe a retired authority, retain the exact completion fact, and never
+    // create another physical execution or duplicate completion.
+    for epoch in [claim.lease.epoch, claim.lease.epoch.saturating_sub(1)] {
+        assert_eq!(
+            store
+                .settle(&done, epoch, DispatchOutcome::Done, &[])
+                .await
+                .expect("retry a completion after response loss"),
+            SettleOutcome::Fenced,
+            "a completed claim cannot settle twice",
+        );
+        assert_eq!(
+            store.completion_events_after(cursor, 2).await.expect("observe retained completion"),
+            first_page,
+            "response loss preserves exactly one durable completion",
+        );
+    }
     assert_eq!(
         store
             .completion_events_after(cursor, 1)

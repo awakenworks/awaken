@@ -43,8 +43,8 @@ use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-use awaken_runtime_contract::tool::ToolOutput;
 use awaken_session_application_contract::{DelegatedRun, Pending};
+use awaken_tool_contract::tool::ToolOutput;
 
 use awaken_ext_compact::{CompactConfig, CompactPlugin};
 

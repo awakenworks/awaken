@@ -255,7 +255,7 @@ mod tests {
             request: awaken_session_mcp_contract::StageMcpAttachment,
         ) -> Result<
             awaken_session_mcp_contract::McpRealizationReceipt,
-            awaken_session_error_contract::RunError,
+            awaken_session_types::RunError,
         > {
             let first_stage = {
                 let mut calls = self.calls.lock().unwrap();
@@ -281,7 +281,7 @@ mod tests {
                     })
                 });
             if !resident {
-                return Err(awaken_session_error_contract::RunError::classified(
+                return Err(awaken_session_types::RunError::classified(
                     "test_session_runtime_missing",
                     "MCP stage ran before the frozen Environment was resident",
                 ));
@@ -298,7 +298,7 @@ mod tests {
         async fn publish_mcp_generation(
             &self,
             _generation: awaken_session_mcp_contract::McpGenerationRef,
-        ) -> Result<(), awaken_session_error_contract::RunError> {
+        ) -> Result<(), awaken_session_types::RunError> {
             self.calls.lock().unwrap().push("publish");
             Ok(())
         }
@@ -306,7 +306,7 @@ mod tests {
         async fn drain_mcp_generation(
             &self,
             _generation: awaken_session_mcp_contract::McpGenerationRef,
-        ) -> Result<(), awaken_session_error_contract::RunError> {
+        ) -> Result<(), awaken_session_types::RunError> {
             self.calls.lock().unwrap().push("drain");
             Ok(())
         }
@@ -359,7 +359,7 @@ mod tests {
             intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
         ) -> Result<
             awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
-            awaken_session_error_contract::RunError,
+            awaken_session_types::RunError,
         > {
             // Fixture cause/effect rule: C1 Control owns the current frozen
             // Environment state and C2 Runtime submits one exact intent. E1
@@ -381,7 +381,7 @@ mod tests {
                     Some(&transition_fingerprint),
                 )
                 .map_err(|error| {
-                    awaken_session_error_contract::RunError::classified(
+                    awaken_session_types::RunError::classified(
                         "test_environment_effect_rejected",
                         error.to_string(),
                     )
@@ -393,7 +393,7 @@ mod tests {
             receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
         ) -> Result<
             awaken_session_state_contract::SessionEnvironmentState,
-            awaken_session_error_contract::RunError,
+            awaken_session_types::RunError,
         > {
             // The recovery oracle counts Create/Adopt root receipts. Resource
             // reservations still commit below, but are a distinct effect kind.

@@ -370,9 +370,12 @@ impl EnvRegistry for PostgresEnvRegistry {
         let committed_at = self.clock.observed_at();
         item.archived_at = Some(committed_at.clone());
         item.updated_at = Some(committed_at);
-        item.revision = EnvironmentRevision(item.revision.0.checked_add(1).ok_or_else(|| {
-            EnvironmentStoreError::Backend("Environment revision exhausted".into())
-        })?);
+        item.revision = EnvironmentRevision(
+            item.revision
+                .0
+                .checked_add(1)
+                .ok_or(EnvironmentStoreError::RevisionExhausted)?,
+        );
         let revision = i64::try_from(item.revision.0).map_err(environment_store)?;
         sqlx::query(
             "UPDATE env_registry_env SET archived_at = $1, revision = $2, updated_at = $1 \

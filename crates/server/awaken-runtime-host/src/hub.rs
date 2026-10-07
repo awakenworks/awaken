@@ -106,7 +106,7 @@ impl awaken_session_runtime_contract::SessionThreadLiveSubscription for HubLiveS
         &mut self,
     ) -> Result<
         Option<awaken_agent_contract::stream::event::Observation>,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         loop {
             match self.receiver.recv().await {

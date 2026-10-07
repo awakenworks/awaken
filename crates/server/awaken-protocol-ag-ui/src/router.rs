@@ -34,7 +34,7 @@ use awaken_session_application_contract::{
     CursorParams, EventForwardingSink, OwnerScopedRunApplication, Pending, RunApplication,
     RunApplicationError, RunMode, RunResume, StepOutcome, paginate_history,
 };
-use awaken_session_error_contract::RunErrorKind;
+use awaken_session_types::RunErrorKind;
 use awaken_tenancy::{PresentedThreadId, ResolvedAgentId, ResolvedResourceId, WorkspaceScope};
 
 use crate::encoder::{AgUiEncoder, encode_history, encode_step};

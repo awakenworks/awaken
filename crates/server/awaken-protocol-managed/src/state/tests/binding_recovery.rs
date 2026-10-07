@@ -1,8 +1,8 @@
 // @formal evidence credential.managed_rollout_abstract_ack_requires_every_target_adoption
 use super::*;
 use crate::state::test_support::{ConflictInjectingRepo, ReadControl};
-use awaken_runtime_contract::tool_batch::ToolBatch;
 use awaken_session_types::SessionId;
+use awaken_tool_contract::tool_batch::ToolBatch;
 
 struct RecordingProjectionRefresh {
     calls: std::sync::atomic::AtomicUsize,

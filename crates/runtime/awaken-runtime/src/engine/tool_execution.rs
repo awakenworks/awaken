@@ -5,7 +5,7 @@
 //! Tool authorization, execution selection, and resumed-result folding.
 
 use super::*;
-use awaken_runtime_contract::tool::{
+use awaken_tool_contract::tool::{
     DurableTaskExecutor, ToolTaskContinuation, start_executor_task, start_tool_task,
 };
 use std::sync::Arc;
@@ -888,7 +888,7 @@ impl LocalToolExecutor<'_> {
     fn tool(
         &self,
         tool_id: &str,
-    ) -> Option<std::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+    ) -> Option<std::sync::Arc<dyn awaken_tool_contract::tool::RawTool>> {
         self.env
             .and_then(|env| env.dynamic_tool(tool_id))
             .or_else(|| self.runtime.tool(tool_id).cloned())
@@ -904,8 +904,7 @@ impl ToolExecutor for LocalToolExecutor<'_> {
     async fn execution_domain(
         &self,
         call: &ToolCall,
-    ) -> std::result::Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, ToolError>
-    {
+    ) -> std::result::Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, ToolError> {
         Ok(self
             .tool(&call.tool_id)
             .map_or(Default::default(), |tool| tool.execution_domain()))
@@ -940,7 +939,7 @@ pub(super) async fn prepare_tool_domain(
     env: &ResolvedExecutionEnv,
     context: &RuntimeRunContext,
     call: &ToolCall,
-) -> Result<std::result::Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, ToolOutput>>
+) -> Result<std::result::Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, ToolOutput>>
 {
     verify_attempt_ownership(context.ownership.as_deref()).await?;
     if !context.physical_quiescence.permits_execution() {

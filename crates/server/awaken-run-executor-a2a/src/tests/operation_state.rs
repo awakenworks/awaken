@@ -84,7 +84,7 @@ fn durable_reference_and_resume_projection_fail_closed() {
     );
     assert_eq!(
         resume_text(&ResumeResult::ToolResult(
-            awaken_runtime_contract::tool::ToolOutput::ok("call", "tool")
+            awaken_tool_contract::tool::ToolOutput::ok("call", "tool")
         ))
         .unwrap(),
         "tool"

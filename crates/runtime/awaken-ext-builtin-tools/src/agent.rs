@@ -8,7 +8,7 @@
 
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::Message;
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput, invoke_raw_tool};
+use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput, invoke_raw_tool};
 use serde::{Deserialize, Serialize};
 
 /// Conventional payload understood by an Agent-backed ordinary tool.

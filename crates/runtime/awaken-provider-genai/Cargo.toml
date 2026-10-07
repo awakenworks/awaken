@@ -30,6 +30,7 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+awaken-tool-contract.workspace = true
 awaken-ext-builtin-tools.workspace = true
 schemars = "1"
 tokio = { workspace = true, features = [

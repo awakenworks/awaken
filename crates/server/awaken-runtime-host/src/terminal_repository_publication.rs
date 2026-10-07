@@ -8,12 +8,12 @@
 // @formal reason: a direct formal-proof claim.
 //! Runtime execution of the one aggregate-derived terminal Repository effect.
 
-use awaken_session_error_contract::RunError;
 use awaken_session_resource_contract::SessionRealizationLease;
 use awaken_session_state_contract::{
     SessionRepositoryPublicationCommand, SessionRepositoryPublicationEffect,
     SessionRepositoryPublicationReceipt, SessionRepositoryPublicationRejection,
 };
+use awaken_session_types::RunError;
 
 use crate::{ManagedHost, managed_adapter_error::to_run_error};
 

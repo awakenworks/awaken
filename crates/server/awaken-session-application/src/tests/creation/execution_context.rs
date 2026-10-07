@@ -86,7 +86,7 @@ async fn profiled_context_admission_freezes_once_and_rejects_invalid_authoring()
         }
         assert!(
             matches!(app.accept_profiled_session(command).await, Err(SessionCreationError::Rejected(error))
-            if error.kind == awaken_session_error_contract::RunErrorKind::BadRequest),
+            if error.kind == awaken_session_types::RunErrorKind::BadRequest),
             "E2"
         );
         assert!(

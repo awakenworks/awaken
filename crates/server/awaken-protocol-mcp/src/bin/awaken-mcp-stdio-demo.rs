@@ -22,7 +22,7 @@ use awaken_protocol_mcp::{
     McpExportedTool, McpHttpConfig, McpStdioServer, McpToolService, SharedExports,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
+use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use serde_json::json;
 use tokio::sync::mpsc;
 

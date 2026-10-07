@@ -8,7 +8,7 @@ use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
     ToolPresentation, ToolPresentationOverride,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolOutputSpiller};
+use awaken_tool_contract::tool::{RawTool, ToolOutputSpiller};
 
 struct RejectingWatermarkCommit;
 

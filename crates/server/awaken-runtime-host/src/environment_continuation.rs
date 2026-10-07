@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use awaken_session_error_contract::RunError;
+use awaken_session_types::RunError;
 
 use crate::{ManagedHost, to_run_error};
 

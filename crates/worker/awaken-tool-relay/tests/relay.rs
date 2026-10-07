@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_runtime_contract::tool::{
+use awaken_tool_contract::tool::{
     RawTool, ToolCall, ToolError, ToolExecutor, ToolOperationContext, ToolOutput,
     with_tool_operation_context,
 };
@@ -288,7 +288,7 @@ async fn assert_poisoned_operation_partition(
     );
     assert!(matches!(
         executor.call_hand(&call("c2", "echo", "new")).await,
-        Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+        Err(awaken_tool_contract::tool::ToolError::UnavailableBeforeDispatch(_))
     ));
 }
 
@@ -346,7 +346,7 @@ async fn caller_cancellation_poisons_the_stream_before_a_late_reply_can_cross_ca
         executor: &RemoteToolExecutor<tokio::io::DuplexStream>,
         call_id: &str,
         operation: Option<&str>,
-    ) -> Result<HandResult, awaken_runtime_contract::tool::ToolError> {
+    ) -> Result<HandResult, awaken_tool_contract::tool::ToolError> {
         let request = call(call_id, "echo", "input");
         match operation {
             Some(operation) => {
@@ -423,7 +423,7 @@ async fn caller_cancellation_poisons_the_stream_before_a_late_reply_can_cross_ca
             assert!(
                 matches!(
                     second,
-                    Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+                    Err(awaken_tool_contract::tool::ToolError::UnavailableBeforeDispatch(_))
                 ),
                 "R2 new operation is provably unsent"
             );
@@ -738,7 +738,7 @@ async fn filesystem_ledger_accepts_and_fences_a_long_nested_workflow_operation_i
         "nested".repeat(40)
     );
     let result = HandResult::Ok {
-        output: awaken_runtime_contract::tool::ToolOutput::ok(
+        output: awaken_tool_contract::tool::ToolOutput::ok(
             "nested-workflow-call",
             "nested-hand-ok",
         ),

@@ -168,7 +168,7 @@ impl AcpToolExporter for Exporter {
         &self,
         _: &str,
         _: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-        _: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+        _: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
     ) -> Result<AcpToolExport, String> {
         panic!("attached tools must never export a Worker loopback endpoint")
     }
@@ -187,7 +187,7 @@ impl awaken_session_environment_contract::tool_export::AttachedChannelToolExport
         &self,
         server: awaken_runtime_contract::resolved::AcpMcpServer,
         _: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-        _: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+        _: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
         reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
         writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
     ) -> Result<AcpToolExport, String> {
@@ -445,7 +445,7 @@ impl AcpToolExporter for HttpOnlyExporter {
         &self,
         _: &str,
         _: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-        _: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+        _: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
     ) -> Result<AcpToolExport, String> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Err("attached export must not use the HTTP fallback".into())

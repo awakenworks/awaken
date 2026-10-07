@@ -902,7 +902,7 @@ async fn controlled_modification_fails_when_post_tool_skill_refresh_fails() {
     assert!(
         matches!(
             &error,
-            awaken_runtime_contract::tool::ToolError::StateInvalidatedAfterDispatch(detail)
+            awaken_tool_contract::tool::ToolError::StateInvalidatedAfterDispatch(detail)
                 if detail.contains("scripted Skill read outage")
         ),
         "PT3 original refresh diagnostic: {error}"
@@ -923,7 +923,7 @@ async fn controlled_modification_fails_when_post_tool_skill_refresh_fails() {
                     arguments: serde_json::json!({"command": "true"}),
                 })
                 .await,
-            Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+            Err(awaken_tool_contract::tool::ToolError::UnavailableBeforeDispatch(_))
         ),
         "PT3 closed Hand rejects every later dispatch"
     );
@@ -935,7 +935,7 @@ async fn post_dispatch_refresh_failure_cannot_hide_an_unknown_hand_effect() {
     // PT4 typed unknown effect + failed catalog refresh => retain Indeterminate
     // and close the one Hand binding. Neither StateInvalidated nor reacquisition
     // may hide uncertainty; PT3 above owns definitive effect + refresh failure.
-    use awaken_runtime_contract::tool::ToolError;
+    use awaken_tool_contract::tool::ToolError;
     let provider = Arc::new(FakeContainerProvider::default());
     let factory = ScriptedHandFactory::new([ScriptedHandOutcome::Indeterminate]);
     let environment = SandboxEnvironmentProvider::container(

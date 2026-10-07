@@ -6,7 +6,7 @@ use awaken_ext_builtin_tools::{
     WebSearchExecutionConfiguration, WebSearchPlugin, WebSearchProviderRegistry,
     WebSearchUserLocation,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolCall};
+use awaken_tool_contract::tool::{RawTool, ToolCall};
 use std::io::{Read, Write};
 use std::sync::Arc;
 

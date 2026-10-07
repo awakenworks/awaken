@@ -8,7 +8,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_lease_contract::fence::{Epoch, Tenure, TenureScope};
-use awaken_runtime_contract::tool::{
+use awaken_tool_contract::tool::{
     ToolCall, ToolConcurrency, ToolRecoveryMode, ToolRecoveryPolicy, ToolTaskHandle,
 };
 use serde::{Deserialize, Serialize};

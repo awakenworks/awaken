@@ -14,8 +14,8 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_runtime_contract::execution::{Error, Result};
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ToolCall};
 use awaken_runtime_contract::resolved::{ContextPolicy, ResolvedSpec, ToolDescriptor};
-use awaken_runtime_contract::tool::ToolOutput;
-use awaken_runtime_contract::tool_batch::ToolBatch;
+use awaken_tool_contract::tool::ToolOutput;
+use awaken_tool_contract::tool_batch::ToolBatch;
 
 use crate::tool_discovery::ToolDiscoveryState;
 

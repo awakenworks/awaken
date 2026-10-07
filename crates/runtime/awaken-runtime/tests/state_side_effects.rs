@@ -39,10 +39,10 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{
+use awaken_store_inmem::{MemoryCommitCoordinator, replay_state};
+use awaken_tool_contract::tool::{
     RawTool, ToolConcurrency, ToolError, ToolOutput, ToolResource, ToolResourceAccess,
 };
-use awaken_store_inmem::{MemoryCommitCoordinator, replay_state};
 use tokio::sync::Barrier;
 
 /// Emits a single Step with the given tool calls, then ends with text.
@@ -621,7 +621,7 @@ impl RawTool for FatalWaveTool {
 async fn parallel_wave_retains_returned_siblings_after_fatal_result_without_publishing_or_reentry()
 {
     use awaken_agent_contract::agent::state::StateKey;
-    use awaken_runtime_contract::tool_batch::{
+    use awaken_tool_contract::tool_batch::{
         ActiveToolBatch, ToolCallPhase, store_from_run_commands,
     };
     // Causes: C1 a wave has already joined every entered invocation;

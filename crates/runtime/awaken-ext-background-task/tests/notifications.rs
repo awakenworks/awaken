@@ -7,7 +7,7 @@ use awaken_ext_background_task::*;
 use awaken_runtime_contract::plugin::{
     PhaseContext, PhaseHookPoint, PhaseKind, Plugin, ResolvedExecutionEnv,
 };
-use awaken_runtime_contract::tool::{ToolCall, ToolConcurrency, ToolRecoveryPolicy};
+use awaken_tool_contract::tool::{ToolCall, ToolConcurrency, ToolRecoveryPolicy};
 use serde_json::{Value, json};
 
 fn ended() -> BackgroundTask {

@@ -19,13 +19,12 @@ impl ToolExecutor for BlockingHandExecutor {
     async fn invoke(
         &self,
         call: &ToolCall,
-    ) -> Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
-    {
+    ) -> Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError> {
         if self.block_once.swap(false, Ordering::SeqCst) {
             self.started.notify_one();
             self.release.notified().await;
         }
-        Ok(awaken_runtime_contract::tool::ToolOutput::ok(
+        Ok(awaken_tool_contract::tool::ToolOutput::ok(
             &call.call_id,
             "completed",
         ))
@@ -37,7 +36,7 @@ impl HandExecutorFactory for BlockingHandFactory {
         &self,
         _channel: Box<dyn AgentChannelType>,
         _operation_scope: &str,
-        _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
+        _recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
     ) -> Arc<dyn ToolExecutor> {
         Arc::new(BlockingHandExecutor {
             started: self.started.clone(),
@@ -89,7 +88,7 @@ async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
             .agent_tools()
             .tool_executor()
             .recovery_capability("write"),
-        awaken_runtime_contract::tool::ToolRecoveryCapability::DurableRequest
+        awaken_tool_contract::tool::ToolRecoveryCapability::DurableRequest
     );
     assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 0);
     assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 0);
@@ -115,7 +114,7 @@ async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
             .agent_tools()
             .tool_executor()
             .recovery_capability("bash"),
-        awaken_runtime_contract::tool::ToolRecoveryCapability::DurableRequest
+        awaken_tool_contract::tool::ToolRecoveryCapability::DurableRequest
     );
     adopted
         .agent_tools()
@@ -193,7 +192,7 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
             arguments: serde_json::json!({}),
         })
         .await,
-        Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+        Err(awaken_tool_contract::tool::ToolError::UnavailableBeforeDispatch(_))
     ));
     assert_eq!(
         provider
@@ -271,7 +270,7 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         .expect_err("a replacement spawn failure is propagated");
     assert!(matches!(
         error,
-        awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(ref message)
+        awaken_tool_contract::tool::ToolError::UnavailableBeforeDispatch(ref message)
             if message.contains("failed to reacquire Session hand")
     ));
     assert_eq!(
@@ -318,7 +317,7 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         .expect_err("a second dead channel ends the bounded retry");
     assert!(matches!(
         error,
-        awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_)
+        awaken_tool_contract::tool::ToolError::UnavailableBeforeDispatch(_)
     ));
     assert_eq!(bounded.binds.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(
@@ -353,7 +352,7 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         .expect_err("a possibly executed call is never replayed");
     assert!(matches!(
         error,
-        awaken_runtime_contract::tool::ToolError::Indeterminate(_)
+        awaken_tool_contract::tool::ToolError::Indeterminate(_)
     ));
     assert_eq!(
         indeterminate
@@ -423,7 +422,7 @@ async fn live_projection_update_hibernates_and_fences_the_session_hand() {
                 arguments: serde_json::json!({}),
             })
             .await,
-            Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+            Err(awaken_tool_contract::tool::ToolError::UnavailableBeforeDispatch(_))
         ),
         "U1/E2"
     );
@@ -452,7 +451,7 @@ async fn live_projection_update_hibernates_and_fences_the_session_hand() {
                 arguments: serde_json::json!({}),
             })
             .await,
-            Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+            Err(awaken_tool_contract::tool::ToolError::UnavailableBeforeDispatch(_))
         ),
         "U3/E2,E4"
     );
@@ -531,7 +530,7 @@ async fn live_projection_update_rejects_an_unreapable_hand() {
             arguments: serde_json::json!({}),
         })
         .await,
-        Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+        Err(awaken_tool_contract::tool::ToolError::UnavailableBeforeDispatch(_))
     ));
     assert_eq!(
         provider.hand_spawns.load(Ordering::SeqCst),
@@ -892,7 +891,7 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
                 arguments: serde_json::json!({}),
             })
             .await,
-        Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+        Err(awaken_tool_contract::tool::ToolError::UnavailableBeforeDispatch(_))
     ));
     assert_eq!(failed_provider.hand_spawns.load(Ordering::SeqCst), 1, "I6");
     failed.lifecycle().dispose().await.unwrap();

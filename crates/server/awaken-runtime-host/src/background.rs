@@ -37,7 +37,7 @@ struct BackgroundActivity {
 
 #[derive(Default)]
 struct SharedToolExecutionAdmission {
-    state: std::sync::Mutex<(u64, BTreeMap<u64, awaken_runtime_contract::ToolConcurrency>)>,
+    state: std::sync::Mutex<(u64, BTreeMap<u64, awaken_tool_contract::ToolConcurrency>)>,
     changed: tokio::sync::Notify,
 }
 
@@ -46,7 +46,7 @@ struct SharedToolExecutionPermit {
     id: u64,
 }
 
-impl awaken_runtime_contract::ToolExecutionPermit for SharedToolExecutionPermit {}
+impl awaken_tool_contract::ToolExecutionPermit for SharedToolExecutionPermit {}
 
 impl Drop for SharedToolExecutionPermit {
     fn drop(&mut self) {
@@ -61,13 +61,13 @@ impl Drop for SharedToolExecutionPermit {
 }
 
 #[async_trait::async_trait]
-impl awaken_runtime_contract::ToolExecutionAdmission for SharedToolExecutionAdmission {
+impl awaken_tool_contract::ToolExecutionAdmission for SharedToolExecutionAdmission {
     async fn acquire(
         self: Arc<Self>,
-        claim: awaken_runtime_contract::ToolConcurrency,
+        claim: awaken_tool_contract::ToolConcurrency,
     ) -> Result<
-        Box<dyn awaken_runtime_contract::ToolExecutionPermit>,
-        awaken_runtime_contract::tool::ToolError,
+        Box<dyn awaken_tool_contract::ToolExecutionPermit>,
+        awaken_tool_contract::tool::ToolError,
     > {
         loop {
             let notified = self.changed.notified();
@@ -82,7 +82,7 @@ impl awaken_runtime_contract::ToolExecutionAdmission for SharedToolExecutionAdmi
                     .all(|active| active.compatible_with(&claim))
                 {
                     state.0 = state.0.checked_add(1).ok_or_else(|| {
-                        awaken_runtime_contract::tool::ToolError::DefinitiveFailure(
+                        awaken_tool_contract::tool::ToolError::DefinitiveFailure(
                             "shared tool admission sequence exhausted".into(),
                         )
                     })?;
@@ -175,7 +175,7 @@ impl BackgroundRuns {
         &self,
         session_id: &str,
         generation_id: &str,
-    ) -> Arc<dyn awaken_runtime_contract::ToolExecutionAdmission> {
+    ) -> Arc<dyn awaken_tool_contract::ToolExecutionAdmission> {
         let key = (session_id.to_string(), generation_id.to_string());
         let mut admissions = self
             .admissions
@@ -381,7 +381,7 @@ mod tests {
         let first = background.tool_execution_admission("session", "generation");
         let same = background.tool_execution_admission("session", "generation");
         let other = background.tool_execution_admission("session", "other-generation");
-        let claim = awaken_runtime_contract::ToolConcurrency::Serial;
+        let claim = awaken_tool_contract::ToolConcurrency::Serial;
         let guard = first.clone().acquire(claim.clone()).await.unwrap();
         let mut blocked = tokio::spawn(async move { same.acquire(claim).await.unwrap() });
         assert!(
@@ -391,7 +391,7 @@ mod tests {
             "R1"
         );
         let independent = other
-            .acquire(awaken_runtime_contract::ToolConcurrency::Serial)
+            .acquire(awaken_tool_contract::ToolConcurrency::Serial)
             .await
             .expect("R3");
         drop(independent);

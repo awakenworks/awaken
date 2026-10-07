@@ -54,7 +54,7 @@ pub(crate) struct ResourcePromptProjection {
 impl ResourcePromptProjection {
     pub(crate) fn try_from_input(
         input: &awaken_session_resource_contract::ResolvedInput,
-    ) -> Result<Self, awaken_session_error_contract::RunError> {
+    ) -> Result<Self, awaken_session_types::RunError> {
         use awaken_session_resource_contract::ResolvedInputSource;
 
         let (kind, logical_path) = match &input.source {
@@ -75,7 +75,7 @@ impl ResourcePromptProjection {
             .as_deref()
             .map(validate_resource_prompt_template)
             .transpose()
-            .map_err(awaken_session_error_contract::RunError::bad_request)?
+            .map_err(awaken_session_types::RunError::bad_request)?
             .unwrap_or(false);
         Ok(Self {
             kind,

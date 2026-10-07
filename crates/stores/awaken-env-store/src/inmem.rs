@@ -205,11 +205,15 @@ impl EnvRegistry for InMemoryEnvRegistry {
         if item.archived_at.is_some() {
             return Ok(Some(item.clone()));
         }
+        let revision = EnvironmentRevision(
+            item.revision
+                .0
+                .checked_add(1)
+                .ok_or(EnvironmentStoreError::RevisionExhausted)?,
+        );
         item.archived_at = Some(committed_at.clone());
         item.updated_at = Some(committed_at);
-        item.revision = EnvironmentRevision(item.revision.0.checked_add(1).ok_or_else(|| {
-            EnvironmentStoreError::Backend("Environment revision exhausted".into())
-        })?);
+        item.revision = revision;
         let item = item.clone();
         state
             .revisions
@@ -296,6 +300,62 @@ mod tests {
 
     fn r() -> InMemoryEnvRegistry {
         InMemoryEnvRegistry::new(awaken_time::system_clock())
+    }
+
+    #[tokio::test]
+    async fn exhausted_update_and_archive_preserve_current_history_and_delivery_intents() {
+        // U1 changed update / A1 archive at MAX reject without a partial write;
+        // U2 exact no-op replay succeeds. Observe the aggregate, immutable
+        // revisions and registration log, rather than a fixture call counter.
+        let r = r();
+        let created = r
+            .create("before".into(), String::new(), BTreeMap::new(), config())
+            .await
+            .unwrap();
+        {
+            let mut state = r.state().unwrap();
+            let item = state.envs.get_mut(&created.id).unwrap();
+            item.revision = EnvironmentRevision(u64::MAX);
+            let item = item.clone();
+            state
+                .revisions
+                .insert((item.id.clone(), item.revision), item);
+        }
+        let before = r.get(&created.id).await.unwrap().unwrap();
+        let history = r.state().unwrap().revisions.clone();
+        let intents = r
+            .registration_intents(EnvironmentRegistrationIntentFilter::All)
+            .await
+            .unwrap();
+        assert_eq!(
+            r.update(
+                &created.id,
+                before.revision,
+                EnvUpdate {
+                    name: Some("after".into()),
+                    ..Default::default()
+                }
+            )
+            .await,
+            Err(EnvironmentStoreError::RevisionExhausted),
+        );
+        assert_eq!(
+            r.archive(&created.id).await,
+            Err(EnvironmentStoreError::RevisionExhausted)
+        );
+        assert_eq!(
+            r.update(&created.id, before.revision, EnvUpdate::default())
+                .await,
+            Ok(Some(before.clone()))
+        );
+        assert_eq!(r.get(&created.id).await, Ok(Some(before)));
+        assert_eq!(r.state().unwrap().revisions, history);
+        assert_eq!(
+            r.registration_intents(EnvironmentRegistrationIntentFilter::All)
+                .await
+                .unwrap(),
+            intents
+        );
     }
 
     #[tokio::test]

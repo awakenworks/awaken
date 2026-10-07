@@ -1,6 +1,6 @@
 use super::*;
 use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
+use awaken_tool_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
 
 use crate::config::ModelSelection;
 
@@ -1304,7 +1304,7 @@ fn advisor_is_distinct_from_delegation_and_requires_one_exact_candidate() {
             .unwrap()
             .recovery_policy
             .mode(),
-        awaken_runtime_contract::tool::ToolRecoveryMode::DurableRequest,
+        awaken_tool_contract::tool::ToolRecoveryMode::DurableRequest,
         "V1"
     );
     assert!(

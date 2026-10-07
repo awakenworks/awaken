@@ -8,8 +8,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey};
-use awaken_runtime_contract::ToolSearchLimit;
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolPresentation};
+use awaken_tool_contract::ToolSearchLimit;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

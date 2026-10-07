@@ -23,8 +23,8 @@ use awaken_runtime_contract::delegation::RunDelegationService;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime_contract::tool::{RawToolRegistry, ToolExecutor};
 use awaken_time::WallClock;
+use awaken_tool_contract::tool::{RawToolRegistry, ToolExecutor};
 
 use super::child_attempt::{
     ChildExecutionAdapters, bind_direct_child_credentials, child_attempt_executor,
@@ -537,9 +537,9 @@ mod tests {
     use awaken_runtime_contract::resume::ResumeResult;
     use awaken_runtime_contract::runtime_context::RuntimeRunContext;
     use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-    use awaken_runtime_contract::tool::{RawToolRegistry, ToolExecutor};
     use awaken_sandbox_local::LocalProvider;
     use awaken_store_inmem::MemoryCommitCoordinator;
+    use awaken_tool_contract::tool::{RawToolRegistry, ToolExecutor};
 
     use super::{
         ChildExecutionAdapters, ChildRunRequest, RunScheduler, await_committed_child_boundary,

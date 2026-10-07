@@ -33,8 +33,8 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use awaken_store_inmem::{MemoryCommitCoordinator, replay_state};
+use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 
 struct TextLlm;
 
@@ -182,8 +182,8 @@ async fn every_entered_phase_hook_vetoes_ack_on_drop_or_unwind_but_not_return() 
             let mut context = RuntimeRunContext::new();
             if recovered {
                 use awaken_agent_contract::agent::state::StateKey;
-                use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatch};
                 use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
+                use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolBatch};
                 // A committed Requested call needs no replay permission. A
                 // text-only model cannot accidentally supply a fresh AfterTool
                 // witness if recovery is skipped. This tests the Runtime fold,

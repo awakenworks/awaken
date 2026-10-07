@@ -31,7 +31,7 @@ impl awaken_session_runtime_contract::SessionEnvironmentBindingSink for WorkerCo
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         self.control
             .authorize_session_environment_effect(&self.identity, intent)
@@ -43,7 +43,7 @@ impl awaken_session_runtime_contract::SessionEnvironmentBindingSink for WorkerCo
         receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         self.control
             .persist_session_environment_receipt(&self.identity, &receipt)

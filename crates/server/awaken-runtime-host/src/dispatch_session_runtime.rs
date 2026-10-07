@@ -10,7 +10,7 @@ use std::sync::{Arc, Weak};
 
 use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};
 use awaken_resource_contract::RepositoryBindingVerifier;
-use awaken_session_error_contract::RunError;
+use awaken_session_types::RunError;
 
 use crate::{ManagedHost, SharedHost};
 

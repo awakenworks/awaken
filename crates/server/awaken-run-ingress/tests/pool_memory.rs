@@ -3099,13 +3099,13 @@ async fn concurrency_drives_distinct_runs_in_parallel() {
     ] {
         let state =
             awaken_agent_contract::agent::state::Store::rebuild(&commit.committed_state(&thread));
-        let batch = <awaken_runtime_contract::ActiveToolBatch as awaken_agent_contract::agent::state::StateKey>::load(&state)
+        let batch = <awaken_tool_contract::ActiveToolBatch as awaken_agent_contract::agent::state::StateKey>::load(&state)
             .expect("MT1 readable batch")
             .expect("MT1 retained batch");
         assert_eq!(batch.calls().len(), 2, "MT1/E3 {rule}");
         assert_eq!(
             batch.phase(),
-            awaken_runtime_contract::ToolBatchPhase::Finalized,
+            awaken_tool_contract::ToolBatchPhase::Finalized,
             "MT1/E3 {rule}"
         );
         assert!(

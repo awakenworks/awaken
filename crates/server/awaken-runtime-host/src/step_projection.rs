@@ -4,7 +4,7 @@
 
 use awaken_agent_contract::agent::run::RunState;
 use awaken_session_application_contract::StepOutcome;
-use awaken_session_error_contract::RunError;
+use awaken_session_types::RunError;
 
 use crate::host::{CommittedStepReceipt, HostError};
 use crate::managed_adapter_error::to_run_error;

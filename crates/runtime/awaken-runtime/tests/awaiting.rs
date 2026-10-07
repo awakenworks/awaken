@@ -29,9 +29,9 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput, ToolOutputSpiller};
-use awaken_runtime_contract::{ActiveToolBatch, ToolBatch};
 use awaken_store_inmem::{MemoryCommitCoordinator, replay_latest_state};
+use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput, ToolOutputSpiller};
+use awaken_tool_contract::{ActiveToolBatch, ToolBatch};
 
 /// Calls `echo` once, then ends with text on the next inference.
 struct ToolThenText {
@@ -1025,7 +1025,7 @@ impl RawTool for OperationProbe {
     }
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         self.0.lock().unwrap().push(
-            awaken_runtime_contract::tool::current_tool_operation_context()
+            awaken_tool_contract::tool::current_tool_operation_context()
                 .expect("runtime operation")
                 .operation_id,
         );

@@ -17,12 +17,12 @@ use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::plugin::{
     PhaseContext, PhaseHookPoint, PhaseKind, Plugin, ResolvedExecutionEnv,
 };
-use awaken_runtime_contract::tool::{
+use awaken_time::WallClockExt;
+use awaken_tool_contract::tool::{
     RawTool, ToolCall, ToolConcurrency, ToolError, ToolExecutionFacts, ToolExecutionFactsResolver,
     ToolOperationContext, ToolRecoveryPolicy, with_tool_execution_facts,
     with_tool_operation_context, with_tool_state_context,
 };
-use awaken_time::WallClockExt;
 
 struct FixtureExecutionFacts;
 
@@ -75,7 +75,7 @@ async fn invoke(
     call: ToolCall,
     state: Store,
     operation: &str,
-) -> awaken_runtime_contract::tool::ToolOutput {
+) -> awaken_tool_contract::tool::ToolOutput {
     with_tool_state_context(
         state,
         with_tool_operation_context(
@@ -140,7 +140,7 @@ async fn expired_cancellation_reconciliation_never_fabricates_remote_termination
                     },
                 )
                 .unwrap();
-            let handle = awaken_runtime_contract::tool::ToolTaskHandle {
+            let handle = awaken_tool_contract::tool::ToolTaskHandle {
                 owner: "mcp".into(),
                 binding: "server@revision".into(),
                 task_id: "remote-task".into(),

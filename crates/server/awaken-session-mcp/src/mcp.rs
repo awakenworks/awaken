@@ -778,7 +778,7 @@ mod native_mcp_wiring_tests {
         let contributions = wiring.plugins[0].resolve();
         let error = contributions.dynamic_tools[0]
             .executable()
-            .invoke(awaken_runtime_contract::tool::ToolCall {
+            .invoke(awaken_tool_contract::tool::ToolCall {
                 call_id: "call-1".into(),
                 tool_id: "mcp__docs__echo".into(),
                 arguments: serde_json::json!({ "value": "slow" }),
@@ -788,7 +788,7 @@ mod native_mcp_wiring_tests {
         assert!(
             matches!(
                 &error,
-                awaken_runtime_contract::tool::ToolError::Indeterminate(_)
+                awaken_tool_contract::tool::ToolError::Indeterminate(_)
             ),
             "{error}"
         );

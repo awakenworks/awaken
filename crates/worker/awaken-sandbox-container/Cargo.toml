@@ -71,6 +71,7 @@ unrecorded-exec = []
 podman = ["connection", "tokio/process"]
 
 [dev-dependencies]
+awaken-tool-contract.workspace = true
 awaken-lease-testkit.workspace = true
 axum.workspace = true
 # Self dev-dependency so the integration suites — which drive the runtime port

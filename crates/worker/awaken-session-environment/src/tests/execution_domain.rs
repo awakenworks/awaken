@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn realized_and_deferred_hand_share_the_same_pre_entry_process_domain() {
-    use awaken_runtime_contract::tool_batch::ToolExecutionDomain;
+    use awaken_tool_contract::tool_batch::ToolExecutionDomain;
     // C1 provider has exact retained binding / no evidence / read failure;
     // C2 first or repeated metadata read through environment/direct Hand.
     // R1 exact => same controlled coordinate at both entrances; R2 absent =>
@@ -45,7 +45,7 @@ async fn realized_and_deferred_hand_share_the_same_pre_entry_process_domain() {
                 assert!(
                     matches!(
                         hand_domain,
-                        Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+                        Err(awaken_tool_contract::tool::ToolError::UnavailableBeforeDispatch(_))
                     ),
                     "R3"
                 );

@@ -230,7 +230,7 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
         }
         let mut closed = Vec::new();
         for domain in footprint.process_domains() {
-            if let awaken_runtime_contract::tool_batch::ToolExecutionDomain::ControlledProcess {
+            if let awaken_tool_contract::tool_batch::ToolExecutionDomain::ControlledProcess {
                 provider_ref,
                 execution_ref,
             } = domain

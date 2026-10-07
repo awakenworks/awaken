@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{RawTool, Tool, ToolError};
+use awaken_tool_contract::tool::{RawTool, Tool, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -291,7 +291,7 @@ impl SessionMemoryTools {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::tool::ToolCall;
+    use awaken_tool_contract::tool::ToolCall;
     use std::sync::Mutex;
 
     struct FakeBinding {

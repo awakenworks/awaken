@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use awaken_ext_mcp::transport::McpToolTransport;
 use awaken_ext_mcp::{DEFAULT_TIMEOUT, StdioTransport, connect_tools};
-use awaken_runtime_contract::tool::ToolCall;
+use awaken_tool_contract::tool::ToolCall;
 
 #[tokio::test]
 #[ignore = "spawns an external MCP server; run with --ignored"]

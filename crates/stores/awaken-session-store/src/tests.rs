@@ -2829,7 +2829,7 @@ async fn retained_admission_lookup_preserves_legacy_unknown_across_reopen() {
         awaken_session_application_contract::resolve_deleted_event_admission(&legacy, "key", "fp")
             .unwrap_err()
             .kind,
-        awaken_session_error_contract::RunErrorKind::Unavailable
+        awaken_session_types::RunErrorKind::Unavailable
     );
     let empty = repo
         .deleted_event_admissions("ws_a", &SessionId::from("empty"))

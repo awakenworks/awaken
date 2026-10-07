@@ -11,8 +11,8 @@ use awaken_ext_goal::grader::AgentGrader;
 use awaken_ext_goal::outcome::{Grade, Grader, GraderError, GradingInput};
 use awaken_ext_goal::state::grader_thread_id;
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
+use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 
 use crate::agent_catalog::AgentCatalog;
 use crate::host::SharedHost;
@@ -99,7 +99,7 @@ impl RawTool for AuxAgentTool {
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         let request: AuxiliaryAgentInput =
-            awaken_runtime_contract::tool::parse_tool_args(call.arguments)?;
+            awaken_tool_contract::tool::parse_tool_args(call.arguments)?;
         // Every Run behind this port is out-of-band housekeeping (compaction or
         // memory selection), not the Worker Run — its usage stays isolated on
         // its own Thread rather than folding into the parent tally.

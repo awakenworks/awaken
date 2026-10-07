@@ -2,7 +2,7 @@
 //! Hand tools execute in-process against a real (temp) filesystem.
 
 use awaken_ext_builtin_tools::{HandToolContext, all_hand_tools_in};
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError};
+use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError};
 use std::sync::Arc;
 
 fn tool(id: &str) -> Arc<dyn RawTool> {

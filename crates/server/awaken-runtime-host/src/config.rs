@@ -29,9 +29,9 @@ use awaken_runtime_contract::resolved::{
     ContextPolicy, InvalidModelBinding, ModelBinding, ToolDescriptor,
 };
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
 #[cfg(test)]
 use awaken_sandbox_local::LocalSandbox;
+use awaken_tool_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
 
 const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repository.";
 
@@ -612,13 +612,13 @@ pub(crate) fn server_gate_allowing(
 /// `agent_run` executor is registered: a delegate call is advertised by the config
 /// but the kernel runs it via the injected resolver, not the tool registry.
 pub(crate) trait RuntimeToolSource {
-    fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>;
+    fn runtime_tools(&self) -> Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>;
 }
 
 pub(crate) struct DeferredHandToolSource;
 
 impl RuntimeToolSource for DeferredHandToolSource {
-    fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+    fn runtime_tools(&self) -> Vec<Arc<dyn awaken_tool_contract::tool::RawTool>> {
         all_hand_tools()
     }
 }
@@ -651,11 +651,10 @@ impl FilesystemFreeAgentToolExecutor {
 impl ToolExecutor for FilesystemFreeAgentToolExecutor {
     async fn invoke(
         &self,
-        call: &awaken_runtime_contract::tool::ToolCall,
-    ) -> Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
-    {
+        call: &awaken_tool_contract::tool::ToolCall,
+    ) -> Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError> {
         if self.tools.get(&call.tool_id).is_none() {
-            return Err(awaken_runtime_contract::tool::ToolError::DefinitiveFailure(
+            return Err(awaken_tool_contract::tool::ToolError::DefinitiveFailure(
                 format!("filesystem-free Session cannot execute `{}`", call.tool_id),
             ));
         }
@@ -664,20 +663,20 @@ impl ToolExecutor for FilesystemFreeAgentToolExecutor {
 }
 
 impl RuntimeToolSource for Box<dyn awaken_session_environment_contract::RootedToolSandbox> {
-    fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+    fn runtime_tools(&self) -> Vec<Arc<dyn awaken_tool_contract::tool::RawTool>> {
         self.rooted_tools()
     }
 }
 
 #[cfg(test)]
 impl RuntimeToolSource for LocalSandbox {
-    fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+    fn runtime_tools(&self) -> Vec<Arc<dyn awaken_tool_contract::tool::RawTool>> {
         self.rooted_tools()
     }
 }
 
 impl RuntimeToolSource for crate::session_environment::SessionEnvironment {
-    fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+    fn runtime_tools(&self) -> Vec<Arc<dyn awaken_tool_contract::tool::RawTool>> {
         self.agent_tools().rooted_tools()
     }
 }
@@ -1087,19 +1086,17 @@ mod tests {
         }
         struct ReadCounter(Arc<std::sync::atomic::AtomicUsize>);
         #[async_trait::async_trait]
-        impl awaken_runtime_contract::tool::RawTool for ReadCounter {
+        impl awaken_tool_contract::tool::RawTool for ReadCounter {
             fn id(&self) -> &str {
                 "read"
             }
             async fn invoke(
                 &self,
                 call: ToolCall,
-            ) -> Result<
-                awaken_runtime_contract::tool::ToolOutput,
-                awaken_runtime_contract::tool::ToolError,
-            > {
+            ) -> Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>
+            {
                 self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(awaken_runtime_contract::tool::ToolOutput::ok(
+                Ok(awaken_tool_contract::tool::ToolOutput::ok(
                     call.call_id,
                     "read",
                 ))

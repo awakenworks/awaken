@@ -14,9 +14,6 @@ pub(crate) use awaken_session_application_contract::{
 pub(crate) use awaken_session_configuration_contract::{
     AgentCapabilities, SessionSandboxLayout, SessionToolConfiguration,
 };
-pub(crate) use awaken_session_error_contract::RunError;
-#[cfg(test)]
-pub(crate) use awaken_session_error_contract::RunErrorKind;
 #[cfg(test)]
 pub(crate) use awaken_session_event_contract::SessionUserRunSystemInput;
 #[cfg(test)]
@@ -43,6 +40,9 @@ pub(crate) use awaken_session_state_contract::{
     SessionTerminalCleanupDisposalEffect, SessionTerminalCleanupEffect, SourceDisposedReceipt,
     SourceReleaseDisposal, SourceReleasePreparationEffect, SourceReleasePreparedReceipt,
 };
+pub(crate) use awaken_session_types::RunError;
+#[cfg(test)]
+pub(crate) use awaken_session_types::RunErrorKind;
 pub(crate) use awaken_session_types::SessionId;
 
 pub use coordination::{
@@ -86,7 +86,6 @@ pub mod __macro_support {
     pub use awaken_session_configuration_contract::{
         AgentCapabilities, SessionSandboxLayout, SessionToolConfiguration,
     };
-    pub use awaken_session_error_contract::RunError;
     pub use awaken_session_event_contract::session_outcome_convenience_id;
     pub use awaken_session_mcp_contract::McpGenerationRef;
     pub use awaken_session_realization_contract::{
@@ -105,6 +104,7 @@ pub mod __macro_support {
         SessionTerminalCleanupDisposalEffect, SessionTerminalCleanupEffect, SourceDisposedReceipt,
         SourceReleaseDisposal, SourceReleasePreparationEffect, SourceReleasePreparedReceipt,
     };
+    pub use awaken_session_types::RunError;
     pub use awaken_session_types::SessionId;
 }
 

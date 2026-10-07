@@ -172,7 +172,7 @@ async fn cold_child_report_projects_frozen_root_and_files_before_continuation() 
         if fail_projection {
             assert_eq!(
                 result.unwrap_err().kind,
-                awaken_session_error_contract::RunErrorKind::Unavailable,
+                awaken_session_types::RunErrorKind::Unavailable,
                 "CR2 retryable"
             );
             assert!(runtime.continuations.lock().unwrap().is_empty(), "CR2/E3");

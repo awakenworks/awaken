@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
-# Reviewed public API snapshot (public-api/awaken-runtime-contract.txt): INVARIANTS G2/G10/G31 name this surface; the fuzz workspace links it.
+# Reviewed public API snapshot (public-api/awaken-runtime-contract.txt): INVARIANTS G2/G10/G31 name this surface, including the compatible Runtime tool facade.
 api_snapshot = true
 context = "runtime"
 product = "sdk"

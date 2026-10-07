@@ -28,8 +28,8 @@ use awaken_mcp_wire::jsonrpc::ServerRequestError;
 use awaken_mcp_wire::progress::McpProgressUpdate;
 use awaken_mcp_wire::{CallToolResult, McpToolDefinition, ToolContent};
 use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
-use awaken_runtime_contract::tool::{ToolCall, ToolError, ToolOutput};
 use awaken_runtime_contract::{ContentBlock, ImageSource};
+use awaken_tool_contract::tool::{ToolCall, ToolError, ToolOutput};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
@@ -345,7 +345,7 @@ mod tests {
     use crate::export::{ProgressRawTool, SharedExports, StaticExports};
     use awaken_runtime_contract::permission::GateDecision;
     use awaken_runtime_contract::resolved::ToolDescriptor;
-    use awaken_runtime_contract::tool::RawTool;
+    use awaken_tool_contract::tool::RawTool;
     use std::sync::Mutex;
 
     struct EchoTool;

@@ -96,7 +96,7 @@ def check_session_admission_ownership(repo_root: Path) -> list[str]:
     )
     return session_admission_ownership_violations(
         {
-            str(path.relative_to(repo_root)): path.read_text(encoding="utf-8")
+            _crate_boundary_workspace.repository_path(path, repo_root): path.read_text(encoding="utf-8")
             for path in paths
         }
     )
@@ -307,11 +307,11 @@ def check_projection_input_boundary(repo_root: Path) -> list[str]:
     )
     record = module.parent.parent / "session_record.rs"
     reducers = {
-        str(path.relative_to(repo_root)): path.read_text(encoding="utf-8")
+        _crate_boundary_workspace.repository_path(path, repo_root): path.read_text(encoding="utf-8")
         for path in sorted(module.with_suffix("").rglob("*.rs"))
     }
     adjacent_modules = {
-        str(path.relative_to(repo_root)): path.read_text(encoding="utf-8")
+        _crate_boundary_workspace.repository_path(path, repo_root): path.read_text(encoding="utf-8")
         for path in sorted(module.parent.rglob("*.rs"))
     }
     return projection_input_boundary_violations(

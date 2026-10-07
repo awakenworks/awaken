@@ -3,7 +3,7 @@
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use awaken_runtime_contract::tool::{
+use awaken_tool_contract::tool::{
     ToolCall, ToolError, ToolExecutor, ToolOutput, ToolRecoveryCapability,
 };
 
@@ -32,10 +32,10 @@ impl ToolExecutor for DeferredSandboxExecutor {
     async fn execution_domain(
         &self,
         call: &ToolCall,
-    ) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, ToolError> {
+    ) -> Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, ToolError> {
         let host = self.host()?;
         if call.tool_id == "read" {
-            let args = awaken_runtime_contract::tool::parse_tool_args(call.arguments.clone())?;
+            let args = awaken_tool_contract::tool::parse_tool_args(call.arguments.clone())?;
             if host
                 .session_slots
                 .read(&self.thread, |slot| {
@@ -44,7 +44,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
                 .flatten()
                 .is_some()
             {
-                return Ok(awaken_runtime_contract::tool_batch::ToolExecutionDomain::Worker {});
+                return Ok(awaken_tool_contract::tool_batch::ToolExecutionDomain::Worker {});
             }
         }
         host.ensure_session_environment_for_tool(&self.thread)
@@ -75,7 +75,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
         let host = self.host()?;
         if call.tool_id == "read" {
             let args: awaken_ext_builtin_tools::ReadArgs =
-                awaken_runtime_contract::tool::parse_tool_args(call.arguments.clone())?;
+                awaken_tool_contract::tool::parse_tool_args(call.arguments.clone())?;
             if let Some(result) = host
                 .session_slots
                 .read(&self.thread, |slot| {

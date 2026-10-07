@@ -440,7 +440,7 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
             &write,
             HandResult::Err { .. }
                 | HandResult::Ok {
-                    output: awaken_runtime_contract::tool::ToolOutput { is_error: true, .. }
+                    output: awaken_tool_contract::tool::ToolOutput { is_error: true, .. }
                 }
         ),
         "P3/E3: {write:?}"

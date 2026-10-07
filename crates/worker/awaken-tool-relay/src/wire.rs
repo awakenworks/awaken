@@ -8,7 +8,7 @@
 //! `FqId`/`Verb`); reusing the domain value objects is fewer types and no adapter
 //! between "tool call" and "exec request".
 
-use awaken_runtime_contract::tool::{ToolCall, ToolOutput};
+use awaken_tool_contract::tool::{ToolCall, ToolOutput};
 use serde::{Deserialize, Serialize};
 
 /// A monotonic per-connection request id used only to match a [`HandReply`] to

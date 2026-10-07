@@ -1431,9 +1431,7 @@ async fn mount_with_managed_over_and_models(
                 .await
             {
                 Ok(_) => Ok(true),
-                Err(error)
-                    if error.kind == awaken_session_error_contract::RunErrorKind::BadRequest =>
-                {
+                Err(error) if error.kind == awaken_session_types::RunErrorKind::BadRequest => {
                     Ok(false)
                 }
                 Err(error) => Err(error.to_string()),

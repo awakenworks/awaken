@@ -14,6 +14,7 @@ description = "Model Context Protocol (MCP) client extension for Awaken"
 separation = "publish"
 
 [dependencies]
+awaken-tool-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-credential.workspace = true
 awaken-mcp-wire.workspace = true

@@ -156,7 +156,21 @@ async fn session_commit_survives_process_kill_before_notification() {
         Ok(expected)
     );
     assert_eq!(repo.pending_lifecycle().await.unwrap(), vec![fact()]);
+    let committed_root = repo.get(&"sesn_process_crash".into()).await.unwrap();
     repo.complete_lifecycle(&fact().id).await.unwrap();
-    repo.complete_lifecycle(&fact().id).await.unwrap();
-    assert!(repo.pending_lifecycle().await.unwrap().is_empty());
+    // The completion response can be lost immediately before another process
+    // takes over. Cold replay must observe the acknowledged durable fact and
+    // cannot advance the root revision or enqueue a replacement notification.
+    drop(repo);
+    let recovered =
+        SqliteManagedSessionRepository::open(&dir.path().join("sessions.db").to_string_lossy())
+            .await
+            .unwrap();
+    assert!(recovered.pending_lifecycle().await.unwrap().is_empty());
+    recovered.complete_lifecycle(&fact().id).await.unwrap();
+    assert!(recovered.pending_lifecycle().await.unwrap().is_empty());
+    assert_eq!(
+        recovered.get(&"sesn_process_crash".into()).await.unwrap(),
+        committed_root
+    );
 }

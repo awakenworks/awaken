@@ -155,9 +155,9 @@ impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSess
         _mode: awaken_session_runtime_contract::SessionRunActivityAdmissionMode,
     ) -> Result<
         awaken_session_runtime_contract::SessionRunActivityAdmission,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
-        Err(awaken_session_error_contract::RunError::bad_request(
+        Err(awaken_session_types::RunError::bad_request(
             "settlement fixture does not admit Session activity",
         ))
     }
@@ -167,8 +167,8 @@ impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSess
         _session_id: &awaken_session_types::SessionId,
         _thread_id: &ThreadId,
         _run_id: &RunId,
-    ) -> Result<bool, awaken_session_error_contract::RunError> {
-        Err(awaken_session_error_contract::RunError::bad_request(
+    ) -> Result<bool, awaken_session_types::RunError> {
+        Err(awaken_session_types::RunError::bad_request(
             "settlement fixture does not admit model requests",
         ))
     }
@@ -178,7 +178,7 @@ impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSess
         _session_id: &awaken_session_types::SessionId,
     ) -> Result<
         Vec<awaken_session_runtime_contract::SessionAgentRosterEntry>,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
         Ok(Vec::new())
     }
@@ -188,24 +188,22 @@ impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSess
         _command: awaken_session_runtime_contract::SessionAgentMessageCommand,
     ) -> Result<
         awaken_session_runtime_contract::SessionAgentMessageReceipt,
-        awaken_session_error_contract::RunError,
+        awaken_session_types::RunError,
     > {
-        Err(awaken_session_error_contract::RunError::bad_request(
-            "unused",
-        ))
+        Err(awaken_session_types::RunError::bad_request("unused"))
     }
 
     async fn settle_session_agent_boundary(
         &self,
         _command: awaken_session_runtime_contract::SessionAgentBoundaryCommand,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         Ok(())
     }
 
     async fn finalize_session_agent_boundary(
         &self,
         command: awaken_session_runtime_contract::SessionAgentBoundaryCommand,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         self.finalized.lock().unwrap().push(command);
         Ok(())
     }
@@ -214,14 +212,14 @@ impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSess
         &self,
         _session_id: &awaken_session_types::SessionId,
         _child_thread_id: &ThreadId,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         Ok(())
     }
 
     async fn reply_session_thread_tool(
         &self,
         _command: awaken_session_runtime_contract::SessionThreadToolReplyCommand,
-    ) -> Result<(), awaken_session_error_contract::RunError> {
+    ) -> Result<(), awaken_session_types::RunError> {
         Ok(())
     }
 }

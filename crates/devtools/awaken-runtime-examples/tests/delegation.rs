@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-use awaken_runtime_contract::ToolRecoveryPolicy;
 use awaken_runtime_contract::delegation::{
     DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
     RunDelegationService,
@@ -18,6 +17,7 @@ use awaken_runtime_contract::llm::{
 use awaken_runtime_contract::resolved::ToolKind;
 use awaken_runtime_contract::resume::{PermissionDecision, ResumeCommand, ResumeResult};
 use awaken_runtime_examples::prelude::*;
+use awaken_tool_contract::ToolRecoveryPolicy;
 
 /// A coordinator model: it calls `agent_run` once, then replies with the delegate's
 /// result text (so the test can see the result flow back through the tool).

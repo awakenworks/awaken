@@ -144,7 +144,8 @@ fn map_environment_application_error(error: EnvironmentApplicationError) -> Wire
             Json(ErrorResponse::new("conflict_error", message)),
         ),
         EnvironmentApplicationError::Store(
-            awaken_environment_contract::EnvironmentStoreError::RevisionConflict,
+            awaken_environment_contract::EnvironmentStoreError::RevisionConflict
+            | awaken_environment_contract::EnvironmentStoreError::RevisionExhausted,
         ) => (
             StatusCode::CONFLICT,
             Json(ErrorResponse::new("conflict_error", message)),
@@ -621,6 +622,13 @@ mod tests {
                     ),
                 ),
                 StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                "P5d",
+                EnvironmentApplicationError::Store(
+                    awaken_environment_contract::EnvironmentStoreError::RevisionExhausted,
+                ),
+                StatusCode::CONFLICT,
             ),
             (
                 "P6b",

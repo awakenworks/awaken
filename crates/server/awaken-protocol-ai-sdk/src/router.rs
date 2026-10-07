@@ -612,7 +612,7 @@ fn sse_error(err: RunApplicationError) -> Response {
 }
 
 fn query_error(error: RunApplicationError) -> Response {
-    use awaken_session_error_contract::RunErrorKind;
+    use awaken_session_types::RunErrorKind;
 
     let status = match error.kind {
         RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
