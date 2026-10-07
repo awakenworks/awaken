@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "sandbox"
 layer = "infrastructure"
 authority = "sandbox-local"
+separation = "isolation"
+isolates = ["tar"]
 
 [features]
 default = []

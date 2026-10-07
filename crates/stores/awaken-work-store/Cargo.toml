@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "dispatch"
 layer = "infrastructure"
 authority = "work"
+separation = "isolation"
+isolates = ["sqlx"]
 
 [features]
 # Volatile executable specifications and fixtures are opt-in. Product builds have

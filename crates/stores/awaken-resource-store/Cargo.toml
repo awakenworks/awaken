@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "resources"
 layer = "infrastructure"
 authority = "resource"
+separation = "isolation"
+isolates = ["sqlx"]
 
 [dependencies]
 awaken-sql-storage = { workspace = true, optional = true }

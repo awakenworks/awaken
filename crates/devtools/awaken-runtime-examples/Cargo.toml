@@ -12,6 +12,7 @@ bounded_context = "agent-runtime"
 layer = "tooling"
 authority = "runtime-examples"
 publish = false
+separation = "test-support"
 
 [dependencies]
 awaken-agent-contract.workspace = true

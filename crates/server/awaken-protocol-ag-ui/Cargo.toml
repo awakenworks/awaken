@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "protocols"
 layer = "interface"
 authority = "protocol-ag-ui"
+separation = "protocol"
+protocol = "ag-ui"
 
 [dependencies]
 awaken-agent-contract.workspace = true

@@ -9,6 +9,7 @@ context = "control"
 product = "apps"
 layer = "bootstrap"
 authority = "control"
+separation = "process"
 
 # The authoring / authz plane (Stage B2): the management CRUD surfaces (admin
 # config, vault front door, webhook subscriptions, user profiles, config authoring,

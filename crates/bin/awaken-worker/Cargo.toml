@@ -9,6 +9,7 @@ context = "worker"
 product = "apps"
 layer = "bootstrap"
 authority = "worker"
+separation = "process"
 
 [lib]
 name = "awaken_worker"

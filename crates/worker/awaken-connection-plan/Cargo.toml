@@ -13,6 +13,8 @@ product = "platform"
 bounded_context = "dispatch"
 layer = "infrastructure"
 authority = "connection-plan"
+separation = "isolation"
+isolates = ["yamux"]
 
 [dependencies]
 awaken-agent-channel.workspace = true

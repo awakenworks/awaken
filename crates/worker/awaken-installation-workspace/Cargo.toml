@@ -15,6 +15,7 @@ product = "platform"
 bounded_context = "access"
 layer = "infrastructure"
 authority = "installation-workspace"
+separation = "sole-in-layer"
 
 [dependencies]
 awaken-sandbox-fs.workspace = true

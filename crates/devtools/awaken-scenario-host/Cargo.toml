@@ -9,6 +9,7 @@ context = "devtools"
 product = "devtools"
 layer = "tooling"
 authority = "scenario-host"
+separation = "process"
 
 [[bin]]
 name = "awaken-scenario-host"

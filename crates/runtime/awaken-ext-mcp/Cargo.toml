@@ -11,6 +11,7 @@ bounded_context = "agent-runtime"
 layer = "infrastructure"
 authority = "ext-mcp"
 description = "Model Context Protocol (MCP) client extension for Awaken"
+separation = "publish"
 
 [dependencies]
 awaken-agent-contract.workspace = true

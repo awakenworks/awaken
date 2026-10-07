@@ -10,6 +10,7 @@ product = "platform"
 bounded_context = "environment"
 layer = "application"
 authority = "environment-execution"
+separation = "sole-in-layer"
 
 [dependencies]
 awaken-agent-contract.workspace = true

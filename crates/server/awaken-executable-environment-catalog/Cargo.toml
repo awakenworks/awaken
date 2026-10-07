@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "environment"
 layer = "infrastructure"
 authority = "executable-environment-registration"
+separation = "isolation"
+isolates = ["axum", "sqlx"]
 
 [dependencies]
 awaken-sql-storage = { workspace = true, features = ["postgres"] }

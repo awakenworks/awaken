@@ -11,6 +11,7 @@ bounded_context = "agent-runtime"
 layer = "domain"
 authority = "credential"
 description = "Host-side credential vocabulary shared by Awaken's outbound wire clients"
+separation = "publish"
 
 [dependencies]
 async-trait.workspace = true

@@ -11,6 +11,7 @@ product = "platform"
 bounded_context = "protocols"
 layer = "domain"
 authority = "managed-session-events"
+separation = "sole-in-layer"
 
 [dependencies]
 awaken-agent-contract.workspace = true

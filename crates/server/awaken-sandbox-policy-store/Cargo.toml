@@ -10,6 +10,8 @@ product = "platform"
 bounded_context = "config"
 layer = "infrastructure"
 authority = "sandbox-policy"
+separation = "isolation"
+isolates = ["sqlx"]
 
 [dependencies]
 awaken-sql-storage = { workspace = true, features = ["postgres"] }

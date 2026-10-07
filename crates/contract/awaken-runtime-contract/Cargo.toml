@@ -14,6 +14,7 @@ layer = "contract"
 # ADR-0081 §1 interface kinds this crate may hold (types | spi | api | remote | ext).
 kinds = ["types", "spi", "api", "ext"]
 authority = "runtime"
+separation = "publish"
 
 [dependencies]
 awaken-time.workspace = true

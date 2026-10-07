@@ -10,6 +10,7 @@ product = "sdk"
 bounded_context = "agent-runtime"
 layer = "infrastructure"
 authority = "ext-permission"
+separation = "publish"
 
 [dependencies]
 awaken-runtime-contract.workspace = true

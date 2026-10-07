@@ -102,8 +102,8 @@ domain problem it solves:
 6. **Order.** This ADR first. Then the metadata changes and the two guard rules,
    before the Session authority port. The realization-language split comes before
    the realization crate moves out of the runtime host; the remote-port move after
-   the Session authority port; the `session-runtime-contract` split and glossary
-   renames with the session-domain rename. ADR-0086 is implemented in its own order
+   the Session authority port; the `session-runtime-contract` split with the
+   glossary renames (`session-state-contract` keeps its name; see the amendment). ADR-0086 is implemented in its own order
    (4, 3, 2, 6, 7).
 
 ## Alternatives
@@ -124,3 +124,41 @@ domain problem it solves:
   clean up, most of which disappear when Run execution is classified as Execution.
 - No public paths change in this ADR; later renames list their awaken-cloud impact
   when they are made.
+
+## Amendment 2026-10-07: a crate states why it is separate
+
+**Principle.** Crates are merged or split only for an effect that lasts: the shape
+of a public contract (SDK API, paths awaken-cloud binds to), content placed in the
+wrong widely-used contract, or a baseline a guard will freeze. A merge that changes
+the crate count but not the dependency graph is not made.
+
+**Rule.** Every crate sets `[package.metadata.awaken] separation` to one reason, and
+`scripts/ci/_crate_separation_fitness.py` (run by `check_crate_boundaries.py`)
+checks it:
+
+| `separation` | Check |
+|---|---|
+| `publish` | product `sdk`, publishable |
+| `process` | a binary target, or layer `bootstrap` (the composition root a binary assembles) |
+| `contract` | layer `contract`, and a crate of another bounded context depends on it |
+| `isolation` | `isolates` lists dependencies from the script's heavy / optional / OS list; the crate depends on each, and another crate of its bounded context does not |
+| `protocol` | `protocol` names an external wire protocol from the script's list; no other crate of its bounded context adapts it |
+| `sole-in-layer` | the only crate of its bounded context at its layer |
+| `test-support` | layer `tooling` |
+
+The 20 crates without a checkable reason at adoption are listed in `UNJUSTIFIED`.
+The list only shrinks. Being listed is not an order to merge.
+
+**Decisions made with it.**
+- The SDK extensions stay separate crates (`publish`): SDK users pick plugins and
+  their dependencies; a merge would not remove a single dependency edge.
+- The small Session contracts are not merged: `session-state-contract` already
+  depends on the budget, configuration, event, mcp and resource contracts, so a
+  merge leaves the graph unchanged. What lasts is moving misplaced content:
+  `agent_config` goes to `executable-agent-contract`, `SessionEnvironmentSource`
+  moves up to the application contract, and `session-runtime-contract` is split by
+  direction (decision 3). `session-state-contract` keeps its name.
+- `awaken-protocol-ag-ui` and `awaken-protocol-ai-sdk` stay separate (`protocol`):
+  they adapt two external protocols that evolve independently. Seven functions
+  (46 lines) are identical; that does not justify a shared module binding them.
+
