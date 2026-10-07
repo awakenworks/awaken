@@ -1,6 +1,6 @@
 // @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
-//! Independent stop command for an already bound, retained Worker Pod domain.
-//! It never removes evidence or calls Dispatch/Session cleanup.
+//! Exact Worker Pod deletion and evidence release under trusted caller admission.
+//! Retained stop observes exits; closed-idle retirement grants no exit or replay.
 
 use super::*;
 use crate::k8s::finalizer::{ExactFinalizerAdmission, update_exact_pod_finalizer};
@@ -17,6 +17,28 @@ pub struct PodProcessStopper {
 impl PodProcessStopper {
     pub fn new(observer: PodProcessObserver) -> Self {
         Self { observer }
+    }
+
+    /// Retire only a Worker domain whose Registry admission is closed and whose
+    /// complete Dispatch physical-slot scan is empty. Container restart cannot
+    /// reopen this immutable UID. Deletion intent permits finalizer release here
+    /// because no attempt needs its history; this operation returns no exit fact.
+    pub async fn retire_closed_idle_pod(&self, name: &str, uid: &str) -> Result<(), RuntimeError> {
+        if uid.is_empty() {
+            return Err(backend("idle retirement requires an exact UID"));
+        }
+        let pod = match self.observer.pods.get(name).await {
+            Ok(pod) => pod,
+            Err(error) if api_not_found(&error) => return Ok(()),
+            Err(error) => return Err(backend(error)),
+        };
+        if pod.metadata.uid.as_deref() != Some(uid) {
+            return Ok(());
+        }
+        if pod.metadata.deletion_timestamp.is_none() {
+            self.request_exact_delete(name, uid, &pod).await?;
+        }
+        self.release_closed_idle_pod_evidence(name, uid).await
     }
 
     /// Drop retention metadata only after the trusted Coordinator has closed
@@ -88,6 +110,19 @@ impl PodProcessStopper {
         // intent. Never-restart policy and point-in-time exit alone do not close
         // its launch lifecycle. Accepted DELETE is still only Unknown: a fresh
         // read must establish both closure and the same exact process exits.
+        self.request_exact_delete(&binding.name, &binding.uid, &pod)
+            .await?;
+        Ok(PodProcessTermination::Unknown)
+    }
+
+    // Retained stop and proven closed-idle retirement use one exact deletion
+    // command. Their callers own different admission and evidence requirements.
+    async fn request_exact_delete(
+        &self,
+        name: &str,
+        uid: &str,
+        pod: &Pod,
+    ) -> Result<(), RuntimeError> {
         let version = coordinate(pod.metadata.resource_version.as_deref())
             .ok_or_else(|| backend("Worker Pod has no exact resource version"))?;
         // Do not force-remove a zero-grace Pod's API history. Even disposable
@@ -98,7 +133,7 @@ impl PodProcessStopper {
             .as_ref()
             .and_then(|spec| spec.termination_grace_period_seconds);
         let mut params = DeleteParams::default().preconditions(Preconditions {
-            uid: Some(binding.uid.clone()),
+            uid: Some(uid.to_owned()),
             resource_version: Some(version),
         });
         if grace == Some(0) {
@@ -106,10 +141,10 @@ impl PodProcessStopper {
         }
         self.observer
             .pods
-            .delete(&binding.name, &params)
+            .delete(name, &params)
             .await
             .map_err(backend)?;
-        Ok(PodProcessTermination::Unknown)
+        Ok(())
     }
 
     /// Release only the evidence finalizer for the exact bound process domain.

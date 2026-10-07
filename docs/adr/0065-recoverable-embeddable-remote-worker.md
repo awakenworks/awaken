@@ -763,3 +763,21 @@ and SQLite shares the recovery-query producer and the same range semantics.
 The fixed page bound is emitted from the same repository constant as a SQL
 literal, including recovery lookahead, so a cached generic plan can cost the
 actual small page instead of estimating a parameterized fraction of the table.
+
+## Amendment: retire closed-idle Kubernetes Worker Pods (2026-10-07)
+
+Kubernetes registration selects the immutable Pod UID, so restarting a container
+inside a closed Worker Pod cannot restore its admission. The existing closed-idle
+maintenance and withdrawal operation now retires that exact Pod before releasing
+its Worker evidence finalizer. Registry Quiesced/Dead and the complete Dispatch
+physical-slot scan remain the sole admission conditions; occupied, inconsistent,
+or unavailable observations issue no provider mutation.
+
+The Kubernetes adapter reuses the existing UID/resourceVersion-conditional
+deletion command and positive grace period. Accepted deletion is an intent, not
+an exit receipt. A retry observes the original UID's deletion intent before
+releasing only its Worker finalizer; missing or replaced Pods are already outside
+that original domain and are never mutated. A previously released finalizer does
+not prevent retirement of a proven closed-idle Pod. The Kubernetes Deployment
+owns replacement and supplies a new UID; no new cleanup controller, registry,
+attempt inventory, process-exit assertion, or replay permission is introduced.

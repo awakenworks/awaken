@@ -7,7 +7,7 @@ use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::ControlDispatchQueue;
 use awaken_dispatch::{
     AttemptAdmission, DispatchQueue, RunClaim, RunDispatch, SqliteDispatchStore, WorkerDirectory,
-    WorkerHeartbeat, WorkerManifest,
+    WorkerHeartbeat,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_store_sqlite::SqliteCommitCoordinator;
@@ -16,19 +16,40 @@ use awaken_worker_registry::SqliteWorkerDirectory;
 use awaken_coordinator_client::{WorkerControlClient, dispatch_transport_with_upstream};
 use awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer;
 use awaken_worker_transport_security::{FixedWorkerLeasePolicy, WorkerUpstream};
+use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::authentication::v1::TokenRequest;
 use k8s_openapi::api::core::v1::{Namespace, Pod, ServiceAccount};
-use kube::api::{DeleteParams, Patch, PatchParams, PostParams};
+use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use std::time::Duration;
 
 const TTL: u64 = 60_000;
 const FINALIZER: &str = awaken_sandbox_container::k8s::WORKER_PROCESS_EVIDENCE_FINALIZER;
 
-fn manifest() -> WorkerManifest {
-    let mut manifest = WorkerManifest::default();
-    manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
-    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
-    manifest
+async fn ready_deployment_pod(pods: &kube::Api<Pod>, previous_uid: Option<&str>) -> Pod {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let observed = pods
+                .list(&ListParams::default().labels("app=closed-idle-worker"))
+                .await
+                .unwrap();
+            if let Some(pod) = observed.items.into_iter().find(|pod| {
+                pod.metadata.deletion_timestamp.is_none()
+                    && pod.metadata.uid.as_deref() != previous_uid
+                    && pod
+                        .status
+                        .as_ref()
+                        .and_then(|s| s.container_statuses.as_ref())
+                        .is_some_and(|statuses| {
+                            !statuses.is_empty() && statuses.iter().all(|s| s.ready)
+                        })
+            }) {
+                return pod;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("actual Ready Deployment Pod with a fresh UID")
 }
 
 async fn token(accounts: &kube::Api<ServiceAccount>, pod: &Pod, audience: &str) -> String {
@@ -485,6 +506,111 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
             .is_none(),
         "L4 never stop successor"
     );
+    // Cause/effect extension: L7 real Always Deployment + real Pod-bound
+    // registration + exact idle withdrawal -> close/delete OLD UID and let the
+    // Kubernetes controller produce a Ready NEW UID. L8 source-side retry for
+    // OLD -> no successor mutation; L9 NEW registers a distinct incarnation.
+    // The existing foreign physical slot stays occupied; no exit receipt is
+    // invented. This is live API/controller evidence, not a full Worker crash
+    // or Hosted product acceptance. Readiness settles on persisted Pod status.
+    let deployments: kube::Api<Deployment> = kube::Api::namespaced(client.clone(), name);
+    deployments.create(&PostParams::default(), &serde_json::from_value(json!({
+        "metadata":{"name":"closed-idle-worker"},
+        "spec":{"replicas":1,"selector":{"matchLabels":{"app":"closed-idle-worker"}},
+            "template":{"metadata":{"labels":{"app":"closed-idle-worker"}},
+                "spec":{"serviceAccountName":"executor","automountServiceAccountToken":false,
+                    "terminationGracePeriodSeconds":1,
+                    "containers":[{"name":"worker","image":image,"imagePullPolicy":"Never",
+                        "command":["sleep","600"],"securityContext":{"allowPrivilegeEscalation":false,
+                            "capabilities":{"drop":["ALL"]}}}]}}}
+    })).unwrap()).await.unwrap();
+    let idle = ready_deployment_pod(&pods, None).await;
+    let idle_token = files.path().join("idle-token");
+    std::fs::write(&idle_token, token(&accounts, &idle, audience).await).unwrap();
+    let idle_upstream = upstream(&address, &idle, &idle_token);
+    let idle_registration = WorkerControlClient::new(idle_upstream.clone())
+        .register_classified("idle-process-nonce", manifest())
+        .await
+        .unwrap()
+        .worker;
+    let idle_identity = idle_registration.snapshot.identity.clone();
+    let idle_control =
+        WorkerControlClient::new(idle_upstream.with_worker_identity(idle_identity.clone()));
+    assert_eq!(
+        idle_control.deregister(&idle_identity).await.unwrap(),
+        awaken_dispatch::RegistryMutation::Applied,
+        "L7"
+    );
+    let successor = ready_deployment_pod(&pods, idle.metadata.uid.as_deref()).await;
+    let directory = SqliteWorkerDirectory::open(files.path().join("registry.sqlite"))
+        .await
+        .unwrap();
+    let closed = directory
+        .incarnation(&idle_identity)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        closed.snapshot.state,
+        awaken_dispatch::WorkerState::Dead,
+        "L7"
+    );
+    assert!(
+        closed.process_exit.is_none(),
+        "L7 deletion intent is not exit evidence"
+    );
+    awaken_dispatch::release_closed_idle_worker_evidence(
+        store.as_ref(),
+        &directory,
+        transport.stop_source().unwrap().as_ref(),
+        &idle_identity,
+    )
+    .await
+    .unwrap();
+    assert!(
+        pods.get(successor.metadata.name.as_deref().unwrap())
+            .await
+            .unwrap()
+            .metadata
+            .deletion_timestamp
+            .is_none(),
+        "L8"
+    );
+    let successor_token = files.path().join("idle-successor-token");
+    std::fs::write(
+        &successor_token,
+        token(&accounts, &successor, audience).await,
+    )
+    .unwrap();
+    let registered_successor =
+        WorkerControlClient::new(upstream(&address, &successor, &successor_token))
+            .register_classified("successor-process-nonce", manifest())
+            .await
+            .unwrap()
+            .worker;
+    assert_eq!(
+        registered_successor.snapshot.state,
+        awaken_dispatch::WorkerState::Starting,
+        "L9"
+    );
+    assert_ne!(
+        registered_successor.snapshot.identity.worker_id, idle_identity.worker_id,
+        "L9"
+    );
+    assert_eq!(
+        registered_successor.snapshot.identity.incarnation_id,
+        successor.metadata.uid.as_deref().unwrap(),
+        "L9"
+    );
+    assert!(
+        store
+            .load_physical_attempt(&next.run_id)
+            .await
+            .unwrap()
+            .is_some(),
+        "L7 foreign physical slot preserved"
+    );
+    created.push(successor);
     server.stop().await;
     // Only these test-owned retention markers are released. The enclosing
     // cluster harness is also the cleanup authority if any assertion panics.

@@ -227,8 +227,9 @@ pub trait WorkerExecutionStopSource: Send + Sync {
     fn owns_worker_evidence(&self, _identity: &crate::WorkerIdentity) -> bool {
         false
     }
-    /// Remove only retention metadata for an exact closed Worker that the
-    /// Coordinator has proved owns no physical slots. This is not exit evidence.
+    /// Retire an exact closed-idle provider domain and release its retention only
+    /// after Coordinator proves no physical slots remain. This is not exit
+    /// evidence and cannot settle an attempt or authorize Session replay.
     async fn release_closed_idle_worker_evidence(
         &self,
         _identity: &crate::WorkerIdentity,
@@ -294,8 +295,9 @@ impl awaken_dispatch_execution::WorkerEvidenceRelease for WorkerEvidenceReleaseA
     }
 }
 
-/// Release metadata only from the original closed incarnation and physical
-/// slot authority. HTTP withdrawal and maintenance retry share this operation.
+/// Retire only the original closed-idle domain admitted by Registry and the
+/// physical-slot authority. HTTP withdrawal and maintenance share this operation;
+/// no provider result here becomes a process-exit or Session cleanup receipt.
 pub async fn release_closed_idle_worker_evidence(
     dispatch: &dyn awaken_dispatch_contract::ControlDispatchQueue,
     directory: &dyn crate::WorkerDirectory,

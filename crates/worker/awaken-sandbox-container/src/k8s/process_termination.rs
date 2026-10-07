@@ -271,7 +271,9 @@ fn process_statuses(pod: &Pod) -> Option<Vec<&ContainerStatus>> {
 }
 
 fn coordinate(value: Option<&str>) -> Option<String> {
-    value.filter(|value| !value.is_empty()).map(str::to_owned)
+    value
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
 }
 
 fn retention_finalizer(pod: &Pod) -> Option<&str> {
