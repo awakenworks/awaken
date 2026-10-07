@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real process tests for the shared CI deadline owner."""
 
+import json
 import os
 from pathlib import Path
 import signal
@@ -10,10 +11,110 @@ import tempfile
 import unittest
 
 
-DEADLINE = Path(__file__).with_name("deadline.py").resolve()
+# Actual execution subjects are the input authority; temporary-directory walks
+# below inspect only this test's owned fixtures, never other repository paths.
+INPUT_GLOBS: tuple[str, ...] = (
+    "scripts/ci/deadline.py",
+    "scripts/ci/_deadline.sh",
+    "scripts/ci/test_deadline.py",
+)
+ROOT = Path(__file__).resolve().parents[2]
+DEADLINE = ROOT / INPUT_GLOBS[0]
+HELPER = ROOT / INPUT_GLOBS[1]
 
 
 class DeadlineTests(unittest.TestCase):
+    def cargo_fixture(self, root, code, *, status=0, delay=0.4, arguments=()):
+        # This fixture owns only admission and Cargo's documented argv protocol;
+        # it delegates execution/cleanup to the actual shared deadline owner.
+        cargo = root / "cargo"
+        cargo.write_text("""#!/usr/bin/env python3
+import os, shutil, sys, time
+if not os.environ.get('FIXTURE_ADMITTED'):
+    time.sleep(float(os.environ['FIXTURE_ADMISSION_DELAY']))
+    refused = int(os.environ['FIXTURE_ADMISSION_STATUS'])
+    if refused:
+        raise SystemExit(refused)
+    os.environ['FIXTURE_ADMITTED'] = '1'
+if sys.argv[1] == 'awaken-ci-deadline':
+    entry = shutil.which('cargo-' + sys.argv[1])
+    os.execv(entry, [entry, *sys.argv[1:]])
+elif sys.argv[1] == 'fixture':
+    os.execv(sys.argv[2], sys.argv[2:])
+raise SystemExit(2)
+""")
+        cargo.chmod(0o755)
+        environment = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
+                           TMPDIR=str(root), FIXTURE_ADMISSION_DELAY=str(delay),
+                           FIXTURE_ADMISSION_STATUS=str(status))
+        environment.pop("FIXTURE_ADMITTED", None)
+        result = subprocess.run(
+            ["bash", "-c", 'source "$1"; shift; run_with_deadline "$@"',
+             "deadline-fixture", str(HELPER), "0.25", "cargo", "fixture",
+             sys.executable, "-c", code, *arguments],
+            env=environment, capture_output=True, text=True, timeout=8,
+        )
+        self.assertEqual(list(root.glob("awaken-cargo-deadline.*")), [],
+                         "the invocation must retire its own temporary entry")
+        return result
+
+    def test_cargo_admission_wait_does_not_spend_execution_budget(self):
+        # A1/A2: C1 admission waits longer than the execution budget; C2 it
+        # succeeds; C3 the real command finishes with zero/nonzero status.
+        # Effects: retain C3's exact status/output and literal argv; admission
+        # waiting must not become a proof timeout or execute shell metacharacters.
+        for status in (0, 23):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                arguments = ("with spaces", "'quotes'", "$(touch unexpected);`literal`")
+                result = self.cargo_fixture(
+                    root, f"import json,sys; print(json.dumps(sys.argv[1:])); raise SystemExit({status})",
+                    arguments=arguments,
+                )
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertEqual(json.loads(result.stdout), list(arguments))
+
+    def test_cargo_admission_refusal_preserves_status_without_execution(self):
+        # A3: C1 queued admission; C2 preflight refuses with 75. Effects: return
+        # 75, start no command, and retire only this invocation's temporary entry.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = root / "executed"
+            result = self.cargo_fixture(
+                root, "from pathlib import Path; import sys; Path(sys.argv[1]).touch()",
+                status=75, arguments=(str(marker),),
+            )
+            self.assertEqual(result.returncode, 75, result.stderr)
+            self.assertFalse(marker.exists())
+
+    def test_cargo_execution_still_times_out_after_admission(self):
+        # A4: C1 admission succeeds; C2 execution exceeds its unchanged budget.
+        # Effects: actual execution emits readiness, then returns 124. D1-D4
+        # below own the same run()/process-group cleanup's full TERM matrix.
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.cargo_fixture(
+                Path(tmp), "import time; print('ready', flush=True); time.sleep(100)",
+            )
+            self.assertEqual(result.returncode, 124, result.stderr)
+            self.assertEqual(result.stdout, "ready\n")
+
+    def test_cargo_protocol_rejects_missing_or_mismatched_name(self):
+        # A5: the external entry lacks Cargo's injected name or carries a
+        # different one => reject with 2 before starting any requested command.
+        # A1/A2 above own the matching-name/unchanged-argv positive rules.
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = Path(tmp) / "cargo-fixture-deadline"
+            entry.symlink_to(DEADLINE)
+            marker = Path(tmp) / "executed"
+            for arguments in ([], ["wrong-name", "1", "--", sys.executable, "-c",
+                                  "from pathlib import Path; import sys; Path(sys.argv[1]).touch()",
+                                  str(marker)]):
+                with self.subTest(arguments=arguments):
+                    result = subprocess.run([sys.executable, str(entry), *arguments],
+                                            capture_output=True, text=True, timeout=3)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertFalse(marker.exists())
+
     def test_timeout_reaps_group_even_when_leader_exits_first(self):
         # Causes: C1 leader handles/ignores TERM; C2 child handles/ignores TERM;
         # C3 command exceeds its deadline. Effects: E1 result remains 124;
@@ -77,16 +178,20 @@ raise SystemExit(m.run(0.5, sys.argv[2:]))
 
     def test_success_and_failure_preserve_command_status(self):
         # D5: command returns before deadline, with zero/nonzero status => exact
-        # status and bytes; ordinary completion must not become a timeout.
+        # status and bytes in direct/Python and non-Cargo/shell dispatch; ordinary
+        # completion must not become a timeout when admission is inapplicable.
         for status in (0, 23):
-            with self.subTest(status=status):
-                result = subprocess.run(
-                    [sys.executable, str(DEADLINE), "2", "--", sys.executable,
-                     "-c", f"print('complete'); raise SystemExit({status})"],
-                    capture_output=True, text=True, timeout=3,
-                )
-                self.assertEqual(result.returncode, status, result.stderr)
-                self.assertEqual(result.stdout, "complete\n")
+            command = [sys.executable, "-c", f"print('complete'); raise SystemExit({status})"]
+            entries = (
+                [sys.executable, str(DEADLINE), "2", "--", *command],
+                ["bash", "-c", 'source "$1"; shift; run_with_deadline "$@"',
+                 "deadline-fixture", str(HELPER), "2", *command],
+            )
+            for entry in entries:
+                with self.subTest(status=status, entry=entry[0]):
+                    result = subprocess.run(entry, capture_output=True, text=True, timeout=3)
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    self.assertEqual(result.stdout, "complete\n")
 
 
 if __name__ == "__main__":

@@ -220,6 +220,12 @@ self_test() {
     echo "Postgres gate omits live process-pool cardinality and closure" >&2
     return 1
   }
+  # P16 live URL + postgres feature + ignored correctness tests -> execute R1-R7
+  # in this fixture. The separate performance observation keeps its own opt-in.
+  grep -Fqx 'pg_test cargo test -p awaken-sql-storage --features postgres --lib postgres_tests -- --ignored --skip checkout_health_policy_performance_observation --test-threads=1 || record_failure "$?"' "$0" || {
+    echo "Postgres gate omits explicit shared checkout correctness" >&2
+    return 1
+  }
   grep -Fqx 'pg_test cargo test -p awaken-coordinator application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact || record_failure "$?"' "$0" || {
     echo "Postgres gate omits fail-closed ApplicationAccess durability conformance" >&2
     return 1
@@ -526,6 +532,9 @@ record_failure() {
 # Keep HTTP branch receipts visible: passing Rust counts alone cannot identify
 # which database adapter ran. Configuration-contract subprocesses reject silent
 # fallback before these same entries run against this live fixture.
+# Shared checkout's cancellation, poisoned backend and capability boundaries
+# are meaningful only against this live database. This selects all R1-R7 rules.
+pg_test cargo test -p awaken-sql-storage --features postgres --lib postgres_tests -- --ignored --skip checkout_health_policy_performance_observation --test-threads=1 || record_failure "$?"
 pg_test cargo test -p awaken-worker-registry --features test-support --lib --test conformance || record_failure "$?"
 pg_test cargo test -p awaken-dispatch --features test-support || record_failure "$?"
 # Scale qualification remains owned by the existing ingress target and this
