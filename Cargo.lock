@@ -2451,7 +2451,6 @@ dependencies = [
  "awaken-file-store",
  "awaken-lease-contract",
  "awaken-lease-testkit",
- "awaken-mcp-wire",
  "awaken-memory-store",
  "awaken-observability",
  "awaken-provisioning-contract",

@@ -54,7 +54,6 @@ awaken-ext-compact = { workspace = true }
 awaken-ext-permission = { workspace = true }
 awaken-ext-skills = { workspace = true }
 awaken-ext-mcp = { workspace = true }
-awaken-mcp-wire.workspace = true
 awaken-ext-goal = { workspace = true }
 awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 awaken-ext-background-task.workspace = true
