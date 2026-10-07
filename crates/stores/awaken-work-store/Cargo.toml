@@ -22,6 +22,7 @@ test-support = []
 loom = []
 
 [dependencies]
+thiserror.workspace = true
 # The WorkQueue port + its neutral vocabulary this crate implements a durable backend
 # for (SQLite embedded / Postgres distributed, at parity).
 awaken-session-types.workspace = true

@@ -50,11 +50,12 @@ test-support = []
 # running needs a database.
 postgres = ["dep:awaken-sql-storage", "dep:sqlx", "dep:awaken-scoped-migration", "awaken-sql-storage/postgres"]
 # SQLite BLOB backend (`sqlite::SqliteFileStore`) over the same `file_store` scope.
-sqlite = ["dep:awaken-sql-storage", "dep:sqlx", "dep:awaken-scoped-migration", "dep:awaken-sqlite-pool"]
+sqlite = ["dep:sqlx", "dep:awaken-scoped-migration", "dep:awaken-sqlite-pool"]
 # Object-store backend (S3-compatible/GCS via `object_store`; key = content id).
 object-store = ["dep:object_store", "dep:futures"]
 
 [dev-dependencies]
+proptest.workspace = true
 awaken-reliability-testkit.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "fs"] }
 tempfile = "3"

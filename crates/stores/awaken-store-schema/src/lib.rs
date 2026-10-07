@@ -14,7 +14,10 @@
 //! driver — it owns the schema, the backends own the runner.
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
-pub use awaken_sql_storage::{StoredU64, StoredU64Error};
+
+mod stored_u64;
+
+pub use stored_u64::{StoredU64, StoredU64Error};
 
 /// The bundle id for the runtime commit schema. Scoped so it never collides with
 /// another component's migrations in the same database.

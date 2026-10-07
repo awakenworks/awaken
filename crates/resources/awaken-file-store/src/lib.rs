@@ -59,8 +59,8 @@ fn decode_artifact_capture(
     revision: i64,
     file_ids_json: &str,
 ) -> Result<ArtifactCapture, FileCatalogError> {
-    let revision = awaken_sql_storage::StoredU64::try_from(revision)
-        .map(awaken_sql_storage::StoredU64::domain_value)
+    let revision = crate::stored_u64::StoredU64::try_from(revision)
+        .map(crate::stored_u64::StoredU64::domain_value)
         .map_err(|error| FileCatalogError::CorruptData {
             detail: error.to_string(),
         })?;
@@ -618,6 +618,11 @@ pub mod postgres;
 /// SQLite `BLOB` backend (`sqlite` feature).
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+
+// The codec is copied verbatim into each storage context; this context uses
+// only part of it outside tests.
+#[cfg_attr(not(test), allow(dead_code))]
+mod stored_u64;
 
 /// Object-store backend — S3-compatible or GCS (`object-store` feature).
 #[cfg(feature = "object-store")]
