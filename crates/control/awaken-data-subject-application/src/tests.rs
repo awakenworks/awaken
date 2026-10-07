@@ -100,7 +100,7 @@ impl ErasureJobRepo for InMemoryDataSubjectRepo {
         Ok(())
     }
 }
-use awaken_runtime_contract::{DataSubjectConsentSource, DataSubjectResolver};
+use awaken_data_governance_contract::{DataSubjectConsentSource, DataSubjectResolver};
 
 fn granted(purpose: Purpose) -> ConsentGrant {
     ConsentGrant {
@@ -423,7 +423,7 @@ async fn resolver_erase_without_erasers_stamps_subject_and_returns_zero() {
 // subject record.
 #[tokio::test]
 async fn resolver_erase_unknown_subject_counts_eraser_removals() {
-    use awaken_runtime_contract::ContentEraser;
+    use awaken_data_governance_contract::ContentEraser;
 
     struct FakeEraser(usize);
     #[async_trait]
@@ -431,7 +431,7 @@ async fn resolver_erase_unknown_subject_counts_eraser_removals() {
         async fn erase_subject(
             &self,
             _s: &DataSubjectId,
-        ) -> Result<usize, awaken_runtime_contract::ErasureError> {
+        ) -> Result<usize, awaken_data_governance_contract::ErasureError> {
             Ok(self.0)
         }
     }
@@ -455,7 +455,7 @@ async fn resolver_erase_unknown_subject_counts_eraser_removals() {
 
 #[tokio::test]
 async fn erasure_retry_resumes_after_the_last_durable_checkpoint() {
-    use awaken_runtime_contract::{ContentEraser, ErasureError};
+    use awaken_data_governance_contract::{ContentEraser, ErasureError};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct CountingEraser {
@@ -514,7 +514,7 @@ async fn erasure_retry_resumes_after_the_last_durable_checkpoint() {
 
 #[tokio::test]
 async fn concurrent_erasure_replays_effect_but_counts_one_checkpoint() {
-    use awaken_runtime_contract::{ContentEraser, ErasureError};
+    use awaken_data_governance_contract::{ContentEraser, ErasureError};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct RacingIdempotentEraser {
@@ -605,7 +605,7 @@ async fn resolver_reads_grant_and_erases() {
 // propagate — the caller can no longer mistake a total no-op for a real erasure.
 #[tokio::test]
 async fn resolver_erase_surfaces_backend_failures() {
-    use awaken_runtime_contract::{ContentEraser, ErasureError};
+    use awaken_data_governance_contract::{ContentEraser, ErasureError};
 
     // A content backend whose DELETE errored: it now reports the failure through
     // the `Result` channel instead of collapsing to an ambiguous `0`.
@@ -682,7 +682,7 @@ async fn resolver_erase_surfaces_backend_failures() {
 
 #[tokio::test]
 async fn erase_fans_out_and_sums_removed_counts() {
-    use awaken_runtime_contract::ContentEraser;
+    use awaken_data_governance_contract::ContentEraser;
 
     struct FakeEraser(usize);
     #[async_trait]
@@ -690,7 +690,7 @@ async fn erase_fans_out_and_sums_removed_counts() {
         async fn erase_subject(
             &self,
             _s: &DataSubjectId,
-        ) -> Result<usize, awaken_runtime_contract::ErasureError> {
+        ) -> Result<usize, awaken_data_governance_contract::ErasureError> {
             Ok(self.0)
         }
     }
@@ -754,7 +754,7 @@ async fn erase_fans_out_and_sums_removed_counts() {
 // `erased_at`, withdrawing its grants, and so ceiling any purpose to Structured.
 #[tokio::test]
 async fn resolver_erase_fans_out_and_stamps_retained_subject() {
-    use awaken_runtime_contract::ContentEraser;
+    use awaken_data_governance_contract::ContentEraser;
 
     struct FakeEraser(usize);
     #[async_trait]
@@ -762,7 +762,7 @@ async fn resolver_erase_fans_out_and_stamps_retained_subject() {
         async fn erase_subject(
             &self,
             _s: &DataSubjectId,
-        ) -> Result<usize, awaken_runtime_contract::ErasureError> {
+        ) -> Result<usize, awaken_data_governance_contract::ErasureError> {
             Ok(self.0)
         }
     }
@@ -1230,7 +1230,7 @@ async fn organization_privacy_reuses_subject_inventory_and_resolver() {
         async fn erase(
             &self,
             subject: &DataSubjectId,
-        ) -> Result<ErasureReceipt, awaken_runtime_contract::ErasureError> {
+        ) -> Result<ErasureReceipt, awaken_data_governance_contract::ErasureError> {
             self.0.lock().unwrap().push(subject.0.clone());
             Ok(ErasureReceipt { records_removed: 1 })
         }
@@ -1255,11 +1255,12 @@ async fn organization_privacy_reuses_subject_inventory_and_resolver() {
     let subjects = Arc::new(RecordingResolver::default());
     let privacy = RepoOrganizationPrivacyResolver::new(repo, subjects.clone());
 
-    let exported = awaken_runtime_contract::OrganizationPrivacyResolver::export_organization(
-        &privacy, "org-a", None,
-    )
-    .await
-    .unwrap();
+    let exported =
+        awaken_data_governance_contract::OrganizationPrivacyResolver::export_organization(
+            &privacy, "org-a", None,
+        )
+        .await
+        .unwrap();
     assert_eq!(
         exported
             .records
@@ -1270,7 +1271,7 @@ async fn organization_privacy_reuses_subject_inventory_and_resolver() {
         "E1"
     );
     assert_eq!(
-        awaken_runtime_contract::OrganizationPrivacyResolver::export_organization(
+        awaken_data_governance_contract::OrganizationPrivacyResolver::export_organization(
             &privacy,
             "org-a",
             Some(&DataSubjectId("subject-a".into())),
@@ -1283,7 +1284,7 @@ async fn organization_privacy_reuses_subject_inventory_and_resolver() {
         "E2"
     );
     assert!(
-        awaken_runtime_contract::OrganizationPrivacyResolver::export_organization(
+        awaken_data_governance_contract::OrganizationPrivacyResolver::export_organization(
             &privacy,
             "org-a",
             Some(&DataSubjectId("foreign".into())),
@@ -1294,7 +1295,7 @@ async fn organization_privacy_reuses_subject_inventory_and_resolver() {
     );
     for _ in 0..2 {
         assert_eq!(
-            awaken_runtime_contract::OrganizationPrivacyResolver::erase_organization(
+            awaken_data_governance_contract::OrganizationPrivacyResolver::erase_organization(
                 &privacy, "org-a",
             )
             .await
@@ -1312,7 +1313,7 @@ async fn organization_privacy_reuses_subject_inventory_and_resolver() {
 
 #[tokio::test]
 async fn restored_erasure_checkpoint_is_validated_before_replay_or_effects() {
-    use awaken_runtime_contract::ContentEraser;
+    use awaken_data_governance_contract::ContentEraser;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct ObservedEraser(Arc<AtomicUsize>);
@@ -1321,7 +1322,7 @@ async fn restored_erasure_checkpoint_is_validated_before_replay_or_effects() {
         async fn erase_subject(
             &self,
             _: &DataSubjectId,
-        ) -> Result<usize, awaken_runtime_contract::ErasureError> {
+        ) -> Result<usize, awaken_data_governance_contract::ErasureError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(7)
         }

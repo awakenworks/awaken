@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_runtime_contract::{ContentEraser, DataSubjectId, ErasureError};
+use awaken_data_governance_contract::{ContentEraser, ErasureError};
+use awaken_runtime_contract::DataSubjectId;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::IntoResponse;

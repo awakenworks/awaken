@@ -28,7 +28,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_runtime_contract::{ContentEraser, DataSubjectId, ErasureError};
+use awaken_data_governance_contract::{ContentEraser, ErasureError};
+use awaken_runtime_contract::DataSubjectId;
 
 use crate::config_home::ConfigHome;
 use crate::{SessionHomeKey, SessionHomePlan, SessionHomeProvider};

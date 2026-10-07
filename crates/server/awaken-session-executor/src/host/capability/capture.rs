@@ -20,7 +20,8 @@ pub(crate) struct ContentCaptureCapability {
     pub(crate) capture_decision: awaken_runtime_contract::CaptureDecision,
     /// Read-only Control consent service. The default null source preserves open
     /// standalone behavior; a managed process replaces it explicitly.
-    pub(crate) data_subject_consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+    pub(crate) data_subject_consent:
+        Arc<dyn awaken_data_governance_contract::DataSubjectConsentSource>,
 }
 
 impl ContentCaptureCapability {
@@ -29,7 +30,7 @@ impl ContentCaptureCapability {
         Self {
             capture_sink: std::sync::RwLock::new(None),
             capture_decision: crate::redact::capture_decision(deployment.content_capture, false),
-            data_subject_consent: Arc::new(awaken_runtime_contract::NullResolver),
+            data_subject_consent: Arc::new(awaken_data_governance_contract::NullResolver),
         }
     }
 }
@@ -50,7 +51,7 @@ impl SharedHost {
     #[must_use]
     pub fn with_data_subject_consent_source(
         mut self,
-        source: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+        source: Arc<dyn awaken_data_governance_contract::DataSubjectConsentSource>,
     ) -> Self {
         self.capture.data_subject_consent = source;
         self

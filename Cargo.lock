@@ -406,6 +406,7 @@ name = "awaken-captured-content-store"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-data-governance-contract",
  "awaken-lease-testkit",
  "awaken-reliability-testkit",
  "awaken-runtime-contract",
@@ -446,6 +447,7 @@ dependencies = [
  "awaken-credential-materializer",
  "awaken-credential-store",
  "awaken-credential-vault",
+ "awaken-data-governance-contract",
  "awaken-data-subject-application",
  "awaken-data-subject-store",
  "awaken-deployment-contract",
@@ -656,6 +658,7 @@ dependencies = [
  "awaken-credential-materializer",
  "awaken-credential-store",
  "awaken-credential-vault",
+ "awaken-data-governance-contract",
  "awaken-data-subject-application",
  "awaken-data-subject-store",
  "awaken-deployment-contract",
@@ -733,6 +736,7 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-credential-vault",
+ "awaken-data-governance-contract",
  "awaken-deployment-application",
  "awaken-deployment-contract",
  "awaken-dispatch",
@@ -961,10 +965,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-data-governance-contract"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-runtime-contract",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-data-subject-application"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-data-governance-contract",
  "awaken-lease-testkit",
  "awaken-runtime-contract",
  "awaken-time",
@@ -1436,6 +1453,7 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-credential-vault",
+ "awaken-data-governance-contract",
  "awaken-provisioning-contract",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
@@ -2354,6 +2372,7 @@ dependencies = [
  "awaken-agent-channel",
  "awaken-agent-contract",
  "awaken-credential-contract",
+ "awaken-data-governance-contract",
  "awaken-lease-testkit",
  "awaken-local-process",
  "awaken-protocol-acp",
@@ -2974,6 +2993,7 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-credential-vault",
+ "awaken-data-governance-contract",
  "awaken-dispatch",
  "awaken-dispatch-contract",
  "awaken-dispatch-erasure",

@@ -12,9 +12,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_runtime_contract::{
-    CaptureError, CaptureSink, ContentEraser, ContentKind, DataSubjectId, Purpose,
-};
+use awaken_data_governance_contract::ContentEraser;
+use awaken_runtime_contract::{CaptureError, CaptureSink, ContentKind, DataSubjectId, Purpose};
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_sqlite_pool::EmbeddedPool;
 use awaken_sqlite_pool::EmbeddedSqlite;
@@ -207,20 +206,20 @@ impl ContentEraser for SqliteCapturedContentStore {
     async fn erase_subject(
         &self,
         subject: &DataSubjectId,
-    ) -> Result<usize, awaken_runtime_contract::ErasureError> {
+    ) -> Result<usize, awaken_data_governance_contract::ErasureError> {
         let erased_at = self.clock.now().as_epoch_ms_i64();
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
-            .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
+            .map_err(|error| awaken_data_governance_contract::ErasureError(error.to_string()))?;
         let previous = sqlx::query_scalar::<_, i64>(&format!(
             "SELECT records_removed FROM {NS}_fence WHERE subject = ?1"
         ))
         .bind(&subject.0)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?
+        .map_err(|error| awaken_data_governance_contract::ErasureError(error.to_string()))?
         .unwrap_or(0);
         // Restricted (Art. 18) rows survive erasure until released. A DELETE that
         // errors is surfaced (fail-closed) rather than swallowed to a `0` count.
@@ -230,10 +229,10 @@ impl ContentEraser for SqliteCapturedContentStore {
         .bind(&subject.0)
         .execute(&mut *tx)
         .await
-        .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))?
+        .map_err(|e| awaken_data_governance_contract::ErasureError(e.to_string()))?
         .rows_affected();
         let receipt = previous.checked_add(removed as i64).ok_or_else(|| {
-            awaken_runtime_contract::ErasureError("erasure receipt overflow".into())
+            awaken_data_governance_contract::ErasureError("erasure receipt overflow".into())
         })?;
         sqlx::query(&format!(
             "INSERT INTO {NS}_fence (subject, erased_at, records_removed) VALUES (?1, ?2, ?3) \
@@ -244,12 +243,14 @@ impl ContentEraser for SqliteCapturedContentStore {
         .bind(receipt)
         .execute(&mut *tx)
         .await
-        .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
+        .map_err(|error| awaken_data_governance_contract::ErasureError(error.to_string()))?;
         tx.commit()
             .await
-            .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
+            .map_err(|error| awaken_data_governance_contract::ErasureError(error.to_string()))?;
         usize::try_from(receipt).map_err(|error| {
-            awaken_runtime_contract::ErasureError(format!("invalid erasure receipt: {error}"))
+            awaken_data_governance_contract::ErasureError(format!(
+                "invalid erasure receipt: {error}"
+            ))
         })
     }
 }
