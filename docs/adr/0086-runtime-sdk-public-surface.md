@@ -1,7 +1,7 @@
 # ADR-0086: Runtime SDK Public Surface
 
 - Status: Accepted
-- Date: 2026-10-05 (accepted 2026-10-06)
+- Date: 2026-10-05 (accepted 2026-10-06; amended 2026-10-07, per-module tiers)
 - Builds on: ADR-0059 neutral core and leaf evolution; ADR-0081 contract layering and
   ratchet guardrails (the depth baseline and the bounded-context ratchet).
 - Leaves unchanged: ADR-0050 content capture and GDPR semantics; ADR-0051 tenancy
@@ -136,3 +136,54 @@ removes the rule's entries from the baseline.
   any growth is recorded in the ADR-0081 depth baseline with this ADR as the reason.
 - Persisted data is unaffected. Every moved type keeps its serde shape, and the
   ext-memory receipt token serializes as the receipt it wraps.
+
+## Amendment 2026-10-07: per-module tiers, values apart from traits
+
+ADR-0088 states the SDK–Platform contract as one list and makes this ADR its single
+source. The list needs every public SDK contract module placed in one tier, because
+`awaken-runtime-contract` today holds three kinds of thing in one crate: values the
+whole Platform reads (the Agent definition), traits only the Run execution side should
+implement or drive (the engine SPI), and Platform vocabulary that items 2, 3, 4 and 7
+above take off the public surface. From a dependency edge alone nobody can tell which
+of the three a Platform crate uses.
+
+**Tiers.** *Value* modules form the published language any context may read. *SPI*
+modules are implemented or driven only by the Execution and Committed Truth contexts
+(ADR-0088). *Leaves* means the items above take it off the public SDK surface.
+*Mixed* modules hold values and SPI traits together; their traits count as SPI.
+
+`awaken-runtime-contract`:
+
+| Tier | Modules |
+|---|---|
+| Value | `resolved`, `snapshot` (with the private `snapshot_builder`, item 5), `resolution` (item 5), `agent_bindings`, `delegation`, `resilience` |
+| SPI | `llm`, `plugin`, `execution`, `resume`, `pause`, `control`, `live_inbox`, `terminal`, `attempt_termination`, `compaction`, `boundary`, `metrics`, `runtime_context`, `resolver`, `activation`, `model_operation` |
+| Mixed (values + SPI traits) | `capture` (values; `ContentRedactor`), `permission` (policy values; `ToolPermissionPolicy`, `PermissionGrantObserver`, `ToolGateHook`), `data_subject` (SDK part per item 2: `DataSubjectId`, `Purpose` values; `CaptureSink`) |
+| Leaves | `capability` (item 3), `model_routing` (item 4), the governance part of `data_subject` (item 2: consent sources, resolvers, erasure, privacy export), the Platform part of `credential` (item 7) |
+
+`model_operation` is the SDK's evidence-store port; its Platform implementation sits in
+the credentials context today. Until that implementation is classified under ADR-0088,
+it is the one recorded exception to the "Execution and Committed Truth only" rule.
+
+`awaken-agent-contract` is Value except `thread::commit` (the commit coordinator and
+operation traits), the reader traits in `thread::read` (`CheckpointReader`,
+`RunRecoverySource`), and `stream::sink` / `stream::checkpoint`, which are SPI.
+`awaken-tool-contract` is Value except the executor and discovery traits, which are SPI.
+
+**Values apart from traits.** After items 1–7 land, value modules and the value half of
+mixed modules move to `awaken-agent-contract` (with `awaken-tool-contract` for tool
+values), and SPI traits move to `awaken-runtime-contract`. No crate is added; the two
+crates already exist and their reader sets differ sharply (most Platform contexts read
+values; two contexts implement the SPI). Item 5 still holds: the snapshot builder stays
+next to the snapshot, so it moves with it.
+
+**Re-exports.** `awaken-runtime-contract` re-exports `awaken-agent-contract` items, the
+`awaken-tool-contract` modules, `awaken_tenancy::ExecutionScopeRef` and
+`tokio_util::sync::CancellationToken` at its root. When the split happens it keeps only
+an explicit list of re-exports for types that appear in its own trait signatures;
+everything else is imported from the owning crate.
+
+**Order.** The tier table applies now: ADR-0088's SPI guard reads it, ratcheted from the
+current state. The value/trait move runs after items 1–7, when the closure of each
+module is known.
+
