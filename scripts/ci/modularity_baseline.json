@@ -16,8 +16,8 @@
       "reason": "W13 step 2 and W20: event projection and orchestration leave; the adapter keeps its wire cache"
     },
     "awaken-session-executor::SharedHost": {
-      "files": 38,
-      "methods": 341,
+      "files": 37,
+      "methods": 332,
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
     "awaken-session-application::SessionApplication": {

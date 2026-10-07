@@ -84,7 +84,7 @@ impl SharedHost {
                 deployment,
                 clock: clock.clone(),
             },
-            HostAuthorityRole::StoreOwning,
+            Arc::new(crate::LocalAuthority::default()),
         )
         .with_runtime_authority(Arc::new(crate::EphemeralRuntimeAuthority::new(clock)))
     }
@@ -122,10 +122,13 @@ impl SharedHost {
         self.clock.clone()
     }
 
-    /// Install the Coordinator-owned durable capability before the Host serves.
+    /// Install the Coordinator-owned durable capability before the Host serves:
+    /// this Host then owns committed truth locally. Only store-owning
+    /// compositions call this; a Worker is constructed with its upstream
+    /// authority instead.
     #[must_use]
     pub fn with_runtime_authority(mut self, authority: Arc<dyn crate::RuntimeAuthority>) -> Self {
-        self.authority = Some(authority);
+        self.authority = Arc::new(crate::LocalAuthority::new(authority));
         self
     }
 
@@ -152,7 +155,7 @@ impl SharedHost {
                 deployment: crate::deployment_config::DeploymentConfig::ephemeral(),
                 clock,
             },
-            HostAuthorityRole::StoreOwning,
+            Arc::new(crate::LocalAuthority::default()),
         )
     }
 
@@ -182,7 +185,7 @@ impl SharedHost {
                 deployment,
                 clock,
             },
-            HostAuthorityRole::StoreOwning,
+            Arc::new(crate::LocalAuthority::default()),
         )
     }
 
@@ -190,6 +193,9 @@ impl SharedHost {
     /// installed before any Resource data store is selected. Management-only
     /// File and durable extraction authorities fail closed; the Worker opens no
     /// File, Memory-content, or Memory-extraction authority database.
+    /// `authority` carries the claim-fenced upstream transports through which
+    /// this Worker reaches committed truth; nothing installed later can grant
+    /// it a local write authority.
     pub fn new_worker_with_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
@@ -198,6 +204,7 @@ impl SharedHost {
         >,
         memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
         process: HostProcess,
+        authority: crate::UpstreamAuthority,
     ) -> Self {
         Self::build(
             llm,
@@ -212,7 +219,7 @@ impl SharedHost {
                 extraction_repository: None,
             },
             process,
-            HostAuthorityRole::DatabaseLessWorker,
+            Arc::new(authority),
         )
     }
 
@@ -243,7 +250,7 @@ impl SharedHost {
                 extraction_repository: Some(extraction_repository),
             },
             process,
-            HostAuthorityRole::StoreOwning,
+            Arc::new(crate::LocalAuthority::default()),
         )
     }
 
@@ -252,7 +259,7 @@ impl SharedHost {
         model_ref: String,
         resources: capability::ResourceInputs,
         process: HostProcess,
-        authority_role: HostAuthorityRole,
+        authority: Arc<dyn crate::SessionAuthority>,
     ) -> Self {
         let HostProcess {
             local_workspace,
@@ -322,11 +329,10 @@ impl SharedHost {
             hub: hub.clone(),
             // `with_store_dir` still overrides this environment-derived default.
             store_dir,
-            authority_role,
             deployment,
-            // Every composition, tests included, installs its durable authority
-            // explicitly through `with_runtime_authority`.
-            authority: None,
+            // A store-owning composition, tests included, installs its durable
+            // Runtime authority explicitly through `with_runtime_authority`.
+            authority,
             clock,
             background_supervisor,
             completion: Arc::new(CompletionRegistry::new(hub)),
@@ -429,17 +435,14 @@ impl SharedHost {
         self.completion.install_committed_progress_wakeup(wakeup)
     }
 
-    /// The role selected at construction, independent of whether any one
-    /// claim-fenced transport has been installed yet.
-    pub(crate) fn is_database_less_worker(&self) -> bool {
-        self.authority_role == HostAuthorityRole::DatabaseLessWorker
-    }
-
-    /// Vary only the role in unit tests that exercise missing-port rejection.
-    /// Product Worker composition always uses `new_worker_with_deployment`.
+    /// Give a unit-test fixture the authority of the role under test. Product
+    /// Worker composition always uses `new_worker_with_deployment`.
     #[cfg(test)]
-    pub(crate) fn with_database_less_worker_role_for_test(mut self) -> Self {
-        self.authority_role = HostAuthorityRole::DatabaseLessWorker;
+    pub(crate) fn with_authority(
+        mut self,
+        authority: impl crate::SessionAuthority + 'static,
+    ) -> Self {
+        self.authority = Arc::new(authority);
         self
     }
 
@@ -539,7 +542,7 @@ impl SharedHost {
         // parent's checkpoint/commit projection instead of a child claim.
         let scheduler = if self.runs_local_dispatch_pool() {
             let recovery_projection = commit.recovery_projection();
-            let claimed_commit = self.worker_claimed_commit()?;
+            let claimed_commit = self.authority.claimed_commit()?;
             Some(crate::agent_runner::RunScheduler {
                 clock: self.clock.clone(),
                 store: self.dispatch_store()?,
@@ -610,7 +613,7 @@ mod startup_tests {
                 deployment: crate::DeploymentConfig::ephemeral(),
                 clock: awaken_time::system_clock(),
             },
-            HostAuthorityRole::StoreOwning,
+            Arc::new(crate::LocalAuthority::default()),
         );
 
         assert!(
@@ -623,10 +626,12 @@ mod startup_tests {
     async fn constructor_selects_worker_role_without_a_transport_marker() {
         // C1 constructor={database-less Worker, Coordinator-local}; C2 both
         // receive the same File/Memory content ports; C3 claimed-commit port
-        // is absent. R1 Worker => remote role and fail-closed missing commit;
-        // R2 Coordinator => store-owning role and no remote commit request.
-        // A content port or an injected commit port alone cannot choose C1;
-        // commit_ingest W1-W3 covers the independent port combinations.
+        // is absent and no Runtime authority is installed. R1 Worker => remote
+        // commit boundary and fail-closed missing claimed commit; R2
+        // Coordinator => local commit boundary (fail-closed until its Runtime
+        // authority is installed) and no remote commit request. A content port
+        // cannot choose C1, and a Worker's transports exist only inside its
+        // upstream authority; commit_ingest W1-W3 covers the port combinations.
         let file: Arc<
             dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
         > = Arc::new(awaken_resource_contract::UnavailableFileContentSource);
@@ -649,6 +654,7 @@ mod startup_tests {
             file.clone(),
             memory.clone(),
             process(),
+            crate::UpstreamAuthority::default(),
         );
         let coordinator = SharedHost::new_with_runtime_resources_and_deployment(
             Arc::new(crate::NoModelConfiguredExecutor),
@@ -658,9 +664,24 @@ mod startup_tests {
             extraction,
             process(),
         );
-        assert!(worker.is_database_less_worker(), "R1 role");
-        assert!(worker.worker_claimed_commit().is_err(), "R1 missing port");
-        assert!(!coordinator.is_database_less_worker(), "R2 role");
-        assert!(coordinator.worker_claimed_commit().unwrap().is_none(), "R2");
+        assert!(
+            matches!(
+                worker.authority.open_commit("role").await,
+                Ok(crate::store::HostCommit::Remote(_))
+            ),
+            "R1 remote commit boundary"
+        );
+        assert!(
+            worker.authority.claimed_commit().is_err(),
+            "R1 missing port"
+        );
+        assert!(
+            coordinator.authority.open_commit("role").await.is_err(),
+            "R2 local commit boundary without an installed Runtime authority"
+        );
+        assert!(
+            coordinator.authority.claimed_commit().unwrap().is_none(),
+            "R2"
+        );
     }
 }

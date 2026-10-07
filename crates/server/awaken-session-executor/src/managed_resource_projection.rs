@@ -414,7 +414,7 @@ impl crate::ManagedHost {
             &awaken_session_resource_contract::SessionRealizationLease,
         )>,
     ) -> Result<Vec<awaken_resource_contract::SkillVersion>, RunError> {
-        let skill_realization = if self.host.is_database_less_worker() {
+        let skill_realization = if self.host.authority.fetches_resources_upstream() {
             realization
         } else {
             None
@@ -1358,9 +1358,10 @@ impl crate::ManagedHost {
         environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_error_contract::RunError>
     {
-        let authority = if let (Some((session_id, resource_revision, lease)), true) =
-            (realization, self.host.is_database_less_worker())
-        {
+        let authority = if let (Some((session_id, resource_revision, lease)), true) = (
+            realization,
+            self.host.authority.fetches_resources_upstream(),
+        ) {
             Some(
                 awaken_dispatch_contract::ResourceOperationFence::SessionMaterialization(
                     awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
@@ -1497,7 +1498,7 @@ impl crate::ManagedHost {
                 config,
             } => {
                 let materialization_reference = match (
-                    self.host.is_database_less_worker(),
+                    self.host.authority.fetches_resources_upstream(),
                     claim,
                     realization,
                 ) {
@@ -1517,14 +1518,13 @@ impl crate::ManagedHost {
                                 awaken_session_realization_contract::SessionResourceMaterializationIntent,
                             >::encode(
                                 self.host
-                                    .worker.memory_reference_encoder
-                                    .as_ref()
+                                    .authority
+                                    .memory_reference_encoder()
                                     .ok_or_else(|| {
                                         RunError::internal(
                                             "remote Memory materialization encoder is not configured",
                                         )
-                                    })?
-                                    .as_ref(),
+                                    })?,
                                 workspace,
                                 memory_store_id.as_str(),
                                 config.version,
@@ -1539,15 +1539,13 @@ impl crate::ManagedHost {
                             awaken_dispatch_contract::RunClaim,
                         >::encode(
                             self.host
-                                .worker
-                                .memory_reference_encoder
-                                .as_ref()
+                                .authority
+                                .memory_reference_encoder()
                                 .ok_or_else(|| {
                                     RunError::internal(
                                         "remote Memory materialization encoder is not configured",
                                     )
-                                })?
-                                .as_ref(),
+                                })?,
                             workspace,
                             memory_store_id.as_str(),
                             config.version,
@@ -1615,7 +1613,10 @@ impl crate::ManagedHost {
                             "repository `{repository_id}` cannot be realized: {error}"
                         ))
                     })?;
-                let transport = match (resource_authority, self.host.is_database_less_worker()) {
+                let transport = match (
+                    resource_authority,
+                    self.host.authority.fetches_resources_upstream(),
+                ) {
                     (
                         Some(awaken_dispatch_contract::ResourceOperationFence::RepositoryPublication {
                             ..

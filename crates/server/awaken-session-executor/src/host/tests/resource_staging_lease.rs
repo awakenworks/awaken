@@ -248,7 +248,11 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 let host = Arc::new(
                     SharedHost::new(Arc::new(OkModel), "stub")
                         .await
-                        .with_session_recovery_control(control.clone()),
+                        .with_session_realization_control(control.clone())
+                        .with_authority(
+                            crate::UpstreamAuthority::default()
+                                .with_terminal_cleanup_control(control.clone()),
+                        ),
                 );
                 let now = crate::terminal_repository_publication::runtime_unix_now_ms();
                 let lease = awaken_session_resource_contract::SessionRealizationLease {
@@ -550,7 +554,10 @@ impl StagingFixture {
         let mut host = SharedHost::new(Arc::new(OkModel), "stub")
             .await
             .with_file_content_source(source.clone())
-            .with_session_recovery_control(control.clone());
+            .with_session_realization_control(control.clone())
+            .with_authority(
+                crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
+            );
         if let Some(authority) = authority {
             host = host.with_execution_authority(authority);
         }

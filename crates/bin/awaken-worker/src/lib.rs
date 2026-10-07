@@ -1389,6 +1389,23 @@ impl WorkerNode {
         // Claimed Runs commit back to the Coordinator under this registered
         // identity; the Host holds only the neutral claim-fenced port.
         let claimed_commit = awaken_coordinator_client::remote_claimed_commit(&upstream)?;
+        // Every registered Worker realizes the already-frozen Session projection
+        // through Control; the same client projects the one durable Environment
+        // root authorization before provider I/O and hands out cold terminal
+        // cleanup. WorkQueue remains the sole Session ownership path.
+        let session_control = Arc::new(awaken_coordinator_client::WorkerControlSessionClient::new(
+            control.clone(),
+            registration.snapshot.identity.clone(),
+        ));
+        // Committed truth lives in the Coordinator: the Host reaches it only
+        // through these claim-fenced transports.
+        let authority = awaken_session_executor::UpstreamAuthority::default()
+            .with_claimed_commit(claimed_commit)
+            .with_memory_reference_encoder(Arc::new(
+                awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder,
+            ))
+            .with_stream_publisher(stream_publisher)
+            .with_terminal_cleanup_control(session_control.clone());
         let mut host = SharedHost::new_worker_with_deployment(
             Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
             "worker",
@@ -1399,17 +1416,13 @@ impl WorkerNode {
                 deployment: deployment.clone(),
                 clock: self.clock.clone(),
             },
+            authority,
         )
         .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes())
         .with_artifact_publisher(remote_artifacts)
         // Every execution topology installs the same Session MCP adapter.
         // Host permission grants and Environment-bound executors remain owners.
         .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter))
-        .with_worker_claimed_commit(claimed_commit)
-        .with_memory_reference_encoder(Arc::new(
-            awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder,
-        ))
-        .with_worker_stream_publisher(stream_publisher)
         .with_worker_dispatch(dispatch, registered_capacity)
         .with_skill_bundle_source(remote_skills)
         .with_web_search_provider_registry(application.web_providers)
@@ -1426,17 +1439,8 @@ impl WorkerNode {
         if let Some(decorator) = application.attempt_decorator {
             host = host.with_attempt_decorator(decorator);
         }
-        // Every registered Worker realizes the already-frozen Session projection
-        // through Control; the same client projects the one durable Environment
-        // root authorization before provider I/O. WorkQueue remains the sole
-        // Session ownership path.
-        let session_control = Arc::new(awaken_coordinator_client::WorkerControlSessionClient::new(
-            control.clone(),
-            registration.snapshot.identity.clone(),
-        ));
         host = host
             .with_session_control(session_control.clone())
-            .with_terminal_cleanup_control(session_control.clone())
             .with_environment_binding_sink(session_control);
         if let Some(gate) = self.tool_gate {
             host = host.with_gate_override(gate);

@@ -173,7 +173,7 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
         let source = Arc::new(FileFenceProbe::new(accepted));
         let mut host = host().await.with_file_content_source(source.clone());
         if remote {
-            host = host.with_database_less_worker_role_for_test();
+            host = host.with_authority(crate::UpstreamAuthority::default());
         }
         let result = crate::ManagedHost::new(Arc::new(host))
             .stage_resolved_input(

@@ -206,7 +206,7 @@ impl SharedHost {
         Ok(self.mcp.validate_input_placement(
             configuration,
             opaque_backend,
-            self.is_database_less_worker(),
+            !self.authority.hosts_session_application(),
         )?)
     }
 

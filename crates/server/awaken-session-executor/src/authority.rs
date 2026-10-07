@@ -3,8 +3,9 @@
 //!
 //! The Runtime Host owns execution semantics, but it does not select or open a
 //! database. A Coordinator startup injects one implementation of these
-//! contracts. Database-less Workers leave the authority absent and use their
-//! remote, claim-fenced transports instead.
+//! contracts. Database-less Workers have none and reach committed truth through
+//! their remote, claim-fenced transports instead. [`SessionAuthority`] is the
+//! one place the Host asks which of the two it is given.
 
 use std::sync::Arc;
 
@@ -494,5 +495,338 @@ impl RuntimeAuthority for EphemeralRuntimeAuthority {
                     as Arc<dyn StreamCheckpointStore>
             })
             .clone())
+    }
+}
+
+/// Where this Host's Session truth lives, answered once per decision.
+///
+/// A Coordinator or single-process Host keeps committed truth in its own
+/// [`RuntimeAuthority`] ([`LocalAuthority`]); a database-less Worker reaches it
+/// upstream through claim-fenced transports ([`UpstreamAuthority`]). Every
+/// role-dependent choice the Host makes is one method here, named for that
+/// decision, so the Host never asks which role it plays. Role-neutral
+/// dependencies (Session Control, the Worker credential resolver) stay outside.
+#[async_trait::async_trait]
+pub(crate) trait SessionAuthority: Send + Sync {
+    /// The commit boundary a Session writes through.
+    async fn open_commit(&self, thread: &str)
+    -> Result<crate::store::HostCommit, crate::HostError>;
+
+    /// The durable interrupted-stream checkpoint store, when this process owns
+    /// one. A Worker persists checkpoints through its claim-fenced dispatch
+    /// transport, so a local store would be a second authority.
+    fn stream_checkpoint(
+        &self,
+        thread: &str,
+    ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, crate::HostError>;
+
+    /// The claim-fenced commit transport claimed Runs write through; `None`
+    /// when they commit through this process's own authority.
+    fn claimed_commit(
+        &self,
+    ) -> Result<Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>, crate::HostError>;
+
+    /// The claim-fenced live-progress publisher; `None` relays progress through
+    /// this process's completion registry.
+    fn live_progress_publisher(
+        &self,
+    ) -> Option<Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>>;
+
+    /// The Control client that hands out cold terminal-cleanup assignments.
+    fn terminal_cleanup_control(
+        &self,
+    ) -> Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>>;
+
+    /// Whether committed Thread truth for `thread` already exists durably.
+    async fn durable_thread_exists(&self, thread: &str) -> Result<bool, crate::HostError>;
+
+    /// The durable dispatch store this process owns, if any.
+    fn durable_dispatch_store(&self) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>>;
+
+    /// The cross-node dispatch wake this process owns, if any.
+    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>>;
+
+    /// Cancelling a Run records the durable cancellation intent (`true`), or
+    /// only signals the attempt resident in this process (`false`): a Worker's
+    /// transport cannot list, requeue, or cancel the global queue.
+    fn cancels_through_durable_intent(&self) -> bool;
+
+    /// Terminal Memory extraction is observed in this process after its own
+    /// commit (`true`), or by the guarded settlement observer beside the
+    /// upstream commit (`false`). Recovery of extraction intents follows the
+    /// same owner.
+    fn observes_terminal_memory_locally(&self) -> bool;
+
+    /// This process can scan every Thread's committed truth to reconcile
+    /// dispatch rows whose Run already ended.
+    fn scans_committed_terminals(&self) -> bool;
+
+    /// The Session application that admits BackgroundTask completion attention
+    /// and MCP application input runs in this process.
+    fn hosts_session_application(&self) -> bool;
+
+    /// Resources (Skill bundles, File content, Memory, Repository transport)
+    /// are fetched upstream under a claim or Session realization fence
+    /// (`true`), or directly from this process's stores (`false`).
+    fn fetches_resources_upstream(&self) -> bool;
+
+    /// The encoder that turns a fenced Memory operation into the upstream
+    /// transport's opaque reference.
+    fn memory_reference_encoder(&self) -> Option<&dyn crate::host::RuntimeMemoryReferenceEncoder>;
+}
+
+/// The authority of a Host that owns committed truth: a Coordinator or a single
+/// process. Absent a [`RuntimeAuthority`], every store-backed answer fails
+/// closed exactly as a Host without an injected authority always has.
+#[derive(Default)]
+pub(crate) struct LocalAuthority {
+    runtime: Option<Arc<dyn RuntimeAuthority>>,
+}
+
+impl LocalAuthority {
+    pub(crate) fn new(runtime: Arc<dyn RuntimeAuthority>) -> Self {
+        Self {
+            runtime: Some(runtime),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionAuthority for LocalAuthority {
+    async fn open_commit(
+        &self,
+        thread: &str,
+    ) -> Result<crate::store::HostCommit, crate::HostError> {
+        self.runtime
+            .as_ref()
+            .ok_or_else(|| {
+                crate::HostError::internal("local Runtime requires an injected authority")
+            })?
+            .open_commit(thread)
+            .await
+            .map(crate::store::HostCommit::Local)
+            .map_err(crate::HostError::from)
+    }
+
+    fn stream_checkpoint(
+        &self,
+        thread: &str,
+    ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, crate::HostError> {
+        self.runtime
+            .as_ref()
+            .ok_or_else(|| {
+                crate::HostError::internal(
+                    "database-less Worker build cannot open a local checkpoint authority",
+                )
+            })?
+            .stream_checkpoint(thread)
+            .map(Some)
+            .map_err(crate::HostError::from)
+    }
+
+    fn claimed_commit(
+        &self,
+    ) -> Result<Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>, crate::HostError>
+    {
+        Ok(None)
+    }
+
+    fn live_progress_publisher(
+        &self,
+    ) -> Option<Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>> {
+        None
+    }
+
+    fn terminal_cleanup_control(
+        &self,
+    ) -> Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>> {
+        None
+    }
+
+    async fn durable_thread_exists(&self, thread: &str) -> Result<bool, crate::HostError> {
+        match self.runtime.as_ref() {
+            Some(runtime) => runtime
+                .durable_thread_exists(thread)
+                .await
+                .map_err(crate::HostError::from),
+            None => Ok(false),
+        }
+    }
+
+    fn durable_dispatch_store(&self) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>> {
+        self.runtime
+            .as_ref()
+            .map(|runtime| runtime.dispatch_store())
+    }
+
+    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>> {
+        self.runtime
+            .as_ref()
+            .and_then(|runtime| runtime.dispatch_wake())
+    }
+
+    fn cancels_through_durable_intent(&self) -> bool {
+        true
+    }
+
+    fn observes_terminal_memory_locally(&self) -> bool {
+        true
+    }
+
+    fn scans_committed_terminals(&self) -> bool {
+        true
+    }
+
+    fn hosts_session_application(&self) -> bool {
+        true
+    }
+
+    fn fetches_resources_upstream(&self) -> bool {
+        false
+    }
+
+    fn memory_reference_encoder(&self) -> Option<&dyn crate::host::RuntimeMemoryReferenceEncoder> {
+        None
+    }
+}
+
+/// The authority of a database-less Worker: committed truth lives in the
+/// Coordinator, reached only through the claim-fenced transports the Worker
+/// composition installs here. A missing transport fails closed where it is
+/// used; no transport grants the Worker a local write authority.
+#[derive(Default)]
+pub struct UpstreamAuthority {
+    claimed_commit: Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>,
+    stream_publisher: Option<Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>>,
+    terminal_cleanup_control:
+        Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>>,
+    memory_reference_encoder: Option<Arc<dyn crate::host::RuntimeMemoryReferenceEncoder>>,
+}
+
+impl UpstreamAuthority {
+    /// The claim-fenced commit transport claimed Runs write through.
+    #[must_use]
+    pub fn with_claimed_commit(
+        mut self,
+        claimed_commit: Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>,
+    ) -> Self {
+        self.claimed_commit = Some(claimed_commit);
+        self
+    }
+
+    /// The registered Worker's claim-fenced live-progress publisher.
+    #[must_use]
+    pub fn with_stream_publisher(
+        mut self,
+        publisher: Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>,
+    ) -> Self {
+        self.stream_publisher = Some(publisher);
+        self
+    }
+
+    /// The Control client that hands this Worker cold terminal-cleanup
+    /// assignments.
+    #[must_use]
+    pub fn with_terminal_cleanup_control(
+        mut self,
+        control: Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>,
+    ) -> Self {
+        self.terminal_cleanup_control = Some(control);
+        self
+    }
+
+    /// The Resource transport's opaque Memory reference encoder. The Host
+    /// neither owns nor inspects the wire representation.
+    #[must_use]
+    pub fn with_memory_reference_encoder<E>(mut self, encoder: Arc<E>) -> Self
+    where
+        E: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+                awaken_dispatch_contract::RunClaim,
+            > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+                awaken_session_realization_contract::SessionResourceMaterializationIntent,
+            > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+                awaken_session_state_contract::SessionTerminalMemoryIntent,
+            > + 'static,
+    {
+        self.memory_reference_encoder = Some(encoder);
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionAuthority for UpstreamAuthority {
+    async fn open_commit(
+        &self,
+        _thread: &str,
+    ) -> Result<crate::store::HostCommit, crate::HostError> {
+        Ok(crate::store::HostCommit::Remote(
+            crate::store::RemoteHostCommit::new(),
+        ))
+    }
+
+    fn stream_checkpoint(
+        &self,
+        _thread: &str,
+    ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, crate::HostError> {
+        Ok(None)
+    }
+
+    fn claimed_commit(
+        &self,
+    ) -> Result<Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>, crate::HostError>
+    {
+        self.claimed_commit.clone().map(Some).ok_or_else(|| {
+            crate::HostError::internal(
+                "database-less Worker requires an injected claimed-commit transport",
+            )
+        })
+    }
+
+    fn live_progress_publisher(
+        &self,
+    ) -> Option<Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>> {
+        self.stream_publisher.clone()
+    }
+
+    fn terminal_cleanup_control(
+        &self,
+    ) -> Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>> {
+        self.terminal_cleanup_control.clone()
+    }
+
+    async fn durable_thread_exists(&self, _thread: &str) -> Result<bool, crate::HostError> {
+        Ok(false)
+    }
+
+    fn durable_dispatch_store(&self) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>> {
+        None
+    }
+
+    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>> {
+        None
+    }
+
+    fn cancels_through_durable_intent(&self) -> bool {
+        false
+    }
+
+    fn observes_terminal_memory_locally(&self) -> bool {
+        false
+    }
+
+    fn scans_committed_terminals(&self) -> bool {
+        false
+    }
+
+    fn hosts_session_application(&self) -> bool {
+        false
+    }
+
+    fn fetches_resources_upstream(&self) -> bool {
+        true
+    }
+
+    fn memory_reference_encoder(&self) -> Option<&dyn crate::host::RuntimeMemoryReferenceEncoder> {
+        self.memory_reference_encoder.as_deref()
     }
 }

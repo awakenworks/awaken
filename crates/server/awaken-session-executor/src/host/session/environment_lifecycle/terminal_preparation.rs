@@ -1013,19 +1013,13 @@ impl SharedHost {
                     .await
                     .map_err(|error| HostError::unavailable(error.to_string()))?;
                 self.terminal_cleanup_effect_fence(effect)?;
-                let operation_reference = if self.is_database_less_worker() {
+                let operation_reference = if self.authority.fetches_resources_upstream() {
                     awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
                         awaken_session_state_contract::SessionTerminalMemoryIntent,
                     >::encode(
-                        self.worker
-                            .memory_reference_encoder
-                            .as_ref()
-                            .ok_or_else(|| {
-                                HostError::internal(
-                                    "remote terminal Memory encoder is not configured",
-                                )
-                            })?
-                            .as_ref(),
+                        self.authority.memory_reference_encoder().ok_or_else(|| {
+                            HostError::internal("remote terminal Memory encoder is not configured")
+                        })?,
                         workspace_id,
                         intent.memory_store_id(),
                         intent.config_version(),

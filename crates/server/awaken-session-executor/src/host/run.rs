@@ -145,13 +145,7 @@ impl SharedHost {
     /// session context (the layout probe lives with the commit boundary in
     /// [`crate::store`]).
     pub async fn has_durable_thread(&self, thread: &str) -> Result<bool, HostError> {
-        match self.authority.as_ref() {
-            Some(authority) => authority
-                .durable_thread_exists(thread)
-                .await
-                .map_err(HostError::from),
-            None => Ok(false),
-        }
+        self.authority.durable_thread_exists(thread).await
     }
 
     pub async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, HostError> {
@@ -360,7 +354,7 @@ impl SharedHost {
                 .expect("active run mutex poisoned")
                 .clone()
         });
-        if self.is_database_less_worker() {
+        if !self.authority.cancels_through_durable_intent() {
             // A Worker revokes its resident attempt, not the Coordinator's
             // durable cancellation intent. Its transport deliberately cannot
             // list/requeue/cancel the global queue. Reuse the installed claim

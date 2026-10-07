@@ -10,9 +10,10 @@
 //! This crate consumes capabilities selected by process startup. It never opens
 //! or selects a SQL/filesystem authority Store, never owns a public protocol or
 //! domain aggregate, and never decides the deployment topology. Coordinator
-//! injects the sole durable [`RuntimeAuthority`]; a database-less Worker injects
-//! claim-fenced transports. Product composition mounts the corresponding
-//! routers around these protocol-neutral behaviors.
+//! injects the sole durable [`RuntimeAuthority`]; a database-less Worker is
+//! constructed with an [`UpstreamAuthority`] carrying its claim-fenced
+//! transports. Product composition mounts the corresponding routers around
+//! these protocol-neutral behaviors.
 
 mod acp_backend;
 mod acp_capability_probe;
@@ -107,8 +108,10 @@ use awaken_session_execution_contract::{
 
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::authority::EphemeralRuntimeAuthority;
+pub(crate) use crate::authority::{LocalAuthority, SessionAuthority};
 pub use crate::authority::{
     LocalCommit, LocalCommitAdapter, LocalCommitQueries, RuntimeAuthority, RuntimeAuthorityError,
+    UpstreamAuthority,
 };
 pub use crate::host::{
     CommittedStepReceipt, HostError, HostErrorKind, HostOutcomeDrive, HostOutcomeReport,

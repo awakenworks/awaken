@@ -1,49 +1,24 @@
 // @formal surface requirement=session.managed_worker.work_authority
-// @formal reason: Static owner: the Session run-ingress seam moved out of host/session.rs unchanged - the
-// @formal reason: durable stream-checkpoint store, the foreground delivery choice (durable dispatch versus
-// @formal reason: a direct attempt driver), and the per-attempt inference materializer a database-less
-// @formal reason: Worker carries. Dynamic path: each selection follows the same commit authority the
-// @formal reason: Session already holds, so a database-less Worker cannot open a local checkpoint
+// @formal reason: Static owner: the Session run-ingress seam moved out of host/session.rs - the
+// @formal reason: foreground delivery choice (durable dispatch versus a direct attempt driver) and the
+// @formal reason: per-attempt inference materializer a database-less Worker carries. Dynamic path: the
+// @formal reason: checkpoint store, claimed commit, and live-progress publisher all come from the Host's
+// @formal reason: one SessionAuthority, so a database-less Worker cannot open a local checkpoint
 // @formal reason: authority or deliver a run outside its claim. Evidence:
 // @formal reason: session.managed_worker.work_authority and the runtime-host ingress tests; this is a
 // @formal reason: product-requirement classification, not a direct proof claim.
-//! How a Session's runs reach an executor: the durable checkpoint store, the
-//! foreground delivery choice (durable dispatch or a direct driver), and the
-//! per-attempt inference materializer a database-less Worker carries.
+//! How a Session's runs reach an executor: the foreground delivery choice
+//! (durable dispatch or a direct driver) and the per-attempt inference
+//! materializer a database-less Worker carries. The checkpoint store, claimed
+//! commit, and live-progress publisher are answered by the Host's
+//! `SessionAuthority`.
 //!
-//! Split out of `session.rs` unchanged; these three are the ingress seam and
-//! share no state with the snapshot/context assembly that remains there.
+//! Split out of `session.rs`; this is the ingress seam and shares no state
+//! with the snapshot/context assembly that remains there.
 
 use super::*;
 
 impl SharedHost {
-    /// Build a thread's interrupted-stream checkpoint store, mirroring
-    /// `build_commit`'s durability choice: a filesystem store under the configured
-    /// directory (so a partial survives a process crash and resumes), or the
-    /// checkpoint adapter paired with the shared Postgres dispatch authority.
-    /// Only explicit test-support startup may select a process-local store.
-    pub(super) fn build_stream_checkpoint(
-        &self,
-        thread: &str,
-    ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, HostError> {
-        // A database-less Worker persists checkpoints through its authenticated,
-        // claim-fenced dispatch transport. Installing a local store here would
-        // create a second authority that cannot survive Worker replacement.
-        if self.is_database_less_worker() {
-            return Ok(None);
-        }
-        self.authority
-            .as_ref()
-            .ok_or_else(|| {
-                HostError::internal(
-                    "database-less Worker build cannot open a local checkpoint authority",
-                )
-            })?
-            .stream_checkpoint(thread)
-            .map(Some)
-            .map_err(HostError::from)
-    }
-
     /// Build the one claimed Worker for this Thread, then select its independent
     /// foreground-delivery policy. Durable foreground delivery retains the
     /// durable coordinator that owns that same Worker; direct foreground delivery
@@ -107,15 +82,15 @@ impl SharedHost {
         if let Some(observer) = session_admission_observer {
             worker = worker.with_session_run_admission_observer(observer);
         }
-        worker = match &self.worker.worker_stream_publisher {
-            Some(publisher) => worker.with_claimed_stream_publisher(publisher.clone()),
+        worker = match self.authority.live_progress_publisher() {
+            Some(publisher) => worker.with_claimed_stream_publisher(publisher),
             None => worker.with_stream_sink(self.completion.clone()),
         };
         worker = worker.with_local_credential_capabilities(local_credential_capabilities);
         if let Some(resolver) = &self.worker.worker_credential_resolver {
             worker = worker.with_worker_credential_resolver(resolver.clone());
         }
-        if let Some(claimed_commit) = self.worker_claimed_commit()? {
+        if let Some(claimed_commit) = self.authority.claimed_commit()? {
             worker = worker.with_claimed_commit(claimed_commit);
         }
         if let Some(projection) = recovery_projection {
