@@ -42,7 +42,7 @@ async fn install_active_worker_relay(
             realization_id: request.realization_id.clone(),
             selected_plaintext_holder: None,
             actual_realization_kind: Some(
-                awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
+                awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
             ),
             receipt_fingerprint: request.fingerprint(),
         },

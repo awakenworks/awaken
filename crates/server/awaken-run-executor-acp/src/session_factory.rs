@@ -38,7 +38,7 @@ impl AcpSessionExecutorFactory for AcpRunExecutor {
     fn credential_realization_capabilities(
         &self,
         _backend: &Backend,
-    ) -> Result<awaken_runtime_contract::CredentialRealizationCapabilities, String> {
+    ) -> Result<awaken_credential_contract::CredentialRealizationCapabilities, String> {
         Ok(Default::default())
     }
 }

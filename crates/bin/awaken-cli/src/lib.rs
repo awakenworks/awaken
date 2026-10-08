@@ -531,8 +531,8 @@ fn resolve_model_services(
                     .with_direct_provider_credential_execution(
                         awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
                         (
-                            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native().inference_holder,
-                            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp().inference_holder,
+                            awaken_credential_contract::CredentialRealizationProfile::self_hosted_native().inference_holder,
+                            awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp().inference_holder,
                         ),
                     ),
             ),
@@ -656,20 +656,21 @@ mod runtime_session_store_tests {
                     packages: Default::default(),
                     prepared_image: None,
                     network: SessionNetworkPolicy::Unrestricted,
-                    credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
-                        inference_holder: awaken_runtime_contract::PlaintextHolder::new(
-                            awaken_runtime_contract::PlaintextBoundary::Workload,
-                            "awaken.workload.acp",
-                        ),
-                        mcp_holder: awaken_runtime_contract::PlaintextHolder::new(
-                            awaken_runtime_contract::PlaintextBoundary::Worker,
-                            "awaken.worker",
-                        ),
-                        resource_holder: awaken_runtime_contract::PlaintextHolder::new(
-                            awaken_runtime_contract::PlaintextBoundary::Worker,
-                            "awaken.worker",
-                        ),
-                    },
+                    credential_realization:
+                        awaken_credential_contract::CredentialRealizationProfile {
+                            inference_holder: awaken_runtime_contract::PlaintextHolder::new(
+                                awaken_runtime_contract::PlaintextBoundary::Workload,
+                                "awaken.workload.acp",
+                            ),
+                            mcp_holder: awaken_runtime_contract::PlaintextHolder::new(
+                                awaken_runtime_contract::PlaintextBoundary::Worker,
+                                "awaken.worker",
+                            ),
+                            resource_holder: awaken_runtime_contract::PlaintextHolder::new(
+                                awaken_runtime_contract::PlaintextBoundary::Worker,
+                                "awaken.worker",
+                            ),
+                        },
                 },
                 runtime_placement:
                     awaken_session_configuration_contract::SessionRuntimePlacement::Local,

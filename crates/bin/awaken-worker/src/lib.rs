@@ -189,7 +189,7 @@ pub struct WorkerNodeBuilder {
     hand_executor_factory:
         Option<Arc<dyn awaken_session_environment_contract::HandExecutorFactory>>,
     worker_local_credential_resolver:
-        Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
+        Option<Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>>,
     acp_capability_observation_source:
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     enclosing_sandbox_boundary: Option<InstalledSandboxBoundary>,
@@ -623,7 +623,7 @@ impl WorkerNodeBuilder {
     #[must_use]
     pub fn with_worker_local_credential_resolver(
         mut self,
-        resolver: Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>,
+        resolver: Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>,
     ) -> Self {
         self.worker_local_credential_resolver = Some(resolver);
         self
@@ -1093,7 +1093,7 @@ pub struct WorkerNode {
     hand_executor_factory:
         Option<Arc<dyn awaken_session_environment_contract::HandExecutorFactory>>,
     credential_observation_resolver:
-        Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
+        Option<Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>>,
     acp_capability_observation_source:
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
@@ -1159,8 +1159,8 @@ pub async fn run_with_inference_and_credential_resolver<R>(
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
-    R: awaken_runtime_contract::CredentialMaterialResolver
-        + awaken_runtime_contract::WorkerLocalCredentialResolver
+    R: awaken_credential_contract::CredentialMaterialResolver
+        + awaken_credential_contract::WorkerLocalCredentialResolver
         + 'static,
 {
     build_secretless_worker(
@@ -1209,8 +1209,8 @@ async fn build_secretless_worker(
     upstream: WorkerUpstream,
     process: WorkerProcessConfig,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
-    material_resolver: Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
-    local_resolver: Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
+    material_resolver: Option<Arc<dyn awaken_credential_contract::CredentialMaterialResolver>>,
+    local_resolver: Option<Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let clock = process.clock.clone();
     let mut builder = WorkerNodeBuilder::new(upstream, clock.clone()).with_process_config(process);

@@ -605,7 +605,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("H23 client injection does not require WorkerRelay provider custody");
     assert_eq!(
         basic_client_receipt.actual_realization_kind,
-        Some(awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField),
+        Some(awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField),
         "H23"
     );
 
@@ -1121,7 +1121,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("H20 complete provider evidence admits exact Worker relay staging");
     assert_eq!(
         secure_receipt.actual_realization_kind,
-        Some(awaken_runtime_contract::CredentialRealizationKind::WorkerRelay),
+        Some(awaken_credential_contract::CredentialRealizationKind::WorkerRelay),
         "H20"
     );
     secure_managed
@@ -1221,7 +1221,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("H23 exact process-protocol client injection");
     assert_eq!(
         client_receipt.actual_realization_kind,
-        Some(awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField),
+        Some(awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField),
         "H23"
     );
     secure_managed
@@ -1279,7 +1279,7 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
     impl CredentialMaterialResolver for ExactTargetResolver {
         fn material_capabilities(
             &self,
-        ) -> std::collections::BTreeSet<awaken_runtime_contract::CredentialMaterialCapability>
+        ) -> std::collections::BTreeSet<awaken_credential_contract::CredentialMaterialCapability>
         {
             let mut profiles = std::collections::BTreeSet::new();
             for holder in [self.holder.clone()] {
@@ -1287,7 +1287,7 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
                     [awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference]
                 {
                     for envelope in [false, true] {
-                        profiles.insert(awaken_runtime_contract::CredentialMaterialCapability {
+                        profiles.insert(awaken_credential_contract::CredentialMaterialCapability {
                             holder: holder.clone(),
                             source,
                             envelope,
@@ -1308,7 +1308,7 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
             Ok(ResolvedCredentialMaterial {
                 credential: request.access.credential.clone(),
                 holder: self.holder.clone(),
-                material: awaken_runtime_contract::CredentialMaterial::secret(
+                material: awaken_credential_contract::CredentialMaterial::secret(
                     awaken_agent_contract::RedactedString::new("mcp-bearer"),
                 ),
             })

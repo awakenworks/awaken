@@ -1,7 +1,6 @@
 // @formal entrypoint credential_effect.boundary_preserves_exact_materialization_authority
-use awaken_runtime_contract::{
-    AttemptCredentialBinding, AttemptCredentialBindingError, CredentialRealizationCapabilities,
-};
+use awaken_credential_contract::CredentialRealizationCapabilities;
+use awaken_runtime_contract::{AttemptCredentialBinding, AttemptCredentialBindingError};
 use awaken_worker_contract::WorkerSnapshot;
 
 use crate::run_dispatch::RunDispatch;
@@ -26,7 +25,7 @@ pub enum DispatchCredentialAdmissionError {
     )]
     UnsupportedSessionMcpHolder,
     #[error("Session MCP credential admission failed: {0}")]
-    SessionAdmission(awaken_runtime_contract::CredentialAdmissionError),
+    SessionAdmission(awaken_credential_contract::CredentialAdmissionError),
     #[error("claimed credential bindings differ from the exact dispatch claim decision")]
     ClaimedBindingMismatch,
 }
@@ -106,14 +105,14 @@ fn acp_mcp_client_injection_profile_admits(
 ) -> bool {
     let consumer_id = format!(
         "{}{}",
-        awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX,
+        awaken_credential_contract::ACP_CREDENTIAL_CONSUMER_PREFIX,
         backend_ref
     );
     (installed.extension_consumers.contains_key(&consumer_id)
         && access
             .admit(
                 holder,
-                awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
+                awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
                 installed,
                 now_unix_ms,
             )
@@ -176,7 +175,7 @@ pub fn compile_attempt_credential_bindings(
                     }
                     let realization = match holder.boundary {
                         awaken_runtime_contract::PlaintextBoundary::Worker => {
-                            awaken_runtime_contract::CredentialRealizationKind::WorkerRelay
+                            awaken_credential_contract::CredentialRealizationKind::WorkerRelay
                         }
                         awaken_runtime_contract::PlaintextBoundary::Workload => {
                             let execution_candidates = request
@@ -203,7 +202,7 @@ pub fn compile_attempt_credential_bindings(
                             access
                                 .admit(
                                     holder,
-                                    awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
+                                    awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
                                     installed,
                                     now_unix_ms,
                                 )
@@ -334,7 +333,7 @@ fn claim_credential_binding_revalidation_rejects_missing_widened_reordered_or_st
             identity,
         ),
         selected_realization_kind:
-            awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+            awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
         claim_epoch: epoch,
     };
     let first = binding("first", 7);

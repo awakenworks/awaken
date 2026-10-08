@@ -846,7 +846,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         serde_json::json!({}),
     );
     conflicting_environment.credential_realization =
-        awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp();
+        awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp();
     let conflicting_host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default")
         .await)
         .build()
@@ -865,7 +865,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         "worker-exact",
         "native",
         awaken_runtime_contract::CredentialExecutionPolicy::exact(
-            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
+            awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
                 .inference_holder,
             awaken_runtime_contract::ModelExposurePolicy::Forbidden,
         ),
@@ -874,7 +874,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         "workload-exact",
         "native",
         awaken_runtime_contract::CredentialExecutionPolicy::exact(
-            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp()
+            awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp()
                 .inference_holder,
             awaken_runtime_contract::ModelExposurePolicy::Forbidden,
         ),

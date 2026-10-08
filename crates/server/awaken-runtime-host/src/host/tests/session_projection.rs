@@ -2022,7 +2022,7 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
         .expect("G2 mediated staging resolves no material");
     assert_eq!(
         receipt.actual_realization_kind,
-        Some(awaken_runtime_contract::CredentialRealizationKind::PlatformRelay),
+        Some(awaken_credential_contract::CredentialRealizationKind::PlatformRelay),
         "G2"
     );
     let server = host

@@ -69,7 +69,7 @@ pub(crate) fn select(
             observations.iter().any(|observation| {
                 observation.cli_id == cli.id
                     && observation.credential_state
-                        == Some(awaken_runtime_contract::CredentialObservationState::Available)
+                        == Some(awaken_credential_contract::CredentialObservationState::Available)
                     && observation.capability_state
                         == Some(awaken_acp_application::AcpCapabilityState::Verified)
             }) && credentials.iter().filter(active).any(|source| {
@@ -139,7 +139,9 @@ mod tests {
             display_name: cli_id.into(),
             detection: awaken_acp_application::AcpDetectionState::Detected,
             version: Some("1".into()),
-            credential_state: Some(awaken_runtime_contract::CredentialObservationState::Available),
+            credential_state: Some(
+                awaken_credential_contract::CredentialObservationState::Available,
+            ),
             reason_code: None,
             capability_state: Some(awaken_acp_application::AcpCapabilityState::Verified),
             capability_fingerprint: Some("fixture".into()),
@@ -281,7 +283,7 @@ mod tests {
 
         let mut unavailable = observation("codex");
         unavailable.credential_state =
-            Some(awaken_runtime_contract::CredentialObservationState::LoginRequired);
+            Some(awaken_credential_contract::CredentialObservationState::LoginRequired);
         assert_eq!(
             select(
                 &ProviderCatalog::default(),

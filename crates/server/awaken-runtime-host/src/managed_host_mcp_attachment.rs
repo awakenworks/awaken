@@ -77,7 +77,8 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
         materializer: &PinnedCredentialMaterializer,
         cli: &str,
         http_transport: bool,
-    ) -> Result<Option<awaken_runtime_contract::CredentialRealizationCapabilities>, RunError> {
+    ) -> Result<Option<awaken_credential_contract::CredentialRealizationCapabilities>, RunError>
+    {
         Ok(crate::host::acp_mcp_client_injection_capabilities(
             materializer,
             self.host.acp_adapter_policy().map_err(to_run_error)?,

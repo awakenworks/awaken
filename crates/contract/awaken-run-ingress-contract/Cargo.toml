@@ -15,6 +15,7 @@ authority = "durable-run-ingress"
 separation = "contract"
 
 [dependencies]
+awaken-credential-contract.workspace = true
 awaken-time.workspace = true
 awaken-lease-contract.workspace = true
 awaken-agent-contract.workspace = true

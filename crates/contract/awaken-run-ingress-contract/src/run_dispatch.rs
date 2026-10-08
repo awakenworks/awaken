@@ -669,6 +669,7 @@ mod tests {
     }
 
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_credential_contract::CredentialMaterial;
     use awaken_runtime_contract::credential::CredentialPurpose;
     use awaken_runtime_contract::resolved::{
         CatalogFingerprint, ModelBinding, ModelProvisioning, ResolvedSpec,
@@ -677,9 +678,9 @@ mod tests {
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
     use awaken_runtime_contract::{
-        CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterial,
-        CredentialMaterialSource, CredentialRef, CredentialTarget, CredentialUsage,
-        SealedCredentialEnvelopeRef, TrustDomainRef,
+        CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource,
+        CredentialRef, CredentialTarget, CredentialUsage, SealedCredentialEnvelopeRef,
+        TrustDomainRef,
     };
 
     fn provider_candidate(
@@ -1066,7 +1067,7 @@ mod tests {
             prepared_image: None,
             network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
             credential_realization:
-                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
         };
         let tools = SessionToolConfiguration {
             toolsets: Vec::new(),

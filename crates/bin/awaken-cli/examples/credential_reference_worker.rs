@@ -48,8 +48,8 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
 
     fn credential_realization_capabilities(
         &self,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
-        awaken_runtime_contract::CredentialRealizationCapabilities {
+    ) -> awaken_credential_contract::CredentialRealizationCapabilities {
+        awaken_credential_contract::CredentialRealizationCapabilities {
             holders: BTreeSet::from([awaken_runtime_contract::PlaintextHolder::new(
                 awaken_runtime_contract::PlaintextBoundary::Worker,
                 awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
@@ -58,7 +58,7 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
                 awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
             ]),
             realization_kinds: BTreeSet::from([
-                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+                awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
             ]),
             recipient_bound_envelopes: false,
             envelope_required: false,
@@ -94,10 +94,10 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
 }
 
 #[async_trait]
-impl awaken_runtime_contract::CredentialMaterialResolver for ReferenceMaterializer {
+impl awaken_credential_contract::CredentialMaterialResolver for ReferenceMaterializer {
     fn material_capabilities(
         &self,
-    ) -> std::collections::BTreeSet<awaken_runtime_contract::CredentialMaterialCapability> {
+    ) -> std::collections::BTreeSet<awaken_credential_contract::CredentialMaterialCapability> {
         let mut profiles = std::collections::BTreeSet::new();
         for holder in [
             awaken_runtime_contract::PlaintextHolder::new(
@@ -109,7 +109,7 @@ impl awaken_runtime_contract::CredentialMaterialResolver for ReferenceMaterializ
                 "awaken.workload.acp",
             ),
         ] {
-            profiles.insert(awaken_runtime_contract::CredentialMaterialCapability {
+            profiles.insert(awaken_credential_contract::CredentialMaterialCapability {
                 holder,
                 source: awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
                 envelope: false,
@@ -120,44 +120,48 @@ impl awaken_runtime_contract::CredentialMaterialResolver for ReferenceMaterializ
 
     async fn resolve_exact(
         &self,
-        _request: awaken_runtime_contract::CredentialMaterialRequest<'_>,
+        _request: awaken_credential_contract::CredentialMaterialRequest<'_>,
     ) -> Result<
-        awaken_runtime_contract::ResolvedCredentialMaterial,
-        awaken_runtime_contract::CredentialMaterialError,
+        awaken_credential_contract::ResolvedCredentialMaterial,
+        awaken_credential_contract::CredentialMaterialError,
     > {
-        Err(awaken_runtime_contract::CredentialMaterialError::Unavailable)
+        Err(awaken_credential_contract::CredentialMaterialError::Unavailable)
     }
 }
 
 #[async_trait]
-impl awaken_runtime_contract::CredentialObservationSource for ReferenceMaterializer {
+impl awaken_credential_contract::CredentialObservationSource for ReferenceMaterializer {
     async fn credential_observations(
         &self,
     ) -> Result<
-        BTreeSet<awaken_runtime_contract::CredentialObservation>,
-        awaken_runtime_contract::CredentialMaterialError,
+        BTreeSet<awaken_credential_contract::CredentialObservation>,
+        awaken_credential_contract::CredentialMaterialError,
     > {
         let state = self.state();
         if state == "probe_failed" {
-            return Err(awaken_runtime_contract::CredentialMaterialError::ProbeFailed);
+            return Err(awaken_credential_contract::CredentialMaterialError::ProbeFailed);
         }
         let state = match state.as_str() {
             "available" | "available_then_login_required" => {
-                awaken_runtime_contract::CredentialObservationState::Available
+                awaken_credential_contract::CredentialObservationState::Available
             }
-            "login_required" => awaken_runtime_contract::CredentialObservationState::LoginRequired,
-            "expired" => awaken_runtime_contract::CredentialObservationState::Expired,
-            "disabled" => awaken_runtime_contract::CredentialObservationState::Disabled,
-            "probe_failed_one" => awaken_runtime_contract::CredentialObservationState::ProbeFailed,
-            _ => awaken_runtime_contract::CredentialObservationState::Invalid,
+            "login_required" => {
+                awaken_credential_contract::CredentialObservationState::LoginRequired
+            }
+            "expired" => awaken_credential_contract::CredentialObservationState::Expired,
+            "disabled" => awaken_credential_contract::CredentialObservationState::Disabled,
+            "probe_failed_one" => {
+                awaken_credential_contract::CredentialObservationState::ProbeFailed
+            }
+            _ => awaken_credential_contract::CredentialObservationState::Invalid,
         };
         Ok(BTreeSet::from([
-            awaken_runtime_contract::CredentialObservation {
+            awaken_credential_contract::CredentialObservation {
                 credential: self.credential.clone(),
                 state,
                 observed_at_ms: 1,
                 reason_code: (state
-                    != awaken_runtime_contract::CredentialObservationState::Available)
+                    != awaken_credential_contract::CredentialObservationState::Available)
                     .then(|| format!("fixture_{state:?}")),
             },
         ]))
@@ -165,30 +169,30 @@ impl awaken_runtime_contract::CredentialObservationSource for ReferenceMateriali
 }
 
 #[async_trait]
-impl awaken_runtime_contract::WorkerLocalReferenceRevalidator for ReferenceMaterializer {
+impl awaken_credential_contract::WorkerLocalReferenceRevalidator for ReferenceMaterializer {
     async fn revalidate_worker_reference(
         &self,
         credential: &awaken_runtime_contract::CredentialRef,
     ) -> Result<
-        awaken_runtime_contract::CredentialObservation,
-        awaken_runtime_contract::CredentialMaterialError,
+        awaken_credential_contract::CredentialObservation,
+        awaken_credential_contract::CredentialMaterialError,
     > {
         if credential != &self.credential {
-            return Err(awaken_runtime_contract::CredentialMaterialError::RevisionMismatch);
+            return Err(awaken_credential_contract::CredentialMaterialError::RevisionMismatch);
         }
         if self.state() == "available_then_login_required" {
-            return Err(awaken_runtime_contract::CredentialMaterialError::LoginRequired);
+            return Err(awaken_credential_contract::CredentialMaterialError::LoginRequired);
         }
         let observation =
-            awaken_runtime_contract::CredentialObservationSource::credential_observations(self)
+            awaken_credential_contract::CredentialObservationSource::credential_observations(self)
                 .await?
                 .into_iter()
                 .next()
-                .ok_or(awaken_runtime_contract::CredentialMaterialError::Unavailable)?;
-        if observation.state == awaken_runtime_contract::CredentialObservationState::Available {
+                .ok_or(awaken_credential_contract::CredentialMaterialError::Unavailable)?;
+        if observation.state == awaken_credential_contract::CredentialObservationState::Available {
             Ok(observation)
         } else {
-            Err(awaken_runtime_contract::CredentialMaterialError::Unavailable)
+            Err(awaken_credential_contract::CredentialMaterialError::Unavailable)
         }
     }
 }

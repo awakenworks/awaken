@@ -423,7 +423,7 @@ fn claim_exact(
     lease_ms: u64,
     now_ms: u64,
     worker: Option<&WorkerSnapshot>,
-    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
     let mode = state
         .rows
@@ -451,7 +451,7 @@ fn claim_exact_with_mode(
     lease_ms: u64,
     now_ms: u64,
     worker: Option<&WorkerSnapshot>,
-    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     mode: ExactClaimMode,
 ) -> Result<Option<Claimed>, DispatchError> {
     let (was_execution_recovery, previous_lease) = match mode {
@@ -630,7 +630,7 @@ fn claim_new_local(
     owner: &str,
     lease_ms: u64,
     now_ms: u64,
-    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
     let run_id = request.run_id().clone();
     let known = known_run_identity(state, &request)?;
@@ -770,7 +770,7 @@ fn deliver_and_claim_local(
     owner: &str,
     lease_ms: u64,
     now_ms: u64,
-    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
     let run_id = input.run_id.clone();
     append_pending(state, input)?;
@@ -782,7 +782,7 @@ fn claim_next_local(
     owner: &str,
     lease_ms: u64,
     now_ms: u64,
-    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
     let Some(run_id) = select_where(state, now_ms, |row| {
         (row.cancellation_requested || can_claim_locally(&row.request.placement))
@@ -998,7 +998,7 @@ impl DispatchQueue for MemoryDispatchStore {
         request: RunDispatch,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let now_ms = self.clock.now_ms();
         let _authority = self.authority.lock().await;
@@ -1039,7 +1039,7 @@ impl DispatchQueue for MemoryDispatchStore {
         input: PendingInput,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let now_ms = self.clock.now_ms();
         let _authority = self.authority.lock().await;
@@ -1073,7 +1073,7 @@ impl DispatchQueue for MemoryDispatchStore {
         &self,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let now_ms = self.clock.now_ms();
         let _authority = self.authority.lock().await;
@@ -1138,7 +1138,7 @@ impl DispatchQueue for MemoryDispatchStore {
         requested_run: &RunId,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let now_ms = self.clock.now_ms();
         let _authority = self.authority.lock().await;

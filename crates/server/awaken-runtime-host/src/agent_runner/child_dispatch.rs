@@ -202,7 +202,7 @@ mod tests {
         assert_eq!(
             request.inference_plaintext_holder,
             Some(
-                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
+                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
                     .inference_holder
             ),
             "R1/E3"

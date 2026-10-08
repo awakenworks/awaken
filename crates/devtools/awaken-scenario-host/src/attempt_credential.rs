@@ -38,7 +38,7 @@ fn native_binding(
         credential,
         selected_plaintext_holder: direct_provider_execution().1,
         selected_realization_kind:
-            awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+            awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
         claim_epoch: 1,
     }
 }

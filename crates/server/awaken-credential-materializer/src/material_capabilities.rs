@@ -6,10 +6,10 @@
 //! One projection from installed material tuples to last-mile execution evidence.
 use std::collections::BTreeSet;
 
-use awaken_runtime_contract::{
-    CredentialMaterialCapability, CredentialMaterialSource, CredentialRealizationCapabilities,
-    CredentialRealizationKind, PlaintextBoundary, PlaintextHolder,
+use awaken_credential_contract::{
+    CredentialMaterialCapability, CredentialRealizationCapabilities, CredentialRealizationKind,
 };
+use awaken_runtime_contract::{CredentialMaterialSource, PlaintextBoundary, PlaintextHolder};
 
 use super::PinnedCredentialMaterializer;
 
@@ -130,11 +130,11 @@ impl PinnedCredentialMaterializer {
         let (kind, material_type) = match delivery {
             awaken_acp_contract::managed_credential::ManagedCredentialDelivery::ProcessSecret => (
                 CredentialRealizationKind::ProcessSecretEnvironment,
-                awaken_runtime_contract::credential::PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE,
+                awaken_credential_contract::PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE,
             ),
             awaken_acp_contract::managed_credential::ManagedCredentialDelivery::Artifact(_) => (
                 CredentialRealizationKind::PrivateSecretFile,
-                awaken_runtime_contract::credential::PRIVATE_SECRET_FILE_MATERIAL_TYPE,
+                awaken_credential_contract::PRIVATE_SECRET_FILE_MATERIAL_TYPE,
             ),
         };
         let mut profile = self.boundary_capabilities(PlaintextBoundary::Workload, kind);
@@ -142,7 +142,7 @@ impl PinnedCredentialMaterializer {
             profile.extension_consumers.insert(
                 format!(
                     "{}acp:{}",
-                    awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX,
+                    awaken_credential_contract::ACP_CREDENTIAL_CONSUMER_PREFIX,
                     cli_id
                 ),
                 [material_type.to_string()].into_iter().collect(),

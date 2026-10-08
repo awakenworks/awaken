@@ -1,9 +1,7 @@
 // @formal entrypoint credential.http_effect_usage_binds_exact_fields_and_placements
 // @formal entrypoint credential.platform_relay_requires_exact_holder_workspace_usage_and_target
-use awaken_runtime_contract::{
-    CredentialRealizationCapabilities, CredentialRealizationKind, PlaintextBoundary,
-    PlaintextHolder,
-};
+use awaken_credential_contract::{CredentialRealizationCapabilities, CredentialRealizationKind};
+use awaken_runtime_contract::{PlaintextBoundary, PlaintextHolder};
 
 use crate::PinnedCredentialMaterializer;
 
@@ -112,6 +110,7 @@ mod tests {
     use std::sync::Arc;
 
     use awaken_agent_contract::RedactedString;
+    use awaken_credential_contract::CredentialRealizationKind;
     use awaken_credential_contract::{
         CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialTarget,
         CredentialTargetContract, OPAQUE_SECRET_MATERIAL_TYPE,
@@ -119,9 +118,9 @@ mod tests {
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
     use awaken_runtime_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource,
-        CredentialRealizationKind, CredentialRef, CredentialUsage, HttpEffectPlacement,
-        ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+        CredentialUsage, HttpEffectPlacement, ModelExposurePolicy, PlaintextBoundary,
+        PlaintextHolder,
     };
 
     use crate::pinned_vault;

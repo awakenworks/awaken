@@ -87,7 +87,7 @@ pub type AttemptExecutorDecorator = Arc<
 /// drifting away from the transport resolver that performs the effect.
 pub struct RemoteAttemptInstallation {
     pub executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
-    pub credential_realization: awaken_runtime_contract::CredentialRealizationCapabilities,
+    pub credential_realization: awaken_credential_contract::CredentialRealizationCapabilities,
 }
 
 /// Retain the actual pool-drain fence future until the caller's absolute

@@ -2,8 +2,8 @@
 //! Exact projection of an operator-selected trust domain into the sole
 //! plaintext-holder boundary implemented by the Worker file resolver.
 
+use awaken_credential_contract::project_worker_plaintext_holder;
 use awaken_runtime_contract::PlaintextHolder;
-use awaken_runtime_contract::credential::project_worker_plaintext_holder;
 
 /// Preserve the exact opaque trust-domain identity while fixing the boundary
 /// to Worker. There is no boundary input and therefore no downgrade/fallback

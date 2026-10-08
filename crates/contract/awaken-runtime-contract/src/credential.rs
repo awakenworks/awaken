@@ -8,8 +8,25 @@
 //! because every execution backend consumes them through `RuntimeRunContext`.
 //! Dispatch owns their persistence, but Native and ACP share this one neutral
 //! vocabulary and recorder port.
+//!
+//! The SDK re-exports only the credential reference vocabulary that snapshot
+//! routes carry (ADR-0086 §7); every other credential item is Platform
+//! vocabulary and is named through `awaken-credential-contract`.
 
-pub use awaken_credential_contract::*;
+pub use awaken_credential_contract::{
+    CredentialAccess, CredentialAudienceRef, CredentialEnvelope, CredentialExecutionPolicy,
+    CredentialMaterialSource, CredentialPurpose, CredentialRef, CredentialRefreshAccess,
+    CredentialTarget, CredentialUsage, CredentialUsageError, HttpEffectPlacement,
+    ModelExposurePolicy, PRIVATE_FILE_CONSUMER, PRIVATE_FILE_MATERIAL_TYPE, PROCESS_ENV_CONSUMER,
+    PROCESS_ENV_MATERIAL_TYPE, PlaintextBoundary, PlaintextHolder, SELF_HOSTED_ACP_TRUST_DOMAIN,
+    SELF_HOSTED_SANDBOX_TRUST_DOMAIN, SELF_HOSTED_WORKER_TRUST_DOMAIN, SealedCredentialEnvelopeRef,
+    SignatureVerificationAlgorithm, TokenEndpointAuth, TrustDomainRef, is_core_delivery_consumer,
+};
+
+use awaken_credential_contract::{
+    CredentialAdmissionError, CredentialMaterialBinding, CredentialProviderExpectationOwned,
+    CredentialRealizationCapabilities, CredentialRealizationKind,
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -807,6 +824,10 @@ fn attempt_delivery_requires_unique_exact_binding_envelope_and_unchanged_authori
 mod tests {
     use super::*;
     use crate::resolved::{BackendModelSelection, ModelBinding, ResolvedModelCandidate};
+    use awaken_credential_contract::{
+        ACP_CREDENTIAL_CONSUMER_PREFIX, PRIVATE_SECRET_FILE_MATERIAL_TYPE,
+        PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE,
+    };
 
     /// The one door through which this module's fixtures build a model binding.
     ///

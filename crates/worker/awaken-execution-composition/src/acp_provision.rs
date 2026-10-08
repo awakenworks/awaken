@@ -5,12 +5,12 @@
 //! backend-owned candidates project only their model policy and leave account,
 //! endpoint, refresh, and login material to the local CLI.
 
+#[cfg(test)]
+use awaken_credential_contract::CredentialRealizationKind;
 use awaken_credential_materializer::PinnedCredentialMaterializer;
 use awaken_run_executor_acp::{
     AcpCli, ConfigHome, LaunchResolver, OpenError, ProcessSecretRequirement, ResolvedModel,
 };
-#[cfg(test)]
-use awaken_runtime_contract::CredentialRealizationKind;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{
     BackendModelSelection, ModelProvisioning, ResolvedModelCandidate,
@@ -284,7 +284,7 @@ impl LaunchResolver for PublishedAcpLaunchResolver {
 
     fn credential_realization_capabilities(
         &self,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+    ) -> awaken_credential_contract::CredentialRealizationCapabilities {
         let credentials = match &self.credentials {
             AcpCredentialAuthority::Local(credentials) => credentials,
             AcpCredentialAuthority::Brokered(materializer) => {
@@ -500,7 +500,7 @@ mod tests {
 
     struct BrokeredLeaseMaterializer {
         calls: Arc<AtomicUsize>,
-        capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: awaken_credential_contract::CredentialRealizationCapabilities,
     }
 
     struct BrokeredLeaseStore;
@@ -562,7 +562,7 @@ mod tests {
         fn credential_realization_capabilities(
             &self,
             _cli: AcpCli,
-        ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+        ) -> awaken_credential_contract::CredentialRealizationCapabilities {
             self.capabilities.clone()
         }
     }
@@ -742,7 +742,7 @@ mod tests {
         // | H1 | Provider | brokered | 1 | gateway URL + opaque lease |
         // | H2 | BackendOwned | brokered | 0 | backend-owned model policy |
         let calls = Arc::new(AtomicUsize::new(0));
-        let capabilities = awaken_runtime_contract::CredentialRealizationCapabilities {
+        let capabilities = awaken_credential_contract::CredentialRealizationCapabilities {
             realization_kinds: [CredentialRealizationKind::PlatformProviderAdapter]
                 .into_iter()
                 .collect(),

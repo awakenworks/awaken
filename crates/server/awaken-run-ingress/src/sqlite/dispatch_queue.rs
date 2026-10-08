@@ -26,7 +26,7 @@ async fn first_admissible_in_band(
     bind_now: bool,
     terminal_resolution: bool,
     now_ms: u64,
-    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<String>, DispatchError> {
     let mut query = sqlx::query_as::<_, (String, String, i64, i64)>(sql);
     if bind_now {
@@ -56,7 +56,7 @@ async fn select_claim_band(
     p: &str,
     quiescent_only: bool,
     now_ms: u64,
-    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<String>, DispatchError> {
     let physical_eligible = if quiescent_only {
         "d.active_attempt_owner IS NULL AND d.active_attempt_epoch IS NULL"
@@ -331,7 +331,7 @@ impl DispatchQueue for SqliteDispatchStore {
         request: RunDispatch,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let now_ms = self.clock.now_ms();
         let run_id = request.run_id().0.clone();
@@ -423,7 +423,7 @@ impl DispatchQueue for SqliteDispatchStore {
         input: PendingInput,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let now_ms = self.clock.now_ms();
         let input = normalize_pending_millis(input);
@@ -484,7 +484,7 @@ impl DispatchQueue for SqliteDispatchStore {
         &self,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let now_ms = self.clock.now_ms();
         let (_authority, mut conn) = self.with_conn().await?;
@@ -607,7 +607,7 @@ impl DispatchQueue for SqliteDispatchStore {
         requested_run: &RunId,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let now_ms = self.clock.now_ms();
         let (_authority, mut conn) = self.with_conn().await?;

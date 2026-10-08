@@ -116,7 +116,7 @@ impl AcpLaunchRegistry {
     pub(crate) fn credential_realization_capabilities(
         &self,
         backend: &awaken_runtime_contract::resolved::Backend,
-    ) -> Result<awaken_runtime_contract::CredentialRealizationCapabilities, OpenError> {
+    ) -> Result<awaken_credential_contract::CredentialRealizationCapabilities, OpenError> {
         Ok(self
             .selected(backend)?
             .resolver
@@ -147,7 +147,7 @@ impl LaunchSource {
     pub(crate) fn credential_realization_capabilities(
         &self,
         backend: &awaken_runtime_contract::resolved::Backend,
-    ) -> Result<awaken_runtime_contract::CredentialRealizationCapabilities, OpenError> {
+    ) -> Result<awaken_credential_contract::CredentialRealizationCapabilities, OpenError> {
         match self {
             Self::Fixed(_) | Self::FixedAcp(_) => Ok(Default::default()),
             Self::Projected(registry) => registry.credential_realization_capabilities(backend),

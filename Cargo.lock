@@ -252,6 +252,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-acp-contract",
+ "awaken-credential-contract",
  "awaken-credential-vault",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
@@ -1028,6 +1029,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-run-ingress",
  "awaken-run-ingress-contract",
  "awaken-runtime-contract",
@@ -1042,6 +1044,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-observability",
@@ -2253,6 +2256,7 @@ dependencies = [
  "async-nats",
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-dispatch-erasure",
  "awaken-dispatch-execution",
  "awaken-lease-testkit",
@@ -2300,6 +2304,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-environment-contract",
  "awaken-lease-contract",
  "awaken-provisioning-contract",
@@ -2326,6 +2331,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-environment-contract",
  "awaken-file-store",
  "awaken-lease-contract",
@@ -2377,6 +2383,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-lease-testkit",
  "awaken-run-ingress-contract",
  "awaken-runtime-contract",
@@ -3017,6 +3024,7 @@ dependencies = [
  "async-trait",
  "awaken-acp-contract",
  "awaken-agent-channel",
+ "awaken-credential-contract",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
  "awaken-tool-contract",
@@ -3558,6 +3566,7 @@ dependencies = [
  "awaken-acp-contract",
  "awaken-authority-clock",
  "awaken-container-contract",
+ "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-environment-contract",
  "awaken-execution-composition",
@@ -3645,6 +3654,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-dispatch-execution",
  "awaken-lease-testkit",
  "awaken-outbound-http",

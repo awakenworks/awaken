@@ -259,7 +259,7 @@ impl MemoryRuntime {
         let snapshot = &intent.extractor;
         if let Some(materializer) = self.inference_materializer.as_ref() {
             let holder =
-                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
+                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
                     .inference_holder;
             let model = &snapshot.agent.resolved_spec.model_binding;
             let bindings = awaken_runtime_contract::compile_candidate_credential_bindings(

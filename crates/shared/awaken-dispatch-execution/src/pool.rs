@@ -76,7 +76,7 @@ pub trait WorkerResolver<S>: Send + Sync {
     /// the server and do not route through this local pool seam.
     fn credential_realization_capabilities(
         &self,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+    ) -> awaken_credential_contract::CredentialRealizationCapabilities {
         Default::default()
     }
 

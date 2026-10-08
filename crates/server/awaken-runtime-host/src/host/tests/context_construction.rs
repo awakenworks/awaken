@@ -156,7 +156,7 @@ impl AcpSessionExecutorFactory for FaultFactory {
     fn credential_realization_capabilities(
         &self,
         backend: &awaken_runtime_contract::resolved::Backend,
-    ) -> Result<awaken_runtime_contract::CredentialRealizationCapabilities, String> {
+    ) -> Result<awaken_credential_contract::CredentialRealizationCapabilities, String> {
         self.inner.credential_realization_capabilities(backend)
     }
 }

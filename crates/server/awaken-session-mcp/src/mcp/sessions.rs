@@ -460,7 +460,7 @@ impl McpSessions {
                     // `None` is the pre-receipt-discriminator legacy form. It
                     // remains safe only through the same exact staged relay;
                     // it can never fall through to process injection.
-                    Some(awaken_runtime_contract::CredentialRealizationKind::WorkerRelay)
+                    Some(awaken_credential_contract::CredentialRealizationKind::WorkerRelay)
                     | None => {
                         let relay = self.relay.get().ok_or_else(|| {
                             McpError::internal("authenticated MCP generation has no staged relay")
@@ -472,7 +472,7 @@ impl McpSessions {
                         }
                     }
                     Some(
-                        awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
+                        awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
                     ) => {}
                     _ => {
                         return Err(McpError::internal(

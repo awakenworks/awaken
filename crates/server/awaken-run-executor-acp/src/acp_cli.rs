@@ -11,8 +11,9 @@ use crate::discovery_spec::{
     AcpDiscoverySpec, AcpLoginProbe, AcpLoginRule, AcpProbeCommand, AcpProbePredicate, AcpVersion,
 };
 use crate::{AcpLaunch, AcpLaunchIdentity, OpenError};
+use awaken_credential_contract::CredentialObservationState;
 use awaken_provisioning_contract as pc;
-use awaken_runtime_contract::{CredentialObservationState, resolved::BackendModelSelection};
+use awaken_runtime_contract::resolved::BackendModelSelection;
 
 mod acquisition;
 mod catalog;

@@ -87,7 +87,7 @@ mod tests {
                 awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
             ),
             selected_realization_kind:
-                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+                awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
             claim_epoch: 1,
         })
     }

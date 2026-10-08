@@ -99,7 +99,7 @@ fn reject_worker_supplied_execution_binding(
 
 fn installed_worker_credential_capabilities(
     worker: &WorkerSnapshot,
-) -> Result<awaken_runtime_contract::CredentialRealizationCapabilities, DispatchError> {
+) -> Result<awaken_credential_contract::CredentialRealizationCapabilities, DispatchError> {
     worker_credential_realization_capabilities(worker)
         .map_err(|error| DispatchError::Rejected(error.to_string()))
 }
@@ -489,7 +489,7 @@ impl DispatchQueue for HttpDispatchQueue {
         request: RunDispatch,
         _owner: &str,
         lease_ms: u64,
-        _capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        _capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let value = self
             .post(
@@ -533,7 +533,7 @@ impl DispatchQueue for HttpDispatchQueue {
         input: PendingInput,
         _owner: &str,
         lease_ms: u64,
-        _capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        _capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let value = self
             .post(
@@ -576,7 +576,7 @@ impl DispatchQueue for HttpDispatchQueue {
         &self,
         _owner: &str,
         lease_ms: u64,
-        _capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        _capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let v = self
             .post(
@@ -638,7 +638,7 @@ impl DispatchQueue for HttpDispatchQueue {
         run_id: &RunId,
         _owner: &str,
         lease_ms: u64,
-        _capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        _capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let value = self
             .post(

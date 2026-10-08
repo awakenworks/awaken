@@ -135,7 +135,7 @@ impl CredentialInferenceMaterializer {
     #[must_use]
     pub fn new<A>(local_authority: Arc<A>, clock: Arc<dyn awaken_time::WallClock>) -> Self
     where
-        A: awaken_runtime_contract::CredentialMaterialResolver
+        A: awaken_credential_contract::CredentialMaterialResolver
             + awaken_provisioning_contract::SecretBroker
             + 'static,
     {
@@ -221,7 +221,7 @@ impl CredentialInferenceMaterializer {
             .materialize_claimed_provider(
                 candidate,
                 context,
-                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+                awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
             )
             .await?;
         if endpoint.upstream_model.is_empty() {
@@ -406,7 +406,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
 
     fn credential_realization_capabilities(
         &self,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+    ) -> awaken_credential_contract::CredentialRealizationCapabilities {
         self.credentials.provider_adapter_capabilities()
     }
 
@@ -452,7 +452,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
                     })?;
                 if binding.credential != access.credential
                     || binding.selected_realization_kind
-                        != awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter
+                        != awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter
                 {
                     return Err(
                         "attempt credential binding differs from Native materializer".into(),
@@ -799,13 +799,13 @@ mod tests {
     fn neutral_materializer() -> CredentialInferenceMaterializer {
         struct NoCredentialAccess;
         #[async_trait]
-        impl awaken_runtime_contract::CredentialMaterialResolver for NoCredentialAccess {
+        impl awaken_credential_contract::CredentialMaterialResolver for NoCredentialAccess {
             async fn resolve_exact(
                 &self,
-                _: awaken_runtime_contract::CredentialMaterialRequest<'_>,
+                _: awaken_credential_contract::CredentialMaterialRequest<'_>,
             ) -> Result<
-                awaken_runtime_contract::ResolvedCredentialMaterial,
-                awaken_runtime_contract::CredentialMaterialError,
+                awaken_credential_contract::ResolvedCredentialMaterial,
+                awaken_credential_contract::CredentialMaterialError,
             > {
                 panic!("brokered inference must not read local or external Provider credentials")
             }

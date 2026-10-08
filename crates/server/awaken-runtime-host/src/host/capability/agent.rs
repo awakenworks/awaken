@@ -26,7 +26,7 @@ pub(crate) struct AgentExecution {
     pub(crate) remote_attempt_executor:
         Option<Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>>,
     pub(crate) remote_credential_realization:
-        awaken_runtime_contract::CredentialRealizationCapabilities,
+        awaken_credential_contract::CredentialRealizationCapabilities,
     pub(crate) judge_snapshot: Option<ExecutableAgentSnapshot>,
     /// Runtime-only view of immutable Agent publications.
     pub(crate) agent_publications:

@@ -678,7 +678,7 @@ mod completion_tests {
                 hosts: vec!["api.example.test".into()],
             },
             credential_realization:
-                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
         }
     }
 

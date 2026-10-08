@@ -57,8 +57,9 @@ pub(crate) fn acp_mcp_client_injection_capabilities(
     >,
     cli: &str,
     http_transport: bool,
-) -> Option<awaken_runtime_contract::CredentialRealizationCapabilities> {
-    use awaken_runtime_contract::{CredentialRealizationKind, PlaintextBoundary};
+) -> Option<awaken_credential_contract::CredentialRealizationCapabilities> {
+    use awaken_credential_contract::CredentialRealizationKind;
+    use awaken_runtime_contract::PlaintextBoundary;
 
     let delivery = awaken_credential_contract::select_mcp_credential_delivery(
         PlaintextBoundary::Workload,
@@ -68,7 +69,7 @@ pub(crate) fn acp_mcp_client_injection_capabilities(
         return None;
     }
     let holder =
-        awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp().mcp_holder;
+        awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp().mcp_holder;
     let mut capabilities = materializer
         .realization_capabilities(holder, CredentialRealizationKind::ProcessProtocolField);
     if capabilities.is_empty() {
@@ -77,7 +78,7 @@ pub(crate) fn acp_mcp_client_injection_capabilities(
     capabilities.extension_consumers.insert(
         format!(
             "{}acp:{cli}",
-            awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX
+            awaken_credential_contract::ACP_CREDENTIAL_CONSUMER_PREFIX
         ),
         [ACP_MCP_CLIENT_INJECTION_MATERIAL_TYPE.to_string()]
             .into_iter()
@@ -125,7 +126,7 @@ impl SharedHost {
     /// one declaration; neither may infer custody from only the Native adapter.
     pub(crate) fn local_credential_realization_capabilities(
         &self,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+    ) -> awaken_credential_contract::CredentialRealizationCapabilities {
         let mut profiles = vec![
             self.agent
                 .inference_routing
@@ -146,9 +147,9 @@ impl SharedHost {
             // not a widening of WorkerRelay custody.
             profiles.push(
                 materializer.realization_capabilities(
-                    awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
+                    awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
                         .resource_holder,
-                    awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
+                    awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
                 ),
             );
             if let Some(acp) = &self.exec.acp {
@@ -180,7 +181,7 @@ impl SharedHost {
                 }
             }));
         }
-        awaken_runtime_contract::CredentialRealizationCapabilities::alternatives(profiles)
+        awaken_credential_contract::CredentialRealizationCapabilities::alternatives(profiles)
     }
 }
 
@@ -188,11 +189,11 @@ impl SharedHost {
 mod tests {
     use std::sync::Arc;
 
-    use awaken_runtime_contract::{
+    use awaken_credential_contract::{
         CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
-        CredentialMaterialSource, CredentialRealizationKind, PlaintextBoundary, PlaintextHolder,
-        ResolvedCredentialMaterial,
+        CredentialRealizationKind, ResolvedCredentialMaterial,
     };
+    use awaken_runtime_contract::{CredentialMaterialSource, PlaintextBoundary, PlaintextHolder};
 
     struct ControlReferenceResolver;
 
@@ -200,7 +201,7 @@ mod tests {
     impl CredentialMaterialResolver for ControlReferenceResolver {
         fn material_capabilities(
             &self,
-        ) -> std::collections::BTreeSet<awaken_runtime_contract::CredentialMaterialCapability>
+        ) -> std::collections::BTreeSet<awaken_credential_contract::CredentialMaterialCapability>
         {
             let mut profiles = std::collections::BTreeSet::new();
             for holder in [
@@ -213,7 +214,7 @@ mod tests {
                     "awaken.workload.acp",
                 ),
             ] {
-                profiles.insert(awaken_runtime_contract::CredentialMaterialCapability {
+                profiles.insert(awaken_credential_contract::CredentialMaterialCapability {
                     holder,
                     source: CredentialMaterialSource::ControlPlaneReference,
                     envelope: false,
@@ -231,7 +232,7 @@ mod tests {
     }
 
     fn has_worker_relay(
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> bool {
         std::iter::once(capabilities)
             .chain(capabilities.alternatives.iter())
@@ -249,18 +250,18 @@ mod tests {
     }
 
     fn has_acp_mcp_client_injection(
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
         backend_ref: &str,
     ) -> bool {
         let consumer = format!(
             "{}{backend_ref}",
-            awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX
+            awaken_credential_contract::ACP_CREDENTIAL_CONSUMER_PREFIX
         );
         std::iter::once(capabilities)
             .chain(capabilities.alternatives.iter())
             .any(|profile| {
                 profile.holders.contains(
-                    &awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp()
+                    &awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp()
                         .mcp_holder,
                 ) && profile
                     .material_sources

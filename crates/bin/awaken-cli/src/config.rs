@@ -107,7 +107,7 @@ mod tests {
             version: (detection == awaken_acp_application::AcpDetectionState::Detected)
                 .then(|| "1.0".to_string()),
             credential_state: (detection == awaken_acp_application::AcpDetectionState::Detected)
-                .then_some(awaken_runtime_contract::CredentialObservationState::Available),
+                .then_some(awaken_credential_contract::CredentialObservationState::Available),
             reason_code: Some("fixture".to_string()),
             capability_state: (detection == awaken_acp_application::AcpDetectionState::Detected)
                 .then_some(awaken_acp_application::AcpCapabilityState::Verified),

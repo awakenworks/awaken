@@ -812,19 +812,20 @@ fn remote_credential_activation(run_id: &str) -> RunActivation {
     activation
 }
 
-fn remote_credential_capabilities() -> awaken_runtime_contract::CredentialRealizationCapabilities {
+fn remote_credential_capabilities() -> awaken_credential_contract::CredentialRealizationCapabilities
+{
     let holder = awaken_runtime_contract::PlaintextHolder::new(
         awaken_runtime_contract::PlaintextBoundary::Worker,
         awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
     );
-    awaken_runtime_contract::CredentialRealizationCapabilities {
+    awaken_credential_contract::CredentialRealizationCapabilities {
         holders: [holder].into_iter().collect(),
         material_sources: [
             awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
         ]
         .into_iter()
         .collect(),
-        realization_kinds: [awaken_runtime_contract::CredentialRealizationKind::WorkerRelay]
+        realization_kinds: [awaken_credential_contract::CredentialRealizationKind::WorkerRelay]
             .into_iter()
             .collect(),
         ..Default::default()
@@ -1122,7 +1123,7 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
         system_clock(),
     )
     .with_local_credential_capabilities(
-        awaken_runtime_contract::CredentialRealizationCapabilities {
+        awaken_credential_contract::CredentialRealizationCapabilities {
             holders: [holder.clone()].into_iter().collect(),
             material_sources: [
                 awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
@@ -1130,7 +1131,7 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
             .into_iter()
             .collect(),
             realization_kinds: [
-                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+                awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
             ]
             .into_iter()
             .collect(),
@@ -2314,7 +2315,7 @@ async fn authenticated_remote_cancellation_receives_only_its_current_claim_bindi
         assert_eq!(bindings[0].claim_epoch, 1, "R1/E1");
         assert_eq!(
             bindings[0].selected_realization_kind,
-            awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
+            awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
             "R1/E1"
         );
     }

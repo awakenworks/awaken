@@ -6,10 +6,10 @@
 //! current ownership, plaintext access, and the corresponding durable receipt.
 
 use awaken_agent_contract::RedactedString;
+use awaken_credential_contract::CredentialRealizationKind;
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
 use awaken_runtime_contract::{
     AttemptCredentialBinding, AttemptCredentialRealization, CredentialAccess,
-    CredentialRealizationKind,
 };
 
 use super::PinnedCredentialMaterializer;
@@ -151,7 +151,7 @@ impl PinnedCredentialMaterializer {
         candidate: &ResolvedModelCandidate,
         context: &awaken_runtime_contract::RuntimeRunContext,
         expected_kind: CredentialRealizationKind,
-    ) -> Result<Option<awaken_runtime_contract::CredentialMaterial>, String> {
+    ) -> Result<Option<awaken_credential_contract::CredentialMaterial>, String> {
         let Some((access, binding)) = Self::claimed_provider_binding(candidate, context)? else {
             return Ok(None);
         };

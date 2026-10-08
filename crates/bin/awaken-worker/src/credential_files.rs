@@ -12,10 +12,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use awaken_credential_contract::{
+    CredentialMaterial, CredentialMaterialError, CredentialMaterialRequest,
+    CredentialMaterialResolver, ResolvedCredentialMaterial, StructuredCredentialMaterial,
+};
 use awaken_runtime_contract::{
-    CredentialEnvelope, CredentialMaterial, CredentialMaterialError, CredentialMaterialRequest,
-    CredentialMaterialResolver, CredentialMaterialSource, CredentialUsage, PlaintextHolder,
-    RedactedString, ResolvedCredentialMaterial, StructuredCredentialMaterial,
+    CredentialEnvelope, CredentialMaterialSource, CredentialUsage, PlaintextHolder, RedactedString,
 };
 
 #[path = "worker_projection.rs"]
@@ -129,7 +131,7 @@ fn hex_component(value: &str) -> String {
 impl CredentialMaterialResolver for WorkerCredentialFileResolver {
     fn material_capabilities(
         &self,
-    ) -> BTreeSet<awaken_runtime_contract::CredentialMaterialCapability> {
+    ) -> BTreeSet<awaken_credential_contract::CredentialMaterialCapability> {
         [
             (
                 awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
@@ -142,7 +144,7 @@ impl CredentialMaterialResolver for WorkerCredentialFileResolver {
         ]
         .into_iter()
         .map(
-            |(source, envelope)| awaken_runtime_contract::CredentialMaterialCapability {
+            |(source, envelope)| awaken_credential_contract::CredentialMaterialCapability {
                 holder: self.holder.clone(),
                 source,
                 envelope,
@@ -193,7 +195,7 @@ impl CredentialMaterialResolver for WorkerCredentialFileResolver {
         let material = match &request.access.usage {
             CredentialUsage::HttpBasicAuth => {
                 CredentialMaterial::Structured(StructuredCredentialMaterial {
-                    type_id: awaken_runtime_contract::credential::HTTP_BASIC_MATERIAL_TYPE.into(),
+                    type_id: awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE.into(),
                     fields: BTreeMap::from([
                         (
                             "username".into(),
@@ -223,10 +225,10 @@ impl CredentialMaterialResolver for WorkerCredentialFileResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_credential_contract::CredentialMaterialBinding;
     use awaken_runtime_contract::{
-        CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialBinding,
-        CredentialRef, ModelExposurePolicy, PlaintextBoundary, SealedCredentialEnvelopeRef,
-        TrustDomainRef,
+        CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialRef,
+        ModelExposurePolicy, PlaintextBoundary, SealedCredentialEnvelopeRef, TrustDomainRef,
     };
 
     fn temp_root(tag: &str) -> PathBuf {
@@ -283,7 +285,7 @@ mod tests {
         // Both the decoded production declaration and the actual file resolver
         // must match R1/R2/R3. Comparing only the two results would let a blanket
         // rejection incorrectly pass the positive rows.
-        use awaken_runtime_contract::{
+        use awaken_credential_contract::{
             CredentialRealizationCapabilities, CredentialRealizationKind,
         };
         use std::sync::Arc;
@@ -482,7 +484,7 @@ mod tests {
         };
         assert_eq!(
             material.type_id,
-            awaken_runtime_contract::credential::HTTP_BASIC_MATERIAL_TYPE,
+            awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
             "R3"
         );
         assert_eq!(

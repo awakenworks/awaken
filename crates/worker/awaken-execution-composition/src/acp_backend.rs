@@ -79,7 +79,7 @@ impl AcpSessionExecutorFactory for BoundAcpSessionFactory {
     fn credential_realization_capabilities(
         &self,
         backend: &Backend,
-    ) -> Result<awaken_runtime_contract::CredentialRealizationCapabilities, String> {
+    ) -> Result<awaken_credential_contract::CredentialRealizationCapabilities, String> {
         self.launch
             .credential_realization_capabilities(backend)
             .map_err(|error| error.to_string())

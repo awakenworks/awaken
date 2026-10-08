@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use crate::{AcpCli, AcpProbeCommand, AcpProbePredicate, AcpVersion, known_acp_clis};
 use async_trait::async_trait;
-use awaken_runtime_contract::CredentialObservationState;
+use awaken_credential_contract::CredentialObservationState;
 use tokio::process::Command;
 
 use super::AcpCapabilityState;

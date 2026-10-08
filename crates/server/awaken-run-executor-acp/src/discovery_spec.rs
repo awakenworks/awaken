@@ -3,7 +3,7 @@
 //! These are inert catalog values. The Worker application owns process I/O,
 //! classification, refresh and observation publication.
 
-use awaken_runtime_contract::CredentialObservationState;
+use awaken_credential_contract::CredentialObservationState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcpProbeCommand {

@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use awaken_runtime_contract::CredentialRealizationCapabilities;
+use awaken_credential_contract::CredentialRealizationCapabilities;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::{Backend, ResolvedModelCandidate};

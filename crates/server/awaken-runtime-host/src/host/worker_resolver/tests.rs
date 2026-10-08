@@ -1154,7 +1154,7 @@ fn ordinary_frozen_projection() -> awaken_session_realization_contract::FrozenSe
             packages: Default::default(),
             prepared_image: None,
             network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
-            credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
+            credential_realization: awaken_credential_contract::CredentialRealizationProfile {
                 inference_holder: holder.clone(),
                 mcp_holder: holder.clone(),
                 resource_holder: holder,

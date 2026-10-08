@@ -7,12 +7,12 @@ use awaken_config_resolver::{
     CredentialCandidateSet, CredentialSelectionContext, credential_candidates, derive_vendor_pool,
 };
 use awaken_config_service::PublicationResolutionError;
+use awaken_credential_contract::CredentialMaterialBinding;
 use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
 use awaken_credential_vault::{
     CredentialBinding, CredentialKind, CredentialSource, CredentialStatus,
     ExactCredentialAccessRequest, compile_exact_credential_access,
 };
-use awaken_runtime_contract::CredentialMaterialBinding;
 use awaken_runtime_contract::resolved::{Backend, ModelBinding, ResolvedModelCandidate};
 use awaken_tenancy::ScopeId;
 

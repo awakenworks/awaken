@@ -19,5 +19,5 @@ pub(crate) struct WorkerTransports {
     /// Sole adapter for opaque credentials owned by this Worker process. Control
     /// and Session code retain only exact non-secret references.
     pub(crate) worker_credential_resolver:
-        Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
+        Option<Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>>,
 }
