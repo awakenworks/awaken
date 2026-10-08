@@ -450,7 +450,7 @@ impl ManagedState {
             if let Some(recorded) = event
                 .source_tool_call_id
                 .as_deref()
-                .and_then(|call_id| record.permission_decisions.get(call_id))
+                .and_then(|call_id| record.recorded_permission(owner_thread_id, call_id))
             {
                 match &mut event.kind {
                     OutboundKind::AgentToolUse {

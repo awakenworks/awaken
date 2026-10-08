@@ -261,7 +261,9 @@ pub(super) struct SessionRecord {
     /// decision beside the transcript lets the projection report the recorded
     /// answer instead of inferring one from the shape of the result — an
     /// inference that read a refusal as a permission.
-    pub(super) permission_decisions: HashMap<String, crate::types::session::RecordedPermission>,
+    /// Recorded gate decisions keyed by `(thread_id, call_id)`.
+    pub(super) permission_decisions:
+        HashMap<(String, String), crate::types::session::RecordedPermission>,
     /// Disposable visibility owner for transcript-derived events. Most entries
     /// name the child whose local stream owns the event; advisor advice names the
     /// primary because the official wire excludes that delivery from the
@@ -448,6 +450,18 @@ impl SessionRecord {
             &self.event_thread_owners,
         );
         true
+    }
+
+    /// The gate's recorded decision for one call of `owner_thread_id` (the
+    /// primary Thread when `None`). Call ids are unique only within a Thread.
+    pub(super) fn recorded_permission(
+        &self,
+        owner_thread_id: Option<&str>,
+        call_id: &str,
+    ) -> Option<&crate::types::session::RecordedPermission> {
+        let thread_id = owner_thread_id.unwrap_or(&self.session.id);
+        self.permission_decisions
+            .get(&(thread_id.to_string(), call_id.to_string()))
     }
 
     pub(super) fn has_event_id(&mut self, event_id: &str) -> bool {
