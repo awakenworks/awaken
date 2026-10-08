@@ -147,6 +147,14 @@ pub(super) async fn plane(path: &str) -> ConfigPlane {
     plane_with_catalog(path).await.0
 }
 pub(super) async fn plane_with_catalog(path: &str) -> (ConfigPlane, Arc<ExecutableAgentCatalog>) {
+    plane_with_store(Arc::new(
+        SqliteConfigStore::open(path).await.expect("config store"),
+    ))
+}
+
+pub(super) fn plane_with_store(
+    store: Arc<dyn awaken_agent_config::ScopedConfigRegistry>,
+) -> (ConfigPlane, Arc<ExecutableAgentCatalog>) {
     let catalog = Arc::new(ExecutableAgentCatalog::new());
     (
         ConfigPlane::new(
@@ -154,7 +162,7 @@ pub(super) async fn plane_with_catalog(path: &str) -> (ConfigPlane, Arc<Executab
                 Arc::new(TestModelResolver),
                 Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
             )),
-            Arc::new(SqliteConfigStore::open(path).await.expect("config store")),
+            store,
             Arc::new(StaticToolCatalog(Vec::new())),
         ),
         catalog,

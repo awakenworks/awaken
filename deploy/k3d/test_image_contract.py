@@ -135,6 +135,28 @@ def main() -> None:
         )
 
     product_marker = "kind: Job\nmetadata:\n  name: awaken-worker"
+    # Persistent Worker recovery cause/effect rules: PR1 a lease/transport loss
+    # closes the existing local authority and exits nonzero; PR2 repeated exits
+    # exceed the old finite Job backoff; PR3 Kubernetes disrupts a Pod before a
+    # container exit is available. Effects: one fresh non-restarting Pod UID is
+    # created by the native Job controller; neither PR1 nor PR3 spends the Job's
+    # failure budget. Original process evidence, drain and lease gates remain.
+    # PR4 missing/Count/In policy => reject this deployment before apply. This
+    # shape gate complements the live controller replacement witness; it does
+    # not claim that a new Pod or a timer proves old execution has settled.
+    def worker_replacement_contract(resources_text: str) -> bool:
+        worker = resources_text.split(product_marker, 1)[1].split("\n---", 1)[0]
+        return (
+            "restartPolicy: Never" in worker
+            and "podFailurePolicy:" in worker
+            and re.search(r"action: Ignore\s+onExitCodes:\s+containerName: worker\s+operator: NotIn\s+values: \[0\]", worker) is not None
+            and re.search(r"action: Ignore\s+onPodConditions:\s+- type: DisruptionTarget", worker) is not None
+            and "activeDeadlineSeconds:" not in worker
+        )
+
+    assert worker_replacement_contract(product_resources), "persistent Worker failures must not exhaust Job retries"
+    assert not worker_replacement_contract(product_resources.replace("action: Ignore", "action: Count"))
+    assert not worker_replacement_contract(product_resources.replace("operator: NotIn", "operator: In"))
     distributed_marker = "kind: StatefulSet\nmetadata: { name: worker, labels: { app: worker } }"
     assert worker_retirement_contract(product_resources, product_marker)
     assert worker_retirement_contract(resources, distributed_marker)

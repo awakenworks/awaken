@@ -311,25 +311,31 @@ impl ConfigPlane {
             .contains(&(agent_id.to_owned(), revision)))
     }
 
+    /// Read the existing durable publication collection once for one owner.
+    /// Request-local projections may share this read across several revision
+    /// lookups; they never become a cache or another publication authority.
+    pub async fn publications(&self, scope: &ScopeId) -> Result<Vec<StoredPublication>, String> {
+        self.store
+            .list_published_scoped(scope)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     /// Read the durable publication index once for a whole authoring list.
     /// Only exact published revisions qualify; a newer draft is not published.
     pub(crate) async fn published_revisions(
         &self,
         scope: &ScopeId,
     ) -> Result<HashSet<(String, u64)>, String> {
-        self.store
-            .list_published_scoped(scope)
-            .await
-            .map(|publications| {
-                publications
-                    .into_iter()
-                    .filter(|publication| {
-                        publication.state == awaken_agent_config::PublicationState::Published
-                    })
-                    .map(|publication| (publication.agent_id, publication.source_revision))
-                    .collect()
-            })
-            .map_err(|error| error.to_string())
+        self.publications(scope).await.map(|publications| {
+            publications
+                .into_iter()
+                .filter(|publication| {
+                    publication.state == awaken_agent_config::PublicationState::Published
+                })
+                .map(|publication| (publication.agent_id, publication.source_revision))
+                .collect()
+        })
     }
 
     /// Latest durable publication for one Agent in the authoring scope. This is
@@ -339,16 +345,12 @@ impl ConfigPlane {
         scope: &ScopeId,
         agent_id: &str,
     ) -> Result<Option<StoredPublication>, String> {
-        self.store
-            .list_published_scoped(scope)
-            .await
-            .map(|publications| {
-                publications
-                    .into_iter()
-                    .filter(|publication| publication.agent_id == agent_id)
-                    .max_by_key(|publication| publication.source_revision)
-            })
-            .map_err(|error| error.to_string())
+        self.publications(scope).await.map(|publications| {
+            publications
+                .into_iter()
+                .filter(|publication| publication.agent_id == agent_id)
+                .max_by_key(|publication| publication.source_revision)
+        })
     }
 
     /// Exact durable publication produced from one authoring revision.
@@ -377,8 +379,7 @@ impl ConfigPlane {
         agent_id: &str,
         source_revision: u64,
     ) -> Result<Option<StoredPublication>, String> {
-        self.store
-            .list_published_scoped(configuration_scope)
+        self.publications(configuration_scope)
             .await
             .map(|publications| {
                 publications.into_iter().find(|publication| {
@@ -387,7 +388,6 @@ impl ConfigPlane {
                         && publication.targets_execution_workspace(execution_workspace)
                 })
             })
-            .map_err(|error| error.to_string())
     }
 
     /// Every stored config draft owned by `scope`.

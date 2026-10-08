@@ -34,6 +34,9 @@ use awaken_time::WallClock;
 
 mod lifecycle_identity;
 mod projection;
+mod publications;
+#[cfg(test)]
+mod read_tests;
 #[cfg(test)]
 mod test_support;
 use lifecycle_identity::{lifecycle_timestamp_at, new_agent_id};
@@ -41,6 +44,7 @@ use projection::{
     acp_configuration_to_preserve, client_tools, config_from_create, project, register_roster_name,
     typed_mcp_servers, typed_multiagent, typed_skills, validate_managed_agent_config,
 };
+use publications::ManagedAgentPublications;
 
 pub struct ConfigPlaneManagedAgentRepository {
     plane: ConfigPlane,
@@ -84,40 +88,23 @@ impl ConfigPlaneManagedAgentRepository {
         ScopeId::from(workspace_id)
     }
 
-    async fn publication_for_read(
+    async fn publications_for_read(
         &self,
         workspace_id: &str,
-        agent_id: &str,
-        source_revision: u64,
-    ) -> Result<Option<awaken_agent_config::StoredPublication>, ManagedAgentError> {
-        let direct = self
-            .plane
-            .publication_at_revision_for_execution_workspace(
-                &Self::scope(workspace_id),
-                workspace_id,
-                agent_id,
-                source_revision,
-            )
-            .await
-            .map_err(ManagedAgentError::Storage)?;
-        if direct.is_some() || !self.reserved_visible_in(workspace_id) {
-            return Ok(direct);
-        }
-        self.plane
-            .publication_at_revision_for_execution_workspace(
-                &ScopeId::from(RESERVED_ADMIN_SCOPE),
-                workspace_id,
-                agent_id,
-                source_revision,
-            )
-            .await
-            .map_err(ManagedAgentError::Storage)
+    ) -> Result<ManagedAgentPublications, ManagedAgentError> {
+        ManagedAgentPublications::read(
+            &self.plane,
+            workspace_id,
+            self.reserved_visible_in(workspace_id),
+        )
+        .await
     }
 
     async fn versioned_for_read(
         &self,
         workspace_id: &str,
         id: &str,
+        publications: &ManagedAgentPublications,
     ) -> Result<Option<AgentConfigRevision>, ManagedAgentError> {
         if workspace_id == RESERVED_ADMIN_SCOPE {
             return Ok(None);
@@ -129,10 +116,7 @@ impl ConfigPlaneManagedAgentRepository {
             .map_err(ManagedAgentError::Storage)?;
         if let Some(current) = current {
             if current.config.lifecycle() != AgentLifecycle::Published
-                || self
-                    .publication_for_read(workspace_id, id, current.revision)
-                    .await?
-                    .is_some()
+                || publications.get(id, current.revision).await?.is_some()
             {
                 return Ok(Some(current));
             }
@@ -149,10 +133,7 @@ impl ConfigPlaneManagedAgentRepository {
             revisions.sort_by_key(|revision| revision.revision);
             for revision in revisions.into_iter().rev() {
                 if revision.config.lifecycle() == AgentLifecycle::Published
-                    && self
-                        .publication_for_read(workspace_id, id, revision.revision)
-                        .await?
-                        .is_some()
+                    && publications.get(id, revision.revision).await?.is_some()
                 {
                     return Ok(Some(revision));
                 }
@@ -170,8 +151,8 @@ impl ConfigPlaneManagedAgentRepository {
         let Some(reserved) = reserved else {
             return Ok(None);
         };
-        Ok(self
-            .publication_for_read(workspace_id, id, reserved.revision)
+        Ok(publications
+            .get(id, reserved.revision)
             .await?
             .is_some()
             .then_some(reserved))
@@ -179,11 +160,11 @@ impl ConfigPlaneManagedAgentRepository {
 
     async fn project_current(
         &self,
-        workspace_id: &str,
+        publications: &ManagedAgentPublications,
         mut revision: AgentConfigRevision,
     ) -> Result<Agent, ManagedAgentError> {
-        if let Some(publication) = self
-            .publication_for_read(workspace_id, &revision.config.id, revision.revision)
+        if let Some(publication) = publications
+            .get(&revision.config.id, revision.revision)
             .await?
             && matches!(
                 &revision.config.model_binding,
@@ -199,6 +180,50 @@ impl ConfigPlaneManagedAgentRepository {
             revision.config.model_binding = ModelSelection::Pinned(binding);
         }
         project(revision, self.clock.as_ref())
+    }
+
+    async fn versions_for_read(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        requested_version: Option<u64>,
+    ) -> Result<Vec<Agent>, ManagedAgentError> {
+        if workspace_id == RESERVED_ADMIN_SCOPE {
+            return Err(ManagedAgentError::NotFound);
+        }
+        let mut revisions = self
+            .plane
+            .list_revisions(&Self::scope(workspace_id), id)
+            .await
+            .map_err(ManagedAgentError::Storage)?;
+        if revisions.is_empty() && self.reserved_visible_in(workspace_id) {
+            revisions = self
+                .plane
+                .list_revisions(&ScopeId::from(RESERVED_ADMIN_SCOPE), id)
+                .await
+                .map_err(ManagedAgentError::Storage)?;
+        }
+        if revisions.is_empty() {
+            return Err(ManagedAgentError::NotFound);
+        }
+        let publications = self.publications_for_read(workspace_id).await?;
+        let latest_revision = revisions.iter().map(|revision| revision.revision).max();
+        let mut visible = Vec::new();
+        for revision in revisions.into_iter().filter(|revision| {
+            requested_version.is_none_or(|expected| revision.revision == expected)
+        }) {
+            let terminal_current = Some(revision.revision) == latest_revision
+                && revision.config.lifecycle() != AgentLifecycle::Published;
+            let published = revision.config.lifecycle() == AgentLifecycle::Published
+                && publications.get(id, revision.revision).await?.is_some();
+            if terminal_current || published {
+                visible.push(self.project_current(&publications, revision).await?);
+            }
+        }
+        if visible.is_empty() {
+            return Err(ManagedAgentError::NotFound);
+        }
+        Ok(visible)
     }
 
     async fn publish_strict(&self, scope: &ScopeId, id: &str) -> Result<(), ManagedAgentError> {
@@ -241,6 +266,7 @@ impl ConfigPlaneManagedAgentRepository {
                 )));
             }
         }
+        let publications = self.publications_for_read(workspace_id).await?;
         let mut roster_names = BTreeMap::<String, String>::new();
         for target in &mut multiagent.agents {
             if target.is_self_reference() {
@@ -251,7 +277,7 @@ impl ConfigPlaneManagedAgentRepository {
                 continue;
             };
             let current = self
-                .versioned_for_read(workspace_id, id)
+                .versioned_for_read(workspace_id, id, &publications)
                 .await?
                 .ok_or_else(|| {
                     ManagedAgentError::Invalid(format!(
@@ -335,14 +361,15 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         {
             ConfigWrite::Applied { revision } => {
                 self.publish_strict(&scope, &id).await?;
+                let publications = self.publications_for_read(workspace_id).await?;
                 let current = self
-                    .versioned_for_read(workspace_id, &id)
+                    .versioned_for_read(workspace_id, &id, &publications)
                     .await?
                     .ok_or_else(|| {
                         ManagedAgentError::Storage("published Agent is not readable".into())
                     })?;
                 let _ = revision;
-                self.project_current(workspace_id, current).await
+                self.project_current(&publications, current).await
             }
             ConfigWrite::Conflict { .. } => Err(ManagedAgentError::Conflict(
                 "generated Agent id already exists".into(),
@@ -358,17 +385,21 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
     ) -> Result<Agent, ManagedAgentError> {
         if let Some(version) = version {
             return self
-                .versions(workspace_id, id)
+                .versions_for_read(workspace_id, id, Some(version))
                 .await?
                 .into_iter()
-                .find(|revision| revision.version == version)
+                .next()
                 .ok_or(ManagedAgentError::NotFound);
         }
+        if workspace_id == RESERVED_ADMIN_SCOPE {
+            return Err(ManagedAgentError::NotFound);
+        }
+        let publications = self.publications_for_read(workspace_id).await?;
         let revision = self
-            .versioned_for_read(workspace_id, id)
+            .versioned_for_read(workspace_id, id, &publications)
             .await?
             .ok_or(ManagedAgentError::NotFound)?;
-        self.project_current(workspace_id, revision).await
+        self.project_current(&publications, revision).await
     }
 
     async fn list(
@@ -385,12 +416,16 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .list(&scope)
             .await
             .map_err(ManagedAgentError::Storage)?;
+        let publications = self.publications_for_read(workspace_id).await?;
         let mut agents = Vec::with_capacity(configs.len());
         for config in configs {
-            let Some(versioned) = self.versioned_for_read(workspace_id, &config.id).await? else {
+            let Some(versioned) = self
+                .versioned_for_read(workspace_id, &config.id, &publications)
+                .await?
+            else {
                 continue;
             };
-            let agent = self.project_current(workspace_id, versioned).await?;
+            let agent = self.project_current(&publications, versioned).await?;
             if !params.include_archived && agent.archived_at.is_some() {
                 continue;
             }
@@ -538,14 +573,15 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         {
             ConfigWrite::Applied { revision } => {
                 self.publish_strict(&scope, id).await?;
+                let publications = self.publications_for_read(workspace_id).await?;
                 let current = self
-                    .versioned_for_read(workspace_id, id)
+                    .versioned_for_read(workspace_id, id, &publications)
                     .await?
                     .ok_or_else(|| {
                         ManagedAgentError::Storage("published Agent is not readable".into())
                     })?;
                 let _ = revision;
-                self.project_current(workspace_id, current).await
+                self.project_current(&publications, current).await
             }
             ConfigWrite::Conflict { current_revision } => Err(ManagedAgentError::Conflict(
                 format!("Agent changed concurrently (current version: {current_revision:?})"),
@@ -605,42 +641,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         workspace_id: &str,
         id: &str,
     ) -> Result<Vec<Agent>, ManagedAgentError> {
-        if workspace_id == RESERVED_ADMIN_SCOPE {
-            return Err(ManagedAgentError::NotFound);
-        }
-        let mut revisions = self
-            .plane
-            .list_revisions(&Self::scope(workspace_id), id)
-            .await
-            .map_err(ManagedAgentError::Storage)?;
-        if revisions.is_empty() && self.reserved_visible_in(workspace_id) {
-            revisions = self
-                .plane
-                .list_revisions(&ScopeId::from(RESERVED_ADMIN_SCOPE), id)
-                .await
-                .map_err(ManagedAgentError::Storage)?;
-        }
-        if revisions.is_empty() {
-            return Err(ManagedAgentError::NotFound);
-        }
-        let latest_revision = revisions.iter().map(|revision| revision.revision).max();
-        let mut visible = Vec::with_capacity(revisions.len());
-        for revision in revisions {
-            let terminal_current = Some(revision.revision) == latest_revision
-                && revision.config.lifecycle() != AgentLifecycle::Published;
-            let published = revision.config.lifecycle() == AgentLifecycle::Published
-                && self
-                    .publication_for_read(workspace_id, id, revision.revision)
-                    .await?
-                    .is_some();
-            if terminal_current || published {
-                visible.push(self.project_current(workspace_id, revision).await?);
-            }
-        }
-        if visible.is_empty() {
-            return Err(ManagedAgentError::NotFound);
-        }
-        Ok(visible)
+        self.versions_for_read(workspace_id, id, None).await
     }
 }
 

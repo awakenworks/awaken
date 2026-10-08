@@ -136,3 +136,88 @@ grep -q 'awaken.design/backend-access: "true"' "$RENDERED"
 ! grep -Eqi 'deepseek_api_key|provider-secret|api[_-]?key:|secret:' "$RENDERED"
 
 echo "OK - internal Awaken product topology is private, durable, and secret-free."
+
+# Live recovery rule PR1: the canonical Worker Job suffers three nonzero exits
+# with its test failure budget reduced to zero. Effect: native Kubernetes must
+# create three different Pod UIDs, each with zero container restarts, without
+# reaching Failed/FailureTarget. PR2 absent/Count retry policy => the first exit
+# exhausts the Job. This observes the actual controller, not a copied retry loop.
+# The fixture runs only `exit 75`: it never registers, claims, or executes model
+# work. Its projection omits execution credentials and the production evidence
+# finalizer; the static contract above and existing PodProcessObserver tests own
+# that separate authority boundary. Required live mode never silently skips.
+if [[ "${AWAKEN_K8S_E2E:-0}" == 1 ]]; then
+  python3 - "$RENDERED" "${AWAKEN_K8S_E2E_CONTEXT:?explicit live context required}" \
+    "${AWAKEN_K8S_NAMESPACE:?explicit test namespace required}" \
+    "${AWAKEN_K8S_FIXTURE_IMAGE:?exact fixture image required}" <<'PY'
+import json, os, subprocess, sys, time
+
+rendered, context, namespace, image = sys.argv[1:]
+if not context.startswith("k3d-"):
+    raise SystemExit("product recovery witness requires an explicit local k3d context")
+if "@sha256:" not in image:
+    raise SystemExit("product recovery witness requires a digest-pinned image")
+base = ["kubectl", "--context", context, "--namespace", namespace, "--request-timeout=10s"]
+
+def call(*args, input=None):
+    return subprocess.run(base + list(args), input=input, text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          check=True, timeout=30).stdout
+
+stream = call("create", "--dry-run=client", "--validate=false", "-f", rendered, "-o", "json").strip()
+objects = []
+decoder = json.JSONDecoder()
+while stream:
+    item, end = decoder.raw_decode(stream)
+    objects.extend(item["items"] if item.get("kind") == "List" else [item])
+    stream = stream[end:].lstrip()
+job = next(item for item in objects
+           if item["kind"] == "Job" and item["metadata"]["name"] == "awaken-worker")
+name = f"worker-recovery-witness-{os.getpid()}"
+job["metadata"] = {"name": name, "namespace": namespace}
+job["spec"]["backoffLimit"] = 0
+template = job["spec"]["template"]
+template["metadata"] = {"labels": {"awaken.dev/recovery-witness": name}}
+pod = template["spec"]
+pod.pop("serviceAccountName", None)
+pod.pop("volumes", None)
+pod["automountServiceAccountToken"] = False
+container = pod["containers"][0]
+container["image"] = image
+container["imagePullPolicy"] = "IfNotPresent"
+container["command"] = ["/bin/sh", "-c", "exit 75"]
+for key in ["args", "volumeMounts", "ports", "readinessProbe", "lifecycle"]:
+    container.pop(key, None)
+created = False
+try:
+    call("create", "-f", "-", input=json.dumps(job))
+    created = True
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        observed = json.loads(call("get", "job", name, "-o", "json"))
+        status = observed.get("status", {})
+        assert not any(c["type"] in ["Failed", "FailureTarget", "Complete"]
+                       and c.get("status") == "True" for c in status.get("conditions", [])), \
+            f"PR2 Worker recovery exhausted its Job budget: {status}"
+        pods = json.loads(call("get", "pods", "-l", f"job-name={name}", "-o", "json"))["items"]
+        exited = [p for p in pods if p.get("status", {}).get("phase") == "Failed"]
+        if len(exited) >= 3:
+            uids = {p["metadata"]["uid"] for p in exited}
+            assert len(uids) == len(exited), "PR1 every retry needs a fresh Pod UID"
+            for p in exited:
+                containers = p["status"]["containerStatuses"]
+                assert all(c["restartCount"] == 0 for c in containers), "PR1 no same-Pod process restart"
+                assert containers[0]["state"]["terminated"]["exitCode"] == 75, "PR1 injected failure observed"
+            assert status.get("failed", 0) == 0, "PR1 exits must not spend failure budget"
+            print(json.dumps({"rule": "PR1", "context": context, "job": name,
+                              "observedFailedPods": len(exited), "uniquePodUids": sorted(uids),
+                              "countedFailures": status.get("failed", 0)}))
+            break
+        time.sleep(0.5)
+    else:
+        raise AssertionError("PR1 native Job controller did not replace three failed Worker incarnations")
+finally:
+    if created:
+        call("delete", "job", name, "--wait=true", "--timeout=20s")
+PY
+fi
