@@ -11,6 +11,7 @@
     "queued_callers_enter_in_exactly_the_order_they_queued": "ADR-0087: the rusqlite bridge it tested was deleted from awaken-sqlite-pool; its decision table is asserted by pool::tests::pool_queued_callers_enter_in_exactly_the_order_they_queued (F2)"
   },
   "renamed": {
+    "closed_idle_retirement_uses_registry_and_exact_dispatch_owner_without_minting_exit": "legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_a_pod",
     "session_schema_preserves_v1_and_adds_one_deterministic_dependency_index": "session_schema_preserves_v1_and_adds_owned_dependency_and_worker_indexes",
     "signed_database_boundary_is_fail_closed": "sql_bigint_codec_boundaries_are_exact",
     "stored_u64_matches_checked_integer_semantics": "sql_bigint_codec_matches_checked_integer_semantics",
