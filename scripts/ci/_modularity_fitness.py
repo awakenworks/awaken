@@ -1,7 +1,7 @@
-"""Modules inside a crate stay real boundaries; four ratchets that only shrink.
+"""Modules inside a crate stay real boundaries; five ratchets that only shrink.
 
 Plan 9.12 / W22. A module is a boundary only when it owns its state and the
-other modules reach it through a narrow surface. Four ways to lose that, each
+other modules reach it through a narrow surface. Five ways to lose that, each
 counted from production code (comments and `cfg(test)` code are not scanned)
 and held at or below `modularity_baseline.json`:
 
@@ -18,6 +18,10 @@ and held at or below `modularity_baseline.json`:
 * `unreachable-pub`: a crate root declares `#![warn(unreachable_pub)]` (or
   `deny`), so the compiler marks every `pub` item the crate does not export.
   Crates that have not adopted it yet are listed; the list only shrinks.
+* `long-function`: a production function longer than `MAX_FUNCTION_LINES`
+  lines (crates of layer `tooling` are not scanned). Today's are recorded by
+  `crate::file::function` with their length and may only get shorter; a moved or
+  renamed one renames its key in the same commit.
 
 A count above its baseline is an error; a count below it is an error until the
 baseline is lowered in the same commit, so the file records the real state.
@@ -38,9 +42,11 @@ from _context_map_fitness import _flatten_path_tree
 BASELINE = Path(__file__).with_name("modularity_baseline.json")
 MAX_IMPL_FILES = 5
 MAX_IMPL_METHODS = 60
+MAX_FUNCTION_LINES = 150
 
 _IMPL = re.compile(r"^\s*impl(?:<[^>{]*>)?\s+([A-Z][A-Za-z0-9_]*)(?:<[^>{]*>)?\s*(?:where[^{]*)?\{", re.M)
 _FN = re.compile(r"\bfn\s+[A-Za-z_]\w*")
+_FN_ITEM = re.compile(r"^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)", re.M)
 _SUPER_GLOB = re.compile(r"^\s*use\s+super::\*\s*;", re.M)
 _PATH_ROOT = re.compile(r"\b(crate|super)\s*::")
 _UNREACHABLE_PUB = re.compile(r"#!\[\s*(?:warn|deny|forbid)\s*\([^)]*\bunreachable_pub\b")
@@ -68,6 +74,24 @@ def impl_spread(files: dict[str, str]) -> dict[str, tuple[int, int]]:
             holders[match.group(1)].add(name)
             methods[match.group(1)] += len(_FN.findall(source, opening, _block_end(source, opening)))
     return {ty: (len(holders[ty]), methods[ty]) for ty in holders}
+
+
+def long_functions(files: dict[str, str]) -> dict[str, int]:
+    """Per `file::function`: its length in lines, when above `MAX_FUNCTION_LINES` (the longest of a repeated name)."""
+    found: dict[str, int] = {}
+    for relative, text in files.items():
+        # Blank string and character literals first: a `{` inside a literal
+        # would otherwise leave the body unbalanced and the function unmeasured.
+        source = _crate_boundary_workspace.rust_syntax(text)
+        for match in _FN_ITEM.finditer(source):
+            end = _crate_boundary_workspace._rust_item_end(source, match.start())
+            if end is None:
+                continue
+            lines = source.count("\n", match.start(), end)
+            key = f"{relative}::{match.group(1)}"
+            if lines > MAX_FUNCTION_LINES and lines > found.get(key, 0):
+                found[key] = lines
+    return found
 
 
 def super_globs(files: dict[str, str]) -> int:
@@ -151,7 +175,10 @@ def crate_measures(manifest_path: Path) -> dict:
     top = {_module_of(relative)[0] for relative in files if _module_of(relative)}
     crate_root = next((root / name for name in ("lib.rs", "main.rs") if (root / name).exists()), None)
     adopted = bool(crate_root and _UNREACHABLE_PUB.search(crate_root.read_text(encoding="utf-8")))
+    layer = _crate_boundary_workspace.load_manifest(manifest_path).get("package", {}).get("metadata", {}).get(
+        "awaken", {}).get("layer", "")
     return {
+        "long-function": {} if layer == "tooling" else long_functions(files),
         "impl-spread": impl_spread(files),
         "super-glob": super_globs(files),
         "module-cycle": largest_module_cycle(files, top),
@@ -205,6 +232,25 @@ def modularity_errors(measures: dict[str, dict], baseline: dict) -> list[str]:
             errors.append(f"unreachable-pub: {crate} must declare #![warn(unreachable_pub)] in its crate root")
     for crate in sorted(pending - set(measures)):
         errors.append(f"unreachable-pub: {crate} is pending but is no longer a crate; remove it in this commit")
+    long_held: dict[str, int] = baseline.get("long-function", {})
+    seen_long: set[str] = set()
+    for crate, measure in sorted(measures.items()):
+        for function, lines in sorted(measure.get("long-function", {}).items()):
+            key = f"{crate}::{function}"
+            held = long_held.get(key)
+            if held is None:
+                errors.append(f"long-function: {key} is {lines} lines (limit {MAX_FUNCTION_LINES}); split it, or "
+                              f"rename its key in {BASELINE.name} if it moved")
+                continue
+            seen_long.add(key)
+            if lines > held:
+                errors.append(f"long-function: {key} grew to {lines} lines, baseline {held}")
+            elif lines < held:
+                errors.append(f"long-function: {key} is {lines} lines, below the baseline {held}; lower "
+                              f"{BASELINE.name} in this commit")
+    for key in sorted(set(long_held) - seen_long):
+        errors.append(f"long-function: {key} is no longer over {MAX_FUNCTION_LINES} lines or no longer exists; "
+                      f"remove it from {BASELINE.name} in this commit (or rename it if it moved)")
     return [f"modularity: {error}" for error in errors]
 
 
@@ -226,12 +272,14 @@ def selftest() -> None:
     | M4   | `use super::*` count above / below / at baseline             | error / error (lower) / accept |
     | M5   | `crate::a` <-> `super::b` paths close a cycle of top modules | cycle size counted |
     | M6   | lint adopted while pending / missing while not pending       | error / error |
+    | M7   | function over the limit: unrecorded / grew / shorter / equal / gone or under | error / error / error (lower) / accept / stale |
     """
     spread = impl_spread({"a.rs": "impl Big { fn x(&self) {} fn y(&self) {} }", "b.rs": "impl<T> Big { fn z() {} }"})
     assert spread == {"Big": (2, 3)}, "impl-spread counting"
 
-    def measure(spread=None, globs=0, cycle=0, adopted=True):
-        return {"impl-spread": spread or {}, "super-glob": globs, "module-cycle": cycle, "unreachable-pub": adopted}
+    def measure(spread=None, globs=0, cycle=0, adopted=True, long=None):
+        return {"impl-spread": spread or {}, "super-glob": globs, "module-cycle": cycle, "unreachable-pub": adopted,
+                "long-function": long or {}}
 
     assert modularity_errors({"c": measure({"T": (5, 60)})}, {}) == [], "M1"
     assert "split it" in modularity_errors({"c": measure({"T": (6, 10)})}, {})[0], "M2 files"
@@ -253,4 +301,12 @@ def selftest() -> None:
     assert "remove it from the pending" in modularity_errors(
         {"c": measure(adopted=True)}, {"unreachable-pub-pending": ["c"]})[0], "M6 adopted"
     assert "must declare" in modularity_errors({"c": measure(adopted=False)}, {})[0], "M6 missing"
+    body = "fn big() {\n" + "    let x = \"{\";\n" * (MAX_FUNCTION_LINES + 1) + "}\nfn small() {\n}\n"
+    assert long_functions({"a.rs": body}) == {"a.rs::big": MAX_FUNCTION_LINES + 2}, "M7 measure (braces in literals)"
+    held = {"long-function": {"c::a.rs::big": 200}}
+    assert "split it" in modularity_errors({"c": measure(long={"a.rs::big": 200})}, {})[0], "M7 unrecorded"
+    assert "grew" in modularity_errors({"c": measure(long={"a.rs::big": 201})}, held)[0], "M7 grew"
+    assert "below the baseline" in modularity_errors({"c": measure(long={"a.rs::big": 190})}, held)[0], "M7 shorter"
+    assert modularity_errors({"c": measure(long={"a.rs::big": 200})}, held) == [], "M7 equal"
+    assert "no longer over" in modularity_errors({"c": measure()}, held)[0], "M7 gone"
     print("_modularity_fitness selftest: the decision tables hold")
