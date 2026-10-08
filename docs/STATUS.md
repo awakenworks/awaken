@@ -19,7 +19,7 @@ Use the current implementation and named tests to assess a behavior. A source
 anchor is a design reference, an executed test qualifies its recorded scope,
 and provider or deployment acceptance requires its own actual observations.
 
-Test design and execution owns validation methods.
+[Test design and execution](design/test-validation.md) owns validation methods.
 Session acceptance owns its
 scenario and source-binding contract. Recorded outcomes remain attached to
 their original source, toolchain, platform and artifact hashes; changing a
@@ -61,6 +61,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/auxiliary-context-windows.md` | Design narrative | Not required | n/a |
 | `design/session-branch-prefixes.md` | Product/downstream mapping | Not required | n/a |
 | `design/runtime-scenario-validation.md` | Coverage map | Not required | n/a |
+| `design/test-validation.md` | Meta / introspection | Not required | n/a |
 | `design/runtime-interface-boundaries.md` | Role owner | Required | self |
 | `design/neutral-waist.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/tool-and-capability.md` | Role owner | Required | self |
