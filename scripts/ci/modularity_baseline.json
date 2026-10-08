@@ -82,7 +82,7 @@
     "awaken-provisioning-contract": 3,
     "awaken-run-ingress": 2,
     "awaken-runtime": 2,
-    "awaken-runtime-contract": 4,
+    "awaken-runtime-contract": 3,
     "awaken-runtime-host": 19,
     "awaken-sandbox-container": 3,
     "awaken-sandbox-local": 3,

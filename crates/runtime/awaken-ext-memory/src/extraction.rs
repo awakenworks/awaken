@@ -75,7 +75,7 @@ pub struct MemoryExtractionIntent {
     /// durable aggregate as the extraction claim; a relay-local/process-local
     /// receipt would not survive recovery or fence a stale claimant.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub credential_realizations: Vec<awaken_runtime_contract::CredentialRealizationReceipt>,
+    pub credential_realizations: Vec<CredentialRealizationToken>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }
@@ -287,7 +287,7 @@ impl MemoryExtractionIntent {
             Self::validate_receipt(&self.mutations, receipt)?;
         }
         for receipt in &self.credential_realizations {
-            if receipt.claim_epoch != self.claim_generation {
+            if receipt.claim_epoch() != self.claim_generation {
                 return Err(MemoryExtractionError::Invalid(
                     "credential realization must belong to the current extraction claim".into(),
                 ));
@@ -573,15 +573,15 @@ impl MemoryExtractionIntent {
         owner: &str,
         generation: u64,
         now_unix_ms: u64,
-        receipt: awaken_runtime_contract::CredentialRealizationReceipt,
+        receipt: CredentialRealizationToken,
     ) -> Result<(), MemoryExtractionError> {
         self.require_claim(owner, generation, now_unix_ms)?;
-        if receipt.claim_epoch != generation {
+        if receipt.claim_epoch() != generation {
             return Err(MemoryExtractionError::StaleClaim);
         }
         if let Some(existing) = self.credential_realizations.iter().find(|existing| {
-            existing.candidate_fingerprint == receipt.candidate_fingerprint
-                && existing.claim_epoch == receipt.claim_epoch
+            existing.candidate_fingerprint() == receipt.candidate_fingerprint()
+                && existing.claim_epoch() == receipt.claim_epoch()
         }) {
             return if existing == &receipt {
                 Ok(())
@@ -867,27 +867,19 @@ mod tests {
         assert!(error.to_string().contains("agent"), "R2/E2: {error}");
     }
 
-    fn credential_receipt(
-        generation: u64,
-    ) -> awaken_runtime_contract::CredentialRealizationReceipt {
-        // The realization kind is Platform vocabulary; the SDK names it only
-        // through the binding's wire value.
-        let binding: awaken_runtime_contract::AttemptCredentialBinding =
-            serde_json::from_value(serde_json::json!({
-                "candidate_fingerprint": "candidate-a",
-                "credential": { "id": "credential-a", "revision": 3 },
-                "selected_plaintext_holder": awaken_runtime_contract::PlaintextHolder::new(
-                    awaken_runtime_contract::PlaintextBoundary::Worker,
-                    awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-                ),
-                "selected_realization_kind": "worker_provider_adapter",
-                "claim_epoch": generation,
-            }))
-            .unwrap();
-        awaken_runtime_contract::CredentialRealizationReceipt::new(
-            &binding,
-            binding.selected_realization_kind,
-        )
+    fn credential_receipt(generation: u64) -> CredentialRealizationToken {
+        // The receipt is Platform vocabulary; the SDK holds its encoding.
+        CredentialRealizationToken::new(serde_json::json!({
+            "candidate_fingerprint": "candidate-a",
+            "credential": { "id": "credential-a", "revision": 3 },
+            "selected_plaintext_holder": awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Worker,
+                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            ),
+            "actual_realization_kind": "worker_provider_adapter",
+            "claim_epoch": generation,
+            "receipt_fingerprint": "sha256:receipt-a",
+        }))
         .unwrap()
     }
 

@@ -16,12 +16,16 @@ separation = "contract"
 
 [dependencies]
 awaken-agent-contract = { workspace = true, features = ["schema"] }
+awaken-runtime-contract.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 schemars = "1"
 serde_json.workspace = true
 thiserror.workspace = true
 url.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
 
 [lints]
 workspace = true

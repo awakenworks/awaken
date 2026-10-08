@@ -23,6 +23,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::{ModelBinding, UnspecifiedReasoning};
 
 use crate::PinnedCredentialMaterializer;
+use awaken_credential_contract::AttemptCredentialRealization;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ResolvedExecutorError {
@@ -289,7 +290,7 @@ impl LlmExecutor for PinnedModelExecutor {
 struct PinnedCandidateExecutor {
     materializer: CredentialInferenceMaterializer,
     candidates: Vec<ResolvedModelCandidate>,
-    realization: Option<awaken_runtime_contract::AttemptCredentialRealization>,
+    realization: Option<awaken_runtime_contract::CredentialRealizationHandle>,
     ownership: Option<Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>>,
     local_run_correlation: Option<String>,
 }
@@ -441,9 +442,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
                 ..
             } = candidate.provisioning()
             {
-                let binding = context
-                    .credential_realization
-                    .as_ref()
+                let binding = AttemptCredentialRealization::from_context(context)
                     .ok_or_else(|| "credential-bearing inference has no claim binding".to_string())?
                     .binding_for(candidate)
                     .map_err(|error| error.to_string())?
@@ -474,9 +473,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
         candidate: &ResolvedModelCandidate,
         context: &RuntimeRunContext,
     ) -> Option<Arc<dyn LlmExecutor>> {
-        let binding = context
-            .credential_realization
-            .as_ref()
+        let binding = AttemptCredentialRealization::from_context(context)
             .and_then(|realization| realization.binding_for(candidate).ok().flatten());
         Some(Arc::new(PinnedCandidateExecutor {
             materializer: self.clone(),

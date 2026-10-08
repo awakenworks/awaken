@@ -17,6 +17,7 @@
 //! in-process mechanism, never external infrastructure — so keeping them here is
 //! a port carrying its own vocabulary, not a leak.
 
+use std::any::Any;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -283,6 +284,39 @@ pub enum ModelCancellationObservation {
     RetainClaimedUntilReceipt,
 }
 
+/// The Platform's credential realization for one execution attempt, carried
+/// opaquely.
+///
+/// The Platform freezes, under the attempt's dispatch claim, which credential
+/// each model candidate may realize and how, and reads that decision back in
+/// the adapters that materialize a model or remote route. The engine carries
+/// the value from ingress to those adapters and never interprets it, like the
+/// scope label and the context's other Platform ports (ADR-0086 §7). The
+/// Platform recovers its typed value through one function of its own, which
+/// fails closed when the handle is absent or holds another type.
+#[derive(Clone)]
+pub struct CredentialRealizationHandle(Arc<dyn Any + Send + Sync>);
+
+impl CredentialRealizationHandle {
+    /// Wrap the Platform's realization value.
+    #[must_use]
+    pub fn new<T: Any + Send + Sync>(realization: T) -> Self {
+        Self(Arc::new(realization))
+    }
+
+    /// The carried value, when it is a `T`.
+    #[must_use]
+    pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        self.0.downcast_ref::<T>()
+    }
+}
+
+impl std::fmt::Debug for CredentialRealizationHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CredentialRealizationHandle(..)")
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct RuntimeRunContext {
     /// Process-local projection of the activation's frozen caller toolsets.
@@ -386,8 +420,9 @@ pub struct RuntimeRunContext {
     pub ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
     /// Secret-free projection of the credential decisions already committed by
     /// this attempt's dispatch claim, plus its claim-fenced receipt port. This is
-    /// live wiring, never an alternative durable authority.
-    pub credential_realization: Option<crate::AttemptCredentialRealization>,
+    /// live wiring, never an alternative durable authority. The Platform owns
+    /// its meaning; the engine only carries it to the adapters that read it.
+    pub credential_realization: Option<CredentialRealizationHandle>,
     /// Exact provider-owned tools selected by Session assembly for this attempt.
     /// Provisioning may validate this plan and an adapter may realize it, but
     /// neither may reinterpret the originating extension's plugin JSON.
@@ -479,9 +514,9 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_credential_realization(
         mut self,
-        realization: crate::AttemptCredentialRealization,
+        realization: impl Into<CredentialRealizationHandle>,
     ) -> Self {
-        self.credential_realization = Some(realization);
+        self.credential_realization = Some(realization.into());
         self
     }
 

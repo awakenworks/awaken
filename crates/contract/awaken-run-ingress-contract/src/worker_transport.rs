@@ -12,7 +12,7 @@
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::thread::commit::operation::CommitOperation;
-use awaken_runtime_contract::{AttemptCredentialDeliveryRequest, CredentialRealizationReceipt};
+use awaken_credential_contract::{AttemptCredentialDeliveryRequest, CredentialRealizationReceipt};
 use serde::{Deserialize, Serialize};
 
 use crate::{

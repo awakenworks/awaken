@@ -31,6 +31,18 @@ pub use awaken_agent_contract::credential::{
     TokenEndpointAuth, TrustDomainRef, is_core_delivery_consumer,
 };
 
+mod attempt;
+pub use attempt::{
+    AttemptCredentialBinding, AttemptCredentialBindingError, AttemptCredentialDelivery,
+    AttemptCredentialDeliveryError, AttemptCredentialDeliveryRequest,
+    AttemptCredentialDeliverySource, AttemptCredentialRealization,
+    CredentialRealizationPersistenceDecision, CredentialRealizationReceipt,
+    CredentialRealizationRecordError, CredentialRealizationRecorder, CredentialReceiptError,
+    candidate_credential_material_binding, candidate_fingerprint, candidate_provider_expectation,
+    compile_candidate_credential_bindings, credential_access_has_same_authority,
+    credential_access_without_delivery, credential_realization_persistence_decision,
+    verify_attempt_credential_delivery, verify_credential_realization_receipt,
+};
 mod http_effect;
 pub use http_effect::{
     HttpEffectFieldPlacements, HttpEffectMaterialPlacements, HttpEffectMaterialReference,

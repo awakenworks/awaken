@@ -37,19 +37,11 @@ pub use boundary::{BoundaryOutcome, evaluate_boundary};
 pub use capture::{CaptureDecision, ContentCapture, ContentKind, ContentRedactor, NoopRedactor};
 pub use control::LiveRunControl;
 pub use credential::{
-    AttemptCredentialBinding, AttemptCredentialBindingError, AttemptCredentialDelivery,
-    AttemptCredentialDeliveryError, AttemptCredentialDeliveryRequest,
-    AttemptCredentialDeliverySource, AttemptCredentialRealization, CandidateFingerprint,
-    CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource,
-    CredentialRealizationPersistenceDecision, CredentialRealizationReceipt,
-    CredentialRealizationRecordError, CredentialRealizationRecorder, CredentialReceiptError,
-    CredentialRef, CredentialRefreshAccess, CredentialTarget, CredentialUsage,
-    CredentialUsageError, HttpEffectPlacement, ModelExposurePolicy, PlaintextBoundary,
-    PlaintextHolder, SealedCredentialEnvelopeRef, TokenEndpointAuth, TrustDomainRef,
-    candidate_credential_material_binding, candidate_fingerprint, candidate_provider_expectation,
-    compile_candidate_credential_bindings, credential_access_has_same_authority,
-    credential_access_without_delivery, credential_realization_persistence_decision,
-    verify_attempt_credential_delivery, verify_credential_realization_receipt,
+    CandidateFingerprint, CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy,
+    CredentialMaterialSource, CredentialRef, CredentialRefreshAccess, CredentialTarget,
+    CredentialUsage, CredentialUsageError, HttpEffectPlacement, ModelExposurePolicy,
+    PlaintextBoundary, PlaintextHolder, SealedCredentialEnvelopeRef, TokenEndpointAuth,
+    TrustDomainRef,
 };
 pub use data_subject::{CaptureError, CaptureSink, DataSubjectId, Purpose};
 pub use delegation::{
@@ -122,8 +114,9 @@ pub use resolver::{
 };
 pub use resume::{ResumeCommand, ResumeError, ResumeResult, validate_resume};
 pub use runtime_context::{
-    AttemptOwnershipError, AttemptOwnershipVerifier, CaptureContext, ModelInputProjectionTrace,
-    NormalizedModelInput, RuntimeRunContext, is_legacy_derived_session_context,
+    AttemptOwnershipError, AttemptOwnershipVerifier, CaptureContext, CredentialRealizationHandle,
+    ModelInputProjectionTrace, NormalizedModelInput, RuntimeRunContext,
+    is_legacy_derived_session_context,
 };
 pub use snapshot::{
     AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,

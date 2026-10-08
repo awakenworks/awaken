@@ -302,6 +302,10 @@ mod tests {
     use awaken_agent_contract::RedactedString;
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_credential_contract::{
+        AttemptCredentialBinding, AttemptCredentialRealization, CredentialRealizationReceipt,
+        CredentialRealizationRecordError, CredentialRealizationRecorder,
+    };
     use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{
         CredentialCreateParams, CredentialError, CredentialKind, InMemorySecretStore, SecretRef,
@@ -312,10 +316,9 @@ mod tests {
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
     use awaken_runtime_contract::{
-        AttemptCredentialBinding, AttemptCredentialRealization, AttemptOwnershipError,
-        AttemptOwnershipVerifier, CredentialAccess, CredentialExecutionPolicy,
-        CredentialMaterialSource, CredentialRealizationReceipt, CredentialRealizationRecordError,
-        CredentialRealizationRecorder, CredentialRef, CredentialUsage, InferenceEndpoint,
+        AttemptOwnershipError, AttemptOwnershipVerifier, CredentialAccess,
+        CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef, CredentialUsage,
+        InferenceEndpoint,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -476,7 +479,7 @@ mod tests {
             _ => panic!("test candidate must carry a credential"),
         };
         let binding = AttemptCredentialBinding {
-            candidate_fingerprint: awaken_runtime_contract::candidate_fingerprint(candidate)
+            candidate_fingerprint: awaken_credential_contract::candidate_fingerprint(candidate)
                 .unwrap(),
             credential,
             selected_plaintext_holder: awaken_runtime_contract::PlaintextHolder::new(

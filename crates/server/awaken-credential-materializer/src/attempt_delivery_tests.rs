@@ -2,6 +2,10 @@
 #[cfg(test)]
 mod tests {
     use awaken_agent_contract::RedactedString;
+    use awaken_credential_contract::credential_access_has_same_authority;
+    use awaken_credential_contract::{
+        AttemptCredentialDeliveryRequest, AttemptCredentialDeliverySource,
+    };
     use awaken_credential_contract::{
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding,
         CredentialMaterialSource, CredentialPurpose, CredentialRef, CredentialTarget,
@@ -12,10 +16,7 @@ mod tests {
         CredentialCreateParams, CredentialKind, CredentialStatus, InMemorySecretStore,
         VaultAttemptCredentialDeliverySource, VaultLocalMaterialAuthority,
     };
-    use awaken_runtime_contract::credential_access_has_same_authority;
-    use awaken_runtime_contract::{
-        AttemptCredentialDeliveryRequest, AttemptCredentialDeliverySource, CandidateFingerprint,
-    };
+    use awaken_runtime_contract::CandidateFingerprint;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use std::sync::Arc;
 

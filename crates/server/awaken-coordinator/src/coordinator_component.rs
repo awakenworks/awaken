@@ -75,7 +75,7 @@ pub struct CoordinatorDependencies {
     /// Worker router; Session and Dispatch retain their existing owners.
     pub worker_create_broker_router: Option<Router>,
     pub credential_deliveries:
-        Option<Arc<dyn awaken_runtime_contract::AttemptCredentialDeliverySource>>,
+        Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
     pub repository_transport_authorizer:
         Option<Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>>,
     /// Coordinator-owned Worker identity/incarnation authority. The process

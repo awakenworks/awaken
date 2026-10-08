@@ -134,21 +134,21 @@ pub(crate) type ChildAcpExecutorFactory = Arc<
 
 struct ChildCredentialRecorder {
     ownership: Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>,
-    bindings: Vec<awaken_runtime_contract::AttemptCredentialBinding>,
+    bindings: Vec<awaken_credential_contract::AttemptCredentialBinding>,
 }
 
 #[async_trait::async_trait]
-impl awaken_runtime_contract::CredentialRealizationRecorder for ChildCredentialRecorder {
+impl awaken_credential_contract::CredentialRealizationRecorder for ChildCredentialRecorder {
     async fn record(
         &self,
-        receipt: awaken_runtime_contract::CredentialRealizationReceipt,
-    ) -> Result<(), awaken_runtime_contract::CredentialRealizationRecordError> {
+        receipt: awaken_credential_contract::CredentialRealizationReceipt,
+    ) -> Result<(), awaken_credential_contract::CredentialRealizationRecordError> {
         self.ownership.verify_current().await.map_err(|error| {
-            awaken_runtime_contract::CredentialRealizationRecordError(error.to_string())
+            awaken_credential_contract::CredentialRealizationRecordError(error.to_string())
         })?;
-        awaken_runtime_contract::verify_credential_realization_receipt(&self.bindings, &receipt)
+        awaken_credential_contract::verify_credential_realization_receipt(&self.bindings, &receipt)
             .map_err(|error| {
-                awaken_runtime_contract::CredentialRealizationRecordError(error.to_string())
+                awaken_credential_contract::CredentialRealizationRecordError(error.to_string())
             })
     }
 }
@@ -251,7 +251,7 @@ pub(super) fn bind_direct_child_credentials(
     let now_unix_ms = awaken_time::WallClockExt::now_ms(clock.as_ref());
     let holder = crate::host::self_hosted_inference_holder(activation)
         .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
-    let bindings = awaken_runtime_contract::compile_candidate_credential_bindings(
+    let bindings = awaken_credential_contract::compile_candidate_credential_bindings(
         &candidates,
         holder.as_ref(),
         &adapters.credential_capabilities,
@@ -261,7 +261,7 @@ pub(super) fn bind_direct_child_credentials(
     .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
     if !bindings.is_empty() {
         context = context.with_credential_realization(
-            awaken_runtime_contract::AttemptCredentialRealization::new(
+            awaken_credential_contract::AttemptCredentialRealization::new(
                 bindings.clone(),
                 Arc::new(ChildCredentialRecorder {
                     ownership,
