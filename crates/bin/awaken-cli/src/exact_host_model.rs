@@ -110,15 +110,18 @@ mod tests {
         // exactly; C2 only the package binary is provided -> use its installed
         // sibling; C3 neither exists -> preserve production resolution. R1 has
         // precedence over R2, and no intermediate/build-dir search is added.
-        let sandbox = std::ffi::OsString::from("/final/debug/awaken-sandbox");
-        let awaken = std::ffi::OsString::from("/final/debug/awaken");
+        let sandbox = std::ffi::OsString::from("/published/hand/exact-companion");
+        let directory = std::path::PathBuf::from("/final/debug");
+        let awaken = directory
+            .join(format!("awaken{}", std::env::consts::EXE_SUFFIX))
+            .into_os_string();
         assert_eq!(
             select_test_namespace_hand_path(Some(sandbox.clone()), Some(awaken.clone())),
             Some(sandbox.into())
         );
         assert_eq!(
             select_test_namespace_hand_path(None, Some(awaken)),
-            Some(std::path::PathBuf::from("/final/debug/awaken-sandbox"))
+            Some(directory.join(format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX)))
         );
         assert_eq!(select_test_namespace_hand_path(None, None), None);
     }

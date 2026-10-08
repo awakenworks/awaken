@@ -271,14 +271,6 @@ pub(crate) fn local_test_wiring() -> ExecutableEnvironmentWiring {
     .expect("configure test executable Environment wiring")
 }
 
-/// Require the process-selected Environment boundary. Local AllInOne remains
-/// supported through an explicit [`ExecutableEnvironmentWiring::local`] value.
-pub(crate) fn require_process_wiring(
-    wiring: Option<ExecutableEnvironmentWiring>,
-) -> ExecutableEnvironmentWiring {
-    wiring.expect("runtime process requires executable Environment wiring")
-}
-
 #[cfg(test)]
 mod startup_tests {
     use std::sync::Arc;
@@ -339,13 +331,33 @@ mod startup_tests {
     }
 
     #[test]
-    #[should_panic(expected = "runtime process requires executable Environment wiring")]
     fn missing_wiring_never_allocates_a_parallel_catalog_or_queue() {
         // Cause/effect decision table: E1 explicit local wiring -> catalog shares
         // the caller's WorkQueue; E2 explicit distributed wiring -> durable
         // catalog/queue; E3 missing wiring -> startup failure. Positive E1/E2
-        // are covered by role process; this test owns E3.
-        let _ = super::require_process_wiring(None);
+        // are covered by role process; this test owns E3 at the actual entry
+        // point, which now returns an error rather than panicking in a helper.
+        awaken_service_lifecycle::run_composed_async_test(|| async {
+            let stores = crate::local_process_stores::in_memory_process_stores().await;
+            let mut process = crate::exact_host_model::local_test_process_options(&stores);
+            process.executable_environment_wiring = None;
+            let result = crate::prepare_runtime_routers(
+                stores,
+                None,
+                None,
+                None,
+                crate::PublicationModelSupply::PublishedProviders,
+                process,
+                None,
+            )
+            .await;
+            assert!(
+                result
+                    .err()
+                    .expect("E3 startup error")
+                    .contains("executable Environment wiring")
+            );
+        });
     }
 
     #[tokio::test]

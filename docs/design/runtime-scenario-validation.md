@@ -153,6 +153,8 @@ tests may reuse the same scenario ids later.
 
 | Id | Scenario | Given | When | Then |
 |---|---|---|---|---|
+| RS-BOOT-001 | Runtime startup rejects incomplete dependencies | AllInOne or Coordinator has otherwise valid selected ports and stores | one required Directory, observation, transport, Agent or Environment port is absent | startup returns a named error before Host assembly; no Session is written; an initially empty lifecycle drains immediately |
+| RS-BOOT-002 | Runtime startup retains exact role ownership | the Runtime startup entry receives selected store groups and services | the role lacks Coordinator ownership, a required store group is absent, split Coordinator receives Control stores, or its Control service is absent | startup returns an error before recovery and component construction; it never constructs another role's fallback authority |
 | RS-MA-001 | allowed delegation | a resolved run with `builtin-delegation-tools` selected and a delegate roster containing `reviewer` | the model calls `agent_run { agent_id: "reviewer" }` | the gate passes, a child run is submitted through the selected backend/ingress, and the result returns through normal tool output or committed facts |
 | RS-MA-002 | denied delegation | a resolved run with no roster entry for `reviewer` | the model calls `agent_run { agent_id: "reviewer" }` | execution fails before dispatch; no child run, pending input, or tool side effect is committed |
 | RS-MA-003 | delegation tool hidden without roster | a resolved run has no delegate or multiagent targets | resolution builds model-visible descriptors | `agent_run` is absent from the descriptor set and the model has no delegation affordance |
@@ -247,6 +249,14 @@ remain separate deployment-qualification obligations until their actual suites
 run against isolated backends. Source-surface and formal-ledger linkage checks
 are separate from executable tests and from proof solving.
 
+The stricter `check_formal_coverage.py --require-verified-profile` review on
+October 8, 2026 reports 32 of 446 P0 repository-safety obligations without a
+direct production proof/refinement grade. The ledger is authoritative for the
+current count; [the verified-profile discussion](../formal-verification-expansion.md#verified-profile-the-31-direct-proof-gaps)
+explains why modeled admission decisions alone do not prove backend durability,
+external process behavior, or full asynchronous linearization. Passing executable
+regressions and the required evidence-linkage gate does not close those gaps.
+
 ## Construction regression design
 
 The Host context decomposition keeps the existing admission kernels, Session
@@ -281,6 +291,43 @@ An error from authoritative terminal recovery after installation may leave a
 **complete** context cached, as before. HC1-HC4 deliberately target failures
 before installation; they do not claim that every constructor error evicts a
 successfully assembled context.
+
+## CLI startup regression design
+
+The Runtime process now checks all required dependencies before selecting a
+scenario authority, restoring Deployment state, or assembling Host. Canonical
+`ProcessRole::owns_startup_component` decides ownership; the private prepared
+value only carries already selected non-optional ports.
+
+| Rule | Independently controlled condition | Observable oracle | Executable test |
+|---|---|---|---|
+| CB1 | AllInOne/Coordinator × exactly one of five required ports absent (10 rows) | named error; zero Deployment recovery calls; Host customizer never reached; no Session or quarantine writes; immediate drain | `missing_runtime_dependencies_fail_before_host_or_tasks` |
+| CB2 | either Runtime role has no Coordinator stores (2 rows) | CB1's failure and state oracles | `runtime_store_and_service_ownership_fails_closed` |
+| CB3 | AllInOne lacks Control stores; split Coordinator has surplus Control stores or lacks Control service (3 rows) | named ownership error; no fallback component | `runtime_store_and_service_ownership_fails_closed` |
+| CB4 | Control/Worker enters with otherwise complete Runtime inputs (2 rows) | ordinary error independent of debug assertions; CB1's state oracles | `non_runtime_roles_cannot_enter_runtime_assembly` |
+| CB5 | valid split Coordinator, including unusable local sandbox with registered-worker placement | public/private route presence, authentication and exclusion; no local sandbox acquisition | existing `service_roles_expose_only_their_owned_api` |
+| CB6 | valid AllInOne startup | canonical Management/Session/Resource surfaces and protected input behavior | existing CLI and Managed protocol integration suites |
+
+The 17 added negative rows use the actual startup entry and isolated local
+stores. A refusing Deployment port verifies that recovery is not reached;
+moving recovery ahead of preflight changes both the error and the call oracle.
+A zero-budget drain is a cleanup oracle; it does not inspect or count
+private task registrations. The existing missing-Environment test keeps its
+identity and now checks the entry's error instead of an obsolete panic helper.
+
+Only the canonical Coordinator component registers Runtime background drain.
+Resource reclamation retains the same guards, worker and clock, and starts after
+the complete protected process routers have been assembled. This ordering does
+not claim that every late component failure is globally free of effects:
+canonical components may already own lifecycle tasks, and the outer lifecycle
+remains responsible for their failure/cancellation cleanup. The matrix above
+targets dependency preflight; it does not qualify real PostgreSQL or containers.
+
+The CLI integration suites require the real `awaken-sandbox` companion built
+with `hand` in the same target/profile directory as `awaken`. Its `hand --check`
+must succeed before running startup cases. This verifies companion selection and
+feature availability; Windows executions still do not qualify Linux namespace
+isolation.
 
 ## Coverage Rules
 

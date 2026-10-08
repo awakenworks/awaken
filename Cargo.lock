@@ -513,6 +513,7 @@ dependencies = [
  "awaken-session-store",
  "awaken-session-types",
  "awaken-session-work-contract",
+ "awaken-sqlite-pool",
  "awaken-store-inmem",
  "awaken-store-runtime",
  "awaken-store-sqlite",
