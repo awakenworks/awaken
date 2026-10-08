@@ -17,6 +17,10 @@ async fn recovery_scan_reduces_pages_before_eof_and_discards_failed_prefixes() {
     // | P5 | caller cancelled | cancelled | 256 |
     // The reducer retains a scalar only. Existing full-scan F2 and cutover V3
     // tests own the downstream zero-effect and unchanged-generation barriers.
+    // Wait coverage: W1 every rule reaches the held second page; W2 P1-P4
+    // finish after release; W3 P5 joins cancellation. A missing signal or
+    // completion fails within two seconds with its rule and phase named,
+    // rather than parking the suite or hiding which boundary failed.
     let durable = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -66,12 +70,24 @@ async fn recovery_scan_reduces_pages_before_eof_and_discards_failed_prefixes() {
             )
             .await
         });
-        repository.recovery_scan_entered.notified().await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            repository.recovery_scan_entered.notified(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{rule}/W1 second page must enter the hold"));
         assert_eq!(reduced.load(Ordering::SeqCst), 256, "{rule}/E1");
         assert!(!task.is_finished(), "{rule}/E2 no partial observation");
         if rule == "P5" {
             task.abort();
-            assert!(task.await.unwrap_err().is_cancelled(), "P5/E5");
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(2), task)
+                    .await
+                    .expect("P5/W3 cancellation must finish")
+                    .unwrap_err()
+                    .is_cancelled(),
+                "P5/E5"
+            );
             repository.recovery_scan_release.notify_one();
             tokio::task::yield_now().await;
             assert_eq!(
@@ -81,7 +97,10 @@ async fn recovery_scan_reduces_pages_before_eof_and_discards_failed_prefixes() {
             );
         } else {
             repository.recovery_scan_release.notify_one();
-            let result = task.await.unwrap();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+                .await
+                .unwrap_or_else(|_| panic!("{rule}/W2 released scan must finish"))
+                .unwrap();
             if rule == "P1" {
                 let (count, quarantined) = result.expect("P1 EOF");
                 assert_eq!(count, 257, "P1/E3");
