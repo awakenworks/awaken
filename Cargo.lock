@@ -515,6 +515,7 @@ dependencies = [
  "awaken-session-types",
  "awaken-session-work-contract",
  "awaken-sql-storage",
+ "awaken-sqlite-pool",
  "awaken-store-inmem",
  "awaken-store-sqlite",
  "awaken-tenancy",
