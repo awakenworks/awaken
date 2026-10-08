@@ -41,6 +41,42 @@ impl PodProcessStopper {
         self.release_closed_idle_pod_evidence(name, uid).await
     }
 
+    /// Request replacement of the current registered Worker Pod before its
+    /// process exits. A Kubernetes controller would otherwise restart the
+    /// container under the same UID, whose immutable Create ledger cannot be
+    /// rebound to a second process. This is deletion *intent* only: the
+    /// independent Coordinator still owns exit observation and evidence release.
+    pub async fn request_registered_pod_replacement(
+        &self,
+        name: &str,
+        uid: &str,
+    ) -> Result<(), RuntimeError> {
+        if uid.is_empty() {
+            return Err(backend("Worker Pod replacement requires its exact UID"));
+        }
+        // Re-read after a lost DELETE response or resourceVersion conflict.
+        // A different UID is never targeted, and no API response is an exit ACK.
+        for _ in 0..4 {
+            let pod = self.observer.pods.get(name).await.map_err(backend)?;
+            if pod.metadata.uid.as_deref() != Some(uid) {
+                return Err(backend("Worker Pod was replaced before its stop request"));
+            }
+            if pod.metadata.deletion_timestamp.is_some() {
+                return Ok(());
+            }
+            let binding = bind(&self.observer.namespace, name, uid, &pod)?;
+            if !binding.worker_evidence_was_retained() {
+                return Err(backend("Worker Pod has no retained process evidence"));
+            }
+            if self.request_stop(&binding).await.is_ok() {
+                return Ok(());
+            }
+        }
+        Err(backend(
+            "Worker Pod replacement intent could not be retained",
+        ))
+    }
+
     /// A graceful Quiesced Worker may still be returning its deregistration
     /// RPC. Observe the exact running process without issuing DELETE; a Dead
     /// Worker uses the normal stop operation below instead.

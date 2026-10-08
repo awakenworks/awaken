@@ -72,8 +72,10 @@ grep -Fq 'k3d_bind_private_kubeconfig "$CLUSTER"' \
 grep -Fq '"$KUBECONFIG_FILE" || return "$?"' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 RENDERED="$(mktemp)"
-trap 'rm -f "$RENDERED"' EXIT
+CONTROL_RENDERED="$(mktemp)"
+trap 'rm -f "$RENDERED" "$CONTROL_RENDERED"' EXIT
 kubectl kustomize "$REPO_ROOT/deploy/k3d/distributed-control" >"$RENDERED"
+kubectl kustomize "$REPO_ROOT/deploy/k3d/distributed-control/create-control" >"$CONTROL_RENDERED"
 
 # Cause/effect decision table:
 # D1 standalone Worker artifact -> no management-CLI Worker launch remains.
@@ -103,8 +105,8 @@ kubectl kustomize "$REPO_ROOT/deploy/k3d/distributed-control" >"$RENDERED"
 # explicit DNS SAN/CA projection + C2 one TLS sidecar per Coordinator Pod whose
 # leaf/key volume is not mounted into the Worker container + C3 Worker egress
 # excludes direct 3001 -> E1 production Worker transport admits the exact HTTPS
-# edge and E2 cannot bypass it through a mounted plaintext route. K2 signed transport admission
-# remains owned by WorkerUpstream; the manifest only supplies deployment facts.
+# edge and E2 cannot bypass it through a mounted plaintext route. Pod token and
+# UID admission remain owned by the existing Kubernetes Worker transport.
 # D7-D1=C1+C2+C3=>E1+E2; missing TLS inputs, health/resources, or the exact edge
 # fails this contract before the live distributed rule runs.
 # D8 acknowledged-write RPO=0 requires one named remote_apply standby and the
@@ -141,6 +143,15 @@ kubectl kustomize "$REPO_ROOT/deploy/k3d/distributed-control" >"$RENDERED"
 # E2 shortening it to the former 20s value fails this deployment contract.
 # Each assertion owns one observable terminal effect; the manifest remains the
 # sole deployment source of truth.
+# D14 brokered Create authority: C1 Worker receives one Pod-bound token/UID,
+# never a signer; C2 Coordinator selects Kubernetes transport and its separate
+# ConfigMap ledger Namespace before Ready; C3 both deployments import the one
+# runtime read/dispose and six-Kind Create Role source; C4 only Coordinator is
+# bound to Create while Worker keeps exact read/dispose; C5 the shared VAP read
+# binding covers both runtime SAs. Effects: E1 first Sandbox POST has its
+# broker route; E2 direct Worker Create/deletecollection stays denied; E3 no
+# stage-late transport switch can create a second authority. Rules B1 all
+# causes=>E1+E2+E3; B2 any missing=>reject before the live rollout.
 grep -q '/usr/local/bin/awaken-worker' "$RENDERED"
 ! grep -q '/usr/local/bin/awaken worker' "$RENDERED"
 for role in control coordinator; do
@@ -158,7 +169,15 @@ grep -q 'value: /etc/awaken/control.toml' "$RENDERED"
 grep -q 'coordinator_internal_url = "http://coordinator:3001"' "$RENDERED"
 grep -q 'control_internal_url = "http://control:3001"' "$RENDERED"
 grep -q 'worker_server_ca_certificate_file = "/etc/awaken-worker-tls/ca.crt"' "$RENDERED"
-grep -q -- '--server https://coordinator:3443' "$RENDERED"
+grep -q 'https://coordinator:3443' "$RENDERED"
+grep -q 'worker_kubernetes_identity_directory = "/var/run/awaken/identity"' "$RENDERED"
+grep -q '^    \[worker_kubernetes\]$' "$RENDERED"
+grep -q 'create_control_namespace = "awaken-create-control"' "$RENDERED"
+! grep -q 'worker_request_credential_file' "$RENDERED"
+! grep -q 'worker_trust_credentials_file' "$RENDERED"
+! grep -q 'adr71-worker-auth' "$RENDERED"
+grep -q 'audience: awaken-worker' "$RENDERED"
+grep -q 'fieldPath: metadata.uid' "$RENDERED"
 ! grep -q -- '--server http://coordinator:3001' "$RENDERED"
 grep -q 'proxy_pass http://127.0.0.1:3001;' "$RENDERED"
 [[ "$(grep -c 'pid /tmp/nginx.pid;' "$RENDERED")" -eq 1 ]]
@@ -214,34 +233,56 @@ grep -q 'serviceAccountName: worker-runtime' "$RENDERED"
 grep -q 'name: worker-runtime' "$RENDERED"
 grep -q 'serviceAccountName: coordinator-runtime' "$RENDERED"
 grep -q 'name: adr71-coordinator-token-review' "$RENDERED"
-COORDINATOR_PROCESS_ROLE="$(sed -n '/metadata: { name: coordinator-worker-process }/,/^---$/p' \
-  "$REPO_ROOT/deploy/k3d/distributed-control/resources.yaml" | head -12)"
-grep -q 'resources: \["pods"\]' <<<"$COORDINATOR_PROCESS_ROLE"
-grep -q 'verbs: \["get", "update", "delete"\]' <<<"$COORDINATOR_PROCESS_ROLE"
-! grep -Eq '"(create|list|watch|patch)"' <<<"$COORDINATOR_PROCESS_ROLE"
-# Continuation-RBAC table: a retained Session needs C1 PVC create, C2 exact UID
-# observation, and C3 terminal delete. E1 all three render in one PVC-only rule;
-# E2 update/list/watch remain absent from that rule. KRB1=C1+C2+C3=>E1+E2.
-WORKER_PVC_RULE="$(sed -n '/^kind: Role$/,/^---$/p' "$RENDERED" \
-  | grep -A5 -- '- persistentvolumeclaims')"
-grep -q -- '- create' <<<"$WORKER_PVC_RULE"
-grep -q -- '- get' <<<"$WORKER_PVC_RULE"
-grep -q -- '- delete' <<<"$WORKER_PVC_RULE"
-! grep -Eq -- '- (update|list|watch)' <<<"$WORKER_PVC_RULE"
+grep -Fq -- '- ../bases/sandbox-runtime-rbac' \
+  "$REPO_ROOT/deploy/k3d/distributed-control/kustomization.yaml"
+grep -Fq -- '- ../bases/sandbox-runtime-rbac' \
+  "$REPO_ROOT/deploy/k3d/product-backend/kustomization.yaml"
+grep -Fq -- '- ../../product-backend/create-control' \
+  "$REPO_ROOT/deploy/k3d/distributed-control/create-control/kustomization.yaml"
+grep -Fq 'kubectl apply -k "$DEPLOY_DIR/distributed-control/create-control"' \
+  "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+! grep -Fq -- '- ../product-backend/create-control' \
+  "$REPO_ROOT/deploy/k3d/distributed-control/kustomization.yaml"
+# D14 namespace decision: C6 the control overlay has its own explicit
+# Namespace and is applied without `-n`; C7 only after it succeeds is the
+# runtime overlay applied with `-n awaken-adr71`. C6+C7 => broker ledger Role
+# exists before the first WorkUnit; mixing both streams under one `-n` must
+# fail this contract instead of relying on a ready but incomplete Coordinator.
+grep -q '^  name: awaken-create-control$' "$CONTROL_RENDERED"
+grep -q '^  namespace: awaken-create-control$' "$CONTROL_RENDERED"
+! grep -q '^  namespace: awaken-create-control$' "$RENDERED"
+CONTROL_APPLY_LINE=$(grep -nF 'kubectl apply -k "$DEPLOY_DIR/distributed-control/create-control"' \
+  "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh" | cut -d: -f1)
+RUNTIME_APPLY_LINE=$(grep -nF 'k3d_render_sandbox_image "$ROLE_OVERLAY" "$SANDBOX_IMAGE"' \
+  "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh" | cut -d: -f1)
+[[ "$CONTROL_APPLY_LINE" -lt "$RUNTIME_APPLY_LINE" ]]
+! grep -q 'kind: Role$' "$REPO_ROOT/deploy/k3d/distributed-control/resources.yaml"
+for binding in coordinator-runtime-read-dispose worker-runtime; do
+  BINDING="$(awk -v expected="$binding" 'BEGIN { RS="---" }
+    /kind: RoleBinding/ && $0 ~ "name: " expected { print }' "$RENDERED")"
+  grep -q 'name: awaken-runtime-read-dispose' <<<"$BINDING"
+done
+CREATE_BINDING="$(awk 'BEGIN { RS="---" }
+  /kind: RoleBinding/ && /name: coordinator-create-executor/ { print }' "$RENDERED")"
+grep -q 'name: awaken-create-executor' <<<"$CREATE_BINDING"
+grep -q 'name: coordinator-runtime' <<<"$CREATE_BINDING"
+! grep -q 'name: worker-runtime' <<<"$CREATE_BINDING"
+LEDGER_BINDING="$(awk 'BEGIN { RS="---" }
+  /kind: RoleBinding/ && /name: awaken-create-ledger/ { print }' "$CONTROL_RENDERED")"
+grep -q 'namespace: awaken-create-control' <<<"$LEDGER_BINDING"
+grep -q 'name: coordinator-runtime' <<<"$LEDGER_BINDING"
+! grep -q 'name: worker-runtime' <<<"$LEDGER_BINDING"
+POLICY_BINDING="$(awk 'BEGIN { RS="---" }
+  /kind: ClusterRoleBinding/ && /name: awaken-create-isolation-read/ { print }' "$CONTROL_RENDERED")"
+grep -q 'name: coordinator-runtime' <<<"$POLICY_BINDING"
+grep -q 'name: worker-runtime' <<<"$POLICY_BINDING"
+grep -q 'namespace: awaken-adr71' <<<"$POLICY_BINDING"
 grep -q 'http://127.0.0.1:9090/admin/drain' "$RENDERED"
 grep -q 'method="POST"' "$RENDERED"
 grep -q 'terminationGracePeriodSeconds: 60' "$RENDERED"
 ! grep -q 'terminationGracePeriodSeconds: 20' "$RENDERED"
-# Cause/effect rule: adopted Pod owner transfer requires update in addition to
-# create/delete. Select the named Worker Role and its first object rule; document
-# order may change when another least-privilege Role is added.
-WORKER_ROLE="$(awk 'BEGIN { RS="---" } /kind: Role/ && /metadata: \{ name: worker-runtime \}/ { print }' \
-  "$REPO_ROOT/deploy/k3d/distributed-control/resources.yaml")"
-WORKER_OBJECT_RULE="$(sed -n '/resources: \["pods", "configmaps"\]/,/^  - apiGroups:/p' \
-  <<<"$WORKER_ROLE")"
-grep -q '"create"' <<<"$WORKER_OBJECT_RULE"
-grep -q '"update"' <<<"$WORKER_OBJECT_RULE"
-grep -q '"delete"' <<<"$WORKER_OBJECT_RULE"
+# The product contract owns the exact shared Role verbs. The live distributed
+# gate checks six denied Worker Creates and six allowed Coordinator Creates.
 ! grep -q 'sandbox_allow_local_fallback = true' "$RENDERED"
 ! grep -q 'cidr: 0.0.0.0/0' "$RENDERED"
 COORDINATOR_NETWORK_POLICY="$(sed -n '/metadata: { name: coordinator }/,/^---$/p' "$REPO_ROOT/deploy/k3d/distributed-control/network-policies.yaml")"
@@ -272,7 +313,7 @@ grep -q "sync_state = 'sync'" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 # after its independent mock Provider completes, and uses no fabricated receipt.
 ! grep -q 'ADR71-CHAOS-SLOW' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'NATIVE_CRASH_MARKER="ADR71-NATIVE-HARD-CRASH"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-grep -q 'worker_kubernetes_identity_directory' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'worker_kubernetes_identity_directory' "$RENDERED"
 grep -q 'restartPolicy: Never' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'awaken.dev/worker-process-evidence' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'wait --for=delete "pod/$NATIVE_CRASH_OLD"' \
@@ -307,6 +348,20 @@ grep -q 'dispose-batch' <<<"$STAGE7"
 grep -Fq 'BATCH_CLEANUP_DEADLINE=$((SECONDS + BATCH_CLEANUP_TIMEOUT_SECONDS))' <<<"$STAGE7"
 grep -Fq 'batch_cleanup_wait_until "$BATCH_CLEANUP_DEADLINE" "${BATCH_AUXILIARY_POD_TARGETS[@]}"' <<<"$STAGE7"
 grep -Fq 'batch_cleanup_wait_until "$BATCH_CLEANUP_DEADLINE" "${BATCH_AUXILIARY_CLAIM_TARGETS[@]}"' <<<"$STAGE7"
+# D15 cause/effect: a hard node stop gives Node Unknown and may give every
+# original Sandbox container only synthetic Unknown/255; retaining the original
+# UID/PVC/guard is required and force deletion cannot qualify an exit. E1 the
+# stage reads old truth without a new Event, E2 it admits only a new independent
+# Session for the later DB fault, E3 neither Worker nor Sandbox Pod is forced
+# away from its evidence finalizer. Stage 6 separately requires both ordinals
+# to change UID instead of silently restarting within one immutable ledger.
+STAGE8="$(sed -n '/log "8\/11/,/log "9\/11/p' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
+grep -Fq 'awaken.dev/create-result-guard' <<<"$STAGE8"
+grep -Fq 'create-independent-session' <<<"$STAGE8"
+grep -Fq 'read-durable' <<<"$STAGE8"
+! grep -Fq -- '--force' <<<"$STAGE8"
+grep -Fq 'worker-0 reused its immutable Pod UID' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'worker-1 reused its immutable Pod UID' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q "get endpoints kubernetes" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 # Promotion decision table: P1 the old synchronous writer dies and its standby
 # is promoted -> clear the inherited dead-peer requirement before publication;

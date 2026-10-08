@@ -327,11 +327,9 @@ spec:
       command: ["/bin/sh", "-ec"]
       args:
         - |
-          sed -e '/^worker_id =/d' \
-              -e '/^worker_request_credential_file =/d' \
-              -e '/^worker_max_concurrent =/d' \
+          sed -e '/^worker_max_concurrent =/d' \
               /etc/awaken-template/worker.toml > /tmp/worker.toml
-          printf '\nworker_kubernetes_identity_directory = "/var/run/awaken/identity"\nworker_max_concurrent = 1\n' >> /tmp/worker.toml
+          printf '\nworker_max_concurrent = 1\n' >> /tmp/worker.toml
           exec /usr/local/bin/awaken-worker --server https://coordinator:3443 --config /tmp/worker.toml
       ports: [{ containerPort: 9090 }]
       readinessProbe:
@@ -489,7 +487,7 @@ kubectl create namespace "$NS" >/dev/null 2>&1 || true
 # sidecar port 3443 -> E1 WorkerUpstream admits HTTPS and validates the private
 # cluster identity without a global TLS bypass. Any false cause -> E2 the static
 # deployment contract fails for a missing input, or the existing TLS handshake
-# fails before signed registration for a mismatched CA/SAN.
+# fails before Pod-token registration for a mismatched CA/SAN.
 # K1 tls_identity_fixture.mjs is the sole E2E certificate generator; production
 # trust admission remains owned by WorkerUpstream. D1=C1+C2+C3+C4=>E1;
 # D2=!C1||!C2||!C3||!C4=>E2. The live rollout below is the positive DNS-SAN/
@@ -537,7 +535,7 @@ log "3/11 deploy replicated authorities, real Workers, and PostgreSQL standby"
 # K2 primary + streaming standby + bounded per-replica pools -> all four owner
 # databases migrate without exhausting the shared server connection budget;
 # K3 two anti-affined role replicas -> one Pod/node loss leaves an endpoint;
-# K4 Worker template + identity-specific signer + private-CA HTTPS edge +
+# K4 Worker template + Pod-bound token/UID + private-CA HTTPS edge +
 # namespace-scoped K8s runtime -> real Worker starts without seal key/DB,
 # creates an isolated Session Pod, and resolves exact Credential/File/Memory/
 # Skill projections there; Worker egress cannot bypass TLS on port 3001;
@@ -553,17 +551,36 @@ images:
     newName: awaken-roles
     newTag: $CLUSTER
 YAML
+# The canonical Create-control Namespace is distinct from the runtime
+# Namespace. Apply its focused overlay without a namespace override before
+# the Worker/Coordinator roles, so kubectl cannot redirect or reject its CAS
+# Role while the first Sandbox Create route is coming up.
+kubectl apply -k "$DEPLOY_DIR/distributed-control/create-control" >/dev/null
 k3d_render_sandbox_image "$ROLE_OVERLAY" "$SANDBOX_IMAGE" \
   | kubectl -n "$NS" apply -f - >/dev/null
-# Live RBAC decision table: C1 the Worker identity may create the retained claim;
-# C2 it may get the exact UID during adoption/rebuild; C3 it may delete only at
-# fenced disposal. E1 every required verb is admitted by the namespace Role.
-# The static contract independently proves no wider PVC verbs are rendered.
-for pvc_verb in create get delete; do
-  [ "$(kubectl auth can-i "$pvc_verb" persistentvolumeclaims \
-    --as="system:serviceaccount:${NS}:worker-runtime" -n "$NS")" = "yes" ] \
-    || { err "worker-runtime cannot ${pvc_verb} continuation PVCs"; exit 1; }
+# Brokered Create/RBAC decision table: C1 the exact Pod-bound Worker has only
+# read/UID-fenced disposal; C2 the Coordinator alone creates each of six
+# protected Kinds; C3 its separate control Namespace accepts only the exact
+# Coordinator ledger writer. Effects: E1 every direct Worker Create is denied;
+# E2 each Coordinator Create and exact ledger CAS is allowed. Rules RB1=C1+C2
+# +C3->E1+E2; any absent cause fails before the first public WorkUnit.
+WORKER_SUBJECT="system:serviceaccount:${NS}:worker-runtime"
+COORDINATOR_SUBJECT="system:serviceaccount:${NS}:coordinator-runtime"
+for resource in pods persistentvolumeclaims configmaps secrets jobs daemonsets; do
+  [ "$(kubectl auth can-i create "$resource" --as="$WORKER_SUBJECT" -n "$NS")" = "no" ] \
+    || { err "worker-runtime can bypass the ${resource} Create broker"; exit 1; }
+  [ "$(kubectl auth can-i create "$resource" --as="$COORDINATOR_SUBJECT" -n "$NS")" = "yes" ] \
+    || { err "Coordinator cannot broker ${resource} Create"; exit 1; }
 done
+for pvc_verb in get delete; do
+  [ "$(kubectl auth can-i "$pvc_verb" persistentvolumeclaims \
+    --as="$WORKER_SUBJECT" -n "$NS")" = "yes" ] \
+    || { err "worker-runtime cannot ${pvc_verb} the exact continuation PVC"; exit 1; }
+done
+[ "$(kubectl auth can-i create configmaps --as="$COORDINATOR_SUBJECT" -n awaken-create-control)" = "yes" ] \
+  || { err "Coordinator cannot CAS the independent Create ledger"; exit 1; }
+[ "$(kubectl auth can-i create configmaps --as="$WORKER_SUBJECT" -n awaken-create-control)" = "no" ] \
+  || { err "Worker can bypass the independent Create ledger"; exit 1; }
 kubectl -n "$NS" rollout status statefulset/postgres-primary --timeout=180s
 kubectl -n "$NS" rollout status statefulset/postgres-standby --timeout=180s
 initialize_role_installation control
@@ -638,8 +655,11 @@ log "6/11 remove the entire Coordinator tier, then recover the same publication"
 # C1 Coordinator unavailable -> public publication fails retryably and Workers
 # revoke their local claim admission; C2 Coordinator restored -> durable
 # publication remains available, but drained Worker incarnations terminate;
-# C3 RestartPolicy replacement -> fresh incarnations register and become Ready.
+# C3 the drained Worker requests exact Pod deletion before exit; StatefulSet
+# replacement gets a new UID, then a fresh incarnation can become Ready.
 WORKER_CONTAINERS_BEFORE=$(kubectl -n "$NS" get pod -l app=worker -o jsonpath='{range .items[*]}{.status.containerStatuses[0].containerID}{"\n"}{end}')
+WORKER_0_UID_BEFORE=$(kubectl -n "$NS" get pod worker-0 -o jsonpath='{.metadata.uid}')
+WORKER_1_UID_BEFORE=$(kubectl -n "$NS" get pod worker-1 -o jsonpath='{.metadata.uid}')
 kubectl -n "$NS" scale deploy/coordinator --replicas=0 >/dev/null
 kubectl -n "$NS" wait --for=delete pod -l app=coordinator --timeout=120s
 node "$DRIVER" unavailable-publication "$API_URL"
@@ -669,7 +689,21 @@ node "$DRIVER" retry-publication "$API_URL"
 kubectl -n "$NS" rollout status statefulset/worker --timeout=240s
 WORKER_CONTAINERS_AFTER=$(kubectl -n "$NS" get pod -l app=worker -o jsonpath='{range .items[*]}{.status.containerStatuses[0].containerID}{"\n"}{end}')
 [ "$WORKER_CONTAINERS_BEFORE" != "$WORKER_CONTAINERS_AFTER" ] || { err "drained Worker containers were reused"; exit 1; }
-ok "Coordinator outage failed closed; RestartPolicy restored fresh Worker incarnations"
+# Worker Pod replacement decision table: W1 authority lost + exact local
+# drain + retained UID deletion intent => Kubernetes may replace the Pod;
+# W2 same UID container restart => the immutable Create ledger cannot bind a
+# second process and must remain unready. E1 both ordinals acquire new UIDs
+# with zero container restarts; E2 either unchanged UID fails this gate. The
+# provider still owns the old exit receipt independently of DELETE acceptance.
+[ "$(kubectl -n "$NS" get pod worker-0 -o jsonpath='{.metadata.uid}')" != "$WORKER_0_UID_BEFORE" ] \
+  || { err "worker-0 reused its immutable Pod UID"; exit 1; }
+[ "$(kubectl -n "$NS" get pod worker-1 -o jsonpath='{.metadata.uid}')" != "$WORKER_1_UID_BEFORE" ] \
+  || { err "worker-1 reused its immutable Pod UID"; exit 1; }
+for pod in worker-0 worker-1; do
+  [ "$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].restartCount}')" = 0 ] \
+    || { err "$pod restarted inside its immutable Pod UID"; exit 1; }
+done
+ok "Coordinator outage failed closed; exact Pod deletion created fresh Worker UIDs"
 
 log "7/11 inject single-Pod faults and concurrent durable traffic"
 # Cause/effect decision table:
@@ -744,21 +778,17 @@ log "8/11 partition, then stop one K3D agent node and verify public continuity"
 # receipt before mutation; malformed, foreign and already-blocked targets fail;
 # N1 network partition or hard node stop + Ready still True -> no business write
 # during the detection window;
-# N2 Ready False/Unknown -> failed role endpoints are evicted; N2b a StatefulSet
-# Worker or Session-owned sandbox object can remain apparently Ready/Terminating
-# while its kubelet is unreachable, so after the physical node fence proves those
-# processes cannot execute, force-removing those stale API objects permits the same
-# lease-fenced Worker ordinal and durable Session environment to restart on a
-# healthy node;
-# N3 the surviving spread CoreDNS replica resolves replacement dependencies and
-# every application role becomes Ready again;
-# N4 stable public GETs -> issue the non-idempotent Event exactly once;
-# N5 surviving/replaced Provider and Worker -> one terminal response, never an
-# error hidden by retrying the accepted Event.
-# N6 decision rule: known target Pod + bound retained claim + matching live UID
-# + mutable bytes written after materialization => reconstruction must change Pod
-# UID and node, preserve PVC UID, and read the exact bytes. Any missing prerequisite
-# fails before fault injection. A resource re-projection cannot recreate this file.
+# N2 Ready False/Unknown evicts failed endpoints, but that observation is not
+# an exit receipt for the three original Sandbox containers. N2b the retained
+# Create-result guard and exact PVC UID must keep the old Session bound while
+# Kubernetes reports synthetic Unknown exits. No force deletion is permitted.
+# N3 a surviving CoreDNS/Worker path may execute an independently created
+# Session after the node returns; it cannot reuse the old Session's attempt or
+# PVC. N4 the later DB failover stage uses that independent identity. N5 the
+# original Session can resume only after a provider supplies real terminal
+# evidence, which this injected k3d node stop intentionally does not provide.
+# N6 before the fault, pin the exact Pod/PVC identity so retention and any
+# later replacement cannot be inferred from a shared name alone.
 # Earlier role replacement may change the physical object. Re-observe the
 # Session-owned Pod now; the bootstrap Pod name is not a durable identity.
 CONTINUITY_POD=$(k3d_sandbox_pod_for_session "$NS" "$SESSION_ID")
@@ -776,9 +806,6 @@ CLAIM_UID_BEFORE=$(kubectl -n "$NS" get pvc "$CLAIM_NAME" -o jsonpath='{.metadat
 CONTINUITY_PV=$(kubectl -n "$NS" get pvc "$CLAIM_NAME" -o jsonpath='{.spec.volumeName}')
 [ -z "$(kubectl get pv "$CONTINUITY_PV" -o jsonpath='{.spec.nodeAffinity}')" ] \
   || { err "continuation PV cannot relocate across nodes"; exit 1; }
-CONTINUITY_MARKER="ADR71-MUTABLE-$POD_UID_BEFORE"
-kubectl -n "$NS" exec "$CONTINUITY_POD" -c agent -- /bin/sh -ec \
-  'printf %s "$1" > /workspace/adr71-continuity; sync' awaken-continuity "$CONTINUITY_MARKER"
 
 # Network-partition rule N7: unlike the hard stop below, this fault leaves every
 # process and network interface running but blocks every underlay packet.
@@ -841,29 +868,21 @@ for _ in $(seq 1 120); do
 done
 [ "${NODE_READY:-True}" != "True" ] \
   || { err "stopped node remained Ready=True beyond its detection deadline"; exit 1; }
-# A Deployment can create a differently named replacement while the unreachable
-# Pod object terminates. A StatefulSet cannot create the same ordinal until that
-# object disappears. This is safe only after the Node Ready fence above: the old
-# Worker process is physically stopped, and any later kubelet return is also
-# rejected by the durable Worker generation/Run lease before effects.
-while read -r failed_worker failed_node; do
-  [ "$failed_node" != "$STOPPED_NODE" ] || kubectl -n "$NS" delete pod "$failed_worker" \
-    --grace-period=0 --force >/dev/null 2>&1
-done < <(kubectl -n "$NS" get pod -l app=worker \
-  -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName --no-headers)
-# Session environments are deterministic, standalone Pods rather than a
-# Deployment/StatefulSet. A stopped kubelet cannot acknowledge their ordinary
-# deletion, and their stale Ready bit would otherwise make adoption repeatedly
-# exec into a process that is physically gone. Delete only Pods observed on the
-# already-fenced node; the durable Session binding and realization digest remain
-# the authority used to rebuild the exact environment on the next claim.
-while read -r failed_sandbox failed_node; do
-  [ "$failed_node" != "$STOPPED_NODE" ] || kubectl -n "$NS" delete pod "$failed_sandbox" \
-    --grace-period=0 --force >/dev/null 2>&1
-done < <(kubectl -n "$NS" get pod -l app=awaken-sandbox \
-  -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName --no-headers)
-# Wait for that canonical Kubernetes state transition before reconnecting the
-# black-box client; the public API assertions below still use no private route.
+# Hard-node decision table: H1 Node Unknown + original Pod UID + retained
+# Create-result guard + original PVC UID => no provider terminal receipt;
+# H2 synthetic Unknown container exits after node return => H1 still holds;
+# H3 an unrelated Session has a different identity and claim. Effects:
+# E1 H1/H2 retain old evidence and never force-delete a Pod; E2 committed old
+# history stays readable; E3 H3 progresses without reopening the old attempt.
+# Neither a Node condition nor a deleted Pod name proves physical closure.
+[ "$(kubectl -n "$NS" get pod "$CONTINUITY_POD" -o jsonpath='{.metadata.uid}')" = "$POD_UID_BEFORE" ] \
+  || { err "node loss replaced the retained Session Pod without proof"; exit 1; }
+[ "$(kubectl -n "$NS" get pvc "$CLAIM_NAME" -o jsonpath='{.metadata.uid}')" = "$CLAIM_UID_BEFORE" ] \
+  || { err "node loss changed the retained continuation claim"; exit 1; }
+kubectl -n "$NS" get pod "$CONTINUITY_POD" \
+  -o jsonpath='{.metadata.finalizers[*]}' | grep -Fq 'awaken.dev/create-result-guard' \
+  || { err "node loss released the Sandbox Create evidence guard"; exit 1; }
+# The public client remains read-only while the original process is Unknown.
 # `kubectl port-forward service/...` selects one backing Pod when it starts. If
 # that Pod was on the stopped node, rebind the same public port to the surviving
 # Service endpoint after Kubernetes has fenced the failed node, before issuing
@@ -879,28 +898,30 @@ for _ in $(seq 1 60); do
 done
 [ "${DNS_SURVIVORS:-0}" -ge 1 ] \
   || { err "no Ready CoreDNS replica survived the stopped node"; exit 1; }
-wait_roles || { diagnostics; exit 1; }
-node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-NODE-LOSS
-# N10: public success alone cannot establish filesystem continuity. Verify all
-# three independent effects before the stopped node (and its old bytes) returns.
-CONTINUITY_POD_AFTER=$(k3d_sandbox_pod_for_session "$NS" "$SESSION_ID")
-POD_UID_AFTER=$(kubectl -n "$NS" get pod "$CONTINUITY_POD_AFTER" -o jsonpath='{.metadata.uid}')
-[ -n "$POD_UID_AFTER" ] || { diagnostics; exit 1; }
-[ "$POD_UID_AFTER" != "$POD_UID_BEFORE" ] \
-  || { err "node loss did not reconstruct the target Pod"; exit 1; }
-[ "$(kubectl -n "$NS" get pod "$CONTINUITY_POD_AFTER" -o jsonpath='{.spec.nodeName}')" != "$STOPPED_NODE" ] \
-  || { err "replacement Pod remained on the stopped node"; exit 1; }
-[ "$(kubectl -n "$NS" get pvc "$CLAIM_NAME" -o jsonpath='{.metadata.uid}')" = "$CLAIM_UID_BEFORE" ] && \
-  [ "$(kubectl -n "$NS" get pod "$CONTINUITY_POD_AFTER" -o jsonpath='{.metadata.annotations.awaken\.dev/continuation-claim-uid}')" = "$CLAIM_UID_BEFORE" ] \
-  || { err "reconstruction changed continuation volume identity"; diagnostics; exit 1; }
-kubectl -n "$NS" exec "$CONTINUITY_POD_AFTER" -c agent -- /bin/sh -ec \
-  'test "$(wc -c < /workspace/adr71-continuity)" -eq "${#1}" && test "$(cat /workspace/adr71-continuity)" = "$1"' awaken-continuity "$CONTINUITY_MARKER"
-ok "node loss changed Pod UID/node, retained PVC UID and exact mutable workspace bytes"
+node "$DRIVER" read-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-NETWORK-both
+[ "$(kubectl -n "$NS" get pod "$CONTINUITY_POD" -o jsonpath='{.metadata.uid}')" = "$POD_UID_BEFORE" ] \
+  || { err "the original Sandbox Pod advanced without physical proof"; exit 1; }
+kubectl -n "$NS" get pod "$CONTINUITY_POD" \
+  -o jsonpath='{.metadata.finalizers[*]}' | grep -Fq 'awaken.dev/create-result-guard' \
+  || { err "the original Sandbox guard was released without physical proof"; exit 1; }
+ok "hard node loss kept the old Session and PVC fenced while history remained readable"
 docker start "$STOPPED_CONTAINER" >/dev/null
 STOPPED_CONTAINER=""
 RESTORED_NODE="$STOPPED_NODE"
 STOPPED_NODE=""
 kubectl wait --for=condition=Ready "node/$RESTORED_NODE" --timeout=180s
+[ "$(kubectl -n "$NS" get pvc "$CLAIM_NAME" -o jsonpath='{.metadata.uid}')" = "$CLAIM_UID_BEFORE" ] \
+  || { err "restored node changed the old Session PVC identity"; exit 1; }
+kubectl -n "$NS" get pod "$CONTINUITY_POD" \
+  -o jsonpath='{.metadata.finalizers[*]}' | grep -Fq 'awaken.dev/create-result-guard' \
+  || { err "synthetic node return released the old Create guard"; exit 1; }
+wait_roles || { diagnostics; exit 1; }
+INDEPENDENT_OUTPUT=$(node "$DRIVER" create-independent-session "$API_URL" "$ENVIRONMENT_ID" | tail -1)
+[[ "$INDEPENDENT_OUTPUT" == 'OK independent='* ]] \
+  || { err "independent Session admission failed: $INDEPENDENT_OUTPUT"; exit 1; }
+SESSION_ID=${INDEPENDENT_OUTPUT#OK independent=}
+node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-INDEPENDENT-AFTER-NODE-LOSS
+ok "independent Session progressed; original Unknown execution stayed fenced"
 
 log "9/11 hard-crash the synchronous PostgreSQL writer and promote its standby"
 # Database failover cause/effect graph:
@@ -1026,24 +1047,16 @@ kubectl -n "$NS" wait --for=delete pod/worker-0 pod/worker-1 --timeout=180s
 
 COORDINATOR_CONFIG=$(kubectl -n "$NS" get secret adr71-role-config \
   -o jsonpath='{.data.coordinator\.toml}' | base64 -d)
-grep -q '^worker_trust_credentials_file = ' <<<"$COORDINATOR_CONFIG" \
-  || { err "initial Coordinator transport is not the expected signed authority"; exit 1; }
-COORDINATOR_CONFIG=$(sed '/^worker_trust_credentials_file = /d' <<<"$COORDINATOR_CONFIG")
-COORDINATOR_CONFIG+=$'\n[worker_kubernetes]\nnamespace = "awaken-adr71"\nservice_account = "worker-runtime"\naudience = "awaken-worker"\nprovider_id = "k3d-adr71"\n'
-COORDINATOR_CONFIG_B64=$(printf '%s' "$COORDINATOR_CONFIG" | base64 | tr -d '\n')
-kubectl -n "$NS" patch secret adr71-role-config --type=merge \
-  -p "{\"data\":{\"coordinator.toml\":\"${COORDINATOR_CONFIG_B64}\"}}" >/dev/null
-COORDINATOR_SUBJECT="system:serviceaccount:${NS}:coordinator-runtime"
+grep -q '^\[worker_kubernetes\]$' <<<"$COORDINATOR_CONFIG" \
+  || { err "the original Coordinator lacked its Pod-bound Create authority"; exit 1; }
+! grep -q '^worker_trust_credentials_file = ' <<<"$COORDINATOR_CONFIG" \
+  || { err "Coordinator transport changed authority during recovery"; exit 1; }
 [ "$(kubectl auth can-i create tokenreviews.authentication.k8s.io --as="$COORDINATOR_SUBJECT")" = "yes" ] \
   || { err "coordinator-runtime cannot create TokenReviews"; exit 1; }
 for pod_verb in get delete; do
   [ "$(kubectl auth can-i "$pod_verb" pods --as="$COORDINATOR_SUBJECT" -n "$NS")" = "yes" ] \
     || { err "coordinator-runtime cannot ${pod_verb} Pods"; exit 1; }
 done
-kubectl -n "$NS" rollout restart deployment/coordinator >/dev/null
-kubectl -n "$NS" rollout status deployment/coordinator --timeout=240s
-start_public_endpoint
-
 create_native_worker_pod "$NATIVE_CRASH_OLD"
 kubectl -n "$NS" wait --for=condition=Ready "pod/$NATIVE_CRASH_OLD" --timeout=240s
 NATIVE_OLD_UID=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_OLD" -o jsonpath='{.metadata.uid}')

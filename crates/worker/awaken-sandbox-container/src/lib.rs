@@ -67,6 +67,8 @@ use exec_attempts::ExecAttempts;
 pub(crate) use exec_attempts::exec_orphan_reaper_command;
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) use exec_attempts::{exec_pid_file, exec_pid_file_prelude};
+#[cfg(feature = "k8s")]
+pub use handle::KubernetesGuardedClaimHandle;
 pub use handle::{
     ContainerContinuationHandle, ContainerHandleCodec, ContainerSandboxHandleV1,
     ContainerSandboxHandleV2, HostBindRestorationHandle, KubernetesPodUid,

@@ -298,6 +298,16 @@ Every distributed-control run resolves the current role binaries through Cargo
 and builds the Hand through the canonical sandbox builder. Cargo and Docker
 retain their incremental caches; the old tag-only reuse bypass has been removed
 because tag existence and a working Hand do not establish current-source identity.
+The distributed topology selects the Kubernetes Worker transport before any
+WorkUnit runs. Each Worker projects its Pod-bound identity and reaches the
+Coordinator's one Create broker over the existing private-CA TLS edge; the
+Worker ServiceAccount cannot create Pod, PVC, ConfigMap, Secret, Job or
+DaemonSet collections directly. The two overlays import the same Sandbox
+read/dispose and six-Kind Create Role source. The distributed overlay also
+imports the existing Create-control Namespace and isolation admission policy,
+binding only its Coordinator to the ledger and Create roles. The final hard
+crash stage retains this original authority instead of replacing transport
+mid-run.
 The shared harness checks local Docker/tmp filesystem bytes and inodes before
 cluster replacement and again before image import, accounting for every node,
 transport archives and a reserve. Remote Docker contexts fail closed because

@@ -1329,6 +1329,7 @@ async fn missing_handle_reconstructs_a_live_original_pod_and_claim_for_terminal_
                     "a".repeat(64),
                 )?,
                 status: TicketStatus::Finished(TicketResult::Created { uid }),
+                origin: Default::default(),
                 isolation_id: String::new(),
                 isolation_pending: false,
             });
@@ -1342,6 +1343,7 @@ async fn missing_handle_reconstructs_a_live_original_pod_and_claim_for_terminal_
             &self,
             _: &str,
             _: &awaken_sandbox_container::ContainerEffectFence,
+            _: &str,
         ) -> Result<RequestJoin, RuntimeError> {
             self.sealed.store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(RequestJoin::Complete(self.tickets.lock().unwrap().clone()))
@@ -1691,6 +1693,12 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
                 awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 { claim_uid, .. } =>
                     claim_uid.as_deref(),
                 awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuation { .. } => None,
+                // KPV5b cause: authorized Rebuild has a runnable replacement
+                // Pod. Effect: a terminal-only guarded claim is inadmissible;
+                // it can authorize cleanup but cannot serve this Rebuild.
+                awaken_sandbox_container::ContainerContinuationHandle::KubernetesGuardedClaim(_) => {
+                    panic!("KPV5b Rebuild returned a terminal-only guarded claim")
+                }
                 awaken_sandbox_container::ContainerContinuationHandle::HostBindRestoration(_) => {
                     panic!("KPV5b Kubernetes replacement returned a host-bind handle")
                 }

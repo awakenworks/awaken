@@ -1153,6 +1153,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         admit()?;
         let reconstructed = handle.is_none();
         let recovered_handle;
+        #[cfg(feature = "k8s")]
+        let mut guarded_claim = false;
+        #[cfg(not(feature = "k8s"))]
+        let guarded_claim = false;
         let handle = match handle {
             Some(handle) => handle,
             None => {
@@ -1184,6 +1188,13 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                                 "materialized container has unretained terminal participants",
                             ));
                         }
+                        #[cfg(feature = "k8s")]
+                        {
+                            guarded_claim = matches!(
+                                runtime_handle,
+                                crate::ContainerContinuationHandle::KubernetesGuardedClaim(_)
+                            );
+                        }
                         recovered_handle = pc::SandboxHandle::container_v2(
                             &spec.scope,
                             ContainerSandboxHandleV2 {
@@ -1213,6 +1224,24 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 }
             }
         };
+        if guarded_claim {
+            // The original Pod never became the Session environment. The
+            // provider already re-observed the exact immutable reservation and
+            // PVC above; preparation has no user bytes to harvest. The same
+            // ContainerSandbox disposal edge re-observes both under the later
+            // aggregate authorization before deleting the original claim.
+            admit()?;
+            return self
+                .adopt_observed_container_with_lifecycle(
+                    handle,
+                    Some(spec),
+                    ContainerCleanupState::physical_cleanup_only(),
+                    ContainerObservationPurpose::TerminalCleanup,
+                    &admit,
+                )
+                .await
+                .map(Some);
+        }
         if handle.restoration().is_some() {
             return Err(pc::SandboxError::invalid(
                 "restored container terminal cleanup requires its exact SandboxRestoreRequest",

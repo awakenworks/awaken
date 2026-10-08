@@ -97,13 +97,16 @@ def main() -> None:
     product = Path(__file__).parent / "product-backend"
     dns = (distributed / "network-policies.yaml").read_text()
     assert "operator: NotIn, values: [awaken-sandbox]" in dns
-    assert 'resources: ["networkpolicies"]' in resources
-    assert 'verbs: ["get", "list", "watch"]' in resources
+    shared_rbac = (
+        Path(__file__).parent / "bases" / "sandbox-runtime-rbac" / "resources.yaml"
+    ).read_text()
+    assert 'resources: ["networkpolicies"]' in shared_rbac
+    assert 'verbs: ["get", "list", "watch"]' in shared_rbac
     for overlay in (distributed, product):
         assert "../bases/sandbox-network-policy" in (overlay / "kustomization.yaml").read_text()
     product_resources = (product / "resources.yaml").read_text()
-    assert 'resources: ["networkpolicies"]' in product_resources
-    assert 'verbs: ["get", "list", "watch"]' in product_resources
+    for overlay in (distributed, product):
+        assert "../bases/sandbox-runtime-rbac" in (overlay / "kustomization.yaml").read_text()
     # Worker-retirement cause/effect decision table. C1 Kubernetes begins a
     # normal Job/StatefulSet replacement; C2 the Worker can still claim work
     # until its local gate closes; C3 an in-flight model/tool may outlive the
@@ -176,19 +179,14 @@ def main() -> None:
         product_resources.replace("preStop:", "removedPreStop:", 1),
         product_marker,
     )
-    # Distributed-control continuation/RBAC decision table. C1 the direct
-    # runtime runs retained Kubernetes Sessions; C2 it selects the canonical
-    # PVC; C3 its Role can allocate, observe by UID, and dispose that claim.
-    # KRB1=C1+C2+C3=>admit exact create/get/delete; KRB2=C1+(!C2|!C3)
-    # =>reject. The brokered product overlay has a different Create owner;
-    # product_backend_contract_test.sh alone checks its split Roles and PVC
-    # configuration. Duplicating that assertion here hid the RBAC change.
+    # Retained-storage selection stays in this image/config contract. The
+    # distributed deployment contract and live can-i table own the separate
+    # Coordinator Create and Worker read/dispose permissions; copying those
+    # Role rules here would create a second RBAC test authority.
     worker = resources.split("  worker.toml: |\n", 1)[1].split("---", 1)[0]
     assert tomllib.loads(textwrap.dedent(worker))["k8s_continuation_volume"] == {
         "storage_class_name": "local-path", "size": "1Gi",
     }
-    assert 'resources: ["persistentvolumeclaims"]' in resources
-    assert 'verbs: ["create", "get", "delete"]' in resources
     assert '/usr/local/bin/awaken-control", "database", "migrate"' in resources
     assert 'command: ["/usr/local/bin/awaken-server"]' in resources
     assert '/usr/local/bin/awaken-coordinator", "database", "migrate"' in resources

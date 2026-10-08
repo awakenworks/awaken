@@ -430,6 +430,8 @@ fn future_host_bind_is_reader_only_and_legacy_nested_enum_rejects_it() {
         }
         ContainerContinuationHandle::KubernetesContinuation { .. }
         | ContainerContinuationHandle::HostBindRestoration(_) => panic!("R9/E2 wrong kind"),
+        #[cfg(feature = "k8s")]
+        ContainerContinuationHandle::KubernetesGuardedClaim(_) => panic!("R9/E2 wrong kind"),
     }
     assert_eq!(
         serde_json::to_value(&decoded_kubernetes).unwrap(),
@@ -456,6 +458,8 @@ fn future_host_bind_is_reader_only_and_legacy_nested_enum_rejects_it() {
         | ContainerContinuationHandle::KubernetesContinuationV2 { .. } => {
             panic!("R10/E3 wrong kind")
         }
+        #[cfg(feature = "k8s")]
+        ContainerContinuationHandle::KubernetesGuardedClaim(_) => panic!("R10/E3 wrong kind"),
     }
     assert_eq!(serde_json::to_value(decoded).unwrap(), future, "R10/E3");
 
@@ -488,5 +492,96 @@ fn future_host_bind_is_reader_only_and_legacy_nested_enum_rejects_it() {
     assert!(
         serde_json::from_value::<LegacySandboxHandle>(legacy_host_bind).is_err(),
         "R11/E4 HostBind locator"
+    );
+}
+
+#[cfg(feature = "k8s")]
+#[test]
+fn guarded_claim_handle_keeps_one_typed_terminal_incarnation() {
+    // Causes: C1 a joined Pod reservation has one Isolated UID and a retained
+    // original claim UID; C2 the terminal-only handle is encoded and reopened;
+    // C3 the reservation is InFlight, its UID is empty, or the claim UID is
+    // missing. Effects: E1 C1+C2 preserves both immutable identities and the
+    // predecessor fence; E2 C3 refuses before a physical-incarnation claim.
+    // Rules H1=C1+C2->E1, H2=C3->E2. Ordinary adoption refusal is owned by
+    // the K8s runtime purpose table, not duplicated in this codec test.
+    use crate::k8s::{CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus};
+    let predecessor =
+        crate::ContainerEffectFence::new("old-effect", "old-worker", "old-boot", 1, u64::MAX)
+            .unwrap();
+    let ticket = CreateTicket {
+        request: CreateTicketRequest::new(
+            "old-group",
+            "pods",
+            "default",
+            "awaken-scope",
+            "a".repeat(64),
+        )
+        .unwrap(),
+        status: TicketStatus::Finished(TicketResult::Isolated {
+            uid: "guard-uid".into(),
+        }),
+        origin: TicketOrigin::TerminalGuard,
+        isolation_id: "0123456789abcdef0123456789abcdef".into(),
+        isolation_pending: false,
+    };
+    let guarded =
+        KubernetesGuardedClaimHandle::new("scope", &predecessor, ticket.clone(), "claim-uid")
+            .unwrap();
+    let handle = pc::SandboxHandle::container_v2(
+        "scope",
+        container_v2(
+            Some(ContainerContinuationHandle::KubernetesGuardedClaim(
+                guarded.clone(),
+            )),
+            Vec::new(),
+        ),
+    );
+    let reopened: pc::SandboxHandle =
+        serde_json::from_str(&serde_json::to_string(&handle).unwrap()).unwrap();
+    assert_eq!(reopened, handle, "H1 typed replay");
+    assert_eq!(
+        reopened.container_physical_incarnation().unwrap(),
+        "guard-uid",
+        "H1"
+    );
+    assert_eq!(guarded.claim_uid, "claim-uid", "H1");
+    assert_eq!(guarded.predecessor, predecessor, "H1");
+
+    let mut in_flight = ticket.clone();
+    in_flight.status = TicketStatus::InFlight;
+    assert!(
+        KubernetesGuardedClaimHandle::new("scope", &predecessor, in_flight, "claim-uid").is_err(),
+        "H2"
+    );
+    assert!(
+        KubernetesGuardedClaimHandle::new("scope", &predecessor, ticket.clone(), "").is_err(),
+        "H2"
+    );
+    let mut no_uid = ticket;
+    no_uid.status = TicketStatus::Finished(TicketResult::Isolated { uid: String::new() });
+    assert!(
+        KubernetesGuardedClaimHandle::new("scope", &predecessor, no_uid.clone(), "claim-uid")
+            .is_err(),
+        "H2 empty guard UID at construction"
+    );
+    let malformed = KubernetesGuardedClaimHandle {
+        scope: "scope".into(),
+        predecessor,
+        guard: no_uid,
+        claim_uid: "claim-uid".into(),
+    };
+    let malformed_handle = pc::SandboxHandle::container_v2(
+        "scope",
+        container_v2(
+            Some(ContainerContinuationHandle::KubernetesGuardedClaim(
+                malformed,
+            )),
+            Vec::new(),
+        ),
+    );
+    assert!(
+        malformed_handle.container_physical_incarnation().is_err(),
+        "H2 empty guard UID"
     );
 }

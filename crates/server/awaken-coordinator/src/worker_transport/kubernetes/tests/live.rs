@@ -704,7 +704,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     .unwrap();
     assert!(
         matches!(
-            successor_create.seal_predecessor("old-session", &old_effect).await.unwrap(),
+            successor_create.seal_predecessor("old-session", &old_effect, "awaken-old-session").await.unwrap(),
             RequestJoin::Complete(tickets)
                 if tickets.len() == 1 && tickets[0].request.resource == "configmaps"
         ),

@@ -31,8 +31,8 @@ data:
       scgi_temp_path /tmp/scgi_temp;
       # Test-only failure injection: the final k3d stage uses one exact
       # non-restarting Pod name. Its terminal ThreadCommit must become durable
-      # before the Worker can acknowledge physical return. All ordinary signed
-      # Workers and the replacement Pod continue through the same proxy path.
+      # before the Worker can acknowledge physical return. Ordinary Pod-bound
+      # Workers and the replacement Pod use the same proxy path.
       map "$uri|$http_x_awaken_worker_id" $reject_old_native_finish {
         default 0;
         ~^/v1/worker/dispatch/attempt/finish\|k8s:awaken-adr71:native-crash-old: 1;
@@ -71,21 +71,6 @@ type: Opaque
 stringData:
   registration-token: "adr71-registration-token" # awaken-allow: secret
   control-service-token: "adr71-control-service-token" # awaken-allow: secret
-  worker-trust.json: |
-    [
-      {"worker_id":"worker-0","key_id":"adr71-key-0","credential_id":"adr71-worker-0","secret_base64":"YWRyNzEtd29ya2VyLTA="},
-      {"worker_id":"worker-1","key_id":"adr71-key-1","credential_id":"adr71-worker-1","secret_base64":"YWRyNzEtd29ya2VyLTE="}
-    ]
----
-apiVersion: v1
-kind: Secret
-metadata: { name: adr71-worker-auth }
-type: Opaque
-stringData:
-  worker-0.json: |
-    {"worker_id":"worker-0","key_id":"adr71-key-0","credential_id":"adr71-worker-0","secret_base64":"YWRyNzEtd29ya2VyLTA="}
-  worker-1.json: |
-    {"worker_id":"worker-1","key_id":"adr71-key-1","credential_id":"adr71-worker-1","secret_base64":"YWRyNzEtd29ya2VyLTE="}
 ---
 apiVersion: v1
 kind: Secret
@@ -140,16 +125,20 @@ stringData:
     executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
     control_internal_url = "http://control:3001"
     control_service_token_file = "/etc/awaken-auth/control-service-token"
-    worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"
     sandbox_tier = "namespace"
     dispatch_wake = "pg-notify"
     dispatch_owner = "adr71-coordinator"
+    [worker_kubernetes]
+    namespace = "awaken-adr71"
+    service_account = "worker-runtime"
+    audience = "awaken-worker"
+    provider_id = "k3d-adr71"
+    create_control_namespace = "awaken-create-control"
   worker.toml: |
     data_dir = "/var/lib/awaken/worker"
     mode = "server"
     role = "worker"
-    worker_id = "__WORKER_ID__"
-    worker_request_credential_file = "/etc/awaken-worker-auth/__WORKER_ID__.json"
+    worker_kubernetes_identity_directory = "/var/run/awaken/identity"
     worker_server_ca_certificate_file = "/etc/awaken-worker-tls/ca.crt"
     worker_credential_material_root = "/var/run/awaken/credentials"
     worker_credential_trust_domain = "awaken.worker"
@@ -293,26 +282,26 @@ roleRef:
   name: system:auth-delegator
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata: { name: coordinator-worker-process }
-rules:
-  # TokenReview establishes the Pod UID; this namespace-scoped capability then
-  # freezes, stops, and releases evidence only for that exact retained process
-  # domain after the Registry has durably recorded its exit.
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "update", "delete"]
----
-apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: coordinator-worker-process }
+metadata: { name: coordinator-runtime-read-dispose }
 subjects:
   - kind: ServiceAccount
     name: coordinator-runtime
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: coordinator-worker-process
+  name: awaken-runtime-read-dispose
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: coordinator-create-executor }
+subjects:
+  - kind: ServiceAccount
+    name: coordinator-runtime
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: awaken-create-executor
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -402,29 +391,6 @@ metadata: { name: worker-runtime }
 automountServiceAccountToken: true
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata: { name: worker-runtime }
-rules:
-  # Distributed recovery retains the Session Pod's canonical continuation PVC.
-  # The runtime needs exactly create/get/delete for allocation, UID-fenced
-  # adoption/rebuild, and terminal disposal; update/list/watch are not admitted.
-  - apiGroups: [""]
-    resources: ["pods", "configmaps"]
-    verbs: ["create", "get", "list", "update", "delete", "deletecollection"]
-  - apiGroups: [""]
-    resources: ["persistentvolumeclaims"]
-    verbs: ["create", "get", "delete"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create", "get"]
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["create", "get", "list", "delete", "deletecollection"]
-  - apiGroups: ["networking.k8s.io"]
-    resources: ["networkpolicies"]
-    verbs: ["get", "list", "watch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata: { name: worker-runtime }
 subjects:
@@ -433,7 +399,7 @@ subjects:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: worker-runtime
+  name: awaken-runtime-read-dispose
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -462,11 +428,8 @@ spec:
           securityContext:
             allowPrivilegeEscalation: true
             seccompProfile: { type: Unconfined }
-          command: ["/bin/sh", "-ec"]
-          args:
-            - |
-              sed "s/__WORKER_ID__/${HOSTNAME}/g" /etc/awaken-template/worker.toml > /tmp/worker.toml
-              exec /usr/local/bin/awaken-worker --server https://coordinator:3443 --config /tmp/worker.toml
+          command: ["/usr/local/bin/awaken-worker"]
+          args: ["--server", "https://coordinator:3443", "--config", "/etc/awaken-template/worker.toml"]
           ports: [{ containerPort: 9090 }]
           lifecycle:
             # Normal scale-in closes local claim admission before SIGTERM and
@@ -485,17 +448,15 @@ spec:
             periodSeconds: 2
           volumeMounts:
             - { name: template, mountPath: /etc/awaken-template, readOnly: true }
-            - { name: auth, mountPath: /etc/awaken-worker-auth, readOnly: true }
             - { name: upstream-tls, mountPath: /etc/awaken-worker-tls, readOnly: true }
             - { name: material, mountPath: /var/run/awaken/credentials, readOnly: true }
+            - { name: identity, mountPath: /var/run/awaken/identity, readOnly: true }
             - { name: data, mountPath: /var/lib/awaken }
       volumes:
         - name: template
           secret:
             secretName: adr71-role-config
             items: [{ key: worker.toml, path: worker.toml }]
-        - name: auth
-          secret: { secretName: adr71-worker-auth }
         - name: upstream-tls
           configMap:
             name: adr71-worker-upstream-ca
@@ -508,6 +469,18 @@ spec:
                 path: envelopes/61647237312d656e76656c6f7065/7368613235363a61647237312d70726f76696465722d7061796c6f6164/61647237312d70726f76696465722d63726564656e7469616c/1/776f726b73706163652d6164723731/666e76316136343a37616138653836326333363034333234/secret
               - key: payload-fingerprint
                 path: envelopes/61647237312d656e76656c6f7065/7368613235363a61647237312d70726f76696465722d7061796c6f6164/61647237312d70726f76696465722d63726564656e7469616c/1/776f726b73706163652d6164723731/666e76316136343a37616138653836326333363034333234/payload_fingerprint
+        - name: identity
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: awaken-worker
+                  expirationSeconds: 600
+              - downwardAPI:
+                  items:
+                    - { path: namespace, fieldRef: { fieldPath: metadata.namespace } }
+                    - { path: name, fieldRef: { fieldPath: metadata.name } }
+                    - { path: uid, fieldRef: { fieldPath: metadata.uid } }
         - name: data
           emptyDir: {}
 ---

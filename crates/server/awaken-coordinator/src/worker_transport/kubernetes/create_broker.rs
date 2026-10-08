@@ -76,6 +76,7 @@ struct SealWire {
     identity: WorkerIdentity,
     scope: String,
     predecessor: ContainerEffectFence,
+    expected_pod_name: String,
 }
 
 fn status_response(code: u16, reason: &str) -> K8sCreateResponse {
@@ -355,6 +356,7 @@ impl K8sCreateBroker {
                         state.directory.clone(),
                         &request.scope,
                         &request.predecessor,
+                        &request.expected_pod_name,
                     )
                     .await?;
                 serde_json::to_value(joined).map_err(|_| {
@@ -463,6 +465,7 @@ impl K8sCreateBroker {
         directory: Arc<dyn WorkerDirectory>,
         scope: &str,
         predecessor: &ContainerEffectFence,
+        expected_pod_name: &str,
     ) -> Result<RequestJoin, ApplicationError> {
         if scope.trim().is_empty() || scope.trim() != scope || scope.len() > 256 {
             return Err(ApplicationError::invalid("Sandbox Create scope is invalid"));
@@ -518,11 +521,9 @@ impl K8sCreateBroker {
                 ApplicationError::unavailable("old Worker Create requests remain unjoined")
             })?;
         self.ledger
-            .isolate_sealed_group_and_join(exact, &group)
+            .reserve_terminal_claim_pod_and_join(exact, &group, scope, expected_pod_name)
             .await
-            .map_err(|_| {
-                ApplicationError::unavailable("old Worker Pod Create isolation is unverified")
-            })
+            .map_err(|_| ApplicationError::unavailable("old Worker Create isolation is unverified"))
     }
 
     async fn forward_and_record(
@@ -1092,7 +1093,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             broker
-                .seal_predecessor(directory.clone(), "scope", &predecessor)
+                .seal_predecessor(directory.clone(), "scope", &predecessor, "awaken-scope")
                 .await
                 .unwrap(),
             RequestJoin::Unknown,
@@ -1117,7 +1118,7 @@ mod tests {
             .unwrap();
         assert!(
             matches!(
-                broker.seal_predecessor(directory, "scope", &predecessor).await.unwrap(),
+                broker.seal_predecessor(directory, "scope", &predecessor, "awaken-scope").await.unwrap(),
                 RequestJoin::Complete(tickets) if tickets.len() == 1
             ),
             "E5 exact persisted exit plus one finished ticket joins"

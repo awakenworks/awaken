@@ -114,7 +114,7 @@ pub use crate::k8s_package_image::K8sPackageImageProvisioner;
 pub use create_ledger::{
     CreateTicket, CreateTicketRequest, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, K8sLedgerBinding,
     K8sWorkerCreateLedger, ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION, RequestJoin,
-    TicketAdmission, TicketResult, TicketStatus, WorkerCreateLedgerState,
+    TicketAdmission, TicketOrigin, TicketResult, TicketStatus, WorkerCreateLedgerState,
 };
 pub(crate) use create_transport::brokered_client;
 pub use create_transport::{K8sCreateRequest, K8sCreateResponse, K8sCreateTransport};
@@ -859,46 +859,6 @@ impl K8sRuntime {
         stamp_k8s_attempt(object, context.attempt.as_str());
     }
 
-    fn desired_create_claim(
-        &self,
-        context: &ContainerRealizationContext<'_>,
-        plan: &ContainerPlan,
-    ) -> Result<Option<PersistentVolumeClaim>, RuntimeError> {
-        if !matches!(context.intent, ContainerRealizationIntent::Create)
-            || !continuation::claim_required(plan, self.continuation_volume.is_some())
-        {
-            return Ok(None);
-        }
-        let effect_fence = context.effect_fence.ok_or_else(|| {
-            backend("Kubernetes retained continuation creation requires a durable effect fence")
-        })?;
-        self.desired_create_claim_for_effect(context.scope, plan, effect_fence)
-    }
-
-    fn desired_create_claim_for_effect(
-        &self,
-        scope: &str,
-        plan: &ContainerPlan,
-        effect_fence: &ContainerEffectFence,
-    ) -> Result<Option<PersistentVolumeClaim>, RuntimeError> {
-        if !continuation::claim_required(plan, self.continuation_volume.is_some()) {
-            return Ok(None);
-        }
-        let runtime_id = self.realization_runtime_id(scope)?;
-        let config = self
-            .continuation_volume
-            .as_ref()
-            .expect("claim selector requires configured continuation storage");
-        let mut claim = continuation::build_claim(&runtime_id, config)?;
-        // The ordinary digest owns the immutable PVC shape. The aggregate fence
-        // is stamped afterwards so a lease-expiry renewal does not create a
-        // second filesystem identity; admission below still compares the exact
-        // stable effect identity and monotonic expiry.
-        stamp_realization(&mut claim)?;
-        stamp_effect_fence(&mut claim, effect_fence);
-        Ok(Some(claim))
-    }
-
     fn create_claim_admission(
         &self,
         desired: &PersistentVolumeClaim,
@@ -1126,6 +1086,11 @@ impl K8sRuntime {
                 claim_uid,
                 ..
             }) => claim_uid.as_deref(),
+            Some(crate::ContainerContinuationHandle::KubernetesGuardedClaim(_)) => {
+                return Err(backend(
+                    "guarded Kubernetes claim has no ordinary Pod continuation",
+                ));
+            }
             Some(crate::ContainerContinuationHandle::HostBindRestoration(_)) => {
                 return Err(backend(
                     "Kubernetes observation received a host-bind continuation handle",

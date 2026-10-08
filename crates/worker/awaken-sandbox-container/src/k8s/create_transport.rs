@@ -44,6 +44,7 @@ pub trait K8sCreateTransport: Send + Sync {
         &self,
         scope: &str,
         predecessor: &ContainerEffectFence,
+        expected_pod_name: &str,
     ) -> Result<RequestJoin, RuntimeError>;
 }
 
@@ -235,6 +236,7 @@ mod tests {
             &self,
             _scope: &str,
             _predecessor: &ContainerEffectFence,
+            _expected_pod_name: &str,
         ) -> Result<RequestJoin, RuntimeError> {
             self.seal_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.join.clone())
@@ -521,6 +523,7 @@ mod tests {
         let ticket = |status| super::super::CreateTicket {
             request: request.clone(),
             status,
+            origin: Default::default(),
             isolation_id: String::new(),
             isolation_pending: false,
         };
@@ -669,6 +672,7 @@ mod tests {
             status: super::super::TicketStatus::Finished(super::super::TicketResult::Created {
                 uid: "old-uid".into(),
             }),
+            origin: Default::default(),
             isolation_id: String::new(),
             isolation_pending: false,
         };
@@ -817,6 +821,7 @@ mod tests {
             status: super::super::TicketStatus::Finished(super::super::TicketResult::Created {
                 uid: "claim-uid".into(),
             }),
+            origin: Default::default(),
             isolation_id: String::new(),
             isolation_pending: false,
         };

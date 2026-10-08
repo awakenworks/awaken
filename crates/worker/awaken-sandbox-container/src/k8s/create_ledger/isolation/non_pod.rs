@@ -476,6 +476,7 @@ mod tests {
             )
             .unwrap(),
             status: TicketStatus::InFlight,
+            origin: Default::default(),
             isolation_id: "0123456789abcdef0123456789abcdef".into(),
             isolation_pending: true,
         }

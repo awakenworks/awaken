@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-09-07
 - Amends: [ADR-0075](0075-unified-managed-session-worker-execution.md)
-- Implementation: Resource projection and terminal-only release implemented; bounded direct-process and brokered cross-process Kubernetes Pod handle-free convergence implemented; six-Kind Create name isolation implemented; richer participant closure remains pending
+- Implementation: Resource projection and terminal-only release implemented; bounded direct-process and brokered cross-process Kubernetes Pod/retained-PVC handle-free convergence implemented; six-Kind Create name isolation and guarded PVC-only terminal cleanup implemented; richer participant closure remains pending live qualification
 
 ## Context
 
@@ -720,3 +720,82 @@ the six-Kind Worker/Create wire and kube defaulting rules, not a parallel
 decoder inside recovery. Provider tests cover the pair's positive and negative
 UID/projection rows and reuse of the terminal disposal owner. Real API and
 product-topology acceptance remain separate evidence gates.
+
+## Amendment 2026-10-08: one guarded PVC-only terminal participant
+
+The exact old Worker exit, Registry-frozen ledger UID and complete sealed
+request join remain the only cross-process Create admission proof. For a frozen
+retained plan with no package, bind, Memory or control participant, a joined
+original PVC Create may precede a lost Pod handle. The existing provider ledger
+now records one terminal Pod-name reservation in the **same** ConfigMap CAS
+state. If no original Pod ticket exists, the provider inserts a typed terminal
+guard ticket; if a Pod Create was definitively rejected, it reuses that
+ticket's original nonce. An admitted InFlight Pod ticket continues through the
+existing isolation transition. A Created Pod remains on the ordinary exact
+Pod/PVC handle path. No second request queue or retry executor is introduced.
+
+After the independent broker has reverified the old Worker exit, a same-name
+unschedulable Pod wins or loses Kubernetes's atomic Create name race. The
+existing immutable reservation projection, UID readback, active admission
+policy and exact dry-run DELETE denial must all hold. The original PVC ticket
+must name the canonical claim and its still-live UID, predecessor effect and
+complete storage projection. The provider then constructs a terminal-only
+typed handle. It does not admit a runnable Pod or issue a cleanup receipt.
+The existing Session terminal owner prepares with zero user-byte harvest and
+later invokes `ContainerSandbox::dispose_for_effect` with its separate current
+authorization. That edge rechecks the guard and original claim, uses the one
+`continuation::initiate_claim_deletion` UID/resourceVersion-fenced deletion,
+waits for the exact claim to disappear, and rechecks that the guard remains
+protected. The retained inert Pod is the durable exclusion proof; it is not
+removed on receipt replay. A lost PVC DELETE response yields uncertainty until
+the same guard and exact claim absence are read back.
+The seal request carries the canonical Pod name already projected by the
+Sandbox Runtime from its realization namespace and scope. The ledger uses the
+existing Pod-to-PVC naming inverse to match that name against the original
+Created claim ticket; re-encoding raw scope in the broker would address a
+different Kubernetes object and must remain Unknown.
+
+Unready policy, missing historical nonce, another Created or Isolated Kind,
+foreign UID/spec/effect, a terminating claim before source reconstruction,
+missing terminal authorization, or an unresolved request remains Unknown with
+zero early Session receipt or Flow successor. The direct-process compatibility
+gate does not borrow this brokered proof. Rich ConfigMap/Secret/Memory/control
+plans and opaque remote execution remain explicit availability gaps. State,
+handle, provider-ordering and mock-API cause/effect tables live beside their
+tests; the real k3d case must prove the original PVC, guard name, late Create
+409, UID-fenced deletion and response/receipt replay in one cluster.
+
+The distributed-control deployment had selected signed/unbound Coordinator
+transport at startup while its K8s Worker already forwarded Create to the
+broker, making the first Sandbox request return 404. It now selects the
+existing Kubernetes Worker transport before Ready. The Worker projects its
+Pod-bound token/UID and has read/dispose but no direct six-Kind Create; the
+Coordinator owns those Creates, the retained ledger in a separate control
+Namespace and the original Worker stop evidence. Both deployments import one
+shared RBAC Role source and the existing Create-isolation policy. The final
+Native crash stage retains the same transport instead of changing authority
+mid-run. Static render/role tests and real `kubectl auth can-i` decisions must
+precede the public WorkUnit; a successful HTTP readiness response alone never
+qualifies the broker route.
+
+The Worker Pod UID is also one immutable Registry incarnation and one Create
+ledger process binding. After local drain and quiescence, a Pod-bound Worker
+uses the existing `PodProcessStopper` to request UID/resourceVersion-fenced
+deletion before its process exits. It keeps liveness serving while retrying a
+lost or unavailable deletion intent. The Coordinator still independently
+observes every exact old container exit and commits the old Registry receipt
+before releasing its finalizer; the Worker's DELETE cannot mint that receipt.
+The distributed outage fixture therefore requires both Worker ordinals to
+return with new Pod UIDs and zero in-Pod restarts.
+
+Hard loss of a Kubernetes node is a different evidence case. A Node `Unknown`
+condition and an external k3d Docker SIGKILL receipt do not by themselves give
+the Sandbox provider a trusted, durable exit for each original Pod container.
+In the observed three-node fault, Kubernetes returned synthetic `Unknown/255`
+for agent, input-projector and memory-projector while the original Pod retained
+`awaken.dev/create-result-guard`. The deployment test must retain that old
+Session/PVC and may exercise later faults only through a separate Session. It
+must never force-delete the guarded Pod or describe the new Session as recovery
+of the old one. Automatic recovery of the original identity after this exact
+hard-node fault still requires a provider-side terminal evidence source; no
+timeout, Node condition, Pod 404 or test-harness Docker receipt is a substitute.

@@ -8,8 +8,17 @@
 # libssl3 the server binary links; `sh` for the hand's bash tool.
 FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends bubblewrap ca-certificates libssl3 python3 \
+# Optional host CA trust is mounted only during package bootstrap. apt's
+# unprivileged fetch helper needs read access; no CA input enters an image layer.
+RUN --mount=type=secret,id=k3d_apt_ca,mode=0444 \
+    set -eu; \
+    set --; \
+    if [ -s /run/secrets/k3d_apt_ca ]; then \
+      sed -i 's@http://@https://@g' /etc/apt/sources.list.d/ubuntu.sources; \
+      set -- -o Acquire::https::CaInfo=/run/secrets/k3d_apt_ca; \
+    fi; \
+    apt-get "$@" update \
+    && apt-get "$@" install -y --no-install-recommends bubblewrap ca-certificates libssl3 python3 \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/lib/awaken/control /var/lib/awaken/coordinator /workspace /outputs
 

@@ -357,12 +357,18 @@ k3d_docker_build() {
     echo "AWAKEN_K3D_BUILD_TIMEOUT_SECONDS must be a positive integer" >&2
     return 2
   }
+  local -a build_options=()
   if [[ -n "${AWAKEN_K3D_BUILD_NETWORK:-}" ]]; then
-    run_with_deadline "$K3D_BUILD_TIMEOUT_SECONDS" \
-      docker build --network "$AWAKEN_K3D_BUILD_NETWORK" "$@"
-  else
-    run_with_deadline "$K3D_BUILD_TIMEOUT_SECONDS" docker build "$@"
+    build_options+=(--network "$AWAKEN_K3D_BUILD_NETWORK")
   fi
+  if [[ -n "${AWAKEN_K3D_BUILD_CA_BUNDLE:-}" ]]; then
+    if [[ ! -s "$AWAKEN_K3D_BUILD_CA_BUNDLE" ]]; then
+      echo "AWAKEN_K3D_BUILD_CA_BUNDLE must name a nonempty readable file" >&2
+      return 2
+    fi
+    build_options+=(--secret "id=k3d_apt_ca,src=$AWAKEN_K3D_BUILD_CA_BUNDLE")
+  fi
+  run_with_deadline "$K3D_BUILD_TIMEOUT_SECONDS" docker build "${build_options[@]}" "$@"
 }
 
 # Diagnostics are observations, not another lifecycle owner. Bind each probe
@@ -1737,13 +1743,31 @@ print(json.dumps(value))
   done
   import_failure=0 transport_failure=0
 
-  unset AWAKEN_K3D_BUILD_NETWORK
+  # Build-transport decision table: B1 no override => one default Docker
+  # build; B2 host network => only its network changes; B3 an existing CA file
+  # => the same build receives a BuildKit secret; B4 missing CA => no build.
+  # The secret is an apt trust input, never a copied image layer or runtime
+  # credential. These branches share one deadline and one Docker invocation.
+  unset AWAKEN_K3D_BUILD_NETWORK AWAKEN_K3D_BUILD_CA_BUNDLE
   k3d_docker_build --load -t fixture:latest .
   [[ "${docker_builds[${#docker_builds[@]} - 1]}" = "build --load -t fixture:latest ." ]]
   [[ "${deadline_calls[${#deadline_calls[@]} - 1]}" = "${K3D_BUILD_TIMEOUT_SECONDS}:docker build --load -t fixture:latest ." ]]
   AWAKEN_K3D_BUILD_NETWORK=host k3d_docker_build --load -t fixture:latest .
   [[ "${docker_builds[${#docker_builds[@]} - 1]}" = "build --network host --load -t fixture:latest ." ]]
   [[ "${deadline_calls[${#deadline_calls[@]} - 1]}" = "${K3D_BUILD_TIMEOUT_SECONDS}:docker build --network host --load -t fixture:latest ." ]]
+  local ca_fixture
+  ca_fixture=$(mktemp)
+  printf 'test CA\n' > "$ca_fixture"
+  AWAKEN_K3D_BUILD_NETWORK=host AWAKEN_K3D_BUILD_CA_BUNDLE="$ca_fixture" \
+    k3d_docker_build --load -t fixture:latest .
+  [[ "${docker_builds[${#docker_builds[@]} - 1]}" = "build --network host --secret id=k3d_apt_ca,src=$ca_fixture --load -t fixture:latest ." ]]
+  local builds_before=${#docker_builds[@]}
+  if AWAKEN_K3D_BUILD_CA_BUNDLE="$ca_fixture-missing" \
+    k3d_docker_build --load -t must-not-run .; then
+    return 1
+  fi
+  [[ "${#docker_builds[@]}" -eq "$builds_before" ]]
+  rm -f -- "$ca_fixture"
   local saved_build_timeout="$K3D_BUILD_TIMEOUT_SECONDS"
   K3D_BUILD_TIMEOUT_SECONDS=invalid
   ! k3d_docker_build --load -t must-not-run .

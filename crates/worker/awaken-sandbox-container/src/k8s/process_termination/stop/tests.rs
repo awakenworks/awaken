@@ -376,6 +376,70 @@ async fn closed_idle_retirement_missing_or_unavailable_coordinates_never_mutate(
 }
 
 #[tokio::test]
+async fn registered_worker_replacement_retains_only_exact_delete_intent() {
+    // Causes: C1 exact retained running UID; C2 API accepts DELETE, loses its
+    // response, or races one resourceVersion change; C3 Pod is already deleting;
+    // C4 UID/retention/process projection is foreign or unbound. Effects:
+    // E1 one UID/RV-fenced intent, never an exit receipt; E2 replay observes
+    // the same intent without another DELETE; E3 C4 cannot mutate any Pod.
+    // Decision rules: W1=C1+C2(accept)->E1; W2=C1+C2(lost)->E1+E2;
+    // W3=C1+C2(conflict)->retry E1; W4=C3->E2; W5=C4->E3.
+    for fault in [Fault::None, Fault::AfterDelete, Fault::Conflict] {
+        let fixture = Fixture::new(fault);
+        let mut live = running();
+        live["spec"]["restartPolicy"] = json!("Always");
+        fixture.facts.lock().unwrap().pod = Some(retained(live));
+        fixture
+            .stopper()
+            .request_registered_pod_replacement("worker", "uid-a")
+            .await
+            .unwrap();
+        fixture
+            .stopper()
+            .request_registered_pod_replacement("worker", "uid-a")
+            .await
+            .unwrap();
+        let facts = fixture.facts.lock().unwrap();
+        assert_eq!(facts.accepted, 1, "W1..W4");
+        assert!(
+            facts
+                .pod
+                .as_ref()
+                .unwrap()
+                .metadata
+                .deletion_timestamp
+                .is_some()
+        );
+        for (method, body) in &facts.calls {
+            if method == "DELETE" {
+                assert_eq!(body["preconditions"]["uid"], "uid-a", "E1");
+            }
+        }
+    }
+    for corrupt in ["uid", "retention", "restart"] {
+        let fixture = Fixture::new(Fault::None);
+        let mut live = running();
+        live["spec"]["restartPolicy"] = json!("Always");
+        match corrupt {
+            "uid" => live["metadata"]["uid"] = json!("foreign"),
+            "retention" => live["metadata"]["finalizers"] = json!([]),
+            "restart" => live["status"]["containerStatuses"][0]["restartCount"] = json!(1),
+            _ => unreachable!(),
+        }
+        fixture.facts.lock().unwrap().pod = Some(decode(live));
+        assert!(
+            fixture
+                .stopper()
+                .request_registered_pod_replacement("worker", "uid-a")
+                .await
+                .is_err(),
+            "W5 {corrupt}"
+        );
+        assert_eq!(fixture.facts.lock().unwrap().accepted, 0, "E3 {corrupt}");
+    }
+}
+
+#[tokio::test]
 async fn deployment_stop_uses_existing_exact_delete_then_observes_original_exits() {
     // C1 frozen retained Always Pod; C2 exact UID/RV; C3 deletion accepted;
     // C4 original containers exited. P1(C1+C2) => one conditional DELETE and

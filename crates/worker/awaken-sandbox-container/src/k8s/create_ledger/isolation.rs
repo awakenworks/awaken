@@ -397,9 +397,15 @@ mod tests {
     use serde_json::Value;
     use std::sync::{Arc, Mutex};
 
+    #[path = "guarded_claim_tests.rs"]
+    mod guarded_claim_tests;
+
     #[derive(Default)]
     struct Fixture {
         pod: Option<Pod>,
+        claim: Option<k8s_openapi::api::core::v1::PersistentVolumeClaim>,
+        claim_deletes: usize,
+        claim_delete_response_lost: bool,
         policy: bool,
         policy_tampered: bool,
         binding_tampered: bool,
@@ -420,6 +426,7 @@ mod tests {
             )
             .unwrap(),
             status: TicketStatus::InFlight,
+            origin: Default::default(),
             isolation_id: "0123456789abcdef0123456789abcdef".into(),
             isolation_pending: true,
         }
@@ -436,7 +443,8 @@ mod tests {
     fn deployment_policy_matches_the_runtime_attestation_contract() {
         // Causes: C1 the six-kind VAP/binding selector, operation or
         // enforcement drifts; C2 Product/Worker lose read-only policy access
-        // or regain any protected Kind's deletecollection. Effects: E1 C1 fails before rollout and live
+        // or the shared runtime Role gains protected Create/deletecollection.
+        // Effects: E1 C1 fails before rollout and live
         // attestation returns Unknown; E2 C2 fails the deployment contract.
         // Rules D1=!C1+!C2->pass, D2=C1|C2->fail. The policy and RBAC remain
         // deployment-owned rather than a second runtime configuration.
@@ -500,8 +508,11 @@ mod tests {
                 "D1 {name} can attest the policy"
             );
         }
+        // Both Product and distributed overlays import this one RBAC base.
+        // Inspect its authoritative Role rather than the old inline Product
+        // manifest; overlay import/render checks live with the deployment gate.
         let runtime_manifest =
-            include_str!("../../../../../../deploy/k3d/product-backend/resources.yaml");
+            include_str!("../../../../../../deploy/k3d/bases/sandbox-runtime-rbac/resources.yaml");
         let runtime_docs = serde_yaml::Deserializer::from_str(runtime_manifest)
             .map(|doc| serde_yaml::Value::deserialize(doc).unwrap())
             .map(|doc| serde_json::to_value(doc).unwrap())
@@ -532,8 +543,8 @@ mod tests {
                         .as_array()
                         .unwrap()
                         .iter()
-                        .any(|verb| verb == "deletecollection"),
-                    "D1 no protected Kind collection delete bypass: {rule}"
+                        .any(|verb| verb == "create" || verb == "deletecollection"),
+                    "D1 no protected Kind direct Create or collection delete bypass: {rule}"
                 );
             }
         }
@@ -544,6 +555,10 @@ mod tests {
             let state = state.clone();
             async move {
                 let path = request.uri().path().to_owned();
+                let requested_pod = path
+                    .rsplit_once("/pods/")
+                    .map(|(_, name)| name)
+                    .filter(|name| !name.is_empty() && !name.contains('/'));
                 let result = if path
                     .ends_with("validatingadmissionpolicies/awaken-create-isolation")
                 {
@@ -600,19 +615,26 @@ mod tests {
                         state.pod = Some(pod.clone());
                         response(201, serde_json::to_value(pod).unwrap())
                     }
-                } else if path.ends_with("/pods/sandbox-pod") && request.method() == Method::GET {
+                } else if requested_pod.is_some() && request.method() == Method::GET {
                     match &state.lock().unwrap().pod {
-                        Some(pod) => response(200, serde_json::to_value(pod).unwrap()),
+                        Some(pod) if pod.metadata.name.as_deref() == requested_pod => {
+                            response(200, serde_json::to_value(pod).unwrap())
+                        }
                         None => response(
                             404,
                             json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"NotFound","message":"Pod not found","code":404}),
                         ),
+                        Some(_) => response(
+                            404,
+                            json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"NotFound","message":"foreign Pod name","code":404}),
+                        ),
                     }
-                } else if path.ends_with("/pods/sandbox-pod") && request.method() == Method::PUT {
+                } else if requested_pod.is_some() && request.method() == Method::PUT {
                     let bytes = request.into_body().collect_bytes().await.unwrap();
                     let mut replacement: Pod = serde_json::from_slice(&bytes).unwrap();
                     let mut state = state.lock().unwrap();
                     let current = state.pod.as_ref().unwrap();
+                    assert_eq!(current.metadata.name.as_deref(), requested_pod);
                     if replacement.metadata.uid != current.metadata.uid
                         || replacement.metadata.resource_version
                             != current.metadata.resource_version
@@ -626,8 +648,19 @@ mod tests {
                         state.pod = Some(replacement.clone());
                         response(200, serde_json::to_value(replacement).unwrap())
                     }
-                } else if path.ends_with("/pods/sandbox-pod") && request.method() == Method::DELETE
-                {
+                } else if requested_pod.is_some() && request.method() == Method::DELETE {
+                    assert_eq!(
+                        state
+                            .lock()
+                            .unwrap()
+                            .pod
+                            .as_ref()
+                            .unwrap()
+                            .metadata
+                            .name
+                            .as_deref(),
+                        requested_pod
+                    );
                     let body = request.into_body().collect_bytes().await.unwrap();
                     let options: Value = serde_json::from_slice(&body).unwrap();
                     assert_eq!(
@@ -642,6 +675,38 @@ mod tests {
                         response(
                             code,
                             json!({"reason":"Invalid","code":code,"message":format!("denied by {POLICY}")}),
+                        )
+                    } else {
+                        response(200, json!({"kind":"Status","status":"Success","code":200}))
+                    }
+                } else if path.contains("/persistentvolumeclaims/")
+                    && request.method() == Method::GET
+                {
+                    match &state.lock().unwrap().claim {
+                        Some(claim) => response(200, serde_json::to_value(claim).unwrap()),
+                        None => response(
+                            404,
+                            json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"NotFound","message":"PVC not found","code":404}),
+                        ),
+                    }
+                } else if path.contains("/persistentvolumeclaims/")
+                    && request.method() == Method::DELETE
+                {
+                    let bytes = request.into_body().collect_bytes().await.unwrap();
+                    let options: Value = serde_json::from_slice(&bytes).unwrap();
+                    let mut state = state.lock().unwrap();
+                    let claim = state.claim.as_ref().expect("exact original PVC exists");
+                    assert_eq!(options["preconditions"]["uid"], json!(claim.metadata.uid));
+                    assert_eq!(
+                        options["preconditions"]["resourceVersion"],
+                        json!(claim.metadata.resource_version)
+                    );
+                    state.claim_deletes += 1;
+                    state.claim = None;
+                    if state.claim_delete_response_lost {
+                        response(
+                            500,
+                            json!({"reason":"InternalError","code":500,"message":"response lost after accepted PVC DELETE"}),
                         )
                     } else {
                         response(200, json!({"kind":"Status","status":"Success","code":200}))

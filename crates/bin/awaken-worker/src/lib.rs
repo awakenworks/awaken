@@ -30,6 +30,23 @@
 use futures_util::FutureExt as _;
 use std::sync::Arc;
 
+#[cfg(feature = "container-k8s")]
+async fn request_registered_kubernetes_pod_replacement(worker_id: &str) -> Result<(), String> {
+    use awaken_sandbox_container::k8s::{PodProcessObserver, PodProcessStopper};
+    use awaken_worker_transport_security::kubernetes::KubernetesPodIdentity;
+
+    let pod = KubernetesPodIdentity::from_worker_id(worker_id)?;
+    let client = kube::Client::try_default()
+        .await
+        .map_err(|error| error.to_string())?;
+    let observer =
+        PodProcessObserver::new(client, pod.namespace()).map_err(|error| error.to_string())?;
+    PodProcessStopper::new(observer)
+        .request_registered_pod_replacement(pod.name(), pod.uid())
+        .await
+        .map_err(|error| error.to_string())
+}
+
 mod acp_capability;
 mod admin;
 mod attempt_decorator;
@@ -1857,9 +1874,6 @@ impl WorkerNode {
         environment_warmups.abort();
         session_realizations.abort();
         session_preparations.abort();
-        if let Some(admin_task) = admin_task {
-            admin_task.abort();
-        }
         // No producer can refill unused capacity after these aborts. When
         // revocation ran, its original absolute deadline remains the one owner
         // for this final effect; an exhausted deadline becomes Unconfirmed.
@@ -1874,6 +1888,30 @@ impl WorkerNode {
                 control.mark_quiesced(&lifecycle.identity),
             )
             .await;
+        }
+        #[cfg(feature = "container-k8s")]
+        if k8s_create_client.is_some() && identity.worker_id.starts_with("k8s:") {
+            // One Pod UID is one Registry incarnation and one immutable Create
+            // ledger. Keep /livez serving while this drained process waits for
+            // a UID-fenced Kubernetes deletion intent; exiting sooner would
+            // let StatefulSet restart a second process under the same UID.
+            // This never emits a stop receipt or releases retained evidence.
+            let mut attempts = 0_u64;
+            loop {
+                match request_registered_kubernetes_pod_replacement(&identity.worker_id).await {
+                    Ok(()) => break,
+                    Err(error) => {
+                        if attempts.is_multiple_of(10) {
+                            eprintln!("worker Pod replacement intent pending: {error}");
+                        }
+                        attempts = attempts.saturating_add(1);
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
+        if let Some(admin_task) = admin_task {
+            admin_task.abort();
         }
         shutdown?;
         if authority_lost {

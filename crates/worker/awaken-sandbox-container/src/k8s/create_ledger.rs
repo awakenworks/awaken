@@ -1,3 +1,8 @@
+// @formal surface obligation=sandbox.admission_never_weakens_isolation
+// @formal reason: This ConfigMap CAS adapter retains the exact Worker UID and
+// @formal reason: orders Create admission, seal and response-loss replay.
+// @formal reason: Its tests qualify those transitions; Pod exit and Session
+// @formal reason: cleanup still require their independent evidence owners.
 //! Provider-owned, process-independent admission root for one Worker Pod.
 //!
 //! Only Coordinator holds a client with Create authority in the control
@@ -12,8 +17,8 @@ pub use isolation::{
     ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION,
 };
 pub use state::{
-    CreateTicket, CreateTicketRequest, RequestJoin, TicketAdmission, TicketResult, TicketStatus,
-    WorkerCreateLedgerState,
+    CreateTicket, CreateTicketRequest, RequestJoin, TicketAdmission, TicketOrigin, TicketResult,
+    TicketStatus, WorkerCreateLedgerState,
 };
 
 use std::collections::BTreeMap;
@@ -465,6 +470,76 @@ impl K8sWorkerCreateLedger {
         }
         let (_, state) = self.load_exact(binding).await?;
         Ok(state.join_group(group))
+    }
+
+    /// Retain the original claim's Pod name in this same ledger when an exact
+    /// stopped Worker created its canonical PVC but no original Pod survives.
+    /// The reservation is a physical participant, never a cleanup receipt.
+    pub async fn reserve_terminal_claim_pod_and_join(
+        &self,
+        binding: K8sLedgerBinding<'_>,
+        group: &str,
+        scope: &str,
+        expected_pod_name: &str,
+    ) -> Result<RequestJoin, RuntimeError> {
+        let joined = self.isolate_sealed_group_and_join(binding, group).await?;
+        let RequestJoin::Complete(tickets) = &joined else {
+            return Ok(RequestJoin::Unknown);
+        };
+        // Runtime owns the realization-namespace projection. Re-encoding raw
+        // scope here would target another Pod/PVC name after process loss.
+        let claim_name = super::names::continuation_claim_for_pod(expected_pod_name)?;
+        let mut claim_uid = None;
+        for ticket in tickets {
+            match &ticket.status {
+                TicketStatus::Finished(TicketResult::Created { uid })
+                    if ticket.request.resource == "persistentvolumeclaims"
+                        && ticket.request.namespace == self.sandbox_namespace
+                        && ticket.request.name == claim_name
+                        && claim_uid.is_none() =>
+                {
+                    claim_uid = Some(uid.clone());
+                }
+                TicketStatus::Finished(
+                    TicketResult::Created { .. } | TicketResult::Isolated { .. },
+                ) => {
+                    // The ordinary Pod/PVC owner or an unclassified participant
+                    // must decide its own cleanup. Never fabricate a guard for it.
+                    return Ok(joined.clone());
+                }
+                TicketStatus::Finished(TicketResult::RejectedNoEffect { .. }) => {}
+                TicketStatus::InFlight => return Ok(RequestJoin::Unknown),
+            }
+        }
+        let Some(claim_uid) = claim_uid else {
+            return Ok(joined);
+        };
+        let digest = blake3::hash(
+            &serde_json::to_vec(&(
+                "k8s-terminal-claim-pod-v1",
+                group,
+                scope,
+                expected_pod_name,
+                &claim_uid,
+            ))
+            .map_err(backend)?,
+        )
+        .to_hex()
+        .to_string();
+        let request = CreateTicketRequest::new(
+            group,
+            "pods",
+            &self.sandbox_namespace,
+            expected_pod_name,
+            digest,
+        )?;
+        let isolation_id = uuid::Uuid::new_v4().simple().to_string();
+        self.mutate(binding, |state| {
+            let changed = state.admit_terminal_pod_guard(&request, &isolation_id)?;
+            Ok(((), changed))
+        })
+        .await?;
+        self.isolate_sealed_group_and_join(binding, group).await
     }
 
     pub async fn seal_worker(&self, binding: K8sLedgerBinding<'_>) -> Result<(), RuntimeError> {
