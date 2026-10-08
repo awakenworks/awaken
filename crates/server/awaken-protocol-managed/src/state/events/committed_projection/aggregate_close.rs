@@ -128,7 +128,7 @@ impl ManagedState {
                 }
             };
             let usage = session_usage_value(
-                evidence.usage_as_of(persisted, &session_id, close.source_commit_cursor),
+                evidence.usage_as_of(persisted, &session_id, close.source_commit_cursor)?,
                 evidence.price_snapshot.as_ref(),
             )
             .map_err(StateError::Run)?;
