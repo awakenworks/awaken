@@ -46,6 +46,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from _native_shell import bash_executable, self_test as native_shell_self_test
+
 # Every file this checker reads: the entry points it probes and the lanes whose
 # call sites it compares against them. The lefthook trigger is rendered from
 # this declaration, so a checker added under scripts/ci re-runs the corpus rule
@@ -205,25 +207,21 @@ def corpus(root: Path) -> list[str]:
 
 def probe(root: Path, relative: str, flag: str = PROBE_FLAG) -> Probe:
     path = root / relative
-    command = ["python3", str(path)] if path.suffix == ".py" else ["bash", str(path)]
-    try:
-        result = subprocess.run(
-            [*command, flag],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=PROBE_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired as expired:
-        # A deadline is not an inconclusive probe. Refusing an unimplemented
-        # flag is a parse-time decision; an entry point still running after the
-        # deadline has started doing work it was never asked to do.
-        captured = (expired.stdout or b"") + (expired.stderr or b"")
-        text = captured.decode("utf-8", errors="replace") if isinstance(captured, bytes) else str(captured)
-        return Probe(relative, 0, text)
-    return Probe(relative, result.returncode, result.stdout + result.stderr)
+    command = [sys.executable, str(path)] if path.suffix == ".py" else [bash_executable(), path.as_posix()]
+    # The shared owner closes every captured descendant pipe on timeout and
+    # normal leader exit. subprocess.run(timeout=...) kills only the immediate
+    # Windows child and can wait forever for an orphan's inherited pipe.
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/ci/deadline.py"), str(PROBE_TIMEOUT_SECONDS), "--", *command, flag],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    # A deadline is a refusal failure even if the hanging command printed a
+    # usage line first. A timed-out probe must never count as admission.
+    return Probe(relative, 0 if result.returncode == 124 else result.returncode, result.stdout + result.stderr)
 
 
 Footprint = dict[str, tuple[int, int]]
@@ -478,6 +476,8 @@ def self_test() -> None:
 
     import tempfile  # noqa: PLC0415 - only the self-test writes fixtures
 
+    native_shell_self_test()
+
     strict = (
         "#!/usr/bin/env bash\n"
         'case "${1:-}" in\n  ""|--self-test) ;;\n'
@@ -486,7 +486,8 @@ def self_test() -> None:
     )
     falls_through = '#!/usr/bin/env bash\nif [ "${1:-}" = "--self-test" ]; then exit 0; fi\necho ran\n'
     silent_refusal = '#!/usr/bin/env bash\nexit 3\n'
-    never_returns = "#!/usr/bin/env bash\nsleep 600\n"
+    never_returns = "#!/usr/bin/env bash\nsleep 600 &\nwait\n"
+    usage_then_hangs = "#!/usr/bin/env bash\necho 'usage: usage_then_hangs.sh [--self-test]'\nsleep 600 &\nwait\n"
 
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -517,12 +518,15 @@ def self_test() -> None:
 
         # C4: the deadline is a refusal failure, not an inconclusive probe.
         (directory / "never_returns.sh").write_text(never_returns, encoding="utf-8")
+        (directory / "usage_then_hangs.sh").write_text(usage_then_hangs, encoding="utf-8")
         global PROBE_TIMEOUT_SECONDS
         original_timeout = PROBE_TIMEOUT_SECONDS
         PROBE_TIMEOUT_SECONDS = 1
         try:
-            slow = probe_all(root, ["scripts/ci/never_returns.sh"])
+            slow = probe_all(root, ["scripts/ci/never_returns.sh", "scripts/ci/usage_then_hangs.sh"])
             assert refusal_errors(slow), "C4/E2 a probe deadline is a refusal failure"
+            assert all(result.status == 0 for result in slow.values()), "C4/E2 usage before a hang is not refusal"
+            assert "usage:" in slow["scripts/ci/usage_then_hangs.sh"].output, "C4 captured output survives tree cleanup"
         finally:
             PROBE_TIMEOUT_SECONDS = original_timeout
 

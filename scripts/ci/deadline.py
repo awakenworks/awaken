@@ -42,10 +42,7 @@ def terminate_group(process: subprocess.Popen[bytes]) -> None:
     process.wait()
 
 
-def run(seconds: float, command: list[str]) -> int:
-    if seconds <= 0 or not command:
-        return 2
-    process = subprocess.Popen(command, start_new_session=True)
+def _wait_posix(process: subprocess.Popen[bytes], seconds: float) -> int:
     try:
         result = process.wait(timeout=seconds)
         if result < 0:
@@ -64,7 +61,42 @@ def run(seconds: float, command: list[str]) -> int:
         raise
 
 
+def run(seconds: float, command: list[str]) -> int:
+    if seconds <= 0 or not command:
+        return 2
+    if os.name == "nt":
+        from _windows_job import WindowsJob
+
+        with WindowsJob() as job:
+            process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
+                                        "--windows-job-child", job.name, "--", *command])
+            try:
+                return process.wait(timeout=seconds)
+            except subprocess.TimeoutExpired:
+                job.close()
+                # A trampoline still starting Python may not have joined yet.
+                # It cannot launch the command before joining the owned Job.
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+                return TIMEOUT_EXIT
+            except BaseException:
+                job.close()
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+                raise
+    return _wait_posix(subprocess.Popen(command, start_new_session=True), seconds)
+
+
 def main(argv: list[str]) -> int:
+    if argv[1:2] == ["--windows-job-child"]:
+        if os.name != "nt" or len(argv) < 5 or argv[3] != "--":
+            return 2
+        from _windows_job import attach_current_process
+
+        attach_current_process(argv[2])
+        return subprocess.call(argv[4:])
     # Cargo's external-command protocol inserts the subcommand name. The entry
     # is a temporary symlink to this owner, so admission completes before run()
     # starts its clock. Direct invocation retains exactly the same parser.

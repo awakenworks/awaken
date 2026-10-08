@@ -7,6 +7,15 @@ run_with_deadline() (
   shift
   local deadline_dir
   deadline_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      # Native Windows Cargo cannot discover a Unix shebang/symlink addon.
+      # Its Rustup/Cargo process tree is owned by the Windows Job in this same
+      # deadline authority. POSIX Cargo admission retains its protocol below.
+      python3 "$deadline_dir/deadline.py" "$seconds" -- "$@"
+      return
+      ;;
+  esac
   if [ "${1:-}" = cargo ]; then
     # Cargo admission owns the wait and capacity preflight. Its external-command
     # protocol then enters this same deadline owner; nested Cargo inherits the

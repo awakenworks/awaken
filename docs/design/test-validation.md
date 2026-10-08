@@ -166,6 +166,46 @@ if ($LASTEXITCODE -ne 0) { throw 'Native portability validation failed' }
 ```
 
 Preserve the toolchain, command, exit status, and named test results per OS.
+The Rust gate uses `check_rustfmt.py` for formatting. On Windows it derives
+every workspace member and target from Cargo metadata and batches the expanded
+UTF-16 paths below the native command-line limit. Listing failure, an incomplete
+plan and a dirty later batch all fail. Other platforms retain `cargo fmt --all`.
+This checks the same workspace instead of accepting Windows error 206 or
+spawning a separate Cargo metadata process for every crate.
+Native Python shell probes resolve an absolute Git Bash executable (or the
+explicit `AWAKEN_NATIVE_BASH`), because bare `bash` can start the WSL launcher.
+They use the running Python interpreter and native file paths so the tested
+entrypoints execute on Windows instead of timing out in another environment.
+The probes use the shared process-tree deadline, including capture-pipe cleanup;
+an ordinary Python subprocess timeout cannot retire a Windows descendant.
+Ambient API-key name filtering uses case-insensitive Bash 3.2 patterns, avoiding
+one external utility launch per environment variable. Its decision table
+checks all 64 letter-case combinations with exact and prefixed names plus
+near-miss names that must remain unchanged.
+
+Console assets are imported from source or emitted by the brand plugins;
+Vite's implicit `public` directory is disabled. Cargo must not watch an absent
+`web/public`: an absent declared input invalidates every following CLI build,
+including the adjacent list/run phases of a required-test selection. Verify
+this boundary with two successive real Cargo invocations and the existing
+Console build contract tests, rather than a synthetic cache-hit counter.
+
+Process tests use the production retirement grace. The bridge does not shorten
+its five-second cleanup observation to a test-only 100ms; timeout-only port and
+copy fixtures use paused Tokio time. Windows bridge lifecycle fixtures launch
+one direct Rust child, matching the native adapter's declared scope. A shell
+that spawns `ping` introduces an unowned descendant and keeps captured output
+open for 30 seconds; it cannot qualify direct-child retirement. Unix's private
+process-group matrix separately proves real descendant retirement.
+
+The portability lane qualifies every name-filtered Rust selection against
+its actual execution, so a moved or empty selection cannot pass. Linux-only
+Namespace replay remains owned by the required Linux lane. On native Windows,
+the lane first runs the deadline's real Job tests: literal arguments/status,
+Cargo dispatch, missing-Job refusal, timeout, leader exit and owner death.
+The Job is attached before launching the requested command; native Cargo does
+not depend on discovery of a Unix shebang/symlink addon. POSIX admission and
+process-group deadlines retain their separate Linux/macOS tests.
 Native crash qualification includes SQLite and live PostgreSQL separately;
 Linux-specific namespace/pidfd obligations remain in the required Linux gate.
 
