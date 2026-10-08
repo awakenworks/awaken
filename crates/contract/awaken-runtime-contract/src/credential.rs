@@ -13,19 +13,21 @@
 //! routes carry (ADR-0086 §7); every other credential item is Platform
 //! vocabulary and is named through `awaken-credential-contract`.
 
-pub use awaken_credential_contract::{
-    CredentialAccess, CredentialAudienceRef, CredentialEnvelope, CredentialExecutionPolicy,
-    CredentialMaterialSource, CredentialPurpose, CredentialRef, CredentialRefreshAccess,
-    CredentialTarget, CredentialUsage, CredentialUsageError, HttpEffectPlacement,
-    ModelExposurePolicy, PRIVATE_FILE_CONSUMER, PRIVATE_FILE_MATERIAL_TYPE, PROCESS_ENV_CONSUMER,
-    PROCESS_ENV_MATERIAL_TYPE, PlaintextBoundary, PlaintextHolder, SELF_HOSTED_ACP_TRUST_DOMAIN,
-    SELF_HOSTED_SANDBOX_TRUST_DOMAIN, SELF_HOSTED_WORKER_TRUST_DOMAIN, SealedCredentialEnvelopeRef,
-    SignatureVerificationAlgorithm, TokenEndpointAuth, TrustDomainRef, is_core_delivery_consumer,
+pub use awaken_agent_contract::credential::{
+    CandidateFingerprint, CredentialAccess, CredentialAudienceRef, CredentialEnvelope,
+    CredentialExecutionPolicy, CredentialMaterialSource, CredentialPurpose, CredentialRef,
+    CredentialRefreshAccess, CredentialTarget, CredentialUsage, CredentialUsageError,
+    HttpEffectPlacement, ModelExposurePolicy, PRIVATE_FILE_CONSUMER, PRIVATE_FILE_MATERIAL_TYPE,
+    PROCESS_ENV_CONSUMER, PROCESS_ENV_MATERIAL_TYPE, PlaintextBoundary, PlaintextHolder,
+    SELF_HOSTED_ACP_TRUST_DOMAIN, SELF_HOSTED_SANDBOX_TRUST_DOMAIN,
+    SELF_HOSTED_WORKER_TRUST_DOMAIN, SealedCredentialEnvelopeRef, SignatureVerificationAlgorithm,
+    TokenEndpointAuth, TrustDomainRef, is_core_delivery_consumer,
 };
 
 use awaken_credential_contract::{
-    CredentialAdmissionError, CredentialMaterialBinding, CredentialProviderExpectationOwned,
-    CredentialRealizationCapabilities, CredentialRealizationKind,
+    CredentialAccessAdmission, CredentialAdmissionError, CredentialMaterialBinding,
+    CredentialProviderExpectationOwned, CredentialRealizationCapabilities,
+    CredentialRealizationKind,
 };
 
 use async_trait::async_trait;
@@ -190,11 +192,6 @@ pub fn compile_candidate_credential_bindings(
     }
     Ok(bindings)
 }
-
-/// Content identity of one complete published model candidate.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct CandidateFingerprint(pub String);
 
 /// One credential execution decision frozen under an exact dispatch claim
 /// epoch. Publication-pinned fallback candidates receive separate entries.

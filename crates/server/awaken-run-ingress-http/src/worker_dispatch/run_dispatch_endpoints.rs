@@ -6,6 +6,7 @@
 //! these handlers add no queue, clock, identity, or lease authority.
 
 use super::*;
+use awaken_credential_contract::CredentialEnvelopeValidation;
 
 /// Keep admission-owned resources alive after a caller drops its HTTP future.
 fn complete_admission<F, T>(operation: F) -> tokio::task::JoinHandle<T>

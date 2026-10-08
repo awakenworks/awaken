@@ -15,7 +15,7 @@ authority = "credential"
 separation = "contract"
 
 [dependencies]
-awaken-agent-contract.workspace = true
+awaken-agent-contract = { workspace = true, features = ["schema"] }
 async-trait.workspace = true
 serde.workspace = true
 schemars = "1"

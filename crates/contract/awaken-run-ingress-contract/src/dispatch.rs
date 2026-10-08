@@ -97,6 +97,7 @@ pub use aggregate::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_credential_contract::CredentialAccessAdmission;
 
     #[test]
     fn session_replacement_safety_partition_is_exhaustive() {

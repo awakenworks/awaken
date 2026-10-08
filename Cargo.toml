@@ -85,7 +85,6 @@ awaken-runtime = { path = "crates/runtime/awaken-runtime" }
 awaken-tool-pattern = { path = "crates/runtime/awaken-tool-pattern" }
 awaken-provider-genai = { path = "crates/runtime/awaken-provider-genai" }
 awaken-ext-permission = { path = "crates/runtime/awaken-ext-permission" }
-awaken-credential = { path = "crates/runtime/awaken-credential" }
 awaken-outbound-http = { path = "crates/runtime/awaken-outbound-http" }
 awaken-authority-clock = { path = "crates/runtime/awaken-authority-clock" }
 awaken-mcp-wire = { path = "crates/runtime/awaken-mcp-wire" }

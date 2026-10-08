@@ -8,6 +8,7 @@
 //! The materializer remains the sole realization adapter; this module only
 //! centralizes its immutable target and capability checks.
 
+use awaken_credential_contract::CredentialAccessAdmission;
 use awaken_credential_contract::{
     CredentialAdmissionError, CredentialRealizationCapabilities, CredentialRealizationKind,
 };

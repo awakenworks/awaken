@@ -2,7 +2,7 @@
 //! wire protocol; Vault lookup and policy remain outside this module.
 
 use async_trait::async_trait;
-use awaken_credential::Credential;
+use awaken_agent_contract::credential::Credential;
 use awaken_runtime_contract::CredentialUsage;
 use awaken_tool_contract::tool::ToolError;
 use serde::Deserialize;

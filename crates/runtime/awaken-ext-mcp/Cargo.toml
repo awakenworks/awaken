@@ -16,7 +16,6 @@ separation = "publish"
 [dependencies]
 awaken-tool-contract.workspace = true
 awaken-agent-contract.workspace = true
-awaken-credential.workspace = true
 awaken-mcp-wire.workspace = true
 awaken-runtime-contract.workspace = true
 async-trait.workspace = true

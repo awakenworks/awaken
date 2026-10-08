@@ -1,4 +1,5 @@
 // @formal entrypoint credential_effect.boundary_preserves_exact_materialization_authority
+use awaken_credential_contract::CredentialAccessAdmission;
 use awaken_credential_contract::CredentialRealizationCapabilities;
 use awaken_runtime_contract::{AttemptCredentialBinding, AttemptCredentialBindingError};
 use awaken_worker_contract::WorkerSnapshot;

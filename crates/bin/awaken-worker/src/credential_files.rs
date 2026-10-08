@@ -9,6 +9,7 @@
 //! envelopes; every path includes the exact revision, Workspace, and target/use
 //! fingerprint, so a file cannot be replayed for another use.
 
+use awaken_credential_contract::CredentialEnvelopeValidation;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -225,6 +226,7 @@ impl CredentialMaterialResolver for WorkerCredentialFileResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_credential_contract::CredentialAccessAdmission;
     use awaken_credential_contract::CredentialMaterialBinding;
     use awaken_runtime_contract::{
         CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialRef,

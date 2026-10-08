@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use awaken_credential::CredentialRefresher;
+use awaken_agent_contract::credential::CredentialRefresher;
 use awaken_credential_contract::CredentialSourceId;
 use awaken_runtime_contract::CredentialRefreshAccess;
 

@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::CredentialUsage;
+use crate::{CredentialUsageError, HttpEffectPlacement};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NamedMaterialShape {
@@ -29,18 +29,6 @@ pub(crate) const fn named_material_shape_is_exact(
             NamedMaterialShape::Secret => declared_fields == 1,
             NamedMaterialShape::Structured => structured_keys_exact,
         }
-}
-
-/// One exact destination at which a hosted HTTP effect may render a material
-/// field. JSON pointers are rooted at the effect's `json` or `body` value.
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum HttpEffectPlacement {
-    Header { name: String },
-    Query { name: String },
-    JsonPointer { pointer: String },
 }
 
 /// One exact secret-free material reference embedded in an HTTP effect.
@@ -180,7 +168,7 @@ impl HttpEffectMaterialPlacements {
         reference: &HttpEffectMaterialReference,
         placement: HttpEffectPlacement,
     ) -> Result<(), HttpEffectMaterialReferenceError> {
-        validate_http_effect_placement(&placement)?;
+        placement.validate()?;
         self.0
             .entry(reference.credential.clone())
             .or_default()
@@ -271,152 +259,6 @@ pub enum HttpEffectMaterialReferenceError {
     InvalidPlacement(#[from] CredentialUsageError),
 }
 
-impl CredentialUsage {
-    /// Validate canonical, secret-free usage facts before material is opened.
-    pub fn validate(&self) -> Result<(), CredentialUsageError> {
-        match self {
-            Self::HttpEffect { fields } => {
-                if fields.is_empty() {
-                    return Err(CredentialUsageError::EmptyHttpEffectFields);
-                }
-                for (field, placements) in fields {
-                    validate_material_field(field)?;
-                    if placements.is_empty() {
-                        return Err(CredentialUsageError::EmptyHttpEffectPlacements);
-                    }
-                    for placement in placements {
-                        validate_http_effect_placement(placement)?;
-                    }
-                }
-            }
-            Self::SignatureVerification { fields } => {
-                if fields.is_empty() {
-                    return Err(CredentialUsageError::EmptySignatureFields);
-                }
-                for (field, algorithms) in fields {
-                    validate_material_field(field)?;
-                    if algorithms.is_empty() {
-                        return Err(CredentialUsageError::EmptySignatureAlgorithms);
-                    }
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    /// Return the sole declared material field for a built-in HTTP effect.
-    /// Gateways use this to bind an opaque [`crate::CredentialMaterial::Secret`]
-    /// when the canonical usage declares exactly one field, without
-    /// reimplementing the usage map rules.
-    pub fn http_effect_single_field(&self) -> Result<Option<&str>, CredentialUsageError> {
-        self.validate()?;
-        let Self::HttpEffect { fields } = self else {
-            return Ok(None);
-        };
-        Ok((fields.len() == 1).then(|| {
-            fields
-                .first_key_value()
-                .expect("validated HTTP effect has at least one field")
-                .0
-                .as_str()
-        }))
-    }
-}
-
-fn validate_material_field(field: &str) -> Result<(), CredentialUsageError> {
-    if field.trim().is_empty() || field.trim() != field || field.chars().any(char::is_control) {
-        return Err(CredentialUsageError::InvalidMaterialField);
-    }
-    Ok(())
-}
-
-fn validate_http_effect_placement(
-    placement: &HttpEffectPlacement,
-) -> Result<(), CredentialUsageError> {
-    match placement {
-        HttpEffectPlacement::Header { name } if !is_canonical_header_name(name) => {
-            Err(CredentialUsageError::InvalidHeaderName)
-        }
-        HttpEffectPlacement::Query { name } if !is_valid_query_name(name) => {
-            Err(CredentialUsageError::InvalidQueryName)
-        }
-        HttpEffectPlacement::JsonPointer { pointer } if !is_valid_json_pointer(pointer) => {
-            Err(CredentialUsageError::InvalidJsonPointer)
-        }
-        _ => Ok(()),
-    }
-}
-
-fn is_canonical_header_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(
-                    byte,
-                    b'!' | b'#'
-                        | b'$'
-                        | b'%'
-                        | b'&'
-                        | b'\''
-                        | b'*'
-                        | b'+'
-                        | b'-'
-                        | b'.'
-                        | b'^'
-                        | b'_'
-                        | b'`'
-                        | b'|'
-                        | b'~'
-                )
-        })
-}
-
-fn is_valid_query_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.trim() == name
-        && !name
-            .bytes()
-            .any(|byte| byte.is_ascii_control() || matches!(byte, b'&' | b'=' | b'#'))
-}
-
-fn is_valid_json_pointer(pointer: &str) -> bool {
-    if pointer.is_empty() {
-        return true;
-    }
-    if !pointer.starts_with('/') || pointer.chars().any(char::is_control) {
-        return false;
-    }
-    let mut bytes = pointer.bytes();
-    while let Some(byte) = bytes.next() {
-        if byte == b'~' && !matches!(bytes.next(), Some(b'0' | b'1')) {
-            return false;
-        }
-    }
-    true
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum CredentialUsageError {
-    #[error("HTTP-effect credential usage declares no material fields")]
-    EmptyHttpEffectFields,
-    #[error("named credential usage has an invalid material field")]
-    InvalidMaterialField,
-    #[error("HTTP-effect credential usage declares a field with no placements")]
-    EmptyHttpEffectPlacements,
-    #[error("signature-verification credential usage declares no material fields")]
-    EmptySignatureFields,
-    #[error("signature-verification credential usage declares a field with no algorithms")]
-    EmptySignatureAlgorithms,
-    #[error("HTTP-effect credential usage has a non-canonical header name")]
-    InvalidHeaderName,
-    #[error("HTTP-effect credential usage has an invalid query name")]
-    InvalidQueryName,
-    #[error("HTTP-effect credential usage has an invalid RFC 6901 JSON pointer")]
-    InvalidJsonPointer,
-}
-
 #[cfg(kani)]
 mod verification {
     use super::{NamedMaterialShape, named_material_shape_is_exact};
@@ -458,7 +300,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        CredentialMaterial, CredentialMaterialBinding, CredentialMaterialError,
+        CredentialMaterial, CredentialMaterialBinding, CredentialMaterialError, CredentialUsage,
         OAuthCredentialMaterial,
     };
 

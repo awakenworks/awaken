@@ -110,7 +110,6 @@
     "awaken-container-contract",
     "awaken-control",
     "awaken-coordinator",
-    "awaken-credential",
     "awaken-credential-contract",
     "awaken-credential-materializer",
     "awaken-credential-store",

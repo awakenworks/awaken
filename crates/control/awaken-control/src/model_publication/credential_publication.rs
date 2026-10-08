@@ -322,6 +322,7 @@ mod tests {
     use awaken_agent_config::ModelSelection;
     use awaken_agent_contract::RedactedString;
     use awaken_config_service::ModelPublicationResolver;
+    use awaken_credential_contract::CredentialEnvelopeValidation;
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{
         CredentialCreateParams, CredentialKind, CredentialStatus, InMemorySecretStore, SecretStore,

@@ -10,7 +10,9 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{CredentialMaterial, CredentialUsage};
+use crate::{
+    CredentialAudienceRef, CredentialMaterial, CredentialPurpose, CredentialTarget, CredentialUsage,
+};
 
 /// The only scalar material descriptor. A scalar secret carries no embedded
 /// type identifier, so arbitrary typed scalar ids would be unverifiable
@@ -43,25 +45,6 @@ pub struct CredentialMaterialTypeId(pub String);
 #[serde(transparent)]
 pub struct CredentialSubjectRef(pub String);
 
-/// Exact upstream audience authorized for a credential purpose.
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(transparent)]
-pub struct CredentialAudienceRef(pub String);
-
-impl From<String> for CredentialAudienceRef {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
-
-impl From<&str> for CredentialAudienceRef {
-    fn from(value: &str) -> Self {
-        Self(value.to_owned())
-    }
-}
-
 /// Normalize an HTTPS repository remote to the provider-neutral Git transport
 /// service audience shared by source issuers and execution consumers. Repository
 /// identity stays in the existing material binding; credentials are reusable
@@ -92,42 +75,26 @@ pub fn repository_transport_audience(
 #[serde(transparent)]
 pub struct CredentialPermissionRef(pub String);
 
-/// Why a target is allowed to consume the credential. Purpose is orthogonal to
-/// provider identity and material shape.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CredentialPurpose {
-    ProviderAdapter,
-    RepositoryTransport,
-    McpAuthorization,
-    RemoteAgentAuthorization,
-    /// One registered Host Web provider identified by its immutable provider id.
-    WebProviderAuthorization,
-    HttpEffect,
-    SignatureVerification,
-    Extension,
-}
-
-impl CredentialPurpose {
+/// Purpose/usage compatibility of an SDK credential target.
+///
+/// Purpose and target are Runtime SDK values; which usage shapes each target
+/// owner supports is decided with the credential descriptor, so the check is
+/// offered here as an extension of both values (ADR-0086 §7).
+pub trait CredentialTargetValidation {
     /// Validate the closed usage shapes supported by each target owner.
     ///
     /// Core delivery carriers are deliberately purpose-neutral: Repository,
     /// MCP, remote-agent and provider credentials all reuse the one ENV and
     /// private-file mechanism. Purpose constrains which upstream may consume
     /// material; it does not get a second say in how the bytes travel.
-    pub fn validate_usage(&self, usage: &CredentialUsage) -> Result<(), CredentialDescriptorError> {
+    /// Consumer-owned target constructors normalize audiences; descriptor
+    /// publication independently rechecks Repository canonicality so a wire
+    /// caller cannot bypass that constructor.
+    fn validate_usage(&self, usage: &CredentialUsage) -> Result<(), CredentialDescriptorError>;
+}
+
+impl CredentialTargetValidation for CredentialPurpose {
+    fn validate_usage(&self, usage: &CredentialUsage) -> Result<(), CredentialDescriptorError> {
         if usage.is_core_delivery() {
             return Ok(());
         }
@@ -148,30 +115,8 @@ impl CredentialPurpose {
     }
 }
 
-/// Exact purpose/audience identity frozen into executable access. Usage remains
-/// the existing independent field on `CredentialAccess`, so executable payloads
-/// cannot serialize two copies of the same usage truth.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CredentialTarget {
-    pub purpose: CredentialPurpose,
-    pub audience: CredentialAudienceRef,
-}
-
-impl CredentialTarget {
-    #[must_use]
-    pub fn new(purpose: CredentialPurpose, audience: impl Into<CredentialAudienceRef>) -> Self {
-        Self {
-            purpose,
-            audience: audience.into(),
-        }
-    }
-
-    /// Validate the purpose/usage pair without deriving or duplicating usage.
-    /// Consumer-owned target constructors normalize audiences; descriptor
-    /// publication independently rechecks Repository canonicality so a wire
-    /// caller cannot bypass that constructor.
-    pub fn validate_usage(&self, usage: &CredentialUsage) -> Result<(), CredentialDescriptorError> {
+impl CredentialTargetValidation for CredentialTarget {
+    fn validate_usage(&self, usage: &CredentialUsage) -> Result<(), CredentialDescriptorError> {
         self.purpose.validate_usage(usage)
     }
 }
@@ -803,5 +748,30 @@ mod tests {
             Err(crate::CredentialMaterialError::MaterialKindMismatch),
             "D3"
         );
+    }
+
+    /// The point of the fold: Repository, MCP, remote-agent and provider
+    /// credentials reuse one delivery mechanism. Purpose constrains which
+    /// upstream may consume material, never how the bytes travel.
+    #[test]
+    fn core_carriers_are_purpose_neutral() {
+        for purpose in [
+            CredentialPurpose::ProviderAdapter,
+            CredentialPurpose::RepositoryTransport,
+            CredentialPurpose::McpAuthorization,
+            CredentialPurpose::RemoteAgentAuthorization,
+            CredentialPurpose::WebProviderAuthorization,
+        ] {
+            for usage in [
+                CredentialUsage::process_env("K"),
+                CredentialUsage::private_file("/run/c"),
+            ] {
+                let target = CredentialTarget::new(purpose, "upstream");
+                assert!(
+                    target.validate_usage(&usage).is_ok(),
+                    "{purpose:?} must admit the core carrier {usage:?}"
+                );
+            }
+        }
     }
 }

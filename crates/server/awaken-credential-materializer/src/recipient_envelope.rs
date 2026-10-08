@@ -15,6 +15,8 @@
 //! another key or a local Vault. Live credential revocation remains the existing
 //! Credential rollout/attempt fence, independently of transport-key revocation.
 
+use awaken_credential_contract::CredentialAccessAdmission;
+use awaken_credential_contract::CredentialEnvelopeValidation;
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};

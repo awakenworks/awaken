@@ -11,6 +11,8 @@
 //! sealed bytes. Native provider execution, optional brokered inference, and
 //! ACP provisioning share this adapter so candidate routing cannot drift.
 
+use awaken_credential_contract::CredentialAccessAdmission;
+use awaken_credential_contract::CredentialEnvelopeValidation;
 mod inference_executor;
 pub use inference_executor::InferenceExecutorMaterializer;
 

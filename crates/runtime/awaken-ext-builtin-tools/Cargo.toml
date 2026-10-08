@@ -15,7 +15,7 @@ separation = "publish"
 [dependencies]
 awaken-web-policy-contract.workspace = true
 awaken-tool-contract.workspace = true
-awaken-credential.workspace = true
+awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 async-trait.workspace = true
 cap-std = "4"

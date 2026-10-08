@@ -306,7 +306,7 @@ impl WebSearchCredentialResolver for HostWebSearchCredentialResolver {
         &self,
         access: &CredentialAccess,
         provider_id: &str,
-    ) -> Result<awaken_credential::Credential, String> {
+    ) -> Result<awaken_agent_contract::credential::Credential, String> {
         let holder = PlaintextHolder::new(
             PlaintextBoundary::Worker,
             awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
@@ -608,10 +608,10 @@ mod tests {
     }
 
     fn verify_paid_header(
-        credential: Option<&awaken_credential::Credential>,
+        credential: Option<&awaken_agent_contract::credential::Credential>,
     ) -> Result<(), ToolError> {
         let header = credential
-            .and_then(awaken_credential::Credential::header)
+            .and_then(awaken_agent_contract::credential::Credential::header)
             .ok_or_else(|| ToolError::DefinitiveFailure("missing paid wire credential".into()))?;
         if header != ("X-Subscription-Token".into(), "paid-search-key".into()) {
             return Err(ToolError::DefinitiveFailure("wrong paid material".into()));
@@ -638,7 +638,7 @@ mod tests {
         async fn search(
             &self,
             request: awaken_ext_builtin_tools::WebSearchRequest,
-            credential: Option<&awaken_credential::Credential>,
+            credential: Option<&awaken_agent_contract::credential::Credential>,
         ) -> Result<Vec<awaken_ext_builtin_tools::WebSearchResult>, ToolError> {
             verify_paid_header(credential)?;
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -670,7 +670,7 @@ mod tests {
         async fn fetch(
             &self,
             request: awaken_ext_builtin_tools::WebFetchRequest,
-            credential: Option<&awaken_credential::Credential>,
+            credential: Option<&awaken_agent_contract::credential::Credential>,
             domain_filters: &[awaken_ext_builtin_tools::WebDomainFilter],
         ) -> Result<String, ToolError> {
             assert!(domain_filters.is_empty(), "R7 Fetch has no domain filter");
