@@ -77,6 +77,7 @@ class MutationOracleTests(unittest.TestCase):
             "acp-observation-model-mutants",
             "eval-evidence-model-mutants",
             "webhook-subscription-model-mutants",
+            "k8s-process-observation-model-mutants",
         )
         for flag in flags:
             handler = "check_" + flag.replace("-", "_")
@@ -107,6 +108,44 @@ class MutationOracleTests(unittest.TestCase):
             with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("java", timeout)):
                 with self.assertRaises(subprocess.TimeoutExpired):
                     check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config", [], **budget)
+
+    def test_k8s_process_observation_keeps_one_complete_qualified_baseline(self) -> None:
+        import formal_execution_replacement_mutations as family
+        # KPT cause/effect rules: R1 canonical model+complete CFG, unique mutation
+        # anchors and qualified 4096MiB/eight-worker/300s profile => one shared
+        # runner receives the full green base, 16 unsafe variants and 6 reachable
+        # observation/stop witnesses. R2 a missing anchor => fail before any TLC.
+        # Constraint: all cases retain three generations and both participants;
+        # the existing TLC oracle owns green-before-kill, exact exit/name and
+        # timeout rejection (covered by the adjacent oracle decision tables).
+        source = (ROOT / "formal/tla/K8sProcessObservation.tla").read_text()
+        config = (ROOT / "formal/tla/K8sProcessObservation.cfg").read_text()
+        jar = Path("tlc.jar")
+        with patch.object(family, "check_tlc_model_mutations") as runner:
+            family.check_k8s_process_observation_model_mutants(jar)
+        runner.assert_called_once()
+        args, budget = runner.call_args
+        self.assertEqual(args[:4], (jar, "K8sProcessObservation", source, config))
+        self.assertEqual(budget, {"heap_mb": 4096, "timeout_seconds": 300, "workers": 8})
+        self.assertIn("MaxGeneration = 3", config)
+        self.assertIn("Containers = {main, projector}", config)
+        cases = args[4]
+        self.assertEqual(len(cases), 22)
+        for mutant, cfg, oracle in cases[:16]:
+            self.assertNotEqual(mutant, source)
+            self.assertEqual((cfg, oracle), (config, "Safety"))
+        witnesses = ("NoObservedExit", "NoReplacementBinding", "NoReplacementExit",
+                     "NoLiveStopRequest", "NoReplacementStop", "NoPostExitStopReceipt")
+        self.assertEqual(cases[16:], [
+            (source, config.replace("INVARIANT Safety", f"INVARIANT {name}"), name)
+            for name in witnesses
+        ])
+        with patch.object(Path, "read_text", side_effect=[
+            source.replace("g = current", "TRUE"), config,
+        ]), patch.object(family, "check_tlc_model_mutations") as runner:
+            with self.assertRaisesRegex(SystemExit, "mutation anchor drifted"):
+                family.check_k8s_process_observation_model_mutants(jar)
+            runner.assert_not_called()
 
     def test_constant_trace_refutation_requires_exact_name_and_status(self) -> None:
         # Q1 TLC rejects a false constant invariant before state exploration:
