@@ -61,8 +61,9 @@ esac
 
 # cargo-mutants restores the source tree, but an interrupted or timestamp-close
 # restoration can leave an incremental artifact compiled from the last mutant.
-# Every mode starts from source-owned evidence and the mutation mode repeats the
-# cleanup on both success and failure.
+# Mutation builds use a separate target/build directory. Cleaning those owners
+# before/after mutation remains required; ordinary quick/full runs retain their
+# incremental cache and can never consume an interrupted mutant compilation.
 cleanup_mutation_artifacts() {
   cargo clean -p awaken-mcp-wire >/dev/null 2>&1 || true
   cargo clean -p awaken-runtime-contract >/dev/null 2>&1 || true
@@ -74,11 +75,11 @@ cleanup_mutation_artifacts() {
     -p awaken-session-state-contract >/dev/null 2>&1 || true
   cargo clean -p awaken-session-executor >/dev/null 2>&1 || true
 }
-cleanup_mutation_artifacts
 python3 scripts/ci/check_reliability.py
-cargo test -p awaken-reliability-testkit --lib
-cargo test -p awaken-mcp-wire --lib sse::tests
-cargo test -p awaken-dispatch --features test-support --test dispatch_conformance \
+source scripts/ci/_rust_test_execution.sh
+run_required_rust_tests -p awaken-reliability-testkit --lib
+run_required_rust_tests -p awaken-mcp-wire --lib sse::tests
+run_required_rust_tests -p awaken-dispatch --features test-support --test dispatch_conformance \
   memory_and_sqlite_refine_the_same_crash_recovery_history
 
 if [ "$mode" = "--quick" ]; then
@@ -86,12 +87,12 @@ if [ "$mode" = "--quick" ]; then
   exit 0
 fi
 
-cargo test -p awaken-store-sqlite --features test-support --test failure_atomicity
-cargo test -p awaken-session-store --test process_crash_outbox
-cargo test -p awaken-session-application --lib tests::creation::time_assurance
-cargo test -p awaken-credential-store --features sqlite,sealed-aead,test-support \
+run_required_rust_tests -p awaken-store-sqlite --features test-support --test failure_atomicity
+run_required_rust_tests -p awaken-session-store --test process_crash_outbox
+run_required_rust_tests -p awaken-session-application --lib tests::creation::time_assurance
+run_required_rust_tests -p awaken-credential-store --features sqlite,sealed-aead,test-support \
   --test process_crash_creation --test process_crash_managed_creation
-cargo test -p awaken-config-store --test process_crash_audit
+run_required_rust_tests -p awaken-config-store --test process_crash_audit
 
 if [ "$mode" = "--full" ]; then
   echo "reliability full executable gate: passed (tool-assisted gates not requested)"
@@ -149,8 +150,14 @@ RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test -p awaken-worker --lib \
   credential_liveness::tests::heartbeat_snapshot_never_mixes_concurrent_publication_batches \
   -- --exact 2>&1 | tee "$tsan_log"
 python3 scripts/ci/check_reliability.py --tsan-log "$tsan_log"
-trap cleanup_mutation_artifacts EXIT
 mutation_evidence="${AWAKEN_RELIABILITY_EVIDENCE_DIR:-$CARGO_TARGET_DIR/reliability}"
+(
+# Keep BOTH Cargo directories isolated: a runner may configure build.build-dir
+# outside target-dir. The subshell also restores the normal graph for callers.
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR%/}/reliability-mutation-build"
+export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
+cleanup_mutation_artifacts
+trap cleanup_mutation_artifacts EXIT
 mkdir -p "$mutation_evidence"
 cargo mutants --package awaken-mcp-wire \
   --output "$mutation_evidence/sse" \
@@ -196,5 +203,6 @@ cargo mutants --package awaken-session-types --test-package awaken-session-execu
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/environment-projection/mutants.out"
 cleanup_mutation_artifacts
 trap - EXIT
+)
 
 echo "reliability required-tools gate: passed"
