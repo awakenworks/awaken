@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import _strict_unittest as strict_unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -88,7 +89,7 @@ class BootstrapTests(unittest.TestCase):
                          "fixtures/cbmc_recursive_alias.c"):
             target = self.scripts / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / "scripts/ci" / relative, target)
+            shutil.copy2(ROOT / "scripts/ci" / relative, target)
         source = (self.scripts / "bootstrap_kani.sh").read_text()
         revision = re.search(r'readonly kani_revision="([^"]+)"', source)[1]
         digest = re.search(r'readonly kani_patch_sha256="([^"]+)"', source)[1]
@@ -108,6 +109,12 @@ class BootstrapTests(unittest.TestCase):
         # source/build/qualification and selection rules execute the real shell.
         source = source.replace('$HOME/.kani/kani-$kani_backend_version/bin', str(bindir))
         (self.scripts / "bootstrap_kani.sh").write_text(source)
+        # Tool/disk admission is an independent port owned by gate_tools tests;
+        # retain both exact calls in the real selection slice, refusing others.
+        (self.scripts / "gate_tools.py").write_text(
+            "import sys\nassert sys.argv[1:] in "
+            "[['require', '--gate', 'formal'], ['disk', '--stage', 'formal']]\n"
+        )
         self.calls = self.root / "calls"
         self.env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
                         AWAKEN_KANI_CACHE_DIR=str(self.cache),
@@ -534,4 +541,4 @@ class BootstrapTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    strict_unittest.main()

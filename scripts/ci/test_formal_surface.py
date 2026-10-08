@@ -9,6 +9,7 @@ import io
 import pathlib
 import tempfile
 import unittest
+import _strict_unittest as strict_unittest
 from unittest import mock
 
 
@@ -438,4 +439,4 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    strict_unittest.main()
