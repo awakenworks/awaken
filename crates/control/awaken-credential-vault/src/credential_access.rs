@@ -12,6 +12,7 @@
 //! selected source; the publication entrypoint optionally delivers that exact
 //! material through the deployment-owned custody port after authorization.
 
+use awaken_credential_contract::CredentialEnvelopeValidation;
 use awaken_credential_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding,
     CredentialMaterialSource, CredentialRef, CredentialTarget, CredentialUsage, PlaintextHolder,

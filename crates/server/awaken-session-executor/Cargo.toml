@@ -72,7 +72,6 @@ awaken-dispatch-erasure.workspace = true
 awaken-dispatch-execution.workspace = true
 awaken-acp-contract = { workspace = true }
 awaken-credential-contract.workspace = true
-awaken-credential.workspace = true
 awaken-credential-materializer = { workspace = true }
 async-trait.workspace = true
 awaken-time.workspace = true

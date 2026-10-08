@@ -262,7 +262,7 @@ pub(super) async fn prepare_runtime_routers(
             awaken_credential_vault::VaultAttemptCredentialDeliverySource::new(authority, issuer),
         )
             as Arc<
-                dyn awaken_runtime_contract::AttemptCredentialDeliverySource,
+                dyn awaken_credential_contract::AttemptCredentialDeliverySource,
             >),
         _ => None,
     };

@@ -253,7 +253,7 @@ mod tests {
         async fn fetch(
             &self,
             _request: awaken_ext_builtin_tools::WebFetchRequest,
-            _credential: Option<&awaken_credential::Credential>,
+            _credential: Option<&awaken_agent_contract::credential::Credential>,
             _domain_filters: &[awaken_ext_builtin_tools::WebDomainFilter],
         ) -> Result<String, awaken_tool_contract::tool::ToolError> {
             unreachable!("publication never executes a provider")

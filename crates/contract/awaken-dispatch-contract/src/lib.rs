@@ -23,11 +23,12 @@ mod worker_transport;
 
 pub use session_run_events::SessionRunEventPage;
 
-pub use awaken_runtime_contract::{
-    AttemptCredentialBinding, CandidateFingerprint, CredentialRealizationPersistenceDecision,
+pub use awaken_credential_contract::{
+    AttemptCredentialBinding, CredentialRealizationPersistenceDecision,
     CredentialRealizationReceipt, CredentialReceiptError,
     credential_realization_persistence_decision, verify_credential_realization_receipt,
 };
+pub use awaken_runtime_contract::CandidateFingerprint;
 pub use awaken_session_execution_contract::SessionRunReplacement;
 pub use awaken_worker_contract::{
     AssignmentRejection, CURRENT_RUNTIME_PROTOCOL_VERSION, ExecutionLocation,

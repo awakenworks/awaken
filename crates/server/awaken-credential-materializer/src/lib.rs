@@ -11,6 +11,8 @@
 //! sealed bytes. Native provider execution, optional brokered inference, and
 //! ACP provisioning share this adapter so candidate routing cannot drift.
 
+use awaken_credential_contract::CredentialAccessAdmission;
+use awaken_credential_contract::CredentialEnvelopeValidation;
 mod inference_executor;
 pub use inference_executor::InferenceExecutorMaterializer;
 
@@ -64,10 +66,12 @@ use awaken_credential_contract::{
     CredentialMaterialBinding, CredentialMaterialError, CredentialMaterialRequest,
     CredentialMaterialResolver, CredentialRealizationKind, ResolvedCredentialMaterial,
 };
+use awaken_credential_contract::{
+    candidate_credential_material_binding, credential_access_has_same_authority,
+};
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
 use awaken_runtime_contract::{
     CredentialAccess, CredentialMaterialSource, CredentialUsage, PlaintextHolder,
-    candidate_credential_material_binding, credential_access_has_same_authority,
 };
 
 #[derive(Clone)]
@@ -301,7 +305,7 @@ impl PinnedCredentialMaterializer {
         let ModelProvisioning::Provider { .. } = candidate.provisioning() else {
             return Err("model candidate does not require a provider credential".into());
         };
-        let expectation = awaken_runtime_contract::candidate_provider_expectation(candidate)
+        let expectation = awaken_credential_contract::candidate_provider_expectation(candidate)
             .map_err(str::to_string)?
             .ok_or_else(|| "provider candidate has no exact source coordinate".to_string())?;
         let (published, material_binding) = candidate_credential_material_binding(candidate)
@@ -1486,11 +1490,11 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_runtime_contract::CredentialRealizationRecorder for FixedAttempt {
+    impl awaken_credential_contract::CredentialRealizationRecorder for FixedAttempt {
         async fn record(
             &self,
-            _receipt: awaken_runtime_contract::CredentialRealizationReceipt,
-        ) -> Result<(), awaken_runtime_contract::CredentialRealizationRecordError> {
+            _receipt: awaken_credential_contract::CredentialRealizationReceipt,
+        ) -> Result<(), awaken_credential_contract::CredentialRealizationRecordError> {
             Ok(())
         }
     }
@@ -1512,15 +1516,15 @@ mod tests {
 
     struct LoseDuringRefresh {
         ownership: Arc<MutableAttempt>,
-        delivery: awaken_runtime_contract::AttemptCredentialDelivery,
+        delivery: awaken_credential_contract::AttemptCredentialDelivery,
     }
 
     #[async_trait::async_trait]
-    impl awaken_runtime_contract::AttemptCredentialDeliverySource for LoseDuringRefresh {
+    impl awaken_credential_contract::AttemptCredentialDeliverySource for LoseDuringRefresh {
         async fn deliver(
             &self,
-            _: awaken_runtime_contract::AttemptCredentialDeliveryRequest,
-        ) -> Result<awaken_runtime_contract::AttemptCredentialDelivery, String> {
+            _: awaken_credential_contract::AttemptCredentialDeliveryRequest,
+        ) -> Result<awaken_credential_contract::AttemptCredentialDelivery, String> {
             self.ownership
                 .0
                 .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1594,7 +1598,7 @@ mod tests {
                 .collect(),
             ..Default::default()
         };
-        let bindings = awaken_runtime_contract::compile_candidate_credential_bindings(
+        let bindings = awaken_credential_contract::compile_candidate_credential_bindings(
             &[&candidate],
             Some(&holder),
             &capabilities,
@@ -1622,7 +1626,7 @@ mod tests {
             let recorder = Arc::new(FixedAttempt(Ok(())));
             let mut context = awaken_runtime_contract::RuntimeRunContext::new()
                 .with_credential_realization(
-                    awaken_runtime_contract::AttemptCredentialRealization::new(
+                    awaken_credential_contract::AttemptCredentialRealization::new(
                         bindings.clone(),
                         recorder,
                     ),
@@ -1642,7 +1646,7 @@ mod tests {
         let context = awaken_runtime_contract::RuntimeRunContext::new()
             .with_ownership(authority.clone())
             .with_credential_realization(
-                awaken_runtime_contract::AttemptCredentialRealization::new(
+                awaken_credential_contract::AttemptCredentialRealization::new(
                     bindings.clone(),
                     authority,
                 ),
@@ -1661,10 +1665,10 @@ mod tests {
 
         let ownership = Arc::new(MutableAttempt(std::sync::atomic::AtomicBool::new(false)));
         let (published, _) =
-            awaken_runtime_contract::candidate_credential_material_binding(&candidate).unwrap();
-        let delivery = awaken_runtime_contract::AttemptCredentialDelivery {
+            awaken_credential_contract::candidate_credential_material_binding(&candidate).unwrap();
+        let delivery = awaken_credential_contract::AttemptCredentialDelivery {
             candidate_fingerprint: bindings[0].candidate_fingerprint.clone(),
-            access: awaken_runtime_contract::credential_access_without_delivery(published)
+            access: awaken_credential_contract::credential_access_without_delivery(published)
                 .with_envelope(
                     awaken_runtime_contract::CredentialEnvelope::SealedForWorker {
                         envelope_ref: awaken_runtime_contract::SealedCredentialEnvelopeRef {
@@ -1678,7 +1682,7 @@ mod tests {
             claim_epoch: bindings[0].claim_epoch,
         };
         let realization =
-            awaken_runtime_contract::AttemptCredentialRealization::new_with_deliveries(
+            awaken_credential_contract::AttemptCredentialRealization::new_with_deliveries(
                 bindings.clone(),
                 Vec::new(),
                 Arc::new(FixedAttempt(Ok(()))),

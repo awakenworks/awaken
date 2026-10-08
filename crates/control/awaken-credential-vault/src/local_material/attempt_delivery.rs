@@ -2,15 +2,16 @@
 //! Claim-scoped envelope issuance from the same Control Vault authority as
 //! ordinary exact material resolution. No credential selection occurs here.
 
+use awaken_credential_contract::CredentialEnvelopeValidation;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_credential_contract::{
-    CredentialEnvelopeIssuance, CredentialEnvelopeIssuer, CredentialMaterialError, CredentialUsage,
-};
-use awaken_runtime_contract::{
     AttemptCredentialDelivery, AttemptCredentialDeliveryRequest, AttemptCredentialDeliverySource,
     credential_access_without_delivery,
+};
+use awaken_credential_contract::{
+    CredentialEnvelopeIssuance, CredentialEnvelopeIssuer, CredentialMaterialError, CredentialUsage,
 };
 use awaken_time::WallClockExt as _;
 

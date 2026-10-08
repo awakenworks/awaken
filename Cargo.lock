@@ -445,7 +445,6 @@ dependencies = [
  "awaken-control",
  "awaken-coordinator",
  "awaken-coordinator-client",
- "awaken-credential",
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-credential-store",
@@ -659,7 +658,6 @@ dependencies = [
  "awaken-config-resolver",
  "awaken-config-service",
  "awaken-config-store",
- "awaken-credential",
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-credential-store",
@@ -879,23 +877,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "awaken-credential"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "tokio",
-]
-
-[[package]]
 name = "awaken-credential-contract"
 version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-runtime-contract",
  "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
  "url",
 ]
 
@@ -906,7 +898,6 @@ dependencies = [
  "async-trait",
  "awaken-acp-contract",
  "awaken-agent-contract",
- "awaken-credential",
  "awaken-credential-contract",
  "awaken-credential-vault",
  "awaken-ext-builtin-tools",
@@ -1515,7 +1506,7 @@ name = "awaken-ext-builtin-tools"
 version = "1.0.0"
 dependencies = [
  "async-trait",
- "awaken-credential",
+ "awaken-agent-contract",
  "awaken-runtime-contract",
  "awaken-tool-contract",
  "awaken-web-policy-contract",
@@ -1565,7 +1556,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-credential",
  "awaken-mcp-wire",
  "awaken-outbound-http",
  "awaken-runtime-contract",
@@ -1584,6 +1574,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-runtime-contract",
  "awaken-time",
@@ -1967,7 +1958,6 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-credential",
  "awaken-credential-contract",
  "awaken-lease-testkit",
  "awaken-outbound-http",
@@ -2467,7 +2457,6 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-credential-contract",
  "awaken-time",
  "awaken-tool-contract",
  "futures-util",
@@ -2738,7 +2727,6 @@ dependencies = [
  "awaken-config-store",
  "awaken-control",
  "awaken-coordinator",
- "awaken-credential",
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-credential-store",
@@ -3022,7 +3010,6 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-authority-clock",
  "awaken-container-contract",
- "awaken-credential",
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-credential-vault",

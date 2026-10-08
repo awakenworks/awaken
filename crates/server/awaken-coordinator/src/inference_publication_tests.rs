@@ -59,18 +59,18 @@ mod tests {
     struct AcceptReceipt;
 
     #[async_trait::async_trait]
-    impl awaken_runtime_contract::CredentialRealizationRecorder for AcceptReceipt {
+    impl awaken_credential_contract::CredentialRealizationRecorder for AcceptReceipt {
         async fn record(
             &self,
-            _receipt: awaken_runtime_contract::CredentialRealizationReceipt,
-        ) -> Result<(), awaken_runtime_contract::CredentialRealizationRecordError> {
+            _receipt: awaken_credential_contract::CredentialRealizationReceipt,
+        ) -> Result<(), awaken_credential_contract::CredentialRealizationRecordError> {
             Ok(())
         }
     }
 
     fn attempt_binding(
         candidate: &ResolvedModelCandidate,
-    ) -> Option<awaken_runtime_contract::AttemptCredentialBinding> {
+    ) -> Option<awaken_credential_contract::AttemptCredentialBinding> {
         let ModelProvisioning::Provider {
             credential: Some(access),
             ..
@@ -78,8 +78,8 @@ mod tests {
         else {
             return None;
         };
-        Some(awaken_runtime_contract::AttemptCredentialBinding {
-            candidate_fingerprint: awaken_runtime_contract::candidate_fingerprint(candidate)
+        Some(awaken_credential_contract::AttemptCredentialBinding {
+            candidate_fingerprint: awaken_credential_contract::candidate_fingerprint(candidate)
                 .unwrap(),
             credential: access.credential.clone(),
             selected_plaintext_holder: awaken_runtime_contract::PlaintextHolder::new(
@@ -94,8 +94,8 @@ mod tests {
 
     fn attempt_realization(
         candidates: &[&ResolvedModelCandidate],
-    ) -> awaken_runtime_contract::AttemptCredentialRealization {
-        awaken_runtime_contract::AttemptCredentialRealization::new(
+    ) -> awaken_credential_contract::AttemptCredentialRealization {
+        awaken_credential_contract::AttemptCredentialRealization::new(
             candidates
                 .iter()
                 .filter_map(|candidate| attempt_binding(candidate))
@@ -267,14 +267,14 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_runtime_contract::CredentialRealizationRecorder for DecisionRecorder {
+    impl awaken_credential_contract::CredentialRealizationRecorder for DecisionRecorder {
         async fn record(
             &self,
-            _receipt: awaken_runtime_contract::CredentialRealizationReceipt,
-        ) -> Result<(), awaken_runtime_contract::CredentialRealizationRecordError> {
+            _receipt: awaken_credential_contract::CredentialRealizationReceipt,
+        ) -> Result<(), awaken_credential_contract::CredentialRealizationRecordError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.accepts.then_some(()).ok_or_else(|| {
-                awaken_runtime_contract::CredentialRealizationRecordError(
+                awaken_credential_contract::CredentialRealizationRecordError(
                     "planned receipt rejection".into(),
                 )
             })
@@ -435,7 +435,7 @@ mod tests {
             let context = RuntimeRunContext::new()
                 .with_ownership(Arc::new(DecisionOwnership(rule.ownership_current)))
                 .with_credential_realization(
-                    awaken_runtime_contract::AttemptCredentialRealization::new(
+                    awaken_credential_contract::AttemptCredentialRealization::new(
                         bindings,
                         Arc::new(DecisionRecorder {
                             accepts: rule.receipt_accepts,

@@ -494,7 +494,7 @@ struct OwnershipCheckingAttemptExecutor {
 
 #[derive(Default)]
 struct CredentialCheckingCancelExecutor {
-    bindings: Mutex<Vec<awaken_runtime_contract::AttemptCredentialBinding>>,
+    bindings: Mutex<Vec<awaken_credential_contract::AttemptCredentialBinding>>,
 }
 
 struct ExpiringOwnershipAttemptExecutor {
@@ -582,11 +582,13 @@ impl RunAttemptExecutor for CredentialCheckingCancelExecutor {
     ) -> ExecutionResult<()> {
         awaken_runtime_contract::execution::verify_attempt_ownership(context.ownership.as_deref())
             .await?;
-        let realization = context.credential_realization.as_ref().ok_or_else(|| {
-            ExecutionError::Execution(
-                "authenticated cancellation has no exact credential realization".into(),
-            )
-        })?;
+        let realization =
+            awaken_credential_contract::AttemptCredentialRealization::from_context(&context)
+                .ok_or_else(|| {
+                    ExecutionError::Execution(
+                        "authenticated cancellation has no exact credential realization".into(),
+                    )
+                })?;
         self.bindings
             .lock()
             .unwrap()

@@ -9,6 +9,7 @@
 //! process owner, and the Worker relay route. The Managed adapter implements
 //! the realizer port by delegating here.
 
+use awaken_credential_contract::CredentialAccessAdmission;
 use std::sync::{Arc, Weak};
 
 use awaken_credential_materializer::{

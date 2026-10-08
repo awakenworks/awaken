@@ -326,8 +326,8 @@ impl ClaimedCredentialDeliveryTransport for HttpDispatchQueue {
     async fn refresh_credential_delivery(
         &self,
         claim: &RunClaim,
-        delivery_request: awaken_runtime_contract::AttemptCredentialDeliveryRequest,
-    ) -> Result<Option<awaken_runtime_contract::AttemptCredentialDelivery>, DispatchError> {
+        delivery_request: awaken_credential_contract::AttemptCredentialDeliveryRequest,
+    ) -> Result<Option<awaken_credential_contract::AttemptCredentialDelivery>, DispatchError> {
         let value = self
             .post(
                 "/v1/worker/dispatch/credential_delivery/refresh",

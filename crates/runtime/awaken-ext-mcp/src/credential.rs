@@ -1,7 +1,7 @@
 //! Opaque credentials for authenticating to an MCP server.
 //!
 //! Re-exports the shared host-side credential vocabulary from
-//! [`awaken_credential`] — the same seam the A2A outbound client uses, so the
+//! [`awaken_agent_contract::credential`] — the same seam the A2A outbound client uses, so the
 //! challenge shape and refresh semantics cannot drift between wire clients.
 //!
 //! A [`Credential`] carries an already-resolved secret value (a bearer token or
@@ -21,7 +21,7 @@
 
 use serde_json::Value;
 
-pub use awaken_credential::{AuthChallenge, Credential, CredentialRefresher};
+pub use awaken_agent_contract::credential::{AuthChallenge, Credential, CredentialRefresher};
 
 /// Whether a request may be sent a second time after credential rotation.
 /// Unknown methods fail closed because an extension method may have effects.

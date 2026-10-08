@@ -16,13 +16,37 @@ use std::collections::BTreeSet;
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
 pub use awaken_agent_contract::StructuredCredentialMaterial;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
+// The credential reference vocabulary is a Runtime SDK value (ADR-0086 §7).
+// Re-exported so Platform paths and type identity are unchanged.
+pub use awaken_agent_contract::credential::{
+    CandidateFingerprint, CredentialAccess, CredentialAudienceRef, CredentialEnvelope,
+    CredentialExecutionPolicy, CredentialMaterialSource, CredentialPurpose, CredentialRef,
+    CredentialRefreshAccess, CredentialTarget, CredentialUsage, CredentialUsageError,
+    HttpEffectPlacement, ModelExposurePolicy, PRIVATE_FILE_CONSUMER, PRIVATE_FILE_MATERIAL_TYPE,
+    PROCESS_ENV_CONSUMER, PROCESS_ENV_MATERIAL_TYPE, PlaintextBoundary, PlaintextHolder,
+    SELF_HOSTED_ACP_TRUST_DOMAIN, SELF_HOSTED_SANDBOX_TRUST_DOMAIN,
+    SELF_HOSTED_WORKER_TRUST_DOMAIN, SealedCredentialEnvelopeRef, SignatureVerificationAlgorithm,
+    TokenEndpointAuth, TrustDomainRef, is_core_delivery_consumer,
+};
+
+mod attempt;
+pub use attempt::{
+    AttemptCredentialBinding, AttemptCredentialBindingError, AttemptCredentialDelivery,
+    AttemptCredentialDeliveryError, AttemptCredentialDeliveryRequest,
+    AttemptCredentialDeliverySource, AttemptCredentialRealization,
+    CredentialRealizationPersistenceDecision, CredentialRealizationReceipt,
+    CredentialRealizationRecordError, CredentialRealizationRecorder, CredentialReceiptError,
+    candidate_credential_material_binding, candidate_fingerprint, candidate_provider_expectation,
+    compile_candidate_credential_bindings, credential_access_has_same_authority,
+    credential_access_without_delivery, credential_realization_persistence_decision,
+    verify_attempt_credential_delivery, verify_credential_realization_receipt,
+};
 mod http_effect;
 pub use http_effect::{
-    CredentialUsageError, HttpEffectFieldPlacements, HttpEffectMaterialPlacements,
-    HttpEffectMaterialReference, HttpEffectMaterialReferenceError, HttpEffectPlacement,
-    project_http_effect_material_placements,
+    HttpEffectFieldPlacements, HttpEffectMaterialPlacements, HttpEffectMaterialReference,
+    HttpEffectMaterialReferenceError, project_http_effect_material_placements,
 };
 mod http_basic;
 pub use http_basic::{HTTP_BASIC_MATERIAL_TYPE, http_basic_material};
@@ -45,11 +69,6 @@ pub use managed_rollout::{
 };
 mod observation_admission;
 pub use observation_admission::require_exact_available_worker_reference;
-mod usage;
-pub use usage::{
-    CredentialUsage, PRIVATE_FILE_CONSUMER, PRIVATE_FILE_MATERIAL_TYPE, PROCESS_ENV_CONSUMER,
-    PROCESS_ENV_MATERIAL_TYPE, SignatureVerificationAlgorithm, is_core_delivery_consumer,
-};
 #[cfg(kani)]
 mod formal;
 mod material_resolution;
@@ -68,27 +87,12 @@ pub use realization_capabilities::{
     mcp_credential_delivery_receipt_matches, select_mcp_credential_delivery,
 };
 
-/// Stable built-in trust domains used by the self-hosted execution profile.
-/// Hosted deployments publish their own opaque domains instead.
-pub const SELF_HOSTED_WORKER_TRUST_DOMAIN: &str = "awaken.worker";
-pub const SELF_HOSTED_ACP_TRUST_DOMAIN: &str = "awaken.workload.acp";
-pub const SELF_HOSTED_SANDBOX_TRUST_DOMAIN: &str = "awaken.workload.sandbox";
-
 /// Trust domain of the platform-held egress mediator.
 ///
 /// Every hosted deployment names this one domain. Without it each consumer
 /// invents its own Platform trust-domain string, and two deployments that mean
 /// the same mediator stop comparing equal.
 pub const PLATFORM_EGRESS_GATEWAY_TRUST_DOMAIN: &str = "awaken.platform.egress-gateway";
-
-/// A stable reference to one credential source revision.
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
-)]
-pub struct CredentialRef {
-    pub id: String,
-    pub revision: u64,
-}
 
 /// Worker-local state observed for one exact non-secret credential revision.
 /// This is execution evidence, never credential selection or secret material.
@@ -125,14 +129,6 @@ impl CredentialObservation {
     }
 }
 
-/// The trusted adapter from which exact credential material may be resolved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CredentialMaterialSource {
-    ControlPlaneReference,
-    WorkerReference,
-}
-
 /// The durable credential-access vocabulary is closed over references. Keep
 /// this match exhaustive so adding another material source cannot silently
 /// create an inline-material path without revisiting admission and its proof.
@@ -141,27 +137,6 @@ const fn durable_material_source_is_reference_only(source: CredentialMaterialSou
         CredentialMaterialSource::ControlPlaneReference
         | CredentialMaterialSource::WorkerReference => true,
     }
-}
-
-/// The process/trust boundary permitted to hold plaintext.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PlaintextBoundary {
-    Workload,
-    Worker,
-    Platform,
-}
-
-/// Opaque trust-domain identity.  It is deliberately not an IAM principal.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct TrustDomainRef(pub String);
-
-/// One exact plaintext holder; boundaries are not ordered by strength.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct PlaintextHolder {
-    pub boundary: PlaintextBoundary,
-    pub trust_domain: TrustDomainRef,
 }
 
 /// Allocation-free projection used by Worker-private material adapters. Keeping
@@ -180,80 +155,6 @@ pub const fn project_worker_plaintext_holder<T>(
     WorkerPlaintextHolderProjection {
         boundary: PlaintextBoundary::Worker,
         trust_domain,
-    }
-}
-
-impl PlaintextHolder {
-    #[must_use]
-    pub fn new(boundary: PlaintextBoundary, trust_domain: impl Into<String>) -> Self {
-        Self {
-            boundary,
-            trust_domain: TrustDomainRef(trust_domain.into()),
-        }
-    }
-}
-
-/// What credential-like content may be model-visible.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelExposurePolicy {
-    Forbidden,
-    VirtualOnly,
-}
-
-/// Published authorization for execution-time plaintext and model exposure.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CredentialExecutionPolicy {
-    pub allowed_plaintext_holders: BTreeSet<PlaintextHolder>,
-    pub model_exposure: ModelExposurePolicy,
-}
-
-impl CredentialExecutionPolicy {
-    fn self_hosted_holders() -> [PlaintextHolder; 3] {
-        [
-            PlaintextHolder::new(PlaintextBoundary::Worker, SELF_HOSTED_WORKER_TRUST_DOMAIN),
-            PlaintextHolder::new(PlaintextBoundary::Workload, SELF_HOSTED_ACP_TRUST_DOMAIN),
-            PlaintextHolder::new(
-                PlaintextBoundary::Workload,
-                SELF_HOSTED_SANDBOX_TRUST_DOMAIN,
-            ),
-        ]
-    }
-
-    #[must_use]
-    pub fn exact(holder: PlaintextHolder, model_exposure: ModelExposurePolicy) -> Self {
-        Self {
-            allowed_plaintext_holders: BTreeSet::from([holder]),
-            model_exposure,
-        }
-    }
-
-    #[must_use]
-    pub fn new(
-        allowed_plaintext_holders: impl IntoIterator<Item = PlaintextHolder>,
-        model_exposure: ModelExposurePolicy,
-    ) -> Self {
-        Self {
-            allowed_plaintext_holders: allowed_plaintext_holders.into_iter().collect(),
-            model_exposure,
-        }
-    }
-
-    /// Default policy compiled by the self-hosted deployment profile.
-    #[must_use]
-    pub fn self_hosted_provider() -> Self {
-        Self::new(Self::self_hosted_holders(), ModelExposurePolicy::Forbidden)
-    }
-
-    /// Canonical authenticated MCP policy. A mediated ACP projection may expose
-    /// only the generation-scoped synthetic relay capability; backing material
-    /// remains Worker-held and is never model-visible.
-    #[must_use]
-    pub fn self_hosted_mcp() -> Self {
-        Self::new(
-            Self::self_hosted_holders(),
-            ModelExposurePolicy::VirtualOnly,
-        )
     }
 }
 
@@ -353,60 +254,35 @@ impl CredentialRealizationProfile {
     }
 }
 
-/// Opaque reference to sealed credential material.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SealedCredentialEnvelopeRef {
-    pub id: String,
-    pub payload_fingerprint: String,
-}
-
-/// Recipient-bound sealed transport; it grants no plaintext authorization.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum CredentialEnvelope {
-    SealedForWorker {
-        envelope_ref: SealedCredentialEnvelopeRef,
-        recipient: TrustDomainRef,
-        expires_at_unix_ms: u64,
-    },
-    SealedForWorkload {
-        envelope_ref: SealedCredentialEnvelopeRef,
-        recipient: TrustDomainRef,
-        expires_at_unix_ms: u64,
-    },
-}
-
-impl CredentialEnvelope {
-    fn envelope_ref(&self) -> &SealedCredentialEnvelopeRef {
-        match self {
-            Self::SealedForWorker { envelope_ref, .. }
-            | Self::SealedForWorkload { envelope_ref, .. } => envelope_ref,
-        }
-    }
-
-    fn recipient(&self) -> &TrustDomainRef {
-        match self {
-            Self::SealedForWorker { recipient, .. } | Self::SealedForWorkload { recipient, .. } => {
-                recipient
-            }
-        }
-    }
-
-    fn expires_at_unix_ms(&self) -> u64 {
-        match self {
-            Self::SealedForWorker {
-                expires_at_unix_ms, ..
-            }
-            | Self::SealedForWorkload {
-                expires_at_unix_ms, ..
-            } => *expires_at_unix_ms,
-        }
-    }
-
+/// Material-boundary checks of a recipient-bound envelope.
+///
+/// The envelope is a Runtime SDK value; these checks compare it with Platform
+/// custody facts, so they are offered here as an extension of the value
+/// (ADR-0086 §7).
+pub trait CredentialEnvelopeValidation {
     /// Revalidate the transport binding immediately before material resolution.
     /// Admission may have happened earlier; expiry and recipient are therefore
     /// checked again at the material boundary.
-    pub fn validate_for_holder(
+    fn validate_for_holder(
+        &self,
+        selected_holder: &PlaintextHolder,
+        now_unix_ms: u64,
+    ) -> Result<(), CredentialMaterialError>;
+
+    /// Validate that an issuer returned the envelope for the exact request it
+    /// was given. This check belongs at issuance, before the envelope can enter
+    /// a durable execution pin; last-mile validation is a second fence and must
+    /// not be asked to repair a substituted issuer response.
+    fn validate_issuance(
+        &self,
+        access: &CredentialAccess,
+        selected_holder: &PlaintextHolder,
+        binding: &CredentialMaterialBinding,
+    ) -> Result<(), CredentialMaterialError>;
+}
+
+impl CredentialEnvelopeValidation for CredentialEnvelope {
+    fn validate_for_holder(
         &self,
         selected_holder: &PlaintextHolder,
         now_unix_ms: u64,
@@ -422,11 +298,7 @@ impl CredentialEnvelope {
         Ok(())
     }
 
-    /// Validate that an issuer returned the envelope for the exact request it
-    /// was given. This check belongs at issuance, before the envelope can enter
-    /// a durable execution pin; last-mile validation is a second fence and must
-    /// not be asked to repair a substituted issuer response.
-    pub fn validate_issuance(
+    fn validate_issuance(
         &self,
         access: &CredentialAccess,
         selected_holder: &PlaintextHolder,
@@ -442,285 +314,35 @@ impl CredentialEnvelope {
             self.required_boundary() == selected_holder.boundary,
         )
     }
-
-    fn required_boundary(&self) -> PlaintextBoundary {
-        match self {
-            Self::SealedForWorker { .. } => PlaintextBoundary::Worker,
-            Self::SealedForWorkload { .. } => PlaintextBoundary::Workload,
-        }
-    }
 }
 
-/// Exact OAuth refresh/reseal facts pinned to the same credential revision.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CredentialRefreshAccess {
-    pub credential_revision: u64,
-    pub configuration_fingerprint: String,
-    pub token_endpoint: String,
-    pub client_id: String,
-    pub token_endpoint_auth: TokenEndpointAuth,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_secret_ref: Option<String>,
-    pub refresh_token_ref: String,
-    pub access_token_ref: String,
-    /// Provider account/workspace required by externally managed OAuth drivers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account_id: Option<String>,
-    /// Optional provider plan/tenant classification passed only to the driver.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account_plan: Option<String>,
-    /// Known access-token expiry. `None` delegates expiry detection to the driver.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_at_unix_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resource: Option<String>,
-}
-
-impl CredentialRefreshAccess {
-    /// Compile one exact refresh/reseal instruction and bind every executable
-    /// configuration field into its owning-domain fingerprint.
-    #[allow(clippy::too_many_arguments)]
-    #[must_use]
-    pub fn new(
-        credential_revision: u64,
-        token_endpoint: String,
-        client_id: String,
-        token_endpoint_auth: TokenEndpointAuth,
-        client_secret_ref: Option<String>,
-        refresh_token_ref: String,
-        access_token_ref: String,
-        scope: Option<String>,
-        resource: Option<String>,
-    ) -> Self {
-        let mut access = Self {
-            credential_revision,
-            configuration_fingerprint: String::new(),
-            token_endpoint,
-            client_id,
-            token_endpoint_auth,
-            client_secret_ref,
-            refresh_token_ref,
-            access_token_ref,
-            account_id: None,
-            account_plan: None,
-            expires_at_unix_ms: None,
-            scope,
-            resource,
-        };
-        access.configuration_fingerprint = access.expected_configuration_fingerprint();
-        access
-    }
-
-    /// Recompute the digest from executable facts only. Revision is checked
-    /// separately so drift and configuration tampering remain distinguishable.
-    #[must_use]
-    pub fn expected_configuration_fingerprint(&self) -> String {
-        awaken_agent_contract::stable_fingerprint(&(
-            &self.token_endpoint,
-            &self.client_id,
-            self.token_endpoint_auth,
-            &self.client_secret_ref,
-            &self.refresh_token_ref,
-            &self.access_token_ref,
-            &self.account_id,
-            &self.account_plan,
-            self.expires_at_unix_ms,
-            &self.scope,
-            &self.resource,
-        ))
-    }
-
-    #[must_use]
-    pub fn with_provider_metadata(
-        mut self,
-        account_id: Option<String>,
-        account_plan: Option<String>,
-        expires_at_unix_ms: Option<u64>,
-    ) -> Self {
-        self.account_id = account_id;
-        self.account_plan = account_plan;
-        self.expires_at_unix_ms = expires_at_unix_ms;
-        self.configuration_fingerprint = self.expected_configuration_fingerprint();
-        self
-    }
-
-    #[must_use]
-    pub fn has_valid_configuration_fingerprint(&self) -> bool {
-        self.configuration_fingerprint == self.expected_configuration_fingerprint()
-    }
-
-    #[must_use]
-    pub fn has_valid_client_authentication_binding(&self) -> bool {
-        matches!(
-            (self.token_endpoint_auth, self.client_secret_ref.as_ref()),
-            (TokenEndpointAuth::None, None)
-                | (
-                    TokenEndpointAuth::ClientSecretBasic | TokenEndpointAuth::ClientSecretPost,
-                    Some(_)
-                )
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TokenEndpointAuth {
-    None,
-    ClientSecretBasic,
-    ClientSecretPost,
-}
-
-/// Historical wire value accepted only so retained snapshots can be diagnosed
-/// and migrated.  New construction has no API for selecting it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum LegacyCredentialInjection {
-    Reference,
-    WorkerReference,
-    SealedEnvelope,
-    Direct,
-}
-
-/// Secret-free credential instructions pinned into an executable snapshot.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CredentialAccess {
-    pub credential: CredentialRef,
-    pub material_source: CredentialMaterialSource,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub envelope: Option<CredentialEnvelope>,
-    /// Exact provider-neutral purpose/audience selected by the consumer. Legacy
-    /// rows may omit it; a described source requires it at materialization.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<CredentialTarget>,
-    pub usage: CredentialUsage,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refresh: Option<CredentialRefreshAccess>,
-    pub policy: CredentialExecutionPolicy,
-    #[serde(default, skip_serializing_if = "is_false")]
-    legacy_direct: bool,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
-#[derive(Deserialize)]
-struct CredentialAccessWire {
-    credential: CredentialRef,
-    #[serde(default)]
-    material_source: Option<CredentialMaterialSource>,
-    #[serde(default)]
-    injection: Option<LegacyCredentialInjection>,
-    #[serde(default)]
-    envelope: Option<CredentialEnvelope>,
-    #[serde(default)]
-    target: Option<CredentialTarget>,
-    usage: CredentialUsage,
-    #[serde(default)]
-    refresh: Option<CredentialRefreshAccess>,
-    #[serde(default)]
-    policy: Option<CredentialExecutionPolicy>,
-    #[serde(default)]
-    legacy_direct: bool,
-}
-
-impl<'de> Deserialize<'de> for CredentialAccess {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        use serde::de::Error as _;
-
-        let wire = CredentialAccessWire::deserialize(deserializer)?;
-        let (material_source, decoded_direct) = match (wire.material_source, wire.injection) {
-            (Some(source), None) => (source, false),
-            (None, Some(LegacyCredentialInjection::Reference)) => {
-                (CredentialMaterialSource::ControlPlaneReference, false)
-            }
-            (None, Some(LegacyCredentialInjection::WorkerReference)) => {
-                (CredentialMaterialSource::WorkerReference, false)
-            }
-            (None, Some(LegacyCredentialInjection::Direct)) => {
-                (CredentialMaterialSource::ControlPlaneReference, true)
-            }
-            (None, Some(LegacyCredentialInjection::SealedEnvelope)) => {
-                return Err(D::Error::custom(
-                    "legacy sealed_envelope lacks recipient-bound envelope facts",
-                ));
-            }
-            (Some(_), Some(_)) => {
-                return Err(D::Error::custom(
-                    "credential access cannot contain both material_source and injection",
-                ));
-            }
-            (None, None) => return Err(D::Error::missing_field("material_source")),
-        };
-        let policy = wire.policy.ok_or_else(|| {
-            D::Error::custom("legacy credential access has no plaintext-holder policy")
-        })?;
-        Ok(Self {
-            credential: wire.credential,
-            material_source,
-            envelope: wire.envelope,
-            target: wire.target,
-            usage: wire.usage,
-            refresh: wire.refresh,
-            policy,
-            legacy_direct: decoded_direct || wire.legacy_direct,
-        })
-    }
-}
-
-impl CredentialAccess {
-    #[must_use]
-    pub fn new(
-        credential: CredentialRef,
-        material_source: CredentialMaterialSource,
-        usage: CredentialUsage,
-        policy: CredentialExecutionPolicy,
-    ) -> Self {
-        Self {
-            credential,
-            material_source,
-            envelope: None,
-            target: None,
-            usage,
-            refresh: None,
-            policy,
-            legacy_direct: false,
-        }
-    }
-
-    #[must_use]
-    pub fn with_envelope(mut self, envelope: CredentialEnvelope) -> Self {
-        self.envelope = Some(envelope);
-        self
-    }
-
-    /// Bind this access to one exact source-declared purpose/audience.
-    #[must_use]
-    pub fn with_target(mut self, target: CredentialTarget) -> Self {
-        self.target = Some(target);
-        self
-    }
-
-    #[must_use]
-    pub fn with_refresh(mut self, refresh: CredentialRefreshAccess) -> Self {
-        self.refresh = Some(refresh);
-        self
-    }
-
+/// Realization admission of a published credential reference.
+///
+/// The reference is a Runtime SDK value; whether an installation may realize
+/// it is Platform policy, so the check is offered here as an extension of
+/// [`CredentialAccess`] (ADR-0086 §7).
+pub trait CredentialAccessAdmission {
     /// Apply the one fail-closed causality chain for a selected realization.
-    pub fn admit(
+    fn admit(
+        &self,
+        requested_holder: &PlaintextHolder,
+        realization: CredentialRealizationKind,
+        capabilities: &CredentialRealizationCapabilities,
+        now_unix_ms: u64,
+    ) -> Result<CredentialRealizationPlan, CredentialAdmissionError>;
+}
+
+impl CredentialAccessAdmission for CredentialAccess {
+    fn admit(
         &self,
         requested_holder: &PlaintextHolder,
         realization: CredentialRealizationKind,
         capabilities: &CredentialRealizationCapabilities,
         now_unix_ms: u64,
     ) -> Result<CredentialRealizationPlan, CredentialAdmissionError> {
-        if self.legacy_direct || !durable_material_source_is_reference_only(self.material_source) {
+        if self.is_legacy_direct()
+            || !durable_material_source_is_reference_only(self.material_source)
+        {
             return Err(CredentialAdmissionError::DirectPublicationRejected);
         }
         self.usage

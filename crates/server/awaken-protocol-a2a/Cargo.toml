@@ -20,7 +20,6 @@ protocol = "a2a"
 awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-credential.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-outbound-http.workspace = true

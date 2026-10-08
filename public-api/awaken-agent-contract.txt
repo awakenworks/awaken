@@ -492,6 +492,184 @@ pub awaken_agent_contract::audit::run_event::RunEvent::StateChanged
 pub awaken_agent_contract::audit::run_event::RunEvent::StateChanged::commands: usize
 impl core::convert::From<awaken_agent_contract::audit::run_event::RunEvent> for awaken_agent_contract::audit::draft::Draft
 pub fn awaken_agent_contract::audit::draft::Draft::from(awaken_agent_contract::audit::run_event::RunEvent) -> Self
+pub mod awaken_agent_contract::credential
+pub enum awaken_agent_contract::credential::Credential
+pub awaken_agent_contract::credential::Credential::Bearer(alloc::string::String)
+pub awaken_agent_contract::credential::Credential::Header
+pub awaken_agent_contract::credential::Credential::Header::name: alloc::string::String
+pub awaken_agent_contract::credential::Credential::Header::value: alloc::string::String
+pub awaken_agent_contract::credential::Credential::None
+impl awaken_agent_contract::credential::Credential
+pub fn awaken_agent_contract::credential::Credential::header(&self) -> core::option::Option<(alloc::string::String, alloc::string::String)>
+pub enum awaken_agent_contract::credential::CredentialEnvelope
+pub awaken_agent_contract::credential::CredentialEnvelope::SealedForWorker
+pub awaken_agent_contract::credential::CredentialEnvelope::SealedForWorker::envelope_ref: awaken_agent_contract::credential::SealedCredentialEnvelopeRef
+pub awaken_agent_contract::credential::CredentialEnvelope::SealedForWorker::expires_at_unix_ms: u64
+pub awaken_agent_contract::credential::CredentialEnvelope::SealedForWorker::recipient: awaken_agent_contract::credential::TrustDomainRef
+pub awaken_agent_contract::credential::CredentialEnvelope::SealedForWorkload
+pub awaken_agent_contract::credential::CredentialEnvelope::SealedForWorkload::envelope_ref: awaken_agent_contract::credential::SealedCredentialEnvelopeRef
+pub awaken_agent_contract::credential::CredentialEnvelope::SealedForWorkload::expires_at_unix_ms: u64
+pub awaken_agent_contract::credential::CredentialEnvelope::SealedForWorkload::recipient: awaken_agent_contract::credential::TrustDomainRef
+impl awaken_agent_contract::credential::CredentialEnvelope
+pub fn awaken_agent_contract::credential::CredentialEnvelope::envelope_ref(&self) -> &awaken_agent_contract::credential::SealedCredentialEnvelopeRef
+pub fn awaken_agent_contract::credential::CredentialEnvelope::expires_at_unix_ms(&self) -> u64
+pub fn awaken_agent_contract::credential::CredentialEnvelope::recipient(&self) -> &awaken_agent_contract::credential::TrustDomainRef
+pub fn awaken_agent_contract::credential::CredentialEnvelope::required_boundary(&self) -> awaken_agent_contract::credential::PlaintextBoundary
+pub enum awaken_agent_contract::credential::CredentialMaterialSource
+pub awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference
+pub awaken_agent_contract::credential::CredentialMaterialSource::WorkerReference
+pub enum awaken_agent_contract::credential::CredentialPurpose
+pub awaken_agent_contract::credential::CredentialPurpose::Extension
+pub awaken_agent_contract::credential::CredentialPurpose::HttpEffect
+pub awaken_agent_contract::credential::CredentialPurpose::McpAuthorization
+pub awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter
+pub awaken_agent_contract::credential::CredentialPurpose::RemoteAgentAuthorization
+pub awaken_agent_contract::credential::CredentialPurpose::RepositoryTransport
+pub awaken_agent_contract::credential::CredentialPurpose::SignatureVerification
+pub awaken_agent_contract::credential::CredentialPurpose::WebProviderAuthorization
+pub enum awaken_agent_contract::credential::CredentialUsage
+pub awaken_agent_contract::credential::CredentialUsage::ClientCertificate
+pub awaken_agent_contract::credential::CredentialUsage::Extension
+pub awaken_agent_contract::credential::CredentialUsage::Extension::consumer_id: alloc::string::String
+pub awaken_agent_contract::credential::CredentialUsage::Extension::material_type: alloc::string::String
+pub awaken_agent_contract::credential::CredentialUsage::Extension::public_config: serde_json::value::Value
+pub awaken_agent_contract::credential::CredentialUsage::HttpBasicAuth
+pub awaken_agent_contract::credential::CredentialUsage::HttpEffect
+pub awaken_agent_contract::credential::CredentialUsage::HttpEffect::fields: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::collections::btree::set::BTreeSet<awaken_agent_contract::credential::HttpEffectPlacement>>
+pub awaken_agent_contract::credential::CredentialUsage::HttpHeader
+pub awaken_agent_contract::credential::CredentialUsage::HttpHeader::name: alloc::string::String
+pub awaken_agent_contract::credential::CredentialUsage::HttpHeader::scheme: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::credential::CredentialUsage::ProviderAdapter
+pub awaken_agent_contract::credential::CredentialUsage::QueryParameter
+pub awaken_agent_contract::credential::CredentialUsage::QueryParameter::name: alloc::string::String
+pub awaken_agent_contract::credential::CredentialUsage::SignatureVerification
+pub awaken_agent_contract::credential::CredentialUsage::SignatureVerification::fields: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::collections::btree::set::BTreeSet<awaken_agent_contract::credential::SignatureVerificationAlgorithm>>
+impl awaken_agent_contract::credential::CredentialUsage
+pub fn awaken_agent_contract::credential::CredentialUsage::http_effect_single_field(&self) -> core::result::Result<core::option::Option<&str>, awaken_agent_contract::credential::CredentialUsageError>
+pub fn awaken_agent_contract::credential::CredentialUsage::is_core_delivery(&self) -> bool
+pub fn awaken_agent_contract::credential::CredentialUsage::is_scalar_process_delivery(&self) -> bool
+pub fn awaken_agent_contract::credential::CredentialUsage::private_file(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_contract::credential::CredentialUsage::private_file_path(&self) -> core::option::Option<&str>
+pub fn awaken_agent_contract::credential::CredentialUsage::process_env(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_contract::credential::CredentialUsage::process_env_name(&self) -> core::option::Option<&str>
+pub fn awaken_agent_contract::credential::CredentialUsage::validate(&self) -> core::result::Result<(), awaken_agent_contract::credential::CredentialUsageError>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::credential::CredentialUsage
+pub fn awaken_agent_contract::credential::CredentialUsage::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub enum awaken_agent_contract::credential::CredentialUsageError
+pub awaken_agent_contract::credential::CredentialUsageError::EmptyHttpEffectFields
+pub awaken_agent_contract::credential::CredentialUsageError::EmptyHttpEffectPlacements
+pub awaken_agent_contract::credential::CredentialUsageError::EmptySignatureAlgorithms
+pub awaken_agent_contract::credential::CredentialUsageError::EmptySignatureFields
+pub awaken_agent_contract::credential::CredentialUsageError::InvalidHeaderName
+pub awaken_agent_contract::credential::CredentialUsageError::InvalidJsonPointer
+pub awaken_agent_contract::credential::CredentialUsageError::InvalidMaterialField
+pub awaken_agent_contract::credential::CredentialUsageError::InvalidQueryName
+pub enum awaken_agent_contract::credential::HttpEffectPlacement
+pub awaken_agent_contract::credential::HttpEffectPlacement::Header
+pub awaken_agent_contract::credential::HttpEffectPlacement::Header::name: alloc::string::String
+pub awaken_agent_contract::credential::HttpEffectPlacement::JsonPointer
+pub awaken_agent_contract::credential::HttpEffectPlacement::JsonPointer::pointer: alloc::string::String
+pub awaken_agent_contract::credential::HttpEffectPlacement::Query
+pub awaken_agent_contract::credential::HttpEffectPlacement::Query::name: alloc::string::String
+impl awaken_agent_contract::credential::HttpEffectPlacement
+pub fn awaken_agent_contract::credential::HttpEffectPlacement::validate(&self) -> core::result::Result<(), awaken_agent_contract::credential::CredentialUsageError>
+pub enum awaken_agent_contract::credential::ModelExposurePolicy
+pub awaken_agent_contract::credential::ModelExposurePolicy::Forbidden
+pub awaken_agent_contract::credential::ModelExposurePolicy::VirtualOnly
+pub enum awaken_agent_contract::credential::PlaintextBoundary
+pub awaken_agent_contract::credential::PlaintextBoundary::Platform
+pub awaken_agent_contract::credential::PlaintextBoundary::Worker
+pub awaken_agent_contract::credential::PlaintextBoundary::Workload
+pub enum awaken_agent_contract::credential::SignatureVerificationAlgorithm
+pub awaken_agent_contract::credential::SignatureVerificationAlgorithm::ConstantTime
+pub awaken_agent_contract::credential::SignatureVerificationAlgorithm::HmacSha256
+pub awaken_agent_contract::credential::SignatureVerificationAlgorithm::Sha256Parts
+pub enum awaken_agent_contract::credential::TokenEndpointAuth
+pub awaken_agent_contract::credential::TokenEndpointAuth::ClientSecretBasic
+pub awaken_agent_contract::credential::TokenEndpointAuth::ClientSecretPost
+pub awaken_agent_contract::credential::TokenEndpointAuth::None
+pub struct awaken_agent_contract::credential::AuthChallenge
+pub awaken_agent_contract::credential::AuthChallenge::status: u16
+pub awaken_agent_contract::credential::AuthChallenge::www_authenticate: core::option::Option<alloc::string::String>
+impl core::fmt::Display for awaken_agent_contract::credential::AuthChallenge
+pub fn awaken_agent_contract::credential::AuthChallenge::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_agent_contract::credential::CandidateFingerprint(pub alloc::string::String)
+pub struct awaken_agent_contract::credential::CredentialAccess
+pub awaken_agent_contract::credential::CredentialAccess::credential: awaken_agent_contract::credential::CredentialRef
+pub awaken_agent_contract::credential::CredentialAccess::envelope: core::option::Option<awaken_agent_contract::credential::CredentialEnvelope>
+pub awaken_agent_contract::credential::CredentialAccess::material_source: awaken_agent_contract::credential::CredentialMaterialSource
+pub awaken_agent_contract::credential::CredentialAccess::policy: awaken_agent_contract::credential::CredentialExecutionPolicy
+pub awaken_agent_contract::credential::CredentialAccess::refresh: core::option::Option<awaken_agent_contract::credential::CredentialRefreshAccess>
+pub awaken_agent_contract::credential::CredentialAccess::target: core::option::Option<awaken_agent_contract::credential::CredentialTarget>
+pub awaken_agent_contract::credential::CredentialAccess::usage: awaken_agent_contract::credential::CredentialUsage
+impl awaken_agent_contract::credential::CredentialAccess
+pub fn awaken_agent_contract::credential::CredentialAccess::is_legacy_direct(&self) -> bool
+pub fn awaken_agent_contract::credential::CredentialAccess::new(awaken_agent_contract::credential::CredentialRef, awaken_agent_contract::credential::CredentialMaterialSource, awaken_agent_contract::credential::CredentialUsage, awaken_agent_contract::credential::CredentialExecutionPolicy) -> Self
+pub fn awaken_agent_contract::credential::CredentialAccess::with_envelope(self, awaken_agent_contract::credential::CredentialEnvelope) -> Self
+pub fn awaken_agent_contract::credential::CredentialAccess::with_refresh(self, awaken_agent_contract::credential::CredentialRefreshAccess) -> Self
+pub fn awaken_agent_contract::credential::CredentialAccess::with_target(self, awaken_agent_contract::credential::CredentialTarget) -> Self
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::credential::CredentialAccess
+pub fn awaken_agent_contract::credential::CredentialAccess::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub struct awaken_agent_contract::credential::CredentialAudienceRef(pub alloc::string::String)
+impl core::convert::From<&str> for awaken_agent_contract::credential::CredentialAudienceRef
+pub fn awaken_agent_contract::credential::CredentialAudienceRef::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for awaken_agent_contract::credential::CredentialAudienceRef
+pub fn awaken_agent_contract::credential::CredentialAudienceRef::from(alloc::string::String) -> Self
+pub struct awaken_agent_contract::credential::CredentialExecutionPolicy
+pub awaken_agent_contract::credential::CredentialExecutionPolicy::allowed_plaintext_holders: alloc::collections::btree::set::BTreeSet<awaken_agent_contract::credential::PlaintextHolder>
+pub awaken_agent_contract::credential::CredentialExecutionPolicy::model_exposure: awaken_agent_contract::credential::ModelExposurePolicy
+impl awaken_agent_contract::credential::CredentialExecutionPolicy
+pub fn awaken_agent_contract::credential::CredentialExecutionPolicy::exact(awaken_agent_contract::credential::PlaintextHolder, awaken_agent_contract::credential::ModelExposurePolicy) -> Self
+pub fn awaken_agent_contract::credential::CredentialExecutionPolicy::new(impl core::iter::traits::collect::IntoIterator<Item = awaken_agent_contract::credential::PlaintextHolder>, awaken_agent_contract::credential::ModelExposurePolicy) -> Self
+pub fn awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_mcp() -> Self
+pub fn awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider() -> Self
+pub struct awaken_agent_contract::credential::CredentialRef
+pub awaken_agent_contract::credential::CredentialRef::id: alloc::string::String
+pub awaken_agent_contract::credential::CredentialRef::revision: u64
+pub struct awaken_agent_contract::credential::CredentialRefreshAccess
+pub awaken_agent_contract::credential::CredentialRefreshAccess::access_token_ref: alloc::string::String
+pub awaken_agent_contract::credential::CredentialRefreshAccess::account_id: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::credential::CredentialRefreshAccess::account_plan: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::credential::CredentialRefreshAccess::client_id: alloc::string::String
+pub awaken_agent_contract::credential::CredentialRefreshAccess::client_secret_ref: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::credential::CredentialRefreshAccess::configuration_fingerprint: alloc::string::String
+pub awaken_agent_contract::credential::CredentialRefreshAccess::credential_revision: u64
+pub awaken_agent_contract::credential::CredentialRefreshAccess::expires_at_unix_ms: core::option::Option<u64>
+pub awaken_agent_contract::credential::CredentialRefreshAccess::refresh_token_ref: alloc::string::String
+pub awaken_agent_contract::credential::CredentialRefreshAccess::resource: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::credential::CredentialRefreshAccess::scope: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::credential::CredentialRefreshAccess::token_endpoint: alloc::string::String
+pub awaken_agent_contract::credential::CredentialRefreshAccess::token_endpoint_auth: awaken_agent_contract::credential::TokenEndpointAuth
+impl awaken_agent_contract::credential::CredentialRefreshAccess
+pub fn awaken_agent_contract::credential::CredentialRefreshAccess::expected_configuration_fingerprint(&self) -> alloc::string::String
+pub fn awaken_agent_contract::credential::CredentialRefreshAccess::has_valid_client_authentication_binding(&self) -> bool
+pub fn awaken_agent_contract::credential::CredentialRefreshAccess::has_valid_configuration_fingerprint(&self) -> bool
+pub fn awaken_agent_contract::credential::CredentialRefreshAccess::new(u64, alloc::string::String, alloc::string::String, awaken_agent_contract::credential::TokenEndpointAuth, core::option::Option<alloc::string::String>, alloc::string::String, alloc::string::String, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> Self
+pub fn awaken_agent_contract::credential::CredentialRefreshAccess::with_provider_metadata(self, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>, core::option::Option<u64>) -> Self
+pub struct awaken_agent_contract::credential::CredentialTarget
+pub awaken_agent_contract::credential::CredentialTarget::audience: awaken_agent_contract::credential::CredentialAudienceRef
+pub awaken_agent_contract::credential::CredentialTarget::purpose: awaken_agent_contract::credential::CredentialPurpose
+impl awaken_agent_contract::credential::CredentialTarget
+pub fn awaken_agent_contract::credential::CredentialTarget::new(awaken_agent_contract::credential::CredentialPurpose, impl core::convert::Into<awaken_agent_contract::credential::CredentialAudienceRef>) -> Self
+pub struct awaken_agent_contract::credential::PlaintextHolder
+pub awaken_agent_contract::credential::PlaintextHolder::boundary: awaken_agent_contract::credential::PlaintextBoundary
+pub awaken_agent_contract::credential::PlaintextHolder::trust_domain: awaken_agent_contract::credential::TrustDomainRef
+impl awaken_agent_contract::credential::PlaintextHolder
+pub fn awaken_agent_contract::credential::PlaintextHolder::new(awaken_agent_contract::credential::PlaintextBoundary, impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_agent_contract::credential::SealedCredentialEnvelopeRef
+pub awaken_agent_contract::credential::SealedCredentialEnvelopeRef::id: alloc::string::String
+pub awaken_agent_contract::credential::SealedCredentialEnvelopeRef::payload_fingerprint: alloc::string::String
+pub struct awaken_agent_contract::credential::TrustDomainRef(pub alloc::string::String)
+pub const awaken_agent_contract::credential::PRIVATE_FILE_CONSUMER: &str
+pub const awaken_agent_contract::credential::PRIVATE_FILE_MATERIAL_TYPE: &str
+pub const awaken_agent_contract::credential::PROCESS_ENV_CONSUMER: &str
+pub const awaken_agent_contract::credential::PROCESS_ENV_MATERIAL_TYPE: &str
+pub const awaken_agent_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN: &str
+pub const awaken_agent_contract::credential::SELF_HOSTED_SANDBOX_TRUST_DOMAIN: &str
+pub const awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN: &str
+pub trait awaken_agent_contract::credential::CredentialRefresher: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_contract::credential::CredentialRefresher::refresh<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::credential::AuthChallenge) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_agent_contract::credential::Credential>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_contract::credential::is_core_delivery_consumer(&str) -> bool
 pub mod awaken_agent_contract::event
 pub mod awaken_agent_contract::event::agent
 pub enum awaken_agent_contract::event::agent::AgentEvent

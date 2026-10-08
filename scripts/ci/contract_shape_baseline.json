@@ -2,7 +2,10 @@
   "$comment": "Contract-shape ratchet (scripts/ci/check_contract_shape.py, ADR-0081). Numbers may only fall; raising one requires --write-baseline --reason, recorded in growth_reasons.",
   "crates": {
     "awaken-acp-contract": {
-      "depth": 2
+      "depth": 4,
+      "growth_reasons": {
+        "depth": "ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it"
+      }
     },
     "awaken-agent-channel": {
       "depth": 0,
@@ -10,10 +13,10 @@
     },
     "awaken-agent-contract": {
       "depth": 0,
-      "production_lines": 4924,
+      "production_lines": 5703,
       "catch_all_errors": 5,
       "growth_reasons": {
-        "production_lines": "Keep typed continuation provenance beside MessageId minting and existing steer/report classifiers; seven net production lines after consolidating duplicate Session-scoped identity formatting. No new contract dependency, port, protocol field, or stored authority. This slice adds the versioned caller toolset value beside Agent toolsets and the committed ResumeTicket, one pure fact shared by activation and recovery. Bind durable ToolResult MessageId to the existing ToolBatch Run and Step coordinate instead of response-local provider call IDs, and recognize canonical new IDs while reading legacy committed results; no new port, protocol field, or stored authority.; then: ADR-0086 \u00a76: ScopeId and ExecutionScopeRef move unchanged into awaken-agent-contract (the SDK coordinate) and awaken-tenancy re-exports them, adding one contract level to awaken-tenancy"
+        "production_lines": "Keep typed continuation provenance beside MessageId minting and existing steer/report classifiers; seven net production lines after consolidating duplicate Session-scoped identity formatting. No new contract dependency, port, protocol field, or stored authority. This slice adds the versioned caller toolset value beside Agent toolsets and the committed ResumeTicket, one pure fact shared by activation and recovery. Bind durable ToolResult MessageId to the existing ToolBatch Run and Step coordinate instead of response-local provider call IDs, and recognize canonical new IDs while reading legacy committed results; no new port, protocol field, or stored authority.; then: ADR-0086 \u00a76: ScopeId and ExecutionScopeRef move unchanged into awaken-agent-contract (the SDK coordinate) and awaken-tenancy re-exports them, adding one contract level to awaken-tenancy; then: ADR-0086 amendment 2026-10-08 (item 7): the credential reference vocabulary (references, access, target, usage, envelope values, CandidateFingerprint) and the three outbound credential port items of the removed awaken-credential move into awaken-agent-contract::credential; admission and envelope/target validation become Platform extension traits imported by their callers"
       }
     },
     "awaken-container-contract": {
@@ -23,10 +26,13 @@
       }
     },
     "awaken-credential-contract": {
-      "depth": 1,
-      "production_lines": 2425,
+      "depth": 3,
+      "production_lines": 2340,
+      "catch_all_errors": 1,
       "growth_reasons": {
-        "production_lines": "Exact provider and endpoint identity must cross the existing borrowed material resolver and serialized attempt delivery; the one-way binding fingerprint cannot authorize a live Vault read."
+        "depth": "ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it",
+        "production_lines": "ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it",
+        "catch_all_errors": "ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it"
       }
     },
     "awaken-data-governance-contract": {
@@ -83,18 +89,18 @@
       "depth": 1
     },
     "awaken-dispatch-contract": {
-      "depth": 8,
-      "production_lines": 2453,
+      "depth": 9,
+      "production_lines": 2455,
       "catch_all_errors": 3,
       "growth_reasons": {
-        "production_lines": "Native Run observation adds one data-only dispatch page to the existing Run ingress contract, and physical Worker admission adds one required ControlDispatchQueue method. Both reuse the canonical Dispatch and Registry authorities; the existing canonical Epoch decoder still rejects zero grants. No parallel transport or default capability is added. One canonical Dispatch depth snapshot preserves runnable backlog and live Worker lease demand for hosted scaling without a second queue query owner.",
-        "depth": "Removing the compatibility facade exposes direct domain-owner dependencies; retaining explicit state, realization, runtime, and ingress boundaries avoids a replacement aggregator.; then: the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it"
+        "production_lines": "Native Run observation adds one data-only dispatch page to the existing Run ingress contract, and physical Worker admission adds one required ControlDispatchQueue method. Both reuse the canonical Dispatch and Registry authorities; the existing canonical Epoch decoder still rejects zero grants. No parallel transport or default capability is added. One canonical Dispatch depth snapshot preserves runnable backlog and live Worker lease demand for hosted scaling without a second queue query owner.; then: ADR-0086 amendment 2026-10-08 (item 7): the credential reference vocabulary (references, access, target, usage, envelope values, CandidateFingerprint) and the three outbound credential port items of the removed awaken-credential move into awaken-agent-contract::credential; admission and envelope/target validation become Platform extension traits imported by their callers; then: ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it",
+        "depth": "Removing the compatibility facade exposes direct domain-owner dependencies; retaining explicit state, realization, runtime, and ingress boundaries avoids a replacement aggregator.; then: the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it; then: ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it"
       }
     },
     "awaken-runtime-contract": {
       "depth": 2,
-      "production_lines": 7800,
-      "catch_all_errors": 5,
+      "production_lines": 7229,
+      "catch_all_errors": 4,
       "growth_reasons": {
         "production_lines": "RetryPolicy regains a count bound for rate limits (throttled_max_retries, default 12) alongside the logical deadline, so an instant zero-pause 429 stops at its count while a long pause stops at the deadline; a field, a default constant and doc lines. AttemptQuiescence is the existing backend-neutral live handle in RuntimeRunContext, shared by Native, ACP and A2A. Its 49-line closure extension reuses pinned Tokio TaskTracker and CancellationToken instead of a custom counter; putting the concrete handle in Runtime would create a contract-to-implementation cycle. No contract graph, backend vocabulary, persisted state or wire surface is added. This slice adds the sealed RunActivation source/format wire, live context projection, and a single checked parse used by constructors and serde; it closes a producer bypass found by rust-quick without IO or a second execution owner. Exact provider and endpoint identity must cross the existing borrowed material resolver and serialized attempt delivery; the one-way binding fingerprint cannot authorize a live Vault read. Move the single permission Allow observer from the ACP executor into the Runtime permission contract so Host and executor share one neutral ToolCall port; this adds only the required trait declaration and removes a Host-to-executor type dependency without a second observer or contract edge. Move the sole per-Session ACP executor factory into the existing Session Environment SPI and the sole validated tool-pair kernel into runtime tool export to remove the Host-to-ACP executor construction edge.; then: ADR-0086 amendment 2026-10-08 (item 7): the credential re-export glob becomes an explicit list of the SDK reference vocabulary, so the SDK surface is reviewable"
       }
@@ -116,20 +122,20 @@
       "depth": 1
     },
     "awaken-session-configuration-contract": {
-      "depth": 4,
+      "depth": 5,
       "catch_all_errors": 3,
       "growth_reasons": {
         "catch_all_errors": "Extract immutable Session configuration and its resolution ports behind one authoritative owner during facade removal",
-        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it"
+        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it; then: ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it"
       }
     },
     "awaken-session-dream-contract": {
       "depth": 1
     },
     "awaken-session-environment-contract": {
-      "depth": 3,
+      "depth": 5,
       "growth_reasons": {
-        "depth": "Move the sole per-Session ACP executor factory into the existing Session Environment SPI and the sole validated tool-pair kernel into runtime tool export to remove the Host-to-ACP executor construction edge."
+        "depth": "Move the sole per-Session ACP executor factory into the existing Session Environment SPI and the sole validated tool-pair kernel into runtime tool export to remove the Host-to-ACP executor construction edge.; then: ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it"
       }
     },
     "awaken-session-event-contract": {
@@ -139,36 +145,39 @@
       }
     },
     "awaken-session-mcp-contract": {
-      "depth": 2
+      "depth": 4,
+      "growth_reasons": {
+        "depth": "ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it"
+      }
     },
     "awaken-session-realization-contract": {
-      "depth": 6,
+      "depth": 7,
       "growth_reasons": {
-        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it"
+        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it; then: ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it"
       }
     },
     "awaken-session-repository-contract": {
-      "depth": 6,
+      "depth": 7,
       "growth_reasons": {
-        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it"
+        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it; then: ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it"
       }
     },
     "awaken-session-resource-contract": {
-      "depth": 3,
+      "depth": 4,
       "growth_reasons": {
-        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it"
+        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it; then: ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it"
       }
     },
     "awaken-session-execution-contract": {
-      "depth": 7,
+      "depth": 8,
       "growth_reasons": {
-        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it"
+        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it; then: ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it"
       }
     },
     "awaken-session-state-contract": {
-      "depth": 5,
+      "depth": 6,
       "growth_reasons": {
-        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it"
+        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it; then: ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it"
       }
     },
     "awaken-session-types": {
@@ -193,8 +202,11 @@
       "depth": 1
     },
     "awaken-worker-contract": {
-      "depth": 3,
-      "catch_all_errors": 1
+      "depth": 5,
+      "catch_all_errors": 1,
+      "growth_reasons": {
+        "depth": "ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it"
+      }
     }
   }
 }

@@ -196,7 +196,6 @@ awaken-dispatch-testkit.workspace = true
 awaken-worker-registry = { workspace = true, features = ["test-support"] }
 awaken-dispatch = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
-awaken-credential.workspace = true
 awaken-session-application = { workspace = true, features = ["test-support"] }
 awaken-environment-image-build = { workspace = true, features = ["test-support"] }
 awaken-resource-persistence = { workspace = true, features = ["test-support"] }

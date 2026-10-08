@@ -7,10 +7,9 @@
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::CredentialRealizationKind;
+use awaken_credential_contract::{AttemptCredentialBinding, AttemptCredentialRealization};
+use awaken_runtime_contract::CredentialAccess;
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
-use awaken_runtime_contract::{
-    AttemptCredentialBinding, AttemptCredentialRealization, CredentialAccess,
-};
 
 use super::PinnedCredentialMaterializer;
 
@@ -44,9 +43,7 @@ impl PinnedCredentialMaterializer {
         let Some(access) = credential else {
             return Ok(None);
         };
-        let realization = context
-            .credential_realization
-            .as_ref()
+        let realization = AttemptCredentialRealization::from_context(context)
             .ok_or_else(|| format!("credential-bearing {kind} has no claim binding"))?;
         let binding = realization
             .binding_for(candidate)
@@ -72,9 +69,7 @@ impl PinnedCredentialMaterializer {
                 binding.selected_realization_kind, expected_kind
             ));
         }
-        let realization = context
-            .credential_realization
-            .as_ref()
+        let realization = AttemptCredentialRealization::from_context(context)
             .ok_or_else(|| format!("credential-bearing {kind} has no claim binding"))?;
         let ownership = context
             .ownership

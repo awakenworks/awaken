@@ -24,7 +24,7 @@ pub(crate) fn direct_provider_execution() -> (
 
 fn native_binding(
     candidate: &ResolvedModelCandidate,
-) -> awaken_runtime_contract::AttemptCredentialBinding {
+) -> awaken_credential_contract::AttemptCredentialBinding {
     let credential = match candidate.provisioning() {
         ModelProvisioning::Provider {
             credential: Some(access),
@@ -32,8 +32,8 @@ fn native_binding(
         } => access.credential.clone(),
         _ => panic!("scenario provider candidate must carry a credential"),
     };
-    awaken_runtime_contract::AttemptCredentialBinding {
-        candidate_fingerprint: awaken_runtime_contract::candidate_fingerprint(candidate)
+    awaken_credential_contract::AttemptCredentialBinding {
+        candidate_fingerprint: awaken_credential_contract::candidate_fingerprint(candidate)
             .expect("fingerprint scenario candidate"),
         credential,
         selected_plaintext_holder: direct_provider_execution().1,
@@ -55,11 +55,11 @@ impl awaken_runtime_contract::AttemptOwnershipVerifier for CurrentOwnership {
 struct ReceiptSink;
 
 #[async_trait::async_trait]
-impl awaken_runtime_contract::CredentialRealizationRecorder for ReceiptSink {
+impl awaken_credential_contract::CredentialRealizationRecorder for ReceiptSink {
     async fn record(
         &self,
-        _receipt: awaken_runtime_contract::CredentialRealizationReceipt,
-    ) -> Result<(), awaken_runtime_contract::CredentialRealizationRecordError> {
+        _receipt: awaken_credential_contract::CredentialRealizationReceipt,
+    ) -> Result<(), awaken_credential_contract::CredentialRealizationRecordError> {
         Ok(())
     }
 }
@@ -69,8 +69,10 @@ pub(crate) fn context(
 ) -> awaken_runtime_contract::RuntimeRunContext {
     awaken_runtime_contract::RuntimeRunContext::new()
         .with_ownership(Arc::new(CurrentOwnership))
-        .with_credential_realization(awaken_runtime_contract::AttemptCredentialRealization::new(
-            vec![native_binding(candidate)],
-            Arc::new(ReceiptSink),
-        ))
+        .with_credential_realization(
+            awaken_credential_contract::AttemptCredentialRealization::new(
+                vec![native_binding(candidate)],
+                Arc::new(ReceiptSink),
+            ),
+        )
 }

@@ -176,7 +176,7 @@ pub struct WorkerDispatchService {
     session_work: Option<Arc<dyn awaken_session_work_contract::SessionWorkLeaseAuthority>>,
     local_credential_capabilities: awaken_credential_contract::CredentialRealizationCapabilities,
     credential_deliveries:
-        Option<Arc<dyn awaken_runtime_contract::AttemptCredentialDeliverySource>>,
+        Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
     max_attempts: u64,
     execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
@@ -369,7 +369,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_credential_delivery_source(
         mut self,
-        source: Arc<dyn awaken_runtime_contract::AttemptCredentialDeliverySource>,
+        source: Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>,
     ) -> Self {
         self.credential_deliveries = Some(source);
         self
@@ -500,7 +500,7 @@ pub struct RegisteredDispatchDependencies {
     pub terminal_observer: Arc<dyn DispatchSettlementObserver>,
     pub stream_sink: Arc<dyn StreamSink>,
     pub credential_deliveries:
-        Option<Arc<dyn awaken_runtime_contract::AttemptCredentialDeliverySource>>,
+        Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
     /// The Coordinator's one wall clock: claim leases, registry freshness and
     /// Worker assertions are judged on the timeline every other owner uses.
     pub clock: Arc<dyn WallClock>,
@@ -961,7 +961,7 @@ async fn refresh_credential_delivery(
             .deliver(delivery_request.clone())
             .await
             .map_err(HostError::unavailable)?;
-        awaken_runtime_contract::verify_attempt_credential_delivery(
+        awaken_credential_contract::verify_attempt_credential_delivery(
             &binding,
             &delivery_request.published_access,
             &delivery,
