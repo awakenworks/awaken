@@ -46,15 +46,9 @@ use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_session_application_contract::{DelegatedRun, Pending};
 use awaken_tool_contract::tool::ToolOutput;
 
-use awaken_ext_compact::{CompactConfig, CompactPlugin};
+use awaken_ext_compact::CompactConfig;
 
 use crate::background::BackgroundRuns;
-use crate::compact::{
-    compact_backend as build_compact_backend, compact_runner as build_compact_runner,
-};
-use crate::config::{
-    build_runtime_with_authorization, effective_tool_authorization, server_config,
-};
 use crate::delegate::HostRunDelegationService;
 use crate::hub::{ThreadEvent, ThreadEventHub};
 use crate::store::HostCommit;

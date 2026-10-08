@@ -90,6 +90,7 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (HOST, "Session run path outside the environment lifecycle stays in the host", (
         "host::session::child_substrate",
         "host::session::content_delivery",
+        "host::session::context",
         "host::session::input_projection",
         "host::session::run_ingress",
     )),

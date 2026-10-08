@@ -210,6 +210,7 @@ use awaken_session_types::SessionId;
 mod claimed_dispatch;
 mod cold_terminal_cleanup;
 mod compaction_memory;
+mod context_construction;
 mod coordinated_thread_close;
 mod environment_binding;
 mod environment_projection;
