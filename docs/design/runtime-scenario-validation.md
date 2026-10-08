@@ -176,6 +176,9 @@ tests may reuse the same scenario ids later.
 | RS-CTRL-002 | stop policy wins before resumed result | a stop policy commits a terminal stop reason for a run that previously requested deferred work | the deferred result later arrives through ingress/resume | runtime observes the terminal run state and fails closed; no resumed outcome or extra thread messages are committed |
 | RS-CTRL-003 | resume after terminal state rejected | a run is terminal because of cancel, stop, max-attempt, or natural finish | a stale resume command arrives with an otherwise valid correlation id | resume validation rejects it because the run can no longer consume the result |
 | RS-REC-001 | crash after commit before wake | a scheduled request or external-ingress outbox is committed, but wake delivery is lost | recovery scans committed requests/outboxes | recovery recreates the activation opportunity or target append without duplicating committed output |
+| RS-REC-002 | context assembly fails after Environment acquisition | a Session has acquired its lifecycle-owned Environment and has no complete Runtime cache | a later configuration, tool export, or executor assembly step fails | no incomplete Runtime is installed; returned export leases are released; a retry reuses the exact Environment rather than creating another owner |
+| RS-REC-003 | context construction is cancelled during export | an ACP Session has acquired its Environment and an export future owns a partial transport lease | the caller drops construction while export is suspended | the partial lease and lifecycle lock are released; no Runtime cache is installed; retry completes using the same Environment |
+| RS-REC-004 | complete context is reused | context assembly and installation succeeded for the same frozen inputs and purpose | the caller opens the Session again | the complete cached context is reused without another Environment acquisition or tool export |
 | RS-ING-001 | direct attempt has no durable operation | direct execution is selected | code attempts to request scheduled wake or recovery from the direct driver | the operation is unrepresentable because `DirectAttemptDriver` exposes no durable-only method |
 | RS-ING-002 | durable ingress freezes pending at boundary | multiple pending inputs exist for a target thread | durable ingress claims ownership and prepares a run activation | one owner freezes an eligible pending set into the activation; later pending changes do not mutate that activation |
 | RS-ING-003 | public protocol does not expose delivery internals | a product route submits input or control intent | the host lowers it through its private direct/durable delivery sum | the public command remains protocol-neutral; dispatch batching and recovery remain private server policy |
@@ -211,6 +214,73 @@ tests may reuse the same scenario ids later.
 | RS-TERM-002 | Awaiting is not terminal | a Run commits `Awaiting` and later resumes | settlement notifications are dispatched | no terminal observer runs until the resumed Run commits `Ended` |
 | RS-TERM-003 | terminal reaction survives crash and duplicates | a process dies after terminal commit or an observation is redelivered | the extension checks its stable intent/receipt | missing work is recovered and duplicate delivery creates no duplicate effect |
 | RS-EVT-001 | live stream is not replay truth | a run emits live stream events and then a stream sink fails before or during commit | protocol replay reads runtime history later | replay derives from committed events/facts only; sink failure does not mutate runtime truth or create durable loss |
+
+## High-risk regression review
+
+The October 2026 crate review maps high-risk behavior to existing conformance
+suites and adds tests only for identified gaps. A passing selected suite is
+execution evidence for its configurations, not a whole-workspace line/branch
+coverage percentage or proof of all platform/backend combinations.
+
+| Risk | Required dimensions and state oracle | Evidence owner |
+|---|---|---|
+| Environment revision/lifecycle | maximum revision: change/no-op/invalid request; archive followed by update/bind; error leaves revision, definition and execution registration unchanged | `awaken-environment-contract::revision_boundary_rejects_changes_atomically_and_admits_noop_replay`; `awaken-environment-application::archive_is_terminal_for_every_environment_mutation_path` |
+| Paged Worker demand | empty index, multiple empty pages, repeated/rewound cursor, later read failure and quarantined root; incomplete authority never reports zero demand | `awaken-session-repository-contract`, `src/tests/demand.rs` |
+| Lost acknowledgement | scheduled effect chain with normal/lost finish response; retry the exact ACK without repeating either effect | `awaken-dispatch::a_chain_of_scheduled_actions_is_performed_to_completion_in_one_drive` |
+| Process crash before settle | kill after claim/input delivery and before settlement; reopen SQLite, recover the same input, consume it once, reject stale ownership | `awaken-dispatch::sqlite_process_crash_before_settle_replays_and_consumes_exact_input_once` |
+| Stale fence and occupied physical attempt | stale/current settlement, lease replacement while predecessor remains occupied, duplicate begin/finish and release; stale owner cannot settle or execute successor work | `awaken-dispatch-testkit`, `src/conformance/reliability.rs` |
+| Cancellation/replay | direct versus durable ownership, queued/dead-letter/active work, stale generation and remote cancellation; committed cancellation survives retry without driving cancelled work | `awaken-session-executor`, `src/host/tests/run_boundary.rs`; existing ingress conformance |
+| Terminal cleanup/recovery | committed terminal versus Awaiting, cold reopen, lost observer response, durable binding and stale cleanup fence; exact resource owner and stable receipts decide recovery | Host `cold_terminal_cleanup`, `terminal_disposal`, `terminal_memory`, `realization_renewal` and `resource_staging_lease` suites |
+| Context admission and construction | identity match/mismatch × coordination/execution request × cached purpose, followed by phase failure/cancellation/retry rules below | Host cache admission decision table and construction suite |
+
+For each added fault case, review the independent causes, decision rules,
+observable positive/negative effects, and retry oracle in the test. Small finite
+admission kernels enumerate their complete domains; asynchronous paths force
+the actual ordering boundary and inspect authoritative state/owned resources.
+This is systematic fault-oriented design. It does not claim measured MC/DC,
+mutation adequacy, or fresh model-checker proof runs.
+
+The verification report must name feature configurations and excluded tests.
+Windows local tests and SQLite process-crash tests do not qualify real
+PostgreSQL, NATS, Linux namespaces, containers or Kubernetes. Those combinations
+remain separate deployment-qualification obligations until their actual suites
+run against isolated backends. Source-surface and formal-ledger linkage checks
+are separate from executable tests and from proof solving.
+
+## Construction regression design
+
+The Host context decomposition keeps the existing admission kernels, Session
+lifecycle lock, Environment owner, and installation order. It introduces no new
+authority. The following cause/effect rules complement the existing cache,
+reservation, claimed-dispatch, publication, and terminal-recovery matrices.
+
+The production-function length ratchet added on `origin/main` during this work
+records the existing constructor at 1,568 lines. Its implementation now moves
+into six phase functions, with the largest at 542 lines. The length baseline
+follows those existing bodies at their actual smaller lengths; the 150-line
+limit for new functions remains unchanged. Further phase decomposition remains
+visible as recorded debt rather than being hidden by an exclusion.
+
+| Rule | Independently controlled condition | Observable oracle | Executable test |
+|---|---|---|---|
+| HC1 | compact configuration fails after acquisition and identical request retries | no cached Runtime on either failure; exact Environment retained | `failed_context_assembly_retains_one_environment_for_retry` |
+| HC2 | export fails before returning a lease | no cached Runtime; retry reuses the Environment | `acp_context_failure_releases_exports_and_reuses_environment` |
+| HC3 | executor assembly fails after successful export | HC2 plus returned lease is dropped | `acp_context_failure_releases_exports_and_reuses_environment` |
+| HC4 | caller cancels while export owns a partial lease | no cached Runtime; partial lease dropped; lifecycle lock released; exact-owner retry succeeds | `cancelled_context_construction_releases_lock_and_partial_export` |
+| HC5 | identical successful open repeats | same context identity; export count unchanged; successful lease retained | `acp_context_failure_releases_exports_and_reuses_environment` |
+
+These tests reference RS-REC-002 through RS-REC-004 and enter through the real
+Session constructor. Faults are injected at existing ports. The cancellation
+case uses a retained oneshot barrier with bounded waits, rather than elapsed
+sleep or an assumed scheduler order. Environment identity and cache state are
+the ownership oracles; fixture counters only check transport lease lifetime.
+Publication immutability, stale fences, and terminal disposal retain their
+existing separate tests.
+
+An error from authoritative terminal recovery after installation may leave a
+**complete** context cached, as before. HC1-HC4 deliberately target failures
+before installation; they do not claim that every constructor error evicts a
+successfully assembled context.
 
 ## Coverage Rules
 
