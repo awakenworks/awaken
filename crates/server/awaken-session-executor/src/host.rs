@@ -105,6 +105,10 @@ where
 
 mod build;
 pub use build::HostProcess;
+mod dependencies;
+pub use dependencies::{
+    CyclicPort, CyclicPortAlreadyBound, HostDependencies, SessionApplicationPorts,
+};
 pub(crate) mod capability;
 pub use capability::DispatchPoolSizing;
 mod completion;
@@ -127,8 +131,8 @@ mod terminal_reconciliation;
 mod tests;
 #[cfg(test)]
 pub(crate) use tests::fixtures::{
-    MemoryHostModel, RemoteTerminalCleanupControl, install_test_memory_mounter,
-    test_resource_validator,
+    MemoryHostModel, RemoteTerminalCleanupControl, test_resource_validator,
+    with_test_memory_mounter,
 };
 mod types;
 mod worker_resolver;
@@ -179,8 +183,11 @@ impl<T> RuntimeMemoryReferenceEncoder for T where
 /// Workspace/Session identity, the event hub, deployment, durable authority,
 /// the process clock and completion relay. Everything else is grouped by the
 /// capability that owns it (module `host::capability`); each group is a plain owned
-/// struct whose installers live beside its definition, so a module that uses
-/// one capability names exactly that group.
+/// struct, so a module that uses one capability names exactly that group.
+///
+/// The one constructor is `From<`[`HostDependencies`]`>`: every dependency is
+/// selected on that value before the Host exists, and nothing installs one
+/// into a constructed Host.
 pub struct SharedHost {
     /// Platform-managed workspace for flat, no-login local requests. It is
     /// generated (and persisted with durable storage), never compiled in.
@@ -243,4 +250,6 @@ pub struct SharedHost {
     pub(crate) mcp: awaken_session_mcp::McpSessions,
     /// Content capture (ADR-0050): sink, deployment ceiling, consent source.
     pub(crate) capture: capability::ContentCaptureCapability,
+    /// The edges back into the Session application built over this Host.
+    pub(crate) session_application: SessionApplicationPorts,
 }

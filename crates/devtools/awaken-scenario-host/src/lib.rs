@@ -78,7 +78,8 @@ pub use awaken_protocol_managed::{
 };
 pub use awaken_dispatch_http::durable_ops_router;
 pub use awaken_session_executor::{
-    HostResume, RunApplicationHost, SharedHost, ThreadEvent, ThreadEventHub, advertised_tools,
+    HostDependencies, HostResume, RunApplicationHost, SharedHost, ThreadEvent, ThreadEventHub,
+    advertised_tools,
 };
 pub use awaken_sandbox_local::content_fingerprint;
 pub use awaken_session_mcp::ExtMcpProbe;
@@ -130,7 +131,7 @@ pub async fn build_outcome_matrix_router() -> Router {
         None,
     )
     .await
-    .map_host(|host| {
+    .map_dependencies(|host| {
         host.with_agent_publications(publication.clone())
             .with_judge_snapshot(judge)
     });
@@ -243,7 +244,7 @@ pub async fn build_compaction_router() -> Router {
         .or_else(|| env_u("AWAKEN_MODEL_CONTEXT_WINDOW").map(|window| window / 4 * 3))
         .unwrap_or(1);
     let keep_last = env_u("AWAKEN_COMPACT_KEEP_LAST").unwrap_or(2) as usize;
-    let host = host.map_host(|host| host.with_compaction_tokens(window, keep_last));
+    let host = host.map_dependencies(|host| host.with_compaction_tokens(window, keep_last));
     mount_platform(host).await
 }
 
@@ -269,7 +270,7 @@ pub async fn build_worker_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "worker");
     let host = resource_host(model, model_ref)
         .await
-        .map_host(|host| host.with_client_tools(client_tools));
+        .map_dependencies(|host| host.with_client_tools(client_tools));
     mount_with_environments(host).await
 }
 
@@ -321,7 +322,7 @@ pub async fn build_probe_router() -> Router {
     let publication = fixed_agent_publication([snapshot]);
     let platform = resource_host(model, model_ref)
         .await
-        .map_host(|host| host.with_agent_publications(publication.clone()));
+        .map_dependencies(|host| host.with_agent_publications(publication.clone()));
     mount_with_agent_source(platform, publication).await
 }
 
@@ -412,26 +413,31 @@ pub async fn build_router_and_host(
     build_router_and_host_from(resource_host(llm, model_ref).await).await
 }
 
-/// Build an unmounted Host for a test that owns the outer product composition.
+/// The dependencies of an unmounted Host for a test that owns the outer
+/// product composition: it selects any further dependency, builds the Host,
+/// and mounts it exactly once.
 ///
 /// Unlike [`build_router_and_host`], this function starts no lifecycle and binds
-/// no Session application authority. The caller must mount the Host exactly once.
-pub async fn build_unmounted_host(
+/// no Session application authority.
+pub async fn build_unmounted_dependencies(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-) -> Arc<SharedHost> {
-    build_unmounted_host_with_deployment(llm, model_ref, scenario_deployment()).await
+) -> HostDependencies {
+    build_unmounted_dependencies_with_deployment(llm, model_ref, scenario_deployment()).await
 }
 
 /// The unmounted scenario composition with an explicit deployment. Resources
 /// and Runtime consume the same deployment before any stores or sandboxes open.
 /// No lifecycle or Session application is installed until the caller mounts it.
-pub async fn build_unmounted_host_with_deployment(
+pub async fn build_unmounted_dependencies_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     deployment: awaken_session_executor::DeploymentConfig,
-) -> Arc<SharedHost> {
-    build_unmounted_host_from(resource_host_with_deployment(llm, model_ref, deployment).await)
+) -> HostDependencies {
+    resource_host_with_deployment(llm, model_ref, deployment)
+        .await
+        .into_dependencies()
+        .0
 }
 
 /// Scenario assembly whose Runtime and Managed adapters can share the exact
@@ -445,7 +451,7 @@ pub async fn build_router_and_host_with_agent_publications(
     let publication = scenario_platform::fixed_agent_publication(publications);
     let (host, resources) = resource_host(llm, model_ref)
         .await
-        .map_host(|host| host.with_agent_publications(publication.clone()))
+        .map_dependencies(|host| host.with_agent_publications(publication.clone()))
         .into_parts();
     let host = Arc::new(host);
     let router = scenario_platform::mount_parts_with_agent_source_on_lifecycle(
@@ -458,24 +464,18 @@ pub async fn build_router_and_host_with_agent_publications(
     (router, host)
 }
 
-/// Build an unmounted Host with one immutable Agent publication authority.
-/// Cross-module product-composition tests use this seam to avoid mounting a
-/// disposable Session application before installing their real composition.
-pub async fn build_unmounted_host_with_agent_publications(
+/// [`build_unmounted_dependencies`] with one immutable Agent publication
+/// authority. Cross-module product-composition tests use this seam to avoid
+/// mounting a disposable Session application before installing their real
+/// composition.
+pub async fn build_unmounted_dependencies_with_agent_publications(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     publications: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
-) -> Arc<SharedHost> {
-    build_unmounted_host_from(
-        resource_host(llm, model_ref)
-            .await
-            .map_host(|host| host.with_agent_publications(publications)),
-    )
-}
-
-fn build_unmounted_host_from(platform: deployment::ScenarioPlatform) -> Arc<SharedHost> {
-    let (host, _resources) = platform.into_parts();
-    Arc::new(host)
+) -> HostDependencies {
+    build_unmounted_dependencies(llm, model_ref)
+        .await
+        .with_agent_publications(publications)
 }
 
 async fn build_router_and_host_from(
@@ -913,7 +913,7 @@ pub async fn build_router_with_skills(
     mount_platform(
         resource_host(llm, model_ref)
             .await
-            .map_host(|host| host.with_skills(skills)),
+            .map_dependencies(|host| host.with_skills(skills)),
     )
     .await
 }
@@ -931,7 +931,8 @@ pub async fn build_router_with_managed_skills(
     let platform = resource_host(llm, model_ref.clone()).await;
     let bindings = platform.publish_managed_skills(&skills).await;
     let publication = fixed_host_backend_publication("assistant", &model_ref, bindings);
-    let platform = platform.map_host(|host| host.with_agent_publications(publication.clone()));
+    let platform =
+        platform.map_dependencies(|host| host.with_agent_publications(publication.clone()));
     mount_with_agent_source(platform, publication).await
 }
 
@@ -942,10 +943,14 @@ pub async fn build_graded_router(
     model_ref: impl Into<String>,
     judge_agent_id: impl Into<String>,
 ) -> Router {
-    mount_platform(resource_host(llm, model_ref).await.map_host(|host| {
-        host.with_judge(judge_agent_id)
-            .unwrap_or_else(|error| panic!("scenario host model reference: {error}"))
-    }))
+    mount_platform(
+        resource_host(llm, model_ref)
+            .await
+            .map_dependencies(|host| {
+                host.with_judge(judge_agent_id)
+                    .unwrap_or_else(|error| panic!("scenario host model reference: {error}"))
+            }),
+    )
     .await
 }
 
@@ -980,7 +985,7 @@ pub async fn build_custom_router_and_host() -> (Router, Arc<SharedHost>) {
     let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "custom");
     let host = resource_host(model, model_ref)
         .await
-        .map_host(|host| host.with_client_tools(client_tools));
+        .map_dependencies(|host| host.with_client_tools(client_tools));
     build_router_and_host_from(host).await
 }
 
@@ -1006,7 +1011,7 @@ pub async fn build_statemachine_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(StateMachineModel), "statemachine");
     let host = resource_host(model, model_ref)
         .await
-        .map_host(|host| host.with_state_machine(machine));
+        .map_dependencies(|host| host.with_state_machine(machine));
     mount_platform(host).await
 }
 
@@ -1145,7 +1150,7 @@ pub async fn build_statemachine_rich_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(StateMachineModel), "statemachine-rich");
     let host = resource_host(model, model_ref)
         .await
-        .map_host(|host| host.with_state_machine(machine));
+        .map_dependencies(|host| host.with_state_machine(machine));
     mount_platform(host).await
 }
 
@@ -1180,7 +1185,7 @@ pub async fn build_schedule_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(ProbeModel), "schedule");
     let host = resource_host_with_deployment(model, model_ref, scenario_deployment())
         .await
-        .map_host(|host| host.with_gate_override(Arc::new(ScheduleGate)));
+        .map_dependencies(|host| host.with_gate_override(Arc::new(ScheduleGate)));
     mount_platform(host).await
 }
 
@@ -1242,10 +1247,12 @@ pub async fn build_remote_delegation_router() -> Router {
         })
         .build();
     let publication = fixed_agent_publication([assistant, researcher]);
-    let host = resource_host(model, model_ref).await.map_host(|host| {
-        host.with_agent_publications(publication.clone())
-            .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(None))
-    });
+    let host = resource_host(model, model_ref)
+        .await
+        .map_dependencies(|host| {
+            host.with_agent_publications(publication.clone())
+                .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(None))
+        });
     mount_with_agent_source(host, publication).await
 }
 
@@ -1380,7 +1387,7 @@ pub async fn build_skills_durable_router() -> Router {
     );
     let host = resource_host_with_deployment(model, model_ref, deployment)
         .await
-        .map_host(|host| host.with_agent_publications(publication.clone()));
+        .map_dependencies(|host| host.with_agent_publications(publication.clone()));
     mount_with_agent_source(host, publication).await
 }
 pub async fn build_config_router() -> Router {
@@ -1470,12 +1477,14 @@ pub async fn build_config_router() -> Router {
     );
     let host = resource_host_with_deployment(model, model_ref, deployment)
         .await
-        .map_host(|host| {
+        .map_dependencies(|host| {
             host.with_local_workspace(platform_workspace.clone())
                 .with_agent_publications(executable_agent_catalog.clone())
                 .with_admin_tools(admin_execs)
                 .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(None))
         });
+    let (host, resources) = host.into_parts();
+    let host = Arc::new(host);
     let scenario_dispatch = host
         .dispatch_store()
         .expect("config scenario installs one Dispatch authority");
@@ -1513,11 +1522,16 @@ pub async fn build_config_router() -> Router {
     // mount supplies an ephemeral Session repository; storage_dir present -> it
     // supplies sessions.db beside runtime truth. The Agent source is an added port,
     // never a reason to rebuild ManagedState through a parallel in-memory path.
-    let flat = mount_with_agent_source(host, executable_agent_catalog)
-        .await
-        .merge(config_router(plane))
-        .merge(agents)
-        .merge(session_reservation_scenario_router(scenario_dispatch).await);
+    let flat = scenario_platform::mount_parts_with_agent_source_on_lifecycle(
+        host,
+        resources,
+        executable_agent_catalog,
+        awaken_service_lifecycle::ServiceLifecycle::new(),
+    )
+    .await
+    .merge(config_router(plane))
+    .merge(agents)
+    .merge(session_reservation_scenario_router(scenario_dispatch).await);
     let flat =
         awaken_coordinator::workspace_path::with_platform_workspace(flat, platform_workspace);
     awaken_coordinator::workspace_path::with_workspace_path_addressing(flat)

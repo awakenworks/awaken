@@ -4,7 +4,7 @@
 //! link the Resources application or any store. A test or scenario
 //! composition that wants a local Host builds its ports here, from the same
 //! Resources authorities its process selected, and hands them to
-//! `SharedHost::new_with_resources*`.
+//! `HostDependencies::for_local_resources`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -15,7 +15,9 @@ use awaken_resource_application::{
 };
 use awaken_resource_contract::SkillStore;
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_session_executor::{DeploymentConfig, LocalResourcePorts, LocalSkillPorts, SharedHost};
+use awaken_session_executor::{
+    DeploymentConfig, HostDependencies, LocalResourcePorts, LocalSkillPorts, SharedHost,
+};
 use awaken_time::WallClock;
 
 /// The Host's Resource ports over one selected set of Resources
@@ -78,35 +80,44 @@ pub async fn memory_extraction_repository(
     }
 }
 
-/// A volatile Host over `llm`: ephemeral Memory and extraction databases,
-/// in-memory Files, no Skill catalog or reclamation state, the system clock,
-/// and the Workdir Session environment as a fallback Deployment selection
-/// replaces. Consumer: Worker and Run-ingress tests that need a bare Host.
+/// A volatile Host over `llm`: [`volatile_dependencies`] turned into a Host.
+/// Consumer: Worker and Run-ingress tests that need a bare Host.
 ///
 /// # Panics
 /// When an ephemeral database cannot be opened.
 #[must_use]
 pub async fn volatile_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> SharedHost {
-    with_workdir_fallback(SharedHost::new_with_resources(
-        llm,
-        model_ref,
-        volatile_resource_ports().await,
-        memory_extraction_repository(None).await,
-    ))
+    SharedHost::from(volatile_dependencies(llm, model_ref).await)
 }
 
-/// [`volatile_host`] over an explicit typed Deployment. Consumer: startup
-/// tests of the compositions that select a Session environment from it.
+/// Volatile Host dependencies over `llm`: ephemeral Memory and extraction
+/// databases, in-memory Files, no Skill catalog or reclamation state, the
+/// system clock, the reference volatile Runtime authority, and the Workdir
+/// Session environment as a fallback Deployment selection replaces.
+/// Consumer: tests that select further dependencies before building a Host.
 ///
 /// # Panics
 /// When an ephemeral database cannot be opened.
 #[must_use]
-pub async fn volatile_host_with_deployment(
+pub async fn volatile_dependencies(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+) -> HostDependencies {
+    volatile_dependencies_with_deployment(llm, model_ref, DeploymentConfig::ephemeral()).await
+}
+
+/// [`volatile_dependencies`] over an explicit typed Deployment. Consumer:
+/// startup tests of the compositions that select a Session environment from it.
+///
+/// # Panics
+/// When an ephemeral database cannot be opened.
+#[must_use]
+pub async fn volatile_dependencies_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     deployment: DeploymentConfig,
-) -> SharedHost {
-    with_workdir_fallback(SharedHost::new_with_resources_and_deployment(
+) -> HostDependencies {
+    with_workdir_fallback(HostDependencies::for_local_resources(
         llm,
         model_ref,
         volatile_resource_ports().await,
@@ -116,45 +127,48 @@ pub async fn volatile_host_with_deployment(
     ))
 }
 
-/// Install the Workdir adapter under the Deployment's sandbox root as the
+/// Select the Workdir adapter under the Deployment's sandbox root as the
 /// non-authoritative fallback Session provider.
-fn with_workdir_fallback(host: SharedHost) -> SharedHost {
-    let host = with_volatile_runtime_authority(host);
-    let base = awaken_session_executor::session_sandbox_base(host.deployment_config());
-    host.with_fallback_session_environment_provider(
+fn with_workdir_fallback(dependencies: HostDependencies) -> HostDependencies {
+    let dependencies = with_volatile_runtime_authority(dependencies);
+    let base = awaken_session_executor::session_sandbox_base(dependencies.deployment_config());
+    dependencies.with_fallback_session_environment_provider(
         awaken_session_environment::SandboxEnvironmentProvider::workdir(base)
             .into_session_provider(),
     )
 }
 
-/// Install the one reference Dispatch/commit authority at a test composition
+/// Select the one reference Dispatch/commit authority at a test composition
 /// root. Call only when no explicit runtime authority was already selected.
 #[must_use]
-pub fn with_volatile_runtime_authority(host: SharedHost) -> SharedHost {
+pub fn with_volatile_runtime_authority(dependencies: HostDependencies) -> HostDependencies {
     // Cause/effect fixture rule: C1 a volatile scenario Host has no injected
     // authority; C2 the same Host clock stamps Dispatch and Thread commits.
     // R1 C1+C2 -> one Ingress MemoryDispatchStore is selected here, retains its
     // continuation and operational-feed roles through AnyDispatchStore, and is injected once;
     // product Host construction never selects a Coordinator backend implicitly.
-    let clock = host.clock();
+    let clock = dependencies.clock();
     let dispatch = awaken_dispatch::AnyDispatchStore::from_durable_store(
         awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
         None,
     );
-    host.with_runtime_authority(Arc::new(
+    dependencies.with_runtime_authority(Arc::new(
         awaken_session_executor::EphemeralRuntimeAuthority::with_dispatch(clock, Arc::new(dispatch)),
     ))
 }
 
-/// Upgrade `host` to local durable storage under `dir`, with the canonical
-/// extraction repository at `dir/sessions.db`. Consumer: tests whose Host
-/// must survive a restart over the same directory.
+/// Upgrade `dependencies` to local durable storage under `dir`, with the
+/// canonical extraction repository at `dir/sessions.db`. Consumer: tests whose
+/// Host must survive a restart over the same directory.
 ///
 /// # Panics
 /// When `dir` or its extraction database cannot be opened.
 #[must_use]
-pub async fn with_durable_store_dir(host: SharedHost, dir: &Path) -> SharedHost {
-    host.with_durable_store_dir(
+pub async fn with_durable_store_dir(
+    dependencies: HostDependencies,
+    dir: &Path,
+) -> HostDependencies {
+    dependencies.with_durable_store_dir(
         dir,
         memory_extraction_repository(Some(dir)).await,
         |provider, base| {

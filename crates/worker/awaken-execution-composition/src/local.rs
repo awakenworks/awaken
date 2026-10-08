@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use awaken_session_executor::{DeploymentConfig, SandboxTier, SharedHost};
+use awaken_session_executor::{DeploymentConfig, HostDependencies, SandboxTier};
 use awaken_session_environment::SandboxEnvironmentProvider;
 use awaken_session_environment_contract::HandExecutorFactory;
 
@@ -166,10 +166,10 @@ fn local_tier_provider(
 /// already-installed authoritative provider is preserved; the independent,
 /// operator-enabled TrustedHost backend is still completed.
 pub async fn select_local_session_environment(
-    host: SharedHost,
+    host: HostDependencies,
     hand_factory: Option<Arc<dyn HandExecutorFactory>>,
     namespace_hand_path: PathBuf,
-) -> Result<SharedHost, String> {
+) -> Result<HostDependencies, String> {
     let deployment: DeploymentConfig = host.deployment_config().clone();
     deployment.validate_local_execution()?;
     let explicit = host.session_environment_provider_installed();
@@ -209,7 +209,10 @@ pub async fn select_local_session_environment(
         // The TrustedHost backend is configured completely before the Host
         // holds it: an installed backend cannot gain its Hand or scoped
         // execution afterwards, so it must not exist yet when either is needed.
-        if host.backend_owned_environment_provider_installed() {
+        if host
+            .installed_backend_owned_environment_provider()
+            .is_some()
+        {
             return Err(
                 "configure TrustedHost execution: its backend was installed before the \
                  deployment selected its Hand; select the Session environment before binding ACP"
@@ -263,8 +266,11 @@ pub async fn select_local_session_environment(
 /// realize in, unless startup already installed one. Consumers: process
 /// roots that bind ACP without enabling TrustedHost Native execution.
 #[must_use]
-pub fn with_backend_owned_environment(host: SharedHost) -> SharedHost {
-    if host.backend_owned_environment_provider_installed() {
+pub fn with_backend_owned_environment(host: HostDependencies) -> HostDependencies {
+    if host
+        .installed_backend_owned_environment_provider()
+        .is_some()
+    {
         return host;
     }
     let deployment = host.deployment_config();
@@ -280,7 +286,7 @@ pub fn with_backend_owned_environment(host: SharedHost) -> SharedHost {
 /// test and Scenario compositions whose deterministic fixtures run without
 /// Deployment selection.
 #[must_use]
-pub fn with_workdir_fallback(host: SharedHost) -> SharedHost {
+pub fn with_workdir_fallback(host: HostDependencies) -> HostDependencies {
     let base = awaken_session_executor::session_sandbox_base(host.deployment_config());
     host.with_fallback_session_environment_provider(
         SandboxEnvironmentProvider::workdir(base).into_session_provider(),
@@ -458,8 +464,8 @@ mod startup_tests {
         path
     }
 
-    async fn host(deployment: DeploymentConfig) -> SharedHost {
-        awaken_runtime_host_testkit::volatile_host_with_deployment(
+    async fn host(deployment: DeploymentConfig) -> HostDependencies {
+        awaken_runtime_host_testkit::volatile_dependencies_with_deployment(
             Arc::new(NoLlm),
             "test",
             deployment,
@@ -467,7 +473,7 @@ mod startup_tests {
         .await
     }
 
-    fn trusted_host_provider(host: &SharedHost) -> &SandboxEnvironmentProvider {
+    fn trusted_host_provider(host: &HostDependencies) -> &SandboxEnvironmentProvider {
         host.installed_backend_owned_environment_provider()
             .expect("TrustedHost provider installed")
             .origin()

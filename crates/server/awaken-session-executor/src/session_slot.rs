@@ -851,13 +851,13 @@ mod tests {
         // owner. Effects: E1 drain remains pending before C2, E2 Future drop
         // completes the same activity, and E3 the retry emits exact Removed
         // proof only after the unstarted spawn owner is known to be gone.
-        let host = std::sync::Arc::new(
-            crate::SharedHost::new(
+        let host = std::sync::Arc::new(crate::SharedHost::from(
+            crate::HostDependencies::ephemeral(
                 std::sync::Arc::new(crate::no_model::NoModelConfiguredExecutor),
                 "stub",
             )
             .await,
-        );
+        ));
         let generation =
             crate::test_mcp::mcp_fence("unpolled-staging", "docs", 1, "runtime-1", 1, u64::MAX);
         let request = awaken_session_mcp_contract::StageMcpAttachment {

@@ -1,8 +1,8 @@
 // @formal surface requirement=assembly.binary_roles.role_assembly
 // @formal reason: Host construction selects every injected startup authority exactly once and composes the
 // @formal reason: capability groups; it opens no Store. This link is not a formal-proof claim.
-//! Builder / configuration wiring for [`SharedHost`]: `new`, the chainable
-//! `with_*` methods, per-thread registration, and the process dispatch pool.
+//! Construction of [`SharedHost`] from its [`HostDependencies`] (the one
+//! constructor), per-thread registration, and the process dispatch pool.
 
 use super::*;
 
@@ -13,9 +13,9 @@ use awaken_runtime_contract::delegation::RunDelegationService;
 
 /// The process a Host is constructed in: the installation's resolved platform
 /// Workspace, the typed Deployment, and the one process clock. The process
-/// composition resolves all three once; every Host constructor receives them
-/// together so none can pair a Workspace or clock from a different process
-/// selection. Consumer: the public `SharedHost` constructors and `build`.
+/// composition resolves all three once; every [`HostDependencies`] constructor
+/// receives them together so none can pair a Workspace or clock from a
+/// different process selection. Consumer: the `HostDependencies` constructors.
 pub struct HostProcess {
     /// The installation's resolved platform Workspace coordinate.
     pub local_workspace: String,
@@ -23,6 +23,83 @@ pub struct HostProcess {
     pub deployment: crate::DeploymentConfig,
     /// The process wall clock the Host drives its Workers on.
     pub clock: Arc<dyn awaken_time::WallClock>,
+}
+
+impl From<HostDependencies> for SharedHost {
+    /// The one Host constructor: validate the selected dependencies once and
+    /// assemble the Host's runtime state around them. It performs no I/O; every
+    /// dependency was acquired while the composition filled `dependencies`.
+    fn from(dependencies: HostDependencies) -> Self {
+        let HostDependencies {
+            local_workspace,
+            deployment,
+            clock,
+            store_dir,
+            authority,
+            execution_authority,
+            environment_binding_sink,
+            hub,
+            agent,
+            exec,
+            worker,
+            env,
+            tools,
+            resources,
+            mcp,
+            dispatch,
+            capture,
+            session_application,
+        } = dependencies;
+        assert!(
+            !local_workspace.trim().is_empty(),
+            "local workspace must not be empty"
+        );
+        let session_slots = crate::session_slot::SessionRuntimeSlots::default();
+        let memory = Arc::new(crate::memory::MemoryRuntime::new(
+            agent.llm.clone(),
+            env.auxiliary_sandboxes.provider("mem"),
+            Arc::new(BackgroundRuns::new()),
+            resources.extraction_repository.clone(),
+            clock.clone(),
+            agent.inference_materializer.clone(),
+        ));
+        let background_supervisor =
+            Arc::new(awaken_ext_background_task::BackgroundTaskSupervisor::new(
+                awaken_runtime_contract::content_fingerprint(&(
+                    "background-worker-v1",
+                    std::process::id(),
+                    uuid::Uuid::new_v4().simple().to_string(),
+                ))
+                .expect("background worker identity serializes"),
+                clock.clone(),
+            ));
+        Self {
+            agent: capability::AgentExecution::new(agent, session_slots.clone()),
+            exec,
+            worker,
+            env,
+            tools,
+            resources: capability::ResourcePorts::new(resources, memory),
+            mcp,
+            dispatch: capability::DispatchCapability::new(dispatch),
+            capture,
+            local_workspace,
+            session_slots,
+            execution_authority,
+            hub: hub.clone(),
+            store_dir,
+            deployment,
+            authority,
+            clock,
+            background_supervisor,
+            completion: Arc::new(CompletionRegistry::new(
+                hub,
+                session_application.committed_progress.clone(),
+            )),
+            session_application,
+            environment_binding_sink: std::sync::RwLock::new(environment_binding_sink),
+        }
+    }
 }
 
 impl SharedHost {
@@ -40,63 +117,6 @@ impl SharedHost {
         // process distinct without reading a clock.
         let nonce = uuid::Uuid::new_v4().simple();
         format!("workspace_local_{:x}_{nonce}", std::process::id())
-    }
-
-    /// Volatile host over `llm` for this crate's own unit tests. Other
-    /// compositions use `awaken-runtime-host-testkit`, which owns the
-    /// concrete volatile Resource adapters this crate does not link.
-    #[cfg(test)]
-    pub async fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
-        Self::new_with_deployment(
-            llm,
-            model_ref,
-            crate::deployment_config::DeploymentConfig::ephemeral(),
-        )
-        .await
-    }
-
-    /// Test/scenario construction without an injected Resource component.
-    /// The platform Workspace is freshly minted even when `deployment` names a
-    /// storage root; a fixture that needs a durable coordinate installs it with
-    /// [`Self::with_local_workspace`].
-    #[cfg(test)]
-    pub async fn new_with_deployment(
-        llm: Arc<dyn LlmExecutor>,
-        model_ref: impl Into<String>,
-        deployment: crate::DeploymentConfig,
-    ) -> Self {
-        // A test or Scenario fixture is its own composition: it chooses the
-        // host clock and installs the volatile Runtime authority here.
-        let clock = awaken_time::system_clock();
-        let extraction_repository =
-            capability::local_memory_extraction_repository(deployment.storage_dir.as_deref()).await;
-        Self::build(
-            llm,
-            model_ref.into(),
-            capability::ResourceInputs {
-                #[cfg(any(test, feature = "test-support"))]
-                local: None,
-                worker_content: None,
-                extraction_repository: Some(extraction_repository),
-            },
-            HostProcess {
-                local_workspace: Self::mint_local_workspace(),
-                deployment,
-                clock: clock.clone(),
-            },
-            Arc::new(crate::LocalAuthority::default()),
-        )
-        .with_runtime_authority(Arc::new(crate::EphemeralRuntimeAuthority::new(clock)))
-    }
-
-    /// Test-support replacement of a volatile fixture's deployment value.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn with_deployment_config(mut self, deployment: crate::DeploymentConfig) -> Self {
-        self.mcp
-            .set_relay_exposure(deployment.sandbox.container_mcp_relay.clone());
-        self.deployment = deployment;
-        self
     }
 
     /// The configured Session sandbox tier selected by the authoritative
@@ -120,248 +140,6 @@ impl SharedHost {
     #[must_use]
     pub fn clock(&self) -> Arc<dyn awaken_time::WallClock> {
         self.clock.clone()
-    }
-
-    /// Install the Coordinator-owned durable capability before the Host serves:
-    /// this Host then owns committed truth locally. Only store-owning
-    /// compositions call this; a Worker is constructed with its upstream
-    /// authority instead.
-    #[must_use]
-    pub fn with_runtime_authority(mut self, authority: Arc<dyn crate::RuntimeAuthority>) -> Self {
-        self.authority = Arc::new(crate::LocalAuthority::new(authority));
-        self
-    }
-
-    /// Test/scenario construction with resources but no explicit deployment or
-    /// durable extraction authority.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn new_with_resources(
-        llm: Arc<dyn LlmExecutor>,
-        model_ref: impl Into<String>,
-        resources: capability::LocalResourcePorts,
-        extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
-    ) -> Self {
-        let clock = resources.clock.clone();
-        Self::build(
-            llm,
-            model_ref.into(),
-            capability::ResourceInputs {
-                local: Some(resources),
-                worker_content: None,
-                extraction_repository: Some(extraction_repository),
-            },
-            HostProcess {
-                local_workspace: Self::mint_local_workspace(),
-                deployment: crate::deployment_config::DeploymentConfig::ephemeral(),
-                clock,
-            },
-            Arc::new(crate::LocalAuthority::default()),
-        )
-    }
-
-    /// Construct directly from the process's resolved deployment and its
-    /// resolved platform Workspace coordinate.
-    /// No resource or runtime backend is opened from process-global state first.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn new_with_resources_and_deployment(
-        llm: Arc<dyn LlmExecutor>,
-        model_ref: impl Into<String>,
-        resources: capability::LocalResourcePorts,
-        extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
-        local_workspace: impl Into<String>,
-        deployment: crate::DeploymentConfig,
-    ) -> Self {
-        let clock = resources.clock.clone();
-        Self::build(
-            llm,
-            model_ref.into(),
-            capability::ResourceInputs {
-                local: Some(resources),
-                worker_content: None,
-                extraction_repository: Some(extraction_repository),
-            },
-            HostProcess {
-                local_workspace: local_workspace.into(),
-                deployment,
-                clock,
-            },
-            Arc::new(crate::LocalAuthority::default()),
-        )
-    }
-
-    /// Construct an execution Worker with its exact remote content adapters
-    /// installed before any Resource data store is selected. Management-only
-    /// File and durable extraction authorities fail closed; the Worker opens no
-    /// File, Memory-content, or Memory-extraction authority database.
-    /// `authority` carries the claim-fenced upstream transports through which
-    /// this Worker reaches committed truth; nothing installed later can grant
-    /// it a local write authority.
-    pub fn new_worker_with_deployment(
-        llm: Arc<dyn LlmExecutor>,
-        model_ref: impl Into<String>,
-        file_content_source: Arc<
-            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
-        >,
-        memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
-        process: HostProcess,
-        authority: crate::UpstreamAuthority,
-    ) -> Self {
-        Self::build(
-            llm,
-            model_ref.into(),
-            capability::ResourceInputs {
-                #[cfg(any(test, feature = "test-support"))]
-                local: None,
-                worker_content: Some(capability::WorkerContentAdapters {
-                    file_content_source,
-                    memory_repository,
-                }),
-                extraction_repository: None,
-            },
-            process,
-            Arc::new(authority),
-        )
-    }
-
-    /// Construct a Coordinator-local Runtime Host from only its execution data
-    /// capability. Resources catalog, File commands, Skill authoring, and
-    /// reclamation remain outside and are injected through narrow applications.
-    /// `process` is the Coordinator composition's resolved process.
-    pub fn new_with_runtime_resources_and_deployment(
-        llm: Arc<dyn LlmExecutor>,
-        model_ref: impl Into<String>,
-        file_content_source: Arc<
-            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
-        >,
-        memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
-        extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
-        process: HostProcess,
-    ) -> Self {
-        Self::build(
-            llm,
-            model_ref.into(),
-            capability::ResourceInputs {
-                #[cfg(any(test, feature = "test-support"))]
-                local: None,
-                worker_content: Some(capability::WorkerContentAdapters {
-                    file_content_source,
-                    memory_repository,
-                }),
-                extraction_repository: Some(extraction_repository),
-            },
-            process,
-            Arc::new(crate::LocalAuthority::default()),
-        )
-    }
-
-    fn build(
-        llm: Arc<dyn LlmExecutor>,
-        model_ref: String,
-        resources: capability::ResourceInputs,
-        process: HostProcess,
-        authority: Arc<dyn crate::SessionAuthority>,
-    ) -> Self {
-        let HostProcess {
-            local_workspace,
-            deployment,
-            clock,
-        } = process;
-        assert!(
-            !local_workspace.trim().is_empty(),
-            "local workspace must not be empty"
-        );
-        // Process startup parses the deployment axes once from the environment
-        // into one typed config. `DeploymentConfig::storage_dir` set → durable SQLite commit
-        // and resource adapters (all survive a restart); unset → ephemeral adapters.
-        let store_dir = deployment.storage_dir.clone();
-        let sandbox_root = crate::acp_backend::session_sandbox_base(&deployment);
-        let skills = crate::skill_catalog::SkillCatalog::new();
-        #[cfg(any(test, feature = "test-support"))]
-        let mut skills = skills;
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(skill_ports) = resources
-            .local
-            .as_ref()
-            .and_then(|plane| plane.skills.clone())
-        {
-            skills.set_store(
-                skill_ports.store,
-                skill_ports.bundle_source,
-                skill_ports.application,
-            );
-        }
-        let auxiliary_sandboxes = crate::auxiliary_sandbox::default_auxiliary_sandboxes();
-        let resource_ports = capability::ResourcePorts::assemble(
-            &llm,
-            resources,
-            store_dir.as_deref(),
-            &clock,
-            auxiliary_sandboxes.provider("mem"),
-        );
-        let session_slots = crate::session_slot::SessionRuntimeSlots::default();
-        let hub = Arc::new(ThreadEventHub::new());
-        let background_supervisor =
-            Arc::new(awaken_ext_background_task::BackgroundTaskSupervisor::new(
-                awaken_runtime_contract::content_fingerprint(&(
-                    "background-worker-v1",
-                    std::process::id(),
-                    uuid::Uuid::new_v4().simple().to_string(),
-                ))
-                .expect("background worker identity serializes"),
-                clock.clone(),
-            ));
-        Self {
-            agent: capability::AgentExecution::new(llm, model_ref, session_slots.clone()),
-            exec: capability::AttemptBackends::new(&deployment),
-            worker: capability::WorkerTransports::default(),
-            env: capability::EnvironmentProviders::new(sandbox_root, auxiliary_sandboxes),
-            tools: capability::ToolOffering::new(skills),
-            resources: resource_ports,
-            mcp: awaken_session_mcp::McpSessions::new(
-                deployment.sandbox.container_mcp_relay.clone(),
-                clock.clone(),
-            ),
-            dispatch: capability::DispatchCapability::new(),
-            capture: capability::ContentCaptureCapability::new(&deployment),
-            local_workspace,
-            session_slots,
-            execution_authority: None,
-            hub: hub.clone(),
-            // `with_store_dir` still overrides this environment-derived default.
-            store_dir,
-            deployment,
-            // A store-owning composition, tests included, installs its durable
-            // Runtime authority explicitly through `with_runtime_authority`.
-            authority,
-            clock,
-            background_supervisor,
-            completion: Arc::new(CompletionRegistry::new(hub)),
-            environment_binding_sink: std::sync::RwLock::new(None),
-        }
-    }
-
-    /// Install the same authenticated Control client as the pre-effect Session
-    /// Environment root authority on a database-less Worker.
-    #[must_use]
-    pub fn with_environment_binding_sink(
-        mut self,
-        sink: Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
-    ) -> Self {
-        self.environment_binding_sink = std::sync::RwLock::new(Some(sink));
-        self
-    }
-
-    /// Platform-managed local workspace used when no authenticated/path scope
-    /// exists. Process startup may override it with a provisioned coordinate.
-    #[must_use]
-    pub fn with_local_workspace(mut self, workspace: impl Into<String>) -> Self {
-        let workspace = workspace.into();
-        assert!(
-            !workspace.trim().is_empty(),
-            "local workspace must not be empty"
-        );
-        self.local_workspace = workspace;
-        self
     }
 
     /// The platform-managed local workspace coordinate.
@@ -426,77 +204,11 @@ impl SharedHost {
         self.completion.clone()
     }
 
-    /// Install the process composition's sole wakeup for committed Run progress.
-    /// The callback is notification-only; its consumer must reread durable truth.
-    pub fn install_committed_progress_wakeup(
-        &self,
-        wakeup: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<(), &'static str> {
-        self.completion.install_committed_progress_wakeup(wakeup)
-    }
-
-    /// Give a unit-test fixture the authority of the role under test. Product
-    /// Worker composition always uses `new_worker_with_deployment`.
-    #[cfg(test)]
-    pub(crate) fn with_authority(
-        mut self,
-        authority: impl crate::SessionAuthority + 'static,
-    ) -> Self {
-        self.authority = Arc::new(authority);
-        self
-    }
-
-    /// Test-support upgrade of a volatile fixture to local durable storage
-    /// under `dir`, with the durable Memory extraction repository the caller
-    /// opened there and the relocation of its Session environment providers
-    /// under that root (`awaken-runtime-host-testkit` supplies both for the
-    /// sandbox-backed providers it links; this crate never does).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn with_durable_store_dir(
-        mut self,
-        dir: impl Into<PathBuf>,
-        extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
-        relocate: impl Fn(
-            &awaken_session_environment_contract::SessionEnvironmentProvider,
-            PathBuf,
-        ) -> awaken_session_environment_contract::SessionEnvironmentProvider,
-    ) -> Self {
-        let dir = dir.into();
-        self.resources
-            .memory
-            .set_extraction_repository(extraction_repository);
-        // A durable host must place its Workdir sandboxes under a stable root too;
-        // otherwise the dispatch row survives restart but its persisted handle
-        // points into the previous process's random temp directory.
-        self.env.session_provider = relocate(&self.env.session_provider, dir.join("sandboxes"));
-        self.env.backend_owned_session_provider = self
-            .env
-            .backend_owned_session_provider
-            .as_ref()
-            .map(|provider| relocate(provider, dir.join("trusted-local-sandboxes")));
-        if let Some(mounter) = self.memory_mounter() {
-            self.env
-                .session_provider
-                .installation()
-                .install_memory_mounter(mounter.clone());
-            if let Some(provider) = &self.env.backend_owned_session_provider {
-                provider.installation().install_memory_mounter(mounter);
-            }
-        }
-        self.store_dir = Some(dir);
-        self
-    }
-
-    /// [`Self::with_durable_store_dir`] with the local SQLite extraction
-    /// repository at `dir/sessions.db` and the sandbox-backed relocation, for
-    /// this crate's own unit tests.
-    #[cfg(test)]
-    pub async fn with_store_dir(self, dir: impl Into<PathBuf>) -> Self {
-        let dir = dir.into();
-        let repository = capability::local_memory_extraction_repository(Some(&dir)).await;
-        self.with_durable_store_dir(dir, repository, |provider, base| {
-            crate::session_environment::relocated_provider(provider, base)
-        })
+    /// The edges back into the Session application built over this Host. The
+    /// composition root binds each once, after it built that application.
+    #[must_use]
+    pub fn session_application_ports(&self) -> &SessionApplicationPorts {
+        &self.session_application
     }
 
     /// Bind the exact published delegation targets to a prepared Session.
@@ -599,22 +311,20 @@ mod startup_tests {
                 .await
                 .expect("test extraction repository"),
         );
-        let host = SharedHost::build(
+        let host = SharedHost::from(HostDependencies::for_coordinator(
             Arc::new(crate::NoModelConfiguredExecutor),
-            crate::UNCONFIGURED_MODEL_REF.into(),
-            capability::ResourceInputs {
-                #[cfg(any(test, feature = "test-support"))]
-                local: None,
-                worker_content: None,
-                extraction_repository: Some(expected.clone()),
-            },
+            crate::UNCONFIGURED_MODEL_REF,
+            Arc::new(awaken_resource_contract::UnavailableFileContentSource),
+            Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                awaken_time::system_clock(),
+            )),
+            expected.clone(),
             HostProcess {
                 local_workspace: SharedHost::mint_local_workspace(),
                 deployment: crate::DeploymentConfig::ephemeral(),
                 clock: awaken_time::system_clock(),
             },
-            Arc::new(crate::LocalAuthority::default()),
-        );
+        ));
 
         assert!(
             Arc::ptr_eq(&expected, &host.resources.memory.extraction_repository()),
@@ -648,22 +358,22 @@ mod startup_tests {
             deployment: crate::DeploymentConfig::ephemeral(),
             clock: awaken_time::system_clock(),
         };
-        let worker = SharedHost::new_worker_with_deployment(
+        let worker = SharedHost::from(HostDependencies::for_worker(
             Arc::new(crate::NoModelConfiguredExecutor),
             "stub",
             file.clone(),
             memory.clone(),
             process(),
             crate::UpstreamAuthority::default(),
-        );
-        let coordinator = SharedHost::new_with_runtime_resources_and_deployment(
+        ));
+        let coordinator = SharedHost::from(HostDependencies::for_coordinator(
             Arc::new(crate::NoModelConfiguredExecutor),
             "stub",
             file,
             memory,
             extraction,
             process(),
-        );
+        ));
         assert!(
             matches!(
                 worker.authority.open_commit("role").await,

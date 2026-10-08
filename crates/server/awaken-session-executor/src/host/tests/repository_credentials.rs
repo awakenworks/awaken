@@ -108,7 +108,7 @@ impl awaken_provisioning_contract::RepositoryRealizer for RecordingRepositoryRea
 #[tokio::test]
 async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
     for (rule, install_credentials) in [("D1", true), ("D2", false)] {
-        let host = SharedHost::new(Arc::new(OkModel), "stub").await;
+        let host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
         let workspace = host.local_workspace().to_owned();
         let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
         let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
@@ -129,11 +129,11 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
         .await
         .expect("author dispatch Repository credential");
         let materializer = pinned_vault(credentials, secrets, awaken_time::system_clock());
-        let host = Arc::new(if install_credentials {
+        let host = Arc::new(SharedHost::from(if install_credentials {
             host.with_credential_materializer(materializer.clone())
         } else {
             host
-        });
+        }));
         let managed = managed_with_resource_source(host.clone());
         let managed = if install_credentials {
             managed.with_credential_materializer(materializer)
@@ -240,7 +240,9 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         owner: "worker-platform".into(),
         epoch: 7,
     };
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     let sequenced = Arc::new(SequencedRepositoryTransport(AtomicUsize::new(0)));
     let _runtime = crate::ManagedHost::new(host.clone())
         .with_repository_binding_verifier(sequenced.clone())
@@ -332,7 +334,9 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         "P4 never reuses the capability staged before package or Sandbox preparation"
     );
 
-    let downgrade_host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let downgrade_host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     let downgrade = Arc::new(GatewayThenDirectRepositoryTransport(AtomicUsize::new(0)));
     let _downgrade_runtime = crate::ManagedHost::new(downgrade_host.clone())
         .with_repository_binding_verifier(downgrade.clone())
@@ -359,7 +363,9 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     assert_eq!(downgrade.0.load(Ordering::SeqCst), 2, "P6");
     assert!(downgrade_realizer.0.lock().unwrap().is_empty(), "P6");
 
-    let direct_host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let direct_host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     let _direct_runtime = crate::ManagedHost::new(direct_host.clone())
         .with_repository_binding_verifier(Arc::new(FixedRepositoryTransport(
             awaken_resource_contract::RepositoryTransport::Direct,
@@ -525,7 +531,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
     ];
 
     for rule in rules {
-        let host = SharedHost::new(Arc::new(OkModel), "stub").await;
+        let host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
         let workspace = host.local_workspace().to_owned();
         let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
         let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
@@ -572,7 +578,9 @@ async fn repository_credential_realization_follows_the_decision_table() {
             .expect("disable exact Repository credential");
         }
         let materializer = pinned_vault(credentials.clone(), secrets, awaken_time::system_clock());
-        let host = Arc::new(host.with_credential_materializer(materializer.clone()));
+        let host = Arc::new(SharedHost::from(
+            host.with_credential_materializer(materializer.clone()),
+        ));
         let managed =
             managed_with_resource_source(host.clone()).with_credential_materializer(materializer);
         let managed = managed.install_dispatch_session_runtime();
@@ -723,7 +731,9 @@ async fn repository_credential_realization_follows_the_decision_table() {
 #[tokio::test]
 async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credential = awaken_credential_vault::repo::enter_credential(

@@ -23,11 +23,11 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
             .await
             .unwrap(),
     );
-    let (host, _managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(MemoryHostModel), "stub")
+    let (host, _managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
             .await
             .with_dispatch_store(dispatch.clone()),
-    );
+    ));
     let thread = ThreadId("native-input-session".into());
     let run = RunId("native-input-run".into());
     let ctx = host.ctx_for(&thread.0, None).await.unwrap();
@@ -594,8 +594,9 @@ fn install_test_session_application(host: &Arc<SharedHost>) {
         Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     > = std::sync::OnceLock::new();
     let application = APPLICATION.get_or_init(|| Arc::new(RejectingSessionAgentCoordination));
-    crate::ManagedHost::new(host.clone())
-        .install_agent_coordination_application(Arc::downgrade(application))
+    host.session_application_ports()
+        .agent_coordination
+        .bind(Arc::downgrade(application))
         .expect("install one test Session application authority");
 }
 
@@ -610,8 +611,9 @@ fn install_recording_session_application(host: &Arc<SharedHost>) {
     let application = APPLICATION.get_or_init(|| {
         Arc::new(crate::coordination::RecordingSessionAgentCoordination::default())
     });
-    crate::ManagedHost::new(host.clone())
-        .install_agent_coordination_application(Arc::downgrade(application))
+    host.session_application_ports()
+        .agent_coordination
+        .bind(Arc::downgrade(application))
         .expect("install recording Session application authority");
 }
 

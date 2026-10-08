@@ -522,15 +522,17 @@ mod tests {
                     .identity,
             );
         }
-        let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "fixture")
-            .await
-            .with_dispatch_store(Arc::new(
-                awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
-                    awaken_lease_testkit::ManualClock::new(0),
-                ))
+        let host = SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "fixture")
                 .await
-                .unwrap(),
-            ));
+                .with_dispatch_store(Arc::new(
+                    awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
+                        awaken_lease_testkit::ManualClock::new(0),
+                    ))
+                    .await
+                    .unwrap(),
+                )),
+        );
         let source = Arc::new(IdleEvidence {
             released: Default::default(),
             fail_first: std::sync::atomic::AtomicBool::new(true),
@@ -649,9 +651,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(before.binding.is_none(), "U4 historical unbound slot");
-        let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "fixture")
-            .await
-            .with_dispatch_store(dispatch.clone());
+        let host = SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "fixture")
+                .await
+                .with_dispatch_store(dispatch.clone()),
+        );
         host.bind_worker_evidence_reconciliation(
             directory.clone(),
             Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
@@ -1015,16 +1019,16 @@ mod tests {
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
 
         let creates = Arc::new(AtomicUsize::new(0));
-        let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub")
+        let host = Arc::new(SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
                 .await
                 .with_session_container_provider(
                     Arc::new(CountingRejectedEnvironmentProvider(creates.clone())),
                     Arc::new(crate::session_environment::UnusedHandExecutorFactory),
-                ),
-        );
+                )
+                .with_memory_extraction_repository(Arc::new(FailingTerminalExtractionRepository)),
+        ));
         let _managed = crate::host::tests::install_test_dispatch_runtime(&host);
-        host.install_memory_extraction_repository(Arc::new(FailingTerminalExtractionRepository));
         crate::host::tests::bind_test_memory(
             &host,
             "direct-terminal-observer-failure",
@@ -1076,7 +1080,9 @@ mod tests {
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
         use awaken_dispatch_contract::DispatchQueue;
 
-        let mut local_pool = SharedHost::new(Arc::new(AdoptionModel), "stub").await;
+        let mut local_pool = SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await,
+        );
         local_pool.deployment.durable = true;
         local_pool.deployment.disable_local_pool = false;
         assert!(
@@ -1092,11 +1098,13 @@ mod tests {
                 .await
                 .expect("dispatch store"),
         );
-        let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await
-            .with_dispatch_store(store.clone());
+        let mut coordinator = SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await
+                .with_dispatch_store(store.clone()),
+        );
         coordinator.deployment.durable = true;
         coordinator.deployment.disable_local_pool = true;
         let host = Arc::new(coordinator);
@@ -1223,11 +1231,13 @@ mod tests {
                 .await
                 .expect("dispatch store"),
         );
-        let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await
-            .with_dispatch_store(store.clone());
+        let mut coordinator = SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await
+                .with_dispatch_store(store.clone()),
+        );
         coordinator.deployment.durable = true;
         coordinator.deployment.disable_local_pool = true;
         let host = Arc::new(coordinator);
@@ -1353,11 +1363,13 @@ mod tests {
                 .await
                 .expect("dispatch store"),
         );
-        let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await
-            .with_dispatch_store(store.clone());
+        let mut coordinator = SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await
+                .with_dispatch_store(store.clone()),
+        );
         coordinator.deployment.durable = true;
         coordinator.deployment.disable_local_pool = true;
         let host = Arc::new(coordinator);
@@ -1436,11 +1448,13 @@ mod tests {
                 .await
                 .expect("dispatch store"),
         );
-        let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await
-            .with_dispatch_store(store.clone());
+        let mut coordinator = SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await
+                .with_dispatch_store(store.clone()),
+        );
         coordinator.deployment.durable = true;
         coordinator.deployment.disable_local_pool = true;
         let host = Arc::new(coordinator);

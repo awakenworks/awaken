@@ -161,7 +161,9 @@ mod tests {
     /// Complete ordinary Host composition for real Judge Run tests. The Judge
     /// remains toolless and owns no alternate Session or dispatch path.
     async fn judge_test_host(model: Arc<dyn LlmExecutor>) -> Arc<SharedHost> {
-        let host = Arc::new(SharedHost::new(model, "stub").await);
+        let host = Arc::new(SharedHost::from(
+            crate::HostDependencies::ephemeral(model, "stub").await,
+        ));
         let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         host
     }

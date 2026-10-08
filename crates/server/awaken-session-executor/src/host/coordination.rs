@@ -1018,9 +1018,11 @@ mod tests {
                     .await
                     .expect("coordinated Resource dispatch store"),
             );
-            let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
-                .await
-                .with_dispatch_store(dispatch.clone());
+            let host = SharedHost::from(
+                crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
+                    .await
+                    .with_dispatch_store(dispatch.clone()),
+            );
             host.session_slots.update(&session_id, |slot| {
                 slot.session_dispatch = true;
                 slot.baseline = Some(baseline);

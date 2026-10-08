@@ -1,34 +1,55 @@
 use std::sync::Arc;
 
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_session_executor::SharedHost;
+use awaken_session_executor::{HostDependencies, SharedHost};
 
-/// One runnable Scenario platform instance.
+/// One runnable Scenario platform instance: the Host's dependencies, not yet
+/// turned into a Host, beside the Resources application they were selected
+/// from.
 ///
 /// Keeping the Resources application beside the Host prevents route builders
 /// from reopening Resource Registry, File, Memory, or Skill authorities after
 /// the persistence owner has selected them once.
 pub(crate) struct ScenarioPlatform {
-    host: SharedHost,
+    dependencies: HostDependencies,
     resources: awaken_resource_application::ResourcesApplication,
 }
 
 impl ScenarioPlatform {
     #[must_use]
-    pub(crate) fn map_host(mut self, update: impl FnOnce(SharedHost) -> SharedHost) -> Self {
-        self.host = update(self.host);
+    pub(crate) fn map_dependencies(
+        mut self,
+        update: impl FnOnce(HostDependencies) -> HostDependencies,
+    ) -> Self {
+        self.dependencies = update(self.dependencies);
         self
     }
 
-    pub(crate) async fn map_host_async<F, Fut>(mut self, update: F) -> Self
+    pub(crate) async fn map_dependencies_async<F, Fut>(mut self, update: F) -> Self
     where
-        F: FnOnce(SharedHost) -> Fut,
-        Fut: std::future::Future<Output = SharedHost>,
+        F: FnOnce(HostDependencies) -> Fut,
+        Fut: std::future::Future<Output = HostDependencies>,
     {
-        self.host = update(self.host).await;
+        self.dependencies = update(self.dependencies).await;
         self
     }
 
+    /// The selected dependencies, completed with the Coordinator's platform
+    /// Memory mount adapter the way product startup completes them.
+    #[must_use]
+    pub(crate) fn into_dependencies(
+        self,
+    ) -> (
+        HostDependencies,
+        awaken_resource_application::ResourcesApplication,
+    ) {
+        (
+            awaken_coordinator::with_platform_memory_data_plane(self.dependencies),
+            self.resources,
+        )
+    }
+
+    /// Build the Host from [`Self::into_dependencies`].
     #[must_use]
     pub(crate) fn into_parts(
         self,
@@ -36,16 +57,8 @@ impl ScenarioPlatform {
         SharedHost,
         awaken_resource_application::ResourcesApplication,
     ) {
-        (self.host, self.resources)
-    }
-
-    /// Borrow the platform's one durable Dispatch authority for scenario-only
-    /// protocol adapters. The adapter may invoke existing commands, but it may
-    /// not own lifecycle state or open another store.
-    pub(crate) fn dispatch_store(
-        &self,
-    ) -> Result<Arc<awaken_dispatch::AnyDispatchStore>, awaken_session_executor::HostError> {
-        self.host.dispatch_store()
+        let (dependencies, resources) = self.into_dependencies();
+        (SharedHost::from(dependencies), resources)
     }
 
     /// Seed deterministic Managed-Agent Skill fixtures through the same
@@ -56,7 +69,7 @@ impl ScenarioPlatform {
         &self,
         skills: &[awaken_ext_skills::SkillSpec],
     ) -> Vec<awaken_agent_contract::AgentSkillBinding> {
-        let workspace = self.host.local_workspace();
+        let workspace = self.dependencies.local_workspace();
         let application = self.resources.skill_catalog_application();
         let mut bindings = Vec::with_capacity(skills.len());
         for skill in skills {
@@ -80,7 +93,7 @@ impl ScenarioPlatform {
     /// Session resource name the same aggregate without a placeholder or a
     /// path/order fallback.
     pub(crate) async fn publish_managed_memory_store(&self, id: &str, name: &str) {
-        let workspace_id = self.host.local_workspace().to_string();
+        let workspace_id = self.dependencies.local_workspace().to_string();
         let stores = self.resources.memory_stores();
         if let Some(existing) = stores
             .get(&workspace_id, id)
@@ -259,7 +272,7 @@ async fn resource_host_with_selected_runtime(
     let scenario_workspace = std::env::var("AWAKEN_SCENARIO_WORKSPACE")
         .ok()
         .filter(|workspace| !workspace.trim().is_empty());
-    let host = SharedHost::new_with_resources_and_deployment(
+    let dependencies = HostDependencies::for_local_resources(
         llm,
         model_ref,
         awaken_runtime_host_testkit::local_resource_ports(&resources.authorities()),
@@ -276,22 +289,25 @@ async fn resource_host_with_selected_runtime(
     .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes());
     // Plain deterministic fixtures keep the cheap Workdir adapter; Deployment
     // selection (`runtime_resource_host_with_deployment`) replaces it.
-    let host = awaken_execution_composition::with_workdir_fallback(host);
-    let host = bind_scenario_runtime_authority(host, selected);
-    ScenarioPlatform { host, resources }
+    let dependencies = awaken_execution_composition::with_workdir_fallback(dependencies);
+    let dependencies = bind_scenario_runtime_authority(dependencies, selected);
+    ScenarioPlatform {
+        dependencies,
+        resources,
+    }
 }
 
 /// Select one Runtime authority at the Scenario composition root. The binary
 /// installs its Coordinator-selected authority before any router is built;
 /// direct in-process fixture callers may select only the local volatile case.
 fn bind_scenario_runtime_authority(
-    host: SharedHost,
+    dependencies: HostDependencies,
     selected: Option<&Arc<dyn awaken_session_executor::RuntimeAuthority>>,
-) -> SharedHost {
+) -> HostDependencies {
     match selected {
-        Some(authority) => host.with_runtime_authority(authority.clone()),
+        Some(authority) => dependencies.with_runtime_authority(authority.clone()),
         None => {
-            let deployment = host.deployment_config();
+            let deployment = dependencies.deployment_config();
             assert!(
                 !deployment.durable
                     && deployment.database_url.is_none()
@@ -300,7 +316,7 @@ fn bind_scenario_runtime_authority(
                     && deployment.wake == awaken_session_executor::Wake::None,
                 "durable or distributed Scenario Runtime requires an installed Coordinator authority"
             );
-            awaken_runtime_host_testkit::with_volatile_runtime_authority(host)
+            awaken_runtime_host_testkit::with_volatile_runtime_authority(dependencies)
         }
     }
 }
@@ -317,9 +333,9 @@ pub(crate) async fn runtime_resource_host_with_deployment(
 ) -> ScenarioPlatform {
     resource_host_with_deployment(llm, model_ref, deployment)
         .await
-        .map_host_async(|host| async move {
+        .map_dependencies_async(|dependencies| async move {
             awaken_execution_composition::with_session_environment_from_deployment(
-                host,
+                dependencies,
                 Some(awaken_worker::relay_hand_executor_factory()),
                 &awaken_execution_composition::ContainerTierPolicy::default(),
             )

@@ -178,6 +178,6 @@ pub async fn build_delegation_router_with_deployment(
         None,
     )
     .await
-    .map_host(|host| host.with_agent_publications(publication.clone()));
+    .map_dependencies(|host| host.with_agent_publications(publication.clone()));
     mount_with_agent_source(platform, publication).await
 }

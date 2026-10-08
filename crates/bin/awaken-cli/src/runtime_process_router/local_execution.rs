@@ -1,16 +1,16 @@
 // @formal evidence assembly_role.local_managed_mount_requires_exact_local_worker_component
 //! Install physical execution only for the selected local Session placement.
 
-use awaken_session_executor::SharedHost;
+use awaken_session_executor::HostDependencies;
 use awaken_session_application::SessionExecutionPlacement;
 use std::path::PathBuf;
 
 pub(super) async fn prepare(
-    host: SharedHost,
+    host: HostDependencies,
     placement: SessionExecutionPlacement,
     namespace_hand_path: Option<PathBuf>,
     credentials: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
-) -> Result<SharedHost, String> {
+) -> Result<HostDependencies, String> {
     let host = if placement == SessionExecutionPlacement::LocalWorker {
         let hand_factory = awaken_worker::relay_hand_executor_factory();
         let containers = awaken_execution_composition::ContainerTierPolicy::default();

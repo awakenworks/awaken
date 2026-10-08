@@ -124,8 +124,9 @@ pub use crate::cache_volume::{
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts};
 pub use crate::host::{
-    AttemptExecutorDecorator, DispatchPoolSizing, HostProcess, HostResume,
-    RemoteAttemptInstallation, SharedHost, remote_worker_placement, self_hosted_inference_holder,
+    AttemptExecutorDecorator, CyclicPort, CyclicPortAlreadyBound, DispatchPoolSizing,
+    HostDependencies, HostProcess, HostResume, RemoteAttemptInstallation, SessionApplicationPorts,
+    SharedHost, remote_worker_placement, self_hosted_inference_holder,
 };
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
@@ -178,13 +179,6 @@ pub enum AgentCoordinationInstallError {
     DispatchObservationUnavailable,
     #[error("Session dispatch observation source is already installed")]
     DispatchObservationAlreadyInstalled,
-}
-
-/// Composition failure for the one process-local background Session Run port.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum SessionRunBackgroundInstallError {
-    #[error("Session background Run application is already installed")]
-    AlreadyInstalled,
 }
 
 #[async_trait::async_trait]

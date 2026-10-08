@@ -187,11 +187,10 @@ pub(super) async fn prepare(
         ));
     }
     let background_attention = if background_tasks_enabled {
-        host.dispatch
-            .session_background_runs
-            .read()
-            .expect("Session background Run application lock poisoned")
-            .clone()
+        host.session_application
+            .background_runs
+            .get()
+            .cloned()
             .filter(|application| application.strong_count() > 0)
     } else {
         None

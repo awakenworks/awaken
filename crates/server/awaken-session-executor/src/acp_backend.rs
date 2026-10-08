@@ -6,7 +6,6 @@
 use std::sync::Arc;
 
 use awaken_acp_contract::LaunchObserver;
-use awaken_session_environment_contract::AcpSessionExecutorFactory;
 
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) fn deployment_test_binary(key: &str) -> std::path::PathBuf {
@@ -70,37 +69,6 @@ impl crate::host::SharedHost {
             .ok_or_else(|| crate::HostError::bad_request("ACP backend is not installed"))
     }
 
-    /// Install only the read-only ACP catalog port on a Coordinator that
-    /// delegates physical execution to a registered Worker.
-    #[must_use]
-    pub fn with_acp_projection_policy(
-        mut self,
-        policy: &'static dyn awaken_acp_contract::AcpAdapterPolicy<
-            awaken_runtime_contract::resolved::ProviderServerTool,
-        >,
-    ) -> Self {
-        assert!(
-            self.exec.acp.is_none(),
-            "ACP projection policy cannot shadow an executor"
-        );
-        self.exec.acp_projection_policy = Some(policy);
-        self
-    }
-
-    /// Install the one process-composed ACP execution factory. The frozen
-    /// Session projection, not this installation, selects an ACP backend.
-    #[must_use]
-    pub fn with_acp(mut self, factory: Arc<dyn AcpSessionExecutorFactory>) -> Self {
-        self.exec.acp_projection_policy = None;
-        self.exec.acp = Some(factory);
-        self
-    }
-
-    #[must_use]
-    pub fn acp_launch_observer(&self) -> Arc<dyn LaunchObserver> {
-        Arc::new(HubLaunchObserver::new(self.hub.clone()))
-    }
-
     pub(crate) fn register_thread_backend_projection(&self, thread: &str, backend_ref: &str) {
         self.session_slots.update(thread, |slot| {
             slot.register_backend_projection(backend_ref);
@@ -134,12 +102,12 @@ pub fn session_sandbox_base(deployment: &crate::DeploymentConfig) -> std::path::
 /// Install the existing ACP executor's policy/factory port for Host unit tests
 /// that exercise ACP projection without launching a real CLI process.
 #[cfg(test)]
-pub(crate) fn with_fixture_acp(host: crate::host::SharedHost) -> crate::host::SharedHost {
+pub(crate) fn with_fixture_acp(dependencies: crate::HostDependencies) -> crate::HostDependencies {
     let launch = awaken_run_executor_acp::AcpLaunch::custom(vec!["true".into()], vec![]);
     let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
         launch,
     ));
-    host.with_acp(Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(
+    dependencies.with_acp(Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(
         source,
     )))
 }
@@ -204,7 +172,8 @@ mod tests {
         // role can launch; E4 only canonical ids pass. Decision rules:
         // P1=absent=>E1; P2=projection-only=>E2+!E3+E4;
         // P3=executor=>E2+E3+E4; P4=alias|unknown=>!E4 for P2/P3.
-        let host = SharedHost::new(Arc::new(NoLlm), "test").await;
+        let host =
+            SharedHost::from(crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await);
         assert!(
             host.acp_adapter_policy()
                 .err()
@@ -213,7 +182,10 @@ mod tests {
                 .contains("not installed"),
             "P1"
         );
-        let host = host.with_acp_projection_policy(awaken_run_executor_acp::acp_adapter_policy());
+        let projection_only = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+            .await
+            .with_acp_projection_policy(awaken_run_executor_acp::acp_adapter_policy());
+        let host = SharedHost::from(projection_only);
         assert!(host.exec.acp.is_none(), "P2/E3 no execution factory");
         assert!(
             std::ptr::eq(
@@ -222,7 +194,11 @@ mod tests {
             ),
             "P2/E2 one catalog instance"
         );
-        let host = with_fixture_acp(host);
+        let host = SharedHost::from(with_fixture_acp(
+            crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+                .await
+                .with_acp_projection_policy(awaken_run_executor_acp::acp_adapter_policy()),
+        ));
         assert!(
             host.exec.acp_projection_policy.is_none(),
             "P3 one effective policy owner"
@@ -246,7 +222,9 @@ mod tests {
         // | Rule | Executor wired | Session projection | ACP selected |
         // | A1 | yes | acp:claude | yes |
         // | A2 | yes | absent | no |
-        let host = with_fixture_acp(SharedHost::new(Arc::new(NoLlm), "test").await);
+        let host = SharedHost::from(with_fixture_acp(
+            crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await,
+        ));
         host.register_thread_backend_projection("t", "acp:claude");
         assert!(host.exec.acp.is_some(), "A1 executor");
         assert_eq!(
@@ -276,15 +254,16 @@ mod tests {
         // | E1 | BackendOwned | host identity |
         // | E2 | Provider | configured Namespace |
         // | E3 | HostExecutor | configured Namespace |
-        let mut host = with_fixture_acp(SharedHost::new(Arc::new(NoLlm), "test").await);
+        let mut dependencies =
+            with_fixture_acp(crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await);
         let backend_owned = crate::session_environment::SandboxEnvironmentProvider::
             trusted_host_workdir_with_agent_stderr(
-                session_sandbox_base(host.deployment_config()).join("backend-owned"),
+                session_sandbox_base(dependencies.deployment_config()).join("backend-owned"),
                 false,
             )
             .into_session_provider();
-        host = host.with_backend_owned_environment_provider(backend_owned);
-        host.env.session_provider =
+        dependencies = dependencies.with_backend_owned_environment_provider(backend_owned);
+        dependencies.env.session_provider =
             crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
                 std::env::temp_dir().join("awaken-managed-environment"),
                 false,
@@ -293,6 +272,7 @@ mod tests {
                 std::time::Duration::ZERO,
             )
             .into_session_provider();
+        let host = SharedHost::from(dependencies);
         let backend_owned = awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
             credential: awaken_runtime_contract::CredentialRef {
                 id: "local".into(),
@@ -352,10 +332,11 @@ mod tests {
     async fn hub_launch_observer_republishes_lifecycle_to_the_thread_hub() {
         use awaken_run_executor_acp::{AcpLaunchEvent, AcpLaunchStage};
 
-        let host = SharedHost::new(Arc::new(NoLlm), "test").await;
+        let dependencies = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await;
+        let observer = dependencies.acp_launch_observer();
+        let host = SharedHost::from(dependencies);
         // A UI-facing observer subscribes to the thread before the agent starts.
         let mut sub = host.hub().subscribe("thread-42");
-        let observer = host.acp_launch_observer();
 
         observer.on_launch(
             "thread-42",

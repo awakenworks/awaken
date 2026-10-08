@@ -45,12 +45,12 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     // Each rule owns its filesystem, including the durable Removed marker.
     // Reusing a thread id across independent rows must not reuse that marker.
     let storage = tempfile::tempdir().expect("terminal owner rule storage");
-    let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_store_dir(storage.path())
             .await,
-    );
+    ));
     let managed = install_test_dispatch_runtime(&host);
     install_test_session_application(&host);
 
@@ -538,7 +538,11 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             fence_refresh_probe: Some(probe.clone()),
         });
         let mut host =
-            SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
+            SharedHost::from(
+                crate::HostDependencies::ephemeral(
+                    Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                    "stub",
+                )
                 .await
                 .with_session_container_provider(
                     provider.clone(),
@@ -548,7 +552,8 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
                     events: events.clone(),
                     expected_id: checkpoint.id,
                     delete_gate: None,
-                }));
+                })),
+            );
         host.execution_authority = Some(worker.clone());
         let host = Arc::new(host);
         let managed = install_test_dispatch_runtime(&host);
@@ -751,7 +756,8 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
     // | P3 | T | F | child | F | E3 |
     // | P4 | T | T | root | F | E4 |
     // | P5 | T | T | none | T | E5 |
-    let host = SharedHost::new(Arc::new(OkModel), "stub").await;
+    let host =
+        SharedHost::from(crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await);
     let session_id = "terminal-retire-root";
     let lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: "terminal-retire-worker".into(),
@@ -849,7 +855,8 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
 
 #[tokio::test]
 async fn terminal_quiescence_never_materializes_a_cold_environment() {
-    let host = SharedHost::new(Arc::new(OkModel), "stub").await;
+    let host =
+        SharedHost::from(crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await);
 
     let snapshot = host
         .quiesce_terminal_delegations("cold-terminal")
@@ -882,7 +889,8 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
     // owns settlement; the sibling parent/child tests cover that branch.
     use awaken_dispatch_contract::DispatchQueue as _;
 
-    let host = SharedHost::new(Arc::new(OkModel), "stub").await;
+    let host =
+        SharedHost::from(crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await);
     let dispatch = host.dispatch_store().expect("T1 dispatch authority");
     let session = ThreadId("terminal-reservation-session".into());
     let run = RunId("terminal-reservation-run".into());
@@ -961,11 +969,11 @@ async fn terminal_physical_claim_fixture(
             .await
             .expect("physical Dispatch fixture"),
     );
-    let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_coordinator_dispatch_store(dispatch.clone()),
-    );
+    ));
     let session = ThreadId(format!("terminal-{label}-physical-session"));
     let run = RunId(format!("terminal-{label}-physical-run"));
     dispatch
@@ -1170,7 +1178,8 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
     // exercised by the terminal cleanup integration tests, while the sibling
     // cold-empty test owns !C2. This rule prevents persistence mode from
     // masquerading as dispatch authority ownership.
-    let host = SharedHost::new(Arc::new(OkModel), "stub").await;
+    let host =
+        SharedHost::from(crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await);
     assert!(!host.deployment.durable, "R1/C3");
     let dispatch = host
         .dispatch_store()
@@ -1234,11 +1243,11 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
             .await
             .expect("remote quiescence dispatch"),
     );
-    let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_coordinator_dispatch_store(dispatch.clone()),
-    );
+    ));
     let parent = ThreadId("remote-quiescence-parent".into());
     let child = ThreadId("remote-quiescence-child".into());
     for (thread, run) in [

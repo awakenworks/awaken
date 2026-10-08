@@ -46,37 +46,3 @@ impl AttemptBackends {
         }
     }
 }
-
-impl SharedHost {
-    #[must_use]
-    pub fn with_acp_tool_exporter(
-        mut self,
-        exporter: Arc<dyn awaken_session_environment_contract::tool_export::AcpToolExporter>,
-    ) -> Self {
-        self.exec.acp_tool_exporter = Some(exporter);
-        self
-    }
-
-    /// Install the canonical exact credential materializer used by runtime
-    /// extensions such as paid WebSearch. The value is cloned from the same
-    /// process-startup instance used by Managed MCP/Resource realization.
-    #[must_use]
-    pub fn with_credential_materializer(
-        mut self,
-        materializer: crate::PinnedCredentialMaterializer,
-    ) -> Self {
-        self.exec.credential_materializer = Some(materializer);
-        self
-    }
-
-    /// Wrap the complete per-Session Native/ACP/A2A attempt boundary.
-    ///
-    /// The Host always constructs the authoritative backend router first. The
-    /// application can adapt envelopes, capabilities, and business results
-    /// around it, but cannot replace backend selection.
-    #[must_use]
-    pub fn with_attempt_decorator(mut self, decorator: AttemptExecutorDecorator) -> Self {
-        self.exec.attempt_decorator = Some(decorator);
-        self
-    }
-}

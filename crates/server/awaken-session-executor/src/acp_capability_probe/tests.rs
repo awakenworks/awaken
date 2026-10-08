@@ -59,12 +59,17 @@ async fn probe_negotiator(
     owner: &str,
     handshake: Arc<dyn AcpCapabilityHandshake>,
 ) -> SessionAcpCapabilityNegotiator {
-    let mut host = SharedHost::new(Arc::new(NoLlm), "stub").await;
-    host.local_workspace = owner.to_string();
-    host.env.session_provider =
+    let mut dependencies = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "stub")
+        .await
+        .with_local_workspace(owner);
+    dependencies.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::workdir(base)
             .into_session_provider();
-    SessionAcpCapabilityNegotiator::new(Arc::new(host), Duration::from_secs(30), handshake)
+    SessionAcpCapabilityNegotiator::new(
+        Arc::new(SharedHost::from(dependencies)),
+        Duration::from_secs(30),
+        handshake,
+    )
 }
 
 fn probe_argv() -> Vec<String> {

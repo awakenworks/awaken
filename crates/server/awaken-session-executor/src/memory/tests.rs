@@ -257,6 +257,7 @@ async fn bound_test_memory(
         Arc::new(BackgroundRuns::new()),
         extractions.clone(),
         awaken_time::system_clock(),
+        None,
     ));
     let config = awaken_resource_contract::MemoryStoreConfigVersion {
         memory_store_id: "test-store".into(),
@@ -986,6 +987,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         Arc::new(BackgroundRuns::new()),
         first_repository.clone(),
         awaken_time::system_clock(),
+        None,
     ));
     let child_binding = first_runtime.bind(
         parent,
@@ -1021,10 +1023,13 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
             .await
             .expect("R2 reopen extraction repository"),
     );
-    let recovered_host = Arc::new(SharedHost::new(Arc::new(ExtractorModel), "stub").await);
-    recovered_host.install_memory_extraction_repository(Arc::new(FailFirstRecoverableRead::new(
-        recovered_repository.clone(),
-    )));
+    let recovered_host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(ExtractorModel), "stub")
+            .await
+            .with_memory_extraction_repository(Arc::new(FailFirstRecoverableRead::new(
+                recovered_repository.clone(),
+            ))),
+    ));
     let parent_commit = Arc::new(HostCommit::Local(Arc::new(
         crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
             awaken_time::system_clock(),
@@ -1160,7 +1165,7 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
     let content = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
         awaken_time::system_clock(),
     ));
-    let host = Arc::new(SharedHost::new_worker_with_deployment(
+    let host = Arc::new(SharedHost::from(crate::HostDependencies::for_worker(
         Arc::new(ExtractorModel),
         "stub",
         Arc::new(awaken_resource_contract::UnavailableFileContentSource),
@@ -1171,7 +1176,7 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
             clock: awaken_time::system_clock(),
         },
         crate::UpstreamAuthority::default(),
-    ));
+    )));
     assert!(
         !host.authority.observes_terminal_memory_locally(),
         "the Worker constructor alone gives the Host its upstream authority"

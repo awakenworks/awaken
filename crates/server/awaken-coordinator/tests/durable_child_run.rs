@@ -131,19 +131,16 @@ async fn durable_child_run_scenario() {
             ],
         },
     ];
-    let host = Arc::new(
+    let host = Arc::new(awaken_session_executor::SharedHost::from(
         awaken_runtime_host_testkit::with_durable_store_dir(
-            Arc::into_inner(
-                awaken_scenario_host::build_unmounted_host(
-                    Arc::new(ParentChildModel {
-                        parent_calls: AtomicUsize::new(0),
-                        child_calls: AtomicUsize::new(0),
-                    }),
-                    "stub",
-                )
-                .await,
+            awaken_scenario_host::build_unmounted_dependencies(
+                Arc::new(ParentChildModel {
+                    parent_calls: AtomicUsize::new(0),
+                    child_calls: AtomicUsize::new(0),
+                }),
+                "stub",
             )
-            .expect("unmounted scenario host has one owner")
+            .await
             .with_dispatch_store(dispatch),
             storage.path(),
         )
@@ -152,7 +149,7 @@ async fn durable_child_run_scenario() {
             StaticPublishedAgentSnapshots::try_new([assistant, researcher])
                 .expect("valid test Agent publications"),
         )),
-    );
+    ));
     let _managed = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     host.ensure_dispatch_pool();
 

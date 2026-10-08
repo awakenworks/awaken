@@ -27,8 +27,10 @@ RESOURCE_AUTHORITIES = "crates/resources/awaken-resource-application/src/authori
 RESOURCE_CONTRACT = "crates/contract/awaken-resource-contract/src/lib.rs"
 RESOURCE_PERSISTENCE = "crates/resources/awaken-resource-persistence/src/lib.rs"
 RUNTIME_HOST_BUILD = "crates/server/awaken-session-executor/src/host/build.rs"
-# The Host's capability groups keep their `with_*` installers beside each group
-# definition, so the construction surface is build.rs plus this directory.
+# The Host is built from one `HostDependencies` value whose constructors and
+# `with_*` selections live in this module tree, over the capability groups,
+# so the construction surface is build.rs plus these two places.
+RUNTIME_HOST_DEPENDENCIES = "crates/server/awaken-session-executor/src/host/dependencies"
 RUNTIME_HOST_CAPABILITIES = "crates/server/awaken-session-executor/src/host/capability"
 PROCESS_STORES = "crates/bin/awaken-cli/src/process_stores.rs"
 RUNTIME_HOST_MANIFEST = "crates/server/awaken-session-executor/Cargo.toml"
@@ -152,11 +154,10 @@ REDUNDANT_ADMIN_STORE_REEXPORT = re.compile(
 )
 
 VOLATILE_RUNTIME_HOST_APIS = (
-    "new",
-    "new_with_deployment",
+    "ephemeral",
+    "ephemeral_with_deployment",
     "with_deployment_config",
-    "new_with_resources",
-    "new_with_resources_and_deployment",
+    "for_local_resources",
     "with_skill_store",
     "with_skill_store_backend",
     "with_skill_store_ports",
@@ -593,9 +594,14 @@ def _declaration_is_gated(
 
 
 def runtime_host_construction_source(repo_root: Path) -> str:
-    """build.rs and every capability-group module: the Host's whole construction surface."""
+    """build.rs, the dependency set and every capability-group module: the Host's whole construction surface."""
 
-    paths = [repo_root / RUNTIME_HOST_BUILD, *sorted((repo_root / RUNTIME_HOST_CAPABILITIES).rglob("*.rs"))]
+    paths = [
+        repo_root / RUNTIME_HOST_BUILD,
+        repo_root / f"{RUNTIME_HOST_DEPENDENCIES}.rs",
+        *sorted((repo_root / RUNTIME_HOST_DEPENDENCIES).rglob("*.rs")),
+        *sorted((repo_root / RUNTIME_HOST_CAPABILITIES).rglob("*.rs")),
+    ]
     return "\n".join(path.read_text(encoding="utf-8") for path in paths)
 
 

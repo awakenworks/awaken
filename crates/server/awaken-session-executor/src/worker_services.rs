@@ -219,13 +219,19 @@ mod tests {
         // publisher; E1 only remote publication remains and local File commands
         // are absent. Decision rule P1: C1+C2 => E1. This prevents an unfenced
         // parallel command path.
-        let host = SharedHost::new(
-            Arc::new(crate::NoModelConfiguredExecutor),
-            "startup-fixture",
-        )
-        .await;
+        let dependencies = || {
+            crate::HostDependencies::ephemeral(
+                Arc::new(crate::NoModelConfiguredExecutor),
+                "startup-fixture",
+            )
+        };
+        let host = SharedHost::from(dependencies().await);
         assert!(host.file_application().is_some(), "P1/C1");
-        let host = host.with_artifact_publisher(Arc::new(RemotePublisher));
+        let host = SharedHost::from(
+            dependencies()
+                .await
+                .with_artifact_publisher(Arc::new(RemotePublisher)),
+        );
         assert!(host.file_application().is_none(), "P1/E1");
     }
 }

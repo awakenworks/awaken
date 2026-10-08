@@ -3,9 +3,11 @@
 use super::*;
 
 async fn host_with_process_reaper() -> SharedHost {
-    SharedHost::new(Arc::new(OkModel), "stub")
-        .await
-        .with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor))
+    SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+            .await
+            .with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor)),
+    )
 }
 
 /// Native and ACP are projections of the same exact durable generation.  This
@@ -566,7 +568,8 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
             state: McpProjectionState::Active,
         }
     };
-    let missing_reaper_host = SharedHost::new(Arc::new(OkModel), "stub").await;
+    let missing_reaper_host =
+        SharedHost::from(crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await);
     let missing = generation("mcp-reaper-missing", 9);
     let missing_projection = projection(missing.clone(), false);
     let same_handle = missing_projection.mcp_process.as_ref().unwrap().clone();

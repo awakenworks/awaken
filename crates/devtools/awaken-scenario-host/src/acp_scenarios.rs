@@ -184,7 +184,7 @@ pub async fn build_acp_jsonrpc_router_with_deployment(
     let platform =
         resource_host_with_deployment(Arc::new(OversizedToolModel), "awaken", deployment)
             .await
-            .map_host_async(|host| async move {
+            .map_dependencies_async(|host| async move {
                 awaken_execution_composition::with_acp_launch_source(
                     host.with_agent_publications(host_publication),
                     awaken_worker::relay_hand_executor_factory(),
@@ -302,7 +302,7 @@ pub async fn build_acp_tool_bridge_router() -> Router {
         None,
     )
     .await
-    .map_host(|host| host.with_agent_publications(host_publication));
+    .map_dependencies(|host| host.with_agent_publications(host_publication));
     mount_with_agent_source(platform, publication).await
 }
 
@@ -686,7 +686,8 @@ async fn build_acp_session_environment_router(
             )))
             .build(),
     ]);
-    let platform = platform.map_host(|host| host.with_agent_publications(publication.clone()));
+    let platform =
+        platform.map_dependencies(|host| host.with_agent_publications(publication.clone()));
     // Mount `/v1/environments` over the same complete Managed state/resource
     // catalog used by every other scenario.
     mount_with_environments_and_agent_source(platform, Some(publication)).await
@@ -701,7 +702,7 @@ pub(crate) async fn bind_acp_session_environment(
     secret_broker: Option<Arc<dyn awaken_run_executor_acp::SecretBroker>>,
 ) -> crate::deployment::ScenarioPlatform {
     platform
-        .map_host_async(|host| async move {
+        .map_dependencies_async(|host| async move {
             let host = awaken_execution_composition::with_acp_launch_source(
                 host,
                 awaken_worker::relay_hand_executor_factory(),
@@ -847,7 +848,7 @@ pub async fn build_acp_container_router() -> Router {
     let host_publication = publication.clone();
     let platform = resource_host_with_deployment(model, "awaken", deployment)
         .await
-        .map_host_async(|host| async move {
+        .map_dependencies_async(|host| async move {
             awaken_execution_composition::with_acp_launch_source(
                 host.with_agent_publications(host_publication),
                 awaken_worker::relay_hand_executor_factory(),

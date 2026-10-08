@@ -13,7 +13,8 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_coordinator::{HostResume, ManagedHost, SharedHost};
 use awaken_scenario_host::{
-    CustomToolModel, build_unmounted_host, build_unmounted_host_with_deployment,
+    CustomToolModel, HostDependencies, build_unmounted_dependencies,
+    build_unmounted_dependencies_with_deployment,
 };
 
 fn user(id: &str, text: &str) -> Message {
@@ -31,9 +32,11 @@ fn text_of(message: &Message) -> String {
         .collect()
 }
 
-fn host_with_client_tool(host: SharedHost) -> Arc<SharedHost> {
+fn host_with_client_tool(dependencies: HostDependencies) -> Arc<SharedHost> {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
-    let host = Arc::new(host.with_client_tools(client_tools));
+    let host = Arc::new(SharedHost::from(
+        dependencies.with_client_tools(client_tools),
+    ));
     let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     host
 }
@@ -50,15 +53,12 @@ async fn host_over(dir: &std::path::Path, process: &str) -> Arc<SharedHost> {
     let mut worker_deployment = awaken_session_executor::DeploymentConfig::ephemeral();
     worker_deployment.sandbox_dir = Some(dir.join(format!("sandbox-{process}")));
     host_with_client_tool(
-        Arc::into_inner(
-            build_unmounted_host_with_deployment(
-                Arc::new(CustomToolModel),
-                "custom",
-                worker_deployment,
-            )
-            .await,
+        build_unmounted_dependencies_with_deployment(
+            Arc::new(CustomToolModel),
+            "custom",
+            worker_deployment,
         )
-        .expect("unmounted scenario host has one owner")
+        .await
         .with_runtime_authority(authority),
     )
 }
@@ -179,8 +179,7 @@ async fn in_memory_host_does_not_recover_an_awaiting_run_across_a_rebuild() {
     {
         let host = host_with_client_tool(
             awaken_runtime_host_testkit::with_volatile_runtime_authority(
-                Arc::into_inner(build_unmounted_host(Arc::new(CustomToolModel), "custom").await)
-                    .expect("unmounted scenario host has one owner"),
+                build_unmounted_dependencies(Arc::new(CustomToolModel), "custom").await,
             ),
         );
         host.run(None, thread, vec![user("u1", "hi")])
@@ -191,8 +190,7 @@ async fn in_memory_host_does_not_recover_an_awaiting_run_across_a_rebuild() {
 
     let host = host_with_client_tool(
         awaken_runtime_host_testkit::with_volatile_runtime_authority(
-            Arc::into_inner(build_unmounted_host(Arc::new(CustomToolModel), "custom").await)
-                .expect("unmounted scenario host has one owner"),
+            build_unmounted_dependencies(Arc::new(CustomToolModel), "custom").await,
         ),
     );
     assert!(
