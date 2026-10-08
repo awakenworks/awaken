@@ -14,6 +14,7 @@ import argparse
 import re
 import sys
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 import _arch_fitness
@@ -185,11 +186,12 @@ def _patterns(words: set[str] | dict[str, str], *, ignore_case: bool = False) ->
     return {word: re.compile(rf"\b{re.escape(word)}\b", flags) for word in words}
 
 
-def _rust_use_imports(content: str) -> list[tuple[bool, tuple[str, ...], str, bool]]:
+@lru_cache(maxsize=128)
+def _rust_use_imports(content: str) -> tuple[tuple[bool, tuple[str, ...], str, bool], ...]:
     """Return public flag, source path, local name, and rename flag for Rust use trees."""
     content = _crate_boundary_workspace.rust_syntax(content)
     statements = re.compile(
-        r"(?ms)^\s*(?P<visibility>pub(?:\([^)]*\))?\s+)?use\s+(?P<tree>[^;]+);"
+        r"(?ms)^[^\S\r\n]*(?P<visibility>pub(?:\([^)]*\))?\s+)?use\s+(?P<tree>[^;]+);"
     )
     token_pattern = re.compile(r"::|[A-Za-z_][A-Za-z0-9_]*|\{|\}|,|\*")
     imports: list[tuple[bool, tuple[str, ...], str, bool]] = []
@@ -244,13 +246,13 @@ def _rust_use_imports(content: str) -> list[tuple[bool, tuple[str, ...], str, bo
                 statement.group("visibility") is not None,
             )
             position = next_position if next_position > position else position + 1
-    return imports
+    return tuple(imports)
 
 
 def _declares_alias(content: str, alias: str) -> bool:
     content = _crate_boundary_workspace.rust_syntax(content)
     declaration = re.compile(
-        rf"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?"
+        rf"(?m)^[^\S\r\n]*(?:pub(?:\([^)]*\))?\s+)?"
         rf"(?:(?:async|unsafe|const)\s+)*"
         rf"(?:struct|enum|type|trait|const|static|fn)\s+{re.escape(alias)}\b"
     )
@@ -416,6 +418,14 @@ def selftest_builtin_tool_ownership() -> None:
     ):
         assert _forbidden_builtin_source_errors(rel, forbidden), f"S2/E2: {forbidden}"
     neutral_rel = Path("crates/contract/awaken-runtime-contract/src/example.rs")
+    # Projections leave blank lines. A line's indentation must not repeatedly
+    # scan all later blank lines; multiline visibility/use trees still parse.
+    projected_prefix = " \t\n" * 1000
+    assert _rust_use_imports(projected_prefix + "pub\nuse compat::{Bash as Shell};") == (
+        (True, ("compat", "Bash"), "Shell", True),
+    )
+    assert _declares_alias(projected_prefix + "pub\nstruct Bash;", "Bash")
+    assert not _declares_alias(projected_prefix + "enum Mode { Bash }", "Bash")
     assert not _forbidden_neutral_symbol_errors(
         neutral_rel,
         "use std::{io::Read, fmt::Write}; use {std::io::Write};",

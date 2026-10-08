@@ -89,6 +89,24 @@ initialize_timing_file
 # Groups whose external tools have already been decided this run.
 declare -A prechecked=()
 
+source scripts/ci/_parallel_checks.sh
+parallel_log_directory=$(mktemp -d "$(dirname "$timing_file")/static-checks.XXXXXX") || exit 1
+parallel_checks_init "${AWAKEN_STATIC_JOBS:-1}" "$parallel_log_directory" || {
+  echo "invalid static check concurrency/budget" >&2; exit 2;
+}
+trap 'parallel_checks_cancel; exit 130' INT
+trap 'parallel_checks_cancel; exit 143' TERM
+parallel_checks_result() {
+  local label="$1" status="$2" duration="$3" command="$4" log="$5" outcome=passed
+  echo "-> $label (${duration}s)"
+  cat "$log"
+  if [ "$status" -ne 0 ]; then
+    outcome=failed; failed+=("$label"); repro+=("$command")
+  fi
+  initialize_timing_file
+  printf 'static\t%s\t%s\t%s\n' "$label" "$outcome" "$duration" >> "$timing_file"
+}
+
 # A group's first check decides that group's environment first. Every external
 # tool a group needs is declared in scripts/ci/gate_tools.json, and an absent one
 # is reported as an absent tool here — never later, inside the check, wearing the
@@ -108,10 +126,17 @@ precheck_group() {
 # a reproduce command. Never aborts early, so one run surfaces every failure.
 run() {
   local group="$1" label="$2" started duration status; shift 2
+  # Finish every admitted static check before a dependent group or receipt.
+  [ "$group" = static ] || parallel_checks_drain
   if [ "$requested_group" != all ] && [ "$requested_group" != "$group" ]; then
     return 0
   fi
   precheck_group "$group"
+  if [ "$group" = static ] && [ "${1:-}" = python3 ]; then
+    parallel_checks_submit "$label" "$@"
+    return 0
+  fi
+  parallel_checks_drain
   echo "-> $label"
   started=$SECONDS
   if ! "$@"; then
@@ -139,6 +164,9 @@ run static "test-orchestration self-test" python3 scripts/ci/check_test_orchestr
 run static "test-orchestration" python3 scripts/ci/check_test_orchestration.py
 run static "required Rust execution self-test" python3 scripts/ci/check_rust_test_execution.py --self-test
 run static "affected Rust plan self-test" python3 scripts/ci/rust_test_plan.py --self-test
+run static "parallel static check tests" python3 scripts/ci/test_parallel_checks.py
+run static "combined coverage gate tests" python3 scripts/ci/test_combined_coverage.py
+run static "unit-test CLI decision table" python3 scripts/ci/test_strict_unittest.py
 run static "formal-product-ledger" python3 scripts/ci/check_feature_coverage.py --require-complete
 run static "managed-wire-naming self-test" python3 scripts/ci/check_managed_wire_naming.py --self-test
 run static "managed-wire-naming" python3 scripts/ci/check_managed_wire_naming.py
@@ -166,6 +194,7 @@ run static "contract-shape self-test" python3 scripts/ci/check_contract_shape.py
 run static "contract-shape" python3 scripts/ci/check_contract_shape.py
 run static "coverage checker tests" python3 scripts/ci/test_changed_e2e_line_coverage.py
 run static "LCOV export tests" python3 scripts/ci/test_export_homogeneous_lcov.py
+run static "per-crate coverage tests" python3 scripts/ci/test_coverage_summary.py
 run static "provider-environment self-test" scripts/ci/_provider_environment.sh --self-test
 # The runner below imports e2e/node_modules. Report an uninstalled root as an
 # uninstalled root: its absence otherwise surfaces as ERR_MODULE_NOT_FOUND,
@@ -272,6 +301,8 @@ run frontend "browser-e2e" pnpm -C web test:e2e
 run e2e "deterministic-e2e" scripts/ci/e2e-coverage.sh
 run e2e "latest-managed-sdk" npm --prefix e2e run test:sdk-latest-canary
 run sandbox "sandbox-capabilities" scripts/e2e/sandbox_capability_suite.sh --require-substrates
+
+parallel_checks_drain
 
 if [ "${#failed[@]}" -ne 0 ]; then
   {

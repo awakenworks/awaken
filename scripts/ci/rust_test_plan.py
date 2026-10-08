@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -59,7 +60,27 @@ def git_output(*arguments: str) -> bytes:
     return subprocess.check_output(["git", "-C", str(ROOT), *arguments])
 
 
+def source_digest(revision: bytes, patch: bytes, untracked: dict[str, bytes]) -> str:
+    digest = hashlib.sha256()
+    for value in (revision, patch, *(part for name, data in sorted(untracked.items()) for part in (name.encode(), data))):
+        digest.update(len(value).to_bytes(8, "big"))
+        digest.update(value)
+    return digest.hexdigest()
+
+
+def source_snapshot() -> tuple[str, bytes]:
+    patch = git_output("diff", "--binary", "HEAD", "--")
+    paths = git_output("ls-files", "--others", "--exclude-standard", "-z").decode().split("\0")
+    untracked = {name: (ROOT / name).read_bytes() for name in paths if name}
+    return source_digest(git_output("rev-parse", "HEAD"), patch, untracked), patch
+
+
 class PlanTests(unittest.TestCase):
+    def test_receipt_identity_includes_untracked_bytes_and_boundaries(self) -> None:
+        expected = source_digest(b"revision", b"patch", {"a": b"bc"})
+        for revision, patch, files in ((b"other", b"patch", {"a": b"bc"}), (b"revision", b"changed", {"a": b"bc"}), (b"revision", b"patch", {"a": b"different"}), (b"revision", b"patch", {"ab": b"c"})):
+            self.assertNotEqual(expected, source_digest(revision, patch, files))
+        self.assertEqual(source_digest(b"r", b"p", {"b": b"2", "a": b"1"}), source_digest(b"r", b"p", {"a": b"1", "b": b"2"}))
     def test_shared_profile_names_declared_workspace_features(self) -> None:
         manifests = {tomllib.loads(path.read_text(encoding="utf-8"))["package"]["name"]: path for path in ROOT.glob("crates/*/*/Cargo.toml")}
         for feature in workspace_features().split(","):
@@ -90,12 +111,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--features", action="store_true")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--source-digest", action="store_true")
     parser.add_argument("--base")
     parser.add_argument("--run", action="store_true")
     args = parser.parse_args()
-    if args.features or args.self_test:
-        if args.base or args.run or (args.features and args.self_test):
-            parser.error("--features and --self-test are standalone modes")
+    if args.features or args.self_test or args.source_digest:
+        if args.base or args.run or sum((args.features, args.self_test, args.source_digest)) != 1:
+            parser.error("--features, --source-digest and --self-test are standalone modes")
+        if args.source_digest:
+            print(source_snapshot()[0])
+            return 0
         if args.features:
             print(workspace_features())
             return 0
@@ -107,6 +132,7 @@ def main() -> int:
     features = workspace_features()
     environment = dict(os.environ)
     environment.setdefault("CARGO_TARGET_DIR", str(ROOT / "target"))
+    environment["CARGO_BUILD_BUILD_DIR"] = environment["CARGO_TARGET_DIR"]
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--format-version", "1", "--features", features], cwd=ROOT, env=environment))
     selected, reason = affected_packages(metadata, changed)
     command = ["cargo", "nextest", "run", "--workspace", "--locked", "--features", features]
@@ -119,10 +145,16 @@ def main() -> int:
     directory = Path(environment["CARGO_TARGET_DIR"]) / "test-timings"
     directory.mkdir(parents=True, exist_ok=True)
     receipt = directory / f"affected-{time.time_ns()}.json"
-    receipt.with_suffix(".patch").write_bytes(git_output("diff", "--binary", "HEAD", "--"))
+    fingerprint, patch = source_snapshot()
+    plan["source_digest"] = fingerprint
+    receipt.with_suffix(".patch").write_bytes(patch)
     started = time.monotonic()
     status = subprocess.run(command, cwd=ROOT, env=environment).returncode
-    plan.update(exit_code=status, duration_seconds=time.monotonic() - started)
+    unchanged = source_snapshot()[0] == fingerprint
+    if not unchanged:
+        print("Source changed during affected execution; result cannot qualify this tree", file=sys.stderr)
+        status = status or 1
+    plan.update(exit_code=status, source_unchanged=unchanged, duration_seconds=time.monotonic() - started)
     receipt.write_text(json.dumps(plan, indent=2), encoding="utf-8")
     print(f"Affected execution evidence: {receipt}")
     return status
