@@ -255,6 +255,36 @@ pub(crate) async fn drain_application_access_retention(
     Ok(total)
 }
 
+/// Schedule the exact Deployment and Dream applications mounted by this component.
+fn register_deployment_dream_scheduler(
+    lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+    deployments: Arc<DeploymentApplication>,
+    dreams: Arc<awaken_dream_application::DreamApplication>,
+    clock: Arc<dyn awaken_time::WallClock>,
+) {
+    lifecycle.spawn(
+        "coordinator-deployment-dream-scheduler",
+        move |cancel| async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
+                let now_ms = awaken_time::WallClockExt::now_ms(&*clock);
+                if let Err(error) = deployments.tick_and_launch(now_ms).await {
+                    eprintln!("scheduled Deployment tick failed: {error}");
+                }
+                if let Err(error) = dreams.tick_policies(now_ms).await {
+                    eprintln!("scheduled Dream policy tick failed: {error}");
+                }
+            }
+            Ok(())
+        },
+    );
+}
+
 /// Build the one authoritative Coordinator component.
 pub async fn build_coordinator_component(
     dependencies: CoordinatorDependencies,
@@ -422,28 +452,11 @@ async fn start_coordinator_services(
 
     // One timer drives the exact DeploymentApplication and DreamApplication mounted above;
     // no scheduler may reconstruct either aggregate beside this component.
-    let scheduled_deployments = deployment_application;
-    let scheduler_clock = clock;
-    service_lifecycle.spawn(
-        "coordinator-deployment-dream-scheduler",
-        move |cancel| async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tokio::select! {
-                    () = cancel.cancelled() => break,
-                    _ = interval.tick() => {}
-                }
-                let now_ms = awaken_time::WallClockExt::now_ms(&*scheduler_clock);
-                if let Err(error) = scheduled_deployments.tick_and_launch(now_ms).await {
-                    eprintln!("scheduled Deployment tick failed: {error}");
-                }
-                if let Err(error) = dream_application.tick_policies(now_ms).await {
-                    eprintln!("scheduled Dream policy tick failed: {error}");
-                }
-            }
-            Ok(())
-        },
+    register_deployment_dream_scheduler(
+        &service_lifecycle,
+        deployment_application,
+        dream_application,
+        clock,
     );
 }
 

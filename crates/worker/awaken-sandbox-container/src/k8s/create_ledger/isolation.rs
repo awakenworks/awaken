@@ -335,6 +335,24 @@ pub(super) async fn isolate_pod(
 
 mod non_pod;
 
+pub(crate) fn original_guard_release_required(
+    observed: Option<&Pod>,
+    release_original_guard: bool,
+) -> Result<bool, RuntimeError> {
+    let guarded = observed.is_some_and(|pod| {
+        pod.metadata
+            .finalizers
+            .as_ref()
+            .is_some_and(|values| values.iter().any(|value| value == ORIGINAL_GUARD_FINALIZER))
+    });
+    if guarded && !release_original_guard {
+        return Err(backend(
+            "brokered original Pod needs its durable handle before guard release",
+        ));
+    }
+    Ok(guarded)
+}
+
 pub(super) async fn isolate(
     client: &Client,
     ticket: &CreateTicket,

@@ -860,6 +860,37 @@ pub(super) fn bound_claim_uid(pod: &k8s_openapi::api::core::v1::Pod) -> Option<&
         .map(String::as_str)
 }
 
+pub(super) fn validated_bound_pod_claim_uid(
+    observed_pod: Option<&Pod>,
+    persisted_pod_uid: Option<&str>,
+    persisted_claim_uid: Option<&str>,
+) -> Result<Option<String>, RuntimeError> {
+    let pod_claim_uid = observed_pod.and_then(bound_claim_uid).map(str::to_owned);
+    match (observed_pod, persisted_pod_uid) {
+        (None, _) => {}
+        (Some(_), None) => {
+            return Err(backend(
+                "Kubernetes Sandbox deletion requires a persisted Pod UID",
+            ));
+        }
+        (Some(pod), Some(expected)) if pod.metadata.uid.as_deref() != Some(expected) => {
+            return Err(backend(
+                "Kubernetes Sandbox Pod incarnation changed before deletion",
+            ));
+        }
+        (Some(_), Some(_)) => {}
+    }
+    if persisted_pod_uid.is_some()
+        && observed_pod.is_some()
+        && persisted_claim_uid != pod_claim_uid.as_deref()
+    {
+        return Err(backend(
+            "Sandbox Pod continuation PVC differs from its persisted incarnation evidence",
+        ));
+    }
+    Ok(pod_claim_uid)
+}
+
 /// Select only the canonical continuation volume. Other PVC-backed Resource or
 /// Cache mounts are independent authorities and must never be mistaken for the
 /// mutable-filesystem continuation claim.
