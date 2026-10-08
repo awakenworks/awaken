@@ -171,8 +171,10 @@
     "awaken-session-execution-contract": {
       "depth": 8,
       "growth_reasons": {
-        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it; then: ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it"
-      }
+        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it; then: ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it",
+        "production_lines": "the Session's committed projection evidence (CommittedSessionFacts and its two cursor rules) moved here from awaken-managed-session-events beside the SessionProjectionSource port that reads it, so the Session no longer depends on a protocol crate"
+      },
+      "production_lines": 2078
     },
     "awaken-session-state-contract": {
       "depth": 6,

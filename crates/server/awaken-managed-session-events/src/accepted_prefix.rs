@@ -22,11 +22,10 @@ use awaken_agent_contract::{
     RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind, ThreadDisposition,
 };
 use awaken_session_application_contract::Pending;
-use awaken_session_execution_contract::CoordinatedThreadLink;
+use awaken_session_execution_contract::{CoordinatedThreadLink, ProjectionThreadSnapshots};
 
 use crate::{
-    AcceptanceFence, LifecycleAcceptance, ProjectionError, ProjectionThreadSnapshots,
-    accept_lifecycle, audited_await_targets,
+    AcceptanceFence, LifecycleAcceptance, ProjectionError, accept_lifecycle, audited_await_targets,
 };
 
 /// Resolve the one current Run carried by a recovery prefix through the

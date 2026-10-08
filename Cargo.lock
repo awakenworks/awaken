@@ -2822,7 +2822,6 @@ dependencies = [
  "awaken-executable-environment-contract",
  "awaken-lease-contract",
  "awaken-lease-testkit",
- "awaken-managed-session-events",
  "awaken-provisioning-contract",
  "awaken-reliability-testkit",
  "awaken-resource-contract",

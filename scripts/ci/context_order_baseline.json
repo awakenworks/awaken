@@ -14,7 +14,6 @@
     "awaken-session-application -> awaken-environment-contract": "W7: the Session names environments through identity and reference values a small environment contract provides",
     "awaken-session-application -> awaken-executable-agent-contract": "agent_config moves to executable-agent-contract (plan 9.9); the Session reads the published agent snapshot only",
     "awaken-session-application -> awaken-executable-environment-contract": "W7: the Session names environments through identity and reference values a small environment contract provides",
-    "awaken-session-application -> awaken-managed-session-events": "W13 step 2: the evidence interface moves into session-application-contract",
     "awaken-session-application -> awaken-provisioning-contract": "W7: the Session names environments through identity and reference values a small environment contract provides",
     "awaken-session-application -> awaken-resource-contract": "resource reference values the Session reads move into its own resource contract; resource-contract keeps the store ports",
     "awaken-session-application -> awaken-dispatch-contract": "S3: Session-specific remote ports and work-item language leave dispatch",

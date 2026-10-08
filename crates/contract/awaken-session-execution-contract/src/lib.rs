@@ -65,13 +65,15 @@ pub use run_admission::{
     session_run_id,
 };
 pub use session::{
-    BudgetRuntime, CapabilityRuntime, CommittedOutcomeProjection, CompleteSessionRuntime,
-    CoordinationRuntime, EnvironmentRuntime, LiveInboxApplication, LiveInboxApplicationError,
-    LiveInboxEntry, LiveInboxError, LiveInboxRuntime, LiveInboxSnapshot, McpAttachmentRealizer,
-    NeutralRuntime, OutcomeDrive, OutcomeFailure, OutcomeIteration, OutcomeReport, OutcomeRuntime,
-    RealizationRuntime, SessionEnvironmentBindingSink, SessionProjectionSource, SessionRuntime,
-    SessionThreadLiveSubscription, StreamingRunRuntime, TerminalCleanupRuntime, ThreadReadRuntime,
-    ToolPermissionDecision, drain_mcp_generation_receipt, publish_mcp_generation_receipt,
+    BudgetRuntime, CapabilityRuntime, CommittedEvidenceError, CommittedOutcomeProjection,
+    CommittedSessionFacts, CompleteSessionRuntime, CoordinationRuntime, EnvironmentRuntime,
+    LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
+    LiveInboxRuntime, LiveInboxSnapshot, McpAttachmentRealizer, NeutralRuntime, OutcomeDrive,
+    OutcomeFailure, OutcomeIteration, OutcomeReport, OutcomeRuntime, ProjectionThreadSnapshots,
+    RealizationRuntime, SessionEnvironmentBindingSink, SessionProjectionReadTimings,
+    SessionProjectionSource, SessionRuntime, SessionThreadLiveSubscription, StreamingRunRuntime,
+    TerminalCleanupRuntime, ThreadReadRuntime, ToolPermissionDecision, committed_lifecycle_prefix,
+    drain_mcp_generation_receipt, outcome_terminal_commit_cursor, publish_mcp_generation_receipt,
 };
 
 #[doc(hidden)]
