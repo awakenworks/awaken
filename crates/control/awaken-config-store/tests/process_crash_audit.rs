@@ -13,13 +13,24 @@ const CHILD_MODE: &str = "AWAKEN_AUDIT_CRASH_CHILD";
 const DB_PATH: &str = "AWAKEN_AUDIT_CRASH_DB";
 const MARKER_PATH: &str = "AWAKEN_AUDIT_CRASH_MARKER";
 
+async fn store(path: &str) -> Box<dyn ScopedConfigRegistry> {
+    if let Some(pool) = awaken_reliability_testkit::postgres_crash_pool(path).await {
+        return Box::new(
+            awaken_config_store::PostgresConfigStore::with_pool(pool)
+                .await
+                .unwrap(),
+        );
+    }
+    Box::new(SqliteConfigStore::open(path).await.unwrap())
+}
+
 #[tokio::test]
 async fn durable_audit_survives_process_kill_before_business_commit() {
     // Causes: C1 the mutually exclusive child phase acknowledges a durable
     // pending intent before business, or C2 it acknowledges the atomic audited
     // config/effect commit; C3 CrashProcess then kills that separate process;
     // C4 retry uses the exact identity/payload; C5 retry changes the payload;
-    // C6 the same identity exists in another scope. Effects: E1 fresh SQLite
+    // C6 the same identity exists in another scope. Effects: E1 fresh SQLite/PG
     // reopen sees pending+no config/effect after C1, or E2 committed+revision 1
     // +one effect after C2; E3 an exact pending retry applies once and later
     // exact retries replay, while committed retries only replay; E4 changed
@@ -44,9 +55,7 @@ async fn durable_audit_survives_process_kill_before_business_commit() {
         },
     };
     if let Ok(phase) = std::env::var(CHILD_MODE) {
-        let store = SqliteConfigStore::open(&std::env::var(DB_PATH).unwrap())
-            .await
-            .unwrap();
+        let store = store(&std::env::var(DB_PATH).unwrap()).await;
         for target in [&scope, &other] {
             assert_eq!(
                 store
@@ -77,13 +86,9 @@ async fn durable_audit_survives_process_kill_before_business_commit() {
     }
 
     for committed in [false, true] {
-        let root = std::env::temp_dir().join(format!(
-            "awaken-audit-crash-{}-{committed}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let db = root.join("config.db");
-        let marker = root.join("marker");
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("config.db");
+        let marker = root.path().join("marker");
         let status = CrashProcess::new(
             "durable_audit_survives_process_kill_before_business_commit",
             &marker,
@@ -94,7 +99,7 @@ async fn durable_audit_survives_process_kill_before_business_commit() {
         .run()
         .expect("child reaches the durable boundary and is killed");
         assert!(!status.success());
-        let store = SqliteConfigStore::open(db.to_str().unwrap()).await.unwrap();
+        let store = store(db.to_str().unwrap()).await;
         let entry = store
             .get_management_audit_scoped(&scope, &audit().tool, &audit().call_id)
             .await
@@ -202,7 +207,6 @@ async fn durable_audit_survives_process_kill_before_business_commit() {
                 .is_empty()
         );
         drop(store);
-        std::fs::remove_dir_all(root).unwrap();
     }
 }
 

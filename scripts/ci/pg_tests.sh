@@ -23,6 +23,7 @@ source scripts/ci/_cargo_target.sh
 awaken_configure_cargo_target "$PWD"
 source scripts/ci/_postgres_recovery_root.sh
 source scripts/ci/_deadline.sh
+source scripts/ci/_rust_test_execution.sh
 
 require_docker=0
 RECOVERY_PARENT=$(postgres_recovery_parent) || exit 2
@@ -70,6 +71,13 @@ pg_run_with_deadline() {
 
 pg_test() {
   pg_run_with_deadline "test:${4:-command}" "$PG_TEST_TIMEOUT_SECONDS" "$@"
+}
+
+pg_required_test() {
+  local remaining=$((PG_GATE_BUDGET_SECONDS - SECONDS + PG_GATE_STARTED))
+  [ "$remaining" -gt 0 ] || { echo "PostgreSQL gate budget exhausted before required tests" >&2; return 124; }
+  [ "$remaining" -le "$PG_TEST_TIMEOUT_SECONDS" ] || remaining=$PG_TEST_TIMEOUT_SECONDS
+  AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="$remaining" run_required_rust_tests "$@"
 }
 
 published_port() {
@@ -558,6 +566,9 @@ pg_test cargo test -p awaken-cli --lib installation_binding::tests::postgres_pre
 pg_test cargo test -p awaken-cli --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling -- --ignored --test-threads=1 --exact || record_failure "$?"
 pg_test cargo test -p awaken-coordinator application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact || record_failure "$?"
 pg_test cargo test -p awaken-config-store --features test-support --test postgres || record_failure "$?"
+AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-config-store --locked --test process_crash_audit || record_failure "$?"
+AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-session-store --locked --test process_crash_outbox || record_failure "$?"
+AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-credential-store --locked --features postgres,sqlite,sealed-aead,test-support --test process_crash_creation --test process_crash_managed_creation || record_failure "$?"
 pg_test cargo test -p awaken-admin-config-api --features postgres --test postgres_store || record_failure "$?"
 pg_test cargo test -p awaken-store-postgres --test postgres_live || record_failure "$?"
 pg_test cargo test -p awaken-model-catalog-store --features postgres,test-support --test repo_conformance || record_failure "$?"

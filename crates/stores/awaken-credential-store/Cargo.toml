@@ -32,7 +32,7 @@ awaken-sqlite-pool = { workspace = true, optional = true }
 [dev-dependencies]
 awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true
-awaken-reliability-testkit.workspace = true
+awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 awaken-credential-vault = { workspace = true, features = ["test-support", "oauth-command"] }
 awaken-time.workspace = true
 awaken-lease-contract.workspace = true

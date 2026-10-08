@@ -81,7 +81,7 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
                 environment = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", CASE=case, CALL_LOG=str(fixture / "calls"), CARGO_TARGET_DIR=str(fixture / "target"))
                 result = subprocess.run(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical -- --exact"], cwd=fixture, env=environment, capture_output=True, text=True, timeout=15)
                 self.assertEqual(result.returncode == 0, case == "passing", result.stdout + result.stderr)
-                self.assertEqual((fixture / "calls").read_text().splitlines(), ["test -p critical --lib critical -- --exact --list", "test -p critical --lib critical -- --exact --show-output"])
+                self.assertEqual((fixture / "calls").read_text().splitlines(), ["test --locked -p critical --lib critical -- --exact --list", "test --locked -p critical --lib critical -- --exact --show-output"])
 
     def test_selection_and_execution_decision_table(self) -> None:
         # R1 selected identities + actual successes => pass. R2 zero/renamed/

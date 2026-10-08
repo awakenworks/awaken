@@ -8,6 +8,11 @@
 mod fixture;
 pub use fixture::postgres_fixture_url;
 
+#[cfg(feature = "postgres")]
+mod postgres_crash;
+#[cfg(feature = "postgres")]
+pub use postgres_crash::postgres_crash_pool;
+
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
