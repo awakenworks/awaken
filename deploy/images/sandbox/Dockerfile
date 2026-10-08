@@ -51,9 +51,9 @@ COPY --from=ruby-toolchain /usr/local/ /usr/local/
 COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
 COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
 
-# Bootstrap verified HTTPS from the already pinned Node toolchain; the minimal
+# Bootstrap verified HTTPS from the already pinned Rust toolchain; the minimal
 # Ubuntu base has no CA bundle until its first package installation completes.
-COPY --from=node-toolchain /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=rust-toolchain /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 # Agent tooling most CLIs assume on PATH (curl for service readiness, git for
 # repo work, rg for search), plus the six package-manager runtimes supported by

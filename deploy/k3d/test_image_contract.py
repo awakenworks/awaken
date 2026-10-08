@@ -60,13 +60,13 @@ def main() -> None:
         assert "--chmod=0755" in copies[0].split(), image_path
     # TLS bootstrap decision table: C1 the pinned minimal Ubuntu base lacks
     # CA roots; C2 its two official APT URIs use HTTP; C3 an index download fails.
-    # T1 C1+C2 -> bootstrap the pinned Node CA bundle, change transport to HTTPS
+    # T1 C1+C2 -> bootstrap the pinned Rust CA bundle, change transport to HTTPS
     # before update, and keep Ubuntu's existing signed repository identity.
     # T2 C3 -> fail update before installation, never reuse incomplete indexes.
     # The real canonical image build supplies network/TLS acceptance. These
     # static mutants reject each missing boundary without a second source list.
     sandbox_source = (Path(__file__).parent.parent / "images" / "sandbox" / "Dockerfile").read_text()
-    ca_copy = "COPY --from=node-toolchain /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt"
+    ca_copy = "COPY --from=rust-toolchain /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt"
     https_sources = "sed -i 's#^URIs: http://#URIs: https://#' /etc/apt/sources.list.d/ubuntu.sources"
     strict_update = "apt-get -o APT::Update::Error-Mode=any update"
 
