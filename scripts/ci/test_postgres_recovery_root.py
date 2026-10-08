@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import _strict_unittest as strict_unittest
 
 
 DRILL = Path(__file__).resolve().with_name("postgres_recovery_drill.sh")
@@ -251,4 +252,4 @@ class RecoveryRootTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    strict_unittest.main()

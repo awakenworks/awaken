@@ -70,6 +70,8 @@ jobs:
           if-no-files-found: error
 
   full_quality:
+    env:
+      AWAKEN_STATIC_JOBS: "4"
     # The strict sandbox group requires Docker, unprivileged user namespaces,
     # /dev/fuse, k3d and kubectl. A named runner contract makes missing
     # substrates a scheduling failure instead of a successful test skip.
