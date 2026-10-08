@@ -5,7 +5,13 @@
 
 use super::*;
 
-use awaken_time::WallClockExt as _;
+mod local_execution;
+mod reclamation;
+mod startup;
+mod surfaces;
+
+#[cfg(test)]
+mod tests;
 
 pub(super) async fn prepare_runtime_routers(
     stores: ProcessStores,
@@ -21,23 +27,19 @@ pub(super) async fn prepare_runtime_routers(
     // serves external-CLI sessions.
     customize_host: Option<Box<dyn FnOnce(SharedHost) -> SharedHost + Send>>,
 ) -> Result<ProcessRouters, String> {
+    let startup::RuntimeStartup {
+        process,
+        worker_directory,
+        worker_observation_wiring,
+        worker_transport,
+        executable_agent_wiring,
+        executable_environment_wiring,
+        enrollment_signing_key,
+    } = startup::prepare(&stores, process)?;
     let role = process.role;
-    debug_assert!(matches!(
-        role,
-        config::Role::AllInOne | config::Role::Coordinator
-    ));
-    let worker_directory = process
-        .worker_directory
-        .expect("runtime process requires an explicit WorkerDirectory");
     let runtime_authority = process.runtime_authority;
-    let worker_observation_wiring = process
-        .worker_observations
-        .expect("runtime process requires explicit Worker observation wiring");
     let worker_observations = worker_observation_wiring.source;
     let worker_observation_private_router = worker_observation_wiring.private_router;
-    let worker_transport = process
-        .worker_transport
-        .expect("runtime process requires an explicitly selected Worker transport");
     let worker_authenticator = worker_transport.authenticator();
     let worker_execution_bindings = worker_transport.binding_source();
     let worker_execution_stops = worker_transport.stop_source();
@@ -52,7 +54,7 @@ pub(super) async fn prepare_runtime_routers(
         _remote_coordinator_content_eraser,
         _remote_credential_rollout_target,
         coordinator_service_authenticator,
-    ) = executable_agent_registration::process_parts(process.executable_agent_wiring);
+    ) = executable_agent_registration::process_parts(Some(executable_agent_wiring));
     let content_capture_ceiling = process.content_capture_ceiling;
     let namespace_hand_path = process.namespace_hand_path;
     let deployment = process.deployment;
@@ -88,17 +90,6 @@ pub(super) async fn prepare_runtime_routers(
     let injected_brokered_catalog = process.brokered_catalog.clone();
     let cloud_login = process.cloud_login.clone();
     let org_id = process.org_id.unwrap_or_else(local_org_id);
-    let enrollment_signing_key = match (role, process.enrollment_signing_key) {
-        (config::Role::AllInOne, Some(key)) => key,
-        #[cfg(any(test, feature = "test-support"))]
-        (config::Role::AllInOne, None) => [0xA5; 32],
-        #[cfg(not(any(test, feature = "test-support")))]
-        (config::Role::AllInOne, None) => {
-            panic!("AllInOne requires a derived enrollment signing key")
-        }
-        (config::Role::Coordinator, _) => [0; 32],
-        _ => unreachable!(),
-    };
     let managed_rate_limiter = process
         .managed_services
         .request_limiter
@@ -131,9 +122,6 @@ pub(super) async fn prepare_runtime_routers(
     .map_err(|error| format!("restore Deployment state: {error}"))?;
     let agent_archive_cascade =
         deployment_application.clone() as Arc<dyn awaken_deployment_contract::AgentArchiveCascade>;
-    let executable_environment_wiring = executable_environment_registration::require_process_wiring(
-        process.executable_environment_wiring,
-    );
     let executable_environment_catalog = executable_environment_wiring.catalog;
     let executable_environment_registrar = executable_environment_wiring.registrar;
     let executable_environment_projection_refresher =
@@ -609,44 +597,13 @@ pub(super) async fn prepare_runtime_routers(
     if let Some(materializer) = model_wiring.materializer {
         host_builder = host_builder.with_inference_materializer(materializer);
     }
-    // Production ACP wiring (`acp:*` threads): only a process that owns the local
-    // claim pool realizes a Session Environment. A split Coordinator admits and
-    // projects Sessions to registered Workers; probing or constructing another
-    // sandbox here would create a second physical-effect owner.
-    let host_builder = if session_execution_placement
-        == awaken_session_application::SessionExecutionPlacement::LocalWorker
-    {
-        let hand_factory = awaken_worker::relay_hand_executor_factory();
-        let containers = awaken_execution_composition::ContainerTierPolicy::default();
-        let host_builder = match namespace_hand_path {
-            Some(path) => {
-                awaken_execution_composition::with_session_environment_from_deployment_at(
-                    host_builder,
-                    Some(hand_factory),
-                    path,
-                    &containers,
-                )
-                .await?
-            }
-            None => {
-                awaken_execution_composition::with_session_environment_from_deployment(
-                    host_builder,
-                    Some(hand_factory),
-                    &containers,
-                )
-                .await?
-            }
-        };
-        awaken_execution_composition::with_acp_from_deployment(
-            host_builder,
-            credential_materializer.clone(),
-            None,
-        )
-    } else {
-        // Coordinator-only placement still projects ACP Session tools. Give it
-        // the existing catalog policy, never a second process/Hand executor.
-        host_builder.with_acp_projection_policy(awaken_run_executor_acp::acp_adapter_policy())
-    };
+    let host_builder = local_execution::prepare(
+        host_builder,
+        session_execution_placement,
+        namespace_hand_path,
+        credential_materializer.clone(),
+    )
+    .await?;
     // Last-mile backend wiring the standard process does not own, supplied
     // by the process startup (a scenario that serves external-CLI sessions).
     let host_builder = match customize_host {
@@ -654,28 +611,8 @@ pub(super) async fn prepare_runtime_routers(
         None => host_builder,
     };
     let host = Arc::new(host_builder);
-    // Auxiliary runs are not ordinary service loops: they finish the durable
-    // intent already admitted by a Session commit.  Still, their task/span
-    // lifetime belongs to this process.  Join them after shutdown cancellation
-    // and before the process-level observability provider is flushed; otherwise
-    // an in-flight extraction can be aborted with a committed Memory effect but
-    // an orphaned `runtime.run` span.  The outer ServiceLifecycle deadline is
-    // the shutdown authority, so this local bound is deliberately longer than
-    // the process's normal ten-second drain window.
-    let background_host = host.clone();
-    process
-        .service_lifecycle
-        .spawn("runtime-background-drain", move |cancel| async move {
-            cancel.cancelled().await;
-            if background_host
-                .drain_runtime(std::time::Duration::from_secs(30))
-                .await
-            {
-                Ok(())
-            } else {
-                Err("runtime background work exceeded its drain deadline".into())
-            }
-        });
+    // The canonical Coordinator component owns Runtime background drain.
+    // This process does not register a second drain for the same Host.
     let resource_reclaimer = Arc::new(
         awaken_resource_reclaimer::ResourceReclaimer::new(
             format!("awaken-resource-reclaimer:{}", std::process::id()),
@@ -693,34 +630,7 @@ pub(super) async fn prepare_runtime_routers(
             ),
         )),
     );
-    if let Ok(summary) = resource_reclaimer
-        .reconcile(resource_authorities.clock().now_ms(), 256)
-        .await
-        && summary.completed > 0
-    {
-        eprintln!("reclaimed {} durable resource(s)", summary.completed);
-    }
-    let recurring_resource_reclaimer = resource_reclaimer.clone();
     let reclamation_clock = resource_authorities.clock();
-    process
-        .service_lifecycle
-        .spawn("resources-reclamation", move |cancel| async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tokio::select! {
-                    () = cancel.cancelled() => break,
-                    _ = interval.tick() => {}
-                }
-                if let Err(error) = recurring_resource_reclaimer
-                    .reconcile(reclamation_clock.now_ms(), 256)
-                    .await
-                {
-                    eprintln!("resource reclamation retry remains pending: {error}");
-                }
-            }
-            Ok(())
-        });
     let repository_bindings = Arc::new(
         awaken_resource_application::RegistryRepositoryBindingVerifier::new(
             resource_registry.clone(),
@@ -896,48 +806,20 @@ pub(super) async fn prepare_runtime_routers(
     )
     .await
     .map_err(|error| format!("build Coordinator component: {error}"))?;
-    let coordinator_data = awaken_control::protect_runtime_protocol_routers(
-        coordinator.router,
-        coordinator.application_router,
-        deployment_iam.clone(),
-        deployment_remote_iam.clone(),
+    let surfaces::ProtectedSurfaces { data, private } = surfaces::protect(
+        coordinator,
+        deployment_iam,
+        deployment_remote_iam,
+        deployment_audit_plane,
+        managed_rate_limiter,
     );
-    let coordinator_management = awaken_protocol_managed::with_managed_response_context(
-        awaken_control::protect_management_router(
-            coordinator.management_router,
-            deployment_audit_plane.clone(),
-            deployment_iam.clone(),
-            deployment_remote_iam.clone(),
-            Some(managed_rate_limiter.clone()),
-        )
-        .layer(axum::middleware::from_fn_with_state(
-            coordinator.work_session_access.clone(),
-            awaken_protocol_managed::work_session_guard,
-        )),
-    );
-    let coordinator_managed = awaken_protocol_managed::with_managed_response_context(
-        awaken_control::protect_management_router(
-            coordinator.managed_router,
-            deployment_audit_plane,
-            deployment_iam,
-            deployment_remote_iam,
-            Some(managed_rate_limiter.clone()),
-        )
-        .layer(axum::middleware::from_fn_with_state(
-            coordinator.work_session_access,
-            awaken_protocol_managed::work_session_guard,
-        )),
-    );
-    let data = coordinator_data
-        .merge(coordinator_managed)
-        .merge(coordinator_management);
     let (flat, mcp_export) = match role {
         config::Role::AllInOne => (data.merge(control), mcp_export),
         config::Role::Coordinator => (data, Router::new()),
         config::Role::Control => unreachable!("Control returned before Coordinator process"),
         config::Role::Worker => unreachable!("Worker has its own process startup"),
     };
-    Ok(ProcessRouters::new(
+    let routers = ProcessRouters::new(
         process_surface::finish(
             flat,
             mcp_export,
@@ -945,11 +827,18 @@ pub(super) async fn prepare_runtime_routers(
             worker_observations,
             platform_workspace,
         ),
-        coordinator.private_router,
+        private,
         registration_supervisor,
         process.service_lifecycle,
         Some(event_batch_cutover_validation),
         admin_execs,
     )
-    .with_worker_authenticator(worker_authenticator))
+    .with_worker_authenticator(worker_authenticator);
+    reclamation::install(
+        &routers.service_lifecycle,
+        resource_reclaimer,
+        reclamation_clock,
+    )
+    .await;
+    Ok(routers)
 }

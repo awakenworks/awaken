@@ -184,6 +184,8 @@ serde_json.workspace = true
 sha2 = "0.10"
 
 [dev-dependencies]
+awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
+awaken-sqlite-pool.workspace = true
 awaken-container-contract.workspace = true
 sha2 = "0.10"
 awaken-ext-goal.workspace = true

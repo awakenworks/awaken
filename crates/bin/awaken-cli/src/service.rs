@@ -1290,7 +1290,16 @@ mod tests {
             "LM3/E3"
         );
 
-        std::fs::remove_file(data_dir.join("sessions.db")).unwrap();
+        let session_file = data_dir.join("sessions.db");
+        // awaken-wait: LM5 deletes the exact Session authority only after the
+        // dropped migration pool's last SQLite connection has closed. Windows
+        // refuses deletion while that handle remains open; no elapsed sleep or
+        // retry of the delete operation substitutes for the owned close fact.
+        let sqlite = awaken_sqlite_pool::EmbeddedSqlite::file(&session_file);
+        tokio::time::timeout(std::time::Duration::from_secs(10), sqlite.settled())
+            .await
+            .expect("LM5 migration's Session connection closed before deletion");
+        std::fs::remove_file(&session_file).unwrap();
         let deleted = DatabaseMigrateArgs {
             config_path: Some(config),
             ..Default::default()
