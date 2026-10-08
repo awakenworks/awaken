@@ -1134,28 +1134,34 @@ mod tests {
         // replacement; R10 all external strong owners drop -> SharedHost does
         // not retain the Session application. This prevents both a second Run
         // admission owner and an Arc ownership cycle.
-        let host = Arc::new(
-            crate::SharedHost::new(Arc::new(crate::NoModelConfiguredExecutor), "stub").await,
-        );
+        let host = Arc::new(crate::SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
+                .await,
+        ));
         let managed = crate::ManagedHost::new(host.clone());
         let application = Arc::new(RecordingAttentionApplication::accepting(0));
         let port: Arc<dyn SessionRunBackgroundApplication> = application.clone();
         managed
-            .install_session_background_run_application(Arc::downgrade(&port))
+            .host
+            .session_application_ports()
+            .background_runs
+            .bind(Arc::downgrade(&port))
             .expect("R8 first install");
         assert_eq!(
-            managed.install_session_background_run_application(Arc::downgrade(&port)),
-            Err(crate::SessionRunBackgroundInstallError::AlreadyInstalled),
+            managed
+                .host
+                .session_application_ports()
+                .background_runs
+                .bind(Arc::downgrade(&port)),
+            Err(crate::CyclicPortAlreadyBound),
             "R9 single assignment",
         );
         drop(application);
         drop(port);
         assert!(
-            host.dispatch
-                .session_background_runs
-                .read()
-                .expect("Session background Run application lock poisoned")
-                .as_ref()
+            host.session_application
+                .background_runs
+                .get()
                 .and_then(std::sync::Weak::upgrade)
                 .is_none(),
             "R10 weak ownership edge"

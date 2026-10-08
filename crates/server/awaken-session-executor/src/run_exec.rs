@@ -1042,7 +1042,7 @@ mod tests {
             .expect("claim artifact attempt")
             .expect("artifact attempt available");
         let expected_claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
-        let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test")
+        let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
             .await
             .with_dispatch_store(dispatch.clone());
         let claims = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1051,10 +1051,10 @@ mod tests {
             claims: claims.clone(),
             dispatch: dispatch.clone(),
         });
-        raw_host.session_slots.update(thread, |slot| {
+        let host = Arc::new(SharedHost::from(raw_host));
+        host.session_slots.update(thread, |slot| {
             slot.dispatch_claim = Some(expected_claim.clone());
         });
-        let host = Arc::new(raw_host);
         host.register_thread_workspace(thread, "workspace-a");
         let spec = crate::provisioning::agent_run_sandbox_spec(thread);
         assert_eq!(
@@ -1326,11 +1326,11 @@ mod tests {
         );
 
         let failed_storage = tempfile::tempdir().unwrap();
-        let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test").await;
+        let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await;
         raw_host.resources.file_application = None;
         raw_host.resources.artifact_publisher =
             Arc::new(awaken_resource_contract::UnavailableArtifactPublisher);
-        let failed_host = Arc::new(raw_host);
+        let failed_host = Arc::new(SharedHost::from(raw_host));
         failed_host.register_thread_workspace(thread, "workspace-a");
         let failed_environment = Arc::new(
             crate::session_environment::SandboxEnvironment::workdir(

@@ -32,51 +32,6 @@ impl ManagedHost {
         }
     }
 
-    /// Connect the fixed Runtime coordination tools to the canonical Session
-    /// application after composition has wrapped that application in an `Arc`.
-    /// The Host retains only a weak application port, avoiding an ownership
-    /// cycle (`SessionApplication -> ManagedHost -> SharedHost`).
-    pub fn install_agent_coordination_application(
-        &self,
-        application: std::sync::Weak<dyn awaken_session_execution_contract::SessionAgentCoordination>,
-    ) -> Result<(), AgentCoordinationInstallError> {
-        let mut installed = self
-            .host
-            .dispatch
-            .agent_coordination
-            .write()
-            .expect("Agent coordination application lock poisoned");
-        if installed.is_some() {
-            return Err(AgentCoordinationInstallError::AlreadyInstalled);
-        }
-        *installed = Some(application);
-        Ok(())
-    }
-
-    /// Connect BackgroundTask completion to the canonical Session Run
-    /// application after composition has wrapped that application in an `Arc`.
-    ///
-    /// This is an executable weak edge only. It owns no notification record,
-    /// BackgroundTask state, Run identity mapping, or retry ledger.
-    pub fn install_session_background_run_application(
-        &self,
-        application: std::sync::Weak<
-            dyn awaken_session_application_contract::SessionRunBackgroundApplication,
-        >,
-    ) -> Result<(), SessionRunBackgroundInstallError> {
-        let mut installed = self
-            .host
-            .dispatch
-            .session_background_runs
-            .write()
-            .expect("Session background Run application lock poisoned");
-        if installed.is_some() {
-            return Err(SessionRunBackgroundInstallError::AlreadyInstalled);
-        }
-        *installed = Some(application);
-        Ok(())
-    }
-
     /// Install the fully configured Managed adapter used by durable dispatch.
     ///
     /// Call this once at the process startup after all `with_*` configuration

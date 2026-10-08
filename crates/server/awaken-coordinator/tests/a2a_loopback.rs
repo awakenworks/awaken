@@ -30,7 +30,9 @@ use awaken_runtime_contract::{
     CredentialUsage,
 };
 use awaken_session_executor::ManagedHost;
-use awaken_scenario_host::{EchoModel, build_router, build_unmounted_host_with_agent_publications};
+use awaken_scenario_host::{
+    EchoModel, build_router, build_unmounted_dependencies_with_agent_publications,
+};
 use awaken_service_lifecycle::run_composed_async_test;
 use axum::Router;
 use axum::body::Body;
@@ -257,23 +259,20 @@ async fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("parent and delegated remote publications are valid");
-    let host = Arc::new(
-        Arc::into_inner(
-            build_unmounted_host_with_agent_publications(
-                Arc::new(NativeDelegatingModel),
-                "parent",
-                Arc::new(publications),
-            )
-            .await,
+    let host = Arc::new(SharedHost::from(
+        build_unmounted_dependencies_with_agent_publications(
+            Arc::new(NativeDelegatingModel),
+            "parent",
+            Arc::new(publications),
         )
-        .expect("unmounted scenario host has one owner")
+        .await
         .with_remote_attempt_executor(awaken_session_executor::RemoteAttemptInstallation {
             executor: Arc::new(A2aRunExecutor::new(Arc::new(FixedTransportResolver(
                 transport,
             )))),
             credential_realization: Default::default(),
         }),
-    );
+    ));
     let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     host
 }
@@ -309,18 +308,15 @@ async fn published_delegating_host(
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("authenticated parent and child publications are valid");
-    let host = Arc::new(
-        Arc::into_inner(
-            build_unmounted_host_with_agent_publications(
-                Arc::new(NativeDelegatingModel),
-                "parent",
-                Arc::new(publications),
-            )
-            .await,
+    let host = Arc::new(SharedHost::from(
+        build_unmounted_dependencies_with_agent_publications(
+            Arc::new(NativeDelegatingModel),
+            "parent",
+            Arc::new(publications),
         )
-        .expect("unmounted scenario host has one owner")
+        .await
         .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(materializer))),
-    );
+    ));
     let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     host
 }

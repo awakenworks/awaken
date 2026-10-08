@@ -48,7 +48,7 @@ use std::sync::Arc;
 use awaken_config_service::ManagementAuditPlane;
 use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_session_executor::{ManagedHost, SharedHost};
+use awaken_session_executor::{HostDependencies, ManagedHost, SharedHost};
 use awaken_session_mcp::ExtMcpProbe;
 use axum::Router;
 #[cfg(any(test, feature = "test-support"))]
@@ -340,7 +340,7 @@ async fn build_all_in_one_router_with_model_supply(
 /// `web_search_providers` is selected before Control and Host are assembled, so
 /// publication, capability discovery, and dispatch all receive the same registry.
 /// `customize_host` remains the last-mile seam for a runtime backend the standard
-/// product process does not provide, e.g. `host.with_acp(executor)` so `acp:*`
+/// product process does not provide, e.g. `dependencies.with_acp(executor)` so `acp:*`
 /// threads run on an external CLI while the full managed plane (vault + MCP staging +
 /// config plane) is still in play. Keeps the ACP executor's crate out of this module.
 #[cfg(any(test, feature = "test-support"))]
@@ -349,7 +349,7 @@ pub async fn build_all_in_one_router_with_host_customizer(
     binding: awaken_runtime_contract::resolved::ModelBinding,
     deployment: awaken_session_executor::DeploymentConfig,
     web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
-    customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
+    customize_host: impl FnOnce(HostDependencies) -> HostDependencies + Send + 'static,
 ) -> Router {
     let stores = in_memory_process_stores().await;
     let mut options = exact_host_model::local_test_process_options(&stores);
@@ -384,7 +384,7 @@ pub async fn build_durable_all_in_one_router_with_host_customizer(
     key: &[u8; 32],
     model: Arc<dyn LlmExecutor>,
     binding: awaken_runtime_contract::resolved::ModelBinding,
-    customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
+    customize_host: impl FnOnce(HostDependencies) -> HostDependencies + Send + 'static,
 ) -> Router {
     let stores = open_local_process_stores(dir, key)
         .await

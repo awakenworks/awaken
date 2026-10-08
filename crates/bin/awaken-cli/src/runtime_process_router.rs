@@ -5,6 +5,8 @@
 
 use super::*;
 
+use awaken_coordinator::{install_managed_agent_coordination, with_platform_memory_data_plane};
+
 mod local_execution;
 mod reclamation;
 mod startup;
@@ -25,7 +27,7 @@ pub(super) async fn prepare_runtime_routers(
     // does not own (e.g. an ACP executor for `acp:*` threads) without this
     // module naming that backend's crate. `None` in production; `Some` in a scenario that
     // serves external-CLI sessions.
-    customize_host: Option<Box<dyn FnOnce(SharedHost) -> SharedHost + Send>>,
+    customize_host: Option<Box<dyn FnOnce(HostDependencies) -> HostDependencies + Send>>,
 ) -> Result<ProcessRouters, String> {
     let startup::RuntimeStartup {
         process,
@@ -522,14 +524,13 @@ pub(super) async fn prepare_runtime_routers(
                 .webhooks
                 .clone(),
         };
-    // The data plane: the host runs the server model, resolves a session's agent to
-    // its installed config, and carries the management tool executables so the
-    // reserved-scope assistant can call them. It shares the SAME skill store and
-    // Resource Registry the capability inventory reads, so a skill or memory store the
-    // host serves is exactly what the assistant enumerates, and identity survives a
-    // restart.
+    // The data plane: the host runs the server model, resolves a session's agent to its
+    // installed config, and carries the management tool executables so the reserved-scope
+    // assistant can call them. It shares the SAME skill store and Resource Registry the
+    // capability inventory reads, so a skill or memory store the host serves is exactly
+    // what the assistant enumerates, and identity survives a restart.
     let mut host_builder = match deployment {
-        Some(deployment) => SharedHost::new_with_runtime_resources_and_deployment(
+        Some(deployment) => HostDependencies::for_coordinator(
             model_wiring.executor,
             model_wiring.model_ref,
             resource_application.file_content_source(),
@@ -542,13 +543,14 @@ pub(super) async fn prepare_runtime_routers(
             },
         ),
         #[cfg(any(test, feature = "test-support"))]
-        None => SharedHost::new_with_resources(
+        None => HostDependencies::for_local_resources(
             model_wiring.executor,
             model_wiring.model_ref,
             awaken_runtime_host_testkit::local_resource_ports(&resource_authorities),
             memory_extractions,
-        )
-        .with_local_workspace(platform_workspace.clone()),
+            platform_workspace.clone(),
+            awaken_session_executor::DeploymentConfig::ephemeral(),
+        ),
         #[cfg(not(any(test, feature = "test-support")))]
         None => unreachable!("product runtime process requires a resolved deployment"),
     }
@@ -606,11 +608,11 @@ pub(super) async fn prepare_runtime_routers(
     .await?;
     // Last-mile backend wiring the standard process does not own, supplied
     // by the process startup (a scenario that serves external-CLI sessions).
-    let host_builder = match customize_host {
+    let host_builder = with_platform_memory_data_plane(match customize_host {
         Some(customize) => customize(host_builder),
         None => host_builder,
-    };
-    let host = Arc::new(host_builder);
+    });
+    let host = Arc::new(SharedHost::from(host_builder));
     // The canonical Coordinator component owns Runtime background drain.
     // This process does not register a second drain for the same Host.
     let resource_reclaimer = Arc::new(
@@ -713,7 +715,7 @@ pub(super) async fn prepare_runtime_routers(
     }
     let event_batch_cutover_validation =
         session_application.session_event_batch_cutover_validation_source();
-    awaken_coordinator::install_managed_agent_coordination(&managed_host, &session_application)
+    install_managed_agent_coordination(&host, &managed_host, &session_application)
         .expect("Managed Session coordination application binds before dispatch starts");
     let mut managed_state =
         ManagedState::from_application(session_application.clone(), environment_execution.clone());

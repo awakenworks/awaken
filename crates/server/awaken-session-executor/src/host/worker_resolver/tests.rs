@@ -2,7 +2,8 @@
 // @formal evidence session_resources.explicit_empty_manifest_revokes_runtime_projection
 use super::claimed_dispatch::adopt_bound_sandbox;
 use super::test_support::{
-    ToggleBindingSink, adoption_host, adoption_host_at, available_local_environment_binding, claim,
+    ToggleBindingSink, adoption_dependencies, adoption_dependencies_at, adoption_host,
+    adoption_host_at, adoption_host_over, available_local_environment_binding, claim,
     complete_managed_test_host, deferred_environment, eager_environment, empty_frozen_projection,
     empty_frozen_projection_for_snapshot, frozen_projection_for_manifest,
     install_complete_projection_for_snapshot, managed_test_host, prepare_deferred_session,
@@ -78,11 +79,11 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     assert!(claimed.session_activity_admission_required, "R1/E1");
 
     let storage = tempfile::tempdir().expect("storage");
-    let host = Arc::new(
-        adoption_host_at(storage.path())
+    let host = Arc::new(SharedHost::from(
+        adoption_dependencies_at(storage.path())
             .await
             .with_dispatch_store(store),
-    );
+    ));
     HostWorkerResolver {
         host: Arc::downgrade(&host),
     }
@@ -260,7 +261,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
             .await
             .expect("R2 dispatch store"),
     );
-    let durable = Arc::new(adoption_host().await.with_dispatch_store(durable_store));
+    let durable = adoption_host_over(durable_store).await;
     let _durable_managed = managed_test_host(durable.clone());
     let durable_thread = ThreadId("durable-claimed-root".into());
     let durable_ctx = durable
@@ -285,11 +286,11 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
             .await
             .expect("R3 dispatch store"),
     );
-    let coordinator = Arc::new(
-        adoption_host()
+    let coordinator = Arc::new(SharedHost::from(
+        adoption_dependencies()
             .await
             .with_coordinator_dispatch_store(coordinator_store.clone()),
-    );
+    ));
     let coordinator_thread = "coordinator-only-claimed-root";
     let coordinator_claim = claim(
         &coordinator_store,
@@ -348,7 +349,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
             .await
             .expect("dispatch store"),
     );
-    let host = Arc::new(adoption_host().await.with_dispatch_store(store.clone()));
+    let host = adoption_host_over(store.clone()).await;
     let managed = managed_test_host(host.clone());
     let resolver = HostWorkerResolver {
         host: Arc::downgrade(&host),
@@ -427,11 +428,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
             .await
             .expect("missing dispatch store"),
     );
-    let missing_host = Arc::new(
-        adoption_host()
-            .await
-            .with_dispatch_store(missing_store.clone()),
-    );
+    let missing_host = adoption_host_over(missing_store.clone()).await;
     let _missing_managed =
         crate::ManagedHost::new(missing_host.clone()).install_dispatch_session_runtime();
     let missing_resolver = HostWorkerResolver {
@@ -523,12 +520,12 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
             .await
             .expect("dispatch store"),
     );
-    let host = Arc::new(
-        adoption_host()
+    let host = Arc::new(SharedHost::from(
+        adoption_dependencies()
             .await
             .with_dispatch_store(store.clone())
             .with_agent_publications(Arc::new(catalog)),
-    );
+    ));
     let managed = managed_test_host(host.clone());
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,
@@ -651,11 +648,11 @@ async fn durable_deferred_sandbox_publication_decision_table() {
             .await
             .expect("dispatch store"),
     );
-    let host = Arc::new(
-        adoption_host_at(storage.path())
+    let host = Arc::new(SharedHost::from(
+        adoption_dependencies_at(storage.path())
             .await
             .with_dispatch_store(store.clone()),
-    );
+    ));
     let sink = Arc::new(ToggleBindingSink {
         fail: std::sync::atomic::AtomicBool::new(false),
         calls: AtomicUsize::new(0),
@@ -727,11 +724,11 @@ async fn durable_deferred_sandbox_publication_decision_table() {
             .await
             .expect("loss dispatch store"),
     );
-    let loss_host = Arc::new(
-        adoption_host_at(storage.path().join("response-loss"))
+    let loss_host = Arc::new(SharedHost::from(
+        adoption_dependencies_at(storage.path().join("response-loss"))
             .await
             .with_dispatch_store(loss_store.clone()),
-    );
+    ));
     let loss_sink = Arc::new(ToggleBindingSink {
         fail: std::sync::atomic::AtomicBool::new(false),
         calls: AtomicUsize::new(0),
@@ -914,7 +911,7 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
             .await
             .expect("dispatch store"),
     );
-    let host = Arc::new(adoption_host().await.with_dispatch_store(store.clone()));
+    let host = adoption_host_over(store.clone()).await;
     let thread = "cold-stdio-recovery";
     let realizer = Arc::new(RecordingMcpRealizer {
         required_physical_environment: Some((Arc::downgrade(&host), thread.into())),
@@ -1204,8 +1201,8 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     let resume_calls = Arc::new(AtomicUsize::new(0));
     let continuations = Arc::new(std::sync::Mutex::new(Vec::new()));
     let projection = Arc::new(std::sync::Mutex::new(Some(ordinary_frozen_projection())));
-    let host = Arc::new(
-        adoption_host()
+    let host = Arc::new(SharedHost::from(
+        adoption_dependencies()
             .await
             .with_dispatch_store(dispatch.clone())
             .with_session_realization_control(Arc::new(RecordingSessionControl {
@@ -1216,7 +1213,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
                 mcp_stage: None,
                 fail_begin: Arc::new(AtomicBool::new(false)),
             })),
-    );
+    ));
     let managed = managed_test_host(host.clone());
     awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
         &managed,
@@ -1411,8 +1408,8 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
         }
         let resume_calls = Arc::new(AtomicUsize::new(0));
         let phases = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let host = Arc::new(
-            adoption_host()
+        let host = Arc::new(SharedHost::from(
+            adoption_dependencies()
                 .await
                 .with_dispatch_store(dispatch.clone())
                 .with_session_realization_control(Arc::new(RecordingSessionControl {
@@ -1423,7 +1420,7 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
                     mcp_stage: None,
                     fail_begin: Arc::new(AtomicBool::new(false)),
                 })),
-        );
+        ));
         dispatch
             .enqueue(with_empty_session_resources(
                 ingress::RunDispatch::new(test_activation("conflict", "conflict-run"))
@@ -2116,11 +2113,11 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     // | P2 | none | T | T | T + C5 | E2+E3 |
     // | P3 | previous/desired | any | F | F | E4 |
     let storage = tempfile::tempdir().expect("Skill storage");
-    let host = Arc::new(
-        adoption_host()
+    let host = Arc::new(SharedHost::from(
+        adoption_dependencies()
             .await
             .with_skill_store(storage.path().join("skills")),
-    );
+    ));
     let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     let skill = crate::host::tests::frozen_skill_version(
         "cold-recovery",
@@ -2294,11 +2291,11 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         }
     }
 
-    let host = Arc::new(
-        adoption_host()
+    let host = Arc::new(SharedHost::from(
+        adoption_dependencies()
             .await
             .with_file_content_source(Arc::new(ClaimFileSource)),
-    );
+    ));
     let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
         "workspace-remote",
@@ -2874,8 +2871,8 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
                 .unwrap(),
         );
         let calls = Arc::new(AtomicUsize::new(0));
-        let host = Arc::new(
-            adoption_host()
+        let host = Arc::new(SharedHost::from(
+            adoption_dependencies()
                 .await
                 .with_dispatch_store(dispatch.clone())
                 .with_session_realization_control(Arc::new(RecordingSessionControl {
@@ -2886,7 +2883,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
                     mcp_stage: None,
                     fail_begin: Arc::new(AtomicBool::new(false)),
                 })),
-        );
+        ));
         let managed = managed_test_host(host.clone());
         awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
             &managed,

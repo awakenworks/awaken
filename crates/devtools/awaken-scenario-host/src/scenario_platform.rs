@@ -395,7 +395,8 @@ pub(super) async fn mount_with_memory_publication_on_lifecycle(
             instructions: None,
         }],
     ));
-    let platform = platform.map_host(|host| host.with_agent_publications(publication.clone()));
+    let platform =
+        platform.map_dependencies(|host| host.with_agent_publications(publication.clone()));
     mount_with_agent_source_on_lifecycle(platform, publication, lifecycle).await
 }
 

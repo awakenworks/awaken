@@ -115,7 +115,9 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     // | Rule | C1 | C2 Session | C3 | Effect |
     // | R1   | Y  | N          | Y  | E1     |
     // | R2   | Y  | Y          | Y  | E2     |
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
         authorize_calls: AtomicUsize::new(0),
@@ -183,7 +185,9 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
 
 #[tokio::test]
 async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use_it() {
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
         authorize_calls: AtomicUsize::new(0),
@@ -225,7 +229,9 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
     // identity with no second provider effect, and later context lookup is pure
     // slot reuse.
     use awaken_session_execution_contract::SessionRuntime;
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     let sink = Arc::new(ResponseLossBindingSink::default());
     install_test_dispatch_runtime(&host)
         .realization()
@@ -298,12 +304,12 @@ async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
     // projection/spec/fence construction; this row varies only response loss.
     use awaken_session_execution_contract::SessionRuntime;
     let storage = tempfile::tempdir().unwrap();
-    let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_store_dir(storage.path())
             .await,
-    );
+    ));
     install_test_session_application(&host);
     let thread = "binding-already-applied";
     let activation =
@@ -387,7 +393,9 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     // | T1 | ephemeral | yes | E1 |
     // | T2 | durable injected | yes | E1 |
     // | T3 | durable injected | no | E2 |
-    let ephemeral = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let ephemeral = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     assert!(!ephemeral.deployment.durable, "T1 precondition");
     ephemeral.ensure_dispatch_pool();
     assert!(ephemeral.dispatch.dispatch_pool.get().is_some(), "T1/E1");
@@ -397,11 +405,11 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
             .await
             .unwrap(),
     );
-    let local = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub")
+    let local = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_dispatch_store(local_store),
-    );
+    ));
     assert!(local.runs_local_dispatch_pool(), "local");
     local.ensure_dispatch_pool();
     assert!(local.dispatch.dispatch_pool.get().is_some(), "T2/E1");
@@ -411,11 +419,11 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
             .await
             .unwrap(),
     );
-    let coordinator = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub")
+    let coordinator = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_coordinator_dispatch_store(coordinator_store),
-    );
+    ));
     assert!(!coordinator.runs_local_dispatch_pool(), "coordinator");
     coordinator.ensure_dispatch_pool();
     assert!(coordinator.dispatch.dispatch_pool.get().is_none(), "T3/E2");
@@ -434,7 +442,8 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
     // this regression owns the production Host transport-to-capacity wiring.
     let default =
         std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::new(4).unwrap());
-    let local = SharedHost::new(Arc::new(OkModel), "stub").await;
+    let local =
+        SharedHost::from(crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await);
     assert_eq!(
         local.dispatch_pool_sizing(),
         crate::DispatchPoolSizing::LocalParallelism(default),
@@ -450,11 +459,11 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         let registered = awaken_dispatch_contract::RegisteredCapacity::of(&manifest)
             .expect("R2 non-zero registered capacity");
         let store = Arc::new(awaken_dispatch::MemoryDispatchStore::new(system_clock()));
-        let worker = Arc::new(
-            SharedHost::new(Arc::new(OkModel), "stub")
+        let worker = Arc::new(SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
                 .await
                 .with_worker_dispatch(store, registered),
-        );
+        ));
         worker.ensure_dispatch_pool();
         assert_eq!(
             worker.dispatch.dispatch_pool.get().unwrap().concurrency(),
@@ -469,8 +478,8 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
             "R2 registered branch"
         );
         let _local_fence = worker.begin_pool_drain().await;
-        let coordinator = Arc::new(
-            SharedHost::new(Arc::new(OkModel), "stub")
+        let coordinator = Arc::new(SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
                 .await
                 .with_worker_dispatch(
                     Arc::new(awaken_dispatch::MemoryDispatchStore::new(system_clock())),
@@ -481,7 +490,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
                         .await
                         .unwrap(),
                 )),
-        );
+        ));
         coordinator.ensure_dispatch_pool();
         assert!(coordinator.dispatch.dispatch_pool.get().is_none(), "R3");
     }
@@ -502,7 +511,9 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
 /// created under the rejected lease.
 #[tokio::test]
 async fn recovered_environment_waits_for_replacement_realization_before_publish() {
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
         authorize_calls: AtomicUsize::new(0),
@@ -557,7 +568,9 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
 /// without reusing a substrate produced under an older epoch.
 #[tokio::test]
 async fn environment_binding_catches_up_across_multiple_realization_fences() {
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     let sink = Arc::new(MovingRealizationFenceSink {
         authorize_calls: AtomicUsize::new(0),
         calls: AtomicUsize::new(0),
@@ -622,7 +635,9 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
 /// | B3 | present | absent | observe remote Run | env=None, preserve binding |
 #[tokio::test]
 async fn missing_durable_environment_adoption_is_deferred_only_for_coordination() {
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     host.install_session_environment_owner_projection(
         "binding-corrupt",
         "workspace",
@@ -668,7 +683,9 @@ async fn binding_commit_failure_is_retryable_and_never_publishes_the_environment
     // hidden Candidate and returns Unavailable; R2=R1+C3 reuses that exact
     // Candidate, repeats only authorize/persist, and still publishes nothing.
     use awaken_session_execution_contract::SessionRuntime;
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
         authorize_calls: AtomicUsize::new(0),
@@ -722,7 +739,9 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
     // never one sandbox per caller. Decision rule: release concurrent C1 and
     // require creation cardinality one plus shared identity.
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     install_test_session_application(&host);
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
@@ -796,7 +815,9 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
     // Constraint/Invariant: publication follows complete binding and cannot expose
     // a partial sandbox. Rules L5=C1=>E1+E2; L6=L5+C2=>E1+E2+E3.
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     install_test_session_application(&host);
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),

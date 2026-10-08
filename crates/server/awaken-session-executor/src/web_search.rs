@@ -486,13 +486,13 @@ mod tests {
             AgentBindings, ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride,
             ToolsetPolicy, ToolsetSource,
         };
-        let host = crate::acp_backend::with_fixture_acp(
-            crate::host::SharedHost::new(
+        let host = crate::host::SharedHost::from(crate::acp_backend::with_fixture_acp(
+            crate::HostDependencies::ephemeral(
                 Arc::new(crate::no_model::NoModelConfiguredExecutor),
                 "stub",
             )
             .await,
-        );
+        ));
         let host_fetch = (
             awaken_ext_builtin_tools::web_fetch_descriptor(),
             Arc::new(ProbeTool(awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID))
@@ -776,14 +776,16 @@ mod tests {
                 calls: fetch_calls.clone(),
             }))
             .unwrap();
-        let host = crate::host::SharedHost::new(
-            Arc::new(crate::no_model::NoModelConfiguredExecutor),
-            "stub",
-        )
-        .await
-        .with_local_workspace("workspace-a")
-        .with_credential_materializer(materializer.clone())
-        .with_web_search_provider_registry(providers.clone());
+        let host = crate::host::SharedHost::from(
+            crate::HostDependencies::ephemeral(
+                Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                "stub",
+            )
+            .await
+            .with_local_workspace("workspace-a")
+            .with_credential_materializer(materializer.clone())
+            .with_web_search_provider_registry(providers.clone()),
+        );
         let resolver = host.web_credentials("bound-thread").unwrap();
         assert_eq!(
             resolver.resolve(&access, "brave").await.unwrap().header(),
@@ -795,13 +797,15 @@ mod tests {
             "credential_access": access,
             "options": {},
         });
-        let without_materializer = crate::host::SharedHost::new(
-            Arc::new(crate::no_model::NoModelConfiguredExecutor),
-            "stub",
-        )
-        .await
-        .with_local_workspace("workspace-a")
-        .with_web_search_provider_registry(providers.clone());
+        let without_materializer = crate::host::SharedHost::from(
+            crate::HostDependencies::ephemeral(
+                Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                "stub",
+            )
+            .await
+            .with_local_workspace("workspace-a")
+            .with_web_search_provider_registry(providers.clone()),
+        );
         assert!(
             without_materializer
                 .web_search_plugin("bound-thread", None)
@@ -817,14 +821,16 @@ mod tests {
             "R8 Fetch requires a materializer"
         );
 
-        let foreign = crate::host::SharedHost::new(
-            Arc::new(crate::no_model::NoModelConfiguredExecutor),
-            "stub",
-        )
-        .await
-        .with_local_workspace("workspace-b")
-        .with_credential_materializer(materializer.clone())
-        .with_web_search_provider_registry(providers);
+        let foreign = crate::host::SharedHost::from(
+            crate::HostDependencies::ephemeral(
+                Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                "stub",
+            )
+            .await
+            .with_local_workspace("workspace-b")
+            .with_credential_materializer(materializer.clone())
+            .with_web_search_provider_registry(providers),
+        );
         let (_, foreign_search) = foreign
             .web_search_plugin("bound-thread", None)
             .configured_tool(Some(&published))

@@ -217,11 +217,10 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         let recipients = || {
             let application = self
-                .dispatch
-                .session_background_runs
-                .read()
-                .unwrap()
-                .clone()
+                .session_application
+                .background_runs
+                .get()
+                .cloned()
                 .filter(|p| p.strong_count() > 0)
                 .ok_or_else(|| {
                     McpError::internal("MCP application input has no Session admission authority")
@@ -272,7 +271,9 @@ mod tests {
         // realization, Staging projection, or process spawn. Constraint: an
         // anonymous target needs no credential materialization. Decision row:
         // S0 C1+C2 -> E1+E2, before any Session Environment effect.
-        let host = Arc::new(crate::SharedHost::new(Arc::new(NoLlm), "test").await);
+        let host = Arc::new(crate::SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await,
+        ));
         let generation =
             crate::test_mcp::mcp_fence("mcp-no-reaper", "stdio", 1, "runtime-1", 1, u64::MAX);
         let request = awaken_session_mcp_contract::StageMcpAttachment {

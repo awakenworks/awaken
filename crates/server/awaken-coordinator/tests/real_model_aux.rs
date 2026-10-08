@@ -26,7 +26,7 @@ use awaken_resource_contract::{
 };
 use awaken_session_executor::HostOutcomeDrive;
 
-async fn live_host() -> Option<(SharedHost, String)> {
+async fn live_dependencies() -> Option<(awaken_session_executor::HostDependencies, String)> {
     let key = std::env::var("KIMI_API_KEY").ok()?;
     let base = std::env::var("KIMI_BASE_URL")
         .unwrap_or_else(|_| "https://api.kimi.com/coding/v1/".to_string());
@@ -38,12 +38,15 @@ async fn live_host() -> Option<(SharedHost, String)> {
     )
     .expect("explicit client construction");
     Some((
-        Arc::into_inner(
-            awaken_scenario_host::build_unmounted_host(Arc::new(executor), model.clone()).await,
-        )
-        .expect("unmounted scenario host has one owner"),
+        awaken_scenario_host::build_unmounted_dependencies(Arc::new(executor), model.clone()).await,
         model,
     ))
+}
+
+async fn live_host() -> Option<(SharedHost, String)> {
+    live_dependencies()
+        .await
+        .map(|(dependencies, model)| (SharedHost::from(dependencies), model))
 }
 
 fn user(text: &str) -> Vec<Message> {
@@ -275,13 +278,15 @@ async fn live_relevance_selection_picks_the_right_memory_via_the_selector_agent(
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
-    let (host, _model) = live_host()
+    let (dependencies, _model) = live_dependencies()
         .await
         .expect("set KIMI_API_KEY to run this test");
     // The judge is now an ordinary agent resolved by id; grade with a real one.
-    let host = host
-        .with_judge("judge")
-        .expect("live host model reference is an executable binding");
+    let host = SharedHost::from(
+        dependencies
+            .with_judge("judge")
+            .expect("live host model reference is an executable binding"),
+    );
 
     let progress = host
         .define_outcome(
@@ -325,11 +330,11 @@ async fn live_compaction_summarizes_and_the_conversation_continues() {
     // independent branch selecting `all output, state, side-effect, error, and terminal assertions
     // below hold together`; a multi-row decision table is not applicable, and sibling tests own
     // alternate causes.
-    let (host, _model) = live_host()
+    let (dependencies, _model) = live_dependencies()
         .await
         .expect("set KIMI_API_KEY to run this test");
     // Compact once history passes 4 messages, keeping the last 2 verbatim.
-    let host = host.with_compaction_tokens(4, 2);
+    let host = SharedHost::from(dependencies.with_compaction_tokens(4, 2));
 
     // Several short Runs to build history past the threshold.
     for i in 0..3 {

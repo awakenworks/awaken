@@ -15,7 +15,7 @@ pub(in crate::host) struct WorkerContentAdapters {
 
 /// Local Resource authorities a test or scenario composition hands to the
 /// Host as one unit: the ports its Resources application exposes. Consumer:
-/// `SharedHost::new_with_resources*`; `awaken-runtime-host-testkit` builds it
+/// `HostDependencies::for_local_resources`; `awaken-runtime-host-testkit` builds it
 /// from a Resources application, which this crate no longer links.
 #[cfg(any(test, feature = "test-support"))]
 pub struct LocalResourcePorts {
@@ -46,8 +46,8 @@ pub struct LocalSkillPorts {
 }
 
 /// The Resource inputs of one Host construction, selected together so
-/// [`ResourcePorts::assemble`] sees every source at once. Consumer:
-/// `SharedHost::build`.
+/// [`ResourceSelection::assemble`] sees every source at once. Consumer:
+/// the `HostDependencies` constructors.
 pub(in crate::host) struct ResourceInputs {
     /// Local authorities of a test/scenario composition.
     #[cfg(any(test, feature = "test-support"))]
@@ -102,17 +102,65 @@ pub(crate) struct ResourcePorts {
     pub(crate) memory_stores: crate::memory_stores::MemoryStores,
 }
 
+/// The Resources-context ports a composition selects before the Host
+/// exists: [`ResourcePorts`] without the Host-owned Memory runtime, plus the
+/// Memory extraction authority that runtime is built over. Consumer:
+/// [`crate::HostDependencies`].
+pub(crate) struct ResourceSelection {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) file_store: Arc<dyn FileStore>,
+    pub(crate) file_content_source:
+        Arc<dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) file_catalog: Arc<dyn FileCatalog>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) file_application: Option<Arc<dyn awaken_resource_contract::FileApplicationService>>,
+    pub(crate) artifact_publisher: Arc<
+        dyn awaken_resource_contract::ArtifactPublisher<
+                awaken_dispatch_contract::ArtifactPublicationFence,
+            >,
+    >,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) resource_reclamation:
+        Option<Arc<dyn awaken_resource_contract::ResourceReclamationRepository>>,
+    pub(crate) memory_stores: crate::memory_stores::MemoryStores,
+    /// The durable Memory extraction authority the Host's Memory runtime
+    /// claims and records extraction intents through.
+    pub(crate) extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
+}
+
 impl ResourcePorts {
+    /// The selected ports around the Host's Memory runtime.
+    pub(in crate::host) fn new(
+        selection: ResourceSelection,
+        memory: Arc<crate::memory::MemoryRuntime>,
+    ) -> Self {
+        Self {
+            memory,
+            #[cfg(any(test, feature = "test-support"))]
+            file_store: selection.file_store,
+            file_content_source: selection.file_content_source,
+            #[cfg(any(test, feature = "test-support"))]
+            file_catalog: selection.file_catalog,
+            #[cfg(any(test, feature = "test-support"))]
+            file_application: selection.file_application,
+            artifact_publisher: selection.artifact_publisher,
+            #[cfg(any(test, feature = "test-support"))]
+            resource_reclamation: selection.resource_reclamation,
+            memory_stores: selection.memory_stores,
+        }
+    }
+}
+
+impl ResourceSelection {
     /// Select every Resource port once from the construction inputs. Product
     /// Resource content is injected atomically through `resources`; a Worker
     /// receives its remote adapters in `worker_content`. Only test-support
     /// construction may still use the local openers below.
     pub(in crate::host) fn assemble(
-        llm: &Arc<dyn LlmExecutor>,
         inputs: ResourceInputs,
         store_dir: Option<&std::path::Path>,
         clock: &Arc<dyn awaken_time::WallClock>,
-        memory_sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
     ) -> Self {
         let ResourceInputs {
             #[cfg(any(test, feature = "test-support"))]
@@ -121,7 +169,7 @@ impl ResourcePorts {
             extraction_repository,
         } = inputs;
         #[cfg(not(test))]
-        let _ = store_dir;
+        let _ = (store_dir, clock);
         #[cfg(any(test, feature = "test-support"))]
         let local_memory = resources
             .as_ref()
@@ -154,13 +202,6 @@ impl ResourcePorts {
                 unreachable!("Host construction requires an explicit Memory extraction repository")
             }
         };
-        let memory = Arc::new(crate::memory::MemoryRuntime::new(
-            llm.clone(),
-            memory_sandboxes,
-            Arc::new(BackgroundRuns::new()),
-            extraction_repository,
-            clock.clone(),
-        ));
         #[cfg(any(test, feature = "test-support"))]
         let (file_store, file_catalog) = if worker_content.is_some() {
             let files = Arc::new(crate::unavailable_worker::UnavailableWorkerFiles);
@@ -250,7 +291,6 @@ impl ResourcePorts {
             Arc::new(awaken_resource_contract::UnavailableArtifactPublisher)
         };
         Self {
-            memory,
             #[cfg(any(test, feature = "test-support"))]
             file_store,
             file_content_source,
@@ -262,6 +302,7 @@ impl ResourcePorts {
             #[cfg(any(test, feature = "test-support"))]
             resource_reclamation,
             memory_stores,
+            extraction_repository,
         }
     }
 }
@@ -277,68 +318,11 @@ impl SharedHost {
         local_memory_extraction_repository(storage_dir).await
     }
 
-    /// Install the one Resources-owned File command application. Runtime stores
-    /// only this inward port and cannot construct a parallel implementation.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn with_file_application(
-        mut self,
-        application: Arc<dyn awaken_resource_contract::FileApplicationService>,
-        content_source: Arc<
-            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
-        >,
-        artifact_publisher: Arc<
-            dyn awaken_resource_contract::ArtifactPublisher<
-                    awaken_dispatch_contract::ArtifactPublicationFence,
-                >,
-        >,
-    ) -> Self {
-        self.resources.file_content_source = content_source;
-        self.resources.artifact_publisher = artifact_publisher;
-        self.resources.file_application = Some(application);
-        self
-    }
-
-    /// Install the narrow artifact publisher used by a database-less Worker.
-    /// This does not grant File management or catalog access.
-    #[must_use]
-    pub fn with_artifact_publisher(
-        mut self,
-        publisher: Arc<
-            dyn awaken_resource_contract::ArtifactPublisher<
-                    awaken_dispatch_contract::ArtifactPublicationFence,
-                >,
-        >,
-    ) -> Self {
-        // This is the database-less Worker startup edge. Retaining the
-        // test-only/local File application here would create a second command
-        // path and incorrectly classify the remote publisher as locally fenced.
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            self.resources.file_application = None;
-        }
-        self.resources.artifact_publisher = publisher;
-        self
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     pub fn resource_reclamation(
         &self,
     ) -> Option<Arc<dyn awaken_resource_contract::ResourceReclamationRepository>> {
         self.resources.resource_reclamation.clone()
-    }
-
-    /// Test-support replacement of a volatile fixture's File content port.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn with_file_content_source(
-        mut self,
-        source: Arc<
-            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
-        >,
-    ) -> Self {
-        self.resources.file_content_source = source;
-        self
     }
 }
 

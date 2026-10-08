@@ -32,11 +32,11 @@ fn awaiting_tool_batch_state(
 }
 
 async fn host_requiring_write_confirmation(model: Arc<dyn LlmExecutor>) -> Arc<SharedHost> {
-    let host = Arc::new(
-        SharedHost::new(model, "stub")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(model, "stub")
             .await
             .with_gate_override(write_confirmation_gate()),
-    );
+    ));
     let _managed = install_test_dispatch_runtime(&host);
     host
 }
@@ -241,11 +241,11 @@ async fn confirm_cannot_answer_a_client_tool() {
     // rejected; E2 no reply is committed and the exact ticket remains resumable.
     // Constraint: typed reply kind must match target ownership. Decision rule:
     // exercise the inverse mismatch, then answer correctly to prove E1+E2.
-    let (host, _managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(ClientLookupModel), "stub")
+    let (host, _managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(ClientLookupModel), "stub")
             .await
             .with_client_tools(HashSet::from(["lookup".to_string()])),
-    );
+    ));
     let r1 = host.run(None, "t-bind2", user("hi")).await.expect("Run 1");
     let pending = r1.pending.expect("awaiting on the client tool");
     assert!(pending.client_executed, "lookup is client-executed");
@@ -295,11 +295,11 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_run() {
     //
     // | Rule | ingress | ticket | answer | Effects |
     // | R1 | direct | valid client tool | exact result | E1+E2+E3 |
-    let (host, _managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(ClientLookupModel), "stub")
+    let (host, _managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(ClientLookupModel), "stub")
             .await
             .with_client_tools(HashSet::from(["lookup".to_string()])),
-    );
+    ));
     let r1 = host.run(None, "t-client", user("hi")).await.expect("Run 1");
     let pending = r1.pending.expect("awaiting on the client tool");
 
@@ -349,11 +349,11 @@ async fn durable_foreground_run_relays_live_progress_before_committed_completion
             .await
             .expect("in-memory dispatch"),
     );
-    let host = Arc::new(
-        SharedHost::new(Arc::new(MemoryHostModel), "stub")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
             .await
             .with_dispatch_store(dispatch),
-    );
+    ));
     let _managed = install_test_dispatch_runtime(&host);
     host.ensure_dispatch_pool();
     let sink = Arc::new(awaken_store_inmem::MemoryStreamSink::new());
@@ -397,11 +397,11 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
             .await
             .expect("in-memory dispatch"),
     );
-    let host = Arc::new(
-        SharedHost::new(Arc::new(MemoryHostModel), "stub")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
             .await
             .with_dispatch_store(dispatch.clone()),
-    );
+    ));
     let _managed = install_test_dispatch_runtime(&host);
     let child_run = RunId("child-report-run".into());
     let command = awaken_session_execution_contract::SessionAgentReportContinuation {
@@ -542,11 +542,11 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
             .await
             .expect("coordinated reply dispatch"),
     );
-    let (host, _managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(MemoryHostModel), "stub")
+    let (host, _managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
             .await
             .with_dispatch_store(dispatch.clone()),
-    );
+    ));
     let ctx = host
         .ctx_for(&parent.0, None)
         .await
@@ -1152,7 +1152,9 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
 
     let thread = ThreadId("remote-input-reply-session".into());
     let run_id = RunId("remote-input-reply-run".into());
-    let host = SharedHost::new(Arc::new(MemoryHostModel), "stub").await;
+    let host = SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub").await,
+    );
     let commit = host
         .commit_for_read(&thread.0)
         .await
@@ -1221,7 +1223,9 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
 
     let tool_thread = ThreadId("missing-tool-batch-session".into());
     let tool_run = RunId("missing-tool-batch-run".into());
-    let tool_host = SharedHost::new(Arc::new(MemoryHostModel), "stub").await;
+    let tool_host = SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub").await,
+    );
     let tool_commit = tool_host
         .commit_for_read(&tool_thread.0)
         .await
@@ -1324,11 +1328,11 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
                 .await
                 .expect("primary reply dispatch"),
         );
-        let (host, _managed) = dispatch_test_host(
-            SharedHost::new(Arc::new(MemoryHostModel), "stub")
+        let (host, _managed) = dispatch_test_host(SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
                 .await
                 .with_dispatch_store(dispatch.clone()),
-        );
+        ));
         let ctx = host
             .ctx_for(&parent.0, None)
             .await
@@ -1584,11 +1588,11 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
             .await
             .expect("budget resume dispatch"),
     );
-    let (host, _managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(MemoryHostModel), "stub")
+    let (host, _managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
             .await
             .with_dispatch_store(dispatch.clone()),
-    );
+    ));
 
     let root = ThreadId("budget-resume-root".into());
     let root_run = RunId("budget-resume-root-run".into());
@@ -1999,12 +2003,12 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
             .await
             .expect("in-memory dispatch"),
     );
-    let host = Arc::new(
-        SharedHost::new(Arc::new(ClientLookupModel), "stub")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(ClientLookupModel), "stub")
             .await
             .with_client_tools(HashSet::from(["lookup".to_string()]))
             .with_dispatch_store(dispatch.clone()),
-    );
+    ));
     let _managed = install_test_dispatch_runtime(&host);
     host.ensure_dispatch_pool();
 
@@ -2076,12 +2080,12 @@ async fn coordinator_only_foreground_admission_survives_request_drop_without_a_p
             .await
             .expect("in-memory dispatch"),
     );
-    let host = Arc::new(
-        SharedHost::new(Arc::new(ClientLookupModel), "stub")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(ClientLookupModel), "stub")
             .await
             .with_client_tools(HashSet::from(["lookup".to_string()]))
             .with_coordinator_dispatch_store(dispatch.clone()),
-    );
+    ));
     let _managed = install_test_dispatch_runtime(&host);
     host.ensure_dispatch_pool();
     assert!(host.dispatch.dispatch_pool.get().is_none(), "Q2/E2");
@@ -2143,11 +2147,11 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
     // | R2   | T  | T  | F  | T  | F  | E3     |
     // | R3   | T  | T  | F  | F  | T  | E4     |
     // | R4   | F  | T/F| T  | F  | F  | E2 (resume_with_no_awaiting_run) |
-    let (host, _managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(ClientLookupModel), "stub")
+    let (host, _managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(ClientLookupModel), "stub")
             .await
             .with_client_tools(HashSet::from(["lookup".to_string()])),
-    );
+    ));
     let first = host
         .run(None, "t-cross-protocol-pending", user("hi"))
         .await
@@ -2238,9 +2242,11 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
             .await
             .expect("managed ingress fence dispatch"),
     );
-    let host = SharedHost::new(Arc::new(OkModel), "stub")
-        .await
-        .with_dispatch_store(dispatch.clone());
+    let host = SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+            .await
+            .with_dispatch_store(dispatch.clone()),
+    );
     host.session_slots
         .update("managed-root", |slot| slot.session_dispatch = true);
 

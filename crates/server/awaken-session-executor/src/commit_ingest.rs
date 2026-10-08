@@ -245,7 +245,10 @@ mod tests {
     }
 
     async fn cold_claimed_memory_host() -> (Arc<SharedHost>, crate::ManagedHost) {
-        let host = Arc::new(SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub").await);
+        let host = Arc::new(SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
+                .await,
+        ));
         let managed = crate::ManagedHost::new(host.clone())
             .with_resource_validator(crate::host::test_resource_validator())
             .install_dispatch_session_runtime();
@@ -358,9 +361,11 @@ mod tests {
         let publications =
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([extractor.clone()])
                 .expect("one exact Memory extractor publication");
-        let admission = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
-            .await
-            .with_agent_publications(Arc::new(publications));
+        let admission = SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
+                .await
+                .with_agent_publications(Arc::new(publications)),
+        );
         admission.register_thread_resource_manifest(thread, manifest);
         let dispatch = admission
             .resolved_dispatch(activation)
@@ -508,9 +513,11 @@ mod tests {
             ])
             .expect("exact root and Memory extractor publications"),
         );
-        let admission = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
-            .await
-            .with_agent_publications(publications.clone());
+        let admission = SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
+                .await
+                .with_agent_publications(publications.clone()),
+        );
         admission.register_thread_resource_manifest(thread, manifest.clone());
         let dispatch = admission
             .resolved_dispatch(activation)
@@ -521,20 +528,22 @@ mod tests {
                 .await
                 .expect("durable dispatch store"),
         );
-        let host = Arc::new(
-            SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
+        let host = Arc::new(SharedHost::from(crate::host::with_test_memory_mounter(
+            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
                 .await
                 .with_dispatch_store(queue.clone())
                 .with_agent_publications(publications),
-        );
-        crate::host::install_test_memory_mounter(&host);
+        )));
         let managed = crate::ManagedHost::new(host.clone())
             .with_resource_validator(crate::host::test_resource_validator())
             .install_dispatch_session_runtime();
         let application: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
             Arc::new(crate::coordination::RecordingSessionAgentCoordination::default());
         managed
-            .install_agent_coordination_application(Arc::downgrade(&application))
+            .host
+            .session_application_ports()
+            .agent_coordination
+            .bind(Arc::downgrade(&application))
             .expect("C5 install canonical Session application authority");
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &managed,
@@ -902,26 +911,32 @@ mod tests {
             }
         }
         let injected: Arc<dyn ClaimedRunCommit> = Arc::new(SelectedOnly);
-        let host = || SharedHost::new(Arc::new(crate::NoModelConfiguredExecutor), "stub");
+        let dependencies = || {
+            crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
+        };
         assert!(
-            host().await.authority.claimed_commit().unwrap().is_none(),
+            SharedHost::from(dependencies().await)
+                .authority
+                .claimed_commit()
+                .unwrap()
+                .is_none(),
             "W1"
         );
-        let selected = host()
-            .await
-            .with_authority(
-                crate::UpstreamAuthority::default().with_claimed_commit(injected.clone()),
-            )
-            .authority
-            .claimed_commit()
-            .unwrap()
-            .expect("W2");
+        let selected = SharedHost::from(dependencies().await.with_authority(
+            crate::UpstreamAuthority::default().with_claimed_commit(injected.clone()),
+        ))
+        .authority
+        .claimed_commit()
+        .unwrap()
+        .expect("W2");
         assert!(Arc::ptr_eq(&selected, &injected), "W2 exact port");
-        let error = match host()
-            .await
-            .with_authority(crate::UpstreamAuthority::default())
-            .authority
-            .claimed_commit()
+        let error = match SharedHost::from(
+            dependencies()
+                .await
+                .with_authority(crate::UpstreamAuthority::default()),
+        )
+        .authority
+        .claimed_commit()
         {
             Ok(_) => panic!("W3 must fail closed"),
             Err(error) => error,

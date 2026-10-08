@@ -53,15 +53,16 @@ use captured_writes::{CapturedMemoryWrites, writes_from_committed_agent};
 /// A Session must create a [`BoundMemory`] from its resolved resource manifest.
 pub struct MemoryRuntime {
     llm: Arc<dyn LlmExecutor>,
+    /// The Host's runtime-only inference materialization, when its
+    /// composition installed one (`HostDependencies::with_inference_materializer`).
     inference_materializer:
-        RwLock<Option<Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>>>,
-    /// Fresh sandboxes for extraction/selection Runs; the process composition
-    /// replaces the construction default through
-    /// `SharedHost::with_auxiliary_sandboxes`.
-    provider: RwLock<Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>>,
+        Option<Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>>,
+    /// Fresh sandboxes for extraction/selection Runs, from the process
+    /// composition's `HostDependencies::with_auxiliary_sandboxes`.
+    provider: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
     background: Arc<BackgroundRuns>,
     claim_owner: String,
-    extractions: RwLock<Arc<dyn MemoryExtractionRepository>>,
+    extractions: Arc<dyn MemoryExtractionRepository>,
     /// The Host's process clock extraction claims and receipts are stamped on.
     clock: Arc<dyn awaken_time::WallClock>,
 }
@@ -190,19 +191,22 @@ impl MemoryRuntime {
         background: Arc<BackgroundRuns>,
         extractions: Arc<dyn MemoryExtractionRepository>,
         clock: Arc<dyn awaken_time::WallClock>,
+        inference_materializer: Option<
+            Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>,
+        >,
     ) -> Self {
         Self {
             clock,
             llm,
-            inference_materializer: RwLock::new(None),
-            provider: RwLock::new(provider),
+            inference_materializer,
+            provider,
             background,
             claim_owner: format!(
                 "memory-extractor:{}:{}",
                 std::process::id(),
                 EXTRACTION_OWNER_SEQ.fetch_add(1, Ordering::Relaxed)
             ),
-            extractions: RwLock::new(extractions),
+            extractions,
         }
     }
 
@@ -242,42 +246,10 @@ impl MemoryRuntime {
         self.background.clone()
     }
 
-    /// Replace the auxiliary sandbox provider extraction/selection Runs use.
-    pub(crate) fn set_auxiliary_sandbox_provider(
-        &self,
-        provider: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
-    ) {
-        *self
-            .provider
-            .write()
-            .expect("auxiliary sandbox provider lock poisoned") = provider;
-    }
-
     fn auxiliary_sandbox_provider(
         &self,
     ) -> Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider> {
-        self.provider
-            .read()
-            .expect("auxiliary sandbox provider lock poisoned")
-            .clone()
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn set_extraction_repository(&self, repository: Arc<dyn MemoryExtractionRepository>) {
-        *self
-            .extractions
-            .write()
-            .expect("Memory extraction repository lock poisoned") = repository;
-    }
-
-    pub(crate) fn set_inference_materializer(
-        &self,
-        materializer: Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>,
-    ) {
-        *self
-            .inference_materializer
-            .write()
-            .expect("Memory inference materializer lock poisoned") = Some(materializer);
+        self.provider.clone()
     }
 
     fn materialize_extractor(
@@ -285,12 +257,7 @@ impl MemoryRuntime {
         intent: &MemoryExtractionIntent,
     ) -> Result<(Arc<dyn LlmExecutor>, RuntimeRunContext), String> {
         let snapshot = &intent.extractor;
-        if let Some(materializer) = self
-            .inference_materializer
-            .read()
-            .expect("Memory inference materializer lock poisoned")
-            .as_ref()
-        {
+        if let Some(materializer) = self.inference_materializer.as_ref() {
             let holder =
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
                     .inference_holder;
@@ -341,10 +308,7 @@ impl MemoryRuntime {
     }
 
     pub(crate) fn extraction_repository(&self) -> Arc<dyn MemoryExtractionRepository> {
-        self.extractions
-            .read()
-            .expect("Memory extraction repository lock poisoned")
-            .clone()
+        self.extractions.clone()
     }
 
     fn extraction_controller(&self) -> MemoryExtractionController {
@@ -658,48 +622,10 @@ impl crate::host::SharedHost {
         self.tools.skills.store_handle()
     }
 
-    /// Install the worker adapter behind the neutral provisioning port. This is
-    /// intentionally separate from [`SharedHost::new`](crate::SharedHost::new):
-    /// runtime-host must not depend on a FUSE/copy implementation crate.
-    pub fn install_memory_mounter(
-        &self,
-        mounter: Arc<dyn awaken_provisioning_contract::MemoryMounter>,
-    ) {
-        self.env
-            .session_provider
-            .installation()
-            .install_memory_mounter(mounter.clone());
-        if let Some(provider) = &self.env.backend_owned_session_provider {
-            provider
-                .installation()
-                .install_memory_mounter(mounter.clone());
-        }
-        *self
-            .env
-            .memory_mounter
-            .write()
-            .expect("memory mounter lock poisoned") = Some(mounter);
-    }
-
-    /// Whether an outer process startup already selected the Memory mount
-    /// adapter. Default platform wiring must preserve an explicit selection.
-    #[must_use]
-    pub fn has_memory_mounter(&self) -> bool {
-        self.env
-            .memory_mounter
-            .read()
-            .expect("memory mounter lock poisoned")
-            .is_some()
-    }
-
     pub(crate) fn memory_mounter(
         &self,
     ) -> Option<Arc<dyn awaken_provisioning_contract::MemoryMounter>> {
-        self.env
-            .memory_mounter
-            .read()
-            .expect("memory mounter lock poisoned")
-            .clone()
+        self.env.memory_mounter.clone()
     }
 
     pub(crate) fn register_thread_memory(&self, thread: &str, memory: Option<Arc<BoundMemory>>) {
@@ -842,16 +768,6 @@ impl crate::host::SharedHost {
             writable,
         );
         self.register_thread_memory(thread, Some(Arc::new(bound)));
-    }
-
-    /// Test-support override for fixtures built through the volatile constructor.
-    /// Product startup injects this authority during SharedHost construction.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn install_memory_extraction_repository(
-        &self,
-        repository: Arc<dyn MemoryExtractionRepository>,
-    ) {
-        self.resources.memory.set_extraction_repository(repository);
     }
 }
 

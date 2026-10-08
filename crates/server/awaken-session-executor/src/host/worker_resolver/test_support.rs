@@ -30,15 +30,37 @@ impl LlmExecutor for AdoptionModel {
     }
 }
 
-/// A Host over [`AdoptionModel`] with only its built-in volatile stores.
-pub(crate) async fn adoption_host() -> SharedHost {
-    SharedHost::new(Arc::new(AdoptionModel), "stub").await
+/// The dependencies of a Host over [`AdoptionModel`] with only its built-in
+/// volatile stores.
+pub(crate) async fn adoption_dependencies() -> crate::HostDependencies {
+    crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await
 }
 
-/// [`adoption_host`] with its durable stores opened under `dir`; two calls
-/// over one `dir` are a restart of the same installation.
+/// [`adoption_dependencies`] with its durable stores opened under `dir`; two
+/// Hosts over one `dir` are a restart of the same installation.
+pub(crate) async fn adoption_dependencies_at(
+    dir: impl Into<std::path::PathBuf>,
+) -> crate::HostDependencies {
+    adoption_dependencies().await.with_store_dir(dir).await
+}
+
+/// A Host over [`adoption_dependencies`].
+pub(crate) async fn adoption_host() -> SharedHost {
+    SharedHost::from(adoption_dependencies().await)
+}
+
+/// A Host over [`adoption_dependencies`] whose dispatch transport is `store`.
+pub(crate) async fn adoption_host_over(
+    store: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
+) -> Arc<SharedHost> {
+    Arc::new(SharedHost::from(
+        adoption_dependencies().await.with_dispatch_store(store),
+    ))
+}
+
+/// A Host over [`adoption_dependencies_at`].
 pub(crate) async fn adoption_host_at(dir: impl Into<std::path::PathBuf>) -> SharedHost {
-    adoption_host().await.with_store_dir(dir).await
+    SharedHost::from(adoption_dependencies_at(dir).await)
 }
 
 pub(crate) fn test_activation(thread: &str, run: &str) -> RunActivation {
@@ -235,7 +257,10 @@ pub(super) fn complete_managed_test_host(managed: crate::ManagedHost) -> crate::
         Arc::new(crate::coordination::RecordingSessionAgentCoordination::default())
     });
     managed
-        .install_agent_coordination_application(Arc::downgrade(application))
+        .host
+        .session_application_ports()
+        .agent_coordination
+        .bind(Arc::downgrade(application))
         .expect("install one test Session application authority");
     managed
 }

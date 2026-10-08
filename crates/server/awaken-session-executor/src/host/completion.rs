@@ -444,12 +444,13 @@ pub(crate) struct CompletionRegistry {
     waiters: std::sync::Mutex<HashMap<String, Vec<ForegroundRegistration>>>,
     next_registration_id: std::sync::atomic::AtomicU64,
     hub: Arc<crate::ThreadEventHub>,
-    committed_progress: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>,
+    /// The process composition's sole wakeup for committed Run progress.
+    committed_progress: crate::CyclicPort<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Default for CompletionRegistry {
     fn default() -> Self {
-        Self::new(Arc::new(crate::ThreadEventHub::new()))
+        Self::new(Arc::new(crate::ThreadEventHub::new()), Default::default())
     }
 }
 
@@ -460,22 +461,16 @@ struct ForegroundRegistration {
 }
 
 impl CompletionRegistry {
-    pub(crate) fn new(hub: Arc<crate::ThreadEventHub>) -> Self {
+    pub(crate) fn new(
+        hub: Arc<crate::ThreadEventHub>,
+        committed_progress: crate::CyclicPort<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Self {
         Self {
             waiters: Default::default(),
             next_registration_id: std::sync::atomic::AtomicU64::new(1),
             hub,
-            committed_progress: std::sync::OnceLock::new(),
+            committed_progress,
         }
-    }
-
-    pub(crate) fn install_committed_progress_wakeup(
-        &self,
-        wakeup: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<(), &'static str> {
-        self.committed_progress
-            .set(wakeup)
-            .map_err(|_| "committed Runtime progress wakeup is already installed")
     }
 
     /// Register interest in `run_id` BEFORE it is enqueued, so the pool cannot
@@ -1122,8 +1117,13 @@ mod completion_tests {
         // | coordinator-only | exact host registry | remote settle wakes Session |
         // Mode does not alter sink identity, so pointer identity covers both rules
         // without manufacturing two deployment configurations in this unit test.
-        let host =
-            SharedHost::new(Arc::new(NoModelConfiguredExecutor), UNCONFIGURED_MODEL_REF).await;
+        let host = SharedHost::from(
+            crate::HostDependencies::ephemeral(
+                Arc::new(NoModelConfiguredExecutor),
+                UNCONFIGURED_MODEL_REF,
+            )
+            .await,
+        );
         let expected = host.completion.clone() as Arc<dyn CompletionSink>;
         let exported = host.dispatch_completion_sink();
 
@@ -1138,9 +1138,13 @@ mod completion_tests {
         // Cause/effect rule: C0 the ordinary Dispatch runtime composition is
         // present and C1 its frozen model is explicitly unconfigured. E1 context
         // creation succeeds through C0; E2 dispatch rejects C1 before enqueue.
-        let host = Arc::new(
-            SharedHost::new(Arc::new(NoModelConfiguredExecutor), UNCONFIGURED_MODEL_REF).await,
-        );
+        let host = Arc::new(SharedHost::from(
+            crate::HostDependencies::ephemeral(
+                Arc::new(NoModelConfiguredExecutor),
+                UNCONFIGURED_MODEL_REF,
+            )
+            .await,
+        ));
         let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let ctx = host
             .ctx_for("unconfigured-model", None)
@@ -1167,13 +1171,14 @@ mod completion_tests {
         // Effects: E1 C2 wakes C3 exactly once despite C1; E2 a parallel owner
         // cannot replace it. Both local and remote Workers publish through this
         // same CompletionSink, so deployment mode is not another cause.
-        let registry = CompletionRegistry::default();
+        let port = crate::CyclicPort::default();
+        let registry =
+            CompletionRegistry::new(Arc::new(crate::ThreadEventHub::new()), port.clone());
         let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = wakes.clone();
-        registry
-            .install_committed_progress_wakeup(std::sync::Arc::new(move || {
-                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }))
+        port.bind(std::sync::Arc::new(move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }) as Arc<dyn Fn() + Send + Sync>)
             .expect("C3 installs the sole wakeup");
 
         awaken_dispatch_execution::CompletionSink::settled(
@@ -1183,8 +1188,7 @@ mod completion_tests {
         );
         assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 1, "E1");
         assert!(
-            registry
-                .install_committed_progress_wakeup(std::sync::Arc::new(|| {}))
+            port.bind(std::sync::Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>)
                 .is_err(),
             "E2"
         );
@@ -1451,7 +1455,7 @@ mod completion_tests {
     #[tokio::test]
     async fn background_live_progress_uses_the_exact_thread_hub_channel() {
         let hub = Arc::new(crate::ThreadEventHub::new());
-        let registry = CompletionRegistry::new(hub.clone());
+        let registry = CompletionRegistry::new(hub.clone(), Default::default());
         let mut child = hub.subscribe("child-thread");
         let mut primary = hub.subscribe("session-root");
         let event = StreamObservation::assistant_delta(

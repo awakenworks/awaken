@@ -657,8 +657,9 @@ mod tests {
 
         let thread = "claimed-ready-durable-hand-rebuild";
         let storage = tempfile::tempdir().expect("durable Hand storage");
-        let mut raw_host = SharedHost::new(Arc::new(AdoptionModel), "stub").await;
-        raw_host.env.session_provider =
+        let mut dependencies =
+            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await;
+        dependencies.env.session_provider =
             crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
                 storage.path(),
                 false,
@@ -687,9 +688,15 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            raw_host.env.session_provider = provider.into_session_provider();
+            dependencies.env.session_provider = provider.into_session_provider();
         }
-        let host = Arc::new(raw_host.with_store_dir(storage.path()).await);
+        let dependencies = dependencies.with_store_dir(storage.path()).await;
+        let dependencies = if successor_cancellations.is_empty() {
+            dependencies
+        } else {
+            crate::host::with_test_memory_mounter(dependencies)
+        };
+        let host = Arc::new(SharedHost::from(dependencies));
         let managed = crate::host::worker_resolver::test_support::complete_managed_test_host(
             crate::ManagedHost::new(host.clone())
                 .with_resource_validator(crate::host::test_resource_validator()),
@@ -710,7 +717,6 @@ mod tests {
         let mut projection = frozen_projection();
         let memory_store = "replacement-chain-memory";
         if !successor_cancellations.is_empty() {
-            crate::host::install_test_memory_mounter(&host);
             host.memory_repository()
                 .create(memory_store, "/note.txt", "seed")
                 .await
@@ -1556,12 +1562,12 @@ mod tests {
 
         let thread = "claimed-ready-v1-preinstall-rebuild";
         let storage = tempfile::tempdir().expect("legacy rebuild storage");
-        let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub")
+        let host = Arc::new(SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
                 .await
                 .with_store_dir(storage.path())
                 .await,
-        );
+        ));
         let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
             &managed,
@@ -1657,12 +1663,12 @@ mod tests {
 
         let thread = "claimed-remote-a2a-retiring-local";
         let storage = tempfile::tempdir().expect("remote A2A guard storage");
-        let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub")
+        let host = Arc::new(SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
                 .await
                 .with_store_dir(storage.path())
                 .await,
-        );
+        ));
         let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let local_snapshot = test_activation(thread, "run-local-owner").snapshot;
         let mut local_projection = frozen_projection();

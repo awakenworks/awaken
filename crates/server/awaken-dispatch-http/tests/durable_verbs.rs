@@ -116,11 +116,11 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     let any = Arc::new(AnyDispatchStore::from_dispatch(
         mem.clone() as Arc<dyn Dispatch>
     ));
-    let host = Arc::new(
-        awaken_runtime_host_testkit::volatile_host(Arc::new(OkModel), "stub")
+    let host = Arc::new(awaken_session_executor::SharedHost::from(
+        awaken_runtime_host_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
             .await
             .with_dispatch_store(any),
-    );
+    ));
     let _managed = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     let router = durable_ops_router(host, awaken_time::system_clock());
     let thread = "t-dur";
@@ -270,11 +270,11 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
     let any = Arc::new(AnyDispatchStore::from_dispatch(
         mem.clone() as Arc<dyn Dispatch>
     ));
-    let host = Arc::new(
-        awaken_runtime_host_testkit::volatile_host(Arc::new(OkModel), "stub")
+    let host = Arc::new(awaken_session_executor::SharedHost::from(
+        awaken_runtime_host_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
             .await
             .with_dispatch_store(any),
-    );
+    ));
     let thread = "cold-monitor";
     mem.enqueue(RunDispatch::new(activation("run-dead", thread)))
         .await

@@ -125,14 +125,14 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
     let recorder = ToolFaceRecorder::default();
     let observed = recorder.0.clone();
     let storage = tempfile::tempdir().expect("selected Skill fixture storage");
-    let host = Arc::new(
-        SharedHost::new(Arc::new(recorder), "stub")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(recorder), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
             .await
             .with_agent_publications(publications.clone()),
-    );
+    ));
     let managed = managed_with_resource_source(host.clone());
     let version = frozen_skill_version(selected, selected, "release", "Say READY.", &[]);
     install_pinned_managed_skill_session(
@@ -219,14 +219,14 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
     let missing_recorder = ToolFaceRecorder::default();
     let missing_observed = missing_recorder.0.clone();
     let missing_storage = tempfile::tempdir().expect("missing Skill fixture storage");
-    let missing_host = Arc::new(
-        SharedHost::new(Arc::new(missing_recorder), "stub")
+    let missing_host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(missing_recorder), "stub")
             .await
             .with_skill_store(missing_storage.path().join("skills"))
             .with_store_dir(missing_storage.path())
             .await
             .with_agent_publications(publications),
-    );
+    ));
     let missing_managed = managed_with_resource_source(missing_host.clone());
     let missing = install_pinned_managed_skill_session(
         &missing_host,
@@ -308,8 +308,8 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
     };
-    let host = Arc::new(
-        SharedHost::new(Arc::new(BrainSkillModel), "stub")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(BrainSkillModel), "stub")
             .await
             .with_skills(vec![awaken_ext_skills::SkillSpec::new(
                 "think",
@@ -317,7 +317,7 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
                 "reason",
                 "Think carefully.",
             )]),
-    );
+    ));
     let thread = "direct-deferred-brain";
     host.install_environment_projection(thread, &on_tool_use_environment())
         .unwrap();
@@ -391,12 +391,12 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
         ..awaken_ext_skills::SkillSpec::new("think", "Think", "reason", "Think carefully.")
     };
     let storage = tempfile::tempdir().expect("Managed Skill authority test storage");
-    let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skills(vec![host_static])
             .with_skill_store(storage.path().join("skills")),
-    );
+    ));
     let durable = frozen_skill_version(
         "cached",
         "Cached",
@@ -496,7 +496,9 @@ async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
     // E2 exactly one Environment is persisted. Constraint/Invariant: placement
     // precedes Hand execution. Decision rule: exercise C1 and assert E1 ordering/E2.
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(SharedHost::new(Arc::new(HandReadModel), "stub").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(HandReadModel), "stub").await,
+    ));
     install_test_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
     managed
@@ -557,13 +559,13 @@ async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
 #[tokio::test]
 async fn managed_filesystem_skill_path_survives_deferred_reservation() {
     let storage = tempfile::tempdir().expect("deferred Skill fixture storage");
-    let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
             .await,
-    );
+    ));
     let managed = managed_with_resource_source(host.clone());
     let version = frozen_skill_version(
         "release-signal",
@@ -760,11 +762,11 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
 
     let storage = tempfile::tempdir().expect("storage");
     let skill_store = storage.path().join("skills");
-    let catalog_host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub")
+    let catalog_host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(skill_store.clone()),
-    );
+    ));
     let workspace = catalog_host.local_workspace().to_string();
     let files = vec![
         SkillBundleFile {
@@ -809,13 +811,13 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
         .expect("create Skill");
     drop(catalog_host);
 
-    let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(skill_store)
             .with_store_dir(storage.path())
             .await,
-    );
+    ));
     assert!(
         host.tools.skills.cache_snapshot_in(&workspace).is_empty(),
         "L8 starts from a cold process cache"

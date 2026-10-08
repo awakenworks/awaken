@@ -149,7 +149,7 @@ async fn interrupt_with_admission_suspended(
         hold_after_signal,
         release: tokio::sync::Notify::new(),
     });
-    let mut host = SharedHost::new(Arc::new(OkModel), "stub")
+    let mut host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_dispatch_store(dispatch.clone())
         .with_remote_attempt_executor(RemoteAttemptInstallation {
@@ -160,7 +160,7 @@ async fn interrupt_with_admission_suspended(
     // ordinary foreground-ingress choice. Mirror the scenario-host topology:
     // direct foreground plus a co-located process pool.
     host.deployment.durable = false;
-    let host = Arc::new(host);
+    let host = Arc::new(SharedHost::from(host));
     install_recording_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
     host.ensure_dispatch_pool();

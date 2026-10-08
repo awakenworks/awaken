@@ -1406,7 +1406,7 @@ impl WorkerNode {
             ))
             .with_stream_publisher(stream_publisher)
             .with_terminal_cleanup_control(session_control.clone());
-        let mut host = SharedHost::new_worker_with_deployment(
+        let mut deps = awaken_session_executor::HostDependencies::for_worker(
             Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
             "worker",
             remote_files,
@@ -1428,25 +1428,25 @@ impl WorkerNode {
         .with_web_search_provider_registry(application.web_providers)
         .with_admin_tools(self.admin_tools);
         if let Some(remote_attempt) = self.remote_attempt {
-            host = host.with_remote_attempt_executor(remote_attempt);
+            deps = deps.with_remote_attempt_executor(remote_attempt);
         }
         if let Some(materializer) = &application.inference {
-            host = host.with_inference_materializer(materializer.clone());
+            deps = deps.with_inference_materializer(materializer.clone());
         }
         if let Some(resolver) = &self.credential_observation_resolver {
-            host = host.with_worker_credential_resolver(resolver.clone());
+            deps = deps.with_worker_credential_resolver(resolver.clone());
         }
         if let Some(decorator) = application.attempt_decorator {
-            host = host.with_attempt_decorator(decorator);
+            deps = deps.with_attempt_decorator(decorator);
         }
-        host = host
+        deps = deps
             .with_session_control(session_control.clone())
             .with_environment_binding_sink(session_control);
         if let Some(gate) = self.tool_gate {
-            host = host.with_gate_override(gate);
+            deps = deps.with_gate_override(gate);
         }
         if let Some(memory_mounter) = memory_mounter {
-            host.install_memory_mounter(memory_mounter);
+            deps = deps.with_memory_mounter(memory_mounter);
         }
 
         let session_environment_provider = self
@@ -1458,8 +1458,8 @@ impl WorkerNode {
                 .hand_executor_factory
                 .clone()
                 .expect("container provider was validated with a hand factory");
-            host = awaken_execution_composition::install_container_environment_components(
-                host,
+            deps = awaken_execution_composition::install_container_environment_components(
+                deps,
                 awaken_execution_composition::ContainerEnvironmentComponents {
                     provider: installed.provider,
                     capacity: installed.capacity,
@@ -1470,30 +1470,30 @@ impl WorkerNode {
             );
         }
         if let Some(store) = application.checkpoint_store {
-            host = host.with_environment_checkpoint_store(store);
+            deps = deps.with_environment_checkpoint_store(store);
         }
         if let Some(credentials) = managed_credential_materializer.clone() {
-            host = host.with_credential_materializer(credentials);
+            deps = deps.with_credential_materializer(credentials);
         }
         if let Some(issuer) = self.mcp_relay_outbound_proxy {
-            host = host.with_mcp_relay_outbound_proxy(issuer);
+            deps = deps.with_mcp_relay_outbound_proxy(issuer);
         }
         // Serve only the ACP CLI capability this worker advertises. The run's snapshot
         // selects the matching backend and supplies its published provider access.
-        host = awaken_execution_composition::with_session_environment_from_deployment(
-            host,
+        deps = awaken_execution_composition::with_session_environment_from_deployment(
+            deps,
             self.hand_executor_factory,
             &awaken_execution_composition::ContainerTierPolicy::default(),
         )
         .await
         .map_err(std::io::Error::other)?;
-        host = awaken_execution_composition::with_acp_from_deployment(
-            host,
+        deps = awaken_execution_composition::with_acp_from_deployment(
+            deps,
             self.credential_materializer,
             self.brokered_acp_model_access,
         );
         if let Some((_, backend)) = &self.prepared_local_sandbox {
-            let installed = host.installed_session_environment_provider().realizer().capabilities();
+            let installed = deps.installed_session_environment_provider().realizer().capabilities();
             if installed != self.manifest.sandbox {
                 return Err(std::io::Error::other(format!(
                     "effective local Session provider changed after Worker registration for {backend}; refusing Ready"
@@ -1503,7 +1503,7 @@ impl WorkerNode {
         }
 
         let authority = Arc::new(lifecycle::WorkerAuthorityProof::default());
-        let host = Arc::new(host.with_execution_authority(authority.clone()));
+        let host = Arc::new(SharedHost::from(deps.with_execution_authority(authority.clone())));
         host.prepare_container_mcp_relay().await.map_err(|error| {
             std::io::Error::other(format!(
                 "container MCP relay transport failed before Ready: {error}"

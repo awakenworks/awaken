@@ -19,23 +19,6 @@ pub(crate) struct DispatchCapability {
     /// host wiring plus Resource/credential SPIs, so installing it cannot create
     /// an `Arc<SharedHost>` cycle or a second Vault/materialization path.
     pub(crate) dispatch_session_runtime: std::sync::RwLock<Option<crate::DispatchSessionRuntime>>,
-    /// Weak composition edge to the Session application's sole coordination
-    /// admission owner. This is executable wiring only; it contains no roster,
-    /// Thread relationship, operation receipt, or lifecycle state.
-    pub(crate) agent_coordination: std::sync::RwLock<
-        Option<std::sync::Weak<dyn awaken_session_execution_contract::SessionAgentCoordination>>,
-    >,
-    /// Weak composition edge to the existing Session Run admission owner.
-    /// BackgroundTask completion uses this port only to publish a deterministic
-    /// same-Thread attention Run; task lifecycle and result truth remain in
-    /// committed Thread State.
-    pub(crate) session_background_runs: std::sync::RwLock<
-        Option<
-            std::sync::Weak<
-                dyn awaken_session_application_contract::SessionRunBackgroundApplication,
-            >,
-        >,
-    >,
     /// The process-level dispatch pool (O2), spawned once by `mount` when durable
     /// ingress is enabled. It is the sole claimer of the one shared queue and drives
     /// every session's runs by routing each claimed run back to the worker that owns
@@ -53,17 +36,35 @@ pub(crate) struct DispatchCapability {
         crate::host::terminal_reconciliation::TerminalReconciliationState,
 }
 
-impl DispatchCapability {
-    /// No transport, no pool yet, and the CPU-derived sizing: `mount` spawns
-    /// the pool and a registered Worker replaces the sizing.
-    pub(in crate::host) fn new() -> Self {
+/// The dispatch transport and pool sizing a composition selects before the
+/// Host exists. Consumer: [`crate::HostDependencies`], which turns it into the
+/// Host's [`DispatchCapability`].
+pub(crate) struct DispatchSelection {
+    /// See [`DispatchCapability::dispatch_store_override`].
+    pub(crate) dispatch_store_override: Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>>,
+    /// See [`DispatchCapability::dispatch_pool_sizing`].
+    pub(crate) dispatch_pool_sizing: DispatchPoolSizing,
+}
+
+impl Default for DispatchSelection {
+    /// No transport and the CPU-derived sizing; a registered Worker replaces
+    /// the sizing.
+    fn default() -> Self {
         Self {
             dispatch_store_override: None,
-            dispatch_session_runtime: std::sync::RwLock::new(None),
-            agent_coordination: std::sync::RwLock::new(None),
-            session_background_runs: std::sync::RwLock::new(None),
-            dispatch_pool: std::sync::OnceLock::new(),
             dispatch_pool_sizing: DispatchPoolSizing::local_parallelism(),
+        }
+    }
+}
+
+impl DispatchCapability {
+    /// The selected transport and sizing, with no pool yet: `mount` spawns it.
+    pub(in crate::host) fn new(selection: DispatchSelection) -> Self {
+        Self {
+            dispatch_store_override: selection.dispatch_store_override,
+            dispatch_session_runtime: std::sync::RwLock::new(None),
+            dispatch_pool: std::sync::OnceLock::new(),
+            dispatch_pool_sizing: selection.dispatch_pool_sizing,
             terminal_reconciliation: Default::default(),
         }
     }
@@ -77,9 +78,9 @@ impl DispatchCapability {
 /// against it; installing a locally guessed number instead is exactly the
 /// "registered value nobody consumed" divergence, and it used to be invisible
 /// because both numbers had the same type. Now the CPU guess is a named branch
-/// that only [`SharedHost::new`] can produce, and [`Registered`] is reachable
-/// only by moving a [`RegisteredCapacity`] into
-/// [`SharedHost::with_worker_dispatch`].
+/// that only an unregistered composition produces, and [`Registered`] is
+/// reachable only by moving a [`RegisteredCapacity`] into
+/// [`crate::HostDependencies::with_worker_dispatch`].
 ///
 /// [`Registered`]: DispatchPoolSizing::Registered
 /// [`RegisteredCapacity`]: awaken_dispatch_contract::RegisteredCapacity
@@ -124,65 +125,6 @@ impl DispatchPoolSizing {
 }
 
 impl SharedHost {
-    /// Install the exact durable dispatch transport owned by this host startup.
-    ///
-    /// An explicitly assembled queue is already the authority for ingress, so it
-    /// also enables this host's dispatch pool. Embedders do not need to mutate the
-    /// another process-global configuration source to activate a transport they
-    /// supplied directly.
-    #[must_use]
-    pub fn with_dispatch_store(
-        mut self,
-        store: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
-    ) -> Self {
-        self.dispatch.dispatch_store_override = Some(store);
-        self.deployment.durable = true;
-        self.deployment.disable_local_pool = false;
-        self
-    }
-
-    /// Install the exact durable dispatch transport for a Coordinator-only Host.
-    ///
-    /// Unlike [`Self::with_dispatch_store`], this topology owns admission and
-    /// completion observation but never drains the queue or realizes a Session
-    /// Environment. A separately registered Worker is the sole physical effect
-    /// owner. Keeping this as one constructor prevents call ordering from silently
-    /// re-enabling the local pool after a startup selected remote placement.
-    #[must_use]
-    pub fn with_coordinator_dispatch_store(
-        mut self,
-        store: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
-    ) -> Self {
-        self.dispatch.dispatch_store_override = Some(store);
-        self.deployment.durable = true;
-        self.deployment.disable_local_pool = true;
-        self
-    }
-
-    /// Install the dispatch service together with the capacity its Worker
-    /// registered. CPU quota governs CPU time, not the number of concurrent
-    /// I/O-bound Session preparations, so the registered manifest — never a
-    /// local guess — is the Worker capacity authority.
-    ///
-    /// The capacity is taken by value: a Worker that reads
-    /// [`RegisteredCapacity::of`] and does not reach this installer gets an
-    /// `unused_must_use` diagnostic instead of a pool that quietly disagrees
-    /// with the registry.
-    ///
-    /// [`RegisteredCapacity::of`]: awaken_dispatch_contract::RegisteredCapacity::of
-    #[must_use]
-    pub fn with_worker_dispatch(
-        mut self,
-        dispatch: Arc<dyn awaken_dispatch_contract::Dispatch>,
-        capacity: awaken_dispatch_contract::RegisteredCapacity,
-    ) -> Self {
-        self.dispatch.dispatch_pool_sizing =
-            crate::DispatchPoolSizing::Registered(capacity.into_slots());
-        self.with_dispatch_store(Arc::new(
-            awaken_dispatch_erasure::AnyDispatchStore::from_dispatch(dispatch),
-        ))
-    }
-
     pub fn dispatch_store(
         &self,
     ) -> Result<Arc<awaken_dispatch_erasure::AnyDispatchStore>, HostError> {

@@ -93,9 +93,9 @@ async fn independent_coordinators_converge_after_binding_replacement_and_reject_
 
     let mut hosts = Vec::new();
     for _ in 0..3 {
-        hosts.push(Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").await,
-        ));
+        hosts.push(Arc::new(SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await,
+        )));
     }
     let managed: Vec<_> = hosts
         .iter()
