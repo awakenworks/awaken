@@ -301,6 +301,28 @@ class ProfileTests(unittest.TestCase):
             "formal/tla/SessionExecutionReplacement.tla",
         ], "R2: official Chain command must match the green mutation baseline")
 
+    def test_k8s_observation_gate_uses_the_single_shared_baseline_owner(self):
+        # KCI cause/effect table: C1 one exact existing mutation CLI invocation;
+        # C2 no independent K8s JVM baseline. R1 C1+C2 => the shared TLC oracle
+        # checks the full positive model once before semantic mutants/witnesses.
+        # R2 absent/duplicate CLI or parallel JVM => this linkage test fails.
+        # The family test owns full CFG/bounds/profile; the adjacent TLC oracle
+        # tests own rejection of bad baseline, wrong failure and tool timeout.
+        root = Path(__file__).resolve().parents[2]
+        gate = (root / "scripts/ci/check_formal.sh").read_text()
+        commands = [shlex.split(line, comments=True)
+                    for line in gate.replace("\\\n", " ").splitlines()]
+        flag = "--k8s-process-observation-model-mutants"
+        self.assertEqual([command for command in commands if flag in command], [[
+            "python3", "scripts/ci/check_formal_mutations.py", flag, "$tla_jar",
+        ]], "R2: one canonical K8s positive/negative owner")
+        model_paths = {"formal/tla/K8sProcessObservation.cfg",
+                       "formal/tla/K8sProcessObservation.tla"}
+        self.assertFalse(any(command and command[0] == "java"
+                             and model_paths.intersection(command)
+                             for command in commands),
+                         "R2: no duplicate standalone positive baseline")
+
     def test_absent_guardrail_profiles_preserve_legacy_qualification(self):
         # Cause/effect graph: C1 promotion field is absent or an empty list;
         # C2 promotion field has the wrong type. E1 legacy feature requirements
