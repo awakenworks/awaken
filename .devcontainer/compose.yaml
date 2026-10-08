@@ -1,0 +1,49 @@
+services:
+  workspace:
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ..:/workspaces/awaken:cached
+      - rust-registry:/usr/local/cargo/registry
+      - rust-git:/usr/local/cargo/git
+      - rust-tools:/usr/local/cargo/bin
+      - rust-target:/workspaces/awaken/target
+      - node-root:/workspaces/awaken/node_modules
+      - node-web:/workspaces/awaken/web/node_modules
+      - node-e2e:/workspaces/awaken/e2e/node_modules
+      - node-managed:/workspaces/awaken/packages/managed-sdk-oracle/node_modules
+      - node-projection:/workspaces/awaken/packages/managed-session-projection/node_modules
+      - node-store:/pnpm/store
+    environment:
+      CARGO_TARGET_DIR: /workspaces/awaken/target
+      CARGO_BUILD_BUILD_DIR: /workspaces/awaken/target
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_BUILD_JOBS: "2"
+      AWAKEN_TEST_DATABASE_URL: postgres://postgres:awaken-test-only@postgres:5432/awaken_test # awaken-allow: secret (disposable fixture)
+      AWAKEN_TEST_REQUIRE_POSTGRES: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+  postgres:
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    environment:
+      POSTGRES_PASSWORD: awaken-test-only # awaken-allow: secret (disposable fixture)
+      POSTGRES_DB: awaken_test
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d awaken_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+volumes:
+  rust-registry:
+  rust-git:
+  rust-tools:
+  rust-target:
+  node-root:
+  node-web:
+  node-e2e:
+  node-managed:
+  node-projection:
+  node-store:

@@ -25,6 +25,14 @@ if [[ "$linux_supervision" == true ]]; then
   cargo test -p awaken-sandbox --test linux_scoped
 fi
 
+# SQLite crash/replay contracts are native process/filesystem obligations too.
+# Every OS matrix row must run them; the PostgreSQL lane independently runs the
+# identical domain assertions against its mandatory live network database.
+cargo test --locked -p awaken-session-store --test process_crash_outbox \
+  -p awaken-config-store --test process_crash_audit \
+  -p awaken-credential-store --features sqlite,sealed-aead,test-support \
+  --test process_crash_creation --test process_crash_managed_creation -- --test-threads=1
+
 # Cause/effect matrix: provider={Workdir,sandbox-absolute}, cwd={default,nested},
 # separator={POSIX,Windows}, candidate cwd={equal,different}. Effects: one
 # process/ACP/prompt view; platform-native relative prompt paths; mismatched
