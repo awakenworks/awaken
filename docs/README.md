@@ -72,6 +72,8 @@ or require non-Apache terms for implementing it.
    [../formal/README.md](../formal/README.md) when changing runtime/run-ingress
    lifecycle rules.
 7. Use the theme docs only for the area you are changing.
+   Use [design/test-validation.md](design/test-validation.md) for strict test
+   design, execution tiers, native OS validation and coverage interpretation.
 8. Update [STATUS.md](STATUS.md) when a design slice becomes implemented or moves
    out of scope.
 
