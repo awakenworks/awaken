@@ -249,7 +249,7 @@
     "awaken-cli::control_component.rs::prepare_control_routers": 243,
     "awaken-cli::deployment_process.rs::prepare_runtime_process_with_coordinator_services_and_installations": 219,
     "awaken-cli::process_stores.rs::open_process_stores": 396,
-    "awaken-cli::runtime_process_router.rs::prepare_runtime_routers": 828,
+    "awaken-cli::runtime_process_router.rs::prepare_runtime_routers": 827,
     "awaken-cli::service.rs::serve_prepared_process": 234,
     "awaken-config-service::managed_agent.rs::agent_config_from_managed": 179,
     "awaken-config-service::publication.rs::prepare_agent_publication": 174,
@@ -347,7 +347,7 @@
     "awaken-runtime::engine/run_loop.rs::infer_step": 240,
     "awaken-runtime::engine/run_loop.rs::run_agent_loop": 212,
     "awaken-sandbox-container::k8s.rs::build_pod_with_continuation": 309,
-    "awaken-sandbox-container::k8s.rs::remove_bound": 207,
+    "awaken-sandbox-container::k8s.rs::remove_bound": 203,
     "awaken-sandbox-container::k8s_package_image.rs::build_objects": 229,
     "awaken-sandbox-container::k8s_package_realization.rs::verify_k8s_package_realization": 194,
     "awaken-sandbox-container::lib.rs::resolve_and_stage": 164,
@@ -387,8 +387,7 @@
     "awaken-session-store::postgres.rs::commit": 151,
     "awaken-session-store::sqlite.rs::commit": 155,
     "awaken-store-postgres::lib.rs::recovery_snapshot": 194,
-    "awaken-worker::lib.rs::build": 208,
-    "awaken-worker::lib.rs::run_until": 577,
+    "awaken-worker::lib.rs::run_until": 575,
     "awaken-worker::lifecycle.rs::renew_registry_authority": 176
   }
 }

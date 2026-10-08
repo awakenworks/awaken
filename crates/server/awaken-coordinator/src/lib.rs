@@ -1271,6 +1271,23 @@ async fn mount_with_managed_over(
     )
 }
 
+fn registered_worker_transport_with_broker(
+    dispatch: Router,
+    resources: Router,
+    commit: Arc<awaken_dispatch_http::ClaimedCommitHttpService>,
+    environment_warmups: Router,
+    broker: Option<Router>,
+) -> Router {
+    let transport = awaken_dispatch_http::registered_worker_transport_router_with_services(
+        dispatch, resources, commit,
+    )
+    .merge(environment_warmups);
+    match broker {
+        Some(broker) => transport.merge(broker),
+        None => transport,
+    }
+}
+
 async fn mount_with_managed_over_and_models(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
@@ -1650,17 +1667,13 @@ async fn mount_with_managed_over_and_models(
         worker_authenticator,
         worker_clock.clone(),
     ));
-    let worker_transport =
-        awaken_dispatch_http::registered_worker_transport_router_with_services(
-            dispatch_router,
-            resource_worker,
-            commit,
-        )
-        .merge(environment_warmups);
-    let worker_transport = match worker_create_broker_router {
-        Some(broker) => worker_transport.merge(broker),
-        None => worker_transport,
-    };
+    let worker_transport = registered_worker_transport_with_broker(
+        dispatch_router,
+        resource_worker,
+        commit,
+        environment_warmups,
+        worker_create_broker_router,
+    );
     // The Models API (`/v1/models`) over the deployment's model directory.
     let models = model_inventory.map_or_else(
         || models_router(std::sync::Arc::new(Vec::new())),
@@ -1676,9 +1689,8 @@ async fn mount_with_managed_over_and_models(
         worker_directory.clone(),
         worker_clock.clone(),
     ));
-    let router = with_local_workspace_scope(router, local_workspace);
-    let worker_transport =
-        with_local_workspace_scope(worker_transport, host.local_workspace().to_string());
+    let router = with_local_workspace_scope(router, local_workspace.clone());
+    let worker_transport = with_local_workspace_scope(worker_transport, local_workspace);
     Ok((
         managed,
         router,

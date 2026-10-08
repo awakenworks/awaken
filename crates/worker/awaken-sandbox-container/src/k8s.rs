@@ -1428,44 +1428,15 @@ impl K8sRuntime {
             Err(error) => return Err(backend(error)),
         };
         admit()?;
-        let guarded_original = observed_pod.as_ref().is_some_and(|pod| {
-            pod.metadata.finalizers.as_ref().is_some_and(|values| {
-                values
-                    .iter()
-                    .any(|value| value == create_ledger::ORIGINAL_GUARD_FINALIZER)
-            })
-        });
-        if guarded_original && !release_original_guard {
-            return Err(backend(
-                "brokered original Pod needs its durable handle before guard release",
-            ));
-        }
-        let pod_claim_uid = observed_pod
-            .as_ref()
-            .and_then(continuation::bound_claim_uid)
-            .map(str::to_owned);
-        match (&observed_pod, persisted_pod_uid) {
-            (None, _) => {}
-            (Some(_), None) => {
-                return Err(backend(
-                    "Kubernetes Sandbox deletion requires a persisted Pod UID",
-                ));
-            }
-            (Some(pod), Some(expected)) if pod.metadata.uid.as_deref() != Some(expected) => {
-                return Err(backend(
-                    "Kubernetes Sandbox Pod incarnation changed before deletion",
-                ));
-            }
-            (Some(_), Some(_)) => {}
-        }
-        if persisted_pod_uid.is_some()
-            && observed_pod.is_some()
-            && persisted_claim_uid != pod_claim_uid.as_deref()
-        {
-            return Err(backend(
-                "Sandbox Pod continuation PVC differs from its persisted incarnation evidence",
-            ));
-        }
+        let guarded_original = create_ledger::original_guard_release_required(
+            observed_pod.as_ref(),
+            release_original_guard,
+        )?;
+        let pod_claim_uid = continuation::validated_bound_pod_claim_uid(
+            observed_pod.as_ref(),
+            persisted_pod_uid,
+            persisted_claim_uid,
+        )?;
         let expected_claim_uid = persisted_claim_uid.or(pod_claim_uid.as_deref());
         if self.continuation_volume.is_some() && expected_claim_uid.is_none() {
             let claim_name = continuation_claim_for_pod(container_id)?;

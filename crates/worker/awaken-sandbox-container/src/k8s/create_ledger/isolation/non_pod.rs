@@ -93,6 +93,62 @@ fn inert_template_spec(value: &Value, restart: &str, affinity: bool) -> bool {
             .is_some_and(|containers| containers.len() == 1 && inert_container(&containers[0]))
 }
 
+fn exact_daemonset_reservation(value: &Value, id: &str) -> bool {
+    let terms = value.pointer("/spec/template/spec/affinity/nodeAffinity/requiredDuringSchedulingIgnoredDuringExecution/nodeSelectorTerms");
+    only_keys(
+        value.pointer("/spec"),
+        &["selector", "template", "updateStrategy", "revisionHistoryLimit"],
+    ) && value
+        .pointer("/spec/revisionHistoryLimit")
+        .is_none_or(|limit| limit == 10)
+        && value
+            .pointer("/spec/updateStrategy")
+            .is_none_or(|strategy| {
+                strategy
+                    == &json!({
+                        "type":"RollingUpdate","rollingUpdate":{"maxSurge":0,"maxUnavailable":1}
+                    })
+            })
+        && only_keys(value.pointer("/spec/template"), &["metadata", "spec"])
+        && only_keys(
+            value.pointer("/spec/template/metadata"),
+            &["creationTimestamp", "labels"],
+        )
+        && value
+            .pointer("/spec/template/metadata/creationTimestamp")
+            .is_none_or(Value::is_null)
+        && value
+            .pointer("/spec/template/spec")
+            .is_some_and(|spec| inert_template_spec(spec, "Always", true))
+        && value
+            .pointer("/spec/template/spec/affinity")
+            .is_some_and(|affinity| only_keys(Some(affinity), &["nodeAffinity"]))
+        && value
+            .pointer("/spec/template/spec/affinity/nodeAffinity")
+            .is_some_and(|affinity| {
+                only_keys(Some(affinity), &["requiredDuringSchedulingIgnoredDuringExecution"])
+            })
+        && value
+            .pointer("/spec/template/spec/affinity/nodeAffinity/requiredDuringSchedulingIgnoredDuringExecution")
+            .is_some_and(|required| only_keys(Some(required), &["nodeSelectorTerms"]))
+        && terms
+            == Some(&json!([{"matchExpressions":[
+                {"key":"awaken.dev/create-isolation-node","operator":"Exists"},
+                {"key":"awaken.dev/create-isolation-node","operator":"DoesNotExist"}
+            ]}]))
+        && value.pointer("/spec/selector")
+            == Some(&json!({"matchLabels":{"awaken.dev/create-isolation-child":id}}))
+        && value.pointer("/spec/template/metadata/labels")
+            == Some(&json!({"awaken.dev/create-isolation-child":id}))
+        && ["desiredNumberScheduled", "currentNumberScheduled", "numberReady"]
+            .into_iter()
+            .all(|field| {
+                value
+                    .pointer(&format!("/status/{field}"))
+                    .is_none_or(|count| count == 0 || count.is_null())
+            })
+}
+
 fn other_resource(resource: &str) -> Result<ApiResource, RuntimeError> {
     let (group, kind) = match resource {
         "persistentvolumeclaims" => ("", "PersistentVolumeClaim"),
@@ -319,49 +375,7 @@ fn exact_other_reservation(
                     .pointer("/spec/template/spec")
                     .is_some_and(|spec| inert_template_spec(spec, "Never", false))
         }
-        "daemonsets" => {
-            let terms = value.pointer("/spec/template/spec/affinity/nodeAffinity/requiredDuringSchedulingIgnoredDuringExecution/nodeSelectorTerms");
-            only_keys(value.pointer("/spec"), &[
-                "selector", "template", "updateStrategy", "revisionHistoryLimit",
-            ])
-                && value.pointer("/spec/revisionHistoryLimit").is_none_or(|limit| limit == 10)
-                && value.pointer("/spec/updateStrategy").is_none_or(|strategy| strategy == &json!({
-                    "type":"RollingUpdate","rollingUpdate":{"maxSurge":0,"maxUnavailable":1}
-                }))
-                && only_keys(value.pointer("/spec/template"), &["metadata", "spec"])
-                && only_keys(value.pointer("/spec/template/metadata"), &["creationTimestamp", "labels"])
-                && value.pointer("/spec/template/metadata/creationTimestamp").is_none_or(Value::is_null)
-                && value.pointer("/spec/template/spec")
-                    .is_some_and(|spec| inert_template_spec(spec, "Always", true))
-                && value.pointer("/spec/template/spec/affinity").is_some_and(|affinity|
-                    only_keys(Some(affinity), &["nodeAffinity"]))
-                && value.pointer("/spec/template/spec/affinity/nodeAffinity").is_some_and(|affinity|
-                    only_keys(Some(affinity), &["requiredDuringSchedulingIgnoredDuringExecution"]))
-                && value.pointer("/spec/template/spec/affinity/nodeAffinity/requiredDuringSchedulingIgnoredDuringExecution")
-                    .is_some_and(|required| only_keys(Some(required), &["nodeSelectorTerms"]))
-                && terms
-                == Some(&json!([{"matchExpressions":[
-                    {"key":"awaken.dev/create-isolation-node","operator":"Exists"},
-                    {"key":"awaken.dev/create-isolation-node","operator":"DoesNotExist"}
-                ]}]))
-                && value.pointer("/spec/selector") == Some(&json!({"matchLabels":{
-                    "awaken.dev/create-isolation-child":id
-                }}))
-                && value.pointer("/spec/template/metadata/labels") == Some(&json!({
-                    "awaken.dev/create-isolation-child":id
-                }))
-                && [
-                    "desiredNumberScheduled",
-                    "currentNumberScheduled",
-                    "numberReady",
-                ]
-                .into_iter()
-                .all(|field| {
-                    value
-                        .pointer(&format!("/status/{field}"))
-                        .is_none_or(|count| count == 0 || count.is_null())
-                })
-        }
+        "daemonsets" => exact_daemonset_reservation(&value, id),
         _ => false,
     }
 }

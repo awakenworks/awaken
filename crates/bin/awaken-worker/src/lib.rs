@@ -47,6 +47,23 @@ async fn request_registered_kubernetes_pod_replacement(worker_id: &str) -> Resul
         .map_err(|error| error.to_string())
 }
 
+#[cfg(feature = "container-k8s")]
+async fn await_registered_kubernetes_pod_replacement(worker_id: &str) {
+    let mut attempts = 0_u64;
+    loop {
+        match request_registered_kubernetes_pod_replacement(worker_id).await {
+            Ok(()) => break,
+            Err(error) => {
+                if attempts.is_multiple_of(10) {
+                    eprintln!("worker Pod replacement intent pending: {error}");
+                }
+                attempts = attempts.saturating_add(1);
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
 mod acp_capability;
 mod admin;
 mod attempt_decorator;
@@ -61,9 +78,8 @@ mod relay_hand;
 
 use credential_liveness::WorkerObservationCache;
 use lifecycle::{
-    WorkerSupervisor, grace_window, new_incarnation_id, spawn_environment_warmup_reconciliation,
-    spawn_heartbeat, spawn_session_preparation_reconciliation,
-    spawn_session_realization_reconciliation,
+    WorkerSupervisor, grace_window, spawn_environment_warmup_reconciliation, spawn_heartbeat,
+    spawn_session_preparation_reconciliation, spawn_session_realization_reconciliation,
 };
 use manifest::{
     CredentialMaterializerSupport, ManifestSelection, ManifestSource, ResourceManifestSupport,
@@ -774,8 +790,7 @@ impl WorkerNodeBuilder {
         self
     }
 
-    /// Validate the immutable topology without registering or starting work.
-    pub fn build(mut self) -> Result<WorkerNode, WorkerNodeBuildError> {
+    fn validate_build_topology(&self) -> Result<(), WorkerNodeBuildError> {
         self.deployment
             .validate_local_execution()
             .map_err(WorkerNodeBuildError)?;
@@ -847,6 +862,12 @@ impl WorkerNodeBuilder {
                 "container execution requires an installed hand executor factory".to_string(),
             ));
         }
+        Ok(())
+    }
+
+    /// Validate the immutable topology without registering or starting work.
+    pub fn build(mut self) -> Result<WorkerNode, WorkerNodeBuildError> {
+        self.validate_build_topology()?;
         let credential_observation_resolver = self.worker_local_credential_resolver.clone();
         // `disable_local_pool` names the Serve process's co-located executor pool.
         // A WorkerNode instead owns one mandatory registered remote claim pool, so
@@ -1279,10 +1300,58 @@ fn configured_container_acp_capability_source(
     )))
 }
 
+async fn start_admin_surface(
+    admin_listen: Option<String>,
+    lifecycle: Arc<WorkerSupervisor>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let admin_addr = admin_listen?;
+    match tokio::net::TcpListener::bind(&admin_addr).await {
+        Ok(listener) => {
+            let router = admin::worker_admin_router_with_lifecycle(lifecycle);
+            eprintln!(
+                "awaken-worker admin surface on {admin_addr} (/readyz /metrics /admin/drain)"
+            );
+            Some(tokio::spawn(async move {
+                if let Err(error) = axum::serve(listener, router).await {
+                    eprintln!("awaken-worker admin server exited: {error}");
+                }
+            }))
+        }
+        Err(error) => {
+            eprintln!("awaken-worker admin surface disabled (bind {admin_addr}: {error})");
+            None
+        }
+    }
+}
+
 impl WorkerNode {
     #[must_use]
     pub fn manifest(&self) -> &WorkerManifest {
         &self.manifest
+    }
+
+    fn selected_container_policy(
+        &self,
+    ) -> Result<awaken_execution_composition::ContainerTierPolicy, std::io::Error> {
+        let policy = awaken_execution_composition::ContainerTierPolicy::default();
+        #[cfg(feature = "container-k8s")]
+        {
+            if self.deployment.sandbox_tier == awaken_session_executor::SandboxTier::K8s
+                && self.k8s_create_client.is_none()
+            {
+                return Err(std::io::Error::other(
+                    "Kubernetes Worker requires its brokered Create provider before registration",
+                ));
+            }
+            Ok(policy_with_k8s_create_client(
+                policy,
+                self.k8s_create_client.as_ref(),
+            ))
+        }
+        #[cfg(not(feature = "container-k8s"))]
+        {
+            Ok(policy)
+        }
     }
 
     /// Register, enter Ready, run until SIGINT/SIGTERM, then drain, quiesce, and
@@ -1334,30 +1403,13 @@ impl WorkerNode {
             >,
     {
         let mut deployment = self.deployment.clone();
-        #[cfg(feature = "container-k8s")]
-        if deployment.sandbox_tier == awaken_session_executor::SandboxTier::K8s
-            && self.k8s_create_client.is_none()
-        {
-            return Err(std::io::Error::other(
-                "Kubernetes Worker requires its brokered Create provider before registration",
-            )
-            .into());
-        }
-        let container_policy = awaken_execution_composition::ContainerTierPolicy::default();
-        #[cfg(feature = "container-k8s")]
-        let container_policy =
-            policy_with_k8s_create_client(container_policy, self.k8s_create_client.as_ref());
+        let container_policy = self.selected_container_policy()?;
         #[cfg(feature = "container-k8s")]
         let k8s_create_client = self.k8s_create_client.clone();
         let upstream_url = self.upstream.base_url().to_string();
         let upstream = self.upstream;
         let bootstrap_control = WorkerControlClient::new(upstream.clone());
-        let incarnation_id = match self.preselected_incarnation_id {
-            Some(incarnation_id) => incarnation_id,
-            None => new_incarnation_id().map_err(|error| {
-                std::io::Error::other(format!("generate Worker incarnation: {error}"))
-            })?,
-        };
+        let incarnation_id = lifecycle::select_incarnation_id(self.preselected_incarnation_id)?;
         let mut shutdown = std::pin::pin!(shutdown);
         let mut registration_wait_attempts = 0_u64;
         let registration_receipt = loop {
@@ -1745,25 +1797,7 @@ impl WorkerNode {
         // orchestrator gates routing on `/readyz` and calls `POST /admin/drain` in a
         // `preStop` hook before SIGTERM. Best-effort — a bind failure is logged but does
         // not stop the worker draining runs (the core job).
-        let mut admin_task = None;
-        if let Some(admin_addr) = self.admin_listen {
-            match tokio::net::TcpListener::bind(&admin_addr).await {
-                Ok(listener) => {
-                    let router = admin::worker_admin_router_with_lifecycle(lifecycle.clone());
-                    eprintln!(
-                        "awaken-worker admin surface on {admin_addr} (/readyz /metrics /admin/drain)"
-                    );
-                    admin_task = Some(tokio::spawn(async move {
-                        if let Err(err) = axum::serve(listener, router).await {
-                            eprintln!("awaken-worker admin server exited: {err}");
-                        }
-                    }));
-                }
-                Err(err) => {
-                    eprintln!("awaken-worker admin surface disabled (bind {admin_addr}: {err})")
-                }
-            }
-        }
+        let admin_task = start_admin_surface(self.admin_listen, lifecycle.clone()).await;
 
         // Authority loss is an irreversible boundary for this incarnation. The
         // heartbeat task has already fenced local claim admission; terminate the
@@ -1896,19 +1930,7 @@ impl WorkerNode {
             // a UID-fenced Kubernetes deletion intent; exiting sooner would
             // let StatefulSet restart a second process under the same UID.
             // This never emits a stop receipt or releases retained evidence.
-            let mut attempts = 0_u64;
-            loop {
-                match request_registered_kubernetes_pod_replacement(&identity.worker_id).await {
-                    Ok(()) => break,
-                    Err(error) => {
-                        if attempts.is_multiple_of(10) {
-                            eprintln!("worker Pod replacement intent pending: {error}");
-                        }
-                        attempts = attempts.saturating_add(1);
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    }
-                }
-            }
+            await_registered_kubernetes_pod_replacement(&identity.worker_id).await;
         }
         if let Some(admin_task) = admin_task {
             admin_task.abort();

@@ -342,9 +342,13 @@ impl WorkerSupervisor {
     }
 }
 
-pub(crate) fn new_incarnation_id() -> Result<String, getrandom::Error> {
+pub(crate) fn select_incarnation_id(preselected: Option<String>) -> Result<String, std::io::Error> {
+    if let Some(incarnation_id) = preselected {
+        return Ok(incarnation_id);
+    }
     let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes)?;
+    getrandom::getrandom(&mut bytes)
+        .map_err(|error| std::io::Error::other(format!("generate Worker incarnation: {error}")))?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
