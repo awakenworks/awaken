@@ -27,10 +27,11 @@ awaken-sqlite-pool.workspace = true
 awaken-sql-storage = { workspace = true, features = ["postgres"] }
 
 [dev-dependencies]
+tempfile = "3"
 proptest.workspace = true
 awaken-agent-contract.workspace = true
 awaken-time.workspace = true
-awaken-reliability-testkit.workspace = true
+awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 awaken-runtime-contract.workspace = true
 awaken-runtime = { workspace = true }
 awaken-store-inmem.workspace = true

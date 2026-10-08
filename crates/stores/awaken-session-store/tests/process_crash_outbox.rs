@@ -1,16 +1,25 @@
 // @formal evidence webhook.committed_outbox_row_is_recoverable
 // @formal evidence webhook.lifecycle_commit_and_outbox_are_atomic
-use awaken_session_repository_contract::LifecycleOutbox as _;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use awaken_reliability_testkit::CrashProcess;
-use awaken_session_repository_contract::SessionRepository;
 use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionExecutionState,
     SessionMutationPayload,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
+
+async fn repository(path: &str) -> Box<dyn awaken_session_repository_contract::SessionStore> {
+    if let Some(pool) = awaken_reliability_testkit::postgres_crash_pool(path).await {
+        return Box::new(
+            awaken_session_store::PostgresManagedSessionRepository::with_pool(pool)
+                .await
+                .unwrap(),
+        );
+    }
+    Box::new(SqliteManagedSessionRepository::open(path).await.unwrap())
+}
 
 const CHILD_MODE: &str = "AWAKEN_SESSION_CRASH_CHILD";
 const DB_PATH: &str = "AWAKEN_SESSION_CRASH_DB";
@@ -112,7 +121,7 @@ async fn session_commit_survives_process_kill_before_notification() {
     if std::env::var_os(CHILD_MODE).is_some() {
         let db = std::env::var(DB_PATH).unwrap();
         let marker = std::env::var(MARKER_PATH).unwrap();
-        let repo = SqliteManagedSessionRepository::open(&db).await.unwrap();
+        let repo = repository(&db).await;
         let value = session();
         let payload = SessionMutationPayload::Replace(value.clone());
         repo.create(
@@ -145,9 +154,7 @@ async fn session_commit_survives_process_kill_before_notification() {
     .expect("child reaches the post-commit boundary and is killed");
     assert!(!status.success());
 
-    let repo = SqliteManagedSessionRepository::open(db.to_str().unwrap())
-        .await
-        .unwrap();
+    let repo = repository(db.to_str().unwrap()).await;
     let mut expected = session();
     expected.revision = awaken_session_types::SessionRevision(1);
     assert_eq!(
@@ -162,10 +169,7 @@ async fn session_commit_survives_process_kill_before_notification() {
     // takes over. Cold replay must observe the acknowledged durable fact and
     // cannot advance the root revision or enqueue a replacement notification.
     drop(repo);
-    let recovered =
-        SqliteManagedSessionRepository::open(&dir.path().join("sessions.db").to_string_lossy())
-            .await
-            .unwrap();
+    let recovered = repository(&dir.path().join("sessions.db").to_string_lossy()).await;
     assert!(recovered.pending_lifecycle().await.unwrap().is_empty());
     recovered.complete_lifecycle(&fact().id).await.unwrap();
     assert!(recovered.pending_lifecycle().await.unwrap().is_empty());

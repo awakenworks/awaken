@@ -614,6 +614,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "tempfile",
  "thiserror",
  "tokio",
 ]
@@ -2234,7 +2235,9 @@ dependencies = [
 name = "awaken-reliability-testkit"
 version = "1.0.0"
 dependencies = [
+ "awaken-sql-storage",
  "serde_json",
+ "sqlx",
  "tracing",
 ]
 
