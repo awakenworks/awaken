@@ -58,6 +58,64 @@ ServiceAccount therefore owns namespace-scoped `pods/portforward` for that
 resident channel. Attached exec remains a runtime capability for bounded file
 operations, not a parallel ACP transport.
 
+### Product Worker failure recovery
+
+The product backend must remain able to execute after a Worker loses its lease,
+while preserving the exact old execution fence. Commit `1965ffbbcd` separated
+the Pod-bound Worker and disabled the product's local pool. Its finite-retry Job
+could subsequently reach `BackoffLimitExceeded`, leaving a ready Control process
+with no ready Worker. The Shanzhao deployment reproduced that state after its
+last temporary Worker Job exhausted a failure budget of two on 2026-10-01.
+
+The canonical Worker Job now uses Kubernetes `podFailurePolicy`: nonzero Worker
+exits and `DisruptionTarget` failures do not consume the batch retry budget.
+Kubernetes creates a fresh Pod UID; `restartPolicy: Never`, the process-evidence
+finalizer, drain hook and lease checks retain their original owners. A new Pod
+does not certify retirement of an old attempt: the existing Registry, Dispatch
+and PodProcessObserver still require their exact evidence before effects.
+An intentional successful process exit retains the ordinary Job completion
+semantics. No separate restart daemon or execution scheduler is introduced.
+See the [Kubernetes Job policy contract](https://kubernetes.io/docs/concepts/workloads/controllers/job/#pod-failure-policy).
+
+| Boundary | Authoritative implementation | Recovery behavior |
+| --- | --- | --- |
+| Process replacement | Canonical product Job / native Kubernetes controller | Replace an abnormally exited Pod without exhausting its retry budget |
+| Execution authority | Worker lifecycle, Registry, Dispatch, PodProcessObserver | Close old authority, preserve exact process evidence, admit only a valid successor |
+| Agent publication reads | ConfigPlane / scoped durable publication collection | One request-local index per needed authoring scope; own-scope precedence and lazy reserved fallback |
+
+The related Shanzhao read delay came from exact Agent retrieval enumerating all
+versions and repeatedly loading the whole publication collection for visibility
+and projection. Commit `7ef50b5d26` added per-revision publication checks to keep
+drafts hidden. With 204 revisions and 348 publication rows, those repeated reads
+amplified work instead of sharing the already-authoritative collection. Managed
+get/list/versions and write-response projections now share request-local reads;
+fixed-version retrieval projects only its requested revision. No shared cache,
+new store, publication table or mutable-version fallback is added.
+
+TDD regression rules live beside their tests. The minimal SQLite fixture has
+two published revisions and one draft: its exact read first failed with five
+owner-scope publication loads, then passed with one while preserving visibility
+and error behavior. The live Kubernetes fixture projects the canonical Job into
+a credential-free `exit 75` process with a zero failure budget. Before the policy
+fix the first failure exhausted the Job; after it, three failed Pods with three
+distinct UIDs and zero container restarts were observed with zero counted
+failures. The existing static image contract also rejects removed or narrowed
+replacement policies. These fixtures establish the read and process-replacement
+contracts; real provider/report delivery requires its separate product journey.
+
+```bash
+# The source comments own the cause/effect rules and workload-bound oracle.
+cargo test -p awaken-control --lib managed_agents::
+cargo test -p awaken-config-service --lib
+python3 deploy/k3d/test_image_contract.py
+# Add the existing explicit live gate, context, namespace and immutable image
+# to run the controller replacement witness in this same contract entry point.
+AWAKEN_K8S_E2E=1 AWAKEN_K8S_E2E_CONTEXT=k3d-<cluster> \
+  AWAKEN_K8S_NAMESPACE=<test-namespace> \
+  AWAKEN_K8S_FIXTURE_IMAGE=<image>@sha256:<digest> \
+  e2e/k3d/product_backend_contract_test.sh
+```
+
 ### Inspecting retained SQLite data
 
 Do not run host-user `sqlite3 -readonly` directly against the product PVC.
