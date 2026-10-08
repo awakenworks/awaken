@@ -363,6 +363,20 @@ metadata:
     app.kubernetes.io/name: awaken-worker
 spec:
   backoffLimit: 100
+  # A Worker is a persistent execution process. Losing its lease must fence and
+  # exit, then the native controller creates a fresh Pod UID; it must not spend
+  # a finite batch retry budget. Keep Never and retained process evidence so an
+  # exited incarnation cannot reopen its own execution domain.
+  podFailurePolicy:
+    rules:
+      - action: Ignore
+        onExitCodes:
+          containerName: worker
+          operator: NotIn
+          values: [0]
+      - action: Ignore
+        onPodConditions:
+          - type: DisruptionTarget
   template:
     metadata:
       labels:
@@ -388,7 +402,11 @@ spec:
             - { name: admin, containerPort: 9090 }
           lifecycle:
             preStop:
-              httpGet: { path: /admin/drain, port: admin, scheme: HTTP }
+              exec:
+                command:
+                  - python3
+                  - -c
+                  - 'import urllib.request; urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:9090/admin/drain",method="POST"),timeout=5).read()'
           readinessProbe:
             httpGet: { path: /readyz, port: admin }
             initialDelaySeconds: 2
