@@ -106,7 +106,9 @@ where
 mod build;
 pub use build::HostProcess;
 mod dependencies;
-pub use dependencies::HostDependencies;
+pub use dependencies::{
+    CyclicPort, CyclicPortAlreadyBound, HostDependencies, SessionApplicationPorts,
+};
 pub(crate) mod capability;
 pub use capability::DispatchPoolSizing;
 mod completion;
@@ -248,4 +250,6 @@ pub struct SharedHost {
     pub(crate) mcp: awaken_session_mcp::McpSessions,
     /// Content capture (ADR-0050): sink, deployment ceiling, consent source.
     pub(crate) capture: capability::ContentCaptureCapability,
+    /// The edges back into the Session application built over this Host.
+    pub(crate) session_application: SessionApplicationPorts,
 }

@@ -5,7 +5,7 @@
 
 use super::*;
 
-use awaken_coordinator::with_platform_memory_data_plane;
+use awaken_coordinator::{install_managed_agent_coordination, with_platform_memory_data_plane};
 
 mod local_execution;
 mod reclamation;
@@ -715,7 +715,7 @@ pub(super) async fn prepare_runtime_routers(
     }
     let event_batch_cutover_validation =
         session_application.session_event_batch_cutover_validation_source();
-    awaken_coordinator::install_managed_agent_coordination(&managed_host, &session_application)
+    install_managed_agent_coordination(&host, &managed_host, &session_application)
         .expect("Managed Session coordination application binds before dispatch starts");
     let mut managed_state =
         ManagedState::from_application(session_application.clone(), environment_execution.clone());

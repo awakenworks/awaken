@@ -19,6 +19,77 @@ use crate::host::*;
 mod environment;
 mod tools;
 
+/// One construction-time edge from the Host back into an application that is
+/// itself built over the Host, so the two cannot be constructed in one call.
+///
+/// The port exists from the moment the dependencies are selected; the
+/// composition root binds it exactly once after it built the application, and
+/// a read before that finds nothing and fails closed. This is the only kind of
+/// late binding a Host has, and its type says so. Consumer:
+/// [`SessionApplicationPorts`].
+pub struct CyclicPort<T> {
+    slot: Arc<std::sync::OnceLock<T>>,
+}
+
+/// A [`CyclicPort`] was bound a second time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("this composition edge is already bound")]
+pub struct CyclicPortAlreadyBound;
+
+impl<T> CyclicPort<T> {
+    /// Bind the port to the application the composition just built.
+    ///
+    /// # Errors
+    /// [`CyclicPortAlreadyBound`] when the port was already bound; the first
+    /// binding stays.
+    pub fn bind(&self, value: T) -> Result<(), CyclicPortAlreadyBound> {
+        self.slot.set(value).map_err(|_| CyclicPortAlreadyBound)
+    }
+
+    /// The bound application, or `None` before the composition bound it.
+    pub(crate) fn get(&self) -> Option<&T> {
+        self.slot.get()
+    }
+}
+
+impl<T> Clone for CyclicPort<T> {
+    fn clone(&self) -> Self {
+        Self {
+            slot: self.slot.clone(),
+        }
+    }
+}
+
+impl<T> Default for CyclicPort<T> {
+    fn default() -> Self {
+        Self {
+            slot: Arc::new(std::sync::OnceLock::new()),
+        }
+    }
+}
+
+/// The Host's edges back into the Session application built over it. Each is
+/// a weak or notification-only port, so binding one creates no ownership
+/// cycle. Consumer: the composition root, which binds each once after it built
+/// the Session application (`SharedHost::session_application_ports`).
+#[derive(Clone, Default)]
+pub struct SessionApplicationPorts {
+    /// The Session application's sole coordination admission owner. It
+    /// carries no roster, Thread relationship, operation receipt, or lifecycle
+    /// state.
+    pub agent_coordination:
+        CyclicPort<std::sync::Weak<dyn awaken_session_runtime_contract::SessionAgentCoordination>>,
+    /// The existing Session Run admission owner. BackgroundTask completion
+    /// uses it only to publish a deterministic same-Thread attention Run; task
+    /// lifecycle and result truth remain in committed Thread State.
+    pub background_runs: CyclicPort<
+        std::sync::Weak<dyn awaken_session_application_contract::SessionRunBackgroundApplication>,
+    >,
+    /// The process's sole wakeup for committed Run progress. It is
+    /// notification-only; its consumer must reread durable truth.
+    pub committed_progress: CyclicPort<Arc<dyn Fn() + Send + Sync>>,
+}
+
 /// Every dependency of one [`SharedHost`]. Consumer: the process
 /// compositions (`awaken-cli`, `awaken-worker`, `awaken-coordinator`, the
 /// Scenario host and test fixtures) and `SharedHost::from`.
@@ -44,6 +115,7 @@ pub struct HostDependencies {
     pub(crate) mcp: awaken_session_mcp::McpSessions,
     pub(crate) dispatch: capability::DispatchSelection,
     pub(crate) capture: capability::ContentCaptureCapability,
+    pub(crate) session_application: SessionApplicationPorts,
 }
 
 /// Select the role-neutral defaults around one role's required inputs.
@@ -97,6 +169,7 @@ fn select(
         ),
         dispatch: capability::DispatchSelection::default(),
         capture: capability::ContentCaptureCapability::new(&deployment),
+        session_application: SessionApplicationPorts::default(),
         local_workspace,
         execution_authority: None,
         environment_binding_sink: None,

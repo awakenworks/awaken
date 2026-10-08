@@ -217,11 +217,10 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         let recipients = || {
             let application = self
-                .dispatch
-                .session_background_runs
-                .read()
-                .unwrap()
-                .clone()
+                .session_application
+                .background_runs
+                .get()
+                .cloned()
                 .filter(|p| p.strong_count() > 0)
                 .ok_or_else(|| {
                     McpError::internal("MCP application input has no Session admission authority")

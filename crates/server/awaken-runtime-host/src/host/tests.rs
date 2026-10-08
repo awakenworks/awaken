@@ -594,8 +594,9 @@ fn install_test_session_application(host: &Arc<SharedHost>) {
         Arc<dyn awaken_session_runtime_contract::SessionAgentCoordination>,
     > = std::sync::OnceLock::new();
     let application = APPLICATION.get_or_init(|| Arc::new(RejectingSessionAgentCoordination));
-    crate::ManagedHost::new(host.clone())
-        .install_agent_coordination_application(Arc::downgrade(application))
+    host.session_application_ports()
+        .agent_coordination
+        .bind(Arc::downgrade(application))
         .expect("install one test Session application authority");
 }
 
@@ -610,8 +611,9 @@ fn install_recording_session_application(host: &Arc<SharedHost>) {
     let application = APPLICATION.get_or_init(|| {
         Arc::new(crate::coordination::RecordingSessionAgentCoordination::default())
     });
-    crate::ManagedHost::new(host.clone())
-        .install_agent_coordination_application(Arc::downgrade(application))
+    host.session_application_ports()
+        .agent_coordination
+        .bind(Arc::downgrade(application))
         .expect("install recording Session application authority");
 }
 

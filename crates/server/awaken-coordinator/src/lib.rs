@@ -518,7 +518,7 @@ async fn local_managed_state_over(
     let repository_bindings = Arc::new(
         awaken_resource_application::RegistryRepositoryBindingVerifier::new(catalog.clone()),
     );
-    let runtime = ManagedHost::new(host)
+    let runtime = ManagedHost::new(host.clone())
         .with_resource_validator(catalog.clone())
         .with_repository_binding_verifier(repository_bindings)
         .with_credential_materializer(
@@ -558,7 +558,7 @@ async fn local_managed_state_over(
         application.set_managed_list_price_provider(provider);
     }
     let application = Arc::new(application);
-    install_managed_agent_coordination(&runtime, &application)
+    install_managed_agent_coordination(&host, &runtime, &application)
         .expect("scenario Session coordination application binds once");
     ScenarioManagedState {
         managed: Arc::new(ManagedState::from_application(
@@ -1329,17 +1329,13 @@ async fn mount_with_managed_over_and_models(
                 "bind Session preparation placement compiler: {error}"
             ))
         })?;
-    let weak_session_application = Arc::downgrade(&session_application);
-    host.install_committed_progress_wakeup(Arc::new(move || {
-        if let Some(application) = weak_session_application.upgrade() {
-            application.request_lifecycle_reconciliation();
-        }
-    }))
-    .map_err(|error| {
-        WorkerTransportBuildError::Dispatch(format!(
-            "bind committed Runtime progress wakeup: {error}"
-        ))
-    })?;
+    managed_application::bind_committed_progress_wakeup(&host, &session_application).map_err(
+        |error| {
+            WorkerTransportBuildError::Dispatch(format!(
+                "bind committed Runtime progress wakeup: {error}"
+            ))
+        },
+    )?;
     // The Worker warmup projection is part of the same private transport in
     // production and Scenario compositions. Its source is the exact Environment
     // execution application already used by Session admission; this adapter owns
@@ -1497,8 +1493,9 @@ async fn mount_with_managed_over_and_models(
     let background_runs: Arc<
         dyn awaken_session_application_contract::SessionRunBackgroundApplication,
     > = session_runs.clone();
-    ManagedHost::new(host.clone())
-        .install_session_background_run_application(Arc::downgrade(&background_runs))
+    host.session_application_ports()
+        .background_runs
+        .bind(Arc::downgrade(&background_runs))
         .expect("Session background Run application binds once");
     let admitted_runs: Arc<dyn RunApplication> = session_runs.clone();
     let ai_sdk = awaken_protocol_ai_sdk::router_with_owner_scope(session_runs.clone());

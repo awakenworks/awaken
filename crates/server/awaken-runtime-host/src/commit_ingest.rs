@@ -540,7 +540,10 @@ mod tests {
         let application: Arc<dyn awaken_session_runtime_contract::SessionAgentCoordination> =
             Arc::new(crate::coordination::RecordingSessionAgentCoordination::default());
         managed
-            .install_agent_coordination_application(Arc::downgrade(&application))
+            .host
+            .session_application_ports()
+            .agent_coordination
+            .bind(Arc::downgrade(&application))
             .expect("C5 install canonical Session application authority");
         awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
             &managed,

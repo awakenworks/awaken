@@ -19,23 +19,6 @@ pub(crate) struct DispatchCapability {
     /// host wiring plus Resource/credential SPIs, so installing it cannot create
     /// an `Arc<SharedHost>` cycle or a second Vault/materialization path.
     pub(crate) dispatch_session_runtime: std::sync::RwLock<Option<crate::DispatchSessionRuntime>>,
-    /// Weak composition edge to the Session application's sole coordination
-    /// admission owner. This is executable wiring only; it contains no roster,
-    /// Thread relationship, operation receipt, or lifecycle state.
-    pub(crate) agent_coordination: std::sync::RwLock<
-        Option<std::sync::Weak<dyn awaken_session_runtime_contract::SessionAgentCoordination>>,
-    >,
-    /// Weak composition edge to the existing Session Run admission owner.
-    /// BackgroundTask completion uses this port only to publish a deterministic
-    /// same-Thread attention Run; task lifecycle and result truth remain in
-    /// committed Thread State.
-    pub(crate) session_background_runs: std::sync::RwLock<
-        Option<
-            std::sync::Weak<
-                dyn awaken_session_application_contract::SessionRunBackgroundApplication,
-            >,
-        >,
-    >,
     /// The process-level dispatch pool (O2), spawned once by `mount` when durable
     /// ingress is enabled. It is the sole claimer of the one shared queue and drives
     /// every session's runs by routing each claimed run back to the worker that owns
@@ -80,8 +63,6 @@ impl DispatchCapability {
         Self {
             dispatch_store_override: selection.dispatch_store_override,
             dispatch_session_runtime: std::sync::RwLock::new(None),
-            agent_coordination: std::sync::RwLock::new(None),
-            session_background_runs: std::sync::RwLock::new(None),
             dispatch_pool: std::sync::OnceLock::new(),
             dispatch_pool_sizing: selection.dispatch_pool_sizing,
             terminal_reconciliation: Default::default(),

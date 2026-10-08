@@ -41,11 +41,10 @@ impl crate::SharedHost {
     /// remote control instead of becoming a dead local endpoint.
     pub(crate) fn coordination_endpoint(&self) -> Option<CoordinationEndpoint> {
         let local = self
-            .dispatch
+            .session_application
             .agent_coordination
-            .read()
-            .expect("Agent coordination application lock poisoned")
-            .clone()
+            .get()
+            .cloned()
             .filter(|application| application.strong_count() > 0);
         local.map(CoordinationEndpoint::Local).or_else(|| {
             self.worker
@@ -895,11 +894,10 @@ mod tests {
                 .await
                 .with_session_control(Arc::new(RemoteControl::default())),
         );
-        *host
-            .dispatch
+        host.session_application_ports()
             .agent_coordination
-            .write()
-            .expect("test coordination lock") = Some(dead);
+            .bind(dead)
+            .expect("test coordination port binds once");
 
         assert!(
             matches!(

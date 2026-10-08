@@ -48,6 +48,7 @@ impl From<HostDependencies> for SharedHost {
             mcp,
             dispatch,
             capture,
+            session_application,
         } = dependencies;
         assert!(
             !local_workspace.trim().is_empty(),
@@ -91,7 +92,11 @@ impl From<HostDependencies> for SharedHost {
             authority,
             clock,
             background_supervisor,
-            completion: Arc::new(CompletionRegistry::new(hub)),
+            completion: Arc::new(CompletionRegistry::new(
+                hub,
+                session_application.committed_progress.clone(),
+            )),
+            session_application,
             environment_binding_sink: std::sync::RwLock::new(environment_binding_sink),
         }
     }
@@ -199,13 +204,11 @@ impl SharedHost {
         self.completion.clone()
     }
 
-    /// Install the process composition's sole wakeup for committed Run progress.
-    /// The callback is notification-only; its consumer must reread durable truth.
-    pub fn install_committed_progress_wakeup(
-        &self,
-        wakeup: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<(), &'static str> {
-        self.completion.install_committed_progress_wakeup(wakeup)
+    /// The edges back into the Session application built over this Host. The
+    /// composition root binds each once, after it built that application.
+    #[must_use]
+    pub fn session_application_ports(&self) -> &SessionApplicationPorts {
+        &self.session_application
     }
 
     /// Bind the exact published delegation targets to a prepared Session.

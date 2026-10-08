@@ -1653,11 +1653,18 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
     let coordination: Arc<dyn awaken_session_runtime_contract::SessionAgentCoordination> =
         Arc::new(RejectingSessionAgentCoordination);
     managed
-        .install_agent_coordination_application(Arc::downgrade(&coordination))
+        .host
+        .session_application_ports()
+        .agent_coordination
+        .bind(Arc::downgrade(&coordination))
         .expect("L9 one coordination application");
     assert_eq!(
-        managed.install_agent_coordination_application(Arc::downgrade(&coordination)),
-        Err(crate::AgentCoordinationInstallError::AlreadyInstalled),
+        managed
+            .host
+            .session_application_ports()
+            .agent_coordination
+            .bind(Arc::downgrade(&coordination)),
+        Err(crate::CyclicPortAlreadyBound),
         "L9/E5"
     );
 
@@ -1710,7 +1717,10 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
     ));
     install_test_dispatch_runtime(&direct_with_endpoint)
-        .install_agent_coordination_application(Arc::downgrade(&coordination))
+        .host
+        .session_application_ports()
+        .agent_coordination
+        .bind(Arc::downgrade(&coordination))
         .unwrap();
     let direct_context = direct_with_endpoint
         .ctx_for("gate-direct-present", None)
@@ -1741,7 +1751,10 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         .await
         .unwrap();
     managed_runtime
-        .install_agent_coordination_application(Arc::downgrade(&coordination))
+        .host
+        .session_application_ports()
+        .agent_coordination
+        .bind(Arc::downgrade(&coordination))
         .unwrap();
     let managed_context = managed.ctx_for("gate-managed-present", None).await.unwrap();
     assert!(

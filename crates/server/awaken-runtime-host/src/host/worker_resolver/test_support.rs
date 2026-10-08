@@ -257,7 +257,10 @@ pub(super) fn complete_managed_test_host(managed: crate::ManagedHost) -> crate::
         Arc::new(crate::coordination::RecordingSessionAgentCoordination::default())
     });
     managed
-        .install_agent_coordination_application(Arc::downgrade(application))
+        .host
+        .session_application_ports()
+        .agent_coordination
+        .bind(Arc::downgrade(application))
         .expect("install one test Session application authority");
     managed
 }
