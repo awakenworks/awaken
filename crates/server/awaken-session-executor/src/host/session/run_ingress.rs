@@ -17,6 +17,7 @@
 //! with the snapshot/context assembly that remains there.
 
 use super::*;
+use crate::host::session_ctx::ForegroundRunDelivery;
 
 impl SharedHost {
     /// Build the one claimed Worker for this Thread, then select its independent
