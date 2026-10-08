@@ -36,6 +36,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -195,7 +196,28 @@ def selected(root: Path, lane_roots: tuple[str, ...]) -> set[str]:
     return reached
 
 
-def executables(root: Path) -> list[str]:
+def indexed_executables(root: Path) -> set[str] | None:
+    # Windows/DrvFS may report every regular file as executable. Git's published
+    # modes own the checkout contract; filesystem modes remain useful only for
+    # non-Git self-test fixtures. A failed index read is never an empty corpus.
+    if not (root / ".git").exists():
+        return None
+    environment = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    output = subprocess.check_output(["git", "-C", str(root), "ls-files", "--stage", "-z"], env=environment)
+    return executable_index_modes(output.decode("utf-8"))
+
+
+def executable_index_modes(output: str) -> set[str]:
+    found = set()
+    for record in output.split("\0"):
+        if record:
+            metadata, path = record.split("\t", 1)
+            if metadata.split()[0] == "100755":
+                found.add(path)
+    return found
+
+
+def executables(root: Path, indexed: set[str] | None = None) -> list[str]:
     found: list[str] = []
     for directory in SUBJECT_DIRECTORIES:
         base = root / directory
@@ -204,8 +226,10 @@ def executables(root: Path) -> list[str]:
         for path in sorted(base.rglob("*")):
             if SKIPPED_PARTS.intersection(path.parts):
                 continue
-            if path.is_file() and os.access(path, os.X_OK):
-                found.append(path.relative_to(root).as_posix())
+            relative = path.relative_to(root).as_posix()
+            executable = relative in indexed if indexed is not None else os.access(path, os.X_OK)
+            if path.is_file() and executable:
+                found.append(relative)
     return found
 
 
@@ -256,13 +280,14 @@ def unselected_errors(reached: set[str], present: list[str]) -> list[str]:
     return errors
 
 
-def evidence_errors(root: Path, reached: set[str], paths: set[str]) -> list[str]:
+def evidence_errors(root: Path, reached: set[str], paths: set[str], indexed: set[str] | None = None) -> list[str]:
     """L2: evidence that is an executable must actually be run."""
 
     errors = []
     for relative in sorted(paths):
         path = root / relative
-        if not path.is_file() or not os.access(path, os.X_OK):
+        executable = relative in indexed if indexed is not None else os.access(path, os.X_OK)
+        if not path.is_file() or not executable:
             continue
         if relative in reached:
             continue
@@ -279,7 +304,8 @@ def validate(root: Path) -> list[str]:
         path.relative_to(root).as_posix() for path in sorted(root.glob(WORKFLOW_GLOB))
     )
     reached = selected(root, lane_roots)
-    present = executables(root)
+    indexed = indexed_executables(root)
+    present = executables(root, indexed)
     if not present:
         return ["no executables found under e2e/, scripts/ or deploy/; the corpus collapsed"]
     errors = unselected_errors(reached, present)
@@ -288,7 +314,7 @@ def validate(root: Path) -> list[str]:
             ledger = formal_ledger.load(root)
         except formal_ledger.LedgerError as error:
             return errors + [str(error)]
-        errors += evidence_errors(root, reached, evidence_paths(ledger))
+        errors += evidence_errors(root, reached, evidence_paths(ledger), indexed)
     return errors
 
 
@@ -313,6 +339,11 @@ def self_test() -> None:
     """
 
     import tempfile  # noqa: PLC0415 - only the self-test writes fixtures
+
+    # P1 Git executable mode is admitted; P2 ordinary source/JSON and symlinks
+    # are not executables, even on a mount that grants X_OK to every file.
+    assert executable_index_modes("100755 abc 0\tscripts/run.sh\0" +
+        "100644 def 0\tscripts/source.py\0" + "120000 ghi 0\tscripts/link\0") == {"scripts/run.sh"}
 
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)

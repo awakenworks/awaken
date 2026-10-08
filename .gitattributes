@@ -1,2 +1,5 @@
 # Embedded SQL has published byte checksums; preserve them on every platform.
 *.sql text eol=lf
+# Mounted Windows checkouts must execute unchanged in Linux/Dev Containers.
+*.sh text eol=lf
+*.py text eol=lf

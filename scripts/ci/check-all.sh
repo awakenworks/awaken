@@ -137,6 +137,8 @@ run static "hook-glob generator self-test" python3 scripts/ci/generate_hooks.py 
 run static "hook-glob generation" python3 scripts/ci/generate_hooks.py --check
 run static "test-orchestration self-test" python3 scripts/ci/check_test_orchestration.py --self-test
 run static "test-orchestration" python3 scripts/ci/check_test_orchestration.py
+run static "required Rust execution self-test" python3 scripts/ci/check_rust_test_execution.py --self-test
+run static "affected Rust plan self-test" python3 scripts/ci/rust_test_plan.py --self-test
 run static "formal-product-ledger" python3 scripts/ci/check_feature_coverage.py --require-complete
 run static "managed-wire-naming self-test" python3 scripts/ci/check_managed_wire_naming.py --self-test
 run static "managed-wire-naming" python3 scripts/ci/check_managed_wire_naming.py
