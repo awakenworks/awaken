@@ -13,6 +13,25 @@ the wire shape is still valid.
 
 ## Historical time provenance
 
+### Local executable Models projection
+
+The Models GA/Beta routes read the same Workspace-scoped executable publication
+inventory. A listed model is locally reachable, so its public `lifecycle` is
+`active`; this is not an assertion about an upstream provider's deprecation or
+retirement schedule. The adapter publishes `line`, `deprecated_at`, `retires_at`
+and the capability object as `null` when the inventory supplies no such facts.
+It never derives a line from a model id or a provider date from the request clock.
+
+The lifecycle list predicate is admitted before inventory I/O, using the same
+SDK repeated-array query decoder as Files. It accepts at most three of `active`,
+`deprecated` and `retired`, then filters before the existing id-page kernel.
+The current executable inventory contains no historical retirement catalogue:
+inactive-only predicates produce an empty page without inventing such rows.
+SDK omission, an empty array (serialized as omission), and a nullable empty scalar
+all retain the default active view. Unknown members and non-empty scalars fail
+closed. GA and Beta differ only in the existing response projection and share
+Workspace authority, publication-time provenance, filtering and pagination.
+
 The existing `/v1/sessions` Session, Thread, and Event GET/list responses keep
 their SDK-compatible timestamp strings. A historical row without a recorded
 time can therefore still carry the legacy `2026-01-01T00:00:00Z` placeholder in

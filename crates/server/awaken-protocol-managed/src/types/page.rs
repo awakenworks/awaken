@@ -7,6 +7,38 @@
 use awaken_agent_contract::page::{paginate_by_id, paginate_by_key};
 use serde::{Deserialize, Deserializer, Serialize};
 
+/// Decode the official SDK's repeated `field[]` query vocabulary once for
+/// collection adapters. Family owners validate members and scalar parameters.
+/// SDK: none — adapter-internal decoded query parts; not a public wire body.
+pub(crate) struct ArrayQuery {
+    pub parameters: Vec<(String, String)>,
+    pub values: Vec<String>,
+}
+
+pub(crate) fn split_array_query(raw: &str, field: &str) -> Result<ArrayQuery, String> {
+    let array_key = format!("{field}[]");
+    let mut query = ArrayQuery {
+        parameters: Vec::new(),
+        values: Vec::new(),
+    };
+    for (key, value) in form_urlencoded::parse(raw.as_bytes()) {
+        if key == array_key {
+            query.values.push(value.into_owned());
+        } else if key == field {
+            // TypeScript null is `field=`; an empty array is omitted. A
+            // non-empty scalar cannot stand in for an array member.
+            if !value.is_empty() {
+                return Err(format!("{field} must use repeated {array_key} parameters"));
+            }
+        } else {
+            query
+                .parameters
+                .push((key.into_owned(), value.into_owned()));
+        }
+    }
+    Ok(query)
+}
+
 /// Anthropic `PageCursor<T>` used by Managed resource collections.
 #[derive(Debug, Clone, Serialize)]
 pub struct PageCursor<T> {

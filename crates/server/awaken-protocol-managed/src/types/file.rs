@@ -55,11 +55,19 @@ struct ParsedCursorFileList {
 }
 
 fn parse_cursor_file_list(raw: &str, allow_scope: bool) -> Result<ParsedCursorFileList, String> {
-    let mut params = ParsedCursorFileList::default();
-    for (key, value) in form_urlencoded::parse(raw.as_bytes()) {
+    let query = super::page::split_array_query(raw, "ids")?;
+    let mut params = ParsedCursorFileList {
+        ids: query
+            .values
+            .into_iter()
+            .filter(|value| !value.is_empty())
+            .collect(),
+        ..Default::default()
+    };
+    for (key, value) in query.parameters {
         match key.as_ref() {
             "page" if value.is_empty() => params.page = None,
-            "page" => params.page = Some(value.into_owned()),
+            "page" => params.page = Some(value),
             "limit" => {
                 params.limit = Some(
                     value
@@ -67,17 +75,8 @@ fn parse_cursor_file_list(raw: &str, allow_scope: bool) -> Result<ParsedCursorFi
                         .map_err(|_| "limit must be an unsigned integer".to_string())?,
                 );
             }
-            "ids[]" => {
-                if !value.is_empty() {
-                    params.ids.push(value.into_owned());
-                }
-            }
-            // A nullable array is `ids=` in the TypeScript SDK and omitted by
-            // Python. A non-empty scalar remains invalid: only `ids[]` carries
-            // array members.
-            "ids" if value.is_empty() => {}
             "scope_id" if allow_scope => {
-                params.scope_id = (!value.is_empty()).then(|| value.into_owned());
+                params.scope_id = (!value.is_empty()).then_some(value);
             }
             unknown => return Err(format!("unknown Files list parameter `{unknown}`")),
         }
@@ -255,6 +254,8 @@ mod tests {
         // scalar or unknown key. Effects: E1/E2=the same None state; E3=all
         // ordered IDs; E4=fail closed. The empty scalar exception is exact and
         // cannot widen the declared array into an arbitrary scalar parameter.
+        // Consolidation constraint: the shared SDK decoder retains member order
+        // and nullable-scalar semantics; Files alone still ignores empty IDs.
         assert_eq!(FileListParams::from_query("").unwrap().ids, None, "R1/E1");
         let typescript_null = FileListParams::from_query("ids=&page=").unwrap();
         assert_eq!(typescript_null.ids, None, "R2 nullable array");
@@ -276,6 +277,12 @@ mod tests {
             "R4 scalar"
         );
         assert!(FileListParams::from_query("unknown=x").is_err(), "R4/E4");
+        let mixed =
+            FileListParams::from_query("ids=&ids[]=&ids[]=file_1&ids[]=file_1&page=p&limit=2")
+                .unwrap();
+        assert_eq!(mixed.ids, Some(vec!["file_1".into(), "file_1".into()]));
+        assert_eq!(mixed.page.as_deref(), Some("p"));
+        assert_eq!(mixed.limit, Some(2));
     }
 
     #[test]

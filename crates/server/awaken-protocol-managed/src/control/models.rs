@@ -25,7 +25,7 @@ use crate::common::scope::RequiredWorkspaceScope;
 use crate::resources::flavor::{
     ManagedResourceApiSurface, resource_api_surface, without_beta_selector,
 };
-use crate::types::page::{deserialize_optional_query_value, paginate_id_page};
+use crate::types::page::{deserialize_optional_query_value, paginate_id_page, split_array_query};
 use crate::types::{ErrorResponse, Page};
 
 #[derive(Debug, Default, Deserialize)]
@@ -37,6 +37,36 @@ pub(crate) struct ModelListQuery {
     after_id: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_query_value")]
     limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ModelLifecycle {
+    Active,
+    Deprecated,
+    Retired,
+}
+
+impl ModelListQuery {
+    fn from_query(raw: &str) -> Result<(Self, Vec<ModelLifecycle>), String> {
+        let query = split_array_query(raw, "lifecycle")?;
+        if query.values.len() > 3 {
+            return Err("lifecycle accepts at most 3 values".into());
+        }
+        let lifecycles = query
+            .values
+            .into_iter()
+            .map(|value| {
+                serde_json::from_value(serde_json::Value::String(value))
+                    .map_err(|_| "lifecycle must be active, deprecated or retired".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut scalar = form_urlencoded::Serializer::new(String::new());
+        scalar.extend_pairs(query.parameters);
+        let page =
+            serde_urlencoded::from_str(&scalar.finish()).map_err(|error| error.to_string())?;
+        Ok((page, lifecycles))
+    }
 }
 
 /// One model the deployment can serve, projected to the `BetaModelInfo` core
@@ -105,6 +135,12 @@ impl ModelEntry {
             display_name: &self.display_name,
             created_at: self.created_at.as_deref()?,
             allowed_fallback_models: (surface != ManagedResourceApiSurface::Ga).then(Vec::new),
+            // This directory reports locally reachable executable publications,
+            // not an upstream provider's lifecycle or retirement catalogue.
+            lifecycle: "active",
+            deprecated_at: None,
+            retires_at: None,
+            line: None,
             capabilities: None,
             max_input_tokens: self.context_window,
             max_tokens: self.max_output_tokens,
@@ -121,6 +157,10 @@ struct ModelInfo<'a> {
     created_at: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     allowed_fallback_models: Option<Vec<String>>,
+    lifecycle: &'static str,
+    deprecated_at: Option<&'a str>,
+    retires_at: Option<&'a str>,
+    line: Option<&'a str>,
     capabilities: Option<()>,
     max_input_tokens: Option<u32>,
     max_tokens: Option<u32>,
@@ -207,24 +247,30 @@ async fn list_models(
                 return model_error(StatusCode::BAD_REQUEST, "invalid_request_error", message);
             }
         };
-    let query = match serde_urlencoded::from_str::<ModelListQuery>(&without_beta_selector(
-        raw.as_deref(),
-    )) {
-        Ok(query) => query,
-        Err(error) => {
-            return model_error(
-                StatusCode::BAD_REQUEST,
-                "invalid_request_error",
-                error.to_string(),
-            );
-        }
-    };
+    let (query, lifecycles) =
+        match ModelListQuery::from_query(&without_beta_selector(raw.as_deref())) {
+            Ok(query) => query,
+            Err(error) => {
+                return model_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_error",
+                    error.to_string(),
+                );
+            }
+        };
     let Ok(models) = available.in_workspace(&workspace).await else {
         return model_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "api_error",
             "model directory unavailable",
         );
+    };
+    // Current publications are all locally active. Filter this same collection
+    // before pagination; never add a retired-history reader or synthetic rows.
+    let models = if lifecycles.is_empty() || lifecycles.contains(&ModelLifecycle::Active) {
+        models
+    } else {
+        Vec::new()
     };
     let page = match paginate_id_page(
         &models,
@@ -307,9 +353,42 @@ mod tests {
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
 
-    struct UnavailableInventory;
+    #[derive(Default)]
+    struct UnavailableInventory(std::sync::atomic::AtomicUsize);
 
     struct PublishedInventory(Vec<awaken_executable_agent_contract::PublishedModelReference>);
+
+    #[derive(Default)]
+    struct WorkspaceInventory(std::sync::Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl awaken_executable_agent_contract::ExecutableAgentInventorySource for WorkspaceInventory {
+        async fn current_registrations(
+            &self,
+            _: &str,
+        ) -> Result<
+            Vec<awaken_executable_agent_contract::ExecutableAgentRegistration>,
+            awaken_executable_agent_contract::ExecutableAgentRegistrationError,
+        > {
+            panic!("Models must read the existing publication port")
+        }
+
+        async fn current_model_publications(
+            &self,
+            workspace: &str,
+        ) -> Result<
+            Vec<awaken_executable_agent_contract::PublishedModelReference>,
+            awaken_executable_agent_contract::ExecutableAgentRegistrationError,
+        > {
+            self.0.lock().unwrap().push(workspace.to_owned());
+            Ok(vec![
+                awaken_executable_agent_contract::PublishedModelReference {
+                    model_reference: format!("model-{workspace}"),
+                    first_published_at_unix_ms: Some(1_704_067_200_000),
+                },
+            ])
+        }
+    }
 
     #[async_trait::async_trait]
     impl awaken_executable_agent_contract::ExecutableAgentInventorySource for PublishedInventory {
@@ -343,6 +422,7 @@ mod tests {
             Vec<awaken_executable_agent_contract::ExecutableAgentRegistration>,
             awaken_executable_agent_contract::ExecutableAgentRegistrationError,
         > {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Err(
                 awaken_executable_agent_contract::ExecutableAgentRegistrationError::Unavailable(
                     "refresh failed".into(),
@@ -354,7 +434,7 @@ mod tests {
     #[test]
     fn default_models_project_one_ga_and_beta_contract() {
         // Cause/effect graph: C1 GA/Beta flavor; C2 known token limits; C3 unknown
-        // capabilities. Effects: E1 both emit the seven shared ModelInfo fields;
+        // capabilities. Effects: E1 both emit the eleven shared ModelInfo fields;
         // E2 Beta alone emits allowed_fallback_models; E3 limits are numeric and
         // capabilities null; E4 created_at is the fixture-supplied instant.
         // Constraint: flavor never selects inventory/state.
@@ -363,9 +443,9 @@ mod tests {
         assert!(models.iter().any(|m| m.id == "claude-opus-4-8"));
         for m in &models {
             for (rule, surface, fields, fallback) in [
-                ("R1", ManagedResourceApiSurface::Ga, 7, false),
-                ("R2", ManagedResourceApiSurface::CapabilityBeta, 8, true),
-                ("R3", ManagedResourceApiSurface::QueryBeta, 8, true),
+                ("R1", ManagedResourceApiSurface::Ga, 11, false),
+                ("R2", ManagedResourceApiSurface::CapabilityBeta, 12, true),
+                ("R3", ManagedResourceApiSurface::QueryBeta, 12, true),
             ] {
                 let v = serde_json::to_value(m.project(surface).expect("fixture time")).unwrap();
                 assert_eq!(v.as_object().unwrap().len(), fields, "{rule}");
@@ -380,6 +460,13 @@ mod tests {
                     "{rule}"
                 );
                 assert!(v["capabilities"].is_null(), "{rule}");
+                assert_eq!(v["lifecycle"], "active", "local reachability {rule}");
+                for unknown in ["deprecated_at", "retires_at", "line"] {
+                    assert!(
+                        v.get(unknown).unwrap().is_null(),
+                        "unknown fact {unknown} {rule}"
+                    );
+                }
                 assert_eq!(v["max_input_tokens"], 200_000, "{rule}");
                 assert!(v["max_tokens"].as_u64().is_some(), "{rule}");
             }
@@ -511,6 +598,194 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn lifecycle_filters_share_local_inventory_and_page_rules_across_surfaces() {
+        // Causes: L1 GA/header-Beta/query-Beta; L2 omitted/null/empty SDK array
+        // or active/deprecated/retired members; L3 exclusive cursor and limit.
+        // Effects: R1 defaults or a set containing active retain the SAME local
+        // inventory and page edges; R2 inactive-only selects an empty page.
+        // Constraint: current publication reachability is local active truth;
+        // it supplies no upstream line, dates, retirement history or capability.
+        // The exact SDK serializes [] as omission and null as lifecycle=.
+        let app = models_router(Arc::new(vec![
+            ModelEntry::new("a", "A", "2024-01-01T00:00:00Z"),
+            ModelEntry::new("b", "B", "2024-01-01T00:00:00Z"),
+        ]))
+        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+            "workspace-a".into(),
+        )));
+        for (surface, beta_query, header) in [
+            ("GA", "", false),
+            ("header-Beta", "", true),
+            ("query-Beta", "&beta=true", false),
+        ] {
+            for (rule, filter, ids, has_more) in [
+                ("R1 omission/SDK-empty-array", "", vec!["a"], true),
+                ("R1 null", "&lifecycle=", vec!["a"], true),
+                ("R1 active", "&lifecycle%5B%5D=active", vec!["a"], true),
+                (
+                    "R1 mixed",
+                    "&lifecycle[]=deprecated&lifecycle[]=active&lifecycle[]=retired",
+                    vec!["a"],
+                    true,
+                ),
+                (
+                    "R1 cursor",
+                    "&lifecycle[]=active&after_id=a",
+                    vec!["b"],
+                    false,
+                ),
+                ("R2 deprecated", "&lifecycle[]=deprecated", vec![], false),
+                ("R2 retired", "&lifecycle[]=retired", vec![], false),
+                (
+                    "R2 inactive union",
+                    "&lifecycle[]=deprecated&lifecycle[]=retired",
+                    vec![],
+                    false,
+                ),
+            ] {
+                let mut request = axum::http::Request::builder()
+                    .uri(format!("/v1/models?limit=1{filter}{beta_query}"));
+                if header {
+                    request =
+                        request.header("anthropic-beta", ManagedCapability::ManagedAgents.beta());
+                }
+                let response = app
+                    .clone()
+                    .oneshot(request.body(axum::body::Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK, "{surface} {rule}");
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let actual = value["data"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v["id"].as_str().unwrap())
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, ids, "{surface} {rule}");
+                assert_eq!(value["has_more"], has_more, "{surface} {rule}");
+                assert_eq!(
+                    value["first_id"].as_str(),
+                    ids.first().copied(),
+                    "{surface} {rule}"
+                );
+                assert_eq!(
+                    value["last_id"].as_str(),
+                    ids.last().copied(),
+                    "{surface} {rule}"
+                );
+                for model in value["data"].as_array().unwrap() {
+                    assert_eq!(model["lifecycle"], "active", "{surface} {rule}");
+                    for key in ["line", "deprecated_at", "retires_at", "capabilities"] {
+                        assert!(model.get(key).unwrap().is_null(), "{surface} {rule} {key}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_lifecycle_queries_fail_before_inventory_io() {
+        // Causes: Q1 unknown member/empty member/non-array scalar; Q2 more than
+        // three array members (count before dedup); Q3 GA/Beta transport.
+        // Effect Q1 or Q2 -> 400 and zero inventory reads, even when its source
+        // is unavailable. A valid query still reads the source and yields 503:
+        // an inactive filter cannot hide source failure or manufacture history.
+        let inventory = Arc::new(UnavailableInventory::default());
+        let app = models_router_with_inventory(inventory.clone()).layer(axum::Extension(
+            awaken_tenancy::WorkspaceScope("workspace-a".into()),
+        ));
+        for beta in ["", "&beta=true"] {
+            for query in [
+                "lifecycle=active",
+                "lifecycle[]=unknown",
+                "lifecycle[]=",
+                "lifecycle[]=active&lifecycle[]=active&lifecycle[]=active&lifecycle[]=active",
+            ] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .uri(format!("/v1/models?{query}{beta}"))
+                            .body(axum::body::Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{query}{beta}");
+                assert_eq!(
+                    inventory.0.load(std::sync::atomic::Ordering::SeqCst),
+                    0,
+                    "no IO"
+                );
+            }
+        }
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/models?lifecycle[]=retired")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(inventory.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_projection_keeps_workspace_source_and_retrieve_parity() {
+        // Causes: W1 two trusted Workspace scopes; W2 GA/Beta list/retrieve;
+        // W3 active predicate. Effects: each operation reads only its injected
+        // Workspace publication port, retains its exact model/time, and emits
+        // identical local lifecycle/unknown metadata. No cross-Workspace cache,
+        // fixture defaults or second model catalogue participates.
+        let inventory = Arc::new(WorkspaceInventory::default());
+        for workspace in ["a", "b"] {
+            let app = models_router_with_inventory(inventory.clone()).layer(axum::Extension(
+                awaken_tenancy::WorkspaceScope(workspace.into()),
+            ));
+            for beta in [false, true] {
+                for path in [
+                    "/v1/models?lifecycle[]=active".to_owned(),
+                    format!("/v1/models/model-{workspace}"),
+                ] {
+                    let mut request = axum::http::Request::builder().uri(&path);
+                    if beta {
+                        request = request
+                            .header("anthropic-beta", ManagedCapability::ManagedAgents.beta());
+                    }
+                    let response = app
+                        .clone()
+                        .oneshot(request.body(axum::body::Body::empty()).unwrap())
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), StatusCode::OK);
+                    let body = response.into_body().collect().await.unwrap().to_bytes();
+                    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    let model = if path.starts_with("/v1/models?") {
+                        &value["data"][0]
+                    } else {
+                        &value
+                    };
+                    assert_eq!(model["id"], format!("model-{workspace}"));
+                    assert_eq!(model["created_at"], "2024-01-01T00:00:00Z");
+                    assert_eq!(model["lifecycle"], "active");
+                    for unknown in ["line", "deprecated_at", "retires_at", "capabilities"] {
+                        assert!(model.get(unknown).unwrap().is_null());
+                    }
+                    assert_eq!(model.get("allowed_fallback_models").is_some(), beta);
+                }
+            }
+        }
+        assert_eq!(
+            *inventory.0.lock().unwrap(),
+            ["a", "a", "a", "a", "b", "b", "b", "b"]
+        );
+    }
+
     // Test design: retrieve_accepts_complete_slash_bearing_model_id
     // Cause/effect graph: C1 the registered model id contains provider/model path
     // separators; C2 the request supplies that complete id through the
@@ -552,7 +827,7 @@ mod tests {
         // Effects: E1 failure returns 503 and no stale model document. Constraint
         // K1 fixed fixture models do not use this live source. Decision table:
         // D1 !C1+list=>E1; D2 !C1+retrieve=>E1.
-        let app = models_router_with_inventory(Arc::new(UnavailableInventory)).layer(
+        let app = models_router_with_inventory(Arc::new(UnavailableInventory::default())).layer(
             axum::Extension(awaken_tenancy::WorkspaceScope("default".into())),
         );
         for (rule, path) in [("D1", "/v1/models"), ("D2", "/v1/models/model-a")] {
