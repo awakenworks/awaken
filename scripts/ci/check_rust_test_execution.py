@@ -44,11 +44,85 @@ def execution_errors(inventory: str, results: str, exit_code: int) -> list[str]:
 
 class ExecutionTests(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "the Bash orchestration runs in the Linux gate")
+    def test_portability_entrypoint_requires_the_current_launch_adapter_selection(self) -> None:
+        # P1 the exact current owner lists and executes => continue to E2E.
+        # P2 empty selection or P3 former owner => reject before E2E, even when
+        # Cargo itself returns success. Exercise the actual entrypoint/helper.
+        root = Path(__file__).resolve().parents[2]
+        selected = "sandbox_source::tests::configured_working_directory_drives_process_and_acp_from_one_view"
+        for case in ("passing", "empty", "former-owner"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                fixture = Path(temporary)
+                scripts = fixture / "scripts/ci"
+                scripts.mkdir(parents=True)
+                for name in ("check-trusted-host-portability.sh", "_cargo_target.sh", "_provider_environment.sh",
+                             "_rust_test_execution.sh", "_deadline.sh", "deadline.py", "check_rust_test_execution.py",
+                             "test_deadline.py", "_strict_unittest.py"):
+                    shutil.copyfile(root / "scripts/ci" / name, scripts / name)
+                entrypoint = scripts / "check-trusted-host-portability.sh"
+                if case == "former-owner":
+                    source = entrypoint.read_text(encoding="utf-8")
+                    entrypoint.write_text(source.replace(
+                        "run_required_rust_tests -p awaken-execution-composition --lib ",
+                        "run_required_rust_tests -p awaken-session-executor --lib ", 1), encoding="utf-8")
+                binary = fixture / "bin"
+                binary.mkdir()
+                commands = {
+                    "cargo": '''#!/usr/bin/env bash
+if [ "$1" = awaken-ci-deadline ]; then shift 3; exec "$@"; fi
+printf '%s\\n' "$*" >> "$CALL_LOG"
+selection=portable_fixture
+case "$*" in
+  *configured_working_directory_drives_process_and_acp_from_one_view*)
+    selection="$SELECTED"
+    [[ " $* " == *" -p awaken-execution-composition "* && "$CASE" != empty ]] || selection=''
+    ;;
+esac
+case "$*" in
+  *--list*) [ -z "$selection" ] || echo "$selection: test" ;;
+  *--show-output*)
+    if [ -n "$selection" ]; then
+      echo "test $selection ... ok"
+      echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
+    else
+      echo 'test result: ok. 0 passed; 0 failed; 0 ignored;'
+    fi ;;
+esac
+exit 0
+''',
+                    "git": '#!/bin/sh\n[ "$1" != rev-parse ] || echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n',
+                    "uname": "#!/bin/sh\necho MINGW64_NT\n",
+                    "cygpath": '#!/bin/sh\n[ "$1" = -w ] || exit 2\necho /owned/git-bash\n',
+                    "node": '''#!/bin/sh
+if [ "$1" = --input-type=module ]; then echo /owned/hand; else echo E2E >> "$CALL_LOG"; fi
+''',
+                }
+                for name, source in commands.items():
+                    command = binary / name
+                    command.write_text(source, encoding="utf-8")
+                    command.chmod(0o755)
+                environment = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", CASE=case,
+                                   SELECTED=selected, CALL_LOG=str(fixture / "calls"),
+                                   CARGO_TARGET_DIR=str(fixture / "target"))
+                result = subprocess.run(["bash", str(entrypoint)], cwd=fixture, env=environment,
+                                        capture_output=True, text=True, timeout=90)
+                self.assertEqual(result.returncode == 0, case == "passing", result.stdout + result.stderr)
+                calls = (fixture / "calls").read_text().splitlines()
+                if case == "passing":
+                    self.assertIn(f"test --locked -p awaken-execution-composition --lib {selected} -- --exact --list", calls)
+                    self.assertIn(f"test --locked -p awaken-execution-composition --lib {selected} -- --exact --show-output", calls)
+                    self.assertEqual(calls.count("E2E"), 5)
+                else:
+                    self.assertIn("required selection is empty", result.stderr)
+                    self.assertNotIn("E2E", calls)
+
+    @unittest.skipIf(os.name == "nt", "the Bash orchestration runs in the Linux gate")
     def test_actual_required_runner_rejects_empty_ignored_skipped_and_failed_runs(self) -> None:
         # E1 same argv for listing/execution, including existing libtest args.
-        # E2 zero selection, E3 ignored, E4 fixture skip, E5 nonzero exit all fail.
+        # E2 zero selection, E3 ignored, E4 fixture skip, E5 execution failure,
+        # E6 listing failure all fail. Preserve E6's status and never execute.
         root = Path(__file__).resolve().parents[2]
-        for case in ("passing", "empty", "ignored", "skipped", "failed"):
+        for case in ("passing", "empty", "ignored", "skipped", "failed", "list-failed"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
                 fixture = Path(temporary)
                 scripts = fixture / "scripts/ci"
@@ -62,7 +136,7 @@ class ExecutionTests(unittest.TestCase):
 if [ "$1" = awaken-ci-deadline ]; then shift 3; exec "$@"; fi
 printf '%s\\n' "$*" >> "$CALL_LOG"
 case "$*" in
-  *--list*) [ "$CASE" = empty ] || echo 'critical: test'; exit 0 ;;
+  *--list*) [ "$CASE" = empty ] || echo 'critical: test'; [ "$CASE" != list-failed ] || exit 47; exit 0 ;;
 esac
 if [ "$CASE" = empty ]; then
   echo 'test result: ok. 0 passed; 0 failed; 0 ignored;'; exit 0
@@ -81,7 +155,12 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
                 environment = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", CASE=case, CALL_LOG=str(fixture / "calls"), CARGO_TARGET_DIR=str(fixture / "target"))
                 result = subprocess.run(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical -- --exact"], cwd=fixture, env=environment, capture_output=True, text=True, timeout=15)
                 self.assertEqual(result.returncode == 0, case == "passing", result.stdout + result.stderr)
-                self.assertEqual((fixture / "calls").read_text().splitlines(), ["test --locked -p critical --lib critical -- --exact --list", "test --locked -p critical --lib critical -- --exact --show-output"])
+                expected = ["test --locked -p critical --lib critical -- --exact --list"]
+                if case == "list-failed":
+                    self.assertEqual(result.returncode, 47)
+                else:
+                    expected.append("test --locked -p critical --lib critical -- --exact --show-output")
+                self.assertEqual((fixture / "calls").read_text().splitlines(), expected)
 
     def test_selection_and_execution_decision_table(self) -> None:
         # R1 selected identities + actual successes => pass. R2 zero/renamed/

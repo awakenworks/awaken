@@ -5,6 +5,7 @@ cd "$(dirname "$0")/../.."
 # Reuse the same checkout and ambient-secret boundaries as the main CI gate.
 source scripts/ci/_cargo_target.sh
 source scripts/ci/_provider_environment.sh
+source scripts/ci/_rust_test_execution.sh
 awaken_configure_cargo_target "$PWD"
 awaken_unset_ambient_api_keys
 awaken_append_repo_tools
@@ -24,6 +25,11 @@ fi
 if [[ "$linux_supervision" == true ]]; then
   cargo test -p awaken-sandbox --test linux_scoped
 fi
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    AWAKEN_NATIVE_BASH="$(cygpath -w "$BASH")" python3 scripts/ci/test_deadline.py WindowsDeadlineTests
+    ;;
+esac
 
 # SQLite crash/replay contracts are native process/filesystem obligations too.
 # Every OS matrix row must run them; the PostgreSQL lane independently runs the
@@ -38,40 +44,48 @@ cargo test --locked -p awaken-session-store --test process_crash_outbox \
 # process/ACP/prompt view; platform-native relative prompt paths; mismatched
 # fallback candidates reject before launch. The Local provider suite adds the
 # native Sandbox lifecycle and filesystem boundary on the executing OS.
-cargo test -p awaken-session-executor --lib resource_prompt_tests
-cargo test -p awaken-session-executor --lib trusted_host_repository_projection_preserves_the_exact_tier
-cargo test -p awaken-session-environment --lib trusted_host_live_resource_admission_keeps_readonly_advisory
+run_required_rust_tests -p awaken-session-executor --lib resource_prompt_tests
+run_required_rust_tests -p awaken-session-executor --lib trusted_host_repository_projection_preserves_the_exact_tier
+run_required_rust_tests -p awaken-session-environment --lib trusted_host_live_resource_admission_keeps_readonly_advisory
 # Memory replay decision tables cover absent/exact/different installed pins,
 # lost acknowledgements and concurrent callers as well as Provider restart.
 # Select this existing group once: prompt and terminal rows have their own
 # owners immediately above/below and must not run a second time here.
-cargo test -p awaken-session-executor --lib memory -- --skip resource_prompt_tests --skip terminal_
+memory_selection=(--skip resource_prompt_tests --skip terminal_)
+if [[ "$(uname -s)" != Linux ]]; then
+  # This Namespace replay row belongs to the required Linux gate. Do not count
+  # its non-Linux ignored result as portable execution evidence.
+  memory_selection+=(--skip exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed)
+fi
+run_required_rust_tests -p awaken-session-executor --lib memory -- "${memory_selection[@]}"
 # Terminal cause/effect tables include hot/cold Memory, cancelled recovery,
 # same-generation renewal and Control/Worker clock disagreement. Select the
 # existing terminal group once; it includes the former single Memory row and
 # the provider-fence regression, without a parallel list of disposal cases.
-cargo test -p awaken-session-executor --lib terminal_
+run_required_rust_tests -p awaken-session-executor --lib terminal_
 # Current-proof projection and Host adoption waits are platform-neutral. Select
 # their existing test module once on every OS; the terminal filter above does
 # not include these source/ABA rows, and provider unit tests cannot prove wiring.
-cargo test -p awaken-session-executor --lib fence_source_tests
-cargo test -p awaken-session-environment --lib \
+run_required_rust_tests -p awaken-session-executor --lib fence_source_tests
+run_required_rust_tests -p awaken-session-environment --lib \
   trusted_host_filesystem_view_maps_workspace_relative_cwd_once
-cargo test -p awaken-session-environment --lib trusted_host_installed_hand
-cargo test -p awaken-session-environment --lib workdir_unknown_hand_reap
-cargo test -p awaken-session-executor --lib \
-  configured_working_directory_drives_process_and_acp_from_one_view
-cargo test -p awaken-session-executor --lib \
+run_required_rust_tests -p awaken-session-environment --lib trusted_host_installed_hand
+run_required_rust_tests -p awaken-session-environment --lib workdir_unknown_hand_reap
+# The launch adapter moved to execution-composition; the former Host filter
+# selected zero tests. Bind this obligation to its current exact test identity.
+run_required_rust_tests -p awaken-execution-composition --lib \
+  sandbox_source::tests::configured_working_directory_drives_process_and_acp_from_one_view -- --exact
+run_required_rust_tests -p awaken-session-executor --lib \
   model_pool_working_directory_is_one_attempt_invariant
-cargo test -p awaken-session-executor --lib \
+run_required_rust_tests -p awaken-session-executor --lib \
   session_environment::tests::shared_environment::native_process_and_agent_channel_share_one_live_environment -- --exact
-cargo test -p awaken-agent-config --lib \
+run_required_rust_tests -p awaken-agent-config --lib \
   backend_owned_selection_cannot_encode_an_inexact_backend_or_model
 cargo test -p awaken-run-executor-acp --lib
 cargo test -p awaken-acp-application --lib
-cargo test -p awaken-worker --lib bootstrap::
+run_required_rust_tests -p awaken-worker --lib bootstrap::
 cargo test -p awaken-worker-contract --lib
-cargo test -p awaken-cli --lib acp_local_credentials
+run_required_rust_tests -p awaken-cli --lib acp_local_credentials
 # Publication lifecycle uses the same portable task/slot kernel. Include both
 # adapter races on every matrix runner; Namespace's Unix-socket rows remain
 # Linux-gated inside the Local suite. No container daemon is needed here.
@@ -104,15 +118,15 @@ if [[ "$linux_supervision" == true ]]; then
   # helper. Missing binaries/substrate fail; ignored merely isolates this
   # mandatory Linux gate from portable unit builds without an installed helper.
   AWAKEN_TEST_SCOPED_LAUNCHER="$(command -v bwrap)" \
-    cargo test -p awaken-session-executor --lib trusted_host_scoped_session -- --ignored
+    run_required_rust_tests -p awaken-session-executor --lib trusted_host_scoped_session -- --ignored
   AWAKEN_TEST_SCOPED_LAUNCHER="$(command -v bwrap)" \
-    cargo test -p awaken-session-environment --lib trusted_host_scoped_session -- --ignored
+    run_required_rust_tests -p awaken-session-environment --lib trusted_host_scoped_session -- --ignored
 fi
 # These startup rows require the just-built release companion. The thin scoped
 # qualification above intentionally does not provide Hand, and must not race
 # companion validation or turn an absent executable into a successful skip.
-cargo test -p awaken-session-executor --lib acp_backend::tests -- --include-ignored
-cargo test -p awaken-execution-composition --lib local:: -- --include-ignored
+run_required_rust_tests -p awaken-session-executor --lib acp_backend::tests -- --include-ignored
+run_required_rust_tests -p awaken-execution-composition --lib local:: -- --include-ignored
 cargo test -p awaken-sandbox-fs --lib
 cargo test -p awaken-sandbox-memoryd --lib
 cargo test -p awaken-sandbox-memoryd --test copy_lifecycle

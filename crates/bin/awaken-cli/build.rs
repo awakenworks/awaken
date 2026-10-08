@@ -30,7 +30,6 @@ fn main() {
         workspace.join("pnpm-workspace.yaml").display()
     );
 
-    println!("cargo:rerun-if-changed={}", web.join("public").display());
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let dist = out_dir.join("console");
     println!(
