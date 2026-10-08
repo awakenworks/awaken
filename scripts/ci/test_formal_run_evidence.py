@@ -27,7 +27,18 @@ def nested_shell_function(source: str, name: str) -> str:
 
 def formal_gate_initialization(root: Path) -> str:
     source = (root / "scripts/ci/check_formal.sh").read_text()
-    return source.split("\npython3 scripts/ci/check_feature_coverage.py", 1)[0]
+    # This slice owns receipt/trap behavior, while gate_tools owns real tool
+    # and disk admission. Keep both exact calls but supply that independent
+    # port explicitly; a host's Kani installation must not decide these cases.
+    admission = '''python3() {
+  if [ "$1" = scripts/ci/gate_tools.py ]; then
+    [ "$#" -eq 4 ] && [ "$4" = formal ] || return 2
+    case "$2:$3" in require:--gate|disk:--stage) return 0 ;; *) return 2 ;; esac
+  fi
+  command python3 "$@"
+}
+'''
+    return admission + source.split("\npython3 scripts/ci/check_feature_coverage.py", 1)[0]
 
 
 # Entry points the fixture executes, plus the data files they read that no
