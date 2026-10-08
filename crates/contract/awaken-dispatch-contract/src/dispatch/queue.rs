@@ -429,8 +429,8 @@ pub trait ClaimedCredentialDeliveryTransport: Send + Sync {
     async fn refresh_credential_delivery(
         &self,
         claim: &RunClaim,
-        request: awaken_runtime_contract::AttemptCredentialDeliveryRequest,
-    ) -> Result<Option<awaken_runtime_contract::AttemptCredentialDelivery>, DispatchError>;
+        request: awaken_credential_contract::AttemptCredentialDeliveryRequest,
+    ) -> Result<Option<awaken_credential_contract::AttemptCredentialDelivery>, DispatchError>;
 }
 
 /// One operational observation from the canonical Dispatch store.

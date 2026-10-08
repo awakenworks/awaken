@@ -15,6 +15,10 @@ use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpoi
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_credential_contract::{
+    AttemptCredentialBinding, AttemptCredentialDelivery, AttemptCredentialDeliveryRequest,
+    AttemptCredentialDeliverySource,
+};
 use awaken_credential_contract::{CredentialRealizationCapabilities, CredentialRealizationKind};
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
@@ -32,11 +36,9 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::{
-    AttemptCredentialBinding, AttemptCredentialDelivery, AttemptCredentialDeliveryRequest,
-    AttemptCredentialDeliverySource, CredentialAccess, CredentialEnvelope,
-    CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef, CredentialUsage,
-    InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
-    SealedCredentialEnvelopeRef,
+    CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource,
+    CredentialRef, CredentialUsage, InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary,
+    PlaintextHolder, SealedCredentialEnvelopeRef,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
 use awaken_coordinator_client::HttpDispatchQueue;
@@ -166,16 +168,17 @@ struct BlockingSecondDelivery {
 
 impl BlockingSecondDelivery {
     fn delivery(request: AttemptCredentialDeliveryRequest) -> AttemptCredentialDelivery {
-        let access =
-            awaken_runtime_contract::credential_access_without_delivery(&request.published_access)
-                .with_envelope(CredentialEnvelope::SealedForWorker {
-                    envelope_ref: SealedCredentialEnvelopeRef {
-                        id: format!("claim-{}", request.claim_epoch),
-                        payload_fingerprint: "fresh-payload".into(),
-                    },
-                    recipient: request.selected_plaintext_holder.trust_domain,
-                    expires_at_unix_ms: u64::MAX,
-                });
+        let access = awaken_credential_contract::credential_access_without_delivery(
+            &request.published_access,
+        )
+        .with_envelope(CredentialEnvelope::SealedForWorker {
+            envelope_ref: SealedCredentialEnvelopeRef {
+                id: format!("claim-{}", request.claim_epoch),
+                payload_fingerprint: "fresh-payload".into(),
+            },
+            recipient: request.selected_plaintext_holder.trust_domain,
+            expires_at_unix_ms: u64::MAX,
+        });
         AttemptCredentialDelivery {
             candidate_fingerprint: request.candidate_fingerprint,
             access,
@@ -203,13 +206,13 @@ fn refresh_request(
     candidate: &ResolvedModelCandidate,
 ) -> AttemptCredentialDeliveryRequest {
     let (published_access, material_binding) =
-        awaken_runtime_contract::candidate_credential_material_binding(candidate).unwrap();
+        awaken_credential_contract::candidate_credential_material_binding(candidate).unwrap();
     AttemptCredentialDeliveryRequest {
         candidate_fingerprint: binding.candidate_fingerprint.clone(),
         published_access: published_access.clone(),
         selected_plaintext_holder: binding.selected_plaintext_holder.clone(),
         binding: material_binding,
-        expected_provider: awaken_runtime_contract::candidate_provider_expectation(candidate)
+        expected_provider: awaken_credential_contract::candidate_provider_expectation(candidate)
             .unwrap(),
         claim_epoch: binding.claim_epoch,
     }
@@ -224,16 +227,17 @@ impl AttemptCredentialDeliverySource for FreshClaimDelivery {
         if self.fail {
             return Err("injected claim delivery failure".into());
         }
-        let access =
-            awaken_runtime_contract::credential_access_without_delivery(&request.published_access)
-                .with_envelope(CredentialEnvelope::SealedForWorker {
-                    envelope_ref: SealedCredentialEnvelopeRef {
-                        id: format!("claim-{}", request.claim_epoch),
-                        payload_fingerprint: "fresh-payload".into(),
-                    },
-                    recipient: request.selected_plaintext_holder.trust_domain,
-                    expires_at_unix_ms: u64::MAX,
-                });
+        let access = awaken_credential_contract::credential_access_without_delivery(
+            &request.published_access,
+        )
+        .with_envelope(CredentialEnvelope::SealedForWorker {
+            envelope_ref: SealedCredentialEnvelopeRef {
+                id: format!("claim-{}", request.claim_epoch),
+                payload_fingerprint: "fresh-payload".into(),
+            },
+            recipient: request.selected_plaintext_holder.trust_domain,
+            expires_at_unix_ms: u64::MAX,
+        });
         Ok(AttemptCredentialDelivery {
             candidate_fingerprint: request.candidate_fingerprint,
             access,
@@ -395,7 +399,7 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
             unreachable!()
         };
         assert!(
-            awaken_runtime_contract::credential_access_has_same_authority(
+            awaken_credential_contract::credential_access_has_same_authority(
                 &claimed.credential_deliveries[0].access,
                 published_access,
             ),
@@ -418,7 +422,7 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
             .expect("R3 current claim receives delivery");
         assert_eq!(refreshed.claim_epoch, claimed.lease.epoch, "R3");
         assert!(
-            awaken_runtime_contract::credential_access_has_same_authority(
+            awaken_credential_contract::credential_access_has_same_authority(
                 &refreshed.access,
                 published_access,
             ),

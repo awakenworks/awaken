@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_credential::Credential;
+use awaken_agent_contract::credential::Credential;
 use awaken_runtime_contract::credential::CredentialPurpose;
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, IdBound, Plugin, PluginConfigError, PluginManifest,

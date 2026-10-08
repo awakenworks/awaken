@@ -26,14 +26,14 @@ use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_credential_contract::CredentialRealizationCapabilities;
+pub use awaken_credential_contract::{
+    AttemptCredentialBinding, AttemptCredentialBindingError, AttemptCredentialDelivery,
+    CredentialRealizationPersistenceDecision, CredentialRealizationReceipt, CredentialReceiptError,
+    credential_realization_persistence_decision, verify_credential_realization_receipt,
+};
 #[cfg(test)]
 use awaken_credential_contract::{CredentialAdmissionError, CredentialRealizationKind};
-pub use awaken_runtime_contract::{
-    AttemptCredentialBinding, AttemptCredentialBindingError, AttemptCredentialDelivery,
-    CandidateFingerprint, CredentialRealizationPersistenceDecision, CredentialRealizationReceipt,
-    CredentialReceiptError, credential_realization_persistence_decision,
-    verify_credential_realization_receipt,
-};
+pub use awaken_runtime_contract::CandidateFingerprint;
 #[cfg(test)]
 use awaken_runtime_contract::{CredentialUsage, PlaintextBoundary};
 use awaken_session_execution_contract::{
@@ -97,6 +97,7 @@ pub use aggregate::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_credential_contract::CredentialAccessAdmission;
 
     #[test]
     fn session_replacement_safety_partition_is_exhaustive() {

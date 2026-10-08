@@ -20,7 +20,6 @@ awaken-agent-contract.workspace = true
 awaken-observability.workspace = true
 awaken-dispatch.workspace = true
 awaken-dispatch-contract.workspace = true
-awaken-runtime-contract.workspace = true
 awaken-runtime.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true

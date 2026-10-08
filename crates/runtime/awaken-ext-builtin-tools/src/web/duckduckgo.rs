@@ -1,7 +1,7 @@
 //! Credential-free DuckDuckGo search adapter and response normalization.
 
 use async_trait::async_trait;
-use awaken_credential::Credential;
+use awaken_agent_contract::credential::Credential;
 use awaken_tool_contract::tool::ToolError;
 use serde::Deserialize;
 use serde_json::json;

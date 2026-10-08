@@ -16,7 +16,7 @@ use awaken_runtime_contract::CredentialAccess;
 pub fn materialized_http_credential(
     access: &CredentialAccess,
     material: &CredentialMaterial,
-) -> Result<awaken_credential::Credential, CredentialMaterialError> {
+) -> Result<awaken_agent_contract::credential::Credential, CredentialMaterialError> {
     material.validate_usage(&access.usage)?;
     let awaken_runtime_contract::CredentialUsage::HttpHeader { name, scheme } = &access.usage
     else {
@@ -28,12 +28,14 @@ pub fn materialized_http_credential(
             .as_deref()
             .is_some_and(|value| value.eq_ignore_ascii_case("bearer"))
     {
-        return Ok(awaken_credential::Credential::Bearer(secret.to_owned()));
+        return Ok(awaken_agent_contract::credential::Credential::Bearer(
+            secret.to_owned(),
+        ));
     }
     let value = scheme
         .as_ref()
         .map_or_else(|| secret.to_owned(), |scheme| format!("{scheme} {secret}"));
-    Ok(awaken_credential::Credential::Header {
+    Ok(awaken_agent_contract::credential::Credential::Header {
         name: name.clone(),
         value,
     })
@@ -81,7 +83,7 @@ mod tests {
                     name: "Authorization".into(),
                     scheme: Some("Bearer".into()),
                 },
-                awaken_credential::Credential::Bearer("secret-value".into()),
+                awaken_agent_contract::credential::Credential::Bearer("secret-value".into()),
             ),
             (
                 "H2",
@@ -89,7 +91,7 @@ mod tests {
                     name: "X-Subscription-Token".into(),
                     scheme: None,
                 },
-                awaken_credential::Credential::Header {
+                awaken_agent_contract::credential::Credential::Header {
                     name: "X-Subscription-Token".into(),
                     value: "secret-value".into(),
                 },
@@ -100,7 +102,7 @@ mod tests {
                     name: "X-Api-Key".into(),
                     scheme: Some("Token".into()),
                 },
-                awaken_credential::Credential::Header {
+                awaken_agent_contract::credential::Credential::Header {
                     name: "X-Api-Key".into(),
                     value: "Token secret-value".into(),
                 },

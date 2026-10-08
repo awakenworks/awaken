@@ -13,7 +13,7 @@
 //! wire's.
 //!
 //! Authentication follows the A2A spec's transport-layer model, with the shared
-//! [`awaken_credential`] seam: a [`Credential`] (bearer or header — the `http`
+//! [`awaken_agent_contract::credential`] seam: a [`Credential`] (bearer or header — the `http`
 //! and `apiKey` card schemes) rides on every request, rotatable in place via
 //! [`set_credential`](HttpTransport::set_credential); a 401/403 surfaces its
 //! `WWW-Authenticate` as a structured [`AuthChallenge`], and a host-registered
@@ -23,7 +23,7 @@
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
-use awaken_credential::{AuthChallenge, Credential, CredentialRefresher};
+use awaken_agent_contract::credential::{AuthChallenge, Credential, CredentialRefresher};
 use serde_json::json;
 
 #[cfg(test)]

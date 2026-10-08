@@ -6,6 +6,7 @@
 //! these handlers add no queue, clock, identity, or lease authority.
 
 use super::*;
+use awaken_credential_contract::CredentialEnvelopeValidation;
 
 /// Keep admission-owned resources alive after a caller drops its HTTP future.
 fn complete_admission<F, T>(operation: F) -> tokio::task::JoinHandle<T>
@@ -35,7 +36,7 @@ async fn attach_claim_credential_deliveries(
         .attempt_candidates(claimed.request.activation.model_ref_override.as_deref());
     let mut deliveries = Vec::new();
     for candidate in candidates {
-        let fingerprint = awaken_runtime_contract::candidate_fingerprint(candidate)
+        let fingerprint = awaken_credential_contract::candidate_fingerprint(candidate)
             .map_err(|error| HostError::internal(error.to_string()))?;
         let Some(binding) = claimed
             .credential_bindings
@@ -45,26 +46,27 @@ async fn attach_claim_credential_deliveries(
             continue;
         };
         let Some((published_access, material_binding)) =
-            awaken_runtime_contract::candidate_credential_material_binding(candidate)
+            awaken_credential_contract::candidate_credential_material_binding(candidate)
         else {
             continue;
         };
         if let Some(source) = source {
             let delivery = source
-                .deliver(awaken_runtime_contract::AttemptCredentialDeliveryRequest {
-                    candidate_fingerprint: fingerprint,
-                    published_access: published_access.clone(),
-                    selected_plaintext_holder: binding.selected_plaintext_holder.clone(),
-                    binding: material_binding,
-                    expected_provider: awaken_runtime_contract::candidate_provider_expectation(
-                        candidate,
-                    )
-                    .map_err(HostError::internal)?,
-                    claim_epoch: claimed.lease.epoch,
-                })
+                .deliver(
+                    awaken_credential_contract::AttemptCredentialDeliveryRequest {
+                        candidate_fingerprint: fingerprint,
+                        published_access: published_access.clone(),
+                        selected_plaintext_holder: binding.selected_plaintext_holder.clone(),
+                        binding: material_binding,
+                        expected_provider:
+                            awaken_credential_contract::candidate_provider_expectation(candidate)
+                                .map_err(HostError::internal)?,
+                        claim_epoch: claimed.lease.epoch,
+                    },
+                )
                 .await
                 .map_err(HostError::unavailable)?;
-            awaken_runtime_contract::verify_attempt_credential_delivery(
+            awaken_credential_contract::verify_attempt_credential_delivery(
                 binding,
                 published_access,
                 &delivery,

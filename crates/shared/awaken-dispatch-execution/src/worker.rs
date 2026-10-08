@@ -38,16 +38,16 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
+use awaken_credential_contract::{
+    AttemptCredentialBinding, AttemptCredentialDelivery, AttemptCredentialDeliveryRequest,
+    AttemptCredentialDeliverySource, AttemptCredentialRealization, CredentialRealizationReceipt,
+    CredentialRealizationRecordError, CredentialRealizationRecorder,
+};
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::execution::{AttemptRecoveryMode, RunAttemptExecutor};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::{
     AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext,
-};
-use awaken_runtime_contract::{
-    AttemptCredentialBinding, AttemptCredentialDelivery, AttemptCredentialDeliveryRequest,
-    AttemptCredentialDeliverySource, AttemptCredentialRealization, CredentialRealizationReceipt,
-    CredentialRealizationRecordError, CredentialRealizationRecorder,
 };
 use awaken_session_execution_contract::{
     SessionRunActivityAdmission, SessionRunActivityAdmissionMode,

@@ -1,6 +1,7 @@
 // @formal entrypoint credential_effect.boundary_preserves_exact_materialization_authority
+use awaken_credential_contract::CredentialAccessAdmission;
 use awaken_credential_contract::CredentialRealizationCapabilities;
-use awaken_runtime_contract::{AttemptCredentialBinding, AttemptCredentialBindingError};
+use awaken_credential_contract::{AttemptCredentialBinding, AttemptCredentialBindingError};
 use awaken_worker_contract::WorkerSnapshot;
 
 use crate::run_dispatch::RunDispatch;
@@ -143,7 +144,7 @@ pub fn compile_attempt_credential_bindings(
         .snapshot
         .resolved_spec
         .attempt_candidates(request.activation.model_ref_override.as_deref());
-    let bindings = awaken_runtime_contract::compile_candidate_credential_bindings(
+    let bindings = awaken_credential_contract::compile_candidate_credential_bindings(
         &candidates,
         request.inference_plaintext_holder.as_ref(),
         installed,
@@ -271,7 +272,7 @@ pub fn compile_claim_credential_bindings(
             ) {
                 return Ok(Vec::new());
             }
-            awaken_runtime_contract::compile_candidate_credential_bindings(
+            awaken_credential_contract::compile_candidate_credential_bindings(
                 &[candidate],
                 request.inference_plaintext_holder.as_ref(),
                 installed,

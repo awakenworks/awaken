@@ -1,7 +1,7 @@
 // @formal surface requirement=credential.plaintext_boundary.exact_holder
 // @formal reason: This source implements the repository-controlled credential product boundary and is
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
-//! Host-side credential vocabulary for Awaken's outbound wire clients.
+//! Host-side credential values for Awaken's outbound wire clients.
 //!
 //! Hoisted from `awaken-ext-mcp` when the A2A outbound client needed the same
 //! seam — one definition keeps the challenge shape and refresh semantics from

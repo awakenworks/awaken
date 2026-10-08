@@ -1,6 +1,8 @@
 // @formal entrypoint memory_extraction.unknown_execution_never_reenters_retry
 //! Value objects and terminal outcomes for durable Memory extraction.
 
+use awaken_lease_contract::fence::Epoch;
+use awaken_runtime_contract::CandidateFingerprint;
 use serde::{Deserialize, Serialize};
 
 /// Frozen, secret-free extractor configuration used by every retry.
@@ -67,6 +69,72 @@ impl MemoryHeadToken {
     #[must_use]
     pub fn encoded(&self) -> &serde_json::Value {
         &self.0
+    }
+}
+
+/// A Platform credential realization receipt carried by an extraction intent,
+/// as an opaque token.
+///
+/// The extraction claim records which credential effects its attempt
+/// completed. The receipt is Platform vocabulary (ADR-0086 §7); the SDK reads
+/// only the two values it fences on, the claim epoch and the model candidate,
+/// and carries the Platform's encoding unchanged otherwise. It serializes
+/// exactly as the receipt it wraps, so a persisted intent keeps its wire shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialRealizationToken {
+    claim_epoch: Epoch,
+    candidate_fingerprint: CandidateFingerprint,
+    encoded: serde_json::Value,
+}
+
+/// The two receipt fields the SDK reads; every other field stays opaque.
+#[derive(Deserialize)]
+struct CredentialRealizationCoordinates {
+    claim_epoch: Epoch,
+    candidate_fingerprint: CandidateFingerprint,
+}
+
+impl CredentialRealizationToken {
+    /// Wrap the Platform's encoding of one receipt. An encoding without a
+    /// nonzero claim epoch and a candidate fingerprint is not a receipt and is
+    /// refused.
+    pub fn new(encoded: serde_json::Value) -> Result<Self, serde_json::Error> {
+        let coordinates = CredentialRealizationCoordinates::deserialize(&encoded)?;
+        Ok(Self {
+            claim_epoch: coordinates.claim_epoch,
+            candidate_fingerprint: coordinates.candidate_fingerprint,
+            encoded,
+        })
+    }
+
+    /// The extraction claim epoch the receipt was recorded under.
+    #[must_use]
+    pub fn claim_epoch(&self) -> u64 {
+        self.claim_epoch.get()
+    }
+
+    /// The model candidate whose credential the receipt realized.
+    #[must_use]
+    pub fn candidate_fingerprint(&self) -> &CandidateFingerprint {
+        &self.candidate_fingerprint
+    }
+
+    /// The Platform's encoding, for the Platform to decode.
+    #[must_use]
+    pub fn encoded(&self) -> &serde_json::Value {
+        &self.encoded
+    }
+}
+
+impl Serialize for CredentialRealizationToken {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.encoded.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for CredentialRealizationToken {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(serde_json::Value::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
 
@@ -247,5 +315,37 @@ mod head_token_tests {
         let back: MemoryExtractionMutation = serde_json::from_value(wire).unwrap();
         assert_eq!(back, mutation);
         assert_eq!(back.observed_generation.unwrap().encoded(), &head);
+    }
+
+    #[test]
+    fn credential_realization_token_keeps_the_wire_shape_of_the_receipt_it_wraps() {
+        // The SDK carries the Platform's receipt encoding unchanged and reads
+        // only the claim epoch and the candidate. An encoding without either
+        // is refused instead of becoming an unfenced receipt.
+        let receipt = serde_json::json!({
+            "candidate_fingerprint": "sha256:candidate",
+            "credential": {"id": "credential-a", "revision": 3},
+            "selected_plaintext_holder": {"boundary": "worker", "trust_domain": "awaken.worker"},
+            "actual_realization_kind": "worker_provider_adapter",
+            "claim_epoch": 4,
+            "receipt_fingerprint": "sha256:receipt"
+        });
+        let token = CredentialRealizationToken::new(receipt.clone()).unwrap();
+        assert_eq!(token.claim_epoch(), 4);
+        assert_eq!(
+            token.candidate_fingerprint(),
+            &CandidateFingerprint("sha256:candidate".into())
+        );
+        assert_eq!(serde_json::to_value(&token).unwrap(), receipt);
+        let back: CredentialRealizationToken = serde_json::from_value(receipt.clone()).unwrap();
+        assert_eq!(back, token);
+        assert_eq!(back.encoded(), &receipt);
+        let mut unminted = receipt.clone();
+        unminted["claim_epoch"] = serde_json::json!(0);
+        assert!(CredentialRealizationToken::new(unminted).is_err());
+        let mut unfenced = receipt;
+        unfenced.as_object_mut().unwrap().remove("claim_epoch");
+        assert!(CredentialRealizationToken::new(unfenced.clone()).is_err());
+        assert!(serde_json::from_value::<CredentialRealizationToken>(unfenced).is_err());
     }
 }

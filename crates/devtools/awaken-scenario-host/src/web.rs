@@ -39,10 +39,10 @@ impl WebSearchProvider for ScenarioWebSearchProvider {
     async fn search(
         &self,
         request: WebSearchRequest,
-        credential: Option<&awaken_credential::Credential>,
+        credential: Option<&awaken_agent_contract::credential::Credential>,
     ) -> Result<Vec<WebSearchResult>, ToolError> {
         let secret_matches = credential
-            .and_then(awaken_credential::Credential::header)
+            .and_then(awaken_agent_contract::credential::Credential::header)
             .is_some_and(|header| {
                 header
                     == (

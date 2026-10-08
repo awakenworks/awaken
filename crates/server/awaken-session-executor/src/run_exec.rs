@@ -27,7 +27,7 @@ static LOCAL_ATTEMPT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::At
 struct LocalAttemptAuthority {
     session: std::sync::Weak<SessionCtx>,
     run_id: awaken_agent_contract::agent::run::Id,
-    bindings: Vec<awaken_runtime_contract::AttemptCredentialBinding>,
+    bindings: Vec<awaken_credential_contract::AttemptCredentialBinding>,
 }
 
 impl LocalAttemptAuthority {
@@ -53,19 +53,21 @@ impl awaken_runtime_contract::AttemptOwnershipVerifier for LocalAttemptAuthority
 }
 
 #[async_trait::async_trait]
-impl awaken_runtime_contract::CredentialRealizationRecorder for LocalAttemptAuthority {
+impl awaken_credential_contract::CredentialRealizationRecorder for LocalAttemptAuthority {
     async fn record(
         &self,
-        receipt: awaken_runtime_contract::CredentialRealizationReceipt,
-    ) -> Result<(), awaken_runtime_contract::CredentialRealizationRecordError> {
+        receipt: awaken_credential_contract::CredentialRealizationReceipt,
+    ) -> Result<(), awaken_credential_contract::CredentialRealizationRecordError> {
         if !self.is_current() {
-            return Err(awaken_runtime_contract::CredentialRealizationRecordError(
-                "process-local attempt lost ownership before receipt".into(),
-            ));
+            return Err(
+                awaken_credential_contract::CredentialRealizationRecordError(
+                    "process-local attempt lost ownership before receipt".into(),
+                ),
+            );
         }
-        awaken_runtime_contract::verify_credential_realization_receipt(&self.bindings, &receipt)
+        awaken_credential_contract::verify_credential_realization_receipt(&self.bindings, &receipt)
             .map_err(|error| {
-                awaken_runtime_contract::CredentialRealizationRecordError(error.to_string())
+                awaken_credential_contract::CredentialRealizationRecordError(error.to_string())
             })
     }
 }
@@ -492,7 +494,7 @@ impl SharedHost {
                     )));
                 }
             };
-            let compiled = awaken_runtime_contract::compile_candidate_credential_bindings(
+            let compiled = awaken_credential_contract::compile_candidate_credential_bindings(
                 &[*candidate],
                 holder.as_ref(),
                 &installed,
@@ -523,7 +525,7 @@ impl SharedHost {
         context = context.with_ownership(authority.clone());
         if !bindings.is_empty() {
             context = context.with_credential_realization(
-                awaken_runtime_contract::AttemptCredentialRealization::new(bindings, authority),
+                awaken_credential_contract::AttemptCredentialRealization::new(bindings, authority),
             );
         }
         // Route this attempt's inference through the run's effective model,
