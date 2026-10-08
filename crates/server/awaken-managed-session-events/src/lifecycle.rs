@@ -65,6 +65,80 @@ pub struct ChildLifecycle {
     pub terminal_cursors: Vec<RunLifecycleCursor>,
 }
 
+/// The Run boundaries of the primary Thread in an accepted lifecycle prefix.
+pub fn root_run_boundaries<'a>(
+    session_id: &'a str,
+    lifecycle: &'a [RunLifecycleEvent],
+) -> impl DoubleEndedIterator<Item = &'a RunLifecycleEvent> + 'a {
+    lifecycle.iter().filter(move |event| {
+        event.thread_id.0 == session_id && SessionAgentRunBoundary::is_boundary(event.kind)
+    })
+}
+
+/// The public facts of one primary Thread Run boundary.
+#[derive(Clone, Debug)]
+pub struct RootTerminalFacts {
+    /// The boundary's Run fault, unless an Outcome owns the failure.
+    pub error: Option<DerivedSessionEvent>,
+    pub idle: DerivedSessionEvent,
+}
+
+/// The identity of one primary Thread Run boundary's idle fact.
+#[must_use]
+pub fn root_terminal_idle_key(session_id: &str, terminal: &RunLifecycleEvent) -> EventIdentity {
+    EventIdentity::new(
+        session_id,
+        ManagedEventType::RootLifecycleStatusIdle,
+        FactProvenance::Lifecycle {
+            cursor: terminal.cursor.0,
+        },
+    )
+}
+
+/// Every root Run boundary publishes its Thread idle (and fault) once, from
+/// its own committed lifecycle and audit. The idle names the answerable call
+/// of the boundary's own accepted pause, never a live ticket.
+pub fn root_terminal_facts(
+    session_id: &str,
+    terminal: &RunLifecycleEvent,
+    outcome_owns_failure: bool,
+    root: Option<&RunRecoverySnapshot>,
+    historical_pending: &HashMap<RunLifecycleCursor, Pending>,
+) -> Result<RootTerminalFacts, ProjectionError> {
+    let error = if outcome_owns_failure {
+        None
+    } else {
+        run_fault(terminal, root)?.map(|fault| {
+            DerivedSessionEvent::new(
+                EventIdentity::new(
+                    session_id,
+                    ManagedEventType::RootLifecycleError,
+                    FactProvenance::Lifecycle {
+                        cursor: terminal.cursor.0,
+                    },
+                ),
+                SessionEventKind::RunError {
+                    fault,
+                    advisor: false,
+                },
+            )
+        })
+    };
+    let stop = terminal_stop(
+        &terminal.state,
+        historical_pending.get(&terminal.cursor),
+        terminal.await_reason.as_ref(),
+        false,
+    );
+    Ok(RootTerminalFacts {
+        error,
+        idle: DerivedSessionEvent::new(
+            root_terminal_idle_key(session_id, terminal),
+            SessionEventKind::ThreadIdle(stop),
+        ),
+    })
+}
+
 /// Every primary Thread opening in the complete accepted lifecycle prefix.
 ///
 /// Consumer: the Managed wire encoder. A boundary with no opening since the

@@ -327,9 +327,17 @@ fn validate_durable_outcome_projection(
 }
 
 /// A committed prefix the timeline domain refuses to project is an internal
-/// Runtime fault; the published projection is kept.
+/// Runtime fault, or a damaged prefix only an interrupt settles; either way
+/// the published projection is kept.
 fn projection_error(error: awaken_managed_session_events::ProjectionError) -> StateError {
-    StateError::Run(RunError::internal(error.to_string()))
+    match error {
+        awaken_managed_session_events::ProjectionError::Corrupt(message) => {
+            StateError::Run(RunError::internal(message))
+        }
+        awaken_managed_session_events::ProjectionError::RecoveryRequired(message) => {
+            StateError::projection_recovery_required(message)
+        }
+    }
 }
 
 /// Borrowed committed evidence for one child transcript fold. This is only a

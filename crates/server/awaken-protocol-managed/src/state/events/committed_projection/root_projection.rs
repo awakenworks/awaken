@@ -11,8 +11,7 @@
 use super::candidate_evidence::{BudgetReachProjection, CandidateEvidence};
 use super::*;
 use awaken_managed_session_events::{
-    DerivedSessionEvent, EventIdentity, FactProvenance, ManagedEventType, SessionEventKind,
-    TranscriptRole,
+    EventIdentity, FactProvenance, ManagedEventType, TranscriptRole,
 };
 
 /// Primary-thread input not already owned by a retained Managed admission.
@@ -83,39 +82,6 @@ pub(in crate::state::events) fn transcript_fact_key(
 }
 
 impl ManagedState {
-    pub(super) fn append_root_terminal_error(
-        record: &mut SessionRecord,
-        terminal: &RunLifecycleEvent,
-        outcome_owns_failure: bool,
-        snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-    ) -> Result<(), StateError> {
-        if outcome_owns_failure {
-            return Ok(());
-        }
-        let Some(fault) = awaken_managed_session_events::run_fault(terminal, snapshot)
-            .map_err(projection_error)?
-        else {
-            return Ok(());
-        };
-        record.publish_fact_once(
-            &DerivedSessionEvent::new(
-                EventIdentity::new(
-                    record.session.id.clone(),
-                    ManagedEventType::RootLifecycleError,
-                    FactProvenance::Lifecycle {
-                        cursor: terminal.cursor.0,
-                    },
-                ),
-                SessionEventKind::RunError {
-                    fault,
-                    advisor: false,
-                },
-            ),
-            None,
-        )?;
-        Ok(())
-    }
-
     pub(super) fn project_root_prefix(
         &self,
         record: &mut SessionRecord,
@@ -174,10 +140,9 @@ impl ManagedState {
                 .cloned()
                 .collect::<Vec<_>>()
         };
-        let root_terminal = all_accepted_lifecycle.iter().rev().find(|event| {
-            event.thread_id.0 == session_id
-                && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(event.kind)
-        });
+        let root_terminal =
+            awaken_managed_session_events::root_run_boundaries(session_id, all_accepted_lifecycle)
+                .next_back();
         // Each opening is decided from the entire committed lifecycle. A
         // boundary following a boundary without an intervening opening owns
         // its own Running fact on both an incremental and a cold reader.
