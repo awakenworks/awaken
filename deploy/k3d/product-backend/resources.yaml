@@ -402,7 +402,11 @@ spec:
             - { name: admin, containerPort: 9090 }
           lifecycle:
             preStop:
-              httpGet: { path: /admin/drain, port: admin, scheme: HTTP }
+              exec:
+                command:
+                  - python3
+                  - -c
+                  - 'import urllib.request; urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:9090/admin/drain",method="POST"),timeout=5).read()'
           readinessProbe:
             httpGet: { path: /readyz, port: admin }
             initialDelaySeconds: 2

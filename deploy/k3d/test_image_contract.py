@@ -112,7 +112,9 @@ def main() -> None:
     # invokes the one existing Worker `/admin/drain` authority before SIGTERM;
     # E2 the Pod grace covers configured drain + revocation + bounded lifecycle
     # publication/withdrawal; E3 no deployment-owned stop protocol is added.
-    # Rules WR1=C1+C2=>E1; WR2=C1+C3+C4=>E2; WR3=!E1|!E2=>reject the manifest.
+    # C5 the authoritative admin router admits POST only: a Kubernetes httpGet
+    # hook receives 405 and never closes admission. Rules WR1=C1+C2+C5=>E1;
+    # WR2=C1+C3+C4=>E2; WR3=!E1|!E2=>reject; WR4=GET instead of POST=>reject.
     # The Worker lifecycle tests own runtime drain/cancellation behavior; this
     # test owns the cross-language deployment budget that exposed the crash.
     lifecycle = (
@@ -130,7 +132,8 @@ def main() -> None:
         grace = int(re.search(r"terminationGracePeriodSeconds:\s*(\d+)", worker).group(1))
         return (
             "preStop:" in worker
-            and "httpGet: { path: /admin/drain," in worker
+            and "exec:" in worker
+            and 'urllib.request.Request("http://127.0.0.1:9090/admin/drain",method="POST")' in worker
             and grace >= drain_budget + revocation_budget + 10
         )
 
@@ -160,6 +163,9 @@ def main() -> None:
     distributed_marker = "kind: StatefulSet\nmetadata: { name: worker, labels: { app: worker } }"
     assert worker_retirement_contract(product_resources, product_marker)
     assert worker_retirement_contract(resources, distributed_marker)
+    assert not worker_retirement_contract(
+        product_resources.replace('method="POST"', 'method="GET"'), product_marker,
+    )
     # Mutation witnesses for WR3: either the old 20s grace or deleting the hook
     # must fail this exact deployment contract.
     assert not worker_retirement_contract(

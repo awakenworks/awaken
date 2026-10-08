@@ -472,9 +472,13 @@ spec:
             # Normal scale-in closes local claim admission before SIGTERM and
             # leaves the existing drain and cancellation-return observation
             # inside the 60s Pod grace.
-            # This HTTP hook needs no shell/client in a distroless image.
+            # Reuse Python from the Worker image to invoke the POST-only API.
             preStop:
-              httpGet: { path: /admin/drain, port: 9090, scheme: HTTP }
+              exec:
+                command:
+                  - python3
+                  - -c
+                  - 'import urllib.request; urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:9090/admin/drain",method="POST"),timeout=5).read()'
           readinessProbe:
             httpGet: { path: /readyz, port: 9090 }
             initialDelaySeconds: 2
