@@ -15,10 +15,13 @@ separation = "test-support"
 
 [features]
 tracing = ["dep:tracing"]
+postgres = ["dep:sqlx", "dep:awaken-sql-storage"]
 
 [dependencies]
 serde_json.workspace = true
 tracing = { version = "0.1", optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
+awaken-sql-storage = { workspace = true, features = ["postgres"], optional = true }
 
 [lints]
 workspace = true

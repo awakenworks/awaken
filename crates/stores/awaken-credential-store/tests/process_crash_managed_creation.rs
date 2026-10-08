@@ -9,14 +9,11 @@ use std::collections::BTreeMap;
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::CredentialSourceId;
-use awaken_credential_store::sqlite::SqliteCredentialRepo;
 use awaken_credential_vault::catalog::{
     ManagedCredentialAuth, ManagedCredentialLifecycle, ManagedVault, ManagedVaultCredential,
-    ManagedVaultRepo,
 };
 use awaken_credential_vault::repo::{
-    CredentialRepo, ManagedCredentialRepository, PendingManagedCredentialMutation,
-    recover_managed_credential_mutations,
+    PendingManagedCredentialMutation, recover_managed_credential_mutations,
 };
 use awaken_credential_vault::{
     CredentialKind, CredentialSource, CredentialStatus, SecretRef, SecretStore,
@@ -112,7 +109,7 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
         assert_eq!(
             recover_managed_credential_mutations(
                 &faults,
-                &repo,
+                repo.as_ref(),
                 awaken_time::system_clock().as_ref()
             )
             .await
@@ -169,7 +166,7 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
             assert_eq!(
                 recover_managed_credential_mutations(
                     &secrets,
-                    &repo,
+                    repo.as_ref(),
                     awaken_time::system_clock().as_ref()
                 )
                 .await
@@ -196,7 +193,7 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
         assert_eq!(
             recover_managed_credential_mutations(
                 &secrets,
-                &repo,
+                repo.as_ref(),
                 awaken_time::system_clock().as_ref()
             )
             .await
@@ -225,7 +222,7 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
         .unwrap();
         assert_eq!(repo.pending_managed_mutations().await.unwrap().len(), 1);
         assert_eq!(
-            recover_managed_credential_mutations(&secrets, &repo, clock.as_ref())
+            recover_managed_credential_mutations(&secrets, repo.as_ref(), clock.as_ref())
                 .await
                 .unwrap(),
             0,
@@ -238,9 +235,7 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
 async fn sqlite_writing_lease_fences_live_and_stale_owners() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("lease-fence.db");
-    let repo = SqliteCredentialRepo::open(db.to_str().unwrap())
-        .await
-        .unwrap();
+    let (repo, _secrets) = crash_secrets::stores(db.to_str().unwrap(), &KEY).await;
     repo.insert_vault(
         "ws",
         ManagedVault {
