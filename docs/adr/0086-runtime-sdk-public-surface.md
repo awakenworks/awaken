@@ -1,7 +1,7 @@
 # ADR-0086: Runtime SDK Public Surface
 
 - Status: Accepted
-- Date: 2026-10-05 (accepted 2026-10-06; amended 2026-10-07, per-module tiers)
+- Date: 2026-10-05 (accepted 2026-10-06; amended 2026-10-07, per-module tiers; amended 2026-10-08, item 7)
 - Builds on: ADR-0059 neutral core and leaf evolution; ADR-0081 contract layering and
   ratchet guardrails (the depth baseline and the bounded-context ratchet).
 - Leaves unchanged: ADR-0050 content capture and GDPR semantics; ADR-0051 tenancy
@@ -186,4 +186,63 @@ everything else is imported from the owning crate.
 **Order.** The tier table applies now: ADR-0088's SPI guard reads it, ratcheted from the
 current state. The value/trait move runs after items 1–7, when the closure of each
 module is known.
+
+## Amendment 2026-10-08: item 7 as the code requires it
+
+Items 4, 3, 2 and 6 have landed, and `sdk-standalone` holds one entry:
+`awaken-runtime-contract -> awaken-credential-contract`. A trial of item 7 on main (the
+full change compiled workspace-wide) found that the decision text above does not match
+the code in six places. This amendment replaces the text of item 7; items 1–6 stand.
+
+How credentials flow today. The Agent snapshot's model routes carry `CredentialAccess`
+(reference, target, usage, exposure policy; no secret). When a Worker claims an attempt,
+the Platform commits the credential decisions as secret-free bindings and deliveries plus
+a receipt recorder (`AttemptCredentialRealization`) and places them in
+`RuntimeRunContext.credential_realization`. The engine carries the context and never reads
+that field. The Platform's `LlmExecutor` reads it at the model request, materializes the
+secret just in time and records a `CredentialRealizationReceipt`; ext-memory carries the
+receipts of an extraction request. This works today only because the SDK depends on the
+Platform crate (`pub use awaken_credential_contract::*`).
+
+1. **Target.** The reference vocabulary moves into a `credential` module of
+   `awaken-agent-contract`, not into `awaken-credential`. Every SDK reader already depends
+   on `awaken-agent-contract`; `awaken-credential`'s three port items move with it and the
+   crate is removed. `awaken-runtime-contract` re-exports the moved items from
+   `awaken-agent-contract` (SDK to SDK), so their `awaken_runtime_contract::` paths keep
+   working; `awaken-credential-contract` re-exports them too, so Platform paths keep working.
+2. **Envelopes as values.** `CredentialAccess` holds `SealedCredentialEnvelopeRef` and
+   `CredentialEnvelope` in its fields, so both move into the SDK as values (the closure
+   item 7 already allowed). Every operation on an envelope — custody, sealing, opening,
+   issuance, rollout, observation admission — stays in the Platform.
+3. **Behavior that names Platform types becomes Platform extension traits.** `admit`,
+   `validate_for_holder` / `validate_issuance` and `validate_usage` read Platform types,
+   so they leave the SDK types' inherent impls and become extension traits in
+   `awaken-credential-contract`. Call sites import the trait, including awaken-cloud
+   `gateway.rs:220` and `credential-envelope` `lib.rs:405`.
+4. **The engine carries the attempt realization as an opaque handle.**
+   `RuntimeRunContext.credential_realization` becomes
+   `Option<CredentialRealizationHandle>`, a named SDK type wrapping
+   `Arc<dyn Any + Send + Sync>` that the engine carries and never interprets — the same
+   rule as the scope label in item 6, and the same shape as the context's existing
+   Platform ports (`model_request_gate`, `ownership`). The Platform recovers the typed value
+   through exactly one function, `AttemptCredentialRealization::from_context`, which fails
+   closed when the handle is absent or of another type, as a missing binding does today.
+   A type parameter on `RuntimeRunContext` was rejected: it would spread through every
+   SPI trait and extension signature, for a type SDK users never name.
+5. **Attempt receipts move to the Platform contract.** The binding, delivery and
+   realization types of runtime-contract's own `credential` module move into
+   `awaken-credential-contract`, which then depends on `awaken-runtime-contract`
+   (Platform to SDK, the allowed direction; the ADR-0081 depth growth is recorded with this
+   amendment as the reason). The ext-memory extraction request carries the receipts as an
+   opaque token that exposes only the two values ext-memory reads: the claim epoch (`u64`)
+   and the `CandidateFingerprint` (which moves with the reference vocabulary).
+6. **awaken-cloud paths change.** Items leaving runtime-contract's own module cannot keep
+   an `awaken_runtime_contract::` path, because the SDK may not re-export a Platform crate.
+   awaken-cloud updates them when it next bumps its pin: `gateway.rs` (141, 222, 244, 329),
+   `awaken-model-access/src/lib.rs` (39–40), `tests/materialize.rs:1433`,
+   `tests/materializer.rs` (22–52, 225).
+
+Order: the explicit re-export list replaces the glob first; then the moves above as one
+reviewable series; the series that empties `sdk-standalone` removes the rule's entry from
+`bounded_context_baseline.json`.
 
