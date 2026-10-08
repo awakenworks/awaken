@@ -10,6 +10,9 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/ci"))
+import _strict_unittest as strict_unittest
 
 from image_archive import canonical_digest, retain_digest_name
 
@@ -142,4 +145,4 @@ raise SystemExit(int(os.environ['STATUS']))
 
 
 if __name__ == '__main__':
-    unittest.main()
+    strict_unittest.main()

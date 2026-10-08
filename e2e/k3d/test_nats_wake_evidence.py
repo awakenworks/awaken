@@ -2,7 +2,11 @@
 """Decision tables for the broker observation used by the real runner."""
 
 import json
+from pathlib import Path
 import unittest
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/ci"))
+import _strict_unittest as strict_unittest
 
 from nats_wake_evidence import qualifies, snapshot
 
@@ -55,4 +59,4 @@ class EvidenceTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    strict_unittest.main()

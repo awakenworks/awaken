@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+import _strict_unittest as strict_unittest
 
 import formal_budget
 import formal_plan
@@ -784,4 +785,4 @@ class EvidenceTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    strict_unittest.main()

@@ -14,6 +14,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+import _strict_unittest as strict_unittest
 from unittest import mock
 
 import check_feature_coverage
@@ -488,4 +489,4 @@ class ProfileTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    strict_unittest.main()

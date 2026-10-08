@@ -6,6 +6,9 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts/ci"))
+import _strict_unittest as strict_unittest
 
 ROOT = Path(__file__).resolve().parent
 
@@ -81,4 +84,4 @@ else:raise AssertionError(args)
 
 
 if __name__ == '__main__':
-    unittest.main()
+    strict_unittest.main()

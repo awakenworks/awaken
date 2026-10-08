@@ -7,6 +7,7 @@ import importlib.util
 import pathlib
 import tempfile
 import unittest
+import _strict_unittest as strict_unittest
 
 
 SCRIPT = pathlib.Path(__file__).with_name("export_homogeneous_lcov.py")
@@ -61,4 +62,4 @@ class ProfileGroupingTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    strict_unittest.main()

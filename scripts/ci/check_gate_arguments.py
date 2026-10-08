@@ -212,6 +212,8 @@ def probe(root: Path, relative: str, flag: str = PROBE_FLAG) -> Probe:
             cwd=root,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=PROBE_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as expired:
@@ -501,6 +503,17 @@ def self_test() -> None:
         assert not [e for e in errors if "strict.sh" in e], "C1/E1"
         assert [e for e in errors if "falls_through.sh" in e], "C2/E2"
         assert [e for e in errors if "silent_refusal.sh" in e], "C3/E2"
+
+        # A tool can diagnose an OS error in a different encoding. Preserve its
+        # failure for A1 instead of crashing a reader thread and losing stdout.
+        encoded = directory / "encoded.py"
+        encoded.write_text(
+            "import sys\nsys.stdout.buffer.write(bytes([224, 255]))\nraise SystemExit(3)\n",
+            encoding="utf-8",
+        )
+        observed = probe(root, "scripts/ci/encoded.py")
+        assert observed.status == 3 and "\ufffd" in observed.output
+        assert refusal_errors({observed.relative: observed}), "C3/E2 malformed diagnostic is not admission"
 
         # C4: the deadline is a refusal failure, not an inconclusive probe.
         (directory / "never_returns.sh").write_text(never_returns, encoding="utf-8")

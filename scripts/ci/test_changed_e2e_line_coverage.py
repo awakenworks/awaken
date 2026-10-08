@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import _strict_unittest as strict_unittest
 from unittest import mock
 
 
@@ -475,4 +476,4 @@ evidence = "test"
 
 
 if __name__ == "__main__":
-    unittest.main()
+    strict_unittest.main()

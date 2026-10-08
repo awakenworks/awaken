@@ -4,6 +4,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+import _strict_unittest as strict_unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -114,4 +115,4 @@ class CodexPlatformInstallTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    strict_unittest.main()

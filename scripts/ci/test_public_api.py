@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import _strict_unittest as strict_unittest
 
 
 SOURCE = Path(__file__).resolve().parent
@@ -219,4 +220,4 @@ else:
 
 
 if __name__ == "__main__":
-    unittest.main()
+    strict_unittest.main()
