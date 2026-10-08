@@ -12,7 +12,7 @@
     },
     "awaken-protocol-managed::ManagedState": {
       "files": 30,
-      "methods": 160,
+      "methods": 158,
       "reason": "W13 step 2 and W20: event projection and orchestration leave; the adapter keeps its wire cache"
     },
     "awaken-session-executor::SharedHost": {
@@ -284,9 +284,9 @@
     "awaken-protocol-managed::state/events/admission.rs::send_event_batch": 235,
     "awaken-protocol-managed::state/events/admission.rs::validate_event_batch": 393,
     "awaken-protocol-managed::state/events/committed_projection.rs::build_committed_projection_candidate_over": 196,
-    "awaken-protocol-managed::state/events/committed_projection/candidate_evidence.rs::read": 254,
-    "awaken-protocol-managed::state/events/committed_projection/canonical_order.rs::canonicalize_committed_events": 282,
-    "awaken-protocol-managed::state/events/committed_projection/root_projection.rs::project_root_prefix": 168,
+    "awaken-protocol-managed::state/events/committed_projection/candidate_evidence.rs::read": 189,
+    "awaken-protocol-managed::state/events/committed_projection/canonical_order.rs::canonicalize_committed_events": 221,
+    "awaken-protocol-managed::state/events/committed_projection/root_projection.rs::project_root_prefix": 167,
     "awaken-protocol-managed::state/events/lifecycle_projection.rs::append_delegation_projections": 153,
     "awaken-protocol-managed::state/events/recovery.rs::qualify_tool_projection": 164,
     "awaken-protocol-managed::state/events/transcript_projection.rs::append_child_transcript_projection": 172,

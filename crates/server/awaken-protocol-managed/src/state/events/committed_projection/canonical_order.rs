@@ -6,12 +6,13 @@
 //!
 //! Every durable event is ordered by the timeline fact behind it: the recorded
 //! [`awaken_managed_session_events::EventIdentity`] of a multiagent event, the reversible
-//! identity of a tool use, or the admission of an inbound command, resolved by
-//! [`OrderIndex`] over the candidate's committed prefix. This module owns only
-//! the Managed concerns around that order: live overlays and DTO timestamps.
+//! identity of a tool use, or the admission of an inbound command, positioned by
+//! [`position_events`] over the candidate's committed prefix. This module owns
+//! only the Managed concerns around that order: decoding public ids into those
+//! identities, live overlays, DTO timestamps and the final sort.
 
 use super::*;
-use awaken_managed_session_events::{EventPosition, FactProvenance, ManagedEventType, OrderIndex};
+use awaken_managed_session_events::{AnchoredEvent, EventAnchor, OrderIndex, position_events};
 use std::collections::HashMap;
 
 pub(super) struct CanonicalizationEvidence<'a> {
@@ -20,39 +21,33 @@ pub(super) struct CanonicalizationEvidence<'a> {
     pub(super) coordination: &'a awaken_managed_session_events::CommittedProjection,
 }
 
-fn retain_earliest<K: std::hash::Hash + Eq>(
-    orders: &mut HashMap<K, EventPosition>,
-    key: K,
-    order: EventPosition,
-) {
-    orders
-        .entry(key)
-        .and_modify(|current| *current = (*current).min(order))
-        .or_insert(order);
-}
-
-/// The same committed coordinate lookup serves the early child activity fold
-/// and the final canonical sort. Fact keys and qualified tool ids are the
-/// existing identity owners; a published Event position is never an input.
-fn keyed_event_order(
-    record: &SessionRecord,
-    index: &OrderIndex<'_>,
-    event: &Event,
-    present_types: &std::collections::HashSet<&str>,
-) -> Option<EventPosition> {
-    if let Some(tool) = decode_managed_tool_event_id(&event.id) {
-        let thread_id = internal_thread_id(&record.session.id, tool.thread_id);
-        return index.tool_order(&thread_id, tool.source_id, tool.call_id);
+/// The committed identity behind one projected event, decoded from the
+/// existing identity owners: the inbound receipt id, the recorded fact key and
+/// the reversible tool id. A published Event position is never an input.
+fn event_anchor<'a>(
+    record: &'a SessionRecord,
+    inbound: &HashMap<String, &'a str>,
+    event: &'a Event,
+) -> EventAnchor<'a> {
+    if is_transient_event_id(&event.id) {
+        return EventAnchor::Transient;
     }
-    let key = record.checkpoint.progress.fact_keys.get(&event.id)?;
-    let authenticated = match (&key.role, &key.provenance) {
-        (ManagedEventType::Transcript(role), FactProvenance::AssistantResponse { .. }) => {
-            event.kind.type_str() == role.as_wire_type()
-        }
-        (ManagedEventType::Transcript(role), _) => present_types.contains(role.as_wire_type()),
-        _ => true,
-    };
-    authenticated.then(|| index.fact_order(key)).flatten()
+    if let Some(operation_id) = inbound.get(&event.id) {
+        return EventAnchor::Inbound { operation_id };
+    }
+    // Fact ids (`magent_v1_`), tool ids (`mtool_v1_`) and inbound receipts
+    // (`evt_`) are disjoint, so at most one of these identities applies.
+    if let Some(key) = record.checkpoint.progress.fact_keys.get(&event.id) {
+        return EventAnchor::Fact(key);
+    }
+    match decode_managed_tool_event_id(&event.id) {
+        Some(tool) => EventAnchor::Tool {
+            thread_id: internal_thread_id(&record.session.id, tool.thread_id),
+            source_id: tool.source_id,
+            call_id: tool.call_id,
+        },
+        None => EventAnchor::Unanchored,
+    }
 }
 
 /// Attach each live overlay to its explicit retained predecessor, or the
@@ -126,87 +121,26 @@ impl ManagedState {
             }
         }
 
-        let inbound =
-            index
-                .inbound_orders()
-                .fold(HashMap::new(), |mut orders, (operation_id, order)| {
-                    retain_earliest(
-                        &mut orders,
-                        durable_inbound_event_id(&session_id, operation_id),
-                        order,
-                    );
-                    orders
-                });
-        // A transcript fold's id authenticates its wire type: an assistant
-        // response only as the type it was minted for, a Message fold only as
-        // a type the projection still carries.
-        let present_types = record
+        let inbound = index
+            .inbound_orders()
+            .map(|(operation_id, _)| {
+                (
+                    durable_inbound_event_id(&session_id, operation_id),
+                    operation_id,
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let anchored = record
             .events
             .iter()
-            .map(|event| event.kind.type_str())
-            .collect::<std::collections::HashSet<_>>();
-        let mut orders = HashMap::<String, EventPosition>::new();
-        let mut coordination_facts = Vec::new();
-        let mut parent_terminal_facts = Vec::new();
-        for event in &record.events {
-            if is_transient_event_id(&event.id) {
-                continue;
-            }
-            if let Some(order) = inbound.get(&event.id) {
-                orders.insert(event.id.clone(), *order);
-                continue;
-            }
-            let Some(key) = record.checkpoint.progress.fact_keys.get(&event.id) else {
-                if let Some(order) = keyed_event_order(record, index, event, &present_types) {
-                    orders.insert(event.id.clone(), order);
-                }
-                continue;
-            };
-            match &key.provenance {
-                FactProvenance::LinkOperation { .. }
-                | FactProvenance::CoordinationCall { .. }
-                | FactProvenance::AgentReport { .. } => {
-                    coordination_facts.push((event.id.clone(), key.clone()));
-                }
-                FactProvenance::ParentTerminal => {
-                    parent_terminal_facts.push((event.id.clone(), key.clone()));
-                }
-                _ => {
-                    if let Some(order) = keyed_event_order(record, index, event, &present_types) {
-                        orders.insert(event.id.clone(), order);
-                    }
-                }
-            }
-        }
-        for (id, key) in &coordination_facts {
-            if let Some(order) = coordination.coordination_orders.get(key) {
-                orders.insert(id.clone(), *order);
-            }
-        }
-        let coordination_frontier = coordination
-            .coordination_orders
-            .values()
-            .map(|order| order.source_commit_cursor)
-            .max()
-            .unwrap_or_default();
-
-        // Initial activation can fail before Runtime owns a cleanup cursor. In
-        // that case terminality follows the complete immutable prefix already
-        // ordered above. The derived maximum is disposable ordering, never a
-        // second persisted cursor or Session state.
-        let frontier = orders
-            .values()
-            .map(|order| order.source_commit_cursor)
-            .chain([index.evidence_frontier(), coordination_frontier])
-            .max()
-            .unwrap_or_default();
-        if let Some(terminal_source) = index.parent_terminal_source(frontier) {
-            for (id, key) in &parent_terminal_facts {
-                if let Some(order) = index.parent_terminal_order(key, terminal_source) {
-                    orders.insert(id.clone(), order);
-                }
-            }
-        }
+            .map(|event| AnchoredEvent {
+                id: event.id.clone(),
+                wire_type: event.kind.type_str(),
+                anchor: event_anchor(record, &inbound, event),
+            })
+            .collect::<Vec<_>>();
+        let orders = position_events(index, coordination, &anchored);
+        drop(anchored);
 
         record.event_times = orders
             .iter()
