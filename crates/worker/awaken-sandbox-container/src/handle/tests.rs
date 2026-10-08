@@ -501,10 +501,11 @@ fn guarded_claim_handle_keeps_one_typed_terminal_incarnation() {
     // Causes: C1 a joined Pod reservation has one Isolated UID and a retained
     // original claim UID; C2 the terminal-only handle is encoded and reopened;
     // C3 the reservation is InFlight, its UID is empty, or the claim UID is
-    // missing. Effects: E1 C1+C2 preserves both immutable identities and the
-    // predecessor fence; E2 C3 refuses before a physical-incarnation claim.
-    // Rules H1=C1+C2->E1, H2=C3->E2. Ordinary adoption refusal is owned by
-    // the K8s runtime purpose table, not duplicated in this codec test.
+    // missing; C4 the large guarded variant uses in-memory indirection.
+    // Effects: E1 C1+C2+C4 preserves both immutable identities, the predecessor
+    // fence and the exact serialized wire; E2 C3 refuses before a physical-
+    // incarnation claim. Rules H1=C1+C2+C4->E1, H2=C3->E2. Ordinary adoption
+    // is owned by the K8s runtime purpose table, not duplicated in this test.
     use crate::k8s::{CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus};
     let predecessor =
         crate::ContainerEffectFence::new("old-effect", "old-worker", "old-boot", 1, u64::MAX)
@@ -528,11 +529,16 @@ fn guarded_claim_handle_keeps_one_typed_terminal_incarnation() {
     let guarded =
         KubernetesGuardedClaimHandle::new("scope", &predecessor, ticket.clone(), "claim-uid")
             .unwrap();
+    assert_eq!(
+        serde_json::to_string(&Box::new(guarded.clone())).unwrap(),
+        serde_json::to_string(&guarded).unwrap(),
+        "H1 boxed storage preserves the typed wire"
+    );
     let handle = pc::SandboxHandle::container_v2(
         "scope",
         container_v2(
             Some(ContainerContinuationHandle::KubernetesGuardedClaim(
-                guarded.clone(),
+                Box::new(guarded.clone()),
             )),
             Vec::new(),
         ),
@@ -575,7 +581,7 @@ fn guarded_claim_handle_keeps_one_typed_terminal_incarnation() {
         "scope",
         container_v2(
             Some(ContainerContinuationHandle::KubernetesGuardedClaim(
-                malformed,
+                Box::new(malformed),
             )),
             Vec::new(),
         ),
